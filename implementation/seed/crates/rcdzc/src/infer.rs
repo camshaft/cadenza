@@ -586,7 +586,18 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::List { elems } => {
             let mut elem_ty = Ty::Any;
             for &e in elems.iter() {
-                elem_ty = elem_ty.join(&type_of(db, e));
+                // A CONSTRUCTION-SPREAD child `(.. s)` contributes `s`'s ELEMENT type (peel `List<>`), not
+                // the type of the `(.. )` node — `#list(1 (.. xs))` types the list by joining `Int64` with
+                // `xs`'s element type. The value twin of the pattern rest's `rest : List<T>` typing.
+                let et = if let Some(op) = db.ast.spread_operand(e) {
+                    match type_of(db, op) {
+                        Ty::List(inner) => *inner,
+                        other => other,
+                    }
+                } else {
+                    type_of(db, e)
+                };
+                elem_ty = elem_ty.join(&et);
             }
             Ty::List(Box::new(elem_ty))
         }
@@ -3695,7 +3706,16 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
         Resolved::List { elems } => {
             let mut elem_ty = Ty::Any;
             for &e in elems.iter() {
-                let et = reflected_ty(db, e);
+                // A construction-spread `(.. s)` child reflects `s`'s ELEMENT type (peel `List<>`), the
+                // reflection twin of the `type_of` list arm.
+                let et = if let Some(op) = db.ast.spread_operand(e) {
+                    match reflected_ty(db, op) {
+                        Ty::List(inner) => *inner,
+                        other => other,
+                    }
+                } else {
+                    reflected_ty(db, e)
+                };
                 elem_ty = elem_ty.join(&et);
             }
             Ty::List(Box::new(elem_ty))
@@ -5194,7 +5214,18 @@ fn arg_ty_in_env(
         Resolved::List { elems } => {
             let mut elem_ty = Ty::Any;
             for &e in elems.iter() {
-                elem_ty = elem_ty.join(&arg_ty_in_env(db, e, env, subst, fresh));
+                // A construction-spread `(.. s)` child contributes `s`'s ELEMENT type (peel `List<>`),
+                // read through the local `subst` so a spread operand that is a param being solved links
+                // its element var — the mid-solve twin of the `type_of` list arm's peel.
+                let et = if let Some(op) = db.ast.spread_operand(e) {
+                    match arg_ty_in_env(db, op, env, subst, fresh) {
+                        Ty::List(inner) => *inner,
+                        other => other,
+                    }
+                } else {
+                    arg_ty_in_env(db, e, env, subst, fresh)
+                };
+                elem_ty = elem_ty.join(&et);
             }
             return Ty::List(Box::new(subst.apply(&elem_ty)));
         }

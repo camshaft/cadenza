@@ -34997,12 +34997,13 @@
 (case
   "cspr1 construction SPREAD splices a runtime list into a literal (should-work: the value twin of the rest pattern)"
   (doc
-    "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0201 '`..` is a rest/spread
-     marker, valid only inside a collection PATTERN', routed v-inference — construction-spread parse
-     round-trips are pinned (#6908/#6910/#6912), the LOWERING is the missing piece): `#list(1 .. xs n)`
-     with xs=[10,20] must construct [1,10,20,n] — the elementwise splice, dual to the pattern gather.
-     Derivation: (at 2)=20, (at 3)=n -> 100*20 + n. n=7 -> 2007; n=0 -> 2000. Auto-flips on the
-     spread lowering.")
+    "Construction SPREAD, the value twin of the list REST pattern (operator-greenlit 2026-09-01;
+     DESIGN-collection-spread-construction.md §4a): `#list(1 (.. xs) n)` with xs=[10,20] constructs
+     [1,10,20,n] — the elementwise splice, dual to the pattern gather. Lowers by desugaring the maximal
+     inline runs (as `#list(…)`) and the spread operands into a left-to-right `List.concat` fold (reusing
+     the existing concat lowering; no new IR), so it works on BOTH wasm and rust. Derivation: (at 2)=20,
+     (at 3)=n -> 100*20 + n. n=7 -> 2007; n=0 -> 2000. Formerly declined CDZ0201 ('`..` is pattern-only');
+     that reject now stands only for a `..` that is NOT a direct collection-construction child.")
   (input
     (do
       (def
@@ -35017,3 +35018,87 @@
   (output (: 2007 Int64))
   (call main (: 0 Int64))
   (output (: 2000 Int64)))
+
+; ALL-SPREAD construction (no inline element) — `#list((.. xs) (.. ys))` is the pure `List.concat` of the
+; two runtime operands, no synthetic single-element `#list` in the fold. xs=[1,2], ys=[3,4] -> [1,2,3,4];
+; observe len (4) and the boundary elements (elem 1 from xs = 2, elem 2 from ys = 3): 100*len + 10*(at 1)
+; + (at 2) = 400 + 20 + 3 = 423.
+(case
+  "a construction spread with only spreads concatenates the operands (no inline element)"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def xs #list(1 k))
+          (def ys #list(3 4))
+          (def zs #list((.. xs) (.. ys)))
+          (+ (+ (* 100 (List.len zs))
+                (* 10 (match (List.at zs 1) ((Some v) v) ((None _u) -1))))
+             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 423 Int64)))
+
+; LEADING and TRAILING spreads in one literal — `#list((.. xs) 7 (.. ys))` splices before AND after the
+; inline `7`. xs=[1,2], ys=[3,4] -> [1,2,7,3,4]; (at 2)=7 (the inline), len=5: 100*5 + 7 = 507.
+(case
+  "a construction spread with a leading and a trailing spread around an inline element"
+  (input
+    (do
+      (def (main (: mid Int64))
+        (do
+          (def xs #list(1 2))
+          (def ys #list(3 4))
+          (def zs #list((.. xs) mid (.. ys)))
+          (+ (* 100 (List.len zs))
+             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 507 Int64)))
+
+; EMPTY spread is the identity — `#list(1 (.. #list()) 2)` splices nothing, so it is `[1,2]` (concat with
+; the empty list is a no-op). len=2, (at 1)=2: 100*2 + 2 = 202.
+(case
+  "a construction spread of an empty list contributes no elements"
+  (input
+    (do
+      (def (main)
+        (do
+          (def zs #list(1 (.. #list()) 2))
+          (+ (* 100 (List.len zs))
+             (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main)
+  (output (: 202 Int64)))
+
+; A FULLY-CONSTANT construction spread folds at compile time to one list — `#list(1 (.. #list(2 3)) 4)` is
+; the constant [1,2,3,4] (the `List.concat` fold merges the constant operands into a single `ListNew`),
+; observably identical to a written `#list(1 2 3 4)`. len=4, (at 2)=3: 100*4 + 3 = 403.
+(case
+  "a fully-constant construction spread folds to a single constant list"
+  (input
+    (do
+      (def (main)
+        (do
+          (def zs #list(1 (.. #list(2 3)) 4))
+          (+ (* 100 (List.len zs))
+             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main)
+  (output (: 403 Int64)))
+
+; A SINGLE spread with no inline element — `#list((.. xs))` is `xs` itself (a copy; for an immutable
+; persistent list, copy and alias are observationally identical). xs=[5,k] -> len=2, (at 1)=k: k=6 -> 206.
+(case
+  "a construction spread of a single list with no inline elements is that list"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def xs #list(5 k))
+          (def zs #list((.. xs)))
+          (+ (* 100 (List.len zs))
+             (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 6 Int64))
+  (output (: 206 Int64)))
