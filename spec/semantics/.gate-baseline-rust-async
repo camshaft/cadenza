@@ -6923,8 +6923,8 @@ pass	matching on string literals
 pass	mcs1 a mask covering a logical-shift's proven range is elided (value parity)
 pass	mcs2 a mask narrower than the shifted range still masks (not elided)
 pass	md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed
-pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
-pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
+fail	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
+fail	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 pass	mdi1 a PITCH-CLASS walker over MIDI notes — transpose shifts the held note answering its class mod twelve, octave answers the note divided by twelve, two fifths then a double-octave drop then a fourth and a tone walk the circle, and the seeds' classes rotate through DIFFERENT residues while the octave rows differ by the same offset
 pass	me1 a MIXED-endian frame crosses the dispatch boundary as an op ARGUMENT — the arm decodes big and little fields independently
 pass	me2 the arm RE-ENCODES its two decoded fields with SWAPPED endianness and the body decodes the swap
