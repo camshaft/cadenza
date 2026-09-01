@@ -513,6 +513,13 @@ pub(crate) fn run_sharing_aware_emit(
     db: &mut crate::db::Db,
     layout: &crate::layout::Layout,
     opt_level: OptLevel,
+    // SCRUTINEE-SHARES-ONLY (v-cadenza-backend co-design, the cadenza-at-O1 install path): when `true`,
+    // install ONLY the plan entries whose shared node is a dispatch subject (`b2_bind_plan_scrutinee_only`) —
+    // the serialization-forced match-scrutinee subset that is reclaim-safe on an UN-O2-optimized body, EXCLUDING
+    // the general shared-heap-node bindings (loop-carried / captured-list) that leak on the cadenza O1 round-trip
+    // (v-cadenza census: 06/09/14b regressed 0→N under the full plan at cadenza-O1). The default wasm path passes
+    // `false` (full plan) — the O2 body's pass pipeline makes the general bindings reclaim-safe, so those wins stay.
+    scrutinee_shares_only: bool,
 ) {
     // Gated to O2+ (a whole-body sharing analysis), tier-consistent with `GlobalCsePass`.
     if opt_level < OptLevel::O2 {
@@ -546,7 +553,11 @@ pub(crate) fn run_sharing_aware_emit(
         // Let-install; sequential per-entry install NESTS correctly when two entries share a `scope_node`
         // (each captures `scope_node`'s CURRENT core as the new Let body → the second wraps the first, let*).
         // See backend/wasm/DESIGN-sharing-aware-emit-let-slot.md.
-        let plan = crate::core_analysis::b2_bind_plan(db, body);
+        let plan = if scrutinee_shares_only {
+            crate::core_analysis::b2_bind_plan_scrutinee_only(db, body)
+        } else {
+            crate::core_analysis::b2_bind_plan(db, body)
+        };
         install_b2_bind_entries(db, &plan);
         if !plan.is_empty() {
             trace!(target: "rcdzc::opt", def, entries = plan.len(),
@@ -1096,7 +1107,7 @@ mod tests {
         ));
         let layout = crate::layout::compute(&mut db).expect("layout");
         assert!(!db.has_core_overrides(), "no override before the pass");
-        run_sharing_aware_emit(&mut db, &layout, OptLevel::O1);
+        run_sharing_aware_emit(&mut db, &layout, OptLevel::O1, false);
         assert!(
             !db.has_core_overrides(),
             "O1 leaves the core column untouched — the B2 install is gated O2+"
@@ -1119,7 +1130,7 @@ mod tests {
         let body = db.defs[d].body.expect("main body");
         let layout = crate::layout::compute(&mut db).expect("layout");
         let _ = crate::lower::core_of(&mut db, body);
-        run_sharing_aware_emit(&mut db, &layout, OptLevel::O2);
+        run_sharing_aware_emit(&mut db, &layout, OptLevel::O2, false);
         assert!(
             !db.has_core_overrides(),
             "a repeated SCALAR is not a heap share → b2_bind_plan is empty → B2 installs nothing (that \

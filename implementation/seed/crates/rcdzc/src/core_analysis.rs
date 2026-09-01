@@ -384,6 +384,32 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
     shared_node_bind_plan(db, body, b2_heap_eligible)
 }
 
+/// The B2 bind plan RESTRICTED to entries whose shared node is a DISPATCH SUBJECT — the `scrutinee` of a
+/// `Match`/`MatchSum`/`MatchList`, or of a `SumPayload`/`SumExpect` read (`b2_is_dispatched_on`). This is the
+/// SERIALIZATION-FORCED subset: a re-used match scrutinee (or a shared tuple/record read via multiple
+/// single-`Elem` field reads) is a DAG share the Core→binary-AST→surface round-trip CANNOT re-express except
+/// by re-introducing a `let` — so binding it once is semantics-preserving on the round-trip. The GENERAL
+/// shared-heap-node bindings (a loop-carried value, a doubly-captured list read via `List.len`/`List.at` — NOT
+/// dispatch subjects) are EXCLUDED: v-cadenza-backend's cadenza-hop census showed those Let-binds are only
+/// reclaim-safe on an O2-OPTIMIZED body (the O2 pass pipeline is protective, not merely tiering) and LEAK on an
+/// O1 body's round-trip (06 digital-root, 09 collatz/cle2, 14b regressed 0→N when the full plan ran at
+/// cadenza-O1). Since `b2_heap_eligible`'s P3-narrow already drops the rust-slot-UNSAFE consuming-scrutinee
+/// shapes (MatchList/RestFrom → `vec-split` UAF, sum-variant `Payload` → rust decline), every dispatched-on
+/// entry SURVIVING into the base plan is the both-backend-safe product-destructure / single-`Elem` field-read
+/// share — cbm3's 127 state-tuple reads + adv-62's destructuring match. Used ONLY by the cadenza-at-O1 install
+/// path (`run_sharing_aware_emit(scrutinee_shares_only=true)`); the default wasm O2 path keeps the full plan.
+/// Conservative: over-exclusion at O1 only forfeits a shared-read opt, never miscompiles.
+pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    let full = b2_bind_plan(db, body);
+    let mut kept = Vec::with_capacity(full.len());
+    for e in full {
+        if b2_is_dispatched_on(db, body, e.shared_id) {
+            kept.push(e);
+        }
+    }
+    kept
+}
+
 /// Per-node ELIGIBILITY for a share KIND: returns `Some(ty)` when the node at `id` (reached by `count`
 /// parent edges, reachable from `body`) is an eligible SHARE for this kind, `None` to skip it. ONLY the
 /// KIND-SPECIFIC gates live here — B2's heap gate-2 + P1/P3 (`b2_heap_eligible`), or the O2 CSE's scalar

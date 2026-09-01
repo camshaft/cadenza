@@ -540,7 +540,11 @@ fn compile_with_opt_inner(
     // run_sharing_aware_emit holds; a future reachability-changing pass needs a layout recompute here.
     crate::opt::PassManager::for_level(opt_level).run(&mut db);
 
-    crate::opt::run_sharing_aware_emit(&mut db, &layout, opt_level);
+    // `scrutinee_shares_only = false`: the default (wasm) path installs the FULL B2 plan (the O2 body's pass
+    // pipeline makes the general shared-heap bindings reclaim-safe). v-cadenza-backend flips this to a
+    // cadenza-at-O1 gate (`emit_targets` includes Cadenza && level < O2) to install only the match-scrutinee
+    // subset — the co-designed mechanism lives in `run_sharing_aware_emit`/`b2_bind_plan_scrutinee_only`.
+    crate::opt::run_sharing_aware_emit(&mut db, &layout, opt_level, false);
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors). The check does not stop at the
