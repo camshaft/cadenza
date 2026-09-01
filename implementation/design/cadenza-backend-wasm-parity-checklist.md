@@ -29,26 +29,24 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **9** (was 12; #7355 closed the 2 Map folded-dup-key breaks, #7357 the empty-collection
-ascription-drop. titled-break scan, corrected+precondition gate; all surface/recompilability TYPE breaks — none
-wrong-DATA), by family:
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **8** (was 12; #7355 closed 2 Map dup-key, #7357 empty-collection, #7376 the erased-sum
+tuple-payload destructure = 07 Box-Pair/gn3. corrected+precondition gate; all surface/recompilability TYPE breaks —
+none wrong-DATA), by family:
   • ✅ EMPTY-COLLECTION ascription-drop (CDZ0203) — CLOSED #7357 (dae2c1b1c2): an empty `#list()`/`#set()`/`#map()`
     re-emitted bare drops its element/key/value type → hop2 undetermined-escape reject. Fix = `ascribe_if_empty`
     wraps `(: <lit> <solved-ty>)` (mirrors the `(None)`-carries-its-type precedent). breaker-minimized (3/5).
-  • GENERIC/NESTED-SUM (CDZ0203 ×4) — ROOT CAUSE + POLICY DECIDED (breaker fully minimized 4/5+5/5+rb3, ONE root):
-    the emitter re-materializes newtype-ERASED sum wraps/projections INCOHERENTLY across a DEPTH-≥3 nested chain
-    (a single-level `(match x ((Box v) v))` round-trips fine; only nested/inlined Box-over-Pair-over-runtime-list
-    breaks). Three defects (from breaker's `cdz convert`): (a) a match arm BODY re-emits the payload EXPRESSION
-    instead of the pattern BINDER (`_cdz_m0`) — payload-substitution (also a latent effects/live-objects dup
-    hazard) · (b) the final tuple-field projection is DROPPED · (c) a construction WRAP is dropped on one side
-    while the UNWRAP + `(: .. (List Box))` annotation are kept on the other → producer/consumer disagree.
-    🎯 POLICY = **FULLY RE-MATERIALIZE** (NOT fully-erase): the Core keeps nominal identity (`Box` ≠ its inner),
-    so an escaping value must render with its `Box` type + producer/consumer must agree at `(List Box)`;
-    fully-erase would drop nominal annotations = a type-drop (renders `Int64` not `Box`) = the newtype-unwrap
-    wrong-type-surface class. FIX = emit every wrap/unwrap/annotation coherently + body reads resolve to BINDERS
-    (no payload-expr substitution) + never drop a projection — in `emit_match_sum` / `nominal_disposition` / the
-    projection walker (the #7278 machinery extended to nested Payload paths). DEEP + load-bearing → do CAREFULLY
-    over a focused tick, validate with the corrected+precondition gate + value-A/B on the 4 minimals (breaker verifies).
+  • ERASED-SUM re-materialization (CDZ0203) — ✅ tuple-payload DESTRUCTURE fixed #7376 (a5c42accf2): the #7278
+    Leaf-root arm bound a single-variant ctor's payload at CTOR arity, so an erased newtype OVER a tuple bound the
+    WHOLE tuple as one slot while the body reads its FIELDS at `[Elem(i)]` → dropped projection. Fix: when the sole
+    payload is a `Ty::Tuple`, destructure it (`(Ctor #tuple(b…))`). Closed 07 Box-Pair/gn3 + breaker cd1/cd2. ⏭️ TWO
+    remaining sub-shapes (still open, CDZ0203 ×3 across 05/09): (1) the WRAP-SIDE (rg1 title-5) — a `(Box.Wrap x)`
+    CONSTRUCTION emitted BARE (nominal-disposition Construct-vs-PassThrough, not the destructure) — MINE NEXT; (2) the
+    DEPTH-3 rb3 erased-and-boxed nested-sum (05) — a deeper nesting my one-level tuple-destructure doesn't compose
+    through yet. 🎯 POLICY = **FULLY RE-MATERIALIZE** (NOT fully-erase): the Core keeps nominal identity (`Box` ≠
+    inner), so an escaping value must render with its `Box` type + producer/consumer must agree at `(List Box)`;
+    fully-erase would drop nominal annotations = a type-drop. For the WRAP-SIDE: emit the `(Ctor …)` construction
+    (nominal_disposition Construct) where a wrap was dropped; validate corrected+precondition gate + value-A/B
+    (breaker verifies rg1).
     Repros: /tmp/gn3.sexp, /tmp/rg1.sexp; writeup .claude/fleet/queue/adv-emitter-incoherent-rematerialization-of-erased-generic-sums.md.
     NOTE: #7355 verify surfaced a PRE-EXISTING constructor-side dup-key bug (const-map CONSTRUCTOR holds both
     folded-equal entries on the DIRECT leg) — routed to v-compiler-primitives (const-map build), NOT my lane.
