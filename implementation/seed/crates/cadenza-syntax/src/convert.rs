@@ -570,6 +570,63 @@ mod tests {
     }
 
     #[test]
+    fn render_binary_renders_non_finite_floats_inside_compounds() {
+        // REGRESSION GUARD for the render HALF of breaker's wasm-boundary bug (2026-09-01): a non-finite
+        // float (nan / ±inf) INSIDE a compound value renders SILENTLY WRONG on the wasm boundary (the whole
+        // compound collapses to `#list()`). Root cause is the wasm ENCODE (cdz-runtime value_codec declines a
+        // non-finite `float_leaf` and has no FloatNan/FloatInf doc leaf) — NOT this render path. This test
+        // pins that the render half (codec decode + the canonical printer) is CORRECT + ready: a doc carrying
+        // `Leaf::FloatNan` / `Leaf::FloatInf` inside a `Ctor`-headed compound renders the idiomatic value form
+        // with the word-forms `nan`/`inf`/`-inf`, byte-for-byte matching the rust renderer (breaker's matrix:
+        // `#list(nan)` / `#tuple(nan 7)`). The reader never produces these leaves (source `nan` is a Name), so
+        // the doc is built directly via `Builder` — exactly the shape value_codec/`Ast.encode` emits once the
+        // encode gap is fixed. Guards a future printer/codec change from silently dropping the word-forms.
+        use crate::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix};
+        let render = |build: &dyn Fn(&mut Builder) -> crate::ast::StructId| {
+            let mut b = Builder::new();
+            let root = build(&mut b);
+            let a = b.finish(root);
+            let bytes = crate::codec::encode(&a);
+            let sexpr = render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Expr,
+                Options::default(),
+            )
+            .unwrap();
+            let ml =
+                render_binary(&bytes, Format::Ml, FragmentKind::Expr, Options::default()).unwrap();
+            (sexpr, ml)
+        };
+        // (list nan) — a NaN inside a list.
+        let (sx, ml) = render(&|b| {
+            let n = b.atom_leaf(Leaf::FloatNan);
+            b.compound(CompoundCtor::List, &[n])
+        });
+        assert_eq!((sx.as_str(), ml.as_str()), ("#list(nan)", "[nan]"));
+        // (tuple nan 7) — a NaN alongside a finite Int in a tuple; the whole tuple survives.
+        let (sx, ml) = render(&|b| {
+            let n = b.atom_leaf(Leaf::FloatNan);
+            let i = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(7),
+                radix: Radix::Dec,
+            });
+            b.compound(CompoundCtor::Tuple, &[n, i])
+        });
+        assert_eq!((sx.as_str(), ml.as_str()), ("#tuple(nan 7)", "(nan, 7)"));
+        // (list -inf inf) — both infinity signs inside a list.
+        let (sx, ml) = render(&|b| {
+            let ni = b.atom_leaf(Leaf::FloatInf { negative: true });
+            let pi = b.atom_leaf(Leaf::FloatInf { negative: false });
+            b.compound(CompoundCtor::List, &[ni, pi])
+        });
+        assert_eq!(
+            (sx.as_str(), ml.as_str()),
+            ("#list(-inf inf)", "[-inf, inf]")
+        );
+    }
+
+    #[test]
     fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
         // A multi-line s-expr parse error's trailing `at byte N` becomes `at line:col`.
         let src = "(module m\n  (def (main)\n    (+ 1 2)))\n  )))";
