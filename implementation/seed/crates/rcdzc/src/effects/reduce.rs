@@ -360,7 +360,14 @@ pub fn reduce_handle(
         // pending continuation (the deferred tagged-return vertical). So decline iff the handle is not the
         // whole function body OR the unsoundness includes a cross-fn abort.
         let cross_fn = body_has_unsound_abortive_perform(db, body, &ctx, true, false, true);
-        if !whole_fn_body || cross_fn {
+        // SEED-SHAREABLE gate (first increment): only take the HandleAbort path for a SHAREABLE-CONSTANT seed.
+        // A NON-shareable (heap) seed is threaded as `#seed`, so an abort value that reads the (advanced) state
+        // carries a `#seed`/`#st` ref that the collapse path binds via `apply_seed_wrap`/`drain_and_wrap` on the
+        // returned value — machinery the mid-body `Core::HandleAbort` does not yet receive, so its embedded
+        // `#seed` reads UNBOUND (CDZ0101). Until the HandleAbort value gets that same seed-wrap/drain treatment
+        // (a scoped follow-up), DECLINE the heap-seed case cleanly (it declined before this feature too — no
+        // regression) and take HandleAbort only for the shareable-seed subset (the eab1 witness + scalar states).
+        if !whole_fn_body || cross_fn || !seed_is_shareable_constant(db, init) {
             return None;
         }
         // else: RELAX — this handle is the whole function body and its only unsoundness is a same-fn abort
