@@ -84,4 +84,33 @@ private def _progMain (n : UInt8) : Ast.Module :=
 #guard differential (fun _ _ => .ok #[.i64 5]) (_progMain 5) "(module)" (rt "Widget") { entry := "main" }
        == .skip "cdz-result-type: entry has no modeled scalar result type"
 
+/-! ### The conformance RUNNER (v-lean-oracle owns this) — tally `differential` over a corpus of cases.
+DRIVER-ABSTRACT: `talosDriver` (from `Oracle.Wasm.Talos`, once the co-land lands) plugs in as `drive`. The
+IO wrapper (parse a manifest, read each case's coreWat/rtBytes/coreAst files, print the tally + divergence
+report) is the executable `main`, added when talos is on main; this is its pure core. Each case is
+`(id, coreAst, coreWat, rtBytes)`; a DIVERGENCE keeps `(id, coreOutcome, wasmOutcome)` for the report — a
+divergence is a real MISCOMPILE FINDING to route to the compiler owners. -/
+structure Tally where
+  agree : Nat := 0
+  diverge : Nat := 0
+  skip : Nat := 0
+  deriving Repr, BEq, Inhabited
+
+/-- Run the differential over a corpus, tallying agree/diverge/skip + collecting divergence details
+`(id, core, wasm)` (the miscompile findings). Driver-abstract. -/
+def runCorpus (drive : Driver) (trial : Trial)
+    (cases : List (String × Ast.Module × String × ByteArray)) :
+    Tally × List (String × Outcome × Outcome) :=
+  cases.foldl (fun (acc : Tally × List (String × Outcome × Outcome)) c =>
+    let (t, divs) := acc
+    match differential drive c.2.1 c.2.2.1 c.2.2.2 trial with
+    | .agree => ({t with agree := t.agree + 1}, divs)
+    | .diverge cv wv => ({t with diverge := t.diverge + 1}, (c.1, cv, wv) :: divs)
+    | .skip _ => ({t with skip := t.skip + 1}, divs)) ({}, [])
+
+-- runner tally over 3 stub cases: agree (5=5) / diverge (5≠9) / skip (unmodeled result type).
+#guard (runCorpus (fun _ _ => .ok #[.i64 5]) { entry := "main" }
+         [("a", _progMain 5, "(module)", rt "Int"), ("b", _progMain 9, "(module)", rt "Int"),
+          ("c", _progMain 5, "(module)", rt "Widget")]).1 == { agree := 1, diverge := 1, skip := 1 }
+
 end Oracle.WasmDiff
