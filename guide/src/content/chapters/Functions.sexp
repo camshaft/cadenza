@@ -7,13 +7,13 @@
   (lede "Functions are values, so you can build bigger transformations out of smaller ones by piping, by composing, and by applying one argument at a time.")
   (p "You've already met higher-order functions in " (c "Values &amp; functions") ": because a function is an ordinary value, you can pass one to another function and return one from a function. This chapter is about the everyday shapes that grow out of that single idea.")
   (h2 "The pipeline operator")
-  (p "When you transform a value through a series of steps, writing it as nested calls reads inside-out: the " (em "last") " thing to happen is written " (em "first") ". The pipeline operator " (c "|&gt;") " flips that around, so " (c "x |&gt; f") " means \"take " (c "x") " and feed it to " (c "f") "\", i.e. exactly " (cdz "(f x)") ", but written left-to-right in the order things happen.")
+  (p "When you transform a value through a series of steps, writing it as nested calls reads inside-out: the " (em "last") " thing to happen is written " (em "first") ". The pipeline operator " (c "|&gt;") " flips that around, so " (c "x |&gt; f") " means \"take " (c "x") " and feed it to " (c "f") "\", i.e. exactly " (cdz (f x)) ", but written left-to-right in the order things happen.")
   (runnable
     (source (def (inc n) (+ n 1))
 (def (dbl n) (* n 2))
 (def (main) (|> (|> 5 inc) dbl))))
   (p "Read the " (c "main") " in the conventional syntax (flip the toggle in the header) and it becomes " (c "5 |&gt; inc |&gt; dbl") ": start with 5, increment to 6, double to 12. Same program, but the pipeline reads like a sentence, with data flowing through a sequence of steps.")
-  (why (tenet "One program, many syntaxes") (c "|&gt;") " isn't a special construct the compiler treats differently, but an ordinary operator the resolver rewrites into a plain application, so " (c "x |&gt; f") " and " (cdz "(f x)") " are the very same program underneath. That's the pattern throughout Cadenza: surface conveniences desugar to the one homoiconic core, which is why the syntax toggle can always show you the other view. The pipeline is sugar for readability, never a second way for a program to " (em "mean") " something.")
+  (why (tenet "One program, many syntaxes") (c "|&gt;") " isn't a special construct the compiler treats differently, but an ordinary operator the resolver rewrites into a plain application, so " (c "x |&gt; f") " and " (cdz (f x)) " are the very same program underneath. That's the pattern throughout Cadenza: surface conveniences desugar to the one homoiconic core, which is why the syntax toggle can always show you the other view. The pipeline is sugar for readability, never a second way for a program to " (em "mean") " something.")
   (h2 "Composing two functions into one")
   (p "Sometimes you don't want to pipe a value right now, but instead want a " (em "new function") " that is two functions glued together. Since functions are values, you can write " (c "compose") " yourself: it takes two functions and returns a function that runs one, then the other.")
   (runnable
@@ -23,13 +23,13 @@
 (def (dbl n) (* n 2))
 (def (main)
   ((compose inc dbl) 10))))
-  (p (cdz "(compose inc dbl)") " is a brand-new function that doubles then increments, so applying it to 10 gives 21. Nothing built-in made this possible; " (c "compose") " is a few characters of ordinary Cadenza, because functions are just values you can package up.")
+  (p (cdz (compose inc dbl)) " is a brand-new function that doubles then increments, so applying it to 10 gives 21. Nothing built-in made this possible; " (c "compose") " is a few characters of ordinary Cadenza, because functions are just values you can package up.")
   (h2 "One argument at a time")
   (p "A two-argument function is really a function that takes the first argument and returns a function waiting for the second. So you can apply arguments one at a time, which is called " (em "currying") ". Give " (c "add") " just its first argument and you get back a function:")
   (runnable
     (source (def (add a b) (+ a b))
 (def (main) ((add 3) 4))))
-  (p (cdz "(add 3)") " is a function that adds 3 to whatever comes next; applying it to 4 yields 7. And capturing that partial application in a binding gives you a small, reusable specialization:")
+  (p (cdz (add 3)) " is a function that adds 3 to whatever comes next; applying it to 4 yields 7. And capturing that partial application in a binding gives you a small, reusable specialization:")
   (runnable
     (source (def (adder n) (fn (x) (+ x n)))
 (def (main)
@@ -47,7 +47,7 @@
 (def (main)
   (map-sum (fn (x) (+ x 1)) 0 #list(5 7 30)))))
   (p "Each element is incremented and the results summed: " (c "6 + 8 + 31 = 45") ". You write the lambda with no type ceremony and the compiler figures out the types from how the argument is used.")
-  (p "The same holds for a " (em "multi-argument") " callback, as in the classic accumulator fold. Here " (c "fold-list") " takes a two-argument " (c "f") " and threads an accumulator through the list, and the lambda " (cdz "(fn (x a) (+ a x))") " is again fully unannotated on both sides. Folding " (cdz "#list(5 7 30)") " from " (c "0") " sums them to " (c "42") ":")
+  (p "The same holds for a " (em "multi-argument") " callback, as in the classic accumulator fold. Here " (c "fold-list") " takes a two-argument " (c "f") " and threads an accumulator through the list, and the lambda " (cdz (fn (x a) (+ a x))) " is again fully unannotated on both sides. Folding " (cdz #list(5 7 30)) " from " (c "0") " sums them to " (c "42") ":")
   (runnable
     (source (def (fold-list f acc xs)
   (match xs
@@ -68,7 +68,7 @@
     (hint "The right-hand side of " (c "|&gt;") " is the function to pipe into, here " (c "dbl") "."))
   (exercise
     (id "functions:2")
-    (prompt (c "compose") " is written for you, and " (cdz "(compose f g)") " runs " (c "g") " first, then " (c "f") ". Order the two functions so " (c "5") " is " (em "doubled, then incremented") ", giving " (c "11") ". Fill in the first argument.")
+    (prompt (c "compose") " is written for you, and " (cdz (compose f g)) " runs " (c "g") " first, then " (c "f") ". Order the two functions so " (c "5") " is " (em "doubled, then incremented") ", giving " (c "11") ". Fill in the first argument.")
     (starter (def (compose f g)
   (fn (x) (f (g x))))
 (def (inc n) (+ n 1))
@@ -80,4 +80,4 @@
 (def (dbl n) (* n 2))
 (def (main) ((compose inc dbl) 5)))
     (expected "11")
-    (hint "The " (em "second") " argument runs first, so " (c "dbl") " doubles " (c "5") " to " (c "10") "; the " (em "first") " then runs on that, so it's " (c "inc") ", giving " (c "11") ". (Swap them to " (cdz "(compose dbl inc)") " and you'd get " (c "12") " instead.)")))
+    (hint "The " (em "second") " argument runs first, so " (c "dbl") " doubles " (c "5") " to " (c "10") "; the " (em "first") " then runs on that, so it's " (c "inc") ", giving " (c "11") ". (Swap them to " (cdz (compose dbl inc)) " and you'd get " (c "12") " instead.)")))

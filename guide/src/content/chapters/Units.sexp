@@ -44,7 +44,7 @@
   (runnable
     (source (/ (Qty.of 240.0 (Unit.of #"meter"))
    (Qty.of 8.0 (Unit.of #"second")))))
-  (p "The result carries its derived unit, " (c "30.0 meter/second") ", a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: " (cdz "(Unit.* a b)") " for a product (an area is a length times a length), " (cdz "(Unit./ a b)") " for a quotient, " (cdz "(Unit.^ u n)") " for a power, and " (c "Unit.one") " for a plain dimensionless number.")
+  (p "The result carries its derived unit, " (c "30.0 meter/second") ", a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: " (cdz (Unit.* a b)) " for a product (an area is a length times a length), " (cdz (Unit./ a b)) " for a quotient, " (cdz (Unit.^ u n)) " for a power, and " (c "Unit.one") " for a plain dimensionless number.")
   (h2 "Raising a quantity to a power")
   (p (c "Qty.pow") " raises a whole quantity, value " (em "and") " unit, to a compile-time integer power. Square a length and you get an area: the unit becomes meters-squared while the value squares. A five-meter side gives twenty-five square meters, " (c "25.0 meter^2") ", the unit squared along with the value:")
   (runnable
@@ -84,13 +84,13 @@
   (= (Unit.in (Unit.of #"millimeter")
               (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
      (Rational.of 127 20)))))
-  (p "That reads " (c "true") ": the converted value is the exact rational " (c "127/20") ", not a float approximation of 6.35. The exactness comes from the " (em "value") " type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly " (c "1") ", so the comparison against " (cdz "(Rational.of 1 1)") " is " (c "true") ", which floating point can't promise:")
+  (p "That reads " (c "true") ": the converted value is the exact rational " (c "127/20") ", not a float approximation of 6.35. The exactness comes from the " (em "value") " type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly " (c "1") ", so the comparison against " (cdz (Rational.of 1 1)) " is " (c "true") ", which floating point can't promise:")
   (runnable
     (source (def (main)
   (let ((t (Rational.of 1 3)))
     (= (+ (+ t t) t) (Rational.of 1 1))))))
   (p "This is the split that makes the CAD model trustworthy: the " (em "model") " (coordinates, dimensions, bolt positions) stays exact in rationals and units, so a bounding box reports true dimensions and a metric-plus-imperial assembly is precise to the fraction. Float only appears at the very end, in the " (em "mesh") " the renderer draws (an arbitrary-angle rotation needs sine and cosine, which aren't rational). Exact where it matters, float only at the geometry kernel, and the " (app-link (route "/cad") " CAD page ") " lets you see a model like this rendered. The " (app-link (route "/calculator") " calculator ") " works in dimensioned quantities too, if you'd rather just do unit arithmetic at a prompt.")
-  (why (tenet "Dimensions are checked, then erased") "Units live entirely at compile time. " (cdz "(Qty.of 5.0 meter)") " and the bare " (c "5.0") " emit " (em "byte-identical") " code: the unit is a static claim the checker verifies and then throws away, so a dimensional mismatch is always a compile error (CDZ0501) and never a runtime trap. You get the discipline of dimensional analysis (a length never adds to a time, a velocity is length over time) with zero runtime cost. It's the same principle as the rest of the numeric model: Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.")
+  (why (tenet "Dimensions are checked, then erased") "Units live entirely at compile time. " (cdz (Qty.of 5.0 meter)) " and the bare " (c "5.0") " emit " (em "byte-identical") " code: the unit is a static claim the checker verifies and then throws away, so a dimensional mismatch is always a compile error (CDZ0501) and never a runtime trap. You get the discipline of dimensional analysis (a length never adds to a time, a velocity is length over time) with zero runtime cost. It's the same principle as the rest of the numeric model: Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.")
   (h2 "A quantity is a value you can key by")
   (p "That erasure is also why a quantity works as a value in its own right: the unit is gone at run time, but the magnitude is a perfectly good map key. Build a map under a five-kilometre quantity, then look it up with a separately-constructed but equal key, and it hits, because quantities compare by content like every other value:")
   (runnable
@@ -152,4 +152,4 @@
               (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
      (Rational.of 127 20))))
     (expected "true")
-    (hint "A quarter inch is " (cdz "(Rational.of 1 4)") ", numerator " (c "1") ". One inch is " (c "25.4") " mm, so a quarter is " (c "6.35") " mm, which as an exact fraction is " (c "127/20") ". The check confirms the conversion landed on that rational exactly.")))
+    (hint "A quarter inch is " (cdz (Rational.of 1 4)) ", numerator " (c "1") ". One inch is " (c "25.4") " mm, so a quarter is " (c "6.35") " mm, which as an exact fraction is " (c "127/20") ". The check confirms the conversion landed on that rational exactly.")))

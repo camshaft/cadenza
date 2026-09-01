@@ -70,7 +70,7 @@
     (solution (def (round-trips n) (= (/ (* n 2) 2) n))
 (def (main) (round-trips 21)))
     (expected "true")
-    (hint "Doubling then halving gets you back where you started, so " (cdz "(/ (* n 2) 2)") " equals " (c "n") ". Fill the blank with " (c "n") "; a " (c "@test") " would " (c "assert-eq") " these two."))
+    (hint "Doubling then halving gets you back where you started, so " (cdz (/ (* n 2) 2)) " equals " (c "n") ". Fill the blank with " (c "n") "; a " (c "@test") " would " (c "assert-eq") " these two."))
   (exercise
     (id "property-testing:2")
     (prompt "The length of a three-element list is exactly " (c "3") ", the property a length test asserts. Fill the comparison value so the check gives " (c "true") ".")

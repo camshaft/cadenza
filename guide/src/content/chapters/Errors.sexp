@@ -5,7 +5,7 @@
   (section "Fundamentals")
   (blurb "Option, Result, safe indexing, and checked arithmetic.")
   (lede "What happens when there's no answer, and how Cadenza makes you deal with it.")
-  (p "Not every operation has an answer, and a language has to do something when you look past the end of a list or look up a missing key or ask for a result that doesn't fit. Cadenza represents a value that might be missing with the " (c "Option") " type, which is either " (cdz "(Some x)") " with a value or " (cdz "(None unit)") " with nothing, so the type system makes a caller acknowledge both cases rather than return a bogus default. A genuinely undefined operation like dividing by zero is a different story that halts rather than inventing a value, as you saw in " (strong "The numeric model") ", so this chapter is about the kind of absence you can handle.")
+  (p "Not every operation has an answer, and a language has to do something when you look past the end of a list or look up a missing key or ask for a result that doesn't fit. Cadenza represents a value that might be missing with the " (c "Option") " type, which is either " (cdz (Some x)) " with a value or " (cdz (None unit)) " with nothing, so the type system makes a caller acknowledge both cases rather than return a bogus default. A genuinely undefined operation like dividing by zero is a different story that halts rather than inventing a value, as you saw in " (strong "The numeric model") ", so this chapter is about the kind of absence you can handle.")
   (h2 "Returning an Option")
   (p "Here's safe division: it returns " (c "None") " when the divisor is zero, and " (c "Some") " of the quotient otherwise. The caller " (c "match") "es on the result and can't forget the empty case.")
   (runnable
@@ -44,7 +44,7 @@
     ((None _) -1)))))
   (p "That's " (c "Int64") "'s largest value times 2, which can't fit, so you get the " (c "None") " arm.")
   (h2 "Chaining fallible steps: the " (c "?") " operator")
-  (p "Match on one " (c "Option") " and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The " (c "?") " operator (written " (c "(try …)") ") collapses that: on a " (c "Some") " it unwraps the value and carries on; on a " (c "None") " it " (em "short-circuits") ", making the whole function's result that " (c "None") ". Here two checked-adds both succeed, so " (c "x") " and " (c "y") " unwrap and the function returns " (cdz "(Some 84)") ":")
+  (p "Match on one " (c "Option") " and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The " (c "?") " operator (written " (c "(try …)") ") collapses that: on a " (c "Some") " it unwraps the value and carries on; on a " (c "None") " it " (em "short-circuits") ", making the whole function's result that " (c "None") ". Here two checked-adds both succeed, so " (c "x") " and " (c "y") " unwrap and the function returns " (cdz (Some 84)) ":")
   (runnable
     (source (def (main)
   (let ((x (try (Int64.checked-add 20 22))))
@@ -56,9 +56,9 @@
   (let ((x (try (Int64.checked-add Int64.max 1))))
     (let ((y (try (Int64.checked-add 40 2))))
       (Some (+ x y)))))))
-  (p "The overflowing add is " (c "None") ", so " (c "main") " is " (cdz "(None unit)") ". The enclosing function must itself return the matching kind (an " (c "Option") " here, or a " (c "Result") "): " (c "?") " needs a fallible boundary to short-circuit " (em "to") ", and it doesn't convert between " (c "Option") " and " (c "Result") ": the kinds have to line up.")
+  (p "The overflowing add is " (c "None") ", so " (c "main") " is " (cdz (None unit)) ". The enclosing function must itself return the matching kind (an " (c "Option") " here, or a " (c "Result") "): " (c "?") " needs a fallible boundary to short-circuit " (em "to") ", and it doesn't convert between " (c "Option") " and " (c "Result") ": the kinds have to line up.")
   (h2 "Matching on the value inside")
-  (p "A pattern can look " (em "inside") " a variant, not just name it. Here the first arm only fires for exactly " (cdz "(Some 0)") "; a different " (c "Some") " falls through to the binding arm.")
+  (p "A pattern can look " (em "inside") " a variant, not just name it. Here the first arm only fires for exactly " (cdz (Some 0)) "; a different " (c "Some") " falls through to the binding arm.")
   (runnable
     (source (def (describe o)
   (match o
@@ -66,9 +66,9 @@
     ((Some x) x)
     ((None _) -1)))
 (def (main) (describe (Some 0)))))
-  (p (cdz "(Some 0)") " matches the literal-" (c "0") " arm, so this is " (c "100") ". Feed it " (cdz "(Some 7)") " instead and the second arm binds " (c "x") " and returns " (c "7") "; " (cdz "(None unit)") " takes the last.")
+  (p (cdz (Some 0)) " matches the literal-" (c "0") " arm, so this is " (c "100") ". Feed it " (cdz (Some 7)) " instead and the second arm binds " (c "x") " and returns " (c "7") "; " (cdz (None unit)) " takes the last.")
   (h2 "Failing with a reason: " (c "Result"))
-  (p "An " (c "Option") " says " (em "whether") " there's an answer; sometimes you also want to say " (em "why") " there isn't. " (c "Result") " is the sum for that: " (cdz "(Ok value)") " when it worked, " (cdz "(Err e)") " carrying a reason when it didn't, and you take it apart with " (c "match") " exactly like an " (c "Option") ". Here " (c "safe-div") " reports the offending divisor on failure:")
+  (p "An " (c "Option") " says " (em "whether") " there's an answer; sometimes you also want to say " (em "why") " there isn't. " (c "Result") " is the sum for that: " (cdz (Ok value)) " when it worked, " (cdz (Err e)) " carrying a reason when it didn't, and you take it apart with " (c "match") " exactly like an " (c "Option") ". Here " (c "safe-div") " reports the offending divisor on failure:")
   (runnable
     (source (def (safe-div a b)
   (if (= b 0) (Err b) (Ok (/ a b))))
@@ -80,7 +80,7 @@
   (h2 "Your turn")
   (exercise
     (id "errors:1")
-    (prompt (c "check") " returns " (cdz "(Err 8)") " for this input. Finish the " (c "Err") " arm to hand back the reason it carries, so the result is " (c "8") ".")
+    (prompt (c "check") " returns " (cdz (Err 8)) " for this input. Finish the " (c "Err") " arm to hand back the reason it carries, so the result is " (c "8") ".")
     (starter (def (check n)
   (if (= n 0) (Ok n) (Err n)))
 (def (main)
@@ -111,5 +111,5 @@
     ((Some left) left)
     ((None _) -1))))
     (expected "-1")
-    (hint "The " (c "Some") " branch already carries a value; the empty branch carries nothing, which you write as " (cdz "(None unit)") ", the same " (c "None") " the " (c "match") " below is waiting for."))
+    (hint "The " (c "Some") " branch already carries a value; the empty branch carries nothing, which you write as " (cdz (None unit)) ", the same " (c "None") " the " (c "match") " below is waiting for."))
   (p (c "Option") ", " (c "Result") ", and " (c "?") " all answer the same question, what happens when a step might not deliver, by making the outcome a " (em "value the caller must handle") ". The next chapter turns that inside out: with " (em "effects &amp; handlers") ", a function " (em "performs") " an operation and lets whoever runs it decide what it means, so the caller answers instead of just inspecting a returned value. It's the pivot from the fundamentals into what makes Cadenza its own language."))
