@@ -416,3 +416,98 @@ surface decisions), while 3-6 wait on the merged design (esp. the §3.3 default 
    (consistent with the operator's "infer-or-error-and-ask" principle for `try-as`).
 
 All rulings incorporated above. No blockers remain; increments 1-2 (the standalone primitives) proceed.
+
+---
+
+## Addendum A — call-site argument SPLAT (`f(.. t)` / `f(.. xs)`)
+
+> **Status:** DESIGN ADDENDUM — DRAFT FOR OPERATOR REVIEW (do NOT auto-merge). Follows the merged
+> base design; operator follow-on (relayed by concierge, 2026-09-01).
+>
+> **Operator intent (verbatim):** *"we probably need the same mechanism at the call site. So you'd be
+> able to splat a number of args from a compile-time known tuple, or even a runtime list?"* and the
+> refinement *"I guess the tuple values can be runtime on the splat too, assuming they're not also
+> marked const in the function definition."*
+
+### A.1 The shape
+The param-side rest `(.. v)` GATHERS trailing args; the call-site splat is its DUAL — it SPREADS a
+tuple/list into a call's argument list, reusing the same value-position `(.. operand)` marker
+v-ast-compound ships for collection construction:
+
+| call | splat source | expands to |
+|---|---|---|
+| `(f a (.. t) b)` | tuple `t : Tuple(T0 T1)` | `(f a (. t 0) (. t 1) b)` — arity static |
+| `(f a (.. xs))` | list `xs : List T` | feeds `f`'s list-rest param the (segment-folded) list |
+
+Both are the value-position `(.. operand)` node appearing in a CALL argument position — a NEW consumer
+site for the marker. **Territory (confirmed with v-ast-compound):** the `Arenas::spread_operand`
+recognizer is context-INDEPENDENT (shape-only) so it is REUSED verbatim to detect a `(.. v)` child in a
+call's argument list; but the LOWERING is v-varargs' own new consumer site — v-ast-compound's
+segment-and-fold fires ONLY in the compound-CONSTRUCTOR resolved arms (`Resolved::List/Set/Tuple` +
+`entry_spread_desugar` for Record/Map), which never see a CALL application node. So v-ast-compound owns
+`(.. v)` in COMPOUND CONSTRUCTION; v-varargs owns it in PARAM position AND CALL-ARGUMENT position.
+
+### A.2 Tuple splat — compile-time positional expansion (arity static, values may be runtime)
+`(f … (.. t) …)` with `t : Tuple(T_0 … T_{n-1})`: the arity `n` is a **static property of the tuple's
+type** (`Tuple.size`, increment-1 primitive), so the splat **expands at compile time** into `n`
+positional arguments `(. t 0) … (. t (n-1))` spliced into the call in place. Each `(. t i)` is an
+ordinary tuple projection (`Core::Proj`, already exists) — so **the values may be RUNTIME** (a
+projection of a runtime-valued tuple); only the ARITY must be static. This is the same one-tier
+compile-time expansion the reducer already does; no new runtime capability.
+
+**Implementation (mirror v-ast-compound's `lower_tuple_spread`, per their ack):** the static-tuple
+arg-splat is exactly the tuple-CONSTRUCTION splat, emitting call ARGS instead of tuple elements —
+expand the tuple operand into per-slot `Core::Proj` occurrences (arity from its type), and MATERIALIZE
+a runtime tuple operand ONCE via a self-keyed `Core::Let` (the `materialize_row_op_operand` pattern) so
+the `n` projections share ONE evaluation (no re-eval of a runtime tuple per slot). v-ast-compound
+offered to factor `lower_tuple_spread`'s projection-flatten + materialize-once into a shared helper
+v-varargs can call — take them up on that to avoid duplicating the materialize logic.
+
+- **Interleaving:** inline args and tuple splats compose positionally — `(f a (.. t) b)` with
+  `t : Tuple(X Y)` → `(f a x0 y0 b)`, a 4-arg call. Multiple tuple splats concatenate positionally.
+- **Into a tuple-rest param:** a tuple splat feeding a tuple-rest callee (base design §3.2) contributes
+  its elements to the monomorphized rest tuple — the two mechanisms compose.
+
+#### A.2a `const`-param interaction (operator refinement)
+`const` parameters already exist (`(const (: d T))` binder, `strip_const_params`, `db.const_params`).
+The rule: a splatted tuple's VALUES need **not** be const in general — but if the target `f`'s parameter
+at the landing position is declared `const`, then the corresponding splatted element **must** be a
+compile-time constant (the existing const-param requirement), else the existing const-param diagnostic
+fires. Const-ness is governed by the FUNCTION DEFINITION, not the splat: `arity` is what the splat
+requires to be static; per-position value-const-ness is `f`'s contract. Because the tuple splat expands
+to positional `(. t i)` occurrences BEFORE the const-param pass, `strip_const_params`/`type_specialize`
+sees ordinary positional args and enforces const-ness per position with no new machinery.
+
+### A.3 List splat — dynamic count, feeds a list-rest param
+`(f … (.. xs))` with `xs : List T`: a runtime list has **no static arity**, so it cannot expand to
+fixed positions. It is only well-formed when the argument it lands in is a **list-typed rest parameter**
+(base design §3.1): the splat contributes `xs`'s elements to that rest list. Inline trailing args +
+list splats compose via the **same segment-and-fold** v-ast-compound built for collection construction
+(`[a, ..xs, b]` ≡ `concat`): the rest list is `concat(segment_0, xs, segment_1, …)`. A list splat into a
+FIXED (non-rest) parameter position, or into a tuple-rest (which needs a static arity), is a
+compile-time error (A.4).
+
+### A.4 Diagnostics (each pins a corpus reject)
+1. **List splat into a fixed / tuple-rest position** — "a list splat `(.. xs)` has no static arity;
+   it can only feed a list-typed rest parameter. Use a tuple to splat into fixed positions."
+2. **Arity mismatch after tuple expansion** — a tuple splat expanding to the wrong positional count
+   reuses the ordinary arity diagnostic (the expansion is checked like hand-written positional args).
+3. **`const` param fed a non-const splatted value** — the existing const-param diagnostic, at the
+   landing position.
+4. **Splat of a non-tuple / non-list** — "`(.. v)` in a call argument requires a tuple (static-arity
+   splat) or a list (into a rest parameter); found `<T>`."
+
+### A.5 Increments (append after base-design increment 6)
+7. **Tuple splat into fixed params** — recognize `(.. t)` in a call arg list; expand to `(. t i)`
+   positionally via `Tuple.size` + `Core::Proj`; arity + const-param checks. Corpus: static-arity
+   splat, runtime-valued tuple splat, interleaved inline+splat, the const-param case, the reject.
+8. **List splat into a list-rest param** — the segment-and-fold feeding a list rest (reuses
+   v-ast-compound's construction fold). Corpus: pure list splat, inline+splat concat, the
+   fixed-position reject.
+9. **Composition** — tuple splat into a tuple-rest callee; list splat into a list-rest callee; mixed.
+   Corpus + guide.
+
+### A.6 Coordination
+v-ast-compound owns the value-position `(.. v)` marker + segment-and-fold; the call-arg site is a NEW
+consumer — split territory so the recognizer (`spread_operand`) stays one shared idiom. v-inference for
+the tuple-expansion typing + list-rest concat typing + the const-param-at-position rule.
