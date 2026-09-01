@@ -29,7 +29,7 @@
   (input
     (do
       (type Outcome (Ok Int64) (Err Int64))
-      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c))
+      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) evt.c)
       (def (main) (let ((evt #record((= a (None)) (= b (None)) (= c 9)))) (apply evt)))
       (export main)))
   (output (: 9 Int64)))
@@ -39,7 +39,7 @@
   (input
     (do
       (type Outcome (Ok Int64) (Err Int64))
-      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c))
+      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) evt.c)
       (def (main) (apply #record((= a (None)) (= b (None)) (= c 9))))
       (export main)))
   (output (: 9 Int64)))
@@ -49,7 +49,15 @@
   (input
     (do
       (type Outcome (Ok Int64) (Err Int64))
-      (def (apply (: e (Record (: pair (Tuple (Option Bytes) (Option Outcome))) (: d (Option Int64)) (: c Int64)))) (. e c))
+      (def
+        (apply
+          (:
+            e
+            (Record
+              (: pair (Tuple (Option Bytes) (Option Outcome)))
+              (: d (Option Int64))
+              (: c Int64))))
+        e.c)
       (def (main) (apply #record((= pair #tuple((None) (None))) (= d (None)) (= c 9))))
       (export main)))
   (output (: 9 Int64)))
@@ -911,7 +919,9 @@
     (do
       (def
         (main)
-        (match #tuple(#record((= x #tuple(3 4))) 5) (#tuple(#record((= x #tuple(a b))) c) (+ (+ a b) c))))
+        (match
+          #tuple(#record((= x #tuple(3 4))) 5)
+          (#tuple(#record((= x #tuple(a b))) c) (+ (+ a b) c))))
       (export main)))
   (output (: 12 Int64)))
 
@@ -13877,6 +13887,47 @@
   (input (let ((a "k")) (let ((b "k")) (Map.len #map((= a 1) (= b 2))))))
   (output (: 1 Int64)))
 
+; ── breaker bank: folded-duplicate-key map VALUE canonicalization (the wrong-value cluster behind
+; #7359 + its completion). The size-1 witnesses above pin `Map.len`; these three pin the VALUE — a
+; constant map whose keys are distinct EXPRESSIONS folding to the same value (`a` and `5`, colliding
+; only AFTER const-fold, so the front-end duplicate-literal-key check correctly does not fire) must
+; BE the canonical single-entry map, last write per key winning. Before the fix the constant-map
+; value held BOTH physical entries (invariant "each key at most once" violated in a live value) and
+; consumers disagreed: len-fold said 1 while equality compared physical entries (false where the
+; spec demands true), `Map.insert` overwrote only the FIRST duplicate, and the escaped value printed
+; both entries.
+(case
+  "mdk1 a folded-duplicate-key map escapes as the canonical single entry (last write wins)"
+  (doc
+    "`a` is bound to 5, so `(map (a 1) (5 2))` has keys that collide only after const-fold; the
+           later `(5 2)` overwrites (collections-and-text.md #Keys Are Compared By Value) and the
+           ESCAPED VALUE is the one-entry map `(map (5 2))` — not a two-entry value that merely
+           reports size 1. Pins the canonical value itself (print/escape face), the strongest form
+           of the size-1 witnesses above. MUST be the single-entry map.")
+  (input (let ((a 5)) #map((= a 1) (= 5 2))))
+  (output (: #map((= 5 2)) (Map Int64 Int64))))
+
+(case
+  "mdk2 a folded-duplicate-key map EQUALS the map built by a single insert of the surviving entry"
+  (doc
+    "The equality face of the canonicalization: `(map (a 1) (5 2))` with `a` bound to 5 equals
+           `(Map.insert Map.empty 5 2)` — maps compare by CONTENT (one entry, key 5, value 2), so a
+           representation holding both physical entries would break this (equality over physical
+           entries was exactly the pre-fix failure: false where the spec demands true). MUST be true.")
+  (input (let ((a 5)) (= #map((= a 1) (= 5 2)) (Map.insert Map.empty 5 2))))
+  (output (: true Bool)))
+
+(case
+  "mdk3 inserting at the folded-duplicate key overwrites the ONE canonical entry"
+  (doc
+    "The propagation face: `Map.insert` at key 5 on the folded-duplicate-key map yields the
+           one-entry map `(map (5 9))` — the insert overwrites THE entry of an already-canonical
+           value. Pre-fix the broken two-entry value infected downstream ops (insert overwrote only
+           the FIRST duplicate, yielding an invariant-violating `(map (5 9) (5 2))`). MUST be the
+           single-entry map keyed 5 valued 9.")
+  (input (let ((a 5)) (Map.insert #map((= a 1) (= 5 2)) 5 9)))
+  (output (: #map((= 5 9)) (Map Int64 Int64))))
+
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
 ; "a map's keys are values of one key type; a record's field names are fixed compile-time labels." So in
 ; a `(map (k v) …)` literal the key position `k` is an ORDINARY EXPRESSION evaluated and resolved in
@@ -24655,7 +24706,10 @@
            `#map((= 1 v) (.. r1) (.. r2))` — not one binder after `..` — reports the coded CDZ0201 rest-shape,
            with NO spurious CDZ0101 unbound-name for the value binder `v` (the disjoint-freshen / inert-binder
            fix keeps the native form clean). Migrated from rcdzc a_map_match_pattern_with_a_malformed_rest_names_the_shape.")
-  (input (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) (.. r1) (.. r2)) v) (_ 0))) (export f)))
+  (input
+    (do
+      (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) (.. r1) (.. r2)) v) (_ 0)))
+      (export f)))
   (error CDZ0201 (message "map rest pattern is") (no-diagnostic "unbound name")))
 
 (case
@@ -24767,7 +24821,11 @@
   (doc
     "The guard-cond usage scan WIDENS what counts as used; it does not blanket-suppress. Here the cond
            tests the scrutinee `n`, the body is a constant, so the arm binder `x` is dead → CDZ0306.")
-  (input (do (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0))) (def (main) (f 5)) (export main)))
+  (input
+    (do
+      (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0)))
+      (def (main) (f 5))
+      (export main)))
   (output (: 5 Int64))
   (count 1)
   (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x"))))
@@ -24801,7 +24859,11 @@
   (doc
     "The usage scan must cover the guard cond subtree, not just the arm body: `x` is referenced in the
            cond `(> x 0)`, so it is used even though the body is a constant.")
-  (input (do (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0))) (def (main) (f 5)) (export main)))
+  (input
+    (do
+      (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0)))
+      (def (main) (f 5))
+      (export main)))
   (output (: 5 Int64))
   (no-diagnostic "unused match binding"))
 
