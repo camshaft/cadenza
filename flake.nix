@@ -3636,6 +3636,124 @@
               corpusFileNames}
         '';
 
+        # ── COARSE per-FILE verdict harvest (v-nix + v-corpus-harness, re-baseline coarsening 2026-09-01) ──
+        # WHY: the per-CASE verdict graph above (mkCorpusBuild = one __contentAddressed output PER CASE, ~10.7k
+        # ×3 backends, feeding mkCorpusVerdict) makes the WHOLE-corpus harvest a HUGE content-addressed graph.
+        # Realising it fires a realisation (.doi) query per CA output PER substituter → a network-bound
+        # "live-but-sleeping" storm that never completes (the corpus-verdicts wedge; substitute=false timed out
+        # at 5.5h, camshaft-only still storms). The GATE keeps the per-case granularity (fast incremental PR
+        # gating — a one-case edit re-runs ONLY that case's CA build/exec). Only the HARVEST coarsens: ONE
+        # derivation per FILE compiles + grades + emit-verdicts EVERY case in the file INTERNALLY (looping the
+        # shred's case dirs), so the harvest graph is ~35 file outputs, NOT tens of thousands of per-case CA
+        # outputs → realisation queries drop ~300× → the storm cannot recur regardless of substitute settings.
+        # VERDICT LOGIC IS BYTE-IDENTICAL to mkCorpusBuild+mkCorpusVerdict: same cdz-compile invocation, same
+        # cdz-run --grade --emit-verdict, same store/runtime/baseline/peer handling, same `cat verdict >> out`
+        # concat — only the derivation GRANULARITY changes (each case is independent, so a case graded solo vs
+        # in a per-file batch yields the IDENTICAL verdict). v-corpus-harness owns the parity acceptance test
+        # (coarse file output == concat of the per-case verdicts) + reconcile + LAND; corpusVerdictsCoarseParity
+        # below is the per-file byte-parity spike this rests on.
+        mkCorpusVerdictsFileCoarse = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            expected = corpusCaseCount file;
+          in
+          pkgs.runCommand "corpus-verdicts-coarse-${name}"
+            {
+              nativeBuildInputs = [ cdzCompile cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            : > "$out"
+            n=0
+            for case in ${shred}/${name}/*/; do
+              [ -d "$case" ] || continue
+              case="''${case%/}"
+              work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work"
+              # --- compile (mirrors mkCorpusBuild EXACTLY) ---
+              inputs=("ast:main=$case/program.ast")
+              entry=()
+              for m in "$case"/module-*.ast; do
+                if [ -e "$m" ]; then
+                  mn=$(basename "$m" .ast); mn=''${mn#module-}
+                  inputs+=("ast:$mn=$m")
+                  entry=(--entry main)
+                fi
+              done
+              cfg=()
+              if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
+              if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
+              if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err"; then
+                status=0
+              else
+                status=$?
+              fi
+              for p in "$case"/peer-*.ast; do
+                [ -e "$p" ] || continue
+                pn=$(basename "$p" .ast)
+                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                  -o "$work/$pn.wasm" 2>>"$work/compile.err" || true
+              done
+              # --- grade + emit-verdict (mirrors mkCorpusVerdict EXACTLY) ---
+              args=(--grade "$case/test-run.ast" --compile-status "$status" --compile-diag "$work/compile.err"
+                    --baseline ${./spec/semantics/.gate-baseline})
+              if [ -e "$work/diagnostics" ]; then args+=(--diagnostics "$work/diagnostics"); fi
+              if [ -e "$work/emit.wasm" ]; then args=("$work/emit.wasm" "''${args[@]}"); fi
+              if [ -e "$case/component-name" ]; then args+=(--component-name "$(cat "$case/component-name")"); fi
+              for pw in "$work"/peer-*.wasm; do
+                [ -e "$pw" ] || continue
+                pn=$(basename "$pw" .wasm)
+                args+=(--peer "$(cat "$case/$pn.iface")=$pw")
+              done
+              args+=(--runtime ${runtimeDebug})
+              args+=(--emit-verdict "$work/verdict")
+              cdz-run "''${args[@]}"
+              [ -s "$work/verdict" ] || { echo "corpus-verdicts-coarse ${name}: $case wrote no verdict" >&2; exit 1; }
+              cat "$work/verdict" >> "$out"
+              n=$((n + 1))
+            done
+            # Enumeration guard: the coarse loop MUST see exactly the eval-time case count (catches a shred vs
+            # corpusCaseCount drift that would silently drop cases from the harvest).
+            if [ "$n" -ne ${toString expected} ]; then
+              echo "corpus-verdicts-coarse ${name}: graded $n cases, expected ${toString expected}" >&2; exit 1
+            fi
+          '';
+
+        # `.#packages.corpus-verdicts-coarse` — the whole-corpus COARSE harvest (~35 file derivations), the
+        # storm-free replacement for corpusVerdictsAll that apps.save-baseline will consume once v-corpus-harness
+        # signs off the parity acceptance test. Kept SEPARATE from corpusVerdictsAll for now so the existing gate
+        # + per-case harvest are untouched during the spike.
+        corpusVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-coarse" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusVerdictsFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
+        # PARITY SPIKE — the coarse per-file harvest MUST be byte-identical to the per-case verdictsFileAgg for
+        # the SAME file (the v-corpus-harness acceptance test, one file). Sorts both before diffing because the
+        # coarse loop walks the shred dirs in glob (numeric) order while verdictsFileAgg walks eval-time idxs —
+        # both orderings are valid (xtask-save-baseline parses into a description→verdict map + re-sorts), so the
+        # invariant is SET-equality of verdict lines, which sorted-diff checks. Green here = the coarsening
+        # preserves every verdict; then v-corpus-harness widens to the whole corpus + the 3 backends + LANDs.
+        # Parametrized per-file (v-corpus-harness acceptance: run a DIVERSE sample, not the storm-prone whole
+        # corpus at once — the per-case reference verdictsFileAgg is itself the storm-prone graph at 35-file
+        # scale). `.#corpus-verdicts-coarse-parity-<stem>` runs it for any file.
+        mkCoarseParity = { name, file }:
+          pkgs.runCommand "corpus-verdicts-coarse-parity-${name}" { } ''
+            if diff <(sort ${mkCorpusVerdictsFileCoarse { inherit name file; }}) \
+                    <(sort ${verdictsFileAgg { inherit name file; }}); then
+              echo "ok: coarse per-file harvest byte-identical to per-case for ${name}" > "$out"
+            else
+              echo "PARITY FAIL: coarse != per-case verdicts for ${name}" >&2; exit 1
+            fi
+          '';
+        corpusVerdictsCoarseParity = mkCoarseParity {
+          name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
+        };
+
         # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
         # For every corpus wasm output that COMPILES, measure the gap between our emit and what Binaryen's
         # `wasm-opt` would produce. If wasm-opt shrinks nothing, our module is OPTIMAL on the metrics we track;
@@ -4101,6 +4219,103 @@
                 ''cat ${verdictsRustAsyncFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
               corpusFileNames}
         '';
+
+        # ── COARSE per-FILE RUST + RUST-ASYNC verdict harvest (v-nix, coarsening 2026-09-01) — the rust twin of
+        # mkCorpusVerdictsFileCoarse. Same storm rationale: the per-case rust graph (mkCorpusRustBuild = one
+        # __contentAddressed output per case → mkCorpusRustVerdict) is a huge CA graph. This coarsens the HARVEST
+        # to ONE derivation per file (loops the shred case dirs, compiles -t rust + grades via cdz-rust-run
+        # --emit-verdict internally). Verdict logic is byte-identical to mkCorpusRustBuild+mkCorpusRustVerdict
+        # (same cdz-compile -t rust, same cdz-rust-run --grade --emit-verdict + rustRlibs dirs; `async` adds
+        # --async exactly like mkCorpusRustAsyncVerdict). The GATE (corpus-rust / corpus-rust-async per-case
+        # checks) is untouched. rust has NO peers/wit-world/component-name/diagnostics, so the loop body is the
+        # simpler rust shape.
+        mkCorpusRustVerdictsFileCoarse = { name, file, async ? false }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            expected = corpusCaseCount file;
+            tag = if async then "rust-async" else "rust";
+          in
+          pkgs.runCommand "corpus-verdicts-${tag}-coarse-${name}"
+            {
+              nativeBuildInputs = [ cdzCompile cdzRustRun rustToolchain ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            : > "$out"
+            n=0
+            for case in ${shred}/${name}/*/; do
+              [ -d "$case" ] || continue
+              case="''${case%/}"
+              work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work/w"
+              # --- compile (mirrors mkCorpusRust${if async then "Async" else ""}Build: -t ${if async then "rust-async" else "rust"}) ---
+              inputs=("ast:main=$case/program.ast")
+              entry=()
+              for m in "$case"/module-*.ast; do
+                if [ -e "$m" ]; then
+                  mn=$(basename "$m" .ast); mn=''${mn#module-}
+                  inputs+=("ast:$mn=$m")
+                  entry=(--entry main)
+                fi
+              done
+              if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t ${if async then "rust-async" else "rust"} -o "$work/emit.rs" 2>"$work/compile.err"; then
+                status=0
+              else
+                status=$?
+              fi
+              # --- grade + emit-verdict (mirrors mkCorpusRust${if async then "Async" else ""}Verdict) ---
+              args=(--grade "$case/test-run.ast")
+              ${pkgs.lib.optionalString async ''args+=(--async)''}
+              args+=(--compile-status "$status" --compile-diag "$work/compile.err"
+                     --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                     --workdir "$work/w" --emit-verdict "$work/verdict")
+              if [ -e "$work/emit.rs" ]; then args+=(--module "$work/emit.rs"); fi
+              cdz-rust-run "''${args[@]}"
+              [ -s "$work/verdict" ] || { echo "corpus-verdicts-${tag}-coarse ${name}: $case wrote no verdict" >&2; exit 1; }
+              cat "$work/verdict" >> "$out"
+              n=$((n + 1))
+            done
+            if [ "$n" -ne ${toString expected} ]; then
+              echo "corpus-verdicts-${tag}-coarse ${name}: graded $n cases, expected ${toString expected}" >&2; exit 1
+            fi
+          '';
+
+        corpusRustVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-rust-coarse" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusRustVerdictsFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+        corpusRustAsyncVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-rust-async-coarse" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusRustVerdictsFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; async = true; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
+        # PARITY SPIKES (rust + rust-async): coarse per-file == per-case verdictsRust{,Async}FileAgg, sorted-diff.
+        # Parametrized per-file (v-corpus-harness: 01-literals scalar-only is NOT enough — the -t rust-async
+        # variant bug proved diverse shapes must be exercised). `.#corpus-verdicts-rust{,-async}-coarse-parity-<stem>`.
+        mkRustCoarseParity = { name, file, async ? false }:
+          let tag = if async then "rust-async" else "rust";
+          in pkgs.runCommand "corpus-verdicts-${tag}-coarse-parity-${name}" { } ''
+            if diff <(sort ${mkCorpusRustVerdictsFileCoarse { inherit name file async; }}) \
+                    <(sort ${if async then verdictsRustAsyncFileAgg { inherit name file; } else verdictsRustFileAgg { inherit name file; }}); then
+              echo "ok: coarse ${tag} per-file == per-case for ${name}" > "$out"
+            else
+              echo "PARITY FAIL: coarse ${tag} != per-case for ${name}" >&2; exit 1
+            fi
+          '';
+        corpusRustVerdictsCoarseParity = mkRustCoarseParity {
+          name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
+        };
+        corpusRustAsyncVerdictsCoarseParity = mkRustCoarseParity {
+          name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
+          async = true;
+        };
 
         # VANISHED-check (gap #7 completion) — the GLOBAL half of baseline regression detection the per-case
         # exec cannot do. The per-case `--baseline` check catches a `pass -> not-pass` regression on a case
@@ -5346,6 +5561,39 @@
         # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
         # (pending v-xtask's xtask-save-baseline leaf on main) feeds this to the leaf to regenerate .gate-baseline.
         packages.corpus-verdicts = corpusVerdictsAll;
+
+        # `.#corpus-verdicts-coarse` — the storm-free COARSE harvest (~35 file derivations, one per file, each
+        # compiling+grading its cases internally) that will REPLACE corpusVerdictsAll as apps.save-baseline's
+        # source once v-corpus-harness signs off parity. `.#corpus-verdicts-coarse-parity` is the per-file
+        # byte-identity spike (coarse == per-case verdictsFileAgg). See mkCorpusVerdictsFileCoarse's def note.
+        packages.corpus-verdicts-coarse = corpusVerdictsCoarseAll;
+        packages.corpus-verdicts-coarse-parity = corpusVerdictsCoarseParity;
+        # DIVERSE-SAMPLE per-file parity packages (v-corpus-harness acceptance step 2): distinct case shapes —
+        # 05-compound-types (value-heavy #record/#tuple), 11-modules (multi-module → --entry main),
+        # 25-verification (big, cross-module type-import), 26-program-conditions (traps/@invariant/diagnostics),
+        # 29-cross-component-peers (--peer/L3). 01-literals is corpus-verdicts-coarse-parity above.
+        packages.corpus-verdicts-coarse-parity-05-compound-types = mkCoarseParity { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; };
+        packages.corpus-verdicts-coarse-parity-11-modules = mkCoarseParity { name = "11-modules"; file = ./spec/semantics/11-modules.sexp; };
+        packages.corpus-verdicts-coarse-parity-25-verification = mkCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; };
+        packages.corpus-verdicts-coarse-parity-26-program-conditions = mkCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; };
+        packages.corpus-verdicts-coarse-parity-29-cross-component-peers = mkCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; };
+        # rust + rust-async coarse harvests + per-file parity spikes (the 3-backend set for v-corpus-harness).
+        packages.corpus-verdicts-rust-coarse = corpusRustVerdictsCoarseAll;
+        packages.corpus-verdicts-rust-async-coarse = corpusRustAsyncVerdictsCoarseAll;
+        packages.corpus-verdicts-rust-coarse-parity = corpusRustVerdictsCoarseParity;
+        packages.corpus-verdicts-rust-async-coarse-parity = corpusRustAsyncVerdictsCoarseParity;
+        # DIVERSE-SAMPLE rust + rust-async per-file parity (v-corpus-harness: 01-literals scalar-only insufficient
+        # after the -t rust-async variant bug — exercise multi-module + value-heavy shapes at least).
+        packages.corpus-verdicts-rust-coarse-parity-11-modules = mkRustCoarseParity { name = "11-modules"; file = ./spec/semantics/11-modules.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-05-compound-types = mkRustCoarseParity { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-25-verification = mkRustCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-26-program-conditions = mkRustCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-29-cross-component-peers = mkRustCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; };
+        packages.corpus-verdicts-rust-async-coarse-parity-11-modules = mkRustCoarseParity { name = "11-modules"; file = ./spec/semantics/11-modules.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-05-compound-types = mkRustCoarseParity { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-25-verification = mkRustCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-26-program-conditions = mkRustCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-29-cross-component-peers = mkRustCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; async = true; };
 
         # `.#corpus-verdicts-rust` / `.#corpus-verdicts-rust-async` — the RUST + RUST-ASYNC verdict harvests
         # (v-xtask-decompose, the flake.nix:3514 follow-up). Same `<tag>\t<description>` shape as the wasm
@@ -6899,21 +7147,21 @@
                 # Build each backend's whole-corpus verdict harvest (uses the ambient nix the caller ran with),
                 # then write its .gate-baseline* via the xtask-save-baseline leaf. All 3 = the faithful nix
                 # re-baseline; the cached per-case graphs mean an unchanged corpus is a store cache hit.
-                # `--option substitute false`: the harvest is a huge CONTENT-ADDRESSED graph (tens of thousands
-                # of per-case CA outputs); with substitution ON, nix fires a REALISATION (`.doi`) query per CA
-                # output PER substituter (camshaft + the determinate-nix system defaults install.determinate.
-                # systems + cache.nixos.org, the latter two ALWAYS 404 for our CA realisations) → hundreds of
-                # thousands of tiny HTTP GETs that build NOTHING → the daemon "wedges live-but-sleeping" even
-                # SOLO at low load (network-bound, v-nix -L repro 2026-08-31). substitute=false skips that
-                # realisation-substitution phase entirely; it is verdict-SAFE (build-vs-fetch, not what-outputs —
-                # deterministic per-case verdicts are byte-identical local vs substituted; v-corpus-harness
-                # sign-off) and a fresh re-baseline substitutes nothing anyway. Only the harvest path is affected;
-                # the gate keeps normal substitution. Durable fix (per-file coarsening) tracked separately.
-                harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths --option substitute false)"
+                # COARSE harvest (v-nix coarsening 2026-09-01): the -coarse variants are ONE derivation per FILE
+                # (~35, each compiling+grading its cases internally) instead of the per-CASE __contentAddressed
+                # graph (tens of thousands of CA outputs). The old per-case harvest wedged "live-but-sleeping"
+                # under a REALISATION (`.doi`) query storm (a query per CA output per substituter; substitute=false
+                # was the blunt workaround, but rebuilt the toolchain from source too / timed out at 5.5h). The
+                # coarse graph has only ~35 CA shreds → the storm cannot recur, so substitution stays ON (keeps
+                # cachix reuse — a fresh re-baseline builds; an unchanged corpus is a cache hit). VERDICT-SAFE:
+                # byte-identical to the per-case harvest (v-corpus-harness parity sign-off — wasm 6-file diverse
+                # sample + rust/rust-async 11-modules+05-compound-types all byte-clean). The GATE keeps the
+                # per-case granularity (fast incremental PR gating); only this HARVEST coarsens.
+                harvest="$(nix build "$root#corpus-verdicts-coarse" --no-link --print-out-paths)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
-                harvest_rust="$(nix build "$root#corpus-verdicts-rust" --no-link --print-out-paths --option substitute false)"
+                harvest_rust="$(nix build "$root#corpus-verdicts-rust-coarse" --no-link --print-out-paths)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust" "$root/spec/semantics/.gate-baseline-rust"
-                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async" --no-link --print-out-paths --option substitute false)"
+                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async-coarse" --no-link --print-out-paths)"
                 exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust_async" "$root/spec/semantics/.gate-baseline-rust-async"
               '';
             };
