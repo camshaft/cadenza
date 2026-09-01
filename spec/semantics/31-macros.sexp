@@ -51,3 +51,24 @@
       (export main)))
   (call main)
   (output (: 7 Int64)))
+
+(case
+  "a macro may INTRODUCE a local binding in its expansion and reference it within that expansion"
+  (doc
+    "An expansion is ordinary code, so it may DECLARE a new binding, not only splice into an expression
+           (metaprogramming.md §Expansion Precedes And Feeds The Core Guarantees). `(def (double-via-local
+           (quote e)) (quasiquote (do (def t (unquote e)) (+ t t))))` builds `(do (def t E) (+ t t))` — a
+           do-local `(def t …)` whose value is the spliced argument, referenced twice by the macro's OWN
+           `(+ t t)`. `(double-via-local 21)` expands to `(do (def t 21) (+ t t))` and evaluates to `42 :
+           Int64`. Pins that a macro-INTRODUCED binder resolves for a reference in the SAME expansion: the
+           expander must SEED the spliced subtree's lexical scope so the do-local `def` binds `t` for the
+           following `(+ t t)` — a binding introduced BY the macro (both binder and its references are
+           macro-internal here, so no caller interaction / hygiene question arises). Without scope seeding
+           for the spliced-in binder, the `t` references would spuriously unbind (CDZ0101).")
+  (input
+    (do
+      (def (double-via-local (quote e)) (quasiquote (do (def t (unquote e)) (+ t t))))
+      (def (main) (double-via-local 21))
+      (export main)))
+  (call main)
+  (output (: 42 Int64)))

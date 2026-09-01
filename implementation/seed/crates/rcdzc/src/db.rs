@@ -3616,31 +3616,40 @@ impl Db {
         if self.scope_skip.len() < len {
             self.scope_skip.resize(len, None);
         }
-        if (root.0 as usize) < covered_boundary || (root.0 as usize) >= self.scope_skip.len() {
-            return;
+        if (root.0 as usize) >= self.scope_skip.len() {
+            return; // genuinely out of range
         }
-        // The root's own skip: the SAME per-node rule the descent below applies to children, but to
-        // root's PARENT — if the parent is a binding CANDIDATE, root skips TO it (`(parent, root)`, so a
-        // name unbound within the subtree is looked up in the parent's bindings), else root inherits the
-        // parent's own skip (path-compression over a non-binding parent). Using the parent's skip
-        // UNCONDITIONALLY skipped PAST a binding parent: a desugar's rewritten `(match …)` reparented into
-        // an enclosing `let`'s body slot then never saw that `let`'s bindings, so a guard-cond reference to
-        // it exhausted the skip → spurious CDZ0101 (the inlined guarded-literal-list bug). A parentless root
-        // (the usual freshly-pushed case) still gets `None` → falls through to its lexical context.
-        let root_skip = match self.parent_of(root) {
-            Some(p) if (p.0 as usize) < self.scope_skip.len() => {
-                if is_binding_candidate(&self.ast, &self.parent, &self.module_records, p) {
-                    Some((p, root))
-                } else {
-                    self.scope_skip[p.0 as usize]
+        // A COVERED root (`root < covered_boundary`) keeps its EXISTING skip entry — its lexical position is
+        // unchanged — but its FRESH (post-load) descendants still need seeding. The MACRO EXPANDER
+        // (`lower::expand_macros`) OVERWRITES a load-time call node IN PLACE with its expansion, so the root
+        // node id is load-time (covered) while the spliced-in children are fresh; a bare early-return here
+        // would leave those children unseeded (scope_skip == None) and a macro-INTRODUCED binding
+        // (`(do (def y …) y)`) would spuriously unbind (CDZ0101). So only a FRESH root recomputes its own
+        // skip; a covered root falls straight through to the descent, which fills only its fresh children.
+        if (root.0 as usize) >= covered_boundary {
+            // The root's own skip: the SAME per-node rule the descent below applies to children, but to
+            // root's PARENT — if the parent is a binding CANDIDATE, root skips TO it (`(parent, root)`, so a
+            // name unbound within the subtree is looked up in the parent's bindings), else root inherits the
+            // parent's own skip (path-compression over a non-binding parent). Using the parent's skip
+            // UNCONDITIONALLY skipped PAST a binding parent: a desugar's rewritten `(match …)` reparented into
+            // an enclosing `let`'s body slot then never saw that `let`'s bindings, so a guard-cond reference to
+            // it exhausted the skip → spurious CDZ0101 (the inlined guarded-literal-list bug). A parentless root
+            // (the usual freshly-pushed case) still gets `None` → falls through to its lexical context.
+            let root_skip = match self.parent_of(root) {
+                Some(p) if (p.0 as usize) < self.scope_skip.len() => {
+                    if is_binding_candidate(&self.ast, &self.parent, &self.module_records, p) {
+                        Some((p, root))
+                    } else {
+                        self.scope_skip[p.0 as usize]
+                    }
                 }
-            }
-            _ => None,
-        };
-        self.scope_skip[root.0 as usize] = root_skip;
-        // Mark the root as GENUINELY seeded (computed entry, not a resize-default) — the fast-path is safe
-        // for it. See `scope_skip_covers`.
-        self.scope_skip_seeded.insert(root);
+                _ => None,
+            };
+            self.scope_skip[root.0 as usize] = root_skip;
+            // Mark the root as GENUINELY seeded (computed entry, not a resize-default) — the fast-path is safe
+            // for it. See `scope_skip_covers`.
+            self.scope_skip_seeded.insert(root);
+        }
         // Descend top-down: for each fresh child, its skip = `(node, child)` if `node` is a binding
         // candidate (land inner references on `node`), else `node`'s own skip (hop over the non-binding
         // spine). This is `build_scope_skip`'s unwind rule, applied to the synth subtree.
