@@ -18,10 +18,17 @@ A cadenza close needs BOTH: (1) the case no longer declines, AND (2) the emitted
 emit-success by the OUTPUT FILE (`-o X; [ -s X ]`), NEVER by `compile 2>/dev/null | grep -q wrote` — cdz
 prints "wrote" to STDERR, so that grep never matches and the hop2 check silently no-ops (a HOLLOW gate that
 reports 0 breaks while checking nothing; it hid breaker's #7298 catch). Also hand-probe a RUNTIME-vs-const
-survivor for any value-emitting arm (a corpus sweep is blind to value arms whose const folds away). A
-corrected hop2 sweep on clean main (2026-09-01) found **~65 emit-but-don't-recompile breaks** — a standing
-backlog: big-UInt64-literal ascription-drop (the ConstInt arm doesn't ascribe unsigned/over-i64), List/type
-ascriptions, nested/generic user sums, Map-runtime-keys, Rational. (Reported to breaker + concierge.)
+survivor for any value-emitting arm (a corpus sweep is blind to value arms whose const folds away). ALSO: a
+TRUE round-trip break requires the ORIGINAL to compile to wasm — `original-wasm-OK AND hop2-FAIL`; an original
+that itself fails wasm is SHARED, not a cadenza gap (the gate MUST pre-check original-wasm, else it over-counts).
+The first corrected sweep reported ~65 but ~half were SHARED (bare-effect host ops returning String/etc — original
+also CDZ0900). With the original-wasm precondition: **~22 TRUE round-trip breaks** on clean main — cluster: the
+UInt64-literal ascription-drop dominates (10 in 06-numeric-model; the ConstInt arm emits a BARE literal, which
+re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user sums (05/07) · a NEWTYPE-unwrap match
+`(match u ((Mk n) n))` folding to bare `u` → returns `(: 7 UserId)` not `7` (a VALUE MISCOMPILE in the nominal
+fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
+#7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
+effect breaks were all SHARED). (Reported to breaker + concierge.) NEXT: fix the UInt64-literal cluster.
 
 ## Tally (2026-09-01 baseline scan): **968 GAP-cases** vs 1919 SHARED.
 ## Re-measured (2026-09-01, post #7268/#7257/#7259/#7278): **340 GAP** / 1543 SHARED (1883 total declines,
