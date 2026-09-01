@@ -50,10 +50,18 @@ def main (args : List String) : IO UInt32 := do
       match ← loadCase dir with
       | some c => cases := c :: cases
       | none => pure ()
-    let (tally, divs) := runCorpus Oracle.Wasm.talosDriver { entry := "main" } cases
+    -- Per-case verdicts (with the skip REASON + divergence outcomes) — the triage view: a skip tells you
+    -- WHICH side declined and why (wasm .err/.unsupported vs a Core reduce gap), a diverge shows both sides.
+    let mut tally : Tally := {}
+    for (id, coreAst, coreWat, rtBytes) in cases.reverse do
+      match differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" } with
+      | .agree => tally := { tally with agree := tally.agree + 1 }
+                  IO.println s!"AGREE {id}"
+      | .diverge _ _ => tally := { tally with diverge := tally.diverge + 1 }
+                        IO.eprintln s!"DIVERGE {id}: Core reference and wasm run disagree (miscompile candidate)"
+      | .skip r => tally := { tally with skip := tally.skip + 1 }
+                   IO.println s!"SKIP {id}: {r}"
     IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip (of {cases.length} cases)"
-    for (id, _, _) in divs.reverse do
-      IO.eprintln s!"DIVERGE {id}: Core reference and wasm run disagree (miscompile candidate)"
     -- talos DRIVES the wasm side now; scalar/arith import-free cases run, heap/runtime-import cases
     -- `.err`→`.unsupported`→`.skip` (sound gap). A DIVERGENCE (nonzero exit) is a real miscompile finding.
     return (if tally.diverge == 0 then 0 else 1)
