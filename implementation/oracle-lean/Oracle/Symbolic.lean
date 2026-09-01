@@ -1096,15 +1096,18 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           (match children[1]?, children[2]? with
            | some sId, some xId =>
              (match symEval m senv fuel ty sId, symEval m senv fuel ty xId with
-              | .sym (.ctor t elems), .sym (.const xv) =>
+              | .sym (.ctor t elems), .sym xe =>
                 if t == "set".toUTF8 then
-                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
-                     .sym (.const (.bool (elems.any (fun e => match e with | .const ev => valEq ev xv | _ => false))))
-                   else .cannotProve "symeval: Set.contains needs all-concrete elements")
+                  -- reify EVERY element AND the query to Values (incl COMPOUND list/tuple/record via
+                  -- `symElemToValue?`); membership via bit-faithful `valEq` (NaN dedupes, +0.0 ≠ -0.0 —
+                  -- NEVER SymExpr-beq). Result is a bool → no set rebuild. A symbolic element/query → cannotProve.
+                  (match elems.mapM symElemToValue?, symElemToValue? xe with
+                   | some vals, some xval => .sym (.const (.bool (vals.any (fun ev => valEq ev xval))))
+                   | _, _ => .cannotProve "symeval: Set.contains needs all-concrete elements")
                 else .cannotProve "symeval: Set.contains on a non-set value"
               | .cannotProve r, _ => .cannotProve r
               | _, .cannotProve r => .cannotProve r
-              | _, _ => .cannotProve "symeval: Set.contains on non-set / non-const query")
+              | _, _ => .cannotProve "symeval: Set.contains on non-set / non-value query")
            | _, _ => .cannotProve "symeval: malformed Set.contains")
         else if q == "String".toUTF8 && mem == "byte-len".toUTF8 then
           -- `String.byte-len s` over a concrete string → the UTF-8 BYTE count (`.const (.int b.size)`),
@@ -2207,6 +2210,20 @@ private def _setLenCompoundExpr : Module :=
     root := 14 }
 #guard symEval _setLenCompoundExpr [] symDefaultFuel defaultIntTy 14
        == SymOutcome.sym (.const (.int 2))
+
+-- SET.CONTAINS over COMPOUND elements + compound query: `((. Set contains) (set (list 1 2)(list 3 4)) (list 1 2))`
+-- → true (`symElemToValue?` reifies each list; `valEq` membership over the Values). No set rebuild.
+private def _setContainsCompoundExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "contains".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .atom 6, .list #[4, 5, 6],
+               .atom 4, .atom 7, .atom 8, .list #[8, 9, 10], .atom 3, .list #[12, 7, 11],
+               .atom 4, .atom 5, .atom 6, .list #[14, 15, 16], .list #[3, 13, 17]],
+    root := 18 }
+#guard symEval _setContainsCompoundExpr [] symDefaultFuel defaultIntTy 18
+       == SymOutcome.sym (.const (.bool true))
 
 -- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
 -- deduped, last-wins via canonMap).
