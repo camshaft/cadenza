@@ -482,6 +482,7 @@ pass	ml/558-annotation-on-match
 pass	ml/559-annotation-on-handle
 pass	ml/56-neg-prefix-member
 pass	ml/560-annotation-on-host
+pass	ml/561-empty-quote-pattern-round-trip
 pass	ml/57-neg-tighter-than-plus
 pass	ml/58-neg-parenthesized-operand
 pass	ml/59-neg-signed-literal
