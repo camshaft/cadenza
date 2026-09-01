@@ -3548,6 +3548,37 @@ fn collect_nontail_compound_reclaim_binders_seen(
     }
 }
 
+/// INC1 boundary discriminator: whether `body` is SELF-RECURSIVE — it contains a `Core::Call` back to its
+/// OWN def (`db.defs[callee].body == Some(body)`). This SEPARATES the INC1 reclaim targets (Peano `depth`,
+/// BST del-min/insert — recursive-sum owned-param FOLDS whose shell is genuinely callee-owned + dead-after)
+/// from a NON-recursive owned-param match the scalar `nontail_param_payload_ok` gate would otherwise admit —
+/// CRUCIALLY the boundary-REBUILT compound-Result CLOSURE arg: an EXPORTED closure the host invokes via a
+/// trampoline that ALSO drops the rebuilt arg. That closure body matches its param ONCE and never self-calls,
+/// so INC1-reclaiming its shell DOUBLE-FREES against the trampoline drop (guest func-12 INC1 drop + guest
+/// func-15 trampoline drop → runtime drop-guard `unreachable`; MEASURED on 21-host-closures:6896, main-vs-B
+/// A/B). A self-recursive fold has NO such external drop (internally direct-called; a tail self-call carries
+/// no caller-drop). SOUND-CONSERVATIVE: a non-self-recursive owned-param leak stays a LEAK (value-correct),
+/// never a UAF — the operator's paramountcy order. Direct self-recursion only (mutual recursion is missed →
+/// a leak, never a double-free). Computable from `body` alone (no `self_def`), so BOTH the emit selection
+/// AND `def_inc1_reclaims_param` gate on it identically (single-source-of-truth complementary).
+pub(super) fn body_is_self_recursive(db: &mut Db, body: StructId) -> bool {
+    fn go(db: &mut Db, id: StructId, body: StructId, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee, .. } = core_of(db, id)
+            && db.defs.get(callee).and_then(|d| d.body) == Some(body)
+        {
+            return true;
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, c, body, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, body, body, &mut seen)
+}
+
 /// Whether the callee function `body` will INC1 non-tail-spine-reclaim its param `param_binder` — i.e. `body`
 /// contains a `MatchSum` over `param_binder` that [`is_nontail_spine_param`] selects (the callee drops that
 /// owned recursive-sum scrutinee's shell itself, at every recursion frame). Used by `call_arg_caller_drops`
@@ -3566,6 +3597,12 @@ pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder:
     // INC1 target); assuming non-diverging is exact for every reclaimable case (a rare diverging body
     // over-yields → a leak, never a double-free).
     if !is_heap_type(&type_of(db, param_binder)) {
+        return false;
+    }
+    // Mirror the emit selection's SELF-RECURSION gate (single-source-of-truth): a non-self-recursive body
+    // (e.g. a boundary-rebuilt compound-Result closure) never INC1-reclaims here, so the caller-drop must
+    // NOT yield to it.
+    if !body_is_self_recursive(db, body) {
         return false;
     }
     let mut cseen = HashSet::new();

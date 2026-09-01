@@ -1223,7 +1223,13 @@ pub fn select_function_of(
     // per (edge, param). Only EXPORT entries + genuine CAPTURING closures are wholly boundary-excluded.
     let inc1_wholly_excluded =
         layout.exports.iter().any(|e| e.body == body) || body_is_capturing_lifted(db, body);
-    let nontail_reclaim: HashSet<StructId> = if inc1_wholly_excluded {
+    // INC1 SELF-RECURSION gate: only a self-recursive fold's owned-param shell is safe to reclaim here. A
+    // non-self-recursive owned-param match (esp. the boundary-REBUILT compound-Result CLOSURE arg whose
+    // export trampoline ALSO drops it) would DOUBLE-FREE — MEASURED on 21-host-closures:6896 (guest func-12
+    // INC1 drop + guest func-15 trampoline drop → runtime drop-guard trap). See `body_is_self_recursive`.
+    let nontail_reclaim: HashSet<StructId> = if inc1_wholly_excluded
+        || !body_is_self_recursive(db, body)
+    {
         HashSet::new()
     } else {
         let epilogue_dropped: HashSet<u32> = looped_owned_param_drops(db, body, params, self_def)
