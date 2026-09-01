@@ -7293,7 +7293,20 @@
            #7205). Contrast the companion below: a genuine partial `(+ 1)` gets the GENERIC not-fully-applied
            message, so the suggest-`Num.neg` is specific to `-`.")
   (input (do (def (f (: x Int64)) (: (- x) Int64)) (export f)))
-  (error CDZ0203 (message "not negation")))
+  ; The message NAMES the deprecated-prefix slip ("not negation") AND redirects to the real negate
+  ; ("Num.neg") — both AND-required so a wording degrade that drops either flips this case.
+  (error CDZ0203 (message "not negation") (message "Num.neg")))
+(case
+  "prefix `(- x)` as an OPERAND of another operator is a partial subtraction, suggest-`Num.neg` at the operand-mismatch site too"
+  (doc
+    "The suggest-`Num.neg` redirect is wired at the OPERATOR-OPERAND mismatch site, not only at an
+           annotation: `(+ (- x) 1)` feeds the partial `(- x)` (a `(-> Int64 Int64)` function) as an operand to
+           `+`, which is `this operation is not defined on a function value` (CDZ0203) — and the same
+           deprecated-prefix tail fires, pointing at `Num.neg`. Pins that the node-aware slip-hint reaches the
+           operand position, so the reader gets the negate redirect wherever the partial `(- e)` lands as a
+           value (v-inference #7205).")
+  (input (do (def (f (: x Int64)) (+ (- x) 1)) (export f)))
+  (error CDZ0203 (message "not negation") (message "Num.neg")))
 (case
   "a non-`-` partial in value position keeps the GENERIC not-fully-applied message (no suggest-`Num.neg`)"
   (doc
@@ -7302,7 +7315,10 @@
            argument(s)`) with NO `Num.neg` suggestion. Proves the suggest-`Num.neg` tail is specific to the
            deprecated prefix `-`, not emitted for every under-applied binary operator.")
   (input (do (def (f (: x Int64)) (: (+ 1) Int64)) (export f)))
-  (error CDZ0203 (message "fully applied")))
+  ; PROGRAM-scoped no-diagnostic: NO diagnostic anywhere suggests `Num.neg` — the suggest-neg tail must not
+  ; leak into a generic under-application. The generic `fully applied` message is what fires instead.
+  (error CDZ0203 (message "fully applied"))
+  (no-diagnostic "Num.neg"))
 
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
