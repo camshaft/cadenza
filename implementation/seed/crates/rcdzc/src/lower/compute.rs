@@ -3291,6 +3291,10 @@ pub(crate) fn record_spread_desugar(db: &mut Db, id: StructId) -> Option<StructI
                 let merge_key = db.push_name("merge");
                 let head = db.push_list(vec![dot, rec_mod, merge_key]);
                 acc = db.push_list(vec![head, acc, next]);
+                // TAG this merge as spread-synthesized: a construction spread is last-writer-wins on an
+                // overlapping field (DESIGN §6), so the disjointness CDZ0211 the explicit `Record.merge`
+                // enforces is skipped for it (the `Core`/type layers already take the last writer).
+                db.record_spread_merge_nodes.insert(acc);
             }
             acc
         }

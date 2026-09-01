@@ -1571,6 +1571,15 @@ pub struct Db {
     /// record node id; `Some(fold)` iff that node is a record with a spread child.
     pub(crate) record_spread_desugar: crate::fxhash::FxHashMap<StructId, StructId>,
 
+    /// The synthesized `((. Record merge) …)` fold nodes a RECORD CONSTRUCTION SPREAD desugars to (see
+    /// [`record_spread_desugar`]). A construction spread is last-writer-wins on an OVERLAPPING field
+    /// (DESIGN-collection-spread-construction.md §6), UNLIKE the explicit `Record.merge` op whose field sets
+    /// MUST be disjoint (type-system.md). The `Core`/type layers already take last-writer, so the
+    /// disjointness CDZ0211 fault (`collect_node`'s `RecordMerge` arm) is SKIPPED for a merge in this set —
+    /// the one place the two features' semantics differ. Explicit `Record.merge` (not in this set) still
+    /// requires disjoint fields.
+    pub(crate) record_spread_merge_nodes: crate::fxhash::FxHashSet<StructId>,
+
     /// Memo of the static recursion analysis (`eval::is_recursive`): for a function BODY occurrence,
     /// whether that function is (transitively) recursive — a call whose callee reaches the same body.
     /// A pure function of the fixed def/`let` structure, so it caches by body `StructId` like
@@ -3137,6 +3146,7 @@ impl Db {
             synth_name_origin: crate::fxhash::FxHashMap::default(),
             build_cache: crate::fxhash::FxHashMap::default(),
             record_spread_desugar: crate::fxhash::FxHashMap::default(),
+            record_spread_merge_nodes: crate::fxhash::FxHashSet::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             escape_verdict_memo: crate::fxhash::FxHashMap::default(),
