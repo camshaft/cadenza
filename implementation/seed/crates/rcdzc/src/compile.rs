@@ -3095,11 +3095,14 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
-    // A def is an ENTRYPOINT if it is exported — the only context where a nullary body is lowered
-    // STANDALONE as the emitted artifact. A non-exported nullary def is always inlined at its call sites
-    // (or dead), so its standalone lowering is not what ships; its reached-poison walk would fault on a
+    // A def is an ENTRYPOINT if it is exported — the only context where a body is lowered STANDALONE as
+    // the emitted artifact (a nullary export IS its value; a parameterized export is the boundary
+    // function, with no internal call site). A non-exported def is always inlined at its call sites (or
+    // dead), so its standalone lowering is not what ships; its reached-poison walk would fault on a
     // decline that the inline at the call site resolves (e.g. a library def that performs an effect whose
-    // home is its caller's handler). So run the reached-poison walk only on EXPORTED nullary bodies.
+    // home is its caller's handler). So run the reached-poison walk on EXPORTED bodies — a nullary export
+    // surfaces every reached poison; a parameterized export surfaces the CODED ones (the per-body loop
+    // below).
     let exported_bodies: std::collections::HashSet<StructId> = db
         .exports
         .iter()
@@ -3141,16 +3144,16 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
         }
     }
-    let bodies: Vec<(StructId, bool)> = db
+    let bodies: Vec<(StructId, bool, bool)> = db
         .defs
         .iter()
         .filter(|d| d.body.is_none_or(|b| !cyclic_bodies.contains(&b)))
         .filter_map(|d| {
             d.body
-                .map(|b| (b, d.params.is_empty() && exported_bodies.contains(&b)))
+                .map(|b| (b, d.params.is_empty(), exported_bodies.contains(&b)))
         })
         .collect();
-    for (body, nullary) in bodies {
+    for (body, is_nullary, is_exported) in bodies {
         // PER-DEF-BODY reset of the structural-reduction work counter (see `STRUCTURAL_REDUCTION_BUDGET`):
         // this body's `type_errors`/reached-poison walk gets its OWN budget, so a divergent body (the
         // self-app structural-explosion HANG) trips fast while the whole-compile cumulative total stays
@@ -3167,12 +3170,30 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         //
         // `type_errors` applies to EVERY body — a function body's free parameters are bound (a `Param`
         // types fine), so an unbound name or type fault in it is still caught. The reached-POISON walk
-        // lowers the body, which only makes sense for a VALUE: a FUNCTION body (a def with parameters)
-        // is not lowered standalone — its params are unsubstituted until it is applied — so run the
-        // trap walk only on a nullary def's body. A function body's traps surface at its call site.
+        // lowers the body; it runs only on an EXPORTED body (a non-exported def is inlined / reached at a
+        // call site, where its traps surface — walking it standalone would fault on a decline the inline
+        // resolves, e.g. a library def whose performed effect's home is its caller's handler).
         faults.extend(type_errors(db, body));
-        if nullary {
-            collect_reached_poisons(db, body, &mut faults);
+        if is_exported {
+            if is_nullary {
+                // A nullary EXPORTED value is lowered standalone as the emitted artifact — every reached
+                // poison (coded OR codeless) is a real build failure.
+                collect_reached_poisons(db, body, &mut faults);
+            } else {
+                // A PARAMETERIZED EXPORTED body is ALSO lowered standalone — it is the boundary export
+                // function, with NO internal call site (the boundary IS the entry). So its unconditionally-
+                // reached poisons are real (emit hits them). Surface the CODED ones, satisfying the
+                // documented `cdz check` contract that check reports every CODED fault (a codeless not-yet
+                // decline stays out of scope). This closes the #7143/#7210 parity gap where a coded
+                // compound-ordering / compare / to-list CDZ0203 in a parameterized export was SILENT in
+                // `cdz check` yet REJECTED by `cdz compile` — a coded-fault-invisible-to-check contract
+                // violation (breaker). The reached-poison walk descends only UNCONDITIONALLY-reached
+                // positions (never a guarded `if`/`match` arm), so it is a strict SUBSET of what emit
+                // lowers — check ⊆ compile, so this can never make check reject a program compile accepts.
+                let mut param_poisons = Vec::new();
+                collect_reached_poisons(db, body, &mut param_poisons);
+                faults.extend(param_poisons.into_iter().filter(|r| r.code.is_some()));
+            }
         }
     }
     // MODULE-MEMBER VALUE/NULLARY BODIES. `modules::register_fn_def` registers only a ≥1-PARAM member in

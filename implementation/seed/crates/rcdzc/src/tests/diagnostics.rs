@@ -44,6 +44,38 @@ fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
     assert_eq!(d.message, "a widget of this shape is not supported");
 }
 
+#[test]
+fn a_coded_fault_in_a_parameterized_export_is_visible_to_check_not_only_compile() {
+    // `cdz check` must surface every CODED fault (its documented contract; only codeless not-yet declines
+    // are out of scope). A parameterized EXPORTED body is lowered STANDALONE as the boundary function, so
+    // its unconditionally-reached CODED poisons are real build failures — and must appear in `check`, not
+    // only `compile`. Pins the #7143/#7210 parity fix: a runtime float-leaf-tuple `<` (a coded
+    // compound-ordering CDZ0203) in a parameterized export was formerly SILENT in check yet REJECTED at
+    // compile (a coded-fault-invisible-to-check contract violation, breaker). Now check == compile.
+    let coded_err = |src: &str| -> Vec<String> {
+        diags_of(src)
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error && d.code.is_some())
+            .map(|d| d.code.clone().unwrap())
+            .collect()
+    };
+    let src =
+        "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))";
+    assert_eq!(
+        coded_err(src),
+        vec!["CDZ0203".to_string()],
+        "check must surface the coded compound-ordering CDZ0203 for a parameterized export"
+    );
+    // A NON-exported def with the same shape is reached at a call site, not lowered standalone, so its
+    // reached-poison walk does NOT run at check — no false reject (here `f` is unused; `main` is clean).
+    let nonexp = "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (def (main) 0) (export main))";
+    assert!(
+        coded_err(nonexp).is_empty(),
+        "a non-exported def's compound-ordering decline is not walked at check: {:?}",
+        coded_err(nonexp)
+    );
+}
+
 // MIGRATED to corpus (03-equality-and-observation.sexp, after the mutually-recursive-sum equality case):
 // two cases pin that a user variant named like a prelude MODULE (`Num`, added by #7023 for `Num.neg`) still
 // CONSTRUCTS through the const-fold/inline path — a NULLARY-main `(= (mk 4) (mk 4))` FULLY const-folds both
