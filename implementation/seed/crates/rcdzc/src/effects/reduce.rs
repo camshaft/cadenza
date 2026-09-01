@@ -2807,6 +2807,44 @@ pub(crate) fn hoist_resumptive_once(
                 ch.push(new_cond);
                 return Some(db.push_list(ch));
             }
+            // Site 1 THROUGH-BLOCK (adv-69 c3): a NON-LAST do-item that is a PURE-let-WRAPPED branch-
+            // performing conditional — `(let ((x true)) (if x (St.put 7) unit))`. Direct Site 1 above misses
+            // it (the item is a `let`, not an `if`), so it fell to the block-wrapped-statement decline. FRESHEN
+            // the wrapper's local binders first (alpha-rename to fresh names) so distributing `rest` into the
+            // conditional branches cannot CAPTURE a free name in `rest` that collides with a wrapper binder
+            // (c3's `x` = the enclosing fn param, distinct from the block's `x`); then PEEL the pure wrapper,
+            // distribute `rest` into the inner conditional, and RE-WRAP in the (freshened) pure `let`. The
+            // wrapper bindings are pure (`peel_pure_let_wrapper` gate), so re-wrapping the distributed
+            // conditional preserves evaluation order + effect count — the branch perform's state advance now
+            // threads through the continuation exactly like the direct case.
+            if i + 1 < items.len() && block_wrapped_branch_performs(db, it, ctx) {
+                let it_fresh = freshen_local_binders(db, it);
+                if let Some((wrapper_pairs, inner_cond)) = peel_pure_let_wrapper(db, it_fresh)
+                    && !wrapper_pairs.is_empty()
+                    && conditional_branch_performs(db, inner_cond, ctx)
+                {
+                    let rest: Vec<StructId> = items[i + 1..].to_vec();
+                    let wrap = |db: &mut Db, branch: StructId| -> StructId {
+                        let do_head = db.push_name("do");
+                        let mut ch = vec![do_head, branch];
+                        ch.extend_from_slice(&rest);
+                        db.push_list(ch)
+                    };
+                    let distributed = map_conditional_branches(db, inner_cond, wrap);
+                    // Re-wrap the distributed conditional in the freshened pure `let` wrapper.
+                    let bindings = db.push_list(wrapper_pairs);
+                    let let_head = db.push_name("let");
+                    let rewrapped = db.push_list(vec![let_head, bindings, distributed]);
+                    if i == 0 {
+                        return Some(rewrapped);
+                    }
+                    let do_head = db.push_name("do");
+                    let mut ch = vec![do_head];
+                    ch.extend_from_slice(&items[..i]);
+                    ch.push(rewrapped);
+                    return Some(db.push_list(ch));
+                }
+            }
         }
     }
     // Site 2: a strict application `(op a0 … ak)` — head not a perform — with a branch-performing
