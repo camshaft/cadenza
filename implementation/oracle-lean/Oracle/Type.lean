@@ -58,24 +58,61 @@ def scalarLitTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
     | _ => none
   | _ => none
 
-/-- Infer the type of a body node. T1.1a: scalar literals only (rule base case) — the extraction plumbing
-all further HM rules build on. Non-literal bodies decline (`Unsupported`) until the V/A/Fn/App/Let/If/Match
-rules land (design PROPOSAL-lean-type-oracle-typing-rules §3). -/
-def inferBody (m : Ast.Module) (nodeId : Nat) : TypeVerdict :=
+/-- The type of a top-level VALUE definition `(def x <scalar-literal>)`: the target is a bare NAME atom
+(a value binding — a `(def (f …) …)` function def has a `(name …)`-LIST target, so `Eval.nameOf?` returns
+`none` on it and this excludes it) and the body is a scalar literal. `none` for a function def, a
+`(name …)`-list target, or a non-literal body. This is the T1.1b value environment: enough to type a
+`main` body that ALIASES a top-level literal binding. Extended to full HM-typed defs as fn/let/app land. -/
+def topLevelValueDefTy? (m : Ast.Module) (defChildren : Array Nat) : Option (ByteArray × Ty) := do
+  let tid ← defChildren[1]?
+  let nm ← Eval.nameOf? m tid              -- bare-name target ⇒ a value def (list target ⇒ function def ⇒ none)
+  let bodyId ← defChildren[defChildren.size - 1]?
+  let τ ← scalarLitTy? m bodyId
+  some (nm, τ)
+
+/-- The T1.1b top-level value environment: `(name, τ)` for every top-level `(def x <scalar-literal>)` in
+the `(do …)` program. The V rule (design §3, `ts:36`) resolves a body name against it. -/
+def topLevelValueEnv (m : Ast.Module) : List (ByteArray × Ty) :=
+  match m.nodes[m.root]? with
+  | some (.list stmts) =>
+    stmts.toList.filterMap (fun sid =>
+      match Eval.asDef? m sid with
+      | some dc => topLevelValueDefTy? m dc
+      | none => none)
+  | _ => []
+
+/-- Infer the type of a body node under a value environment `env`.
+* T1.1a: a scalar literal → its type (the rule base case).
+* T1.1b — the **V rule** (design §3 row V, `ts:36`): a bare-name body resolves against `env` (top-level
+  value defs); a resolved name gets its bound type. An UNRESOLVED name declines (`Unsupported`) rather
+  than emitting `CDZ0101 Unbound` — a positive unbound-reject is UNSOUND without a complete scope model
+  (the name may be a prelude/builtin or a not-yet-modeled local binder), so CDZ0101 waits on the prelude
+  scope slice. This keeps the positive-disagreement invariant (design §5): the oracle only ever emits a
+  positive verdict on a fully-modeled program.
+Any other non-literal body declines until the A/App/If/Let/Fn/Match rules land. -/
+def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
   match scalarLitTy? m nodeId with
   | some τ => .wellTyped τ
-  | none => .unsupported "type oracle: non-literal body not yet modeled (T1.1a — HM rules land next)"
+  | none =>
+    match Eval.nameOf? m nodeId with
+    | some nm =>
+      match env.find? (fun e => e.1 == nm) with
+      | some (_, τ) => .wellTyped τ
+      | none => .unsupported
+          "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)"
+    | none => .unsupported "type oracle: non-literal body not yet modeled (T1.1b — HM app/if/let/fn/match rules land next)"
 
-/-- The type oracle (T1.1a). Extract the `main` export's body (`Eval.namedParamsBody?`); a NULLARY `main`
-whose body is a scalar literal is `WellTyped`. A parameterized main or a non-literal body declines
-(`Unsupported` — a sound coverage gap). HM name-resolution + unification over fn/app/let/if/match lands in
-the following T1 slices. -/
+/-- The type oracle (T1.1b). Extract the `main` export's body (`Eval.namedParamsBody?`), build the
+top-level value environment, and infer the body: a scalar literal (T1.1a) or a name resolving to a
+top-level value binding (T1.1b, the V rule) is `WellTyped`. A parameterized main, an unresolved name, or
+any other non-literal body declines (`Unsupported` — a sound coverage gap). HM unification over
+app/if/let/fn/match lands in the following T1 slices. -/
 def infer (m : Ast.Module) : TypeVerdict :=
   match Eval.namedParamsBody? m "main".toUTF8 with
   | none => .unsupported "type oracle: program has no (def (main) …) export"
   | some (specs, bodyId) =>
     if specs.size != 0 then .unsupported "type oracle: parameterized main not yet modeled (T1)"
-    else inferBody m bodyId
+    else inferBody m (topLevelValueEnv m) bodyId
 
 /-- The differential classification (design §1.2): map the oracle's verdict against rcdzc's carried
 accept/reject/decline onto `holds`/`mismatch`/`skip`. A `mismatch` names the direction so cdz-smith triages
@@ -112,6 +149,23 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                                nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[0, 2, 3],
                                           .atom 4, .atom 2, .list #[5, 6], .atom 0, .list #[8, 4, 7]],
                                root := 9 }) .accept == .holds
+-- T1.1b (V rule): `(do (def x 5) (def (main) x) (export main))` — main's body ALIASES the top-level
+-- value def `x`, which resolves to Int → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "x".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "main".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2],       -- (def x 5)
+                           .atom 1, .atom 4, .list #[5], .atom 2, .list #[4, 6, 7],  -- (def (main) x)
+                           .atom 5, .atom 4, .list #[9, 10],                  -- (export main)
+                           .atom 0, .list #[12, 3, 8, 11]],                   -- (do …)
+                root := 13 } == .wellTyped (.int 64 true))
+-- T1.1b: an UNRESOLVED name body → declines (`Unsupported`, NOT a CDZ0101 positive reject — the name
+-- may be a prelude/builtin) → against an rcdzc reject this judges `skip`, never a false-reject.
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                                  .name "foo".toUTF8, .name "export".toUTF8],
+                      nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[0, 2, 3],  -- (def (main) foo)
+                                 .atom 4, .atom 2, .list #[5, 6], .atom 0, .list #[8, 4, 7]],
+                      root := 9 } with | .unsupported _ => true | _ => false)
 -- a non-literal body (an application) → the oracle declines (T1.1a) → skip.
 #guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
                                   .name "f".toUTF8, .name "export".toUTF8],
