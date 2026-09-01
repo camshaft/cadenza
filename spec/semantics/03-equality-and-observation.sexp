@@ -539,7 +539,7 @@
       (def
         (main (: n Int64))
         (do
-          (def direct (Map.insert Map.empty (Rational.of 1 2) 50))
+          (def direct #map((= (Rational.of 1 2) 50)))
           (def churned (shrink 1 n (grow 1 n direct)))
           (+
             (* 10 (if (= churned direct) 1 0))
