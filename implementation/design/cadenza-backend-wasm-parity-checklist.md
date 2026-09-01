@@ -16,14 +16,14 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
-- [ ] **HostCall / effects — ~203** (biggest). `Core::HostCall` not re-emitted. BUILDABLE NOW
-  (v-effects recipe): (1) collect the set of effects appearing as `Core::HostCall` nodes (walk Core,
-  each node's `effect` field) + their op signatures from `db.effect_decl_by_occ`; (2) re-emit the
-  `(effect E (op o (-> <domain> <result>)) …)` DECL for each in the preamble (like `emit_type_decl`);
-  (3) wrap the ENTRYPOINT body in ONE `(host (E1 E2 …) <body>)` delegation (a generous
-  entrypoint-level scope is faithful — a HostCall effect is unhandled in-program, so delegating over a
-  larger region shadows nothing); (4) per-node `Core::HostCall{effect,op,args}` → `((. E op) <args>)`.
-  Caveat: peer-bound effects ride `db.effect_bindings`. NO lexical-scope reconstruction needed.
+- [~] **HostCall / effects — ~203** (biggest). PARTIALLY CLOSED #7268 (1d97ceeae3): the simple
+  host-delegated perform now round-trips — per-node `((. E op) args)` + `(effect E (op o (-> ..)))` decl
+  preamble + a `(host (E..) body)` wrapper on each performing def; perform ⇔ decl coupling declines when the
+  decl is not re-emittable. Verified 43 host cases BYTE-IDENTICAL + recompile, 0 breaks. STILL DECLINING
+  (later slices, safe CDZ0900): (a) an effect op whose ARROW TYPE has a non-copyable payload (e.g. a
+  Qty-return `(-> Unit (Qty Int64 ((. Unit base) #"meter")))` — `emit_type_surface` can't copy the `#"meter"`
+  bytes-unit; extend the type-surface copier or use `type_ast`); (b) multi-effect / handled / peer-bound
+  (`effect_bindings`) shapes. Re-scan to measure the program-wide HostCall-decline drop.
 - [ ] **fn-typed `(-> ..)` parameters — ~170** (higher-order). An INTERNAL fn param works (lam2);
   a specific higher-order shape declines while wasm compiles it. Investigate the declining shape
   (likely exported/boundary or a specific fn-type position).
