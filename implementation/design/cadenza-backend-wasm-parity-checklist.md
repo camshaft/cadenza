@@ -1,0 +1,70 @@
+# Cadenza-backend wasm-parity checklist (`--target cadenza` round-trip)
+
+**Goal (operator ruling, 2026-09-01):** FULL wasm parity — the cadenza backend must re-emit EVERY
+form the wasm backend emits, and the emitted surface must recompile. Close ALL real gaps, in ANY
+order, until the forms-diff is empty (excluding genuine true-parity / both-decline forms). This file
+is the DURABLE tracked checklist so the list is not forgotten across ticks/compaction.
+
+## How this list was produced (re-runnable)
+Every `spec/semantics/*.sexp` corpus program is run through BOTH `cdz compile -t wasm` and
+`cdz compile -t cadenza`. A case where **wasm OK + cadenza declines = a real PARITY GAP** (this
+backend's work). A case where **both decline = SHARED** (a language/lowering limit, not a
+cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (declines) and
+`/tmp/parity_xref.sh` (GAP-vs-SHARED classification). Re-run when closing a category to re-measure.
+
+## Tally (2026-09-01 baseline scan): **968 GAP-cases** vs 1919 SHARED.
+
+## Parity-gap categories (ranked by case count) — the checklist
+
+- [ ] **HostCall / effects — ~203** (biggest). `Core::HostCall` not re-emitted. BUILDABLE NOW
+  (v-effects recipe): (1) collect the set of effects appearing as `Core::HostCall` nodes (walk Core,
+  each node's `effect` field) + their op signatures from `db.effect_decl_by_occ`; (2) re-emit the
+  `(effect E (op o (-> <domain> <result>)) …)` DECL for each in the preamble (like `emit_type_decl`);
+  (3) wrap the ENTRYPOINT body in ONE `(host (E1 E2 …) <body>)` delegation (a generous
+  entrypoint-level scope is faithful — a HostCall effect is unhandled in-program, so delegating over a
+  larger region shadows nothing); (4) per-node `Core::HostCall{effect,op,args}` → `((. E op) <args>)`.
+  Caveat: peer-bound effects ride `db.effect_bindings`. NO lexical-scope reconstruction needed.
+- [ ] **fn-typed `(-> ..)` parameters — ~170** (higher-order). An INTERNAL fn param works (lam2);
+  a specific higher-order shape declines while wasm compiles it. Investigate the declining shape
+  (likely exported/boundary or a specific fn-type position).
+- [ ] **quantity VALUE from certain construction sites — 106.** A simple `Qty.of` round-trips, but
+  specific construction sites decline (`re-emitting a quantity value from this construction site`).
+  Coordinate value-facts / units owner.
+- [ ] **binary-matching reads — ~106** (`BinIntRead` 98 / `BinRestRead` 6 / `BinSizedRead` 2). Bit-pattern
+  matching not re-emitted. Coordinate the binary-matching owner.
+- [ ] **nested-match sub-pattern with a sum/list-rest step — 67** (MY lane). The SumPayload
+  nested-projection fallback declines a refutable sum/list-rest step under a list/tuple pattern
+  (breaker's family; the codeless-ness is fixed CDZ0900 #7189, the FACE still declines). Needs
+  nested-match reconstruction inside `emit_match_list` / the projection walker.
+- [ ] **disc-FOLDED / Leaf-ROOT sum-match root — 65** (MY lane). A single-arm irrefutable
+  destructure `(match p ((Mk #tuple(a b)) body))` (root cont = Leaf) hits the `_ => decline` in
+  emit_match_sum. Needs Leaf-root routing through emit_switch_tree with a full destructure (the
+  early-session reverted area — do it carefully with body-read-driven slot binding).
+- [x] **closure-capture resolution — 42.** CLOSED #7257 (6e65587241): hoist an un-resolvable value-capture
+  into a `(let ((cN <cap-value>)) (fn ..))`. Re-scan pending (b4i9masus) to confirm flip count.
+- [ ] **newtype VALUE from certain construction sites — 32** (`re-emitting a newtype value from this
+  construction site`). Investigate the declining construction site.
+- [ ] **AST metaprogramming nodes — ~26** (`AstEncode` 16 / `AstPrint` 9 / `AstDecode` 1). Coordinate
+  v-metaprogramming for the reify/print/decode surface.
+- [ ] **`Core::Seq` — 41.** Entangled with effects (Seq ⟺ observable side-effects ⟺ HostCall); likely
+  RESOLVED as a side effect of the HostCall build (emit `(do stmts… tail)`). Re-measure after HostCall.
+- [ ] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** An un-folded INTERNAL NaN/Inf node declines; emit the
+  `Float64.nan` / inf surface. VERIFY not shared (a NaN/Inf VALUE crossing the boundary is shared —
+  "no written value form"). Only the internal-node case is a gap.
+- [ ] **`ConstBytes` — 14.** A bytes constant value not re-emitted (`b"…"` literal). Emit the bytes literal.
+- [x] **Str/Char literal-at-slot — (LitTest).** CLOSED #7242 (49e1d2a1a0). (Bytes/ListLen/MapHasKeys slot
+  probes still decline, coded CDZ0900.)
+
+## VERIFY (counted as GAP but likely true-parity / mis-counted) — confirm before chasing
+- [ ] **under-determined sum type — 13.** Likely SHARED (wasm needs concrete types too); confirm direct also declines.
+- [ ] **`Poison` 28 / `TrapDivZero` 7 / `TrapOverflow` 5 / other Trap — ~40.** A TRAP may BE the case's expected
+  outcome → true-parity, not a gap. Verify against each case's expected outcome; reclassify as SHARED if so.
+
+## Already landed toward parity (compound-slot family + declines-coded, pre-full-parity-ruling)
+variant-at-slot #7074 · literal-at-slot + empty-sum #7153 · newtype-peel (map-key) #7181 · guarded-slot
+#7188 · projection declines coded CDZ0900 #7189 · newtype-list-element peel #7219 · Str/Char-at-slot #7242 ·
+closure-capture hoist #7257.
+
+## Coordination (peer lanes — do NOT solo-reinvent)
+effects/HostCall → v-effects (recipe received) · binary-matching → owner · AST nodes → v-metaprogramming ·
+quantity → value-facts/units.
