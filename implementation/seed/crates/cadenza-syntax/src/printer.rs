@@ -6654,15 +6654,9 @@ mod tests {
     // The `((. Set of) (list …))` sexp→ml oracles are subsumed by 376/378's fmt; set-of call-form fallback is
     // ml/234-236, spread sets ml/158-159, leading-comment ml/282, rest-pattern ml/333. Only the WIDTH-specific
     // wide-set break stays Rust below (fits at the corpus width; needs width-20 to trigger the all-or-nothing break).
-    #[test]
-    fn wide_set_breaks_all_or_nothing_like_a_list() {
-        // Wide sets break all-or-nothing like a list (width-triggered layout — a fmt-width property).
-        assert_eq!(
-            assert_roundtrip("#(1000, 2000, 3000, 4000)", 20),
-            "#(\n  1000,\n  2000,\n  3000,\n  4000\n)"
-        );
-    }
-
+    // `wide_set_breaks_all_or_nothing_like_a_list` MIGRATED to the spec/syntax corpus via the width-golden
+    // ext: ml/567-wide-set-breaks-all-or-nothing (`#(1000, 2000, 3000, 4000)` + `width` 20 → format.cdz
+    // breaks every element one-per-line, like a wide list).
     // `set_literal_falls_back_to_call_form` (a shadowed `Set`, or a `Set.of` over a non-`list`-literal arg,
     // is NOT a set literal — it renders as the ordinary `Set.of(…)` member call) MIGRATED to the
     // spec/syntax corpus (inc-6 batch-34): ml/234-set-of-computed-arg-call-form `Set.of(xs)`→
@@ -6709,24 +6703,11 @@ mod tests {
     //     subsumed by these cases' fmt goldens; `Some(x)` bare-ctor is subsumed by ml/338 `C(c)`.
     // ONLY the width-specific multi-binding-`let` LAYOUT assertions stay Rust (a fmt-width property, not a
     // parse-tree fact): a 3-binding `let` breaks consistently one-per-line when it overflows, flat when it fits.
-    #[test]
-    fn multi_binding_let_breaks_consistently_by_width() {
-        // A multi-binding `let` that does NOT fit breaks CONSISTENTLY: every binding drops to its own
-        // line, indented under `let` — not a greedy fill that packs two bindings per line. At width 20
-        // the three bindings overflow one line, so each gets its own; the first stays on the `let `
-        // line and the rest hang at INDENT under it.
-        assert_eq!(
-            assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 20),
-            "let aa = 1,\n  bb = 2,\n  cc = 3 in\naa + bb + cc"
-        );
-        // The same bindings that DO fit stay on one line (consistent box prints flat when it fits) —
-        // so this is a no-op for a `let` that fits, changing only the overflow layout.
-        assert_eq!(
-            assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 80),
-            "let aa = 1, bb = 2, cc = 3 in\naa + bb + cc"
-        );
-    }
-
+    // `multi_binding_let_breaks_consistently_by_width` (a multi-binding `let` that overflows breaks EVERY
+    // binding to its own indented line — not a greedy 2-per-line fill; fits-inline stays flat) MIGRATED to
+    // the spec/syntax corpus via the width-golden ext: ml/568-multi-binding-let-breaks-by-width (`let aa =
+    // 1, bb = 2, cc = 3 in aa + bb + cc` + `width` 20 → each binding own line). Fits-inline is the same
+    // multi-binding let at the default width (bindings stay on one line; body reflows below).
     // `type_ascription_round_trips` (`e : T` → arena `(: e T)`, ascription binds loosest so it wraps the
     // whole expression) MIGRATED to the spec/syntax corpus (inc-6 batch-10): ml/74-type-ascription-literal
     // `42 : Int64`→`(: 42 Int64)`, ml/75-type-ascription-over-sum `2 + 2 : Int64`→`(: (+ 2 2) Int64)`
@@ -6956,23 +6937,14 @@ mod tests {
     // ml/79-paren-grouping-not-tuple (`(* (+ 1 2) 3)`), `1 + 2 * 3` = ml/02-arith-precedence
     // (`(+ 1 (* 2 3))`). No new cases needed; the two assertions were already pinned.
 
-    #[test]
-    fn match_always_one_arm_per_line() {
-        // Arms go one per line even at a WIDE width where they would fit on one line — the OCaml/Rust
-        // convention, never packed. Each is led by `| ` (including the first); `match … with` header.
-        let out = assert_roundtrip("match e with | Some(n) => n | None => 0 | _ => neg", 200);
-        assert_eq!(
-            out, "match e with\n  | Some(n) => n\n  | None => 0\n  | _ => neg",
-            "got:\n{out}"
-        );
-    }
-
-    #[test]
-    fn call_breaks_all_args_when_wide() {
-        let out = assert_roundtrip("some-function(alpha, beta, gamma, delta, epsilon)", 20);
-        assert!(out.starts_with("some-function(\n"), "got:\n{out}");
-    }
-
+    // `match_always_one_arm_per_line` (match arms print one-per-line EVEN at a wide width where they'd fit —
+    // the OCaml/Rust convention, never packed) MIGRATED to the spec/syntax corpus: it is WIDTH-INVARIANT
+    // (arms always break), so ml/33-match-multi-clause (`def f(p) = match p with | Some(x) => x | None => 0`)
+    // pins it at the default width — its format.cdz is `match p with`⏎`  | Some(x) => x`⏎`  | None => 0`,
+    // one-arm-per-line even though it fits on one line. (Also ml/34 and the many match cases.)
+    // `call_breaks_all_args_when_wide` MIGRATED to the spec/syntax corpus: same layout property as
+    // ml/566-plain-call-all-or-nothing-wide (`some-function(alpha, beta, gamma, delta)` + `width` 20 → all
+    // args one-per-line) — a 5th arg changes nothing structural, so it is redundant.
     // Two non-last-match-arm-body paren-vs-bare layout tests MIGRATED to the spec/syntax corpus (inc-6
     // batch-29). The paren-vs-bare decision is STRUCTURAL (whether the arm body's TRAILING sub-expression
     // is an open `|`-arm list), verified width-invariant at the corpus width:
@@ -7146,20 +7118,10 @@ mod tests {
     // (`wide_if_breaks_condition_on_if_line` below STAYS Rust — a width-40 layout regression the
     // canonical-width fmt can't capture.)
 
-    #[test]
-    fn wide_if_breaks_condition_on_if_line() {
-        // Too wide for one line: the condition stays on the `if` line, branches drop to indented
-        // lines, `else` dedents to the `if` column.
-        let out = assert_roundtrip(
-            "if some-condition then some-then-value(1, 2, 3) else some-else-value(4, 5, 6)",
-            40,
-        );
-        assert_eq!(
-            out,
-            "if some-condition then\n  some-then-value(1, 2, 3)\nelse\n  some-else-value(4, 5, 6)"
-        );
-    }
-
+    // `wide_if_breaks_condition_on_if_line` (too wide for one line: the condition stays on the `if` line,
+    // branches drop to indented lines, `else` dedents to the `if` column) MIGRATED to the spec/syntax corpus
+    // via the width-golden ext: ml/569-wide-if-breaks-condition-on-if-line (`if some-condition then some-then-
+    // value(1, 2, 3) else some-else-value(4, 5, 6)` + `width` 40 → `if …then`⏎`  …`⏎`else`⏎`  …`).
     // `tuple_patterns_use_paren_sugar` (a `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching
     // the value tuple; a 1-element tuple pattern prints `(a,)` with a trailing comma) MIGRATED to the
     // spec/syntax corpus (inc-6 batch-24): ml/189-match-tuple-pattern `| (a, b) => a + b`→

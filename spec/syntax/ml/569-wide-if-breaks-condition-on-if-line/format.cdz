@@ -1,0 +1,4 @@
+if some-condition then
+  some-then-value(1, 2, 3)
+else
+  some-else-value(4, 5, 6)
