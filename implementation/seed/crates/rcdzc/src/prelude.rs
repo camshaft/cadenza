@@ -529,6 +529,9 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
         ("concat", "tuple-cat"),
         ("split-at", "tuple-split-at"),
         ("remove", "tuple-pop"),
+        // `Tuple.size t : Int64` — the tuple's arity (a static property of its type; folds to a
+        // constant Int in `lower`). Result type computed in `infer::apply_type` like the other tuple ops.
+        ("size", "tuple-size"),
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);

@@ -266,6 +266,15 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let rest = tuple_or_unit(&elems[1..]);
         return Ty::Tuple(std::rc::Rc::from([elems[0].clone(), rest]));
     }
+    // `Tuple.size t` — the tuple's arity as an `Int64` (a compile-time-known count; `lower` folds it to a
+    // constant Int). A non-tuple operand falls through to the generic path (→ Any, faulted elsewhere).
+    //= spec/capabilities/type-system.md#the-arity-of-a-tuple-positional-operation-s-result-must-be-determined-statically
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleSize)
+        && args.len() == 1
+        && matches!(type_of(db, args[0]), Ty::Tuple(_))
+    {
+        return Ty::int64();
+    }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
     // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type

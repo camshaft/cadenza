@@ -514,6 +514,7 @@ pub(crate) fn check_application(
                 | crate::resolved::Prim::TupleCat
                 | crate::resolved::Prim::TupleSplitAt
                 | crate::resolved::Prim::TuplePop
+                | crate::resolved::Prim::TupleSize
         )
     ) {
         return;
