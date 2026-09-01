@@ -1725,6 +1725,69 @@ theorem denote_normalize_app_ident_not_not (ρ : Nat → Value) (w : IntTy) (a0 
   obtain ⟨b1, rfl, hb⟩ := denoteUnary_not_inv u1 (.bool b0) hna
   rw [hu1]; simp_all
 
+/-! ### BOOL `.app`-identity denote-soundness (`foldConst?`'s and/or fold, now reducible via `valIsBool` #7243).
+The LEFT-const bool identities fire on the FIRST operand, so their `normalizeAppIdentities` equation lemmas
+are UNCONDITIONAL. `denote (.const (.bool b)) = .value (.bool b)` (`denote_const_bool`) and
+`valIsBool v b = true → v = .bool b` (`valIsBool_eq`) are the reusable bridges. -/
+theorem denote_const_bool (ρ : Nat → Value) (w : IntTy) (b : Bool) :
+    denote ρ w (.const (.bool b)) = .value (.bool b) := by simp [denote, Value.asF64?]
+theorem valIsBool_eq (v : Value) (b : Bool) (h : valIsBool v b = true) : v = .bool b := by
+  unfold valIsBool at h; split at h
+  · rename_i c; simp only [beq_iff_eq] at h; subst h; rfl
+  · exact absurd h (by simp)
+
+theorem normalizeAppIdentities_or_true_l (b : SymExpr) :
+    normalizeAppIdentities "or" #[.const (.bool true), b] = .const (.bool true) := by
+  simp [normalizeAppIdentities, isConstBool]
+theorem normalizeAppIdentities_and_false_l (b : SymExpr) :
+    normalizeAppIdentities "and" #[.const (.bool false), b] = .const (.bool false) := by
+  simp [normalizeAppIdentities, isConstBool]
+theorem normalizeAppIdentities_or_false_l (b : SymExpr) :
+    normalizeAppIdentities "or" #[.const (.bool false), b] = b := by
+  simp [normalizeAppIdentities, isConstBool]
+theorem normalizeAppIdentities_and_true_l (b : SymExpr) :
+    normalizeAppIdentities "and" #[.const (.bool true), b] = b := by
+  simp [normalizeAppIdentities, isConstBool]
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, DROP): `true or x → true`. `foldConst? "or"` fires on the `true` operand
+regardless of `x` (`valIsBool` reduces it) → `v = .bool true`, matching `normalize`'s `.const (.bool true)`. -/
+theorem denote_normalize_app_ident_or_true_l (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn0 : normalize a0 = .const (.bool true))
+    (hnone : foldConst? "or" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app "or" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "or" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "or" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp,
+      hn0, normalizeAppIdentities_or_true_l (normalize a1)]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "or" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu0' : u0 = .bool true := by
+    have := ih0 u0 hu0; rw [hn0, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu0'
+  have hv : v = .bool true := by simp [denoteBinary, foldConst?, symToValue?, valIsBool] at h; exact h.symm
+  rw [denote_const_bool, hv]
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, DROP): `false and x → false`. -/
+theorem denote_normalize_app_ident_and_false_l (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn0 : normalize a0 = .const (.bool false))
+    (hnone : foldConst? "and" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app "and" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "and" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "and" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp,
+      hn0, normalizeAppIdentities_and_false_l (normalize a1)]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "and" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu0' : u0 = .bool false := by
+    have := ih0 u0 hu0; rw [hn0, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu0'
+  have hv : v = .bool false := by simp [denoteBinary, foldConst?, symToValue?, valIsBool] at h; exact h.symm
+  rw [denote_const_bool, hv]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
