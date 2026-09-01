@@ -4958,6 +4958,26 @@ fn check_baseline(
         for r in &cmp.regressed {
             println!("  -  {r}");
         }
+        // KNOWN IN-PROCESS BLIND SPOT (concierge-greenlit interim, 2026-09-01; removed by the gate-delete
+        // that re-points `--check` off this in-process path onto the per-case nix `corpus-<chapter>` execs).
+        // The in-process gate does NOT capture the KIND_DIAGNOSTICS sidecar (only the nix per-case exec,
+        // which feeds `--diagnostics`, does), so a case that COMPILES cleanly but pins a diagnostic-QUALITY
+        // assert — `(warns …)` / `(warning …)` / `(fix …)` / `(count …)` — cannot confirm that assert here
+        // and downgrades to `todo`, surfacing as a spurious `pass → todo` while it is GREEN on the
+        // authoritative nix bar. This footer (fired only when some regression is `pass → todo`) tells a
+        // lander to verify on nix before treating such a case as a real regression. A `pass → fail` is a
+        // real miscompile — NOT this blind spot. (Root-caused after it false-red-blocked 4 verticals.)
+        if cmp.regressed.iter().any(|r| r.contains("→ todo")) {
+            println!(
+                "\nNOTE: a `pass → todo` above on a case pinning a (warns)/(warning)/(fix)/(count) \
+                 diagnostic-quality assert is very likely the KNOWN in-process diagnostic-capture blind \
+                 spot — the in-process gate cannot capture the KIND_DIAGNOSTICS sidecar, so such a case \
+                 (which compiles fine) downgrades to `todo` here while it is GREEN on the authoritative \
+                 nix bar. Verify with `nix build .#checks.<sys>.corpus-<chapter>` (diagnostics-fed, \
+                 baseline-enforcing) before treating it as a real regression; if green there, an --admin \
+                 bypass is correct. (A `pass → fail` is a real miscompile, not this.)"
+            );
+        }
     }
     if !cmp.vanished.is_empty() {
         println!("\nvanished from the corpus ({}):", cmp.vanished.len());
