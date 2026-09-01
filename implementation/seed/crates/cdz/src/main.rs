@@ -93,6 +93,32 @@ macro_rules! load_spanned_or_bail {
     };
 }
 
+/// Resolve the AST node at `$offset` in `$spans`, or print the canonical "no node at byte offset" error
+/// (naming `$file`) and `return ExitCode::FAILURE`. The cursor-position bail every `run_type_at` /
+/// `run_doc_at` / `run_def` / `run_scope`-style query repeats. (Companion to [`load_spanned_or_bail!`].)
+macro_rules! node_at_offset_or_bail {
+    ($spans:expr, $offset:expr, $file:expr) => {
+        match $spans.node_at_offset($offset) {
+            Some(node) => node,
+            None => {
+                eprintln!("{PROG}: no node at byte offset {} in {}", $offset, $file);
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+}
+
+/// The located-row human prefix for a CLI query result: `<file>:<line>:<col>` when a span resolved to a
+/// line/col, else just `<file>`. Shared by the located-list dispatchers (scope / exports / symbols /
+/// param-manifest / func-layout), which all formatted this identically. Generic over the line/col int
+/// type (`usize` from the query index, `u32` from the compile-abi span table).
+fn loc_or_file<T: std::fmt::Display>(line_col: Option<(T, T)>, file: &str) -> String {
+    match line_col {
+        Some((l, c)) => format!("{file}:{l}:{c}"),
+        None => file.to_string(),
+    }
+}
+
 /// An RAII guard that best-effort removes a temp path when dropped — used by the driver-scaffolding
 /// paths (`run_ml`, `chor`, the sandboxed-build queries) that write pid-stamped temp files/dirs and must
 /// clean them on EVERY exit path (success, error, or panic-unwind). `RemoveOnDrop::file` removes a file,
@@ -5193,13 +5219,7 @@ fn run_type(args: &TypeArgs) -> ExitCode {
 /// compiler span-free while the type is a node-identity query (`DESIGN-sidecar-api.md`).
 fn run_type_at(args: &TypeAtArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
-    let Some(node) = spans.node_at_offset(args.offset) else {
-        eprintln!(
-            "{PROG}: no node at byte offset {} in {}",
-            args.offset, args.file
-        );
-        return ExitCode::FAILURE;
-    };
+    let node = node_at_offset_or_bail!(spans, args.offset, args.file);
     let out = run_sidecar(
         &arenas,
         cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
@@ -5384,13 +5404,7 @@ fn run_doc_module(args: &DocModuleArgs) -> ExitCode {
 fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let _ = source; // doc output carries no span
-    let Some(node) = spans.node_at_offset(args.offset) else {
-        eprintln!(
-            "{PROG}: no node at byte offset {} in {}",
-            args.offset, args.file
-        );
-        return ExitCode::FAILURE;
-    };
+    let node = node_at_offset_or_bail!(spans, args.offset, args.file);
     let out = run_sidecar(
         &arenas,
         cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocAt {
@@ -6334,13 +6348,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
 /// mapping stay at the boundary (span-owning); the compiler answers by node identity.
 fn run_def(args: &DefArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
-    let Some(node) = spans.node_at_offset(args.offset) else {
-        eprintln!(
-            "{PROG}: no node at byte offset {} in {}",
-            args.offset, args.file
-        );
-        return ExitCode::FAILURE;
-    };
+    let node = node_at_offset_or_bail!(spans, args.offset, args.file);
     let out = run_sidecar(
         &arenas,
         cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ResolveOf {
@@ -6389,13 +6397,7 @@ fn run_def(args: &DefArgs) -> ExitCode {
 /// autocomplete / scope panel rides on.
 fn run_scope(args: &ScopeArgs) -> ExitCode {
     let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
-    let Some(node) = spans.node_at_offset(args.offset) else {
-        eprintln!(
-            "{PROG}: no node at byte offset {} in {}",
-            args.offset, args.file
-        );
-        return ExitCode::FAILURE;
-    };
+    let node = node_at_offset_or_bail!(spans, args.offset, args.file);
     let out = run_sidecar(
         &arenas,
         cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ScopeAt {
@@ -6438,10 +6440,7 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
             obj.string("type", &ty);
             println!("{}", obj.finish());
         } else {
-            let loc = match line_col {
-                Some((l, c)) => format!("{}:{l}:{c}", args.file),
-                None => args.file.clone(),
-            };
+            let loc = loc_or_file(line_col, &args.file);
             println!("{loc}: {} : {ty}", b.name);
         }
     }
@@ -6494,10 +6493,7 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             obj.string("type", &ty);
             println!("{}", obj.finish());
         } else {
-            let loc = match line_col {
-                Some((l, c)) => format!("{}:{l}:{c}", args.file),
-                None => args.file.clone(),
-            };
+            let loc = loc_or_file(line_col, &args.file);
             println!("{loc}: {} : {ty}", e.name);
         }
     }
@@ -6547,10 +6543,7 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
             obj.string("name", &name);
             println!("{}", obj.finish());
         } else {
-            let loc = match line_col {
-                Some((l, c)) => format!("{}:{l}:{c}", args.file),
-                None => args.file.clone(),
-            };
+            let loc = loc_or_file(line_col, &args.file);
             println!("{loc}: {kind} {name}");
         }
     }
@@ -6638,10 +6631,7 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
             }
             println!("{}", obj.finish());
         } else {
-            let loc = match line_col {
-                Some((l, c)) => format!("{}:{l}:{c}", args.file),
-                None => args.file.clone(),
-            };
+            let loc = loc_or_file(line_col, &args.file);
             // The bracketed config lists only PRESENT fields (a compact human summary).
             let mut cfg = Vec::new();
             if let Some(w) = widget {
@@ -6708,16 +6698,13 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
     // Map the def's name node to a location once (both the disposition line and every instance line share
     // it); render each instance's args as `NAME[a, b, …]`.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let loc = match report
-        .name_node
-        .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-    {
-        Some(span) => {
-            let (l, c) = index.line_col(&source, span.start);
-            format!("{}:{l}:{c}", args.file)
-        }
-        None => args.file.clone(),
-    };
+    let loc = loc_or_file(
+        report
+            .name_node
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+            .map(|span| index.line_col(&source, span.start)),
+        &args.file,
+    );
     // Present the disposition set readably (joined by `+`, as on the wire) and gloss what it MEANS (why
     // there is / isn't a function to point at). A `transformed→copy` tag or a `+`-joined combination
     // carries its own words, so those get no extra gloss.
