@@ -41,11 +41,13 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
   emit_match_sum. Needs Leaf-root routing through emit_switch_tree with a full destructure (the
   early-session reverted area — do it carefully with body-read-driven slot binding).
 - [x] **closure-capture resolution — 42.** CLOSED #7257 (6e65587241): hoist an un-resolvable value-capture
-  into a `(let ((cN <cap-value>)) (fn ..))`. Re-scan pending (b4i9masus) to confirm flip count.
+  into a `(let ((cN <cap-value>)) (fn ..))`. Re-scan CONFIRMED: captured-var declines 42 → **0**.
 - [ ] **newtype VALUE from certain construction sites — 32** (`re-emitting a newtype value from this
   construction site`). Investigate the declining construction site.
-- [ ] **AST metaprogramming nodes — ~26** (`AstEncode` 16 / `AstPrint` 9 / `AstDecode` 1). Coordinate
-  v-metaprogramming for the reify/print/decode surface.
+- [x] **AST metaprogramming nodes — ~26** (`AstEncode`/`AstPrint`/`AstDecode` over RUNTIME Ast). CLOSED
+  #7259 (5635966d4b): three member-access emit arms `((. Ast encode/print/decode) operand)`; the
+  `discs`/`disc_ok`/`disc_err` re-derive from the operand's solved type on recompile. Case (b) confirmed
+  (runtime Ast, not a fold fix). Co-owned w/ v-metaprogramming (they own the codec). Metaprog-file declines 13 → 0.
 - [ ] **`Core::Seq` — 41.** Entangled with effects (Seq ⟺ observable side-effects ⟺ HostCall); likely
   RESOLVED as a side effect of the HostCall build (emit `(do stmts… tail)`). Re-measure after HostCall.
 - [ ] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** An un-folded INTERNAL NaN/Inf node declines; emit the
