@@ -1139,14 +1139,22 @@ fn apply_lambda_uncached(
             for &a in &args[fixed..] {
                 crate::resolve::resolve_subtree(db, a);
             }
-            let list_value =
-                db.push_compound(crate::ast::CompoundCtor::List, args[fixed..].to_vec());
-            crate::resolve::resolve_subtree(db, list_value);
+            // Gather into a LIST when the rest binder is annotated `(List T)` (homogeneous), else into a
+            // TUPLE (heterogeneous, the unannotated / `Tuple` default — monomorphized per call-site since a
+            // fresh tuple of the concrete arg types is built at THIS application). `DESIGN-variable-arity §3`.
+            let rest_param = *params.last().expect("rest param present");
+            let ctor = if rest_gathers_list(db, rest_param) {
+                crate::ast::CompoundCtor::List
+            } else {
+                crate::ast::CompoundCtor::Tuple
+            };
+            let gathered_value = db.push_compound(ctor, args[fixed..].to_vec());
+            crate::resolve::resolve_subtree(db, gathered_value);
             Some(
                 args[..fixed]
                     .iter()
                     .copied()
-                    .chain(std::iter::once(list_value))
+                    .chain(std::iter::once(gathered_value))
                     .collect(),
             )
         } else {
@@ -1404,6 +1412,26 @@ pub(crate) fn callee_is_varargs(db: &mut Db, head: StructId) -> bool {
     lambda_of(db, head)
         .and_then(|(ps, _)| ps.last().copied())
         .is_some_and(|p| is_rest_param(db, p))
+}
+
+/// Whether a rest parameter `(.. binder)` gathers its trailing arguments into a homogeneous LIST
+/// (`(: name (List T))`) rather than the heterogeneous TUPLE default (`DESIGN-variable-arity-functions.md`
+/// §3.1/§3.3). A rest binder annotated with a `(List …)` type gathers a `List`; anything else — an
+/// UNANNOTATED `(.. name)` or a `(: name Tuple)` / `(: name (Tuple …))` — gathers a `Tuple` (heterogeneous,
+/// monomorphized per call-site). Read off the binder's annotation head.
+pub(crate) fn rest_gathers_list(db: &Db, rest_param: StructId) -> bool {
+    let Some(inner) = db
+        .ast
+        .as_form(rest_param, "..")
+        .and_then(|t| t.first().copied())
+    else {
+        return false;
+    };
+    // `(.. (: name T))` — gather a list iff `T`'s head is `List`; a bare `(.. name)` → tuple.
+    db.ast
+        .as_form(inner, ":")
+        .and_then(|t| t.get(1).copied())
+        .is_some_and(|ty| db.ast.head_name(ty) == Some("List"))
 }
 
 /// The value to β-substitute for a parameter, carrying the parameter's TYPE ANNOTATION so its argument
