@@ -213,6 +213,89 @@ fn synth_payload_name(i: usize) -> std::rc::Rc<str> {
     format!("_cdz_m{i}").into()
 }
 
+/// True iff `decl` is an EMITTED user single-variant, single-payload sum — the erased `Ty::Nominal`
+/// newtype shape whose value/read crosses back to its INNER via `(match s ((<Ctor> x) x))`. The three
+/// erased-newtype peel sites (a `Core::Call` erased return, a `SumPayload` inner read, and a CONSUMER-side
+/// folded-unwrap operand — see [`emit_binder_newtype_inner_peel`]) all gate on this exact predicate.
+fn is_emitted_single_payload_newtype(
+    db: &Db,
+    decl: StructId,
+    emitted: &std::collections::HashSet<StructId>,
+) -> bool {
+    emitted.contains(&decl)
+        && db
+            .type_decl_by_occ(decl)
+            .is_some_and(|t| t.variants.len() == 1 && t.variants[0].payloads.len() == 1)
+}
+
+/// CONSUMER-DRIVEN newtype-unwrap peel: if `operand` is a bare binder read (`Core::Param`/`Core::LocalRef`)
+/// whose DECLARED type is an emitted erased single-payload newtype (`(: w W)`, `(type W (Mk BigInt))`) but
+/// whose SOLVED type is that newtype's INNER (`BigInt`) — a `(match w ((Mk x) x))` unwrap the optimizer FOLDED
+/// away — return the type-correct peel `(match w ((Mk x) x))`. `None` when no peel is needed (caller emits the
+/// operand normally). This is driven from a CONSUMER position that REQUIRES the inner value (`BigInt.of`, an
+/// arith operand): the bare binder name recompiles as the nominal `W`, which that consumer rejects (CDZ0203).
+/// It must NOT be applied at the binder READ itself (a `Core::Param` arm) — a binder read used as a variant
+/// MATCH SCRUTINEE needs the NOMINAL, so an unconditional read-site peel double-matches (the WrapT-over-tuple
+/// regression). Value-equivalent (irrefutable single-variant destructure of the erased value; recompile
+/// re-erases it), and the guard fires ONLY on the folded-unwrap shape (a passing read is typed AS the nominal),
+/// so it never rewrites a passing program.
+fn emit_binder_newtype_inner_peel(
+    db: &mut Db,
+    b: &mut Builder,
+    operand: StructId,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<Option<StructId>, Reject> {
+    let (binder, name): (StructId, std::rc::Rc<str>) = match core_of(db, operand) {
+        Core::Param { binder } => match db.ast.as_name(binder) {
+            Some(n) => (binder, n.into()),
+            None => return Ok(None),
+        },
+        Core::LocalRef { binder } => match env.lets.get(&binder) {
+            Some(n) => (binder, n.clone()),
+            None => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let node_ty = crate::infer::type_of(db, operand);
+    let binder_ty = crate::infer::type_of(db, binder);
+    let Ty::Nominal { decl, inner, .. } = &binder_ty else {
+        return Ok(None);
+    };
+    if **inner != node_ty
+        || node_ty == binder_ty
+        || !is_emitted_single_payload_newtype(db, *decl, emitted)
+    {
+        return Ok(None);
+    }
+    let decl = *decl;
+    let scrut = b.name(name);
+    Ok(emit_newtype_unwrap_peel(db, b, scrut, decl, env))
+}
+
+/// Build the erased-newtype UNWRAP peel `(match <scrut> ((<Ctor> x) x))` — the value-equivalent
+/// single-variant destructure that crosses an erased `Ty::Nominal` value back to its INNER at the surface
+/// (recompile re-erases it, so the peel is a no-op on the emitted value). `scrut` is the already-emitted
+/// scrutinee node; `decl` the newtype's type decl (ctor = variant 0). Mints a fresh unique payload binder
+/// via `env.next_payload`. `None` iff the ctor head can't be recovered (caller falls back to the bare node).
+fn emit_newtype_unwrap_peel(
+    db: &mut Db,
+    b: &mut Builder,
+    scrut: StructId,
+    decl: StructId,
+    env: &mut BinderEnv,
+) -> Option<StructId> {
+    let ctor = crate::lower::variant_head_ast(db, b, decl, 0)?;
+    let x = synth_payload_name(env.next_payload);
+    env.next_payload += 1;
+    let x_pat = b.name(x.clone());
+    let pat = b.list(vec![ctor, x_pat]);
+    let body = b.name(x);
+    let arm = b.list(vec![pat, body]);
+    let match_head = b.name("match");
+    Some(b.list(vec![match_head, scrut, arm]))
+}
+
 /// Emit the binary-AST artifact for the program in `db` under `layout`. Reconstructs a Cadenza surface
 /// tree `(do (def …)… (export …)…)` over the same reachable definition set (`layout.order`) the other
 /// backends emit, then serializes it with the binary-AST codec.
@@ -1204,7 +1287,15 @@ fn emit_expr_viewed(
                 }
             };
             let head = member_access_node(b, module, "of");
-            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            // PEEL a FOLDED newtype-unwrap operand (CONSUMER-side): `BigInt.of`/`<Int>.of` narrows a `BigInt`,
+            // so its operand MUST be the inner numeric — but an erased-newtype param whose `(match w ((Mk x) x))`
+            // unwrap FOLDED emits as the bare binder `w`, which recompiles as the nominal `W` (CDZ0203
+            // "expects an argument of type Int64, but a value of type W was given"). `emit_binder_newtype_inner_peel`
+            // re-inserts `(match w ((Mk x) x))` when the operand is exactly that folded bare-newtype binder.
+            let x = match emit_binder_newtype_inner_peel(db, b, operand, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, operand, None, env, emitted)?,
+            };
             Ok(b.list(vec![head, x]))
         }
         // A numeric CONVERSION `(<TargetType>.<member> <operand>)` — the TARGET type is this node's OWN
@@ -1388,20 +1479,10 @@ fn emit_expr_viewed(
             let ret = callee_return_ty(db, callee);
             if let Some(Ty::Nominal { decl, inner, .. }) = &ret
                 && eff_ty == **inner
-                && emitted.contains(decl)
-                && db
-                    .type_decl_by_occ(*decl)
-                    .is_some_and(|t| t.variants.len() == 1 && t.variants[0].payloads.len() == 1)
-                && let Some(ctor) = crate::lower::variant_head_ast(db, b, *decl, 0)
+                && is_emitted_single_payload_newtype(db, *decl, emitted)
+                && let Some(peel) = emit_newtype_unwrap_peel(db, b, call, *decl, env)
             {
-                let x = synth_payload_name(env.next_payload);
-                env.next_payload += 1;
-                let x_pat = b.name(x.clone());
-                let pat = b.list(vec![ctor, x_pat]);
-                let body = b.name(x);
-                let arm = b.list(vec![pat, body]);
-                let match_head = b.name("match");
-                return Ok(b.list(vec![match_head, call, arm]));
+                return Ok(peel);
             }
             Ok(call)
         }
@@ -1664,31 +1745,15 @@ fn emit_expr_viewed(
                     && let Ty::Nominal {
                         decl: nd, inner, ..
                     } = &binder_ty
-                    && emitted.contains(nd)
-                    && db
-                        .type_decl_by_occ(*nd)
-                        .is_some_and(|t| t.variants.len() == 1 && t.variants[0].payloads.len() == 1)
+                    && is_emitted_single_payload_newtype(db, *nd, emitted)
                 {
                     let node_ty = crate::infer::type_of(db, id);
                     if **inner == node_ty && node_ty != binder_ty {
                         let nd = *nd;
                         let scrut = b.name(nm.clone());
-                        let ctor =
-                            crate::lower::variant_head_ast(db, b, nd, 0).ok_or_else(|| {
-                                Reject::decline(
-                                    "the Cadenza backend could not recover the newtype ctor for a \
-                                     payload peel"
-                                        .to_string(),
-                                )
-                            })?;
-                        let x = synth_payload_name(env.next_payload);
-                        env.next_payload += 1;
-                        let x_pat = b.name(x.clone());
-                        let pat = b.list(vec![ctor, x_pat]);
-                        let body = b.name(x);
-                        let arm = b.list(vec![pat, body]);
-                        let match_head = b.name("match");
-                        return Ok(b.list(vec![match_head, scrut, arm]));
+                        if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, nd, env) {
+                            return Ok(peel);
+                        }
                     }
                 }
                 return Ok(b.name(nm));
