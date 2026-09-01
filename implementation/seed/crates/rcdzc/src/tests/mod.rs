@@ -4877,14 +4877,22 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
         ),
         other => panic!("a const Set.to-list of orderable tuples must fold, got {other:?}"),
     }
-    // A set whose element the canonical order cannot rank (a tuple carrying a FLOAT) keeps the runtime op.
+    // A set whose element has NO total order (a tuple carrying a FLOAT — the IEEE partial order is not a
+    // total order) is a coded CDZ0203 at the SHARED front-end (all-leaf, matching the ordering/compare
+    // reconcile), NOT the old defer-to-backend runtime op (which enumerated via BTreeSet's Ord on rust
+    // while wasm declined — a backend divergence). Both backends + `cdz check` inherit the one verdict.
     match fold("(Set.to-list (Set.of (list (tuple 1.5 2) (tuple 3.5 4))))") {
-        Core::SetToList { .. } => {}
-        other => {
-            panic!(
-                "a non-orderable-element (float-in-tuple) Set.to-list must emit the runtime op, got {other:?}"
-            )
+        Core::Poison(r) => {
+            assert_eq!(r.code, Some(crate::diag::Code::TypeMismatch));
+            assert!(
+                r.message.contains("no total order") && r.message.contains("IEEE partial order"),
+                "the front-end no-total-order carve-out names the reason: {}",
+                r.message
+            );
         }
+        other => panic!(
+            "a non-orderable-element (float-in-tuple) Set.to-list is a front-end CDZ0203 poison, got {other:?}"
+        ),
     }
 }
 
@@ -5108,14 +5116,22 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
         ),
         other => panic!("a const Map.to-list keyed on orderable tuples must fold, got {other:?}"),
     }
-    // A map whose KEY the canonical order cannot rank (a tuple carrying a FLOAT) keeps the runtime op.
+    // A map whose KEY has NO total order (a tuple carrying a FLOAT — a float offers only the IEEE partial
+    // order) is a coded CDZ0203 at the SHARED front-end (all-leaf, matching the ordering/compare reconcile),
+    // NOT the old defer-to-backend runtime op (which enumerated via BTreeMap's Ord on rust while wasm
+    // declined — a backend divergence). Both backends + `cdz check` now inherit the one poison verdict.
     match fold("(Map.to-list (Map.insert Map.empty (tuple 1.5 2) 99))") {
-        Core::MapToList { .. } => {}
-        other => {
-            panic!(
-                "a non-orderable-key (float-in-tuple) Map.to-list must emit the runtime op, got {other:?}"
-            )
+        Core::Poison(r) => {
+            assert_eq!(r.code, Some(crate::diag::Code::TypeMismatch));
+            assert!(
+                r.message.contains("no total order") && r.message.contains("IEEE partial order"),
+                "the front-end no-total-order carve-out names the reason: {}",
+                r.message
+            );
         }
+        other => panic!(
+            "a non-orderable-key (float-in-tuple) Map.to-list is a front-end CDZ0203 poison, got {other:?}"
+        ),
     }
     // The fold sees through an inlined nullary `(def (em) Map.empty)` — the exact seed shape; the whole
     // expression const-folds so no runtime is imported. It COMPILES (the fold-through-nullary pin); its RUN

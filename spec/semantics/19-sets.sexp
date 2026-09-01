@@ -4287,6 +4287,21 @@
       (export main)))
   (error CDZ0203 (message "IEEE partial order")))
 
+; The SET/MAP-leaf sibling of the float-leaf to-list decline above (fuzzer cdz-smith). An element whose
+; type carries a SET or MAP leaf — here a `List (Map …)` — has NO blessed total order either, so its ordered
+; enumeration is undefined: a coded CDZ0203, ALL-LEAF with the float case (the no-total-order family the
+; ordering #7143 + compare #7210 reconcile unified — float AND set/map → one code). Formerly wasm declined
+; CODELESS ("no orderable descriptor") while the rust backend ENUMERATED via `BTreeSet`'s `Ord` (an order the
+; spec does not bless) — a backend divergence. Now declined in the shared front-end (`lower_set_to_list`), so
+; both backends + `cdz check` agree. Construction of the set still works; only the ordered to-list declines.
+(case
+  "Set.to-list over set/map-leaf elements is a coded CDZ0203 — a set/map leaf carries no blessed total order (all-leaf sibling of the float case)"
+  (input
+    (do
+      (def (main) (List.len (Set.to-list (Set.of (list (Map.insert Map.empty 0 (list 8 7)))))))
+      (export main)))
+  (error CDZ0203 (message "no blessed order")))
+
 (case
   "Map.to-list orders by SYMBOL keys while float values — NaN included — ride along"
   (doc

@@ -86,6 +86,14 @@ pub(super) fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
             };
         }
     }
+    // A KEY type with NO total order cannot be enumerated in canonical key order — a float leaf (only the
+    // IEEE partial order) or a set/map leaf (no blessed order). Decline in the shared front-end so both
+    // backends + `cdz check` inherit ONE coded CDZ0203 verdict (ALL-LEAF — the reconcile family). Only the
+    // KEY needs an order; a float/un-orderable VALUE rides along untouched (19-sets "…float values … ride
+    // along"), so this checks `key_ty`, not `val_ty`. A BARE float key still enumerates (canonical bytes).
+    if !orderable_leaf_or_compound(db, &key_ty, /*float_ok=*/ true, &mut Vec::new()) {
+        return Core::Poison(to_list_unorderable_reject("key"));
+    }
     Core::MapToList {
         map,
         key_ty,

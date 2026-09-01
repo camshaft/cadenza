@@ -5127,7 +5127,35 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
         );
         return ill_typed_operand_decline(mismatch, "Set.to-list operand is not a solved set type");
     };
+    // An element type with NO total order cannot be enumerated in order — a float leaf (only the IEEE
+    // partial order; a not-a-number is unordered) or a set/map leaf (no blessed order). Decline it HERE,
+    // in the shared front-end, so BOTH backends AND `cdz check` inherit ONE coded verdict (CDZ0203,
+    // ALL-LEAF — matching the ordering #7143 + compare #7210 reconcile that unified float AND set/map to
+    // one no-total-order code). Formerly the reject was PER-BACKEND (wasm: float→CDZ0203 / set-map→codeless
+    // decline; rust: only float-carrying declined, a set/map-leaf element ENUMERATED via `BTreeSet`'s `Ord`
+    // — a blessed order the spec does not offer) → a backend divergence + a check/compile gap. A BARE float
+    // element still enumerates (canonical bytes; `float_ok`), so this fires only on an un-orderable SHAPE.
+    if !orderable_leaf_or_compound(db, &elem_ty, /*float_ok=*/ true, &mut Vec::new()) {
+        return Core::Poison(to_list_unorderable_reject("element"));
+    }
     Core::SetToList { set, elem_ty }
+}
+
+/// The CDZ0203 no-total-order reject a `Set.to-list` / `Map.to-list` returns when its element / key type
+/// cannot be enumerated in a total order — a float leaf (only the IEEE partial order, a not-a-number is
+/// unordered) or a set/map leaf (no blessed order). The ENUMERATION face of the ordering/compare
+/// no-total-order carve-out (§319 / 03:626); ALL-LEAF (float AND set/map → one CDZ0203), matching the
+/// ordering (#7143) + compare (#7210) reconcile. Coded (a PERMANENT carve-out, never a not-yet), returned
+/// from the shared front-end so both backends + `cdz check` agree. `what` = "element" (Set) / "key" (Map).
+fn to_list_unorderable_reject(what: &str) -> Reject {
+    Reject::coded(
+        crate::diag::Code::TypeMismatch,
+        format!(
+            "a to-list enumerates its {what}s in a total order, but this {what} type has no total order — a \
+             float leaf offers only the IEEE partial order (a not-a-number is unordered), and a set/map leaf \
+             carries no blessed order — so its {what}s cannot be enumerated in order"
+        ),
+    )
 }
 
 /// Synthesize a fresh node carrying `core` with solved type `ty` (its `core`/`ty` columns pre-filled, so
