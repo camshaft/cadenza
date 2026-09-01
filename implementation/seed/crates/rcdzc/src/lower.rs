@@ -1289,9 +1289,15 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // | Core::MapInsert { .. }
             // | Core::MapRemove { .. }
             // | Core::SetAlgebra { .. }
-            // SET constructor — KEPT (structurally SAFE, the `MapNew` analog): `Set.of` builds a FRESH CHAMP
-            // from its elems, no interior sharing off a live set.
-            | Core::SetOf { .. }
+            // `SetOf` is ALSO dropped — NOT for its own reclaim (a fresh constructor is safe in isolation)
+            // but for a MIXED-STATE interaction (v-runtime, post-#7503): with `SetOf` MATERIALIZED-once but
+            // its consumer `SetAlgebra` COPY-PROPAGATED (dropped above), a `SetOf` operand shared into ≥2
+            // inlined `SetAlgebra` ops is OVER-CONSUMED → the 19-sets subset-algebraic leak returns. Both-set-
+            // producers-dropped (= #7500 state) is clean; `SetOf` is a constructor with negligible perf cost
+            // to drop (unlike `MapMerge`). Re-widen `SetOf` together with `SetAlgebra` when the reclaim fix
+            // lands. GENERAL RULE: a dropped copy-propagated consumer forces dropping any producer it would
+            // otherwise share materialized (else the inlined copies over-consume the shared handle).
+            // | Core::SetOf { .. }
             // `Core::SumNew` (the sum-payload heap constructor) is the DIRECT ANALOG of `ListNew` (above),
             // and was the deferred-for-ubiquity op the family-widen note named. A `Node x x` binary variant
             // whose payload `x` is used twice, consumed at runtime (a recursive fold so it can't const-fold),
