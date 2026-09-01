@@ -23,7 +23,7 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
 · TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54; ✅ #7303
 CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
 binary-matching 104 (coordinate owner) · TrapDivZero 7 / TrapOverflow 5 / Poison 3 = 15 (verify true-parity — a
-trap may BE the expected outcome) · ConstFloatNan 5 (non-Float64 width, later slice).
+trap may BE the expected outcome). (ConstFloatNan non-Float64 residual now CLOSED by #7309 — all widths.)
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -78,12 +78,19 @@ trap may BE the expected outcome) · ConstFloatNan 5 (non-Float64 width, later s
   §needs_seq) and surface `do` re-lowers to a Seq under the SAME condition, so the re-emitted stmts re-form an
   equivalent Seq (round-trips); composes with the #7268 `(host …)` wrapper + perform⇔decl coupling. Seq declines
   15 → 0; full-corpus hop2 = 0 breaks. Additive-by-construction.
-- [x] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** CLOSED #7298 (2fcda9acc3): re-emit the canonical value-form
-  leaves `Leaf::FloatNan` / `Leaf::FloatInf { negative:false }` (Core::ConstFloatInf is +∞). These leaves EXIST
-  (added w/ v-metaprogramming's Ast.Float reification) — the old core.rs "no written value form" comment was
-  STALE. NOT shared after all (wasm-OK + cadenza-declined = real GAP). RESIDUE: a non-`Float64`-width non-finite
-  float (`(. Float32 nan)`) still declines — a bare leaf can't carry the width; a later slice (mirrors the
-  finite ConstFloat width-ascription guard).
+- [x] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** CLOSED #7298 then FIXED #7309 (53a33b3fc5) — FULLY closed,
+  all widths. ⚠️ #7298 first emitted the bare leaves `Leaf::FloatNan`/`Leaf::FloatInf`, which was WRONG: those
+  are VALUE-RENDER / `Ast.encode` leaves the FRONT-END POISONS in expression position (`resolve.rs` → CDZ0201
+  "non-finite float value has no source literal form"). It broke recompile whenever a non-finite const survives
+  to a runtime VALUE position (a runtime-vs-const compare that doesn't fold) — breaker adv-hop2 finding; my
+  full-corpus hop2 scan MISSED it because the corpus only has ALL-CONST non-finite compares that fold away
+  (🪤 CORPUS-COVERAGE BLIND SPOT: a passing full-corpus hop2 does NOT prove a value-emitting arm round-trips
+  unless a case keeps the value LIVE past const-folding — a runtime-vs-const shape). #7309 fix: emit the WRITTEN
+  value form `(. Float<width> nan)` / `(. Float<width> Infinity)` (prelude.rs §float module constant fields:
+  a `float-nan`/`float-inf` intrinsic annotated with the module width), which fold back to Core::ConstFloatNan/
+  Inf on recompile. Per-width module name handles EVERY width — subsumes the old ==64 guard, closing the 5
+  residual non-Float64 NaN cases. Validated: breaker repro HOP-2 ok + value 103; Float32 runtime-vs-const ok +
+  value 11; full-corpus hop2 = 0 breaks.
 - [x] **`ConstBytes` — 14.** CLOSED #7298 (2fcda9acc3): re-emit `Leaf::Bytes` (`b"…"`; shared `Arc<[u8]>`, no
   copy), the twin of the `ConstStr`↔`"…"` path. Value A/B + full-corpus hop2 clean.
 - [x] **Str/Char literal-at-slot — (LitTest).** CLOSED #7242 (49e1d2a1a0). (Bytes/ListLen/MapHasKeys slot
