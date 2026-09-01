@@ -1688,6 +1688,43 @@ theorem denote_normalize_app_ident_mod_one_r (ρ : Nat → Value) (w : IntTy) (a
   have hv0 : v = .int 0 := denoteBinary_mod_one_value w x v (foldConst_arith_int_none "%" (.int x) 1 (by decide)) h
   rw [denote_const_int, hv0]
 
+/-- `normalizeAppIdentities` DOUBLE-NEGATION rewrite: `not (not x) → x` (returns the grandchild). Reducible
+(the `o == "not"` head check is `String` `==`, not the opaque SymExpr `==`). -/
+theorem normalizeAppIdentities_not_not (inner : SymExpr) :
+    normalizeAppIdentities "not" #[.app "not" #[inner]] = inner := by simp [normalizeAppIdentities]
+
+/-- Inverse of `denoteUnary "not"`: a value-producing `not` had a BOOL operand, and its result is the
+negation. -/
+theorem denoteUnary_not_inv (u v : Value) (h : denoteUnary "not" (.value u) = .value v) :
+    ∃ b, u = .bool b ∧ v = .bool (!b) := by
+  cases u <;> simp_all [denoteUnary, foldConst?, symToValue?] <;>
+    first | (rename_i b; exact ⟨b, rfl, by simp_all⟩) | done
+
+/-- CAPSTONE `.app`-IDENTITY: DOUBLE-NEGATION `not (not x) → x` (operand-preserving through the inner `not`).
+`normalize a0` is the inner `.app "not" #[inner]`, so `normalizeAppIdentities` returns `inner`. Soundness:
+peel the OUTER `not` on the original (`denote_app1` + `denoteUnary_not_inv`) — `denote a0 = .value (.bool b0)`,
+`v = !b0`; the IH carries `denote (normalize a0) = .value (.bool b0)`, and peeling the inner `not` on
+`.app "not" #[inner]` gives `denote inner = .value (.bool (!b0)) = .value v`. -/
+theorem denote_normalize_app_ident_not_not (ρ : Nat → Value) (w : IntTy) (a0 inner : SymExpr) (v : Value)
+    (hn0 : normalize a0 = .app "not" #[inner])
+    (hnone : foldConst? "not" (#[a0].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app "not" #[a0]) = .value v) :
+    denote ρ w (normalize (.app "not" #[a0])) = .value v := by
+  rw [normalize_app_ident "not" #[a0] hnone,
+      show (#[a0] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0] by simp,
+      hn0, normalizeAppIdentities_not_not inner]
+  rw [denote_app1] at h
+  obtain ⟨u0, hu0⟩ := denoteUnary_value_inv "not" _ v h
+  rw [hu0] at h
+  obtain ⟨b0, rfl, rfl⟩ := denoteUnary_not_inv u0 v h
+  have hna := ih0 (.bool b0) hu0
+  rw [hn0, denote_app1] at hna
+  obtain ⟨u1, hu1⟩ := denoteUnary_value_inv "not" _ (.bool b0) hna
+  rw [hu1] at hna
+  obtain ⟨b1, rfl, hb⟩ := denoteUnary_not_inv u1 (.bool b0) hna
+  rw [hu1]; simp_all
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
