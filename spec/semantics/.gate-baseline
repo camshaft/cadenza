@@ -1050,6 +1050,7 @@ pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
 pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
+pass	a self-aliased map-merge dups the shared handle, merges idempotently, and reclaims with no leak
 pass	a NARROW UInt32 checked-mul fits the UInt64 accumulator exactly (the widest narrow product)
 pass	a NARROW-inner scalar newtype escape at a NEGATIVE value renders the nominal (: -300 I16)
 pass	a NARROW-inner scalar newtype escaping a param'd export emits a valid module (i32-slot box)
