@@ -3556,6 +3556,24 @@ fn collect_nontail_compound_reclaim_binders_seen(
 /// Making this exclusion UNCONDITIONAL (not gated on whether the caller-drop fires today) is future-proof:
 /// a later `param_escapes_body` change can never silently double-free an INC1-reclaimed param.
 pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder: StructId) -> bool {
+    // Mirror the EMIT's `param_reclaim` condition EXACTLY (v-core-opt single-source-of-truth): the callee
+    // reclaims `param_binder`'s shell iff it is in `nontail_match_reclaim_binders` (heap + count==0 + not
+    // epilogue/boundary-excluded — the count==0 is the load-bearing part; !epilogue is moot here since an
+    // epilogue-dropped param is in a LOOPED def whose caller-drop is already gate(5)-excluded) AND some
+    // MatchSum over it passes the emit's payload gate (`nontail_param_payload_ok` scalar OR
+    // `is_nontail_spine_param` + `nontail_param_compound_extra_ok` compound). `never_diverges` is passed
+    // FALSE: the emit's never_diverges is TRUE only for an unrepresentable-result diverging body (not an
+    // INC1 target); assuming non-diverging is exact for every reclaimable case (a rare diverging body
+    // over-yields → a leak, never a double-free).
+    if !is_heap_type(&type_of(db, param_binder)) {
+        return false;
+    }
+    let mut cseen = HashSet::new();
+    let mut total = 0usize;
+    count_param_consumes(db, body, param_binder, &mut cseen, &mut total, true);
+    if total != 0 {
+        return false;
+    }
     fn go(
         db: &mut Db,
         id: StructId,
@@ -3568,9 +3586,14 @@ pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder:
         }
         if let Core::MatchSum { scrutinee, root } = core_of(db, id)
             && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == pb)
-            && is_nontail_spine_param(db, top_body, scrutinee, &root)
         {
-            return true;
+            let scrut_ty = type_of(db, scrutinee);
+            // SCALAR path only (must MATCH the emit's current param_reclaim — the compound disjunct is
+            // bisected OFF; re-enable BOTH together). `top_body` unused while compound is off.
+            let _ = top_body;
+            if super::nontail_param_payload_ok(db, scrutinee, &scrut_ty, false, &root) {
+                return true;
+            }
         }
         core_child_ids(db, id)
             .into_iter()
