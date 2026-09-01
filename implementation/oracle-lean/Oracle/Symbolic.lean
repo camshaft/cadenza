@@ -1469,6 +1469,30 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Map.lookup on non-map / non-const key")
            | _, _ => .cannotProve "symeval: malformed Map.lookup")
+        else if q == "Set".toUTF8 && mem == "of".toUTF8 then
+          -- `Set.of (list e…)` → the canonical set of the list's elements (`canonSet elems`, byte-faithful to
+          -- `evalSetOf`, Eval.lean:1499-1510). The set-CONSTRUCTION companion of the `(set …)` literal +
+          -- Set.insert/union. 🪤🪤 v-cdz-smith #7371/#7412 residual root-cause (raw-hex repro, this PR): a
+          -- SOURCE program building a set via `Set.of` sank to cannotProve (Set.of was UNMODELED) while its
+          -- `--target cadenza` ROUNDTRIP const-folds to a `setCtor`-headed literal that ALREADY folds
+          -- (`headName?` maps the setCtor leaf kind → "set" → the set-literal handler) → the whole Set-op
+          -- chain boundaried in the differential. The gap was the SOURCE `Set.of`, NOT the roundtrip literal
+          -- head (which needed no fix). Arg must be a concrete `.ctor "list"` of all-concrete (incl compound
+          -- via `symElemToValue?`) elements; a symbolic/unorderable element → cannotProve.
+          (match children[1]? with
+           | some listId =>
+             (match symEval m senv fuel ty listId with
+              | .sym (.ctor t elems) =>
+                if t == "list".toUTF8 then
+                  (match elems.mapM symElemToValue? with
+                   | some vals => (match canonSet vals with
+                                   | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                                   | none => .cannotProve "symeval: Set.of on unorderable elements")
+                   | none => .cannotProve "symeval: Set.of needs all-concrete list elements")
+                else .cannotProve "symeval: Set.of argument is not a list value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Set.of argument is not a list value")
+           | none => .cannotProve "symeval: malformed Set.of")
         else if q == "Set".toUTF8 && mem == "insert".toUTF8 then
           -- `Set.insert s x` → the set with `x` added, RE-CANONICALIZED (`canonSet (es.push x)`,
           -- Eval.lean:1655-1659). Now that set LITERALS are canonical too (#6691), this canonical output is
@@ -2608,6 +2632,19 @@ private def _setInsertExpr : Module :=
     root := 9 }
 #guard symEval _setInsertExpr [] symDefaultFuel defaultIntTy 9
        == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
+
+-- SET.OF construction coverage (v-cdz-smith #7371/#7412 residual root-cause): `((. Set of) (list 6 0 6))`
+-- → canonical set `[0,6]` (sort + dedup). The SOURCE-side set builder whose absence boundaried the whole
+-- Set-op differential while the `--target cadenza` roundtrip (a setCtor-headed literal) already folded.
+private def _setOfExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[6]),
+                Leaf.intLit false .dec (ByteArray.mk #[0])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 4,
+               .list #[4, 5, 6, 7], .list #[3, 8]],
+    root := 9 }
+#guard symEval _setOfExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 0), .const (.int 6)])
 
 -- MAP.REMOVE member-op coverage: `((. Map remove) (map (1 10) (2 20)) 1)` → `[(2,20)]` (key 1 dropped).
 private def _mapRemoveExpr : Module :=
