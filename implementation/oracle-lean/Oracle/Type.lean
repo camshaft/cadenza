@@ -161,26 +161,75 @@ def topLevelValueEnv (m : Ast.Module) : List (ByteArray × Ty) :=
       | none => none)
   | _ => []
 
-/-- Infer the type of a body node under a value environment `env`.
-* T1.1a: a scalar literal → its type (the rule base case).
-* T1.1b — the **V rule** (design §3 row V, `ts:36`): a bare-name body resolves against `env` (top-level
-  value defs); a resolved name gets its bound type. An UNRESOLVED name declines (`Unsupported`) rather
-  than emitting `CDZ0101 Unbound` — a positive unbound-reject is UNSOUND without a complete scope model
-  (the name may be a prelude/builtin or a not-yet-modeled local binder), so CDZ0101 waits on the prelude
-  scope slice. This keeps the positive-disagreement invariant (design §5): the oracle only ever emits a
-  positive verdict on a fully-modeled program.
-Any other non-literal body declines until the A/App/If/Let/Fn/Match rules land. -/
-def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
+/-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
+disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
+positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
+program, so an unresolved name / an unmodeled construct fails as `unsupported`, never as a false reject. -/
+inductive InferFail where
+  | illTyped (code : Code)
+  | unsupported (reason : String)
+
+/-- The threaded inference state: the accumulated unification substitution + the next fresh var id. -/
+structure InferState where
+  subst : Subst := []
+  next : Nat := 0          -- next fresh unification-var id (used once App/Let/Fn introduce fresh vars)
+  deriving Inhabited
+
+/-- Lift `unify` into the inference result: a clash becomes a positive `IllTyped` (the code), success
+threads the extended substitution. -/
+def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
+  match unify a b st.subst with
+  | .ok s => .ok { st with subst := s }
+  | .error c => .error (.illTyped c)
+
+/-- Recursive HM inference over the analyzable T1 fragment: synthesize a type + threaded state, or fail
+(`IllTyped code` / `Unsupported reason`).
+* T1.1a — scalar literal → its type.
+* T1.1b — the **V rule** (`ts:36`): a bare name resolves against `env` (top-level value defs); an
+  UNRESOLVED name is `Unsupported` (NOT `CDZ0101` — sound without a full scope model, see `InferFail`).
+* T1.2 — the **If rule** (`ts:76-84`): `(if c t e)` unifies `τc` with `Bool`, unifies the two branch
+  types (`never` absorbs — `unify`'s bottom rule — so `(if c 1 (trap))` stays well-typed at `Int`), and
+  yields the resolved branch type. A condition-not-`Bool` or a branch clash is `IllTyped CDZ0203`.
+Any other construct → `Unsupported` until its rule lands (A/App/Let/Fn/Match). -/
+partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
+    Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
-  | some τ => .wellTyped τ
+  | some τ => .ok (τ, st)
   | none =>
     match Eval.nameOf? m nodeId with
     | some nm =>
       match env.find? (fun e => e.1 == nm) with
-      | some (_, τ) => .wellTyped τ
-      | none => .unsupported
-          "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)"
-    | none => .unsupported "type oracle: non-literal body not yet modeled (T1.1b — HM app/if/let/fn/match rules land next)"
+      | some (_, τ) => .ok (τ, st)
+      | none => .error (.unsupported
+          "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)")
+    | none =>
+      match m.nodes[nodeId]? with
+      | some (.list children) =>
+        match m.headName? (.list children) with
+        | some h =>
+          if h == "if".toUTF8 then
+            match children[1]?, children[2]?, children[3]? with
+            | some cId, some tId, some eId => do
+                let (τc, st) ← inferE m env st cId
+                let st ← unifyInfer τc .bool st          -- condition must be Bool (ts:76)
+                let (τt, st) ← inferE m env st tId
+                let (τe, st) ← inferE m env st eId
+                let st ← unifyInfer τt τe st              -- both branches unify; never absorbs (ts:82-84)
+                .ok (applySubst st.subst τt, st)
+            | _, _, _ => .error (.unsupported "type oracle: malformed if")
+          else .error (.unsupported
+            "type oracle: construct not yet modeled (T1 — A/App/Let/Fn/Match rules land next)")
+        | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
+      | _ => .error (.unsupported "type oracle: node not modeled")
+
+/-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
+the verdict algebra. A resolved type (with the final substitution applied) is `WellTyped`; a modeled
+fault is `IllTyped`; a coverage gap is `Unsupported`. -/
+def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
+  match inferE m env {} nodeId with
+  | .ok (τ, st) => .wellTyped (applySubst st.subst τ)
+  | .error (.illTyped c) => .illTyped c
+  | .error (.unsupported r) => .unsupported r
 
 /-- The type oracle (T1.1b). Extract the `main` export's body (`Eval.namedParamsBody?`), build the
 top-level value environment, and infer the body: a scalar literal (T1.1a) or a name resolving to a
@@ -252,6 +301,31 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                       nodes := #[.atom 1, .atom 2, .list #[1], .atom 3, .list #[3], .list #[0, 2, 4],
                                  .atom 4, .atom 2, .list #[6, 7], .atom 0, .list #[9, 5, 8]],
                       root := 10 } with | .unsupported _ => true | _ => false)
+-- T1.2 (If rule): `(if #t 1 2)` — both branches Int, condition Bool → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "if".toUTF8,
+                            .boolLit true, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .list #[0, 1, 2, 3],  -- (if #t 1 2)
+                           .atom 2, .list #[5], .atom 1, .list #[7, 6, 4],           -- (def (main) …)
+                           .atom 7, .atom 2, .list #[9, 10], .atom 0, .list #[12, 8, 11]],
+                root := 13 } == .wellTyped (.int 64 true))
+-- T1.2 (If rule): `(if #t 1 #f)` — branch types clash (Int vs Bool) → IllTyped CDZ0203 (the FIRST
+-- positive reject the oracle emits; against an rcdzc ACCEPT this is a false-accept mismatch).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "if".toUTF8,
+                            .boolLit true, .intLit false .dec (ByteArray.mk #[1]), .boolLit false,
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .list #[0, 1, 2, 3],
+                           .atom 2, .list #[5], .atom 1, .list #[7, 6, 4],
+                           .atom 7, .atom 2, .list #[9, 10], .atom 0, .list #[12, 8, 11]],
+                root := 13 } == .illTyped "CDZ0203")
+-- T1.2 (If rule): `(if 1 2 3)` — condition is Int, not Bool → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "if".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .list #[0, 1, 2, 3],
+                           .atom 2, .list #[5], .atom 1, .list #[7, 6, 4],
+                           .atom 7, .atom 2, .list #[9, 10], .atom 0, .list #[12, 8, 11]],
+                root := 13 } == .illTyped "CDZ0203")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
