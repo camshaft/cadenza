@@ -1396,6 +1396,48 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Map.len on a non-map value")
            | none => .cannotProve "symeval: malformed Map.len")
+        else if q == "Set".toUTF8 && mem == "to-list".toUTF8 then
+          -- `Set.to-list s` → the ordered list of the set's CANONICAL (sorted, deduped) elements as a
+          -- `.ctor "list"` of `valueToSym`. Mirrors `Set.len` but returns the list VALUE, not the count —
+          -- the value companion draining v-cdz-smith's #7412 to-list boundary. Non-set/symbolic/unorderable
+          -- → cannotProve. (Canonical order matches a set's canonical value repr, so `List.at`/comparison over
+          -- the result is faithful.)
+          (match children[1]? with
+           | some sId =>
+             (match symEval m senv fuel ty sId with
+              | .sym (.ctor t elems) =>
+                if t == "set".toUTF8 then
+                  (match elems.mapM symElemToValue? with
+                   | some vs => (match canonSet vs with
+                                 | some s => .sym (.ctor "list".toUTF8 (s.map valueToSym))
+                                 | none => .cannotProve "symeval: Set.to-list on unorderable elements")
+                   | none => .cannotProve "symeval: Set.to-list needs all-concrete elements")
+                else .cannotProve "symeval: Set.to-list on a non-set value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Set.to-list on a non-set value")
+           | none => .cannotProve "symeval: malformed Set.to-list")
+        else if q == "Map".toUTF8 && mem == "to-list".toUTF8 then
+          -- `Map.to-list mp` → the ordered list of `(k, v)` tuples over the CANONICAL (last-write-wins,
+          -- sorted-by-key) map, as a `.ctor "list"` of `.tuple #[.const k, .const v]`. Mirrors `Map.len` but
+          -- returns the list VALUE. Non-map/symbolic/unorderable/malformed entry → cannotProve.
+          (match children[1]? with
+           | some mId =>
+             (match symEval m senv fuel ty mId with
+              | .sym (.ctor t elems) =>
+                if t == "map".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .tuple #[ke, ve] => (match symElemToValue? ke, symElemToValue? ve with
+                                                                     | some k, some v => some (k, v)
+                                                                     | _, _ => none)
+                                              | _ => none) with
+                   | some kvs => (match canonMap kvs with
+                                  | some cm => .sym (.ctor "list".toUTF8 (cm.map (fun kv => SymExpr.tuple #[.const kv.1, .const kv.2])))
+                                  | none => .cannotProve "symeval: Map.to-list on unorderable key")
+                   | none => .cannotProve "symeval: Map.to-list needs all-concrete entries")
+                else .cannotProve "symeval: Map.to-list on a non-map value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Map.to-list on a non-map value")
+           | none => .cannotProve "symeval: malformed Map.to-list")
         else if q == "Map".toUTF8 && mem == "lookup".toUTF8 then
           -- `Map.lookup mp k` → `Some v` (k's value) or `None`, mirroring `evalNode`'s find over the
           -- CANONICALIZED map (Eval.lean:1664-1667, `es.find? (valEq ·.1 k) |>.map (·.2)`). 🔑 must `canonMap`
