@@ -123,13 +123,28 @@ pub fn grade(
             // forwarding the peer's exported funcs over the shared runtime); a plain case runs the consumer
             // alone. Both read the shared runtime's live-cell count for the heap-balance assertion.
             let (outcome, observed, live) = if peers.is_empty() {
-                run_with_live_objects(
+                match run_with_live_objects(
                     component_bytes,
                     &opts,
                     second_call,
                     drop_handle,
                     call_member,
-                )?
+                ) {
+                    Ok(triple) => triple,
+                    // An emitted component that will not LOAD (wasmtime "invalid component: …", from
+                    // `run_with_live_objects`'s `load_guest`) is a MISCOMPILE / bad artifact — grade it a
+                    // FAIL, do NOT let the error crash the harvest. This makes the grade harvest ROBUST to a
+                    // miscompile (it records the case fail faithfully + is tracked, flipping to pass when the
+                    // emit is fixed) instead of one un-loadable component wedging the whole re-baseline —
+                    // the same class of hardening as "a trap grades fail, not a crash". Scoped to the load
+                    // failure: a runtime/host-infra error (a genuine harness fault) still propagates, so it
+                    // is never silently masqueraded as a case fail.
+                    Err(e) if format!("{e}").contains("invalid component") => {
+                        per_trial_live.push(None);
+                        return Ok(GradeOutcome::BadArtifact(format!("{e}")));
+                    }
+                    Err(e) => return Err(e),
+                }
             } else {
                 // A COMPOSE-TIME REJECT (arity/type/missing-op) is the peer case's OUTCOME, not a harness
                 // error: the corpus models it as `(trap "signature mismatch")` / `(trap "type mismatch")` /
