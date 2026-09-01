@@ -27,7 +27,7 @@
 //! defaults to `release-debug` (optimized, so the corpus gate is fast). Pass `--profile dev` for a
 //! quick unoptimized build when iterating on the tools themselves.
 
-use cdz_corpus_grade::canonical_output_value;
+use cdz_corpus_grade::{TrapCode, canonical_output_value, classify, is_ice_signature};
 use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -3639,25 +3639,6 @@ fn first_error_diag(stderr: &[u8]) -> (Option<String>, String) {
     (None, String::new())
 }
 
-/// Whether a CODE-LESS compile-failure message is an INTERNAL COMPILER ERROR (a bug) rather than an honest
-/// not-yet-implemented decline (operator ruling 2026-08-27, refined WITH breaker). Code-less-ness ALONE does
-/// NOT mark an ICE — the ~60 honest capability declines ("… has no machine representation / valtype / unbox
-/// op / native Rust representation") are also code-less — so only these curated internal-invariant shapes
-/// FAIL; everything else code-less stays Todo (zero false positives). MIRROR of
-/// `cdz_corpus_grade::is_ice_signature` — keep in sync. New ICE signatures are added here as they surface.
-fn is_ice_signature(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    m.contains("no local slot")
-        || m.contains("is a compiler bug")
-        || m.contains("no bound rust identifier")
-        || m.contains("sum match sub-value has no declaration")
-        // Unreachable-by-construction defensive fallthrough (lower_quantity_combine's caller filters op to the
-        // handled set) — a "can't happen" internal-invariant guard, not a capability gap. Zero corpus reach.
-        || m.contains("unexpected op in mixed-unit")
-        || m.contains("panicked")
-        || m.contains("internal error")
-}
-
 /// Whether a RUNTIME failure reason is an ARTIFACT-ICE: a compile-success-but-unloadable component (wasmtime
 /// `Component::new`/instantiate rejects it) — the "compiler said yes and produced garbage" ICE (breaker's B1).
 /// Never a legitimate runtime trap, so it FAILs regardless of expectation kind (the trap-expectation channel
@@ -4843,117 +4824,6 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             }
         }
         _ => Grade::Todo,
-    }
-}
-
-/// A STANDARD, CLOSED set of runtime trap KINDS — the "trap code" analogue of a diagnostic code (operator
-/// 2026-08-27: "similar to error/warning codes … an actual unique id, not string matching on english"). A
-/// `(trap …)` corpus expectation and a runtime trap outcome both resolve to one of these and compare by CODE
-/// EQUALITY. MIRROR of `cdz_corpus_grade::TrapCode` (xtask is a separate crate, kept in sync deliberately so a
-/// `(trap …)` case grades identically on wasm and rust). A code's [`TrapCode::code`] id is STABLE — it must
-/// not change when a backend's human trap wording drifts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrapCode {
-    DivByZero,
-    OutOfBounds,
-    Overflow,
-    Unreachable,
-    /// A cross-component PEER compose-time signature/arity/type reject (`run_with_peers` refuses a peer
-    /// whose exported op does not match the consumer's binding). Not a runtime arithmetic trap — a compose
-    /// refusal surfaced as a trap by the gate.
-    PeerSignatureMismatch,
-    /// A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface reject).
-    PeerMissingInterface,
-}
-
-impl TrapCode {
-    /// The STABLE `CDZ07xx` id — the canonical `(trap "CDZ07xx")` spelling, and the [`TrapCode::from_id`]
-    /// inverse (operator ruling 2026-08-27: CDZxxxx codes for trap reasons). `CDZ07xx` is the runtime-trap
-    /// block, distinct from `rcdzc::diag::Code`'s compile-diagnostic ranges. MIRROR of `cdz_corpus_grade`.
-    fn code(self) -> &'static str {
-        match self {
-            TrapCode::DivByZero => "CDZ0701",
-            TrapCode::OutOfBounds => "CDZ0702",
-            TrapCode::Overflow => "CDZ0703",
-            TrapCode::Unreachable => "CDZ0704",
-            TrapCode::PeerSignatureMismatch => "CDZ0705",
-            TrapCode::PeerMissingInterface => "CDZ0706",
-        }
-    }
-
-    /// Parse a corpus `(trap "…")` token as an explicit trap CODE id. `None` if not a code id — the grader
-    /// falls back to [`classify`] for a legacy English reason (so old `(trap "divide by zero")` cases keep
-    /// grading while new cases use the stable `(trap "CDZ0701")`).
-    fn from_id(token: &str) -> Option<TrapCode> {
-        match token.trim() {
-            "CDZ0701" => Some(TrapCode::DivByZero),
-            "CDZ0702" => Some(TrapCode::OutOfBounds),
-            "CDZ0703" => Some(TrapCode::Overflow),
-            "CDZ0704" => Some(TrapCode::Unreachable),
-            "CDZ0705" => Some(TrapCode::PeerSignatureMismatch),
-            "CDZ0706" => Some(TrapCode::PeerMissingInterface),
-            _ => None,
-        }
-    }
-}
-
-/// Classify a trap-reason string (cdz-run's actual wasmtime/rust-panic message, OR a legacy corpus English
-/// reason) into its [`TrapCode`], so the two vocabularies compare equal. `None` for a reason that doesn't
-/// classify (so the grader stays conservative — an unclassifiable actual never Passes against a classifiable
-/// expectation, and vice versa). This is the ONE place English is matched — on the RUNTIME reason the backend
-/// emits; the AUTHORED side uses [`TrapCode::from_id`].
-///
-/// wasmtime writes its own vocabulary (`integer divide by zero`, `integer overflow`, `out of bounds memory
-/// access`, `wasm 'unreachable' instruction executed`); rust panics its own (`divide by zero` / `remainder by
-/// zero`, `integer overflow`, `shift count out of range`). Lowercased + matched by distinguishing SUBSTRING,
-/// most-specific first, mapping to one code per underlying trap.
-fn classify(reason: &str) -> Option<TrapCode> {
-    let r = reason.to_ascii_lowercase();
-    // Order matters: check the most specific substrings first. "divide by zero" / "division by zero"
-    // both contain "zero"; "integer overflow" / "overflow" share "overflow".
-    if r.contains("divide by zero")
-        || r.contains("division by zero")
-        || r.contains("remainder by zero")
-    {
-        // Divide-by-zero AND modulo/remainder-by-zero are the SAME underlying fault (a zero divisor):
-        // wasm traps both as an integer division trap, and the rust backend panics "division by zero"
-        // for `/` but "remainder by zero" for `%` — map both spellings to the one canonical code so a
-        // runtime modulo-by-zero `(trap …)` case grades pass on BOTH backends (the rust matcher was
-        // keyed only to the divide spelling, so a `%`-by-zero case graded todo on rust — breaker's gap).
-        Some(TrapCode::DivByZero)
-    } else if r.contains("out of bounds") || r.contains("out-of-bounds") {
-        // wasmtime "out of bounds memory access" (a guest bounds trap) and the corpus "index out of
-        // bounds" are the same underlying fault — a list/segment index past the end.
-        Some(TrapCode::OutOfBounds)
-    } else if r.contains("overflow") {
-        // "integer overflow" / bare "overflow" — an arithmetic result outside the type width.
-        Some(TrapCode::Overflow)
-    } else if r.contains("unreachable") || r.contains("shift count out of range") {
-        // wasmtime "wasm 'unreachable' instruction executed" / the corpus bare "unreachable" — the
-        // compiler lowers an explicit non-arithmetic trap (a `trap`/uninhabited-match) to `unreachable`.
-        // The rust backend's shift-count guard panics "shift count out of range" for the SAME
-        // non-arithmetic `Core::Trap` the wasm backend lowers to bare `unreachable` (an out-of-range
-        // shift count) — map it to the same canonical code so a `(trap "unreachable")` shift-count case
-        // grades pass on BOTH backends. (Rust's second shift panic, "integer overflow in left shift",
-        // already classifies via the "overflow" arm above.)
-        Some(TrapCode::Unreachable)
-    } else if r.contains("signature mismatch") || r.contains("type mismatch") {
-        // A cross-component PEER compose-time reject in the SIGNATURE family: cdz-run's peer signature check
-        // refuses to compose a peer whose exported op does not match the consumer's binding — either an
-        // ARITY mismatch ("peer `<iface>` op `<f>` signature mismatch: …") or a per-argument/result TYPE
-        // mismatch ("peer `<iface>` op `<f>` type mismatch at argument <n>: …"). Both cdz-run phrases, and
-        // the corpus `(trap "signature mismatch")` / `(trap "CDZ0705")` expectation, classify here — so a
-        // compose-time reject grades PASS, not an unconfirmed todo. (A compose reject is neither a compile
-        // `(declines)`/`(error)` — both components compile — nor a runtime arithmetic trap; it is its own kind.)
-        Some(TrapCode::PeerSignatureMismatch)
-    } else if r.contains("does not export op") || r.contains("does not export the interface") {
-        // A peer that does not export a bound OP ("peer `<iface>` does not export op `<f>`, … offers …") or
-        // does not export the bound INTERFACE at all ("peer does not export the interface `<iface>`") — the
-        // missing-op / wrong-interface compose reject. Matched on the two SPECIFIC peer phrases (not a bare
-        // "does not export", which would also catch unrelated runtime/reducer/NFC infrastructure errors).
-        Some(TrapCode::PeerMissingInterface)
-    } else {
-        None
     }
 }
 
@@ -7528,58 +7398,6 @@ mod trap_grading_tests {
         assert!(run_failure_has_diagnostic(
             "cdz: live-objects run on value-heap runtime abc123\ncdz-run: peer `m/api` does not export op `sub`"
         ));
-    }
-
-    #[test]
-    fn classify_maps_corpus_and_wasmtime_vocabularies_to_one_trap_code() {
-        // The corpus's human reasons and wasmtime's actual trap messages must classify to the SAME code
-        // per underlying trap, so `grade_trial`'s `trap` arm recognizes an expected trap that fired.
-        // Division by zero — corpus writes both spellings; wasmtime prepends "integer".
-        assert_eq!(classify("divide by zero"), Some(TrapCode::DivByZero));
-        assert_eq!(classify("division by zero"), Some(TrapCode::DivByZero));
-        assert_eq!(
-            classify("cdz-run: trap: wasm trap: integer divide by zero: error while executing"),
-            Some(TrapCode::DivByZero)
-        );
-        // Modulo/remainder-by-zero is the SAME div-by-zero fault — the rust backend panics
-        // "remainder by zero" for `%` (vs "division by zero" for `/`); both must classify identically
-        // so a runtime `%`-by-zero `(trap …)` case grades pass on rust, not todo (breaker's gap).
-        assert_eq!(classify("remainder by zero"), Some(TrapCode::DivByZero));
-        assert_eq!(
-            classify("thread 'main' panicked at …: remainder by zero"),
-            Some(TrapCode::DivByZero)
-        );
-        // Overflow — bare and "integer" both, corpus + wasmtime.
-        assert_eq!(classify("overflow"), Some(TrapCode::Overflow));
-        assert_eq!(classify("integer overflow"), Some(TrapCode::Overflow));
-        assert_eq!(
-            classify("cdz-run: trap: wasm trap: integer overflow: error"),
-            Some(TrapCode::Overflow)
-        );
-        // Out of bounds — corpus "index out of bounds" vs wasmtime "out of bounds memory access".
-        assert_eq!(classify("index out of bounds"), Some(TrapCode::OutOfBounds));
-        assert_eq!(
-            classify("wasm trap: out of bounds memory access"),
-            Some(TrapCode::OutOfBounds)
-        );
-        // Unreachable — corpus bare word vs wasmtime's full phrasing.
-        assert_eq!(classify("unreachable"), Some(TrapCode::Unreachable));
-        assert_eq!(
-            classify("wasm `unreachable` instruction executed"),
-            Some(TrapCode::Unreachable)
-        );
-        // An unclassifiable reason yields None (grader stays conservative — never a false Pass).
-        assert_eq!(classify("some novel host failure"), None);
-        // Every code's stable id round-trips through `from_id` (the corpus-facing token); a non-code is None.
-        for tc in [
-            TrapCode::DivByZero,
-            TrapCode::OutOfBounds,
-            TrapCode::Overflow,
-            TrapCode::Unreachable,
-        ] {
-            assert_eq!(TrapCode::from_id(tc.code()), Some(tc));
-        }
-        assert_eq!(TrapCode::from_id("not-a-code"), None);
     }
 
     #[test]
