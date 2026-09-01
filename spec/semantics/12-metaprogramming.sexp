@@ -4863,7 +4863,7 @@ c")))
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty 1 10) 2 20))
+          (def m #map((= 1 10) (= 2 20)))
           (def v (Option.expect (Map.lookup m k) "present"))
           (Int64.of (eval (quasiquote (+ (unquote v) 5))))))
       (export main)))
@@ -4906,7 +4906,7 @@ c")))
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert Map.empty 1 k))
+          (def m #map((= 1 k)))
           (def r (eval (quasiquote (match 5 (m (+ m 2)) (_ 0)))))
           (+ (* 100 (Int64.of r)) (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
       (export main)))

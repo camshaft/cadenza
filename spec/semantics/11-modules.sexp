@@ -1792,7 +1792,7 @@
       (export main)))
   (module "table"
     (do
-      (def tbl (Map.insert (Map.insert Map.empty 1 10) 2 20))
+      (def tbl #map((= 1 10) (= 2 20)))
       (def (get (: k Int64)) (match (Map.lookup tbl k) ((Some v) v) ((None _u) 0)))
       (export get)))
   (call main (: 2 Int64))
@@ -2566,7 +2566,7 @@
       (def
         (main (: b Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty 1 10) 2 20))
+          (def m #map((= 1 10) (= 2 20)))
           (handle
             Look
             m
@@ -2704,7 +2704,7 @@
       (export main)))
   (module "table"
     (do
-      (def tbl (Map.insert (Map.insert Map.empty 1 10) 2 20))
+      (def tbl #map((= 1 10) (= 2 20)))
       (def (base) tbl)
       (def (probe (: k Int64)) (match (Map.lookup tbl k) ((Some v) v) ((None _u) 0)))
       (export base probe)))
