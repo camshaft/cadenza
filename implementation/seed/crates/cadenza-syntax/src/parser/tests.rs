@@ -1277,23 +1277,11 @@ fn exhaustive_short_token_soup_always_terminates_well_formed() {
 //     close the region early (the raw-region scanner tracks string literals).
 // The recovery/span/never-panic embedded tests below STAY Rust (diagnostic-quality / span / totality guards).
 
-#[test]
-fn a_malformed_embedded_body_is_a_recovered_error_not_a_panic() {
-    // A sub-grammar parse error lifts a diagnostic into this parse and leaves an `<error>` placeholder
-    // under the embedded node — the arena stays well-formed, the parse never panics.
-    let p = read_ml(r#"json{ {"a": } }"#); // missing value → JSON error
-    assert!(!p.ok(), "a malformed JSON body surfaces a parse error");
-    let a = &p.arenas;
-    let emb = a
-        .as_form(a.root, "embedded")
-        .expect("still an (embedded …) node even on a bad body");
-    assert_eq!(
-        a.as_name(emb[1]),
-        Some("<error>"),
-        "a bad body grafts an <error> placeholder, keeping the arena well-formed"
-    );
-}
-
+// `a_malformed_embedded_body_is_a_recovered_error_not_a_panic` (a sub-grammar parse error grafts an
+// `<error>` placeholder under the embedded node, arena stays well-formed, never panics) MIGRATED to the
+// spec/syntax corpus (parser-corpus inc-8): ml/499-embedded-json-malformed-body (`json{ {"a": } }`) is the
+// decline (error.txt `region: unexpected character`) + `recovered.sexp` `(embedded #"json" <error>)` — the
+// recovered arena is still a well-formed `(embedded …)` node with the `<error>` graft.
 // `embedded_node_spans_are_document_coordinates_that_slice_back_to_the_embedded_source` (LSP-transparency:
 // an embedded region's grafted nodes keep OUTER-document coordinates, so a cursor in a `json{ … }` body
 // resolves to the exact JSON node — every node's span is a valid outer-source slice, and the interior `42`
@@ -1301,18 +1289,11 @@ fn a_malformed_embedded_body_is_a_recovered_error_not_a_panic() {
 // corpus (parser-corpus inc-8) via `spans.txt`: ml/547-embedded-node-spans-document-coordinates,
 // `json{ {"key": 42} }` -> spans.txt pins the `42` leaf at `14:16 42` (outer offsets) plus a valid
 // in-bounds span for every grafted node — the span-golden IS the outer-coordinate-slice assertion.
-#[test]
-fn an_unterminated_embedded_region_recovers_without_panicking() {
-    // No closing `}` at all — the scanner reports an unterminated region, consumes to end, and emits a
-    // placeholder. Never a panic, never a hang.
-    let p = read_ml(r#"json{ {"a": 1} "#); // no closing brace for the region
-    assert!(!p.ok(), "an unterminated region is an error");
-    assert!(
-        p.arenas.as_form(p.arenas.root, "embedded").is_some(),
-        "still produces a well-formed (embedded …) node"
-    );
-}
-
+// `an_unterminated_embedded_region_recovers_without_panicking` (no closing `}` for the region — the
+// scanner reports it, consumes to end, and still emits a well-formed `(embedded …)` node; never a panic/
+// hang) MIGRATED to the spec/syntax corpus (parser-corpus inc-8): ml/500-embedded-json-unterminated-region
+// (`json{ {"a": 1}` unterminated) is the decline (error.txt `embedded-syntax region`) + `recovered.sexp`
+// `(embedded #"json" <error>)` — the recovered arena is still a well-formed embedded node.
 #[test]
 fn embedded_syntax_switch_never_panics_and_stays_wellformed_over_arbitrary_bodies() {
     // The embedded-syntax switch (`json{ … }` / `toml{ … }`) runs on UNTRUSTED body text — the raw
