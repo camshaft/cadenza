@@ -199,6 +199,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   result `Bool`; a non-`Bool` operand is `IllTyped CDZ0203`.
 * T1.6 — **tuple construction** (`ts:130-146`): `(tuple e…)` infers each element → `.tuple [τ…]` (arity
   is part of the type); an `IllTyped`/`Unsupported` element propagates.
+* T1.7 — **positional projection** (`ts:146`): `(. base i)` with an int index `i` yields the `i`-th
+  element type of `base`'s tuple; out-of-arity or a non-tuple base is `IllTyped CDZ0203`. A name index
+  (record field / member) is `Unsupported`.
 Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -286,6 +289,31 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let (τ, st') ← inferE m env acc.2 eid
                 pure (acc.1 ++ [τ], st')) ([], st)
             .ok (.tuple τs, st)
+          else if h == ".".toUTF8 && children.size == 3 then
+            -- T1.7 — positional TUPLE PROJECTION `(. base i)` where `i` is an INT literal (`ts:146`): infer
+            -- `base` as a tuple, then the `i`-th element type if `i < arity`, else out-of-arity is
+            -- `IllTyped CDZ0203`; a positional projection of a NON-tuple is also a type error (`CDZ0203`).
+            -- A NAME index (record-field / module-member access) is `Unsupported` until records/members are
+            -- modeled — a name index never decodes to an int (`Value.ofLeaf`), so it falls through cleanly.
+            match children[1]?, children[2]? with
+            | some baseId, some idxId =>
+              match (m.nodes[idxId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
+              | some l =>
+                (match Value.ofLeaf l with
+                 | some (.int n) =>
+                   if n < 0 then .error (.illTyped "CDZ0203")
+                   else do
+                     let (τb, st) ← inferE m env st baseId
+                     match applySubst st.subst τb with
+                     | .tuple τs => (match τs[n.toNat]? with
+                                     | some τ => .ok (τ, st)
+                                     | none => .error (.illTyped "CDZ0203"))
+                     | .never => .ok (.never, st)
+                     | _ => .error (.illTyped "CDZ0203")
+                 | _ => .error (.unsupported
+                     "type oracle: record-field / member projection not yet modeled"))
+              | none => .error (.unsupported "type oracle: malformed projection")
+            | _, _ => .error (.unsupported "type oracle: malformed projection")
           else .error (.unsupported
             "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
@@ -479,6 +507,24 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[8], .atom 1, .list #[10, 9, 7],          -- (def (main) …)
                            .atom 9, .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
                 root := 16 } == .illTyped "CDZ0203")
+-- T1.7 (projection): `(. (tuple 1 #t) 1)` → the element-1 type = Bool → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "tuple".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .boolLit true,
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (tuple 1 #t)
+                           .atom 3, .atom 5, .list #[4, 3, 5],            -- (. (tuple 1 #t) 1)
+                           .atom 2, .list #[7], .atom 1, .list #[9, 8, 6],-- (def (main) …)
+                           .atom 7, .atom 2, .list #[11, 12], .atom 0, .list #[14, 10, 13]],
+                root := 15 } == .wellTyped .bool)
+-- T1.7 (projection): `(. (tuple 1 #t) 5)` — index out of arity → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "tuple".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .boolLit true,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (tuple 1 #t)
+                           .atom 3, .atom 7, .list #[4, 3, 5],            -- (. (tuple 1 #t) 5)
+                           .atom 2, .list #[7], .atom 1, .list #[9, 8, 6],
+                           .atom 8, .atom 2, .list #[11, 12], .atom 0, .list #[14, 10, 13]],
+                root := 15 } == .illTyped "CDZ0203")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
