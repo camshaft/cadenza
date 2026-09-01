@@ -18,6 +18,10 @@ down from 2887 — ~1000 more cases now compile to cadenza as the landed slices 
 generic `Core node … : NODE` 72 · nested-match non-tuple sub-pattern 49 · fn-typed param `(-> ..)` 46+20+… ·
 newtype-value-from-construction-site 28 · payload-projection-over-non-tuple/record 22 · literal-payload-test
 non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Qty-value-from-construction-site 11.
+### generic-node bucket IDENTIFIED (node_ident scan, un-normalized): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2
+(binary-matching — coordinate owner) · ConstFloatNan 30 · ConstBytes 16 · Seq 15 · ConstFloatInf 8 · TrapDivZero 7
+· TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54. Left in
+this bucket: binary-matching (104, owner) · Seq 15 (re-measure post-HostCall) · Trap*/Poison (verify true-parity).
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -69,10 +73,14 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
   Ast decl rides along and discs re-derive consistently; the dangerous combo (decl dropped) is not reachable.
 - [ ] **`Core::Seq` — 41.** Entangled with effects (Seq ⟺ observable side-effects ⟺ HostCall); likely
   RESOLVED as a side effect of the HostCall build (emit `(do stmts… tail)`). Re-measure after HostCall.
-- [ ] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** An un-folded INTERNAL NaN/Inf node declines; emit the
-  `Float64.nan` / inf surface. VERIFY not shared (a NaN/Inf VALUE crossing the boundary is shared —
-  "no written value form"). Only the internal-node case is a gap.
-- [ ] **`ConstBytes` — 14.** A bytes constant value not re-emitted (`b"…"` literal). Emit the bytes literal.
+- [x] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** CLOSED #7298 (2fcda9acc3): re-emit the canonical value-form
+  leaves `Leaf::FloatNan` / `Leaf::FloatInf { negative:false }` (Core::ConstFloatInf is +∞). These leaves EXIST
+  (added w/ v-metaprogramming's Ast.Float reification) — the old core.rs "no written value form" comment was
+  STALE. NOT shared after all (wasm-OK + cadenza-declined = real GAP). RESIDUE: a non-`Float64`-width non-finite
+  float (`(. Float32 nan)`) still declines — a bare leaf can't carry the width; a later slice (mirrors the
+  finite ConstFloat width-ascription guard).
+- [x] **`ConstBytes` — 14.** CLOSED #7298 (2fcda9acc3): re-emit `Leaf::Bytes` (`b"…"`; shared `Arc<[u8]>`, no
+  copy), the twin of the `ConstStr`↔`"…"` path. Value A/B + full-corpus hop2 clean.
 - [x] **Str/Char literal-at-slot — (LitTest).** CLOSED #7242 (49e1d2a1a0). (Bytes/ListLen/MapHasKeys slot
   probes still decline, coded CDZ0900.)
 
