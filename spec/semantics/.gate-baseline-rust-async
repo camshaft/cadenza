@@ -5537,7 +5537,10 @@ pass	an out-of-range signed literal names its valid range in the diagnostic
 pass	an out-of-range unsigned literal names a range starting at zero
 pass	an outer Int64 let binder survives an inner String shadow of the same name
 pass	an outer definition references a sibling nested module by bare name
+pass	an outer effect in BOTH the resume value and next-state slot folds to 57 (asb)
 pass	an outer effect in a nested arm's RESUME-VALUE slot is served (as3)
+pass	an outer effect in a nested arm's next-state slot across THREE chained performs folds to 61 (as1)
+pass	an outer effect performed DIRECTLY in a nested arm's next-state slot folds to 6 (as2)
 pass	an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch
 pass	an outer perform LET-LIFTED out of the next-state slot folds strict (as7 workaround)
 pass	an over-ceiling SIGNED width far past the ceiling is rejected naming the written width
@@ -8835,9 +8838,6 @@ todo	an abortive perform in a recursive callee with a PENDING continuation in th
 todo	an effect bound to a peer routes a two-argument op to the boundary
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an escaping captured continuation is refused, not miscompiled
-todo	an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)
-todo	an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)
-todo	an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
 todo	bk2 one-byte-different inputs bare-compare unequal digests
 todo	bk3 runtime digests dedup as set members by content

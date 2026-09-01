@@ -2659,16 +2659,19 @@
   (output (: 100 Int64)))
 
 (case
-  "an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)"
+  "an outer effect performed DIRECTLY in a nested arm's next-state slot folds to 6 (as2)"
   (doc
-    "breaker as-family safe-decline. An inner handler arm whose NEXT-STATE slot performs an OUTER effect
-           directly — `(step (u) t (resume t (+ t (A.get))))` — was a confirmed SILENT MISCOMPILE: the
-           next-state threads forward as a state EXPRESSION, so the embedded `(A.get)` is DROPPED (a single
-           B.step discards the final slot state — returned 5, must be 6). The fold now DECLINES cleanly
-           (`next_state_directly_performs_foreign`) rather than emit a wrong value; the correct fold (run the
-           next-state foreign once at dispatch, thread its pure result) is a later increment that flips this
-           to 6. Contrast the HOST-delegated slot perform above, which is served (a host call is sequenced at
-           its evaluation point, not threaded through the state expression).")
+    "breaker as-family. An inner handler arm whose NEXT-STATE slot performs an OUTER effect directly —
+           `(step (u) t (resume t (+ t (A.get))))` — was once a silent miscompile (the next-state threads
+           forward as a state EXPRESSION, so the embedded `(A.get)` was DROPPED — returned 5, must be 6) and
+           then a clean decline. It now FOLDS correctly: `hoist_next_state_foreign_perform` lifts the
+           next-state foreign perform to a dispatch-time `let`-init before the resume — `(let ((_cdz_ns0
+           (A.get))) (resume t (+ t _cdz_ns0)))`, the proven value-equivalent as7 shape — so `(A.get)` runs
+           once per dispatch and its PURE result threads forward. Single B.step reads the seed 5, its
+           next-state runs A.get (5, A->6) → 5, body `(+ (* 10 0) …)`… trace: B.step reads t=0 → 0, next-state
+           `0 + (A.get)=5`; body `(+ (* 10 0) (A.get))` reads the advanced A=6 → `0 + 6` = 6. Contrast the
+           HOST-delegated slot perform above, served identically (a host call is sequenced at its evaluation
+           point, not threaded through the state expression).")
   (input
     (do
       (effect A (op get (-> Unit Int64)))
@@ -2787,13 +2790,15 @@
   (output (: 65 Int64)))
 
 (case
-  "an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)"
+  "an outer effect in a nested arm's next-state slot across THREE chained performs folds to 61 (as1)"
   (doc
-    "The multi-step face of the next-state-slot outer-perform decline: three chained `B.step` performs
-           re-splice the next-state expression, so the embedded outer `(A.get)` is DROPPED or DUPLICATED
-           across dispatches (returned 63, a value that fits no evaluation model). Same
-           `next_state_directly_performs_foreign` gate declines it cleanly; the correct fold is a later
-           increment (flips to 61).")
+    "The multi-DISPATCH face of the next-state-slot outer-perform fold: three chained `B.step` dispatches
+           each re-run the next-state's outer `(A.get)`. Once a silent miscompile / clean decline, it now
+           FOLDS via `hoist_next_state_foreign_perform` (the `let`-lift runs A.get once PER dispatch, threading
+           its pure result — the ordinary `_cdz_ns` binder name is load-bearing: a `#`-prefixed one trips the
+           fold's growing-state heuristics and mis-threads across dispatches). Over an A seed of 5, the three
+           B.step read 0, 5, 11 (each dispatch's next-state `(+ t (A.get))` bumps A: 5→6→7 read as 5,6,7), so
+           the body `(+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step)))` = `100·0 + (10·5 + 11)` = 61.")
   (input
     (do
       (effect A (op get (-> Unit Int64)))
@@ -2814,14 +2819,16 @@
   (output (: 61 Int64)))
 
 (case
-  "an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)"
+  "an outer effect in BOTH the resume value and next-state slot folds to 57 (asb)"
   (doc
     "The both-slots face: the outer effect is performed in BOTH the resume VALUE and the NEXT-STATE —
-           `(resume (A.get) (A.get))`. An earlier guard's `&& !value-performs-foreign` clause let this slip
-           past (both slots perform, so the negated conjunct was false) → it silently compiled to 56 while
-           the correct value is 57. The guard now reads the RAW resume next-state and declines whenever IT
-           performs a foreign op regardless of the value, closing the gap; the correct fold (57) is a later
-           increment.")
+           `(resume (A.get) (A.get))`. Once a silent 56 / clean decline, it now FOLDS to the correct 57:
+           `hoist_next_state_foreign_perform` lifts BOTH performs to `let`-inits, the VALUE's FIRST then the
+           next-state's — `(let ((_cdz_ns0 (A.get)) (_cdz_ns1 (A.get))) (resume _cdz_ns0 _cdz_ns1))` — so the
+           value-slot A.get sequences BEFORE the next-state's (value-then-next-state order is load-bearing: a
+           next-state-first order gives the wrong 67). Trace over A seed 5: the value A.get reads 5 (A→6), the
+           next-state A.get reads 6 (A→7); B.step returns the value 5; body `(+ (* 10 (B.step)) (A.get))` =
+           `10·5 + (A.get=7)` = 57.")
   (input
     (do
       (effect A (op get (-> Unit Int64)))

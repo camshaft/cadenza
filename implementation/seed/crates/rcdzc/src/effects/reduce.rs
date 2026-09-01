@@ -39,6 +39,15 @@ pub fn reduce_handle(
     // Build the operation→arm map, keyed by each arm's operation identity (read off the arm's op
     // projection's `(meta effect-op)`). An arm whose op is not an effect operation (a malformed arm) or
     // whose op the effect does not declare (CDZ0403 — reported elsewhere) makes the fold decline.
+    // The set of ops THIS handle discharges — an op NOT in it, performed by an arm body, is FOREIGN (an
+    // outer handler's effect). Computed up front so `hoist_next_state_foreign_perform` can classify a
+    // next-state perform without the (not-yet-built) `HandlerCtx`.
+    let mut discharged: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    for arm in arms {
+        if let Some((d, i)) = crate::eval::effect_op_of(db, arm.op) {
+            discharged.insert((d.0, i));
+        }
+    }
     let mut map = HashMap::default();
     for arm in arms {
         let (decl, idx) = crate::eval::effect_op_of(db, arm.op)?;
@@ -86,6 +95,22 @@ pub fn reduce_handle(
         // instead of copying the compound scrutinee into every continuation copy (super-linear emit → invalid
         // wasm). A pure syntactic identity; see `hoist_single_binder_match_scrutinee`.
         let arm = match hoist_single_binder_match_scrutinee(db, arm.body) {
+            Some(hoisted) => HandleArm {
+                op: arm.op,
+                params: arm.params.clone(),
+                state: arm.state,
+                cont: arm.cont,
+                body: hoisted,
+            },
+            None => arm,
+        };
+        // NEXT-STATE FOREIGN-PERFORM HOIST (as2/as1/asb): an arm whose tail resume NEXT-STATE performs an
+        // OUTER effect — `(resume t (+ t (A.get)))` — would drop/duplicate that perform if threaded as a
+        // symbolic state expression (the `next_state_directly_performs_foreign` decline). Lift each next-state
+        // foreign perform (and any resume-VALUE foreign perform, sequenced FIRST) to a dispatch-time `let`-init
+        // before the resume — the proven value-equivalent form — so the ordinary resumptive fold serves it.
+        // Byte-identical for a pure/served next-state (as3, the common case).
+        let arm = match hoist_next_state_foreign_perform(db, arm.body, &discharged) {
             Some(hoisted) => HandleArm {
                 op: arm.op,
                 params: arm.params.clone(),
