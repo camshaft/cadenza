@@ -5446,20 +5446,20 @@
             { [ -n "$s" ] && [ -n "$e" ]; } || { rm -rf "$out"/* ; exit 0; }
             dd if="${build}/emit.wasm" of="$out/result-type.ast" bs=1 skip=$((s)) count=$(( $((e)) - $((s)) )) status=none 2>/dev/null
           '';
-        # Per corpus file → the list of per-case extraction dirs (empty for skipped cases).
-        # FIRST-PROOF CAP: mkCorpusBuild is UNCACHED here (recompiles each case → wasm), and 01-literals +
-        # 06-numeric-model are ~1478 cases, so the full first build is prohibitively heavy. Cap the per-file case
-        # count to prove the pipeline e2e (extractor → manifest → runCorpus agree/skip) fast; REMOVE the cap
-        # (use the full `n`) to widen to the whole corpus for the real conformance check. TODO: widen post-proof.
-        wasmFirstProofCap = 12;
+        # Per corpus file → the list of per-case extraction dirs (empty for skipped cases). STEP A (uncapped):
+        # every case of the scoped scalar files. The FIRST-PROOF CAP is gone — the per-case emit.wasm builds are
+        # now cache-warm on cachix (corpus-emit-wasm-warm → cache-warm-emit-wasm.yml), so mkCorpusBuild is pulled,
+        # not recompiled. The mkWasmExtract layer (unbundle/print + cdz-compile -t cadenza + objdump/dd) still
+        # runs cold on the first full build (CA-cached after); v-lean-oracle chose momentum over pre-warming it,
+        # so the first uncapped run goes via `with-lease`. STEP B (later): widen `wasmOracleFiles` to the whole
+        # corpus once Step A is proven green at ~1478 cases.
         wasmExtractFileDirs = { name, file }:
           let
             shred = mkCorpusShred { inherit name file; };
             n = corpusCaseCount file;
-            n' = if n > wasmFirstProofCap then wasmFirstProofCap else n;
-            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n';
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
           in map (idx: mkWasmExtract { inherit name shred idx; build = mkCorpusBuild { inherit name shred idx; }; }) idxs;
-        # SCOPE (first cut): scalar-heavy corpus files so the initial differential run is tractable; widen to
+        # SCOPE (Step A): scalar-heavy corpus files so the initial differential run is tractable; widen to
         # `corpusFileNames` once the pipeline is proven green over these.
         wasmOracleFiles = [ "01-literals.sexp" "06-numeric-model.sexp" ];
         # The manifest v-lean-oracle's oracle-wasm-diff check reads: one line per per-case dir that HAS a
