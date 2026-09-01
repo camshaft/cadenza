@@ -561,6 +561,11 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
     }
 }
 
+// Gated with the other decline-campaign subcommands (host/world) — its dispatch arm is
+// `#[cfg(feature = "differential")]` (with a non-differential fallback), and it calls the gated
+// `write_declines`, so the fn itself must be gated too or a DEFAULT-feature `--all-targets` build reds
+// E0425 (write_declines not found). (Fix for a pre-existing default-feature clippy break.)
+#[cfg(feature = "differential")]
 fn cmd_module_declines(args: &[String]) -> ExitCode {
     let mut count: u64 = 2000;
     let mut seed: Option<u64> = None;
