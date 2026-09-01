@@ -1331,6 +1331,7 @@ pass	a bare 2-parameter user generic echoes both parameters
 pass	a bare Ast literal used as an arithmetic operand names the compile-time-metadata misuse
 pass	a bare BIGINT as op ARGUMENT — the arm does exact wide arithmetic on the crossed box
 pass	a bare Float width-constructor names the sized default with a replace fix
+pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion
 pass	a bare Int width-constructor names the sized default with a replace fix
 pass	a bare List constructor in a parameter type names the missing element argument
 pass	a bare Map constructor in a parameter type names its two missing arguments
@@ -1449,6 +1450,7 @@ pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep folds to 73 (adv-69 nh7 depth-3)
 pass	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep folds through the block (adv-69 a4-depth3)
 pass	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body folds through the block (adv-69 g3-nested)
+pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)
 pass	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body folds to 73 (adv-69 c3-nested sub-face)
 pass	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body folds through the block (adv-69 a4)
 pass	a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)
@@ -2672,6 +2674,7 @@ pass	a macro builds new syntax from its argument via quasiquote and the expansio
 pass	a macro may INTRODUCE a local binding in its expansion and reference it within that expansion
 pass	a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)
 pass	a macro may introduce a HELPER FUNCTION and its parameter resolves in the function's body
+pass	a macro may introduce a RECURSIVE helper function and its recursive self-call lowers + its parameter is inferred
 pass	a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)
 pass	a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)
 pass	a macro-introduced binder does NOT capture a caller identifier of the same name (hygiene, do-local def)
@@ -4014,6 +4017,8 @@ pass	a runtime full-width UInt64 subtraction that underflows traps rather than w
 pass	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
+pass	a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells
+pass	a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells
 pass	a runtime hole woven into a compound Ast is read back by a nested match
 pass	a runtime if-produced Bytes is length-measured with valid wasm
 pass	a runtime increment traps exactly at the maximum integer
@@ -6100,6 +6105,7 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	consuming a runtime Option Float32 (not returning it) leaves zero live objects
 pass	context that constrains a nullary variant's element makes Type.of concrete
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a NEGATIVE integer to a char yields None
@@ -8946,8 +8952,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)
-pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion
-pass	a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells
-pass	consuming a runtime Option Float32 (not returning it) leaves zero live objects
-pass	a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells

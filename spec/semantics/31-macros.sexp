@@ -154,6 +154,36 @@
   (output (: 105 Int64)))
 
 (case
+  "a macro may introduce a RECURSIVE helper function and its recursive self-call lowers + its parameter is inferred"
+  (doc
+    "The recursive twin of the helper case above (metaprogramming.md §Expansion Precedes And Feeds The
+           Core Guarantees): a macro introduces a do-local `(def (fact p) (if (> p 1) (* p (fact (- p 1)))
+           1))` — a RECURSIVE function — then calls it with the spliced caller argument. `(via-fn 5)`
+           expands to `(do (def (fact p) …) (fact 5))` and MUST evaluate to `120 : Int64`, exactly as the
+           post-expansion-equivalent hand-written `(do (def (fact p) …) (fact 5))` does. Post-expansion
+           equivalence is the core macro guarantee: expanded AST is compiled exactly as if written directly.
+           Pins TWO mechanisms a macro-spliced recursive def needs that a load-time def gets for free — the
+           spliced def is a FRESH post-load body absent from the load-time indexes:
+             (1) the recursive self-call `(fact (- p 1))` must lower to a `Core::Call`, which needs the
+                 spliced def registered as a callable (`register_reduced_callables` in `expand_macros`) —
+                 else `callee_def_index` misses it and it declines CDZ0900 'needs runtime specialization';
+             (2) the parameter `p` must be INFERRED (`solve_recursive_params`, A2), which needs `p`'s
+                 signature occurrence to resolve as a `Resolved::Param` — that goes through
+                 `resolve::is_param_occurrence`, which walks `parent_of`, so the spliced subtree's PARENT
+                 index must be populated (`expand_macros` rebuilds it after the splice) — else `p` resolves
+                 as an unbound `Poison`, `type_of`=`Any`, the solve never fires, and the recursive call
+                 declines 'a parameter whose type could not be inferred'.
+           (Was breaker-fenced `mrf1`; fixed by the two mechanisms above, both in `expand_macros`.)")
+  (input
+    (do
+      (def (via-fn (quote arg))
+        (quasiquote (do (def (fact p) (if (> p 1) (* p (fact (- p 1))) 1)) (fact (unquote arg)))))
+      (def (main) (via-fn 5))
+      (export main)))
+  (call main)
+  (output (: 120 Int64)))
+
+(case
   "a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)"
   (doc
     "Direction-2 hygiene (metaprogramming.md §Macros Are Hygienic): a name a macro INTRODUCES as a

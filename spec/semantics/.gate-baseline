@@ -3209,6 +3209,7 @@ pass	a macro builds new syntax from its argument via quasiquote and the expansio
 pass	a macro may INTRODUCE a local binding in its expansion and reference it within that expansion
 pass	a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)
 pass	a macro may introduce a HELPER FUNCTION and its parameter resolves in the function's body
+pass	a macro may introduce a RECURSIVE helper function and its recursive self-call lowers + its parameter is inferred
 pass	a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)
 pass	a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)
 pass	a macro-introduced binder does NOT capture a caller identifier of the same name (hygiene, do-local def)
