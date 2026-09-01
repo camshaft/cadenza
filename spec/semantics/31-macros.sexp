@@ -184,6 +184,30 @@
   (output (: 120 Int64)))
 
 (case
+  "a NESTED macro expansion (macro whose output calls another macro) introduces a recursive helper that lowers + infers"
+  (doc
+    "The multi-ROUND twin of the recursive-helper case above: expansion runs to a FIXPOINT
+           (metaprogramming.md §Expansion Runs In Phases To A Fixpoint), so a macro whose output CONTAINS
+           ANOTHER macro call is expanded in a LATER round. Here `wrap` expands to `(+ 0 (mkrec x))`, then
+           `mkrec` expands (a second round) to a do-local RECURSIVE `(def (fib n) …)` + `(fib x)`. The
+           inner recursive helper must STILL lower (its self-call → `Core::Call`) and infer its param,
+           exactly as a first-round recursive helper does — `(wrap 10)` must evaluate to `55 : Int64`
+           (`fib 10`). Pins that the reduced-callable registration (`register_reduced_callables`) reaches a
+           def spliced in a NON-FIRST round: the round-1 splice marks the (then plain) `(mkrec x)` call
+           node walked, so the round-2 re-splice into a do-block must UN-MARK that node before the walk,
+           else `collect_reduced_callables` returns early and the inner `fib` is never registered →
+           CDZ0900 on its self-call. (mrf1 nested-macro follow-up.)")
+  (input
+    (do
+      (def (mkrec (quote a))
+        (quasiquote (do (def (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib (unquote a)))))
+      (def (wrap (quote x)) (quasiquote (+ 0 (mkrec (unquote x)))))
+      (def (main) (wrap 10))
+      (export main)))
+  (call main)
+  (output (: 55 Int64)))
+
+(case
   "a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)"
   (doc
     "Direction-2 hygiene (metaprogramming.md §Macros Are Hygienic): a name a macro INTRODUCES as a

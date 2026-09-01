@@ -709,7 +709,15 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 // post-load body absent from the load-time `def_by_body` index — its recursive
                 // self-call would miss `callee_def_index` and decline CDZ0900. Register the spliced
                 // do-local callables now (mirrors the β-reduce inliner at eval.rs:1289 and specialize
-                // at call_lower.rs:2169).
+                // at call_lower.rs:2169). First UN-MARK `id` in the reduced-callable walk memo: a
+                // NESTED expansion (a macro whose output calls ANOTHER macro that introduces a
+                // recursive helper) overwrites `id`'s structure in a LATER round, but `id` was already
+                // marked walked in an earlier round when it was a plain call — so `collect_reduced_
+                // callables` would return early and never reach the freshly-spliced do-local def
+                // (CDZ0900 on the inner recursive helper). Only `id` is reused across the re-splice
+                // (the new subtree's other nodes are freshly appended, never walked), so removing just
+                // `id` lets the fresh structure be walked. (mrf1 nested-macro follow-up.)
+                db.reduced_callable_walked.remove(&id);
                 db.register_reduced_callables(id);
                 changed = true;
             }

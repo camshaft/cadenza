@@ -1,4 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
+fail	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
+fail	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -942,6 +945,7 @@ pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 pass	a NESTED const recursion — a recursive helper called per element inside a recursive build — folds
 pass	a NESTED float tuple as a SET element dedups by deep content
 pass	a NESTED list-of-lists-of-quantities used as a Map key canonicalizes and hits
+pass	a NESTED macro expansion (macro whose output calls another macro) introduces a recursive helper that lowers + infers
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 pass	a NESTED runtime bin match re-parses a bin-decoded payload
 pass	a NESTED sum-in-sum map key discriminates by the inner variant
@@ -3231,6 +3235,7 @@ pass	a non-tail conditional abort in the untaken branch folds to the pure siblin
 pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
+pass	a non-tail recursive abort abandons the pending frames and folds to the abort value (99)
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a non-type in a List element position names the element type
 pass	a non-type in a Map key position names the key type
@@ -3252,6 +3257,7 @@ pass	a not connective with a non-boolean operand is a type error
 pass	a not of a runtime conjunction computes the negated conjunction
 pass	a not-a-number leaf makes a compound unequal to the same compound with a finite leaf
 pass	a not-a-number value is unequal to a finite float
+pass	a nullary (Set.of) is an arity error, not a compiler crash
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple
 pass	a nullary constructor is a single-arity function taking unit
@@ -6505,6 +6511,7 @@ pass	eval on a runtime value in a let init gives the compile-time-AST teaching m
 pass	eval on a runtime value in a match scrutinee gives the compile-time-AST teaching message
 pass	eval on a runtime value in an arithmetic operand gives the compile-time-AST teaching message
 pass	eval on malformed AST traps
+pass	eval sees through macro expansion — a macro producing a (quote …) evals as the plain form
 pass	every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern
 pass	every arm of a three-variant enum match is exercised by RUNTIME calls
 pass	every not-a-number value is equal to every not-a-number value
@@ -6926,8 +6933,6 @@ pass	matching on string literals
 pass	mcs1 a mask covering a logical-shift's proven range is elided (value parity)
 pass	mcs2 a mask narrower than the shifted range still masks (not elided)
 pass	md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed
-fail	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
-fail	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 pass	mdi1 a PITCH-CLASS walker over MIDI notes — transpose shifts the held note answering its class mod twelve, octave answers the note divided by twelve, two fifths then a double-octave drop then a fourth and a tone walk the circle, and the seeds' classes rotate through DIFFERENT residues while the octave rows differ by the same offset
 pass	me1 a MIXED-endian frame crosses the dispatch boundary as an op ARGUMENT — the arm decodes big and little fields independently
 pass	me2 the arm RE-ENCODES its two decoded fields with SWAPPED endianness and the body decodes the swap
@@ -7060,7 +7065,6 @@ pass	mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the n
 pass	named member access on a List redirects to the List operation module
 pass	named member access on a Map redirects to the Map operation module
 pass	named member access on a Set redirects to the Set operation module
-pass	a nullary (Set.of) is an arity error, not a compiler crash
 pass	named member access on a String redirects to the String operation module
 pass	named member access on a sum redirects to a match template over its variants
 pass	named member access on a user sum spells its own variants and payload binders in the match template
@@ -8807,7 +8811,7 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
 todo	a non-tail cross-function conditional abort declines cleanly
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
-pass	a non-tail recursive abort abandons the pending frames and folds to the abort value (99)
+todo	a non-tail recursive abort declines rather than miscompiles
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)
 todo	a peer missing a bound op is rejected naming the op
@@ -8953,5 +8957,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
-pass	eval sees through macro expansion — a macro producing a (quote …) evals as the plain form
