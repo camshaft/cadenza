@@ -1408,14 +1408,24 @@ pub fn cdz_render_at(
     // cdz-run's render_val through it — `Leaf::FloatNan` → `nan` — and this Rust-gate render matches it,
     // retiring the old `NaN` spelling). Inline it (widening a Float32 to f64 first) so both gates agree.
     if ty == "Float64" || ty == "Float32" {
-        // `.clone() as f64` (not a bare `as f64`): the path may be a VALUE (`.0`, top-level `__r`) OR a
-        // `&f64` reference (a payload binder in a sum-render helper `match &v { Enum::Float(__p) => … }`
-        // binds `__p: &f64`), and `(&f64) as f64` is an invalid reference cast (E0606). `f64: Clone` +
-        // autoref makes `.clone()` yield an owned `f64` from either, then `as f64` is a no-op / a
-        // Float32→f64 widen. (Surfaced when `Ast` — a sum with a `Float` payload — became renderable once
-        // its `String` payload got a rep; the helper then hit the `&f64` cast.)
+        // `.clone()` (not a bare read): the path may be a VALUE (`.0`, top-level `__r`) OR a `&f{N}` reference
+        // (a payload binder in a sum-render helper `match &v { Enum::Float(__p) => … }` binds `__p: &f{N}`);
+        // `f{N}: Clone` + autoref yields an owned float from either (a bare `as` on a `&` is E0606).
+        //
+        // WIDTH-FAITHFUL (operator ruling): a `Float32` renders its OWN shortest round-trip (`28.29f32` →
+        // "28.29"), NOT the `f32 as f64` PROMOTION ("28.290000915527344" — a DIFFERENT number: 28.29 is the
+        // shortest decimal round-tripping to those 32 bits; the promoted f64 is the render of a different
+        // value). So Float32 keeps `f32` through to the format (Rust's `{}` on `f32` is the shortest f32
+        // decimal — matching wasm's `value_codec` `float32_leaf`); only Float64 renders as `f64`. The
+        // canonical-form logic (-0.0 sign, nan, whole→`N.0`, else shortest `{}`) is width-independent — `f32`
+        // and `f64` both have `is_sign_negative`/`is_nan`/`fract`/`is_finite` and shortest `Display`.
+        let bind = if ty == "Float32" {
+            format!("({path}).clone()") // stays f32 — NO promotion
+        } else {
+            format!("({path}).clone() as f64")
+        };
         return format!(
-            "{{ let __f = ({path}).clone() as f64; \
+            "{{ let __f = {bind}; \
              if __f == 0.0 && __f.is_sign_negative() {{ \"-0.0\".to_string() }} \
              else if __f.is_nan() {{ \"nan\".to_string() }} \
              else if __f.fract() == 0.0 && __f.is_finite() {{ format!(\"{{:.0}}.0\", __f) }} \
