@@ -134,7 +134,7 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty 1 (Ev.A 10)) 2 (Ev.B 7)))
+          (def m #map((= 1 (Ev.A 10)) (= 2 (Ev.B 7))))
           (match (Map.lookup m k) ((Some (A n)) (* n 10)) ((Some _) 7) ((None _u) 0))))
       (export main)))
   (call main (: 1 Int64))
@@ -744,7 +744,7 @@
       (def
         (main (: k Int64))
         (do
-          (def inv (Map.insert Map.empty 1 #record((= name "widget") (= qty k))))
+          (def inv #map((= 1 #record((= name "widget") (= qty k)))))
           (def r (Option.expect (Map.lookup inv 1) "slot"))
           (. (Record.extend (Record.without r (qty)) #"qty" (+ r.qty 5)) qty)))
       (export main)))
@@ -785,7 +785,7 @@
       (def
         (main (: k Int64))
         (do
-          (def inv (Map.insert Map.empty 1 #record((= name "widget") (= qty k))))
+          (def inv #map((= 1 #record((= name "widget") (= qty k)))))
           (def r (Option.expect (Map.lookup inv 1) "slot"))
           (+
             (* 10 (String.byte-len (. (Record.without r (qty)) name)))
@@ -859,8 +859,8 @@
       (def
         (main (: k Int64))
         (do
-          (def inner (Map.insert Map.empty 2 #record((= name "widget") (= qty k))))
-          (def outer (Map.insert Map.empty 1 inner))
+          (def inner #map((= 2 #record((= name "widget") (= qty k)))))
+          (def outer #map((= 1 inner)))
           (def r (Option.expect (Map.lookup (Option.expect (Map.lookup outer 1) "o") 2) "i"))
           (. (Record.extend (Record.without r (qty)) #"qty" (+ r.qty 5)) qty)))
       (export main)))
@@ -1953,10 +1953,10 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert Map.empty 1 #record((= x 10))))
+          (def m #map((= 1 #record((= x 10)))))
           (def r (Option.expect (Map.lookup m 1) "p"))
           (def wide (Record.extend r #"y" k))
-          (def m2 (Map.insert Map.empty 1 wide))
+          (def m2 #map((= 1 wide)))
           (+
             (* 100 (. (Option.expect (Map.lookup m2 1) "p") y))
             (. (Option.expect (Map.lookup m 1) "p") x))))
@@ -1983,10 +1983,10 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert Map.empty 1 #record((= x 10) (= y k))))
+          (def m #map((= 1 #record((= x 10) (= y k)))))
           (def r (Option.expect (Map.lookup m 1) "p"))
           (def slim (Record.without r (y)))
-          (def m2 (Map.insert Map.empty 1 slim))
+          (def m2 #map((= 1 slim)))
           (+
             (* 100 (. (Option.expect (Map.lookup m2 1) "p") x))
             (. (Option.expect (Map.lookup m 1) "p") y))))
