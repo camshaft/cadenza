@@ -73,11 +73,9 @@ fn unit_atom(b: &mut Builder) -> StructId {
     name_atom(b, "unit")
 }
 
-/// A float VALUE leaf, matching the old `display_float(*f as f64)`: NaN → `Leaf::FloatNan` (renders `nan` —
-/// the ONE canonical-form change from the old `NaN`), ±inf → `Leaf::FloatInf` (`inf`/`-inf`, = the old Rust
-/// `{}` fallthrough), else a `Decimal` from the f64 (integral → `N.0`, `-0.0` sign preserved) → the printer's
-/// `render_decimal`. Both Float32 and Float64 promote to f64 first (the old renderer did `*f as f64`), so a
-/// Float32 renders its f64-promoted shortest form (NOT `Decimal::from_f32`, which would diverge).
+/// A Float64 VALUE leaf: NaN → `Leaf::FloatNan` (renders `nan` — the ONE canonical-form change from the old
+/// `NaN`), ±inf → `Leaf::FloatInf` (`inf`/`-inf`, = the old Rust `{}` fallthrough), else a `Decimal` from the
+/// f64 (integral → `N.0`, `-0.0` sign preserved) → the printer's `render_decimal`.
 fn float_atom(b: &mut Builder, f: f64) -> StructId {
     if f.is_nan() {
         b.atom_leaf(Leaf::FloatNan)
@@ -89,6 +87,26 @@ fn float_atom(b: &mut Builder, f: f64) -> StructId {
         // `from_f64` is `Some` for every finite f64 (it declines only on non-finite, handled above).
         b.atom_leaf(Leaf::Float(
             Decimal::from_f64(f).expect("finite f64 has a Decimal"),
+        ))
+    }
+}
+
+/// A Float32 VALUE leaf rendered at the f32's OWN shortest decimal (`Decimal::from_f32` = `{:e}` on the
+/// binary32), NOT the f32→f64-PROMOTED shortest: promoting rendered `28.29` as `28.290000915527344` — a
+/// DIFFERENT number (operator ruling: "why would we promote the f32 to f64? those are different values
+/// entirely"). NaN/±inf as `float_atom`. Mirrors the wasm value_codec `float32_leaf`, the rcdzc const-fold
+/// value render (`const_value_ast` `from_f32`), and the Rust backend — the one-canonical shortest-f32
+/// (seq-283): a direct-return Float32 scalar now displays identically to a runtime-heap / const one.
+fn float32_atom(b: &mut Builder, f: f32) -> StructId {
+    if f.is_nan() {
+        b.atom_leaf(Leaf::FloatNan)
+    } else if f.is_infinite() {
+        b.atom_leaf(Leaf::FloatInf {
+            negative: f.is_sign_negative(),
+        })
+    } else {
+        b.atom_leaf(Leaf::Float(
+            Decimal::from_f32(f).expect("finite f32 has a Decimal"),
         ))
     }
 }
@@ -128,7 +146,7 @@ fn build_val(b: &mut Builder, v: &Val, ty: Option<(&Arenas, StructId)>) -> Struc
             value: IntValue::from_u128(*i as u128),
             radix: Radix::Dec,
         }),
-        Val::Float32(f) => float_atom(b, *f as f64),
+        Val::Float32(f) => float32_atom(b, *f),
         Val::Float64(f) => float_atom(b, *f),
         Val::Char(c) => b.atom_leaf(Leaf::Char(*c)),
         // A `Symbol` crosses as a WIT `string` (a `Val::String`); the guest result-type `Symbol` renders the
