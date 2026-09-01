@@ -722,6 +722,31 @@ fn emit_def(
                     .to_string(),
             ));
         }
+        // A def whose RESULT type is a NON-DEFAULT-width numeric — a non-`Float64` float (`Float32`) or a
+        // non-`Int64` int (`UInt*` / `Int8/16/32`) — but whose body's leaves keep the DEFAULT width (the
+        // type-solver fixed only the enclosing node, leaving the arm/operand literals `Deferred`/`Int64`).
+        // The emit renders those leaves BARE → on recompile the body re-grounds to the DEFAULT width, LOSING
+        // the intended narrow: `Float32` binary32 rounding (`0.1` vs `0.10000000149011612`) or a `UInt8`
+        // overflow trap (`(+ 200 100)` runs 300 instead of trapping) — 06-numeric. Re-ascribe the WHOLE body
+        // `(: <body> <result-ty>)` so the recompile's ascription concretizes the leaves to the narrow type.
+        // GATED to a `Core::Arith`/`Core::If` body: a `Core::Match`-lowered nested-if ascribed to a narrow
+        // FLOAT recompiles to INVALID WASM (a separate front-end gap — verified by reverting a broader
+        // attempt), and its f32-EXACT literal case passes un-ascribed anyway. Redundant-but-safe when the body
+        // is already the narrow type (recompile folds the ascription). Fully-solved result only.
+        Some(rt)
+            if rt.is_fully_solved()
+                && match &rt {
+                    Ty::Float(ft) => ft.ground_width() != 64,
+                    Ty::Int(it) => !(it.ground_signed() && it.ground_width() == 64),
+                    _ => false,
+                }
+                && matches!(core_of(db, body), Core::Arith { .. } | Core::If { .. }) =>
+        {
+            let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
+            let colon = b.name(":");
+            let ty_node = b.name(rt.render_name(&db.name_ctx()).as_str());
+            b.list(vec![colon, body_node, ty_node])
+        }
         _ => emit_expr(db, b, body, None, &mut env, emitted)?,
     };
     // If the body PERFORMED any host-delegated effect (a `Core::HostCall`), wrap it in ONE
