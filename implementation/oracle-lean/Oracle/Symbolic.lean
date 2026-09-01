@@ -803,7 +803,10 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.ctor "list".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
-      else if h == "set".toUTF8 then
+      else if h == "set".toUTF8 || h == "Set".toUTF8 then
+        -- lowercase `(set …)` = a SET LITERAL; CAPITAL `(Set …)` = the value-render form the `--target
+        -- cadenza` ROUNDTRIP emits (a const-folded set value renders with the module-name head "Set", NOT a
+        -- `#set`/setCtor node) — both are the same canonical set (v-cdz-smith #7412/#7371 roundtrip residual).
         -- a SET literal → `.ctor "set"`. When ALL elements are CONCRETE (incl COMPOUND list/tuple/record via
         -- `symElemToValue?`), CANONICALIZE via eval's own `canonSet` (sort + dedup) then rebuild the SymExpr
         -- form with `valueToSym` — so the symbolic value matches eval's canonicalized set AND set-REORDER
@@ -822,7 +825,9 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                            | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
                            | none => .sym (.ctor "set".toUTF8 elems))
            | none => .sym (.ctor "set".toUTF8 elems))
-      else if h == "map".toUTF8 then
+      else if h == "map".toUTF8 || h == "Map".toUTF8 then
+        -- lowercase `(map …)` = a MAP LITERAL; CAPITAL `(Map …)` = the roundtrip value-render form (a
+        -- const-folded map value renders with the module-name head "Map") — both the same canonical map.
         -- a MAP literal: each entry is `(k v)` or `(= k v)` (mirrors `evalMapLiteral`'s key/value parse).
         -- Model as `.ctor "map"` of one `.tuple #[key, value]` per entry. When ALL entries are const (key AND
         -- value), CANONICALIZE via eval's own `canonMap` (last-insert-wins per key + sort-by-key) so the
