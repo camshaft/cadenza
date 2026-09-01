@@ -19,28 +19,14 @@
 //! does not resolve is OMITTED from the list (the doc-item then gets no `(ty …)` — the graceful-degrade
 //! rule). TOTAL on decode: a malformed tree / wrong-shape form is skipped, never a crash.
 
-use crate::graft::copy_from;
-use cadenza_ast::ast::{Arenas, Builder, StructId};
+use cadenza_ast::ast::Arenas;
 
 /// Encode the exported-item → resolved-type map as the `KIND_EXPORT_TYPES` artifact bytes — ONE canonical
 /// binary AST value (see module docs). Each entry's `Arenas` is a standalone arena ROOTED at that export's
 /// type payload sub-AST (as the `rcdzc` producer extracts it); its root subtree is grafted verbatim into
 /// the shared response arena. Order is preserved. Round-trips with [`decode_export_types`].
 pub fn encode_export_types(entries: &[(String, Arenas)]) -> Vec<u8> {
-    let mut b = Builder::new();
-    let mut forms: Vec<StructId> = Vec::with_capacity(entries.len());
-    for (name, ty_arena) in entries {
-        let head = b.name("export-type");
-        let name_node = b.atom_leaf(cadenza_ast::ast::Leaf::Str(name.as_str().into()));
-        let payload = copy_from(&mut b, ty_arena, ty_arena.root);
-        forms.push(b.list(vec![head, name_node, payload]));
-    }
-    let et_head = b.name("export-types");
-    let mut children = Vec::with_capacity(forms.len() + 1);
-    children.push(et_head);
-    children.extend(forms);
-    let root = b.list(children);
-    cadenza_ast::codec::encode(&b.finish(root))
+    crate::ty_map_wire::encode("export-type", "export-types", entries)
 }
 
 /// Decode the `KIND_EXPORT_TYPES` bytes, DISTINGUISHING a legitimately-ABSENT section from a PRESENT-but-
@@ -50,28 +36,7 @@ pub fn encode_export_types(entries: &[(String, Arenas)]) -> Vec<u8> {
 /// decoded but wrong root → `Err`. The `Err` carries an actionable message. Twin of
 /// [`crate::result_types_wire::decode_result_types_checked`]; see the lenient [`decode_export_types`].
 pub fn decode_export_types_checked(bytes: &[u8]) -> Result<Vec<(String, Arenas)>, String> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    let a = cadenza_ast::codec::decode_detailed(bytes).map_err(|e| {
-        format!(
-            "export-types section is present ({} bytes) but failed to decode ({e:?}) — the compiler \
-             emitted a malformed/mismatched binary AST (decode-validity bug), not a typeless program",
-            bytes.len()
-        )
-    })?;
-    let Some(forms) = a.as_form(a.root, "export-types") else {
-        return Err(
-            "export-types section decoded but its root is not an `export-types` form — \
-             present-but-wrong-shape compiler output (decode-validity bug)"
-                .to_string(),
-        );
-    };
-    Ok(forms
-        .to_vec()
-        .iter()
-        .filter_map(|&f| decode_one(&a, f))
-        .collect())
+    crate::ty_map_wire::decode_checked("export-type", "export-types", bytes)
 }
 
 /// Decode the `KIND_EXPORT_TYPES` bytes back into export name → standalone type arena pairs — the inverse
@@ -82,15 +47,6 @@ pub fn decode_export_types_checked(bytes: &[u8]) -> Result<Vec<(String, Arenas)>
 /// [`decode_export_types_checked`] instead.
 pub fn decode_export_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
     decode_export_types_checked(bytes).unwrap_or_default()
-}
-
-fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
-    let tail = a.as_form(form, "export-type")?;
-    let name = a.as_str(*tail.first()?)?.to_string();
-    let payload = *tail.get(1)?;
-    let mut b = Builder::new();
-    let root = copy_from(&mut b, a, payload);
-    Some((name, b.finish(root)))
 }
 
 #[cfg(test)]

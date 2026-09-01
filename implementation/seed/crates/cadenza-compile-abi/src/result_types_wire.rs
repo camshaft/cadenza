@@ -19,8 +19,7 @@
 //! `(-> …)` / `(Sum …)` / `(Record …)` / `(List …)` / scalar payload `encode_ty_payload` builds. TOTAL on
 //! decode: a malformed / wrong-shape form is skipped, never a crash.
 
-use crate::graft::copy_from;
-use cadenza_ast::ast::{Arenas, Builder, StructId};
+use cadenza_ast::ast::Arenas;
 
 /// Encode the export→result-type map as the `KIND_RESULT_TYPES` artifact / `cdz-result-type` section
 /// bytes — ONE canonical binary AST value (see module docs). Each entry's `Arenas` is a standalone arena
@@ -28,20 +27,7 @@ use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// `encode_ty_payload`); its root subtree is grafted verbatim into the shared response arena. Order is
 /// preserved. Round-trips with [`decode_result_types`].
 pub fn encode_result_types(entries: &[(String, Arenas)]) -> Vec<u8> {
-    let mut b = Builder::new();
-    let mut forms: Vec<StructId> = Vec::with_capacity(entries.len());
-    for (name, ty_arena) in entries {
-        let head = b.name("result-type");
-        let name_node = b.atom_leaf(cadenza_ast::ast::Leaf::Str(name.as_str().into()));
-        let payload = copy_from(&mut b, ty_arena, ty_arena.root);
-        forms.push(b.list(vec![head, name_node, payload]));
-    }
-    let rt_head = b.name("result-types");
-    let mut children = Vec::with_capacity(forms.len() + 1);
-    children.push(rt_head);
-    children.extend(forms);
-    let root = b.list(children);
-    cadenza_ast::codec::encode(&b.finish(root))
+    crate::ty_map_wire::encode("result-type", "result-types", entries)
 }
 
 /// Decode the `KIND_RESULT_TYPES` bytes, DISTINGUISHING a legitimately-ABSENT section from a PRESENT-but-
@@ -57,28 +43,7 @@ pub fn encode_result_types(entries: &[(String, Arenas)]) -> Vec<u8> {
 ///
 /// The `Err` carries an actionable message for the fail-loud path. See the lenient [`decode_result_types`].
 pub fn decode_result_types_checked(bytes: &[u8]) -> Result<Vec<(String, Arenas)>, String> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    let a = cadenza_ast::codec::decode_detailed(bytes).map_err(|e| {
-        format!(
-            "result-types section is present ({} bytes) but failed to decode ({e:?}) — the compiler \
-             emitted a malformed/mismatched binary AST (decode-validity bug), not a typeless program",
-            bytes.len()
-        )
-    })?;
-    let Some(forms) = a.as_form(a.root, "result-types") else {
-        return Err(
-            "result-types section decoded but its root is not a `result-types` form — \
-             present-but-wrong-shape compiler output (decode-validity bug)"
-                .to_string(),
-        );
-    };
-    Ok(forms
-        .to_vec()
-        .iter()
-        .filter_map(|&f| decode_one(&a, f))
-        .collect())
+    crate::ty_map_wire::decode_checked("result-type", "result-types", bytes)
 }
 
 /// Decode the `KIND_RESULT_TYPES` bytes back into export name → standalone type-arena pairs — the inverse
@@ -91,19 +56,10 @@ pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
     decode_result_types_checked(bytes).unwrap_or_default()
 }
 
-fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
-    let tail = a.as_form(form, "result-type")?;
-    let name = a.as_str(*tail.first()?)?.to_string();
-    let payload = *tail.get(1)?;
-    let mut b = Builder::new();
-    let root = copy_from(&mut b, a, payload);
-    Some((name, b.finish(root)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cadenza_ast::ast::{Builder, Leaf};
+    use cadenza_ast::ast::{Builder, Leaf, StructId};
 
     /// A standalone type-payload arena rooted at `root_build`'s node — as the producer extracts one
     /// export's `encode_ty_payload` subtree.
