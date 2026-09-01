@@ -1644,6 +1644,24 @@ pub fn render_value(bytes: &[u8]) -> Result<String, JsError> {
     String::from_utf8(text).map_err(|_| JsError::new("decoded value was not valid UTF-8"))
 }
 
+/// Render an EMBEDDED canonical binary AST to a text SURFACE — the guide's `(cdz …)` inline-Cadenza tag
+/// renders its base64-decoded binary-AST subtree per-surface for the auto-toggle, WITHOUT re-parsing text
+/// (binary-AST is THE exchange format; one canonical render). `to` is the surface name (`ml`/`sexpr`/…);
+/// `kind` is the fragment grammatical role the sibling tags carry (`expr` for `(cdz …)`, `type` for
+/// `(cdz-type …)`, `pattern` for `(cdz-pat …)`) — see [`convert::FragmentKind`]. Generalizes
+/// [`render_value`] (which is binary→sexpr only) to any surface + fragment kind.
+#[wasm_bindgen]
+pub fn render_binary(bytes: &[u8], to: &str, kind: &str) -> Result<String, JsError> {
+    let to = parse_format(to)?;
+    let kind = convert::FragmentKind::parse(kind).ok_or_else(|| {
+        JsError::new(&format!(
+            "unknown fragment kind: {kind} (expected expr|type|pattern)"
+        ))
+    })?;
+    convert::render_binary(bytes, to, kind, Default::default())
+        .map_err(|e| JsError::new(&format!("render binary -> {}: {}", to.name(), e.0)))
+}
+
 /// Emit the program as Rust SOURCE — the compiler's second backend. Cadenza is target-neutral above
 /// the backend seam, so the same typed core lowers to a self-contained `.rs` module (one `pub fn` per
 /// export). `is_async` selects the ASYNC, gas-metered calling convention (every emitted function is an

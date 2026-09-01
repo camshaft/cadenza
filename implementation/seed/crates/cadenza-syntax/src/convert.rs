@@ -339,9 +339,133 @@ fn utf8(input: &[u8]) -> Result<&str, ConvertError> {
     std::str::from_utf8(input).map_err(|_| ConvertError("input is not valid UTF-8".into()))
 }
 
+/// The grammatical KIND of an embedded Cadenza FRAGMENT, supplied by the author (the guide's `(cdz …)` /
+/// `(cdz-type …)` / `(cdz-pat …)` sibling tags) and threaded to [`render_binary`]. Cadenza's reader parses
+/// a fragment UNIFORMLY to faithful binary-AST — a `(Tuple Int64 Iter)` is the SAME application-shaped AST
+/// whether the author means it as a value or a type — so the grammatical role is a RENDER-time property
+/// (positional in a full program), and a STANDALONE fragment must be TOLD which surface role to render in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FragmentKind {
+    /// An expression fragment (the default + by far the most frequent): value / application / member /
+    /// list-or-record with rest. Rendered by the ordinary canonical printer.
+    Expr,
+    /// A type fragment — rendered in TYPE position (`(Tuple Int64 Iter)` → the idiomatic type surface, not
+    /// the ctor-application `Tuple(Int64, Iter)`). INCREMENT-1: renders via the ordinary printer (faithful
+    /// AST, not yet the idiomatic type surface); the idiomatic render is a follow-up increment.
+    Type,
+    /// A pattern fragment — rendered in PATTERN position. A list/record WITH a rest already round-trips as
+    /// an expr; a bare standalone spread cannot be backed (it has no meaning outside its construction).
+    /// INCREMENT-1: renders via the ordinary printer (follow-up makes it idiomatic where it differs).
+    Pattern,
+}
+
+impl FragmentKind {
+    /// Parse the kind name carried on the tag→codegen→render wire (`expr` / `type` / `pattern`).
+    pub fn parse(name: &str) -> Option<FragmentKind> {
+        match name {
+            "expr" => Some(FragmentKind::Expr),
+            "type" => Some(FragmentKind::Type),
+            "pattern" | "pat" => Some(FragmentKind::Pattern),
+            _ => None,
+        }
+    }
+}
+
+/// Render a canonical binary-AST document to a text SURFACE string — the binary→surface direction the
+/// guide's `(cdz …)` inline tag (rendering an EMBEDDED AST per-surface for the auto-toggle) and the general
+/// AST-to-string refactor tool need. Decodes the binary AST, then prints it via the canonical per-surface
+/// printer (binary-AST is THE exchange format — one canonical render, NO text re-parse). `surface` is a
+/// text surface (`Sexpr`/`Ml`/…); `kind` selects the FRAGMENT render mode (see [`FragmentKind`]).
+///
+/// INCREMENT-1: `Expr` is the fully-canonical printer (turnkey for value/application/member/list-record
+/// fragments). `Type`/`Pattern` currently render through the SAME canonical printer — a FAITHFUL AST render,
+/// but not yet the idiomatic type-/pattern-position surface; the idiomatic render is a follow-up increment,
+/// so a caller wanting the idiomatic TYPE surface must not rely on `Type` until then. The `kind` is threaded
+/// now so the interface (and its `cdz-wasm` binding) is stable for consumers to wire against immediately.
+pub fn render_binary(
+    bytes: &[u8],
+    surface: Format,
+    kind: FragmentKind,
+    opts: Options,
+) -> Result<String, ConvertError> {
+    let arenas = read(bytes, Format::Binary)?;
+    // INCREMENT-1: every kind renders via the ordinary canonical printer (`write_with`). `Expr` is exact;
+    // `Type`/`Pattern` idiomatic rendering is the follow-up increment (this is the seam it will branch at).
+    let _ = kind;
+    let out = write_with(&arenas, surface, opts)?;
+    String::from_utf8(out)
+        .map_err(|e| ConvertError(format!("surface render is not valid UTF-8: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_binary_decodes_and_prints_the_canonical_surface() {
+        // render_binary is the binary→surface direction (guide `(cdz …)` tag + AST-to-string refactor tool):
+        // decode the canonical binary AST, then print via the canonical per-surface printer — byte-identical
+        // to `write_with` on the decoded arena, and NO text re-parse. Pin it for both surfaces + the kinds.
+        let arenas = crate::sexpr::read("(module m (def (main) (: 42 Int64)) (export main))")
+            .expect("sexpr parses");
+        let bytes = crate::codec::encode(&arenas);
+        let decoded = read(&bytes, Format::Binary).expect("decodes the binary AST");
+
+        // Sexpr surface == the canonical sexpr pretty printer on the decoded arena.
+        let expect_sexpr =
+            String::from_utf8(write_with(&decoded, Format::Sexpr, Options::default()).unwrap())
+                .unwrap();
+        assert_eq!(
+            render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Expr,
+                Options::default()
+            )
+            .unwrap(),
+            expect_sexpr,
+            "render_binary(Sexpr, Expr) is the canonical sexpr render of the decoded AST"
+        );
+        // ML surface == the canonical ML printer on the decoded arena.
+        let expect_ml =
+            String::from_utf8(write_with(&decoded, Format::Ml, Options::default()).unwrap())
+                .unwrap();
+        assert_eq!(
+            render_binary(&bytes, Format::Ml, FragmentKind::Expr, Options::default()).unwrap(),
+            expect_ml,
+            "render_binary(Ml, Expr) is the canonical ML render of the decoded AST"
+        );
+        // INCREMENT-1: Type/Pattern render faithfully via the same canonical printer (no panic; idiomatic
+        // type/pattern surface is the follow-up increment).
+        assert_eq!(
+            render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Type,
+                Options::default()
+            )
+            .unwrap(),
+            expect_sexpr,
+            "increment-1: Type renders faithfully via the canonical printer"
+        );
+        assert_eq!(
+            render_binary(
+                &bytes,
+                Format::Ml,
+                FragmentKind::Pattern,
+                Options::default()
+            )
+            .unwrap(),
+            expect_ml,
+            "increment-1: Pattern renders faithfully via the canonical printer"
+        );
+        // The tag→codegen→render kind wire spelling.
+        assert_eq!(FragmentKind::parse("expr"), Some(FragmentKind::Expr));
+        assert_eq!(FragmentKind::parse("type"), Some(FragmentKind::Type));
+        assert_eq!(FragmentKind::parse("pattern"), Some(FragmentKind::Pattern));
+        assert_eq!(FragmentKind::parse("pat"), Some(FragmentKind::Pattern));
+        assert_eq!(FragmentKind::parse("nope"), None);
+    }
 
     #[test]
     fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
