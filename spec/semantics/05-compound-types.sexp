@@ -35186,18 +35186,21 @@
   (call main)
   (output (: 3 Int64)))
 
-; TODO fence (idealistic; DESIGN §6 last-writer-wins): a record spread whose fields OVERLAP an inline field
-; should let the LATER (left-to-right) writer win. `#record((.. r) (= x 9))` with r={x:1,y:2}: the spread
-; comes first (x=1,y=2), then the inline x=9 overrides -> x=9, y=2, so m.x + m.y = 11. Currently DECLINES
-; CDZ0211 (Record.merge requires DISJOINT field sets; a last-writer-wins overlap needs a merge variant that
-; does not exist yet — routed as a follow-up). Auto-flips when a last-wins record merge lands.
+; A record spread whose fields OVERLAP an inline field is LAST-WRITER-WINS (DESIGN §6): the LATER
+; (left-to-right) write wins. `#record((.. r) (= x 9))` with r={x:1,y:2}: the spread comes first (x=1,y=2),
+; then the inline x=9 overrides -> x=9, y=2, so m.x + m.y = 11. UNLIKE the explicit `Record.merge` op
+; (which requires DISJOINT field sets, type-system.md), a construction spread is a distinct feature that
+; takes the later writer — the desugar's synthesized merge is tagged so the disjointness CDZ0211 is skipped
+; for it while the `Core`/type layers take the last operand's value. Works on wasm and rust.
 (case
-  "a record construction spread with an overriding field is last-writer-wins (should-work)"
+  "a record construction spread with an overriding field is last-writer-wins"
   (doc
-    "Idealistic TODO fence (operator: spread supports all collections, DESIGN §6 last-writer-wins). The
-     spread and a later inline field name the SAME field; the LATER (inline) write should win. Declines
-     CDZ0211 today — Record.merge is disjoint-only; a last-writer-wins record merge is the missing piece.
-     Routed as a follow-up (v-ast-compound / record row-ops). Auto-flips when that merge lands.")
+    "A record construction spread is LAST-WRITER-WINS on an overlapping field (DESIGN §6; operator: spread
+     supports all collections). The spread and a later inline field name the SAME field; the LATER (inline)
+     write wins (x=9 here). This is the construction-spread feature, distinct from the explicit
+     `Record.merge` op whose field sets must be DISJOINT (type-system.md) — the spread-synthesized merge is
+     tagged so the disjointness CDZ0211 is skipped for it, and the union type + lowering take the later
+     value.")
   (input
     (do
       (def (main)
@@ -35208,6 +35211,22 @@
       (export main)))
   (call main)
   (output (: 11 Int64)))
+
+; The reverse order — an inline field FOLLOWED by a spread that RE-DEFINES it — also takes the later
+; writer: the SPREAD wins. `#record((= x 9) (.. r))` with r={x:1,y:2}: inline x=9 first, then spread r
+; overrides x -> x=1, y=2, so m.x + m.y = 3. Confirms last-writer-wins regardless of which side is inline.
+(case
+  "a record construction spread after an inline field overrides it (spread wins)"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def r #record((= x k) (= y 2)))
+          (def m #record((= x 9) (.. r)))
+          (+ m.x m.y)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64)))
 
 ; TODO fence (idealistic; DESIGN §6): a MAP construction spread `#map((= k v) (.. m))` should merge m's
 ; entries last-writer-wins. Currently DECLINES — unlike list/set/record, a map has DYNAMIC keys, so it

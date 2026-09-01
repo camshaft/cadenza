@@ -1494,7 +1494,13 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // own fault surfaces via the descent.
                 collect(db, args[0], out);
                 collect(db, args[1], out);
-                if let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+                // A merge SYNTHESIZED by a record construction spread is last-writer-wins on an overlapping
+                // field (DESIGN §6), so SKIP the disjointness fault for it — the union type + the lowering
+                // already take the later operand's value. An EXPLICIT `Record.merge` (not tagged) keeps the
+                // spec's disjoint-field requirement (type-system.md §Two Records … Disjoint).
+                if !db.record_spread_merge_nodes.contains(&id)
+                    && let (Ty::Record(a), Ty::Record(b)) =
+                        (type_of(db, args[0]), type_of(db, args[1]))
                 {
                     for k in a.keys() {
                         if b.contains_key(k) {
