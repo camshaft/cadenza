@@ -2675,4 +2675,29 @@ theorem denote_normalize_ite (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr) 
           · have hplain := normalize_ite_plain c t e h1 h2 hnm1 hnm2 (by simpa using hg)
             exact denote_normalize_ite_plain_step ρ w c t e ihc iht ihe hplain v h
 
+/-! ### Restricted-capstone COMPOUND cases (value-form under a denote-totality restriction). The value-form
+motive `denote e = value v → denote (normalize e) = value v` is FALSE for a `.tuple`/`.record` with an
+ill-typed (non-value-denoting) element — e.g. `(tuple (if <non-bool> true false))` denotes to a poison
+element while its normal form (`(tuple c)`) denotes to `c`'s value. So these cases need the RESTRICTION
+that every element denotes to a value (`hval`); the value-form element IH (`ih`) + `hval` then reconstruct
+the EQUALITY element IH that the unconditional `denote_normalize_tuple`/`_record` lemmas consume. These are
+the compound cases of the top-level restricted `denote.induct` capstone. -/
+theorem denote_normalize_tuple_value (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) (v : Value)
+    (ih : ∀ x ∈ es, ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u)
+    (hval : ∀ x ∈ es, ∃ u, denote ρ w x = .value u)
+    (h : denote ρ w (.tuple es) = .value v) :
+    denote ρ w (normalize (.tuple es)) = .value v := by
+  rw [denote_normalize_tuple ρ w es (fun x hx => by
+    obtain ⟨u, hu⟩ := hval x hx; rw [ih x hx u hu, hu])]
+  exact h
+
+theorem denote_normalize_record_value (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray × SymExpr)) (v : Value)
+    (ih : ∀ x ∈ fs, ∀ u, denote ρ w x.2 = .value u → denote ρ w (normalize x.2) = .value u)
+    (hval : ∀ x ∈ fs, ∃ u, denote ρ w x.2 = .value u)
+    (h : denote ρ w (.record fs) = .value v) :
+    denote ρ w (normalize (.record fs)) = .value v := by
+  rw [denote_normalize_record ρ w fs (fun x hx => by
+    obtain ⟨u, hu⟩ := hval x hx; rw [ih x hx u hu, hu])]
+  exact h
+
 end Oracle
