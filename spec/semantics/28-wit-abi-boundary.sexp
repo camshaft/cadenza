@@ -4505,3 +4505,26 @@ cases
   (call f (: 5 Int64))
   (output (: (Some b"hi") (Option Bytes)))
   (live-objects known-leak))
+
+(case
+  "a result<record,record> EXPORT result crosses — BOTH arms carry a compound payload"
+  (doc
+    "SHAPE 81 - a typed `result<record{a}, record{b}>` EXPORT result: BOTH the Ok and Err arms carry a COMPOUND (record) payload. `canon_write_of`'s Result arm (#7217) recurses into the Record arm for EACH arm's payload — the both-compound case (SHAPE 75 had a scalar err arm). Ok{a=x} for x>0, Err{b=-x} otherwise; x=5 -> Ok{a=5}. Value-correct + 0-leak reclaim rides #7226 (the def result handle is dropped after the write). KNOWN-LEAK pin kept for parity with the SpillRecord-result family (now over-specified since #7226; a follow-up tightens the family).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          f
+          (func (param x (s64)) (result (result (record (= a (s64))) (record (= b (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def
+        (f (: x Int64))
+        (if (> x 0) (Result.Ok #record((= a x))) (Result.Err #record((= b (- 0 x))))))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: (Ok #record((= a 5))) (Result (Record (: a Int64)) (Record (: b Int64)))))
+  (live-objects known-leak))
