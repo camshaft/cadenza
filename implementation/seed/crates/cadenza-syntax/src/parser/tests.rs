@@ -480,54 +480,13 @@ fn arena_shapes() {
 // — plus ml/12 nullary-member, ml/14-24 (prim/list/option/result/variant/enum-flags/record members). The
 // builder-EQUIVALENCE claim (parse == the S1 programmatic builders) is the separate `inline_world_*` tests.
 
-#[test]
-fn a_docd_world_carries_the_doc_but_its_interfaces_are_identity_stable() {
-    // A `///` doc on a world attaches as a `(doc …)` child right after the name (round-trip), same as
-    // `effect`/`type`. The doc is SURFACE metadata, NOT part of the world's identity: `world_schema_
-    // tree` (the identity constructor) takes no docs, so the identity is over the INTERFACE children
-    // only. Pin that a doc'd world and its undocumented twin have byte-identical INTERFACE structure —
-    // the invariant the compile arm's `parse_target_world` relies on when it skips doc heads (so a
-    // documented world keeps the same `wit_world` as its undocumented twin; coordinated w/ v-compiler-ml
-    // 2026-08-12). This guards the docs-vs-identity boundary from the syntax side.
-    let doc = parse_ok("/// a reducer world\nworld W = | export i = | m : () -> u8");
-    let plain = parse_ok("world W = | export i = | m : () -> u8");
-    let dw = doc.as_form(doc.root, "world").expect("world form");
-    let pw = plain.as_form(plain.root, "world").expect("world form");
-    // The doc'd world carries a leading `(doc …)` after the name; the plain one does not.
-    assert_eq!(doc.as_name(dw[0]), Some("W"));
-    assert!(
-        doc.as_form(dw[1], "doc").is_some(),
-        "doc node attaches after the name"
-    );
-    assert!(
-        plain.as_form(pw[1], "doc").is_none(),
-        "no doc on the plain world"
-    );
-    // The IDENTITY-bearing part — the interfaces (children after name, skipping any doc) — matches
-    // between the two worlds. The doc'd world's interfaces are children[2..] (past the doc);
-    // the plain world's are children[1..]. Assert same count + pairwise structural equality, so the
-    // identity computed over the non-doc children is doc-independent (what parse_target_world relies
-    // on when it skips doc heads).
-    let doc_ifaces: Vec<StructId> = dw[1..]
-        .iter()
-        .copied()
-        .filter(|&c| doc.as_form(c, "doc").is_none())
-        .collect();
-    let plain_ifaces: Vec<StructId> = pw[1..].to_vec();
-    assert_eq!(
-        doc_ifaces.len(),
-        plain_ifaces.len(),
-        "same interface count once the doc is skipped"
-    );
-    for (&d, &p) in doc_ifaces.iter().zip(plain_ifaces.iter()) {
-        assert_eq!(
-            crate::sexpr::print_from(&doc, d),
-            crate::sexpr::print_from(&plain, p),
-            "each identity-bearing interface matches its undocumented twin"
-        );
-    }
-}
-
+// `a_docd_world_carries_the_doc_but_its_interfaces_are_identity_stable` (a `///` doc on a world attaches
+// as a `(doc …)` child right after the name — like effect/type — and the interface children are unchanged
+// vs the undocumented twin) MIGRATED to the spec/syntax corpus (parser-corpus inc-8): ml/548-world-doc,
+// `/// a reducer world` + `world W = …` -> `(world W (doc "a reducer world") (export i (member m (func
+// (result (u8))))))`. The observable doc-node placement is pinned by the golden; its interfaces are
+// byte-identical to the plain world twins (ml/12-24), so the doc-independent-identity invariant the compile
+// arm relies on is a structural consequence of the two goldens (no cross-parse comparison needed here).
 #[test]
 fn inline_world_surface_encodes_identically_to_the_world_schema_tree_builder() {
     // THE cross-source identity guarantee: the inline `world …` surface must lower to the EXACT SAME
@@ -665,36 +624,15 @@ fn inline_pure_fold_world_encodes_identically_to_the_kernel_artifact_form() {
     );
 }
 
-#[test]
-fn world_nullary_member_elides_the_param_list() {
-    // A nullary member `now : () -> Timestamp` (or `now : -> Timestamp`) yields a func with zero
-    // params but an always-present result — matching `wit_func_sig(&[], …)`.
-    let a = parse_ok("world Clock = | export c = | now : () -> Timestamp");
-    let iface = a
-        .as_form(a.as_form(a.root, "world").unwrap()[1], "export")
-        .unwrap();
-    let func = a
-        .as_form(a.as_form(iface[1], "member").unwrap()[1], "func")
-        .unwrap();
-    assert_eq!(func.len(), 1, "zero params, just the result sub-node");
-    assert!(a.as_form(func[0], "result").is_some());
-}
-
-#[test]
-fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
-    // `world` is CONTEXTUAL — only `world <name> =` heads a decl. A bare `world` used as a variable
-    // (a let binding, a reference) MUST stay an ordinary name so the common word is not burned.
-    let a = parse_ok("let world = 5 in world + 1");
-    // The body reads `world` as a plain name, not a `(world …)` decl — no `world`-headed form at root.
-    assert!(
-        a.as_form(a.root, "world").is_none(),
-        "a bare `world` must not parse as a world declaration"
-    );
-    // And `world` alone as an expression is just the name.
-    let b = parse_ok("world");
-    assert_eq!(b.as_name(b.root), Some("world"));
-}
-
+// `world_nullary_member_elides_the_param_list` (a nullary member `now : () -> Timestamp` yields a func
+// with zero params + the always-present result) MIGRATED to the spec/syntax corpus: byte-subsumed by
+// ml/12-world-nullary-member (`world Clock = | export c = | now : () -> Timestamp` -> `(world Clock (export
+// c (member now (func (result Timestamp)))))` — the func node is `(func (result …))`, no param sub-node).
+//
+// `bare_world_is_still_an_ordinary_name_not_a_world_decl` (`world` is CONTEXTUAL — only `world <name> =`
+// heads a decl; a bare `world` used as a value stays an ordinary name) MIGRATED to the spec/syntax corpus
+// (parser-corpus inc-8): ml/549-world-contextual-keyword, `let world = 5 in world + 1` -> `(let ((world 5))
+// (+ world 1))` — `world` binds + is referenced as a plain name, never a `(world …)` decl.
 // `handle_promotes_effect_and_seed_with_state_last` + `handle_stateless_seed_elides_to_unit` +
 // `host_delegation_builds_effect_list` (the effect-handling surface: `handle E(seed) with | op(params…) =>
 // body in expr` promotes the effect NAME + seed to the head, the arm op is BARE, and the LAST arm binder is
