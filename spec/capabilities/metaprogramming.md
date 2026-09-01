@@ -139,7 +139,7 @@ A name a macro introduces MUST NOT capture a name at the macro's use site unless
 
 A name a macro introduces MUST NOT be captured by a name at the macro's use site unless the macro explicitly requests it.
 
-Hygiene MUST be realized by tracking the set of scopes an identifier carries, so that a name's binding is resolved by its scope set rather than by its spelling alone.
+Hygiene MUST be realized by tracking, for each identifier, binding-relevant provenance beyond its spelling — at minimum whether the identifier was introduced by a macro or spliced from the macro's use site — so that a name's binding is resolved by that provenance rather than by its spelling alone. The set of scopes an identifier carries is one such provenance; recording, per macro splice, each name's introduce-site or use-site origin — renaming introduced binders and marking introduced references accordingly — is another.
 
 ### Expansion Runs In Phases To A Fixpoint
 
