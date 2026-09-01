@@ -1429,52 +1429,13 @@ fn a_malformed_embedded_body_is_a_recovered_error_not_a_panic() {
     );
 }
 
-#[test]
-fn embedded_node_spans_are_document_coordinates_that_slice_back_to_the_embedded_source() {
-    // LSP-transparency: an embedded region's nodes keep their OWN spans, shifted into the OUTER
-    // document's coordinates — so a cursor inside a `json{ … }` body resolves to the exact JSON node,
-    // not the whole region. Assert every grafted node's span is a valid in-bounds slice of the OUTER
-    // source (not the body), and that a known interior leaf's span slices to its literal text.
-    let src = r#"json{ {"key": 42} }"#;
-    let p = read_ml(src);
-    assert!(p.ok(), "parses clean: {:?}", p.errors);
-    let a = &p.arenas;
-    let spans = &p.spans;
-    // Every node's span is a valid slice of the OUTER document source (geometry preserved through the
-    // offset shift — the whole point is these are document coordinates, safe to slice for an editor).
-    for id in (0..a.structure.len() as u32).map(StructId) {
-        let sp = spans.get(id).expect("total span table");
-        assert!(
-            sp.start <= sp.end
-                && sp.end <= src.len()
-                && src.is_char_boundary(sp.start)
-                && src.is_char_boundary(sp.end),
-            "embedded node {id:?} span {sp:?} is not a valid slice of the outer source {src:?}"
-        );
-    }
-    // The `42` value leaf inside the JSON must span the literal `42` IN THE OUTER SOURCE (offset, not
-    // body-relative). Find it: the embedded subtree is emb[1]; walk to the number leaf.
-    let emb = a.as_form(a.root, "embedded").expect("root is (embedded …)");
-    // The subtree root is a JSON object `(object (member "key" 42))`-ish; locate the leaf whose outer
-    // span slices to "42".
-    let mut found_42 = false;
-    for id in (0..a.structure.len() as u32).map(StructId) {
-        if let crate::ast::Struct::Atom(lid) = a.get(id)
-            && matches!(a.leaf(*lid), Leaf::Int { .. })
-        {
-            let sp = spans.get(id).unwrap();
-            assert_eq!(
-                &src[sp.start..sp.end],
-                "42",
-                "the JSON number leaf's span must slice to `42` in the OUTER source"
-            );
-            found_42 = true;
-        }
-    }
-    assert!(found_42, "the embedded JSON `42` leaf was grafted");
-    let _ = emb;
-}
-
+// `embedded_node_spans_are_document_coordinates_that_slice_back_to_the_embedded_source` (LSP-transparency:
+// an embedded region's grafted nodes keep OUTER-document coordinates, so a cursor in a `json{ … }` body
+// resolves to the exact JSON node — every node's span is a valid outer-source slice, and the interior `42`
+// leaf slices to `42` in the OUTER source, offset-remapped, not body-relative) MIGRATED to the spec/syntax
+// corpus (parser-corpus inc-8) via `spans.txt`: ml/547-embedded-node-spans-document-coordinates,
+// `json{ {"key": 42} }` -> spans.txt pins the `42` leaf at `14:16 42` (outer offsets) plus a valid
+// in-bounds span for every grafted node — the span-golden IS the outer-coordinate-slice assertion.
 #[test]
 fn an_unterminated_embedded_region_recovers_without_panicking() {
     // No closing `}` at all — the scanner reports an unterminated region, consumes to end, and emits a
