@@ -1753,6 +1753,23 @@ fn emit_elem_grounding_empty_list(
             return Ok(format!("Vec::<{rust_elem}>::new()"));
         }
     }
+    // A generic-sum CONSTRUCTION whose SLOT type carries an UNCONSTRAINED type arg — a bare `(Ok x)` / `(None)`
+    // whose Err / element type the checker left FREE because the value is DISCARDED (List.len'd, stored in a
+    // record/list only its length is read, …) — emits e.g. `Ok(22016)` : `Result<i64, _>`, which rustc cannot
+    // infer in a slot with no downstream use (E0282 "type annotations needed"; wasm needs no such
+    // materialization). The `target` IS the checker's SOLVED field/element/payload slot type; a free var there
+    // is GENUINELY free — a record/tuple/sum-payload slot is a DIRECT construction, not a join (a join threads
+    // the SOLVED join type as the target — `Core::If`'s result annotation — so grounding is a no-op there and
+    // never conflicts with a sibling). GROUND the slot's free vars and PIN the construction with a type
+    // ascription so the emitted enum is fully typed. Only a DIRECT `SumNew` value with a free-var target — a
+    // non-sum value, or a fully-solved target, is byte-identical to before (this only annotates the E0282 tail).
+    if let Some(t) = target
+        && matches!(core_of(db, id), Core::SumNew { .. })
+        && t.has_free_var()
+        && let Some(rt) = types::rust_type(&db.name_ctx(), &types::ground_open_vars(t))
+    {
+        return Ok(format!("{{ let __v: {rt} = {a}; __v }}"));
+    }
     Ok(a)
 }
 

@@ -481,6 +481,32 @@ pub(super) fn ground_open_vars(ty: &Ty) -> Ty {
                 .map(ground_open_vars)
                 .collect::<std::rc::Rc<[Ty]>>(),
         ),
+        // A GENERIC sum / nominal carries its instantiation in `args` — an unconstrained arg (a bare `(Ok x)`
+        // whose Err the checker left free, or a `Box` over an unsolved element) is a `Ty::Var` NESTED in
+        // `args`, which the old (no-Sum/Nominal) walk left ungrounded — so a `Result<i64, _>` in a discarded
+        // value emitted an ambiguous type (E0282). Recurse into `args` (and a nominal's derived `inner`) so
+        // the grounded type is fully concrete. `decl` (the identity) is unchanged.
+        Ty::Sum { decl, args } => Ty::Sum {
+            decl: *decl,
+            args: args.iter().map(ground_open_vars).collect::<std::rc::Rc<[Ty]>>(),
+        },
+        Ty::Nominal { decl, args, inner } => Ty::Nominal {
+            decl: *decl,
+            args: args.iter().map(ground_open_vars).collect::<std::rc::Rc<[Ty]>>(),
+            inner: std::rc::Rc::new(ground_open_vars(inner)),
+        },
+        // A record's field types can likewise nest a free var (a `(Ok x)` field of a discarded record).
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
+            fields
+                .iter()
+                .map(|(k, t)| (k.clone(), ground_open_vars(t)))
+                .collect(),
+        )),
+        // A Qty erases to its inner magnitude — ground the inner, keep the unit.
+        Ty::Qty { inner, unit } => Ty::Qty {
+            inner: Box::new(ground_open_vars(inner)),
+            unit: unit.clone(),
+        },
         _ => ty.clone(),
     }
 }
