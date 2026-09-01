@@ -4577,6 +4577,7 @@ fn gate_one_case(
                         &rec,
                         i,
                         std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some(),
+                        &t.expect,
                     );
                     run_program(
                         tools,
@@ -4688,7 +4689,37 @@ enum Grade {
 /// case's verdict is the combination of its trials' verdicts: `Fail` if ANY trial fails (the actionable
 /// disagreement wins, tagged with which trial), else `Todo` if any trial is todo (the whole case is
 /// only as "done" as its least-done trial — a partially-declining case is not a live guard), else
-/// `Pass`. The common single-trial case grades exactly as before.
+/// Does a trial's recorded `expect` denote a HEAP-FREE SCALAR return (so its live-cell residual must
+/// be 0)? Only an `output` trial returning a bare scalar — an integer/float/bool/char/identifier — owns
+/// NO live heap after the run, so its expected balance is unambiguously 0 regardless of the call args.
+///
+/// A HEAP-OWNING return (`#list`/`#map`/`#set`/`#bytes`/a string/a `(…)`/`{…}`/`[…]` compound, i.e. any
+/// value whose rendering starts with `#`/`(`/`"`/`{`/`[`) has a NONZERO reachable-return count that a
+/// single case-level `(live-objects 0)` clause can't express per-trial (arg 5 of a "runtime-selected
+/// empty-or-nonempty list" returns `#list(5)` = a live 1-element list, NOT a leak). Such a trial is NOT
+/// a per-trial 0-check candidate. A non-`output` expect (trap/error/reject) returns no value → also not
+/// a candidate. Erring toward NOT-a-candidate is the safe direction: a missed scalar leak just goes
+/// uncaught (under-admit), whereas a wrongly-applied 0-check on a heap return would RED a correct case.
+fn trial_expect_is_scalar_return(expect: &str) -> bool {
+    let Some(rest) = expect.strip_prefix("output ") else {
+        return false;
+    };
+    // The value is either bare (`output 42`) or in the resource-escape form (`output (: 42 Int64)`).
+    let rest = rest.trim_start();
+    let value = rest.strip_prefix("(:").map(str::trim_start).unwrap_or(rest);
+    match value.chars().next() {
+        // Heap / compound value renderings.
+        Some('#' | '(' | '"' | '{' | '[') => false,
+        // Bare scalar literals: numbers, sign, char, bool / nullary-identifier.
+        Some(c)
+            if c.is_ascii_digit() || matches!(c, '-' | '+' | '\'') || c.is_ascii_alphabetic() =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The live-objects check to apply to trial `i` of a case.
 ///
 /// Trial 0 always uses the recorded check. For a LATER trial the DEFAULT gate skips the balance
@@ -4698,15 +4729,21 @@ enum Grade {
 /// trials still grade their value/trap outcome.
 ///
 /// Under `--guarded-all` (the memory-safety escape-verification mode) the MUST-RECLAIM-TO-0 checks
-/// (opt-out `Default` and explicit `Expect(0)`) ALSO apply to every later trial: a non-leak heap case
-/// must fully reclaim on EVERY call, and a residual on a later call is a genuine leak the trial-0-only
-/// rule was HIDING (breaker's PAIRWISE/tree/PASCAL class — arg1 is the clean call, the leaks are on
-/// later args). A positive `Expect(n>0)` residual still can't be expressed per-trial (different args
-/// return different-sized heap values), so it stays first-trial-only; `known-leak` stays `Off`. The
+/// (opt-out `Default` and explicit `Expect(0)`) ALSO apply to every later trial whose return is a
+/// HEAP-FREE SCALAR (`trial_expect_is_scalar_return`): a scalar-returning heap case must fully reclaim
+/// on EVERY call, and a residual on a later call is a genuine leak the trial-0-only rule was HIDING
+/// (breaker's PAIRWISE/tree/PASCAL class — arg1 is the clean call, the leaks are on later args). A
+/// later trial that RETURNS a heap value (its reachable-return count is nonzero and unknowable from a
+/// single clause) is skipped, as is a positive `Expect(n>0)` residual; `known-leak` stays `Off`. The
 /// strictness is CONFINED to guarded-all (a manual CLI mode, not in the required nix gate) so the
 /// DEFAULT corpus gate baseline is unchanged — no fleet flip — while the monitor stops missing
 /// later-trial leaks.
-fn live_objects_for_trial(rec: &CorpusRecord, i: usize, guarded_all: bool) -> LiveObjectsCheck {
+fn live_objects_for_trial(
+    rec: &CorpusRecord,
+    i: usize,
+    guarded_all: bool,
+    trial_expect: &str,
+) -> LiveObjectsCheck {
     let check = LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak);
     if i == 0 {
         return check;
@@ -4716,6 +4753,7 @@ fn live_objects_for_trial(rec: &CorpusRecord, i: usize, guarded_all: bool) -> Li
             check,
             LiveObjectsCheck::Default | LiveObjectsCheck::Expect(0)
         )
+        && trial_expect_is_scalar_return(trial_expect)
     {
         check
     } else {
@@ -4729,8 +4767,12 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let live_objects =
-                live_objects_for_trial(rec, i, std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some());
+            let live_objects = live_objects_for_trial(
+                rec,
+                i,
+                std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some(),
+                &t.expect,
+            );
             run_program(
                 tools,
                 store,
@@ -7101,54 +7143,94 @@ mod trap_grading_tests {
             live_objects: count,
             live_objects_known_leak: known_leak,
         };
-        // Trial 0 always uses the recorded check, regardless of mode.
+        let scalar = "output (: 42 Int64)"; // heap-free return
+        let heap = "output (: #list(5) (List Int64))"; // owns a live 1-element list
+        // Trial 0 always uses the recorded check, regardless of mode / return shape.
         let expect_zero = rec(Some(0), false);
         let default_heap = rec(None, false); // opt-out default = must reclaim to 0
         let expect_residual = rec(Some(3), false);
         let leaker = rec(None, true);
         for guarded in [false, true] {
-            assert!(matches!(
-                live_objects_for_trial(&expect_zero, 0, guarded),
-                LiveObjectsCheck::Expect(0)
-            ));
-            assert!(matches!(
-                live_objects_for_trial(&default_heap, 0, guarded),
-                LiveObjectsCheck::Default
-            ));
-            assert!(matches!(
-                live_objects_for_trial(&leaker, 0, guarded),
-                LiveObjectsCheck::Off
-            ));
+            for expect in [scalar, heap] {
+                assert!(matches!(
+                    live_objects_for_trial(&expect_zero, 0, guarded, expect),
+                    LiveObjectsCheck::Expect(0)
+                ));
+                assert!(matches!(
+                    live_objects_for_trial(&default_heap, 0, guarded, expect),
+                    LiveObjectsCheck::Default
+                ));
+                assert!(matches!(
+                    live_objects_for_trial(&leaker, 0, guarded, expect),
+                    LiveObjectsCheck::Off
+                ));
+            }
         }
         // DEFAULT gate: every LATER trial skips the balance (baseline unchanged, no fleet flip).
         assert!(matches!(
-            live_objects_for_trial(&expect_zero, 1, false),
+            live_objects_for_trial(&expect_zero, 1, false, scalar),
             LiveObjectsCheck::Off
         ));
         assert!(matches!(
-            live_objects_for_trial(&default_heap, 2, false),
+            live_objects_for_trial(&default_heap, 2, false, scalar),
             LiveObjectsCheck::Off
         ));
-        // GUARDED-ALL: the must-reclaim-to-0 checks (Expect(0) + Default) apply to EVERY later trial —
-        // this is what catches a leak on arg2/arg3 that arg1 (trial 0) does not.
+        // GUARDED-ALL: the must-reclaim-to-0 checks (Expect(0) + Default) apply to a later trial with a
+        // SCALAR return — this is what catches a leak on arg2/arg3 that arg1 (trial 0) does not.
         assert!(matches!(
-            live_objects_for_trial(&expect_zero, 1, true),
+            live_objects_for_trial(&expect_zero, 1, true, scalar),
             LiveObjectsCheck::Expect(0)
         ));
         assert!(matches!(
-            live_objects_for_trial(&default_heap, 2, true),
+            live_objects_for_trial(&default_heap, 2, true, scalar),
             LiveObjectsCheck::Default
         ));
-        // GUARDED-ALL: a POSITIVE residual (Expect(n>0)) can't be expressed per-trial (different args
-        // return different-sized heap values) → stays first-trial-only, and known-leak stays Off.
+        // GUARDED-ALL: a later trial that RETURNS A HEAP VALUE is SKIPPED (its reachable-return count is
+        // nonzero — the parameterized-export empty-or-nonempty list/map/set false-positive class).
         assert!(matches!(
-            live_objects_for_trial(&expect_residual, 1, true),
+            live_objects_for_trial(&expect_zero, 1, true, heap),
             LiveObjectsCheck::Off
         ));
         assert!(matches!(
-            live_objects_for_trial(&leaker, 1, true),
+            live_objects_for_trial(&default_heap, 2, true, heap),
             LiveObjectsCheck::Off
         ));
+        // GUARDED-ALL: a POSITIVE residual (Expect(n>0)) can't be expressed per-trial → first-trial-only;
+        // known-leak stays Off — both regardless of return shape.
+        assert!(matches!(
+            live_objects_for_trial(&expect_residual, 1, true, scalar),
+            LiveObjectsCheck::Off
+        ));
+        assert!(matches!(
+            live_objects_for_trial(&leaker, 1, true, scalar),
+            LiveObjectsCheck::Off
+        ));
+
+        // The scalar-return classifier itself.
+        for s in [
+            "output (: 42 Int64)",
+            "output (: -5 Int64)",
+            "output (: 3.14 Float64)",
+            "output (: true Bool)",
+            "output (: 'a' Char)",
+            "output 42",
+        ] {
+            assert!(trial_expect_is_scalar_return(s), "expected scalar: {s}");
+        }
+        for h in [
+            "output (: #list(5) (List Int64))",
+            "output (: #map((= 5 5)) (Map Int64 Int64))",
+            "output (: #set(5) (Set Int64))",
+            "output (: \"hi\" String)",
+            "output (: (tuple 1 2) (Tuple Int64 Int64))",
+            "trap \"boom\"",
+            "error CDZ0101",
+        ] {
+            assert!(
+                !trial_expect_is_scalar_return(h),
+                "expected non-scalar: {h}"
+            );
+        }
     }
 
     #[test]
