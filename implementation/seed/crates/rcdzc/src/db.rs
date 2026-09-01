@@ -1564,6 +1564,13 @@ pub struct Db {
     /// same node, so `(Int 64)` denotes ONE module however many times it is written or demanded.
     pub(crate) build_cache: crate::fxhash::FxHashMap<BuildKey, StructId>,
 
+    /// Memo of the CONSTRUCTION-SPREAD desugar for a spread-bearing `#record((= f v) (.. r) …)` node — the
+    /// synthesized `(Record.merge …)` fold that `lower`/`type_of`/`collect` all delegate to. Synthesized
+    /// ONCE per record node (it reuses + reparents the original entry/operand occurrences; re-synthesizing
+    /// would repoint their parents repeatedly), so every demand returns the SAME fold node. Keyed by the
+    /// record node id; `Some(fold)` iff that node is a record with a spread child.
+    pub(crate) record_spread_desugar: crate::fxhash::FxHashMap<StructId, StructId>,
+
     /// Memo of the static recursion analysis (`eval::is_recursive`): for a function BODY occurrence,
     /// whether that function is (transitively) recursive — a call whose callee reaches the same body.
     /// A pure function of the fixed def/`let` structure, so it caches by body `StructId` like
@@ -3129,6 +3136,7 @@ impl Db {
             reached_clipped: false,
             synth_name_origin: crate::fxhash::FxHashMap::default(),
             build_cache: crate::fxhash::FxHashMap::default(),
+            record_spread_desugar: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             escape_verdict_memo: crate::fxhash::FxHashMap::default(),
