@@ -723,18 +723,10 @@ fn a_deep_glued_unit_chain_is_diagnosed_not_an_unbounded_arena() {
 // (: x a)) x)`, ml/136-forall-param-multi-desugars, ml/137-forall-param-already-canonical `def id(a: Type, x:
 // a) = x` (BYTE-IDENTICAL tree to ml/135, pinning the pure-sugar equivalence). This test keeps ONLY the
 // value-position error guard below (a reserved-keyword diagnostic — out of the parse-tree/fmt corpus scope).
-#[test]
-fn a_bare_value_position_forall_is_a_reserved_keyword_error() {
-    // `forall` is a RESERVED keyword (like `as`): recognized in type position, never a bare value
-    // name — a value-position `forall` is the usual "keyword outside its form" error.
-    let bare = read_ml("forall");
-    assert!(
-        !bare.ok() && bare.errors.iter().any(|e| e.message.contains("keyword")),
-        "a bare value-position `forall` is a reserved-keyword error: {:?}",
-        bare.errors
-    );
-}
-
+// `a_bare_value_position_forall_is_a_reserved_keyword_error` (`forall` is reserved — a bare value-position
+// `forall` is a "keyword outside its form" error) MIGRATED to the spec/syntax corpus (parser-corpus b94):
+// ml/493-reserved-forall-bare-value pins the decline of `forall` with error.txt "keyword used outside its
+// form" (its companion ml/494-reserved-as-bare-value covers `as`).
 // `infix_ascription_rhs_beginning_with_forall_is_a_type_not_an_expression` (a NESTED, expression-position
 // infix `:` ascription whose RHS begins with `forall` parses the RHS as a TYPE, keeping a `(forall …)` node —
 // distinct from a PARAM-annotation forall which desugars to `(: a Type)`, ml/135-140) MIGRATED to the
@@ -1160,40 +1152,12 @@ fn recovered_arena_invariants_hold_on_arbitrary_input() {
 // `f(a b)` is a VALID quantity parse `f((Qty.of a (Unit.of #b)))`, not a missing comma — but `1 2` cannot
 // be a unit, so it stays an unambiguous missing separator.)
 
-#[test]
-fn an_unterminated_literal_names_its_specific_cause() {
-    // A lexer ERROR token in expression position (an unterminated literal run to end-of-input) used
-    // to read as the generic "expected an expression" — misdirecting, since the token IS where an
-    // expression starts; the real defect is the unclosed literal. Each opener now names its cause,
-    // the ML-surface twin of the s-expr reader's "unterminated string".
-    for (src, needle) in [
-        ("def f() = \"abc", "unterminated string literal"),
-        ("def f() = b\"abc", "unterminated byte-string literal"),
-        ("def f() = #\"abc", "unterminated symbol literal"),
-        ("def f() = `abc", "unterminated backtick name"),
-    ] {
-        let p = read_ml(src);
-        assert!(!p.ok(), "{src:?} is rejected");
-        assert!(
-            p.errors.iter().any(|e| e.message.contains(needle)),
-            "{src:?} names {needle:?}, not the generic message: {:?}",
-            p.errors
-        );
-        assert!(
-            !p.errors
-                .iter()
-                .any(|e| e.message == "expected an expression"),
-            "{src:?} does not fall back to the generic message: {:?}",
-            p.errors
-        );
-    }
-    // A well-terminated string is unaffected (no spurious error).
-    assert!(
-        read_ml("def f() = \"abc\"").ok(),
-        "a closed string parses clean"
-    );
-}
-
+// `an_unterminated_literal_names_its_specific_cause` (each unterminated-literal opener names its SPECIFIC
+// cause — not the generic "expected an expression") MIGRATED to the spec/syntax corpus (parser-corpus b95):
+// ml/495-unterminated-string-literal, ml/496-unterminated-byte-string-literal, ml/497-unterminated-symbol-
+// literal, ml/498-unterminated-backtick-name — each a decline whose error.txt pins the specific cause
+// (which, being present, IS the "not the generic message" guarantee). The closed-string no-false-reject is
+// covered by the well-formed string cases (ml/25, ml/514).
 // `missing_comma_in_list_recovers` (`[1 2 3]` — every element is recovered despite the missing `,`, into
 // the native `#list(1 2 3)` ctor) MIGRATED to the spec/syntax corpus (parser-corpus): ml/503-list-missing-
 // comma pins the DECLINE (error.txt `expected \`,\``) AND — via the new `recovered.sexp` recovery-golden
