@@ -4745,6 +4745,17 @@ fn ty_float_walkable_seen(db: &mut Db, ty: &Ty, seen: &mut Vec<crate::ast::Struc
             let elem = (**elem).clone();
             ty_float_walkable_seen(db, &elem, seen)
         }
+        // A MAP — walkable iff its KEY is an ord-key (so keys compare by `==`: an Int/String/… natively, a
+        // float KEY via the `Eq` `__CdzF64` wrapper) AND its VALUE is walkable. Reached only when the Map is
+        // NOT already native-`Eq` (a float / float-carrying VALUE — a float KEY alone keeps the Map native-`Eq`
+        // via the wrapper, #7419, and takes the `==` fast-path). `emit_value_eq_walk`'s Map arm zips the sorted
+        // `(k, v)` pairs: keys by `==`, the value by the value walk (a float value by canonical byte form —
+        // `{5: NaN} == {5: NaN}`, matching wasm's map value-eq, NOT `BTreeMap`'s derived `PartialEq`).
+        Ty::Map(k, v) => {
+            let k = (**k).clone();
+            let v = (**v).clone();
+            types::ty_is_ord_key(db, &k) && ty_float_walkable_seen(db, &v, seen)
+        }
         // A SUM whose payloads carry a Float and/or a List (so it is NOT already native-Eq — that path was
         // taken above) — walkable iff every variant's payload is. `emit_value_eq_walk` renders a Sum through
         // a generated recursive helper `fn __eq_<Ident>` (call-indirection), so a self-referential sum (e.g.
@@ -5112,6 +5123,22 @@ fn emit_value_eq_walk_seen(
             let elem_cmp = emit_value_eq_walk_seen(db, &elem, "__le", "__re", seen, helpers)?;
             Ok(format!(
                 "({l}.len() == {r}.len() && {l}.iter().zip({r}.iter()).all(|(__le, __re)| {elem_cmp}))"
+            ))
+        }
+        // A MAP reaches this walk ONLY when its VALUE is not native-`Eq` (a float value, or a compound
+        // carrying one) — a `Map` whose value IS `Eq` took the `==` fast-path above. The KEY is always an
+        // ord-key (hence `Eq`: a float key is the `__CdzF64` wrapper, canonical), so keys compare by `==`;
+        // the VALUE is a RAW slot (`f64` for a float value), walked so a NaN/-0.0 value compares by the
+        // canonical byte form (matching wasm's map value-eq — `{5: NaN} == {5: NaN}`), NOT `BTreeMap`'s
+        // derived `PartialEq` (which would give the wrong NaN answer). Both `BTreeMap`s iterate in sorted
+        // KEY order, so equal maps yield the same `(k, v)` sequence: equal lengths + every zipped pair with
+        // equal key and value-walk-equal value. (No `Set` arm here — a `Set` is always native-`Eq`, closes
+        // its element via the ord-wrapper, so it never reaches this walk.)
+        Ty::Map(_k, v) => {
+            let vty = (**v).clone();
+            let val_cmp = emit_value_eq_walk_seen(db, &vty, "__lv", "__rv", seen, helpers)?;
+            Ok(format!(
+                "({l}.len() == {r}.len() && {l}.iter().zip({r}.iter()).all(|((__lk, __lv), (__rk, __rv))| __lk == __rk && ({val_cmp})))"
             ))
         }
         // A NOMINAL newtype is transparent — its Rust value IS the inner, so walk the inner over the same
