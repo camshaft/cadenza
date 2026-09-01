@@ -1126,9 +1126,17 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 ))
             }
             Core::SumNew { .. } => Core::Break { value: operand },
-            // The boundary break for a RUNTIME operand is a later brick; until then the message names
-            // the current limit (seq-280: the "later" intent stays here in the comment).
-            _ => Core::Poison(Reject::decline(
+            // A RUNTIME `?` operand reaching THIS generic path (not the `lower_let` runtime-`?` short-circuit,
+            // which DOES build the `MatchSum` boundary break for a single-binding `(let ((x (try e))) body)` /
+            // the surface `let x = e? in …`). It fires for a runtime `?` OUTSIDE that let-binding-tail context
+            // — a `do (def x (try e)) …` whose user-node try leaks its decline through the def-body/emit
+            // collection (the do-def↔let routing divergence, tracked), or a bare `(try e)` in a non-tail
+            // position. CODED CDZ0900 (`UnsupportedConstruct`, seq-286: a reachable decline carries a code —
+            // it was formerly a bare codeless `Reject::decline`). Message text UNCHANGED so the shared
+            // `TRY_RUNTIME_OPERAND_DECLINE_PREFIX` dedup (drop this weaker sibling when infer's CDZ0203
+            // non-fallible reject names an ill-typed operand) still matches. Still a decline (`is_decline`),
+            // so that dedup — gated on `is_decline` — is unaffected.
+            _ => Core::Poison(Reject::unsupported(
                 "the `?`/`try` operator lowers only a constant operand",
             )),
         },
