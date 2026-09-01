@@ -1090,7 +1090,11 @@
               # xtask now deps xtask-support (the shared foundation lib — content_address/hash_tree moved
               # there). xtask-support's own closure is cadenza-ast + cdz-contract + itself (cdz-contract deps
               # cadenza-ast; sha2 is external).
-              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" "xtask-support" ];
+              # TRANSIENT closure growth (v-xtask-decompose): the cdz-corpus-grade dep (→ cadenza-syntax
+              # family + cadenza-compile-abi) is a remove-at-gate-delete transient — the in-process
+              # gate --check grader single-sources cdz_corpus_grade::canonical_output_value (SLICE 1, #7273
+              # fix). When the gate-machinery delete lands, xtask stops grading in-process and this shrinks back.
+              xtask = [ "cadenza-ast" "cadenza-compile-abi" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" "cdz-contract" "cdz-corpus-grade" "cdz-rust-render" "xtask" "xtask-support" ];
               xtask-support = [ "cadenza-ast" "cdz-contract" "xtask-support" ];
               # xtask-roundtrip deps xtask-support (which deps cdz-contract→cadenza-ast).
               xtask-roundtrip = [ "cadenza-ast" "cdz-contract" "xtask-roundtrip" "xtask-support" ];

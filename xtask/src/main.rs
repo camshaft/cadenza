@@ -27,6 +27,7 @@
 //! defaults to `release-debug` (optimized, so the corpus gate is fast). Pass `--profile dev` for a
 //! quick unoptimized build when iterating on the tools themselves.
 
+use cdz_corpus_grade::canonical_output_value;
 use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -4673,11 +4674,30 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         // and prints value AND type). Accept EITHER — the bare value (scalar) or the full form (compound)
         // — so both ABIs grade against the one recorded `(: value type)` outcome.
         "output" => {
-            let expected_val = expected_value(payload);
             let expected_full = payload.trim().to_string();
             match ran {
-                Ran::Value(v, _, _) if *v == expected_val || *v == expected_full => Grade::Pass,
-                Ran::Value(v, _, _) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
+                // STRUCTURAL value compare via the SINGLE-SOURCE shared canonical reader/printer
+                // (`cdz_corpus_grade::canonical_output_value`, operator SLICE-1) — replaces the local
+                // `expected_value` string-scan that diverged and caused fleet red #7273. Canon BOTH the
+                // expected payload AND the run value, compare the canonical renders (so bare-vs-`(: v T)`
+                // and rendering variance normalize away, subsuming the old bare/full dual-check). A parse
+                // failure is a LOUD Fail — never a silent pass: a corpus authoring error on the expected
+                // side, a compiler emit bug (decode-validity break) on the actual side. Mirrors the merged
+                // `cdz_corpus_grade::grade_trial` Output arm exactly (verdict-identical).
+                Ran::Value(v, _, _) => {
+                    match (canonical_output_value(payload), canonical_output_value(v)) {
+                        (Ok(want), Ok(got)) if want == got => Grade::Pass,
+                        (Ok(want), Ok(got)) => Grade::Fail(format!(
+                            "expected {expected_full} (canonical {want}), ran → {v} (canonical {got})"
+                        )),
+                        (Err(e), _) => Grade::Fail(format!(
+                            "corpus expected-output {expected_full} did not parse as a canonical value: {e}"
+                        )),
+                        (_, Err(e)) => Grade::Fail(format!(
+                            "ran value {v} did not parse as a canonical value (compiler emit bug): {e}"
+                        )),
+                    }
+                }
                 // A CODE-LESS decline whose message is an ICE signature (`is_ice_signature`) on a case that
                 // should produce a VALUE is a compiler BUG → FAIL, never a hidden todo (operator ruling
                 // 2026-08-27, refined with breaker). A coded decline, or a code-less HONEST capability decline
@@ -4934,105 +4954,6 @@ fn classify(reason: &str) -> Option<TrapCode> {
         Some(TrapCode::PeerMissingInterface)
     } else {
         None
-    }
-}
-
-/// The value out of an `output` payload `(: <value> <Type>)` — the text of `<value>`. Falls back to
-/// the whole payload if it is not the `(: value Type)` shape.
-fn expected_value(payload: &str) -> String {
-    // payload is `(: <value> <Type>)`. Take the FIRST whitespace-separated token after `(:` as the
-    // value, respecting nesting — a COMPOUND value/type is itself parenthesized (`(: (tuple 0 7) (Tuple
-    // Int64 Int64))`), so a naive "everything up to the last space" split cuts the value wrong. Scan the
-    // first balanced token: a `(…)` group, or a bare atom up to the next top-level space.
-    let inner = payload.trim();
-    let Some(rest) = inner.strip_prefix("(:") else {
-        return inner.to_string();
-    };
-    let rest = rest.trim();
-    let bytes = rest.as_bytes();
-    if bytes.first() == Some(&b'(') {
-        // A parenthesized value — take the balanced `(…)` group.
-        let mut depth = 0i32;
-        for (i, &b) in bytes.iter().enumerate() {
-            match b {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return rest[..=i].to_string();
-                    }
-                }
-                _ => {}
-            }
-        }
-        rest.to_string()
-    } else if bytes.first() == Some(&b'"') {
-        // A QUOTED STRING value (`(: "parse error" String)`) — take up to and INCLUDING the closing `"`.
-        // A String value contains INTERNAL SPACES, so the bare-atom "up to next space" split would cut it
-        // wrong (`"parse` — breaking every multi-word string result). Scan for the matching close quote,
-        // honoring a `\"` escape so an embedded quote does not end the token early.
-        let mut escaped = false;
-        for (i, &b) in bytes.iter().enumerate().skip(1) {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                return rest[..=i].to_string();
-            }
-        }
-        rest.to_string()
-    } else if bytes.first() == Some(&b'#') {
-        // An M2 NATIVE-CTOR value: `#tuple(…)`, `#list(…)`, `#record((= a 1) …)`, `#set(…)`, `#map((= k v) …)`
-        // — the `#head` is immediately followed by a BALANCED `(…)` whose interior has TOP-LEVEL SPACES, so the
-        // bare-atom "up to next space" split would cut it wrong (`#tuple(127` from `#tuple(127 -128)`), failing
-        // EVERY compound value on the Rust ABI (which crosses the bare value, no `(: … type)` wrapper — unlike
-        // the wasm ABI's full-form escape matched by `expected_full`). Take the `#head(…)` span via balanced
-        // parens. A `#"…"` bytes literal (may hold interior spaces) is taken to its closing quote; a paren-less
-        // `#`-value (`#\a`, `#\space`) falls to the bare-atom arm.
-        if bytes.get(1) == Some(&b'"') {
-            let mut escaped = false;
-            for (i, &b) in bytes.iter().enumerate().skip(2) {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == b'"' {
-                    return rest[..=i].to_string();
-                }
-            }
-            return rest.to_string();
-        }
-        let lp = rest.find('(');
-        let ws = rest.find(char::is_whitespace);
-        if let Some(lp) = lp
-            && ws.is_none_or(|w| lp < w)
-        {
-            let mut depth = 0i32;
-            for (i, &b) in bytes.iter().enumerate().skip(lp) {
-                match b {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return rest[..=i].to_string();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // A `#`-value with no parens before the next space (`#\a`) — bare atom.
-        match rest.find(char::is_whitespace) {
-            Some(idx) => rest[..idx].to_string(),
-            None => rest.trim_end_matches(')').to_string(),
-        }
-    } else {
-        // A bare atom — up to the next space.
-        match rest.find(char::is_whitespace) {
-            Some(idx) => rest[..idx].to_string(),
-            None => rest.trim_end_matches(')').to_string(),
-        }
     }
 }
 
@@ -7766,6 +7687,40 @@ mod trap_grading_tests {
                 }
             ),
             Grade::Todo
+        ));
+    }
+
+    #[test]
+    fn grade_trial_output_arm_uses_the_shared_structural_value_canon() {
+        // The Output arm now single-sources `cdz_corpus_grade::canonical_output_value` (SLICE 1) — this
+        // pins that fold on the AUTHORITATIVE gate --check path (the #7273-divergence fix). Both the
+        // expected payload and the run value are canon'd + compared, so annotation + rendering variance
+        // normalize away.
+        //
+        // Bare value matches the bare-value expectation → Pass.
+        assert!(matches!(
+            grade_trial(
+                "output (: 42 I64)",
+                &Ran::Value("42".to_string(), vec![], vec![])
+            ),
+            Grade::Pass
+        ));
+        // STRUCTURAL equivalence: the run value crosses as the FULL `(: v T)` form (the wasm ABI escape),
+        // the expected payload is the same form — canon extracts the value subtree on BOTH sides → Pass.
+        assert!(matches!(
+            grade_trial(
+                "output (: 42 I64)",
+                &Ran::Value("(: 42 I64)".to_string(), vec![], vec![])
+            ),
+            Grade::Pass
+        ));
+        // A genuine value mismatch → Fail (the miscompile signal), not a false Pass.
+        assert!(matches!(
+            grade_trial(
+                "output (: 42 I64)",
+                &Ran::Value("43".to_string(), vec![], vec![])
+            ),
+            Grade::Fail(_)
         ));
     }
 
