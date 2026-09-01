@@ -1452,6 +1452,49 @@ theorem denote_normalize_app_ident_plain (ρ : Nat → Value) (w : IntTy) (op : 
     rw [ih a0 (by simp) u0 hu0, ih a1 (by simp) u1 hu1]
     exact h
 
+/-- `denote (.const (.int n)) = .value (.int n)` (an int const is `asF64?`-canonical, so denote's float
+canonicalization is the identity on it). -/
+theorem denote_const_int (ρ : Nat → Value) (w : IntTy) (n : Int) :
+    denote ρ w (.const (.int n)) = .value (.int n) := by simp [denote, Value.asF64?]
+
+/-- `foldConst?` NEVER folds `+ x (int 0)` — its arith arm folds only via `asF64?`, and `asF64? (.int 0)`
+is `none`, so the fold declines for ANY first operand. This is exactly the `foldConst? = none` the `x+0`
+identity case has in hand (the identity fires only after `foldConst?` declined), for the specific `.const`
+operands `denoteBinary_arith_int_r`/`denoteBinary_add_zero_value` need. -/
+theorem foldConst_add_int0_none (va : Value) : foldConst? "+" #[.const va, .const (.int 0)] = none := by
+  simp [foldConst?, symToValue?, Value.asF64?]
+
+/-- CAPSTONE `.app`-IDENTITY case — `x + 0 → x` (operand-preserving, the FIRST assembled algebraic-identity
+denote-soundness case, validating the #7216 opaque-BEq unblock composes END-TO-END). `foldConst?` declined
+(`hnone`) so `normalize` took the identity branch, and the 2nd operand normalized to `.const (.int 0)`
+(`hn1`), so `normalizeAppIdentities` returns `normalize a0` (`normalizeAppIdentities_add_zero_r`, now
+reducible via `isConstInt`). Soundness: from `h`, both operands denote to values (`denoteBinary_value_inv`);
+`ih1` + `hn1` pin the 2nd to `.int 0` (`denote_const_int`); the arith result forces the 1st to `.int x`
+(`denoteBinary_arith_int_r`); `denoteBinary_add_zero_value` gives `v = .int x`; `ih0` carries
+`denote (normalize a0) = .value (.int x) = .value v`. The other operand-preserving identities
+(`x-0`, `x*1`, `1*x`, `x/1`) assemble identically with their `normalizeAppIdentities_*`/`denoteBinary_*_value`
+pair; operand-DROPPING (`x*0`/`x%1`) need the `!mayTrap` route. -/
+theorem denote_normalize_app_ident_add_zero_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn1 : normalize a1 = .const (.int 0))
+    (hnone : foldConst? "+" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app "+" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "+" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "+" #[a0, a1] hnone]
+  rw [show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp]
+  rw [hn1, normalizeAppIdentities_add_zero_r (normalize a0)]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "+" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .int 0 := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_int] at this
+    exact (Outcome.value.inj this).symm
+  subst hu1'
+  obtain ⟨x, rfl⟩ := denoteBinary_arith_int_r "+" w u0 0 v (foldConst_add_int0_none u0) (by decide) h
+  have hvx : v = .int x := denoteBinary_add_zero_value w x v (foldConst_add_int0_none _) h
+  rw [ih0 (.int x) hu0, hvx]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
