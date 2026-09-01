@@ -176,3 +176,28 @@
       (export main)))
   (call main)
   (output (: 105 Int64)))
+
+; ── breaker: the post-expansion-equivalence gap. The identical do-local recursive fn compiles and
+; computes 120 when written PLAINLY (09/02 pin the plain form), but the macro-introduced expansion of
+; the SAME shape declines CDZ0900 "a recursive function needs runtime specialization" — the expander's
+; live-parameter-scan fallback (#7529) doesn't feed the recursion machinery the way a load-time def
+; does. metaprogramming.md §Expansion Precedes And Feeds The Core Guarantees says the expanded program
+; is an ordinary program; this pins the should-work value and tracks the gap (v-metaprogramming).
+(case
+  "mrf1 a macro-introduced RECURSIVE helper computes like its plainly-written twin (should-work: expansion precedes the core guarantees)"
+  (doc
+    "`(via-rec 5)` expands to `(do (def (fact p) (if (> p 1) (* p (fact (- p 1))) 1)) (fact 5))` —
+           byte-for-byte the plain do-local recursive fn that compiles and computes 120 when written
+           directly. Post-expansion equivalence (metaprogramming.md §Expansion Precedes And Feeds The
+           Core Guarantees) says the macro-introduced twin MUST behave identically. Today the expansion
+           declines CDZ0900 (runtime-specialization not-yet) — the #7529 parameter-scope fallback covers
+           the parameter but not the fn's own recursive self-reference. MUST be 120.")
+  (input
+    (do
+      (def
+        (via-rec (quote arg))
+        (quasiquote (do (def (fact p) (if (> p 1) (* p (fact (- p 1))) 1)) (fact (unquote arg)))))
+      (def (main) (via-rec 5))
+      (export main)))
+  (call main)
+  (output (: 120 Int64)))
