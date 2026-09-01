@@ -1556,17 +1556,28 @@ fn emit_expr_viewed(
             }
         }
         // A kept multi-use binding sequence `(let ((<n0> <v0>) …) <body>)`. Each binding is `(init, init)`
-        // — keyed only by its initializer occurrence — so a fresh surface name is minted deterministically
-        // (by binding order) and recorded in `env` for the `LocalRef`s that read it. Bindings are
+        // — keyed only by its initializer occurrence — so a fresh surface name is minted from the monotone
+        // `env.next_payload` counter and recorded in `env` for the `LocalRef`s that read it. Bindings are
         // SEQUENTIAL (`let*`): a later binding's value may reference an earlier binding, so each name is
         // registered right AFTER its own value is emitted and BEFORE the next; the body is emitted with
         // every binding in scope. Head-first: the `let` head and each binding's name atom are pushed
         // before their sub-trees.
+        //
+        // The name index MUST be the monotone `env.next_payload` (like the payload/scrut binders at
+        // sites 1668/2838), NOT `env.lets.len()`: a SHARED `Core::Let` inlined at several use sites (e.g. a
+        // tuple returned by a helper, projected `.0`/`.1` at multiple reads) re-emits the SAME binder
+        // `StructId`s. `env.lets` is keyed by `StructId`, so on the 2nd+ emission `insert` REPLACES rather
+        // than grows and `env.lets.len()` STALLS — minting the SAME `_cdz_let` name for two distinct
+        // bindings of one `let` (`(let ((_cdz_let2 …) (_cdz_let2 (gcd _cdz_let2 24))) #tuple((/ _cdz_let2
+        // _cdz_let2) …))` → the body reads g/g = 1, a WRONG value). The monotone counter mints a fresh
+        // unique name every emission, so re-inlined shares stay value-correct. (Bit 06-numeric's
+        // user-fraction-add case; value-eq round-trip, not byte-idempotent.)
         Core::Let { bindings, body } => {
             let let_head = b.name("let");
             let mut binding_nodes = Vec::with_capacity(bindings.len());
             for &(binder, value) in bindings.iter() {
-                let name = synth_binding_name(env.lets.len());
+                let name = synth_binding_name(env.next_payload);
+                env.next_payload += 1;
                 let name_atom = b.name(name.clone());
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
@@ -2449,7 +2460,11 @@ fn emit_expr_viewed(
                 // wasm backend's evaluate-once-at-creation capture. (Value-eq; sharing across sibling closures
                 // is lost — each hoists its own copy — a benign double-eval, not a wrong value.)
                 if !resolvable {
-                    let cname = synth_binding_name(env.lets.len());
+                    // Monotone counter (not `env.lets.len()`), consistent with the `Core::Let` and payload
+                    // sites — a hoisted capture value shares the `_cdz_let` name space, so a stall/collision
+                    // would mis-bind here too.
+                    let cname = synth_binding_name(env.next_payload);
+                    env.next_payload += 1;
                     let cap_val = emit_expr(db, b, cap, None, env, emitted)?;
                     env.lets.insert(cap, cname.clone());
                     inserted_keys.push(cap);
