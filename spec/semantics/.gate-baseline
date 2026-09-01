@@ -423,6 +423,7 @@ pass	Set.to-list over a RUNTIME-built set yields canonical order (first element 
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
 pass	Set.to-list over an owned-temporary runtime set reclaims the source, leaving no live heap objects
+pass	Set.to-list over set/map-leaf elements is a coded CDZ0203 — a set/map leaf carries no blessed total order (all-leaf sibling of the float case)
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
