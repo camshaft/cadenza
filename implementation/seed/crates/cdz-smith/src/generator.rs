@@ -1319,7 +1319,7 @@ impl Gen<'_> {
     /// backend (a miscompile → an invalid-wasm finding). Operator directive 2026-08-30: keep expanding.
     fn mixed_width_recon(&mut self) {
         let ff = self.cur.flip(); // float-width family (Float64+Float32) vs int-width (Int64+narrow int)
-        match self.cur.choice(5) {
+        match self.cur.choice(6) {
             0 => {
                 // Arithmetic `+` mixing a wide literal with a narrow concrete operand.
                 self.out.push_str("(+ ");
@@ -1353,13 +1353,25 @@ impl Gen<'_> {
                 self.mw_narrow(ff);
                 self.out.push(')');
             }
-            _ => {
+            4 => {
                 // `Qty.+` magnitude reconciliation (the #Qty finding): wide + narrow magnitude.
                 self.out.push_str("(Qty.value (+ (Qty.of ");
                 self.mw_wide(ff);
                 self.out.push_str(" (Unit.base #\"mole\")) (Qty.of ");
                 self.mw_narrow(ff);
                 self.out.push_str(" (Unit.base #\"mole\"))))");
+            }
+            _ => {
+                // `Qty.*` PRODUCT magnitude reconciliation — the sibling of the Qty.+ arm on the DISTINCT
+                // product unit-algebra lowering (a `*` composes units, so the two operands carry DIFFERENT
+                // units — mole × second — and their magnitudes multiply). Same wide/narrow-magnitude seam
+                // the Qty.+ i32/i64 finding exposed, but reached through the product path the `+` arm never
+                // touches. Operator directive 2026-08-30: keep expanding the invalid-wasm-finding family.
+                self.out.push_str("(Qty.value (* (Qty.of ");
+                self.mw_wide(ff);
+                self.out.push_str(" (Unit.base #\"mole\")) (Qty.of ");
+                self.mw_narrow(ff);
+                self.out.push_str(" (Unit.base #\"second\"))))");
             }
         }
     }
@@ -2906,6 +2918,7 @@ mod tests {
     fn some_seed_emits_a_mixed_width_reconciliation() {
         let mut hit_map = false;
         let mut hit_narrow_operand = false;
+        let mut hit_qty_product = false;
         for n in 0..8000u32 {
             let seed = varied_seed(n);
             let src = generate(&seed).source;
@@ -2923,10 +2936,19 @@ mod tests {
             if src.contains("(Qty.value (+ (Qty.of ") {
                 hit_narrow_operand = true;
             }
+            // The Qty PRODUCT arm — unique two-`Qty.of` shape under `(Qty.value (* (Qty.of` — reaches the
+            // product unit-algebra magnitude reconciliation (distinct from the Qty.+ path).
+            if src.contains("(Qty.value (* (Qty.of ") {
+                hit_qty_product = true;
+            }
         }
         assert!(
             hit_map || hit_narrow_operand,
             "no seed emitted a mixed-width reconciliation shape (Map value / Qty.+ magnitude)"
+        );
+        assert!(
+            hit_qty_product,
+            "no seed emitted the Qty.* PRODUCT mixed-width magnitude shape"
         );
     }
 
