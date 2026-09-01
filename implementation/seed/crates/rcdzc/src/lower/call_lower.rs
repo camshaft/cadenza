@@ -1117,7 +1117,13 @@ pub(super) fn emit_call_or_specialize(
             // annotation" on a parameter is wrong (the parameter — often ALREADY `(: n Int64)` — is fine); the
             // fault is the missing base case, and no parameter annotation fixes it.
             if crate::infer::recursive_def_params_all_determined(db, callee) {
-                return Core::Poison(Reject::decline(
+                // A no-base-case recursion is a REJECTION of an invalid user program (every path recurses →
+                // no value → undetermined result), not a capability decline — code it CDZ0204
+                // (`NonProductiveRecursion`, the 02xx well-formedness band) so the fault carries a stable
+                // code, not a bare codeless decline (seq-286). Distinct from the CDZ0999 nullary
+                // reduce-bound decline in `lower/compute.rs`.
+                return Core::Poison(Reject::coded(
+                    crate::diag::Code::NonProductiveRecursion,
                     "this recursive function never returns a concrete value — every path calls itself, so \
                      its result type is undetermined and it has no machine representation. Add a BASE CASE \
                      that returns a value without recursing (e.g. an `if`/`match` arm that stops the \
