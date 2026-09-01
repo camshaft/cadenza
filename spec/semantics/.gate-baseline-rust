@@ -5609,6 +5609,7 @@ pass	an unknown type in a record LET-BINDER annotation names the type, not the f
 pass	an unknown type in a record VALUE annotation names the type, not the field label
 pass	an unknown type in a record parameter annotation names the type, not the field label
 pass	an unproductive self-recursion is declined, not a compiler crash
+pass	an unproductive PARAMETERIZED self-recursion is a coded CDZ0204 — no base case, result never concrete
 pass	an unprojected element whose constant modulo-by-zero traps is elided but earns a CDZ0305 warning
 pass	an unprojected element whose constant overflow traps is elided but earns a CDZ0305 warning
 pass	an unprojected element whose constant zero-denominator Rational.of traps is elided but earns a CDZ0305 warning
