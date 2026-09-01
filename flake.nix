@@ -4945,6 +4945,35 @@
             cat manifest.diff; exit 1
           fi
         '';
+        # INLINE (cdz …) RENDER GATE (v-guide-infra): every AST-backed inline Cadenza span — the codegen emits
+        # `<Cadenza ast="<base64>" kind="…">` (#7245) — must RENDER in both surfaces from its embedded binary
+        # AST. check:examples/guideShred gate only runnable/exercise SOURCES, so a mis-rendering INLINE prose
+        # span was ungated. This is the NATIVE gate twin of the node check:cdz-render (which is advisory-tier,
+        # unenforced under the sole-localGate model): it decodes each committed span's base64 + `cdz convert
+        # --from binary --to {ml,sexpr}` — no compile, so cheap. Folded into localGate so a span embedding a
+        # non-renderable AST reds the MERGE gate, not silently in-browser (v-guide-editor request).
+        guideCdzRenderAssert = pkgs.runCommand "guide-cdz-render-assert"
+          { nativeBuildInputs = [ seedCompiler pkgs.gnugrep pkgs.coreutils ]; } ''
+          set -euo pipefail
+          cdz=${seedCompiler}/bin/cdz
+          # Gather every AST-backed inline Cadenza span's base64 from the generated chapter .tsx. Loop over a
+          # FILE (not a pipe) so the failure flag survives (a piped `while read` runs in a subshell).
+          grep -hoE 'ast="[A-Za-z0-9+/=]+"' ${./guide/src/content/chapters}/*.tsx | sed 's/^ast="//; s/"$//' > all.b64
+          count=$(wc -l < all.b64)
+          # Vacuous-pass guard: the guide has many migrated (cdz …) spans, so ~none means the emitted shape
+          # changed and this extractor drifted (a silent green that would let a real render regression through).
+          [ "$count" -ge 50 ] || { echo "guide-cdz-render-assert: only $count AST-backed <Cadenza ast=…> spans found — extractor drift (the emitted shape likely changed)"; exit 2; }
+          fail=0
+          while read -r b64; do
+            printf '%s' "$b64" | base64 -d > frag.cdzb || { echo "FAIL: undecodable base64 span"; fail=1; continue; }
+            for surface in ml sexpr; do
+              "$cdz" convert --from binary --to "$surface" frag.cdzb > /dev/null 2>err \
+                || { echo "FAIL: a (cdz …) embedded AST did not render --to $surface: $(head -c 160 err)"; fail=1; }
+            done
+          done < all.b64
+          [ "$fail" -eq 0 ] || { echo "guide-cdz-render-assert: one or more inline (cdz …) spans failed to render"; exit 1; }
+          echo "ok: $count inline (cdz …) spans render in ml+sexpr from their embedded AST" > "$out"
+        '';
 
         # Lean 4.32.2 toolchain (v-wasm-oracle talos wasm-oracle pin) — the OFFICIAL leanprover PREBUILT
         # elan release, pinned + autoPatchelf'd. ISOLATED from the fleet nixpkgs on purpose: nixpkgs lean4 is
@@ -5849,6 +5878,12 @@
                   # Green-confirmed on current main before the fold (committed == fresh, count=412/emitted=405/
                   # deferred=7). Teeth a required-status can't give under self-merge.
                   guideManifestDriftAssert
+                  # guideCdzRenderAssert FOLDED IN (v-guide-infra 2026-09-01): every AST-backed inline
+                  # (cdz …) span must render in both surfaces from its embedded binary AST. The node
+                  # check:cdz-render is advisory-tier (unenforced under the sole-localGate model), so this
+                  # NATIVE twin (cdz convert --from binary, no compile → cheap) gates it at merge. Closes the
+                  # inline-span render gap v-guide-editor flagged. Green-confirmed before the fold.
+                  guideCdzRenderAssert
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   # cdzFmtCheck FOLDED IN (v-code-cleanliness seq-282, v-nix 2026-08-30): the AUTHORITATIVE
                   # fleet-wide `cdz fmt --check` gate on the 6 canonical domain src dirs. Cheap front-end
@@ -6069,6 +6104,7 @@
             guide-shred-check = guideShredCheck;
             guide-examples-shredded = guideExamplesShredded;
             guide-manifest-drift-assert = guideManifestDriftAssert;
+            guide-cdz-render-assert = guideCdzRenderAssert;
           } // guideFileAggs // testShredFileAggs // {
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
