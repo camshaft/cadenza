@@ -711,10 +711,14 @@ pub(crate) fn expand_macros(db: &mut Db) {
         if !changed {
             break;
         }
-        // A spliced node's memoized `resolved_of` is now stale (it cached the pre-splice `Apply`); clear so
-        // the next round re-resolves the expanded arena (seeing spliced nodes as their real form + finding
-        // any nested macro call the expansion introduced).
+        // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
+        // pre-splice `Apply`; and `apply_lambda` — run above to reduce each macro body — typed that body's
+        // `(Ast.Int (: n BigInt))` payloads as `BigInt` and MEMOIZED `type_of` for the copied nodes the
+        // reconstruction reuses, so without clearing `db.types` a spliced macro-body int literal keeps its
+        // stale `BigInt` type instead of grounding `Int64` by ordinary inference at the call site (the
+        // BigInt-vs-Int64 mismatch). Cleared before the next round re-resolves + re-types the expanded arena.
         db.resolved = crate::arena::Column::new();
+        db.types = crate::arena::Column::new();
     }
 }
 
