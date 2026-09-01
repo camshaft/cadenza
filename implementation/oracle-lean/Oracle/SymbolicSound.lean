@@ -2700,4 +2700,62 @@ theorem denote_normalize_record_value (ρ : Nat → Value) (w : IntTy) (fs : Arr
     obtain ⟨u, hu⟩ := hval x hx; rw [ih x hx u hu, hu])]
   exact h
 
+/-! ### The top-level RESTRICTED capstone (operator-endorsed option (a): assume well-typed programs).
+`WellDenoted ρ w e` is the semantic denote-totality restriction: every `.tuple`/`.record` element denotes
+to a VALUE (not a poison from an ill-typed sub-expr) and, recursively, every sub-term is `WellDenoted`.
+It excludes exactly the counterexamples where the value-form capstone is false (a compound with an
+ill-typed element). `denote` MODELS only var/const/ite/app/tuple/record — ctor/proj/case/localFn denote
+to `.unsupported`, so the value-form hypothesis is vacuous there. -/
+def WellDenoted (ρ : Nat → Value) (w : IntTy) : SymExpr → Prop
+  | .var _ => True
+  | .const _ => True
+  | .app _ args => ∀ x : {a // a ∈ args}, WellDenoted ρ w x.val
+  | .ite c t e => WellDenoted ρ w c ∧ WellDenoted ρ w t ∧ WellDenoted ρ w e
+  | .tuple es => ∀ x : {a // a ∈ es}, (∃ u, denote ρ w x.val = .value u) ∧ WellDenoted ρ w x.val
+  | .record fs => ∀ x : {a // a ∈ fs}, (∃ u, denote ρ w x.val.2 = .value u) ∧ WellDenoted ρ w x.val.2
+  | .ctor _ args => ∀ x : {a // a ∈ args}, WellDenoted ρ w x.val
+  | .proj b _ => WellDenoted ρ w b
+  | .case s arms => WellDenoted ρ w s ∧ ∀ x : {a // a ∈ arms}, WellDenoted ρ w x.val.2
+  | .localFn _ _ _ => True
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+    | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
+    | omega
+
+/-- TOP-LEVEL RESTRICTED CAPSTONE: on a well-typed program, `normalize` preserves the computed value —
+`denote ρ w e = .value v → denote ρ w (normalize e) = .value v`. Assembled over `denote.induct`: the
+value-modeling cases dispatch to their consolidated lemmas (var/const, `.app` #7379, `.ite` #7392,
+tuple/record via the `_value` restricted lemmas fed by `WellDenoted`); the non-modeled ctor/proj/case/localFn
+cases are VACUOUS (`denote = .unsupported`, so the value hypothesis is contradictory). -/
+theorem denote_normalize_sound (ρ : Nat → Value) (w : IntTy) (e : SymExpr) :
+    WellDenoted ρ w e → ∀ v, denote ρ w e = .value v → denote ρ w (normalize e) = .value v := by
+  induction e using WellDenoted.induct with
+  | case1 n => intro _ v h; rw [denote_normalize_var]; exact h
+  | case2 c => intro _ v h; rw [denote_normalize_const]; exact h
+  | case3 op args ih => intro hwd v h
+                        simp only [WellDenoted] at hwd
+                        exact denote_normalize_app ρ w op args v
+                          (fun x hx u hu => ih ⟨x, hx⟩ (hwd ⟨x, hx⟩) u hu) h
+  | case4 c t e ihc iht ihe => intro hwd v h
+                               simp only [WellDenoted] at hwd
+                               exact denote_normalize_ite ρ w c t e v
+                                 (ihc hwd.1) (iht hwd.2.1) (ihe hwd.2.2) h
+  | case5 es ih => intro hwd v h
+                   simp only [WellDenoted] at hwd
+                   exact denote_normalize_tuple_value ρ w es v
+                     (fun x hx u hu => ih ⟨x, hx⟩ (hwd ⟨x, hx⟩).2 u hu)
+                     (fun x hx => (hwd ⟨x, hx⟩).1) h
+  | case6 fs ih => intro hwd v h
+                   simp only [WellDenoted] at hwd
+                   exact denote_normalize_record_value ρ w fs v
+                     (fun x hx u hu => ih ⟨x, hx⟩ (hwd ⟨x, hx⟩).2 u hu)
+                     (fun x hx => (hwd ⟨x, hx⟩).1) h
+  | case7 _ _ _ => intro _ v h; simp [denote] at h
+  | case8 _ _ _ => intro _ v h; simp [denote] at h
+  | case9 _ _ _ => intro _ v h; simp [denote] at h
+  | case10 _ _ _ => intro _ v h; simp [denote] at h
+
 end Oracle
