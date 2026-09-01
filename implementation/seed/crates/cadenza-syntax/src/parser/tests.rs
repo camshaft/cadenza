@@ -1447,50 +1447,10 @@ fn a_head_app_record_type_field_is_rejected_steering_to_the_colon_form() {
     assert!(read_ml("def f(o: Option(Int64)) = o").ok());
 }
 
-#[test]
-fn malformed_wit_member_type_spellings_are_rejected_with_guidance() {
-    // A malformed WIT aggregate member type (wrong result arity, a variant case with 2+ payloads, a
-    // non-name enum/flags case) is REJECTED with an actionable, steering message — not silently left as
-    // a broken member descriptor. Same reject-with-guidance policy as the record-field form. Each is in
-    // world-member type position, where the head IS the WIT type keyword.
-    let cases: [(&str, &str); 4] = [
-        (
-            "world W = | export i = | m : (x : u8) -> result(bool, string, u8)",
-            "at most two arguments",
-        ),
-        (
-            "world W = | export i = | m : (x : u8) -> variant(Ok, Bad(u8, string))",
-            "single payload type",
-        ),
-        (
-            "world W = | export i = | m : (x : u8) -> enum(Red, Green(u8))",
-            "an `enum` case is a bare name",
-        ),
-        (
-            "world W = | export i = | m : (x : u8) -> flags(Read(u8), Write)",
-            "a `flags` bit is a bare name",
-        ),
-    ];
-    for (src, needle) in cases {
-        let p = read_ml(src);
-        assert!(!p.ok(), "malformed WIT member type must reject: {src}");
-        assert!(
-            p.errors.iter().any(|e| e.message.contains(needle)),
-            "reject steers with `{needle}`: {src} -> {:?}",
-            p.errors
-        );
-    }
-    // The WELL-FORMED spellings still parse clean — no false reject.
-    for src in [
-        "world W = | export i = | m : (x : u8) -> result(bool, string)",
-        "world W = | export i = | m : (x : u8) -> result(bool)",
-        "world W = | export i = | m : (x : u8) -> variant(Ok, Bad(string))",
-        "world W = | export i = | m : (x : u8) -> enum(Red, Green, Blue)",
-        "world W = | export i = | m : (x : u8) -> flags(Read, Write)",
-    ] {
-        assert!(
-            read_ml(src).ok(),
-            "well-formed WIT member type must parse: {src}"
-        );
-    }
-}
+// `malformed_wit_member_type_spellings_are_rejected_with_guidance` MIGRATED to the spec/syntax corpus
+// (parser-corpus): BOTH halves are now corpus-covered, so the rust test is redundant. The 4 REJECTS are
+// decline cases with pinned steering diagnostics — ml/489-wit-result-at-most-two-args, ml/490-wit-variant-
+// single-payload, ml/491-wit-enum-case-bare-name, ml/492-wit-flags-bit-bare-name (b92). The 5 WELL-FORMED
+// spellings (the "no false reject" half) are structurally pinned by the world-member positives — result-
+// both ml/17, result-no-err ml/18, variant-payload ml/23, enum+flags ml/24 (their tree.sexp goldens ARE
+// the "parses clean to this member descriptor" proof).
