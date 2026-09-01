@@ -275,10 +275,59 @@ pub struct GradeResult {
 /// call 0 but leaks on call 2 (or whose leak scales with call depth) is a real leak the corpus MUST catch.
 /// The first-call-only capture silently FALSE-GREENED those leaks fleet-wide. No-heap trials are skipped
 /// (never a false fail), so a mixed case is graded on its heap trials alone.
+/// Does a trial's `expect` denote a HEAP-FREE SCALAR return (so its live-cell residual is unambiguously
+/// 0)? Only an `output` trial returning a bare scalar — integer/float/bool/char/identifier — owns no live
+/// heap after the run. A heap/compound return (`#…`/`(…)`/`"…"`/`{…}`/`[…]`) has a nonzero reachable-return
+/// count a single case-level `(live-objects 0)` clause can't express per-trial, so it is NOT a per-trial
+/// 0-check candidate. Ported from xtask's guarded-all `trial_expect_is_scalar_return` (#7527) so the SHARED
+/// nix grade path applies the same discriminator (else the coarse harvest false-fails the 3 heap-return
+/// non-leaks — the empty-or-nonempty list/map/set trio). Errs toward NOT-a-candidate: a missed scalar leak
+/// is under-admit (leak-safe), a wrong 0-check on a heap return would RED a correct case.
+pub fn expect_is_scalar_return(expect: &GExpect) -> bool {
+    let GExpect::Output(v) = expect else {
+        return false; // trap/error/warning return no value → not a 0-check candidate
+    };
+    // The value is bare (`42`) or in the resource-escape ascription form (`(: 42 Int64)`).
+    let value = v
+        .trim_start()
+        .strip_prefix("(:")
+        .map(str::trim_start)
+        .unwrap_or(v.trim_start());
+    match value.chars().next() {
+        Some('#' | '(' | '"' | '{' | '[') => false, // heap/compound render
+        Some(c)
+            if c.is_ascii_digit() || matches!(c, '-' | '+' | '\'') || c.is_ascii_alphabetic() =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The heap-balance assertion (strict): checks EVERY heap trial's 0-residual with NO scalar-return
+/// discriminator. The grade path calls [`check_live_objects_scalar`] instead (which applies the #7527
+/// discriminator); this strict entry point is retained for the existing count-logic call sites/tests.
 pub fn check_live_objects(
     per_trial: &[Option<u32>],
     expected: Option<u32>,
     per_call: Option<&[u32]>,
+) -> Option<String> {
+    check_live_objects_scalar(per_trial, expected, per_call, &[])
+}
+
+/// As [`check_live_objects`], plus the #7527 scalar-return discriminator: `per_trial_scalar[i]` says whether
+/// trial `i` returns a heap-free scalar (see [`expect_is_scalar_return`]). Under a must-reclaim-to-0
+/// expectation (UNIFORM, `want == 0`), a LATER trial (`i > 0`) whose return is NOT a scalar (a heap/compound
+/// return) has a legitimate nonzero reachable-return count → its 0-check is SKIPPED (not a leak). Trial 0
+/// stays the always-checked calibration; POSITIONAL `(live-objects N1 N2 …)` and `Expect(n>0)` are
+/// unaffected. Under-admit-safe (a heap-return trial that ALSO leaks extra goes uncaught; the full fix is
+/// per-trial expected counts — a future corpus-grammar increment). An empty `per_trial_scalar` applies no
+/// skip (strict — every trial checked).
+pub fn check_live_objects_scalar(
+    per_trial: &[Option<u32>],
+    expected: Option<u32>,
+    per_call: Option<&[u32]>,
+    per_trial_scalar: &[bool],
 ) -> Option<String> {
     // POSITIONAL: `(live-objects [known-leak] N1 N2 …)` — one expected count per trial, index-aligned to
     // the call order. This is the arm-dependent case (e.g. a leak that SCALES with input size): call 0 may
@@ -312,6 +361,13 @@ pub fn check_live_objects(
         if let Some(n) = live
             && *n != want
         {
+            // #7527 discriminator: under a must-reclaim-to-0 expectation, a LATER trial (i > 0) that
+            // RETURNS a heap value owns a nonzero reachable-return count a single `(live-objects 0)` clause
+            // can't express per-trial — skip its 0-check (not a leak). Trial 0 is the always-checked
+            // calibration; strict when `per_trial_scalar` is empty/absent (defaults to scalar = checked).
+            if want == 0 && i > 0 && !per_trial_scalar.get(i).copied().unwrap_or(true) {
+                continue;
+            }
             // A single-trial case keeps the historical (call-index-free) message so its verdict text stays
             // stable; a multi-call case names the offending call so a depth-scaling leak is legible.
             let has_multiple_heap_trials = per_trial.iter().filter(|l| l.is_some()).count() > 1;
@@ -2567,6 +2623,53 @@ mod tests {
         assert!(!known_leak_now_clean(&[Some(2)])); // still leaks
         assert!(!known_leak_now_clean(&[None, None])); // no heap trial measured → not a candidate
         assert!(!known_leak_now_clean(&[])); // no trials
+    }
+
+    /// The #7527 scalar-return classifier + the `check_live_objects_scalar` skip: a later heap-RETURN trial
+    /// is exempt from the must-reclaim-to-0 check (its reachable-return count is not a leak), while a
+    /// scalar-return later trial + trial 0 stay strictly checked.
+    #[test]
+    fn scalar_return_discriminator_skips_later_heap_return_trials() {
+        // Classifier: bare scalars (incl. ascription form) = true; heap/compound renders = false; non-Output = false.
+        assert!(expect_is_scalar_return(&GExpect::Output("42".into())));
+        assert!(expect_is_scalar_return(&GExpect::Output(
+            "(: 42 Int64)".into()
+        )));
+        assert!(expect_is_scalar_return(&GExpect::Output("-3".into())));
+        assert!(expect_is_scalar_return(&GExpect::Output("true".into())));
+        assert!(expect_is_scalar_return(&GExpect::Output("'a'".into())));
+        assert!(!expect_is_scalar_return(&GExpect::Output(
+            "#list(5)".into()
+        )));
+        assert!(!expect_is_scalar_return(&GExpect::Output("(1 2)".into())));
+        assert!(!expect_is_scalar_return(&GExpect::Output("\"hi\"".into())));
+        assert!(!expect_is_scalar_return(&GExpect::Trap("boom".into())));
+
+        // The 3-false-pos shape: trial 0 returns empty (0 cells), a LATER trial returns a heap value (2
+        // reachable cells) — NOT a leak. With the discriminator (later trial = heap-return), it PASSES;
+        // strict (no discriminator) FALSE-FAILS it.
+        assert_eq!(
+            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[true, false]),
+            None
+        );
+        assert!(check_live_objects(&[Some(0), Some(2)], Some(0), None).is_some()); // strict still fails
+
+        // A genuine scalar-return later-trial leak (both trials scalar) is STILL caught.
+        assert!(
+            check_live_objects_scalar(&[Some(0), Some(5)], Some(0), None, &[true, true])
+                .as_deref()
+                .unwrap()
+                .contains("call 1")
+        );
+        // Trial 0 is the always-checked calibration: a heap-return on trial 0 is NOT skipped.
+        assert!(check_live_objects_scalar(&[Some(2)], Some(0), None, &[false]).is_some());
+        // Empty per_trial_scalar = strict (no skip).
+        assert!(check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[]).is_some());
+        // A positional `(live-objects N1 N2)` case is unaffected by the discriminator (author-specified).
+        assert!(
+            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), Some(&[0, 0]), &[true, false])
+                .is_some()
+        );
     }
 
     /// `check_live_objects` balances EVERY trial, not just call[0] — the fix for the systemic false-green

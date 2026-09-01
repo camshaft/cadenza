@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use cdz_corpus_grade::{
-    GTrial, Grade, Outcome as GradeOutcome, Verdict, check_live_objects, decode_test_run,
-    exec_exit, grade_run,
+    GTrial, Grade, Outcome as GradeOutcome, Verdict, check_live_objects_scalar, decode_test_run,
+    exec_exit, expect_is_scalar_return, grade_run,
 };
 
 use crate::{
@@ -78,12 +78,18 @@ pub fn grade(
     // the first call silently false-greened leaks that appear (or scale) on calls 2+ — the systemic gate
     // hole this harness owns. A no-heap trial contributes `None` and is skipped when balancing.
     let mut per_trial_live: Vec<Option<u32>> = Vec::new();
+    // Parallel to `per_trial_live` (one entry per trial, same order): does the trial RETURN a heap-free
+    // scalar? Fed to `check_live_objects_scalar` so a later heap-RETURN trial's 0-check is skipped (#7527).
+    let mut per_trial_scalar: Vec<bool> = Vec::new();
     let result = grade_run(
         &test_run,
         compile_status,
         compile_diag,
         diag_wire,
         |trial: &GTrial| {
+            // Record the scalar-vs-heap-return classification FIRST (before any early-return below), so it
+            // stays index-aligned with `per_trial_live` even when a trial short-circuits (bad artifact).
+            per_trial_scalar.push(expect_is_scalar_return(&trial.expect));
             let export = match (&trial.call, component_name) {
                 // A `(call-method …)` case has no export (empty) — leave it None so the run routes to the
                 // value-resource escape driver, which the named member reach keys off.
@@ -198,10 +204,11 @@ pub fn grade(
                 test_run.description
             );
         }
-    } else if let Some(msg) = check_live_objects(
+    } else if let Some(msg) = check_live_objects_scalar(
         &per_trial_live,
         test_run.live_objects,
         test_run.live_objects_per_call.as_deref(),
+        &per_trial_scalar,
     ) {
         result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
     }
