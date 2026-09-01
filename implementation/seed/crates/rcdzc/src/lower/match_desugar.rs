@@ -2949,6 +2949,25 @@ pub(super) fn lower_match_list(
                 }
             }
             None => {
+                // A SCALAR / STRING LITERAL arm pattern (`8`, `true`, `1.5`, `"add"`) over a LIST
+                // scrutinee. A literal pattern matches the WHOLE scrutinee value, so its type must be the
+                // scrutinee's — but a scalar/string can never equal a `List`, so this is a permanent TYPE
+                // MISMATCH (the pattern face of the `(match (list 1 2) (true 99))` ill-typedness), NOT a
+                // not-yet-lowerable shape. Reject it coded CDZ0203 up front — it previously fell through to
+                // the codeless "a list match arm … is not supported" decline below, which read as
+                // unimplemented rather than ill-typed (v-deferral decline-correctness, v-cdz-smith sweep).
+                // (Names were classified as binders above, so a non-name `Atom` here is a literal.)
+                if matches!(db.ast.get(pat), crate::ast::Struct::Atom(_)) {
+                    return Core::Poison(
+                        Reject::coded(
+                            Code::TypeMismatch,
+                            "a scalar-literal pattern cannot match a `List` scrutinee — a literal pattern \
+                             matches the whole value, but the value here is a list, not a scalar (an \
+                             element pattern is `(list …)`; a whole-list binder is a bare name)",
+                        )
+                        .at(pat),
+                    );
+                }
                 // The arm is neither a `(list …)` element pattern nor a bare binder. The COMMON way to
                 // reach here is a constructor-shaped head over a LIST scrutinee — `(Zorp x)`, `(List.Cons
                 // h t)` — i.e. a name used as a pattern ctor that a list scrutinee has no ctors for. When
