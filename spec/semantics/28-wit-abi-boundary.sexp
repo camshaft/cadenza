@@ -4426,3 +4426,21 @@ cases
   (call f (: 5 Int64))
   (output (: #record((= v 6)) (Record (: v Int64))))
   (live-objects known-leak))
+
+(case
+  "a spilled record EXPORT result RECLAIMS the def's result handle — ZERO live objects"
+  (doc
+    "SHAPE 77 - the SpillRecord-result reclaim regression-guard (NO `known-leak`, asserts 0 live objects). A spilled compound EXPORT result (`record{a,b}`) is written to the retptr'd return area by the canonical writer (`emit_result_spill`), which BORROWS the def's result handle (arr-get/etc.); the wrapper then `drop`s that handle (the def returns an OWNED result, callee-owns-args, so the caller-wrapper reclaims it — the borrowing writer retained nothing, so `drop` deep-reclaims the whole value tree). Before the reclaim the spilled result cell + its boxed children LEAKED one per call (the SpillRecord-result known-leak class the other 28-wit compound-result SHAPEs still pin as `known-leak`); this case pins the FIX (`(live-objects)` default = expect 0). A regression re-introducing the leak reds here.")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member f (func (param x (s64)) (result (record (= a (s64)) (= b (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: x Int64)) #record((= a x) (= b (+ x 1))))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: #record((= a 5) (= b 6)) (Record (: a Int64) (: b Int64)))))
