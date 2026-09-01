@@ -1620,6 +1620,27 @@ fn emit_expr_viewed(
             let k = emit_expr(db, b, key, None, env, emitted)?;
             Ok(b.list(vec![head, m, k]))
         }
+        // RUNTIME `Ast` reflection ops — `Ast.encode`/`Ast.print`/`Ast.decode` over a RUNTIME `Ast`/`Bytes`
+        // value (a compile-time-visible `Ast` folds to a constant in `ast_reflect`, so a SURVIVING node is
+        // genuinely runtime). Each re-emits its member-access perform `((. Ast <op>) <operand>)`; the node's
+        // `discs`/`disc_ok`/`disc_err` are the Ast-sum discriminant metadata, RE-DERIVED from the operand's
+        // solved type on recompile (not carried on the surface), so the bare member-access round-trips to the
+        // same node. (v-metaprogramming owns the `Ast` codec/shape; this is the backend emit arm.)
+        Core::AstEncode { operand, .. } => {
+            let head = member_access(b, "Ast", "encode");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::AstPrint { operand, .. } => {
+            let head = member_access(b, "Ast", "print");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        Core::AstDecode { operand, .. } => {
+            let head = member_access(b, "Ast", "decode");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
         Core::MapSize { map } => {
             let head = member_access(b, "Map", "len");
             let m = emit_expr(db, b, map, None, env, emitted)?;
