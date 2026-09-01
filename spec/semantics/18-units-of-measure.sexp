@@ -86,6 +86,24 @@
   (call main (: 42 Int64))
   (output (: (Qty.of 42 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
 
+; A Qty.+ magnitude that is a FUNCTION-APPLICATION RESULT reconciles its width against the sibling
+; magnitude. Summing two same-unit quantities where one magnitude is `((fn (v1) 8) 3)` (a call result
+; carrying a bare default-Int repr) and the other is a narrow `Int8` must widen the call-result magnitude
+; to the Qty.+ magnitude width. This was a cdz-smith fuzzer finding: the backend once emitted INVALID wasm
+; here (`type mismatch: expected i64, found i32`) — a bare literal magnitude adapts to the wide slot at
+; compile time, but a call-RESULT magnitude kept its own repr and the widen was dropped. Now fixed; the
+; sum is 8 + 3 = 11. (Regression guard for the cdz-smith Qty-magnitude-over-call-result invalid-wasm.)
+(case
+  "a Qty.+ magnitude from a function-application result reconciles against an Int8 sibling"
+  (input
+    (do
+      (def (main)
+        (Qty.value
+          (+ (Qty.of ((fn (v1) 8) 3) (Unit.base #"meter"))
+             (Qty.of (: 3 Int8) (Unit.base #"meter")))))
+      (export main)))
+  (output (: 11 Int64)))
+
 ; `Qty`'s SECOND argument is a UNIT, not a type. A bare unbound name there — `(Qty Int64 meter)` — used to
 ; draw the type-oriented guidance (lowercase → "not a type variable"; uppercase → "unknown type, declare it
 ; with `(type …)`"), both NONSENSE for a unit position. It now NAMES the unit misuse ("`Qty`'s second argument
