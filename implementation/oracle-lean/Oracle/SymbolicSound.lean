@@ -2098,6 +2098,62 @@ theorem denote_normalize_app_ident_and_false_r (ρ : Nat → Value) (w : IntTy) 
   subst hu1'
   rw [denote_const_bool, denoteBinary_and_false_r w u0 v h]
 
+/-! ### `.app` UNARY dispatch — the consolidated 1-ary `.app` case of the top-level `denote.induct`
+assembly. `normalizeAppIdentities` has exactly one 1-ary rewrite (`not (not x) → x`); every other unary
+application rebuilds plainly. `normalizeAppIdentities_unary_plain` reduces the non-`not-not` shapes to the
+plain form; `denote_normalize_app_unary` then dispatches fold / not-not / plain. -/
+
+/-- `normalizeAppIdentities op #[na0]` rebuilds `.app op #[na0]` UNLESS the `not (not x)` rewrite fires
+(`op = "not"` and `na0 = .app "not" #[inner]`). The hypothesis `hne` rules that out, so the unary arm
+falls through to the plain rebuild — the reduction the plain branch of the unary dispatch needs. -/
+theorem normalizeAppIdentities_unary_plain (op : String) (na0 : SymExpr)
+    (hne : ¬ ∃ inner, op = "not" ∧ na0 = .app "not" #[inner]) :
+    normalizeAppIdentities op #[na0] = .app op #[na0] := by
+  by_cases hop : op = "not"
+  · subst hop
+    rw [normalizeAppIdentities, if_pos (by simp), show (#[na0] : Array SymExpr)[0]! = na0 from rfl]
+    cases na0 <;>
+      first
+        | rfl
+        | (rename_i o oa
+           show (if (o == "not" && oa.size == 1) = true then oa[0]!
+                 else SymExpr.app "not" #[SymExpr.app o oa]) = SymExpr.app "not" #[SymExpr.app o oa]
+           by_cases hoo : (o == "not" && oa.size == 1) = true
+           · exfalso
+             simp only [Bool.and_eq_true, beq_iff_eq] at hoo
+             obtain ⟨ho, hs⟩ := hoo; subst ho
+             obtain ⟨x, hx⟩ := Array.size_eq_one_iff.mp hs
+             exact hne ⟨x, rfl, by rw [hx]⟩
+           · rw [if_neg hoo])
+  · have hb : (op == "not") = false := by simp [hop]
+    simp only [normalizeAppIdentities, hb, Bool.false_and, Array.size_singleton,
+      Nat.reduceBEq, Bool.false_eq_true, if_false]
+
+/-- CAPSTONE `.app` UNARY dispatch: soundness for a 1-ary application. `normalize` either folds it to a
+const (`foldConst?` ⇒ `denote_normalize_app_fold`), rewrites `not (not x) → x`
+(`denote_normalize_app_ident_not_not`), or rebuilds `.app op #[normalize a0]` (plain,
+`denote_normalize_app_ident_plain` via `normalizeAppIdentities_unary_plain`). The not-not vs plain split is
+decided structurally on `normalize a0`. A building block of the top-level `denote.induct` `.app` case. -/
+theorem denote_normalize_app_unary (ρ : Nat → Value) (w : IntTy) (op : String) (a0 : SymExpr) (v : Value)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app op #[a0]) = .value v) :
+    denote ρ w (normalize (.app op #[a0])) = .value v := by
+  have ihm : ∀ x ∈ (#[a0] : Array SymExpr), ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u := by
+    intro x hx u hu; simp only [Array.mem_singleton] at hx; subst hx; exact ih0 u hu
+  cases hfold : foldConst? op (#[a0].attach.map (fun x => normalize x.val)) with
+  | some vf => exact denote_normalize_app_fold ρ w op #[a0] vf v hfold ihm h
+  | none =>
+    by_cases hm : ∃ inner, op = "not" ∧ normalize a0 = .app "not" #[inner]
+    · obtain ⟨inner, hop, hn0⟩ := hm
+      subst hop
+      exact denote_normalize_app_ident_not_not ρ w a0 inner v hn0 hfold ih0 h
+    · have hplain : normalize (.app op #[a0])
+          = .app op ((#[a0] : Array SymExpr).attach.map (fun x => normalize x.val)) := by
+        rw [normalize_app_ident op #[a0] hfold,
+            show (#[a0] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0] by simp]
+        exact normalizeAppIdentities_unary_plain op (normalize a0) hm
+      exact denote_normalize_app_ident_plain ρ w op #[a0] v hplain ihm h
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
