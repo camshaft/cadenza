@@ -975,17 +975,30 @@ fn emit_expr_viewed(
                 Ok(b.list(vec![colon, lit, ty_node]))
             }
         }
-        // The non-finite Float constants re-emit their canonical value-form leaves (`Leaf::FloatNan` /
-        // `Leaf::FloatInf` — the surface a NaN / +∞ crosses the boundary as, added with v-metaprogramming's
-        // `Ast.Float` reification). `Core::ConstFloatInf` is the POSITIVE infinity (a negative ∞ is a negate
-        // over it), so `negative: false`. Guarded to the DEFAULT `Float64` width — a bare non-finite leaf
-        // grounds to `Float64` on recompile, so a non-64 width (which a bare leaf can't carry) still declines
-        // (a later slice), mirroring the finite `ConstFloat` width-ascription guard just above.
-        Core::ConstFloatNan if matches!(&eff_ty, Ty::Float(ft) if ft.ground_width() == 64) => {
-            Ok(b.atom_leaf(Leaf::FloatNan))
+        // The non-finite Float constants re-emit their canonical WRITTEN value forms — the member-access
+        // constants `(. Float<width> nan)` / `(. Float<width> Infinity)` (prelude.rs §float module: a
+        // `float-nan` / `float-inf` intrinsic ANNOTATED with the module width), which fold straight back to
+        // `Core::ConstFloatNan` / `Core::ConstFloatInf` on recompile. NOT a bare `Leaf::FloatNan`/`FloatInf`:
+        // those are VALUE-RENDER / `Ast.encode` leaves the FRONT-END REFUSES in expression position
+        // (`resolve.rs` poisons them → CDZ0201 "non-finite float value has no source literal form"), so a bare
+        // leaf breaks the recompile contract as soon as the const survives to a runtime VALUE position (a
+        // runtime-vs-const compare, not an all-const compare that folds away) — the adv-hop2 finding (breaker)
+        // #7298 shipped. The per-width `Float<width>` module name carries the width, so this now handles EVERY
+        // float width (the earlier `== 64` guard is subsumed). `Core::ConstFloatInf` is the POSITIVE infinity
+        // (a negative ∞ is `(- Float<width>.Infinity)`).
+        Core::ConstFloatNan if matches!(&eff_ty, Ty::Float(_)) => {
+            let width = match &eff_ty {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            Ok(member_access(b, &format!("Float{width}"), "nan"))
         }
-        Core::ConstFloatInf if matches!(&eff_ty, Ty::Float(ft) if ft.ground_width() == 64) => {
-            Ok(b.atom_leaf(Leaf::FloatInf { negative: false }))
+        Core::ConstFloatInf if matches!(&eff_ty, Ty::Float(_)) => {
+            let width = match &eff_ty {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            Ok(member_access(b, &format!("Float{width}"), "Infinity"))
         }
         // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
         // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair. `Rational.of`
