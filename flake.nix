@@ -4800,15 +4800,20 @@
                 target/wasm32-unknown-unknown/release/cdz_wasm.wasm
               # wasm-pack's --release runs wasm-opt; the crate profile is opt-level="s" → -Os.
               wasm-opt -Os pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
-              # STRIP the target_features custom section. rustc/LLVM 22 EMITS 8 wasm features (incl
-              # bulk-memory-opt + call-indirect-overlong); wasm-pack's OLDER bundled binaryen lowers those 2
-              # away, but pkgs.binaryen 130/131 PRESERVES them → the guide's jco/wasm loader REJECTS the module
-              # on the SECTION DECLARATION alone (the underlying memory.copy/fill + overlong call_indirect
-              # RUN FINE — v-guide-infra proved section-stripped bytes pass guide test:unit 675/675, 0 OOB;
-              # the declaration is a metadata-rejection, not an instruction-support gap). A separate strip pass
-              # AFTER -Os guarantees the final module carries no target_features section, matching the verified
-              # artifact. Fixes guideExamplesCheck's 25 memory-access-out-of-bounds (localGate-red on main).
-              wasm-opt --strip-target-features pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
+              # LOWER the bulk-memory ops instead of stripping the feature DECLARATION. rustc/LLVM-22 emits
+              # memory.copy/fill (bulk-memory) + the target_features section declaring them. The old
+              # `--strip-target-features` removed the DECLARATION while leaving the memory.copy/fill INSTRUCTIONS
+              # in place → the guide's jco/wasm runtime then won't enable bulk-memory → memory.copy TRAPS
+              # out-of-bounds (guide-examples 252-OOB; v-guide-infra proved via `wasm-opt --print-features`:
+              # stripped bytes error "memory.copy operations require bulk memory operations"). wasm-pack works
+              # because its older binaryen -Os AUTO-LOWERED these; binaryen 130/131 -Os stopped. FIX (v-guide-
+              # infra 2026-09-01): run `--llvm-memory-copy-fill-lowering` WHILE the target_features section is
+              # still present (i.e. on the -Os output, before/instead of any strip) — it rewrites memory.copy/
+              # fill to bounds-safe loops AND drops the bulk-memory feature, so the final module has NEITHER the
+              # bulk-memory instructions NOR the feature declaration → resolves BOTH the runtime OOB (the 252)
+              # AND the jco section-rejection (the earlier 25). Supersedes the strip. (binaryen VERSION was a
+              # red herring — 117-vs-131 didn't matter; the strip-vs-lower difference did.)
+              wasm-opt --llvm-memory-copy-fill-lowering pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
             )
             runHook postBuild
           '';
