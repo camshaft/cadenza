@@ -245,7 +245,10 @@
            the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4) = \"abcd\" (end EXCLUSIVE),
            byte-len 4.")
   (input
-    (do (def (f (: s String)) (String.slice s 0)) (def (main) (String.byte-len ((f "abcdef") 4))) (export main)))
+    (do
+      (def (f (: s String)) (String.slice s 0))
+      (def (main) (String.byte-len ((f "abcdef") 4)))
+      (export main)))
   (call main)
   (output (: 4 Int64)))
 
@@ -273,7 +276,10 @@
            \"abcd\", byte-len 4 — same value as the flat form. Declines today only until the built-in-as-value
            closure synth is realized (declined(PrimAsValueNeedsClosure)).")
   (input
-    (do (def (f (: s String)) ((String.slice s) 0)) (def (main) (String.byte-len ((f "abcdef") 4))) (export main)))
+    (do
+      (def (f (: s String)) ((String.slice s) 0))
+      (def (main) (String.byte-len ((f "abcdef") 4)))
+      (export main)))
   (call main)
   (output (: 4 Int64)))
 
@@ -341,7 +347,9 @@
            (declined(PrimAsValueNeedsClosure)). `((List.at #list(10 20 30)) 1)` completes it to List.at(l,1) =
            Some 20 (0-indexed); the arm returns 20.")
   (input
-    (do (def (main) (match ((List.at #list(10 20 30)) 1) ((Some v) v) ((None _u) -1))) (export main)))
+    (do
+      (def (main) (match ((List.at #list(10 20 30)) 1) ((Some v) v) ((None _u) -1)))
+      (export main)))
   (call main)
   (output (: 20 Int64)))
 
@@ -7330,7 +7338,8 @@
            usage scan into a spurious CDZ0306. `(sm 5)` = 5+4+3+2+1 = 15. (Migrated from rcdzc
            a_recursive_functions_used_parameter_is_not_flagged_unused; the truly-unused-param face is the
            unused-parameter warning case above.)")
-  (input (do (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (def (main) (sm 5)) (export main)))
+  (input
+    (do (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (def (main) (sm 5)) (export main)))
   (output (: 15 Int64))
   (no-diagnostic "unused"))
 
@@ -13117,12 +13126,17 @@
   (output (: 3 Int64))
   (call main (: 2 Int64))
   (output (: 3 Int64))
-  ; main measures 2 (breaker census 2026-08-30, debug 05mPZxve). INC1 v1 was RETRACTED
-  ; 2026-08-31 (captures.is_empty() double-freed at DIRECT-call boundaries — 67 A/B-proven
-  ; regressions; this case pins the INDIRECT face, which stayed sound; the direct-boundary
-  ; face lives in corpus 21). Tighten to (live-objects 0) only when a SOUND reclaim
+  ; TIGHTENED to 0 (2026-09-01): INC1 increment-1 (#7342, self-recursion-gated owned-param-shell
+  ; reclaim) legitimately collapsed this — v-memory-safety A/B + WAT-balance verified (drop-calls
+  ; 1->2 balanced, guarded-all clean).
+  (live-objects 0)
+  only
+  when
+  a
+  SOUND
+  reclaim
   ; discriminator lands, with the owning lane's sign-off + a fresh census.
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "hc2 a CAPTURING closure boxed as a value stays EXCLUDED from the combinator shell-reclaim (leak, never double-free)"
@@ -13162,9 +13176,12 @@
   (output (: 1 Int64))
   (call main (: 2 Int64))
   (output (: 1 Int64))
-  ; measures 2 on main (breaker census 2026-08-30) — MUST-STAY-LEAK while capturing closures are
-  ; excluded from INC1; see doc for the over-suppression tripwire.
-  (live-objects known-leak))
+  ; TIGHTENED to 0 (2026-09-01): the tripwire FIRED on #7342 and the investigation CORRECTED the
+  ; original attribution — the 2 live cells were depth's unreclaimed tree spine (INC1's exact
+  ; target class), NOT the capturing closure's env; the capturing exclusion holds structurally
+  ; (body_is_capturing_lifted gate) and produces no measurable retention in this shape.
+  ; v-memory-safety A/B pinned the flip to #7342, WAT dup/drop balanced, guarded-all UAF-clean.
+  (live-objects 0))
 
 ; A RECURSIVE local function that CAPTURES a binding from its enclosing scope is LAMBDA-LIFTED: the local
 ; function is threaded the captured value as an explicit trailing parameter (its enclosing param's slot is
