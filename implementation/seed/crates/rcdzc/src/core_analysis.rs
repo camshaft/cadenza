@@ -411,6 +411,16 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
 /// a non-recursive (straight-line) body keeps its dispatched destructures (cbm3/adv-62). Conservative: a
 /// straight-line share buried in a recursive body is forfeited too — safe (a leak-neutral miss, never a
 /// regression); a per-`scope_node` loop-region gate can refine later if a valuable such case appears.
+///
+/// GENUINELY-RE-MATERIALIZED (v-cadenza census refinement 2, 2026-09-01): the `!is_recursive` gate was NOT
+/// enough — the actual regressors (06/09/14b-two-distinct) are a straight-line `main` matching a RECURSIVE
+/// HELPER's tuple result exactly ONCE, so `!is_recursive(main)` KEPT them, and the dispatched-on cut bound the
+/// scrutinee because it over-counted the single destructure's intra-match `SumPayload{Elem}` field-reads as
+/// multiple shares. The real distinguisher is genuine RE-MATERIALIZATION: bind only when the scrutinee is
+/// dispatched at 2+ DISTINCT sites (`count_distinct_dispatch_sites` — distinct Match nodes, not field-reads;
+/// cmb1 = 3) OR is EFFECTFUL (`subtree_reaches_host_call` — adv-62's `io.get` scrutinee, whose effect the
+/// round-trip would re-fire per inlined field-read unless bound). A single-site PURE destructure is left
+/// unbound (leak-clean at O1). See the per-entry gate below.
 pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
     // STRAIGHT-LINE-ONLY: a recursive/looping body's B2 Let-binds are not O1-reclaim-safe (the O1 loop reclaim
     // omits the drop the O2 pipeline inserts), so the cadenza-O1 path installs NOTHING there — the dispatched
@@ -422,7 +432,23 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
     let full = b2_bind_plan(db, body);
     let mut kept = Vec::with_capacity(full.len());
     for e in full {
-        if b2_is_dispatched_on(db, body, e.shared_id) {
+        // GENUINELY RE-MATERIALIZED (v-cadenza census refinement 2): the dispatched-on cut ALONE was still too
+        // broad — it counted the intra-match `SumPayload{Elem}` field-reads of a SINGLE destructure as separate
+        // shares, so a 1-match k-field destructure of a straight-line `main`'s (recursive-helper) tuple result
+        // looked "shared" and got bound — an UNNECESSARY bind that LEAKS on the cadenza-O1 round-trip (06
+        // digital-root, 09 collatz, 14b-two-distinct). A value is genuinely re-materialized (worth binding)
+        // only when (a) it is dispatched at 2+ DISTINCT sites — `count_distinct_dispatch_sites` counts distinct
+        // Match/MatchSum/MatchList/SumExpect NODES, NOT the SumPayload slot-reads (cmb1's state-tuple = 3
+        // matches) — OR (b) its init is EFFECTFUL (`subtree_reaches_host_call`): the surface round-trip inlines
+        // the scrutinee at each field-read position, so an effectful scrutinee re-FIRES its effect per read
+        // unless bound once (adv-62 `(let ((v (io.get))) #tuple …)` — the double-eval trap the bind removes). A
+        // SINGLE-site PURE destructure needs NO bind: re-inlining a pure scrutinee is value-neutral and, at O1,
+        // leak-clean (the bind is what leaks). Both branches require `b2_is_dispatched_on` (a scrutinee share),
+        // which `count ≥ 2` already implies; the effectful branch adds it explicitly.
+        let genuinely_rematerialized = count_distinct_dispatch_sites(db, body, e.shared_id) >= 2
+            || (b2_is_dispatched_on(db, body, e.shared_id)
+                && crate::lower::subtree_reaches_host_call(db, e.shared_id));
+        if genuinely_rematerialized {
             kept.push(e);
         }
     }
@@ -588,6 +614,50 @@ fn b2_is_dispatched_on(db: &mut Db, body: StructId, target: StructId) -> bool {
         false
     }
     rec(db, body, target, &mut seen)
+}
+
+/// Count the DISTINCT DISPATCH SITES for `target` reachable from `body` — the number of distinct
+/// `Match`/`MatchSum`/`MatchList`/`SumExpect` NODES whose `scrutinee` is `target`. DELIBERATELY EXCLUDES
+/// `SumPayload` field-reads (unlike [`b2_is_dispatched_on`], which counts them as dispatch reads): a SINGLE
+/// match destructure `(#tuple(a b) …)` lowers each bound field to a `SumPayload{scrutinee: target, [Elem i]}`,
+/// so a 1-match k-field destructure has k `SumPayload` edges to `target`. Counting those inflates ONE
+/// dispatch into "k shares", so B2 binds a scrutinee that is dispatched only ONCE — and on the cadenza-O1
+/// round-trip that unnecessary bind LEAKS (v-cadenza-backend emit evidence: digital-root/collatz/14b-two-
+/// distinct = a straight-line `main` matching a recursive helper's tuple result ONCE; the clean-main inline
+/// emit reads the scrutinee once and is leak-0, the bind is a per-iteration O1 leak). Counting distinct MATCH
+/// SITES instead measures GENUINE re-materialization: a value dispatched at 2+ sites (cmb1's state-tuple = 3
+/// distinct matches) truly re-descends and benefits from the bind; a 1-site destructure does not. Bounded
+/// walk (visited-set dedups, so each dispatch node is counted once). See [`b2_bind_plan_scrutinee_only`].
+fn count_distinct_dispatch_sites(db: &mut Db, body: StructId, target: StructId) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let mut sites = 0usize;
+    fn rec(
+        db: &mut Db,
+        id: StructId,
+        target: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        sites: &mut usize,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        // A DISPATCH SITE = a Match/MatchSum/MatchList/SumExpect node on `target`. NOT a `SumPayload` (that is
+        // an intra-match field slot-read, not a distinct dispatch of the value — see the fn doc).
+        if matches!(core_of(db, id),
+            Core::Match { scrutinee, .. }
+            | Core::MatchSum { scrutinee, .. }
+            | Core::MatchList { scrutinee, .. }
+            | Core::SumExpect { scrutinee, .. }
+            if scrutinee == target)
+        {
+            *sites += 1;
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            rec(db, c, target, seen, sites);
+        }
+    }
+    rec(db, body, target, &mut seen, &mut sites);
+    sites
 }
 
 /// P3-NARROW (BOTH-BACKEND-safe intersection): whether every dispatch-read of `target` reachable from
