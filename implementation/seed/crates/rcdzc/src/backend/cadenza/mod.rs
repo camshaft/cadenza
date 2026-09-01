@@ -1293,7 +1293,13 @@ fn emit_expr_viewed(
             // BARE-NUMERIC result (an Arith — a Compare/StrCmp/FloatCompare result is `Bool`, so its Qty
             // operands are left untouched) whose numeric matches the operand's Qty inner, so a GENUINE
             // Qty-result arith (result `Ty::Qty`, never a bare numeric here) never peels → no regression.
-            let result_ty = crate::infer::type_of(db, id);
+            // Use `eff_ty` (the VIEW-aware type), NOT `type_of(id)`: when this arith is the WRAP-WHOLE body of a
+            // Qty-result def, `emit_def` emits it with `view = Some(inner)` (the bare magnitude), so `eff_ty` is
+            // the bare numeric even though the arith's own type is `Ty::Qty`. Peeling the operands to bare then
+            // lets the enclosing `(Qty.of … u)` wrap a genuine bare-magnitude `(+ a a)` instead of double-wrapping
+            // `(Qty.of (+ (Qty.of a u) (Qty.of a u)) u)` → CDZ0201 (Qty.of on a Qty). For a bare-result arith
+            // (view=None) `eff_ty == type_of(id)`, so the #7516 case is unchanged.
+            let result_ty = eff_ty.clone();
             let numeric_result = matches!(
                 result_ty,
                 Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational
