@@ -1707,16 +1707,36 @@ fn value_encode_renders_a_float_leaf() {
     assert_eq!(&got_n[19..21], &[0x01, 0x02], "siglen 1, magnitude [2]");
     op_drop(n);
 
-    // A NON-FINITE float declines (nan/inf have no exact-decimal form → whole encode is None).
+    // A NON-FINITE float ENCODES as its dedicated PAYLOADLESS word-form leaf (#7479): nan/inf have no
+    // exact-decimal (KIND_FLOAT) form, so they CROSS the value-encode boundary as KIND_FLOAT_NAN=17 /
+    // KIND_FLOAT_POS_INF=18 / KIND_FLOAT_NEG_INF=19 rather than declining the whole encode. The kind byte
+    // sits at index 9 (8-byte header + 1-byte leaf_count), and there is NO payload after it (unlike
+    // KIND_FLOAT's negative+exponent+siglen+magnitude). (Was `is_none()`/"declines" pre-#7479; render-ty's
+    // #7479 non-finite-encode changed the contract but this ungated unit test kept the old assertion.)
     let nan = op_box_float(f64::NAN);
-    assert!(
-        op_value_encode_form(nan, desc).is_none(),
-        "nan declines (no exact decimal)"
+    let got_nan = op_value_encode_form(nan, desc).expect("nan encodes (KIND_FLOAT_NAN)");
+    assert_eq!(
+        got_nan[9],
+        doc::KIND_FLOAT_NAN,
+        "nan → KIND_FLOAT_NAN (17), payloadless"
     );
     op_drop(nan);
-    let inf = op_box_float(f64::INFINITY);
-    assert!(op_value_encode_form(inf, desc).is_none(), "inf declines");
-    op_drop(inf);
+    let pinf = op_box_float(f64::INFINITY);
+    let got_pinf = op_value_encode_form(pinf, desc).expect("+inf encodes (KIND_FLOAT_POS_INF)");
+    assert_eq!(
+        got_pinf[9],
+        doc::KIND_FLOAT_POS_INF,
+        "+inf → KIND_FLOAT_POS_INF (18), payloadless"
+    );
+    op_drop(pinf);
+    let ninf = op_box_float(f64::NEG_INFINITY);
+    let got_ninf = op_value_encode_form(ninf, desc).expect("-inf encodes (KIND_FLOAT_NEG_INF)");
+    assert_eq!(
+        got_ninf[9],
+        doc::KIND_FLOAT_NEG_INF,
+        "-inf → KIND_FLOAT_NEG_INF (19), payloadless"
+    );
+    op_drop(ninf);
 
     assert_eq!(live_nodes(), before, "no leak: every float value dropped");
 }
@@ -1763,11 +1783,14 @@ fn value_encode_renders_a_float32_as_the_f32_shortest_decimal() {
     );
     op_drop(g);
 
-    // A non-finite f32 declines.
+    // A non-finite f32 ENCODES its dedicated payloadless word-form leaf (#7479), not declines: nan →
+    // KIND_FLOAT_NAN=17 (kind byte at index 9, no payload). (Was `is_none()`/"declines" pre-#7479.)
     let nan = op_box_float32(f32::NAN);
-    assert!(
-        op_value_encode_form(nan, desc).is_none(),
-        "f32 nan declines"
+    let got_nan = op_value_encode_form(nan, desc).expect("f32 nan encodes (KIND_FLOAT_NAN)");
+    assert_eq!(
+        got_nan[9],
+        doc::KIND_FLOAT_NAN,
+        "f32 nan → KIND_FLOAT_NAN (17), payloadless"
     );
     op_drop(nan);
 
@@ -1841,11 +1864,21 @@ fn prop_float_leaf_round_trips_bit_exact_under_random_f64() {
                 "f64 {v} (bits {bits:#018x}) must round-trip through its decimal {decimal}"
             );
         } else {
-            // nan/inf have no exact-decimal form → the walker declines (they cross by dedicated forms).
-            // (`op_box_float` canonicalizes NaN, but the encode of a non-finite still declines.)
-            assert!(
-                doc.is_none(),
-                "a non-finite float must DECLINE the value-encode, not emit garbage"
+            // nan/inf have no exact-decimal form → they ENCODE via their dedicated PAYLOADLESS word-form
+            // leaf (#7479): KIND_FLOAT_NAN=17 / KIND_FLOAT_POS_INF=18 / KIND_FLOAT_NEG_INF=19 (kind byte
+            // at index 9, no payload). `op_box_float` canonicalizes NaN, so a non-finite is not bit-round-
+            // tripped here — only its dedicated kind byte is checked. (Was `is_none()`/"declines" pre-#7479.)
+            let doc = doc.expect("a non-finite float encodes its dedicated word-form leaf");
+            let expected_kind = if v.is_nan() {
+                doc::KIND_FLOAT_NAN
+            } else if v.is_sign_positive() {
+                doc::KIND_FLOAT_POS_INF
+            } else {
+                doc::KIND_FLOAT_NEG_INF
+            };
+            assert_eq!(
+                doc[9], expected_kind,
+                "non-finite f64 {v} (bits {bits:#018x}) → its dedicated payloadless kind byte"
             );
         }
         op_drop(h);
@@ -1875,9 +1908,20 @@ fn prop_float32_leaf_round_trips_bit_exact_under_random_f32() {
                 "f32 {v} (bits {bits:#010x}) must round-trip through its decimal {decimal}"
             );
         } else {
-            assert!(
-                doc.is_none(),
-                "a non-finite f32 must DECLINE the value-encode"
+            // A non-finite f32 ENCODES via its dedicated payloadless word-form leaf (#7479), same as f64:
+            // KIND_FLOAT_NAN=17 / KIND_FLOAT_POS_INF=18 / KIND_FLOAT_NEG_INF=19 (kind byte at index 9).
+            // (Was `is_none()`/"declines" pre-#7479.)
+            let doc = doc.expect("a non-finite f32 encodes its dedicated word-form leaf");
+            let expected_kind = if v.is_nan() {
+                doc::KIND_FLOAT_NAN
+            } else if v.is_sign_positive() {
+                doc::KIND_FLOAT_POS_INF
+            } else {
+                doc::KIND_FLOAT_NEG_INF
+            };
+            assert_eq!(
+                doc[9], expected_kind,
+                "non-finite f32 {v} (bits {bits:#010x}) → its dedicated payloadless kind byte"
             );
         }
         op_drop(h);
