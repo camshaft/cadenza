@@ -13348,3 +13348,44 @@
       (def (main) (count 1 "x" 3))
       (export main)))
   (error CDZ0201 (message "list elements must share one type")))
+
+; --- Tuple-rest: an UNANNOTATED `(.. xs)` gathers HETEROGENEOUS args into a tuple -------------
+; DESIGN-variable-arity-functions.md §3.2/§3.3: a rest parameter with NO `(List T)` annotation —
+; a bare `(.. xs)` (or `(: xs Tuple)`) — gathers the trailing arguments into a TUPLE, preserving each
+; argument's own type. Because a tuple's arity + element types are static, the call is monomorphized per
+; call-site: `Tuple.size xs`, projections `(. xs i)`, and `Type.try-as` on an element all fold at compile
+; time — so the body can branch on WHAT TYPES were passed. This is the heterogeneous companion of the
+; homogeneous list-rest above.
+(case
+  "an unannotated rest parameter gathers a heterogeneous tuple whose size is known"
+  (doc
+    "`(def (describe (.. xs)) (Tuple.size xs))` gathers a MIXED-type argument run into a tuple:
+           `(describe 1 \"two\" true)` binds `xs = (1, \"two\", true) : (Tuple Int64 String Bool)`, whose
+           `Tuple.size` is 3. Pins that an unannotated rest is heterogeneous (each argument keeps its type,
+           unlike the homogeneous list-rest) and its arity is observable.")
+  (input
+    (do
+      (def (describe (.. xs)) (Tuple.size xs))
+      (def (main) (describe 1 "two" true))
+      (export main)))
+  (output (: 3 Int64)))
+
+(case
+  "a tuple-rest function branches on the type of a passed argument at compile time"
+  (doc
+    "The payoff: a tuple-rest body inspects the ACTUAL types passed. `(Type.try-as (. xs 0) : Option
+           Int64)` tests whether the first argument is an `Int64`; here `(kind \"hello\" sel)` passes a
+           `String` first, so the `Int64` view is `None` and the `String` view is `Some`, yielding 2. The
+           whole ladder folds at compile time (the element's type is static), so no runtime type tag is
+           emitted. Pins tuple-rest + `Type.try-as` composing into compile-time type-dispatch.")
+  (input
+    (do
+      (def (kind (.. xs))
+        (match (: (Type.try-as (. xs 0)) (Option Int64))
+          ((Some n) 1)
+          ((None u)
+            (match (: (Type.try-as (. xs 0)) (Option String)) ((Some s) 2) ((None u) 0)))))
+      (def (main (: sel Int64)) (kind "hello" sel))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64)))
