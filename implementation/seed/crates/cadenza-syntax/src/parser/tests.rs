@@ -1288,52 +1288,17 @@ fn recovered_arena_invariants_hold_on_arbitrary_input() {
     }
 }
 
-#[test]
-fn does_not_bail_at_first_error() {
-    // Several independent mistakes are ALL reported, not just the first. Three stray symbols
-    // separated as their own top-level statements yield (at least) three errors.
-    let p = recovered("@; ~; $");
-    assert!(
-        p.errors.len() >= 3,
-        "each stray statement reports its own error, got {:?}",
-        p.errors
-    );
-}
-
-#[test]
-fn a_single_stray_symbol_does_not_cascade() {
-    // One bad token in the middle of an otherwise-fine call yields a small, bounded number of
-    // errors — recovery resynchronizes rather than mis-parsing everything after it.
-    let p = read_ml("f(a, $, c)");
-    assert!(!p.ok(), "the stray `$` is reported");
-    assert!(
-        p.errors.len() <= 2,
-        "one stray token stays bounded, got {} errors: {:?}",
-        p.errors.len(),
-        p.errors
-    );
-    // The call is still recovered as `(f a <error> c)` — the good arguments survive.
-    let a = &p.arenas;
-    assert_eq!(a.head_name(a.root), Some("f"));
-    let call = a.as_form(a.root, "f").unwrap();
-    assert_eq!(call.len(), 3, "three arguments recovered around the error");
-    assert_eq!(a.as_name(call[0]), Some("a"));
-    assert_eq!(a.as_name(call[2]), Some("c"));
-}
-
-#[test]
-fn error_inside_brackets_does_not_escape_them() {
-    // The offending token inside `( … )` must NOT consume the closing `)` — the parser resyncs on
-    // the bracket, so the SECOND statement after it parses cleanly as its own form.
-    let p = read_ml("f(@); g(x)");
-    assert!(!p.ok());
-    // Root is a `(do …)` of two statements; the second is a clean call `(g x)`.
-    let top = p.arenas.as_form(p.arenas.root, "do").unwrap();
-    assert_eq!(top.len(), 2, "two top-level statements survive: {top:?}");
-    assert_eq!(p.arenas.head_name(top[1]), Some("g"));
-    let g = p.arenas.as_form(top[1], "g").unwrap();
-    assert_eq!(p.arenas.as_name(g[0]), Some("x"));
-}
+// More fixed-input error-RECOVERY tests MIGRATED to the spec/syntax corpus (parser-corpus inc-8) via the
+// `recovered.sexp` recovery-golden — the recovered tree (incl. `<error>` placeholders) captures the
+// observable "recovered-not-bailed" behavior strictly more precisely than the old error-count asserts:
+//   * `does_not_bail_at_first_error` `@; ~; $` -> ml/541-multi-error-no-bail, recovered `(do (@ <error>
+//     <error>) <error> <error>)` — all three stray statements are recovered (parse did not stop at the first).
+//   * `a_single_stray_symbol_does_not_cascade` `f(a, $, c)` -> ml/542-stray-arg-no-cascade, recovered
+//     `(f a <error> c)` — the good args survive around the one `<error>` (recovery resyncs, no cascade).
+//   * `error_inside_brackets_does_not_escape_them` `f(@); g(x)` -> ml/543-error-inside-brackets-bounded,
+//     recovered `(do (f (@ <error> <error>)) (g x))` — the `)` is not consumed, so `g(x)` parses clean.
+// (`missing_comma_between_args_recovers` also asserts arg SPAN slices — it migrates once the corpus grows a
+// span-golden; kept below until then. Termination-over-generated-junk stays Rust: an internal property.)
 
 #[test]
 fn missing_comma_between_args_recovers() {

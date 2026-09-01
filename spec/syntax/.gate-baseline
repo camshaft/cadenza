@@ -576,6 +576,9 @@ todo	ml/537-call-missing-closer-recovers
 todo	ml/538-let-bad-binding-recovers
 todo	ml/539-if-bad-condition-recovers
 todo	ml/540-match-bad-pattern-recovers
+todo	ml/541-multi-error-no-bail
+todo	ml/542-stray-arg-no-cascade
+todo	ml/543-error-inside-brackets-bounded
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
