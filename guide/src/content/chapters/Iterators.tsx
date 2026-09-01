@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -9,7 +9,7 @@ export default function Iterators() {
     <article>
       <H1>Iterators & ranges</H1>
       <Lede>A list holds all its elements at once. An <em>iterator</em> produces them one at a time, on demand, so you can describe an enormous (even endless) sequence and pull only the few values you actually need.</Lede>
-      <P>The shape is a <em>lazy pull</em>: an iterator answers one question, <C>next</C>, "give me the next element, and the iterator for the rest." When there's nothing left it says so. We model the answer as an <C>Option</C> of a <C>(element, rest)</C> pair: <C>(Some #tuple(v rest))</C> yields <C>v</C> and hands back the iterator <C>rest</C> for what follows, or <C>(None unit)</C> when the sequence is exhausted.</P>
+      <P>The shape is a <em>lazy pull</em>: an iterator answers one question, <C>next</C>, "give me the next element, and the iterator for the rest." When there's nothing left it says so. We model the answer as an <C>Option</C> of a <C>(element, rest)</C> pair: <Cadenza ast="Y2R6YXN0AAEECgRTb21lFQoBdgoEcmVzdAYAAAABAAIAAwEDAQIDAQIABAU=" kind="expr">(Some #tuple(v rest))</Cadenza> yields <C>v</C> and hands back the iterator <C>rest</C> for what follows, or <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when the sequence is exhausted.</P>
       <H2>An iterator is a value you step</H2>
       <P>Rather than a function that hides its state, we make the iterator an ordinary <em>value</em>, a small sum type naming each kind of iterator, and <C>next</C> interprets one step of it. A <C>Range</C> yields <C>lo</C>, then the range starting at <C>lo + 1</C>, until it reaches <C>hi</C>. Summing a range by stepping it to exhaustion, 1 through 4, gives <C>10</C>:</P>
       <Runnable
