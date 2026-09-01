@@ -3061,6 +3061,30 @@
   (output (: 13 Int64)))
 
 (case
+  "a STRUCTURALLY-IDENTICAL mutual-performer SCC round-trips through the cadenza backend"
+  (doc
+    "The content-addressed-spec-dedup face of the mutual-performer SCC (v-effects, dispatched by
+           v-core-opt). `ev` and `od` are STRUCTURALLY IDENTICAL — each is `(if (= n 0) 0 (+ (Cnt.tick)
+           (partner (- n 1))))` — so effect-threading specializes both to the SAME shape and the layout's
+           congruence dedup (`effect_spec_merge_map`) COLLAPSES `od#eff` into its representative `ev#eff`
+           (dropped from `layout.order`, never emitted; callers redirected). The wasm backend redirects the
+           merged spec's func-index and the rust backend canonicalizes its name; the CADENZA backend emits by
+           NAME too, so it must likewise canonicalize a `Core::Call` to the merged partner to its
+           representative — else the emitted `(def (ev#eff …) … (od#eff …))` names a def with no `(def …)` and
+           the round-trip fails `unbound name od#eff` (CDZ0101). Seeded 0, `tick` hands back the counter and
+           threads `s + 1`: four ticks over `ev(4)→od(3)→ev(2)→od(1)→ev(0)=0` read 0,1,2,3, so the sum is
+           `0 + 1 + 2 + 3` = 6. Value-equivalent on the direct path AND the cadenza round-trip — the merged
+           partner's self-consistent representative computes the identical mutual recursion.")
+  (input
+    (do
+      (effect Cnt (op tick (-> Unit Int64)))
+      (def (ev (: n Int64)) (if (= n 0) 0 (+ (Cnt.tick) (od (- n 1)))))
+      (def (od (: n Int64)) (if (= n 0) 0 (+ (Cnt.tick) (ev (- n 1)))))
+      (def (main) (handle Cnt 0 ((tick (u) s (resume s (+ s 1)))) (ev 4)))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
   "a mutually-recursive group performs in one branch and recurses in the OTHER"
   (doc
     "The SPLIT-BRANCH mutual-recursion shape: unlike the case above (where the perform `(Ctr.tick)`
