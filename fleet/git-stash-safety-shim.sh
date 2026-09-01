@@ -65,6 +65,19 @@ done
 # Not a stash command → real git immediately (the 99.9% fast path).
 [ "$_sub" = "stash" ] || run_real "$@"
 
+# CWD-SCOPE GUARD (operator 2026-09-01): ~/.local/bin/git shadows `git` for EVERY process of THIS user, so on
+# a shared box it would otherwise refuse a `git stash` in OTHER repos that have nothing to do with Cadenza —
+# interfering with agents NOT working on Cadenza (operator directive: stop intercepting outside the cadenza
+# directory). The shared-stash hazard this shim guards against is REAL only for Cadenza's cross-worktree
+# stack; a non-Cadenza repo has its OWN independent stash and a bare `git stash` there is perfectly safe.
+# So unless the CWD is inside a Cadenza checkout, exec the REAL git unchanged. Marker-based (symlink-safe —
+# git resolves the real toplevel), NOT a hardcoded path: a Cadenza checkout/worktree uniquely has BOTH
+# spec/semantics and fleet/loops. Use the RESOLVED real git for detection (calling bare `git` would re-enter
+# this shim). FAIL-OPEN: not a git repo, or the marker absent → real git, no refusal. Reached only on the
+# rare stash path (past the fast path above), so it adds no cost to the 99.9% of non-stash git calls.
+_top="$("$_real" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$_top" ] || [ ! -d "$_top/spec/semantics" ] || [ ! -d "$_top/fleet/loops" ]; then run_real "$@"; fi
+
 # It's `git … stash …`. The stash OPERATION is the token right after the subcommand (if any).
 _opidx=$((_subidx + 1))
 _op=""
