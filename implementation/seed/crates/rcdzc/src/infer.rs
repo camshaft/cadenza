@@ -1224,7 +1224,37 @@ fn literal_map_insert_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty:
     None
 }
 
+/// Climb past GROUPING wrappers around `id`. A parenthesized `(expr)` reads as a zero-argument identity
+/// application `Apply { head: expr, args: [] }` (semantically `expr`), so a literal written `(3)` sits
+/// one — or more, `((3))` — grouping layers below its logical parent. Advance past each layer that wraps
+/// EXACTLY the current node (its head IS the node, no args), returning the outermost grouping (or `id`
+/// unchanged when there is none). Used by the context-climb helpers so a grouped literal sees the SAME
+/// enclosing form a bare one does (`(Qty.of (3) u)` climbs to the `Qty.of` like `(Qty.of 3 u)`). Only ever
+/// called on a bare literal, so it never mistakes a genuine nullary call `(f)` (whose head is a function
+/// name, not the literal we started from) for a grouping.
+fn skip_grouping_up(db: &mut Db, id: StructId) -> StructId {
+    let mut node = id;
+    while let Some(parent) = db.parent_of(node) {
+        let is_grouping = match resolved_ref(db, parent) {
+            Resolved::Apply { head, args } => *head == node && args.is_empty(),
+            _ => false,
+        };
+        if is_grouping {
+            node = parent;
+        } else {
+            break;
+        }
+    }
+    node
+}
+
 fn qty_magnitude_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    // A grouped magnitude `(Qty.of (3) u)` wraps the literal in a zero-arg identity application, so the
+    // literal's DIRECT parent is the grouping, not the `Qty.of` — climb past it so the width adoption
+    // fires exactly as for a bare `(Qty.of 3 u)` (else the deferred literal defaults to Int64 and a
+    // `(+ (Qty.of (3) u) (Qty.of v0:Int8 u))` emits an i64 op over an i32 magnitude → INVALID WASM, no
+    // diagnostic — the fuzzer's parenthesized-literal variant of the mixed-magnitude-width miscompile).
+    let id = skip_grouping_up(db, id);
     // The literal must be the MAGNITUDE (arg 0) of an enclosing `(Qty.of <lit> u)`.
     let qty_of = db.parent_of(id)?;
     let qhead = {
