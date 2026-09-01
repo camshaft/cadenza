@@ -399,7 +399,26 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
 /// share — cbm3's 127 state-tuple reads + adv-62's destructuring match. Used ONLY by the cadenza-at-O1 install
 /// path (`run_sharing_aware_emit(scrutinee_shares_only=true)`); the default wasm O2 path keeps the full plan.
 /// Conservative: over-exclusion at O1 only forfeits a shared-read opt, never miscompiles.
+///
+/// STRAIGHT-LINE-ONLY (v-cadenza-backend census refinement, 2026-09-01): the dispatched-on cut ALONE was still
+/// too broad — it kept a dispatched share sitting INSIDE a recursive/tail loop (a loop-carried destructure),
+/// whose per-iteration B2 `Core::Let`-bind is reclaimed by the O2 loop-reclaim but NOT at O1 → a per-iteration
+/// leak (06 digital-root, 09 collatz, 14b two-distinct regressed 0→N even under the dispatched-on filter). The
+/// distinguishing axis v-cadenza pinned: the FIXED cases (cbm3, adv-62) are STRAIGHT-LINE destructures (build
+/// once, destructure in a NON-recursive body); the regressors are LOOP-CARRIED. So gate the whole cadenza-O1
+/// set on a NON-RECURSIVE body (`!eval::is_recursive`): a recursive body's B2 binds are not O1-reclaim-safe
+/// regardless of dispatch, so install NONE there (leak-neutral vs clean main — forfeits the opt, no regression);
+/// a non-recursive (straight-line) body keeps its dispatched destructures (cbm3/adv-62). Conservative: a
+/// straight-line share buried in a recursive body is forfeited too — safe (a leak-neutral miss, never a
+/// regression); a per-`scope_node` loop-region gate can refine later if a valuable such case appears.
 pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    // STRAIGHT-LINE-ONLY: a recursive/looping body's B2 Let-binds are not O1-reclaim-safe (the O1 loop reclaim
+    // omits the drop the O2 pipeline inserts), so the cadenza-O1 path installs NOTHING there — the dispatched
+    // cut is kept only for straight-line (non-recursive) destructures. Leak-neutral over-exclusion, never a
+    // regression (v-cadenza census: this restores 06/09/14b to green while cbm3/adv-62 stay fixed).
+    if crate::eval::is_recursive(db, body) {
+        return Vec::new();
+    }
     let full = b2_bind_plan(db, body);
     let mut kept = Vec::with_capacity(full.len());
     for e in full {
