@@ -912,3 +912,27 @@
   (call main (: 50 Int64))
   (output (: 150 Int64))
   (live-objects 0))
+
+(case
+  "tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)"
+  (doc
+    "Idealistic TODO fence (corpus policy; breaker minimal pair 2026-09-01, GO from v-deferral):
+     `(do (def h (try (half k))) (half h))` must compute exactly like the `(let ((h (try (half k)))))`
+     twin — this file's header documents BOTH as the landed boundary-tail idiom, and the let twin
+     computes exactly with the same runtime user-fn operand. Today the do-def lowering handles only
+     a constant operand (codeless decline at compute.rs:1132, routed v-compiler-primitives).
+     Derivation (matching the verified let twin): half halves evens else None; quarter chains two
+     halvings through `?`: n=8 -> 2 (unwrap twice), n=6 -> -1 (3 is odd: inner fail), n=5 -> -1
+     (short-circuit at the first `?`). Auto-flips when the do-def runtime lowering lands.")
+  (input
+    (do
+      (def (half (: k Int64)) (if (= (% k 2) 0) (Some (/ k 2)) (None)))
+      (def (quarter (: k Int64)) (do (def h (try (half k))) (half h)))
+      (def (main (: n Int64)) (match (quarter n) ((Some v) v) ((None _u) -1)))
+      (export main)))
+  (call main (: 8 Int64))
+  (output (: 2 Int64))
+  (call main (: 6 Int64))
+  (output (: -1 Int64))
+  (call main (: 5 Int64))
+  (output (: -1 Int64)))
