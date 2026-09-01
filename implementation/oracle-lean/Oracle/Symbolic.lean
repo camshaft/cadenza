@@ -481,7 +481,19 @@ partial def symMatchPat (m : Module) (patId : Nat) (v : SymExpr) : Option (Optio
   | some (Node.list pc) =>
     match m.headName? (Node.list pc) with
     | some h =>
-      if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
+      if h == "None".toUTF8 then
+        -- a NULLARY `(None)` ctor pattern (the compiler emits nullary ctor patterns as 0-arg application
+        -- lists, not bare atoms) — matches a `.ctor "None"` scrutinee with NO bindings. The list-form
+        -- companion of the bare-atom `None` case above; without it `(match <None> … (None d))` was
+        -- "match arm undecidable" (None is a built-in, not a declared ctor, so `ctorAppName?` declines).
+        -- (v-cdz-smith: the ABSENT-key Map.lookup → concrete None cases.)
+        match v with
+        | .ctor t _ => if t == "None".toUTF8 then some (some []) else some none
+        | .const _ => some none
+        | .tuple _ => some none
+        | .record _ => some none
+        | _ => none
+      else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         match v with
         | .ctor t args => if t == h then (match pc[1]?, args[0]? with
                                           | some sp, some payload => symMatchPat m sp payload
