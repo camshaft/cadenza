@@ -475,6 +475,7 @@ pass	ml/549-world-contextual-keyword
 pass	ml/55-neg-prefix-call
 pass	ml/550-else-if-ladder-flat-indent
 pass	ml/554-raw-list-application
+pass	ml/555-bitwise-or-match-arm-body-parens
 pass	ml/56-neg-prefix-member
 pass	ml/57-neg-tighter-than-plus
 pass	ml/58-neg-parenthesized-operand
