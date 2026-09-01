@@ -2382,11 +2382,38 @@ fn emit_expr_viewed(
         // with its message dropped, an unreachable match, or a demoted provable trap). The message operand
         // is dropped at lowering (the wasm trap is textless, graded on the trap not its text), so a
         // placeholder `""` re-emits: `(trap "")` re-lowers to `Core::Trap` (byte-idempotent) and traps the
-        // same. (`TrapDivZero`/`TrapOverflow` are distinct wasm trap kinds — a later slice — declined below.)
+        // same. (`TrapOverflow` is a distinct wasm trap kind — a later slice — declined below; `TrapDivZero`
+        // is re-emitted kind-preservingly just after.)
         Core::Trap => {
             let head = b.name("trap");
             let msg = b.atom_leaf(Leaf::Str("".into()));
             Ok(b.list(vec![head, msg]))
+        }
+        // A KIND-PRESERVING const divide-by-zero trap. `Core::TrapDivZero` is the demote target for a
+        // fold-provable const `(/ x 0)` / `(% x 0)` in a CONDITIONALLY-reached `if` branch / `match` arm
+        // (`lower::demote_conditional_trap`) — the operator ruled (2026-08-27) the demote MUST preserve the
+        // "divide by zero" kind, not collapse to a generic `unreachable`. So re-emit the SOURCE-shape const
+        // div-by-zero `(: (/ 1 0) <IntTy>)` ascribed to the node's fixed-width int type: it lands in the SAME
+        // conditional position (a TrapDivZero is ONLY produced there), where `demote_conditional_trap`
+        // re-demotes it to `Core::TrapDivZero` of the SAME kind + width — so the round-tripped program traps
+        // identically (a bare `(trap "")` would trap "unreachable", the WRONG kind, and — since a decline is
+        // SKIPPED by the gate but a mismatched trap FAILS it — would be worse than declining). A non-fixed-width
+        // integer type (e.g. `BigInt`) declines (a later slice).
+        Core::TrapDivZero if matches!(eff_ty, Ty::Int(_)) => {
+            let tyname = eff_ty.render_name(&db.name_ctx());
+            let slash = b.name("/");
+            let one = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(1),
+                radix: Radix::Dec,
+            });
+            let zero = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(0),
+                radix: Radix::Dec,
+            });
+            let div = b.list(vec![slash, one, zero]);
+            let colon = b.name(":");
+            let ty_node = b.name(tyname.as_str());
+            Ok(b.list(vec![colon, div, ty_node]))
         }
         // A SEQUENCING BLOCK — statements evaluated in written order for their observable host effects, then
         // the TAIL is the block's value. Re-emit `(do <stmt>… <tail>)`. A `Core::Seq` is built ONLY when a
