@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -1525,6 +1526,7 @@ pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep folds to 73 (adv-69 nh7 depth-3)
 pass	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep folds through the block (adv-69 a4-depth3)
 pass	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body folds through the block (adv-69 g3-nested)
+pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)
 pass	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body folds to 73 (adv-69 c3-nested sub-face)
 pass	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body folds through the block (adv-69 a4)
 pass	a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)
@@ -9623,6 +9625,7 @@ todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
+todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a conditional abort hoisted alongside a second abortive sibling declines cleanly
 todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
@@ -9698,4 +9701,3 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)

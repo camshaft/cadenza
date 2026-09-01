@@ -152,3 +152,27 @@
       (export main)))
   (call main)
   (output (: 105 Int64)))
+
+(case
+  "a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)"
+  (doc
+    "Direction-2 hygiene (metaprogramming.md §Macros Are Hygienic): a name a macro INTRODUCES as a
+           REFERENCE MUST NOT be CAPTURED by a same-named binder at the use site — the DUAL of the binder
+           cases above (which pin that an introduced BINDER does not capture a caller reference). `(def g
+           100)` binds `g` in the macro's DEFINITION scope; `(def (m (quote body)) (quasiquote (+ g (unquote
+           body))))` references that `g`. The caller `(do (def g 1) (m 5))` has its OWN `g = 1`. Hygienically
+           the macro's introduced `g` denotes the definition-scope `100`, NOT the caller's `1`, so `(m 5)`
+           references the definition-site `g` and evaluates to `105 : Int64` (`(+ 100 5)`), not the captured
+           `6` (`(+ 1 5)`). SHOULD-WORK, tracked known-fail: the reference-side dual is not yet implemented — a
+           macro-introduced free reference is reified as bare syntax and re-resolves at the use site, so it is
+           currently CAPTURED (value 6, a silent hygiene miscompile violating §Macros Are Hygienic). Pinned as
+           a tracked known-fail (baseline `fail`, non-redding) until the definition-scope-capture mechanism
+           lands (owner v-metaprogramming; overlaps the closure-capture work), then re-pinned pass.")
+  (input
+    (do
+      (def g 100)
+      (def (m (quote body)) (quasiquote (+ g (unquote body))))
+      (def (main) (do (def g 1) (m 5)))
+      (export main)))
+  (call main)
+  (output (: 105 Int64)))
