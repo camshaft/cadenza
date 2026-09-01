@@ -2754,6 +2754,58 @@
   (call main (: false Bool))
   (output (: 0.1 Float32)))
 
+; The HEAP-carried companions to the bare Float32 canonical: a Float32 carried through a RUNTIME (non-const)
+; Option/Result crosses the boundary rendering the SAME shortest-f32 (the value_codec heap path). live-objects = the
+; reachable-RETURN count: Option/Result are GENERIC sums, so the Float32 payload is heap-BOXED (wrapper cell + boxed-f32
+; cell = 2), zero residual — v-memory-safety confirmed; the consume->0 companion proves no leak (breaker batch-443
+; EXACT-N convention). These pin v-cdz-smith's original wasm-vs-rust value-differential shape (seed 550055).
+(case
+  "a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells"
+  (doc
+    "A Float32 carried through runtime recursion in an Option (non-const-foldable, so the runtime value-heap
+           path) crosses the boundary rendering the SHORTEST f32 (28.29), per the operator ruling — matching the
+           bare/const/rust paths. This is v-cdz-smith's original divergence witness (seed 550055): wasm once rendered
+           shortest here while rust full-expanded; now both are shortest (rust #7554 / wasm #7565). live-objects 2 =
+           the reachable RETURN of a generic-sum-boxed Float32 (Some wrapper + boxed-f32), zero residual.")
+  (input
+    (do
+      (def (f (: n Int64)) (if (<= n 0) (Some (: 28.29 Float32)) (f (- n 1))))
+      (def (main) (f 3))
+      (export main)))
+  (call main)
+  (output (: (Some 28.29) (Option Float32)))
+  (live-objects 2))
+
+(case
+  "consuming a runtime Option Float32 (not returning it) leaves zero live objects"
+  (doc
+    "The self-proving companion to the Some(Float32) reachable-return witness above: instead of RETURNING the
+           heap Some(Float32), CONSUME it in a match to a scalar Int64. live-objects 0 proves the returning case's 2
+           cells are ENTIRELY the reachable RETURN value with NO residual leak — pairing returning=2 with consuming=0
+           is the decisive no-leak proof (v-memory-safety's cross-check). The Float32 is not rendered here (consumed),
+           so this pins the MEMORY half.")
+  (input
+    (do
+      (def (f (: n Int64)) (if (<= n 0) (Some (: 28.29 Float32)) (f (- n 1))))
+      (def (main) (match (f 3) ((Some _x) 1) ((None _u) 0)))
+      (export main)))
+  (call main)
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells"
+  (doc
+    "The Result/Ok symmetry of the Option/Some heap witness: Ok(Float32) via a runtime parameter crosses the
+           boundary rendering the shortest f32 (0.1, distinct from the promoted 0.10000000149011612), per the operator
+           ruling. Result is a GENERIC sum like Option, so the Float32 payload is heap-boxed → live-objects 2 (Ok
+           wrapper + boxed-f32), the reachable-return count. #7565 renders the runtime top-level Ok shortest (verified
+           real-wasm).")
+  (input (do (def (f (: x Float32)) (: (Ok x) (Result Float32 Int64))) (export f)))
+  (call f (: 0.1 Float32))
+  (output (: (Ok 0.1) (Result Float32 Int64)))
+  (live-objects 2))
+
 ; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
 ; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
 ; branchless SELECT (2-arm) or a probe-chain terminal pair, and those paths grounded arm values from

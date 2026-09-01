@@ -10781,3 +10781,6 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
 pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion
+pass	a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells
+pass	consuming a runtime Option Float32 (not returning it) leaves zero live objects
+pass	a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells
