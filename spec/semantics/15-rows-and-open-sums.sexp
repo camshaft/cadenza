@@ -1545,6 +1545,49 @@
   (input (do (def (g (: n Int64)) (Tuple.split-at n 1)) (export g)))
   (error CDZ0201 (message "`Tuple.split-at` requires a tuple") (message "Int64")))
 
+; --- Tuple arity: `Tuple.size` reports a tuple's element count -------------------------------
+; type-system.md #The Arity Of A Tuple Positional Operation's Result Must Be Determined Statically: a
+; tuple carries no runtime length — its arity is part of its TYPE. `Tuple.size t` reports that arity as
+; an `Int64`, and because the arity is static the result is a compile-time constant even when the tuple
+; holds RUNTIME elements. It is the tuple companion of `List.len` (a homogeneous list has a runtime
+; spine length; a heterogeneous tuple has a static one). A non-tuple operand is the same CDZ0201 kind
+; error the other `Tuple.*` ops give.
+(case
+  "the size of a heterogeneous tuple is its element count"
+  (doc
+    "Witnesses #The Arity Of A Tuple Positional Operation's Result Must Be Determined Statically:
+           `(Tuple.size (tuple 1 \"a\" true))` is `3` — the number of positions — regardless of the
+           elements' types. Pins that a tuple's arity is observable as an `Int64`.")
+  (input (Tuple.size #tuple(1 "a" true)))
+  (output (: 3 Int64)))
+
+(case
+  "the size of the empty tuple is zero"
+  (doc
+    "The degenerate boundary: the empty tuple `(tuple)` — which IS the unit value (core-semantics.md
+           #The Empty Tuple Is The Unit Value) — has arity 0, so `(Tuple.size (tuple))` is `0`. Pins that
+           size handles the zero case rather than underflowing.")
+  (input (Tuple.size #tuple()))
+  (output (: 0 Int64)))
+
+(case
+  "a tuple's size is static even when it holds a runtime element"
+  (doc
+    "The arity is a property of the TYPE, not the values, so `(Tuple.size (tuple n 2 3 4 5))` with `n`
+           a boundary parameter is `5` for every `n` — it folds to the constant arity without evaluating
+           the tuple. Pins that a runtime element does not defeat the static-arity read (the tuple
+           companion of `List.len` on a constant-spine list), for two different `n`.")
+  (input (do (def (main (: n Int64)) (Tuple.size #tuple(n 2 3 4 5))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 5 Int64))
+  (call main (: -100 Int64))
+  (output (: 5 Int64)))
+
+(case
+  "Tuple.size over a non-tuple operand names the op and the non-tuple type"
+  (input (do (def (g (: n Int64)) (Tuple.size n)) (export g)))
+  (error CDZ0201 (message "`Tuple.size` requires a tuple") (message "Int64")))
+
 (case
   "a match on an open sum with an open-tail arm is exhaustive"
   (doc

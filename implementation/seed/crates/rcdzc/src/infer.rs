@@ -6540,6 +6540,7 @@ fn tuple_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str
         Some(crate::resolved::Prim::TupleCat) => Some("concat"),
         Some(crate::resolved::Prim::TupleSplitAt) => Some("split-at"),
         Some(crate::resolved::Prim::TuplePop) => Some("remove"),
+        Some(crate::resolved::Prim::TupleSize) => Some("size"),
         _ => None,
     }
 }

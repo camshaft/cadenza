@@ -6530,6 +6530,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::TupleCat => "tuple-cat",
         Prim::TupleSplitAt => "tuple-split-at",
         Prim::TuplePop => "tuple-pop",
+        Prim::TupleSize => "tuple-size",
         Prim::ListNew => "list-new",
         Prim::SetNew => "set-new",
         Prim::ListLen => "list-len",

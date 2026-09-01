@@ -2221,6 +2221,37 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // `Tuple.remove t` — `(tuple (. t 0) <rest>)`.
                 Some(Prim::TuplePop) if args.len() == 1 => lower_tuple_pop(db, id, args[0]),
+                // `Tuple.size t` — the tuple's ARITY as a constant `Int64`. A tuple's arity is a STATIC
+                // property of its type (no runtime tuple-length exists), so this ALWAYS folds — reading
+                // the count off the operand's `Ty::Tuple`, even for a runtime-valued tuple.
+                // TRAP-PRESERVATION (same discipline as `List.len`): folding to the constant arity
+                // DISCARDS the operand VALUE — computing the size from the static shape without
+                // evaluating the tuple construction. So when the operand is NOT provably trap-free, keep
+                // its evaluation by sequencing it before the constant via `Core::Seq` (+ `strict_force_
+                // eval` so the backend does not §283-elide the discarded statement). A trap-free operand
+                // (the overwhelmingly common case) folds to the bare constant.
+                Some(Prim::TupleSize) if args.len() == 1 => {
+                    let operand = args[0];
+                    if let Core::Poison(r) = core_of(db, operand) {
+                        Core::Poison(r)
+                    } else if let crate::ty::Ty::Tuple(elems) = crate::infer::type_of(db, operand) {
+                        let n = elems.len();
+                        trace!(target: "rcdzc::fold", node = id.0, size = n, "Tuple.size folds to the static tuple arity");
+                        let val = IntValue::from_i64(n as i64);
+                        if is_trap_free(db, operand) {
+                            Core::ConstInt(val)
+                        } else {
+                            let tail = synth_core(db, Core::ConstInt(val), crate::ty::Ty::int64());
+                            db.strict_force_eval.insert(operand);
+                            Core::Seq {
+                                stmts: std::rc::Rc::from([operand]),
+                                tail,
+                            }
+                        }
+                    } else {
+                        Core::Poison(Reject::decline("Tuple.size requires a tuple operand"))
+                    }
+                }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];

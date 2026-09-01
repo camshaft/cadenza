@@ -443,6 +443,12 @@ pub enum Prim {
     /// — the positional analogue of `Record.pop`, `(Tuple.split-at t 1)` with the singleton prefix
     /// unwrapped to its element. A one-operand op over a tuple of arity ≥ 1.
     TuplePop,
+    /// `Tuple.size t` — the tuple's ARITY as an `Int64`. A tuple's arity is a STATIC property of its
+    /// type (a tuple carries no runtime length — `type-system.md` §The Arity Of A Tuple Positional
+    /// Operation's Result Must Be Determined Statically), so this ALWAYS folds to a constant `Int` in
+    /// `lower` from the operand's `Ty::Tuple` — even for a runtime-valued tuple. It never emits a
+    /// runtime op (there is no runtime tuple-length). One operand: the tuple.
+    TupleSize,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -965,6 +971,7 @@ impl Prim {
             "tuple-cat" => Some(Prim::TupleCat),
             "tuple-split-at" => Some(Prim::TupleSplitAt),
             "tuple-pop" => Some(Prim::TuplePop),
+            "tuple-size" => Some(Prim::TupleSize),
             "list-new" => Some(Prim::ListNew),
             "set-new" => Some(Prim::SetNew),
             "list-len" => Some(Prim::ListLen),
