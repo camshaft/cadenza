@@ -23,8 +23,10 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
 · TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54; ✅ #7303
 CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
 binary-matching 104 (coordinate owner) · ✅ TrapDivZero 7 CLOSED #7313 · ✅ TrapOverflow 5 CLOSED #7319 (both
-kind-preserving) · Poison 3 (verify — may be dead-path DCE). (ConstFloatNan non-Float64 residual CLOSED by #7309.)
-So the generic-node bucket is now ONLY binary-matching 104 (owner-coordinate) + Poison 3 (verify).
+kind-preserving) · Poison 3 VERIFIED → 27 SHARED + 3 type-value GAPs ROUTED to v-metaprogramming (reflection).
+(ConstFloatNan non-Float64 residual CLOSED by #7309.) So the generic-node bucket is now ONLY binary-matching 104
+(owner-coordinate) + the 3 type-value Poison GAPs (v-metaprogramming's reflection lane) — every solo my-lane
+generic node is CLOSED or ROUTED.
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -111,8 +113,15 @@ So the generic-node bucket is now ONLY binary-matching 104 (owner-coordinate) + 
   byte-preserving (a source `(* MAX MAX)` re-emits as `(/ MIN -1)` — different source, same trap kind = correct). Guarded
   to signed ≤64-bit (unsigned / wider defer — unsigned overflow needs a different const shape). Validated: trap-kind A/B
   on runtime-vs-const survivors both trap "integer overflow"; targeted hop2 = 0 breaks.
-- [ ] **`Poison` 3.** Still VERIFY — a Poison node may be a dead/unreached rejection wasm DCEs while the cadenza walk
-  declines; confirm direct-wasm behavior before treating as a gap.
+- [~] **`Poison` 3** — VERIFIED + ROUTED (not a solo close). Full Poison scan: 30 Poison-declining programs = 27
+  SHARED (wasm ALSO rejects, e.g. `(const (+ k 1))` → CDZ0201 not-a-const — reclassify SHARED, NOT a gap) + 3 true
+  GAPs, ALL TYPE-VALUE programs in 07-type-system: `(let ((t Int64)) t)`, `(let ((t String)) (let ((u t)) u))`,
+  `(: Int64 Type)`. wasm compiles+runs these, printing the reified type value `(: Int64 Type)`; the cadenza backend
+  gets a `Core::Poison`. This is the TYPE-REFLECTION layer (v-metaprogramming owns Type.ast/-generic). A wasm-accepted
+  program carrying a Core::Poison smells like an UPSTREAM lowering gap, not something to paper over in my backend — a
+  blanket Poison→type-value emit would misfire on genuine rejections. ROUTED to v-metaprogramming (issue sent): (a) should
+  a type-as-value be a Poison at all? (b) if so, is the reified type recoverable for a narrow `Poison-at-Ty::Type` emit
+  arm `(: T Type)`? Awaiting their call before any cadenza-side emit.
 
 ## Already landed toward parity (compound-slot family + declines-coded, pre-full-parity-ruling)
 variant-at-slot #7074 · literal-at-slot + empty-sum #7153 · newtype-peel (map-key) #7181 · guarded-slot
