@@ -29,13 +29,15 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **12** (titled-break scan, corrected+precondition gate, post-#7346; all
-surface/recompilability TYPE breaks — none wrong-DATA), by family:
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **10** (was 12; #7355 closed the 2 Map folded-dup-key breaks. titled-break scan,
+corrected+precondition gate, post-#7346/#7355; all surface/recompilability TYPE breaks — none wrong-DATA), by family:
   • GENERIC/NESTED-SUM (CDZ0203 ×5): 05 depth-3 erased-and-boxed nested-sum match (breaker-reproduced) · 07
     annotated-empty-list (undetermined-empty-list control) · 07 gng1 nested generic Box-of-Pair · 09
     recursive-generic producer wrapping in a user sum consumed at one type · 09 borrowed-heap-sum-param in a
     self-recursive fn. (Same root as the under-determined-sum type_ast/generic-sum surface family.)
-  • MAP runtime-key (CDZ0201 ×2): 05 two distinct names → same value key · same string key. [breaker minimizing]
+  • ✅ MAP folded-duplicate-key (CDZ0201 ×2) — CLOSED #7355 (c4016b9f57): the optimizer folds a bound key name to
+    a literal, so `#map` gets duplicate literal keys → front-end rejects. Fix = last-wins dedup of equal CONSTANT
+    keys at emission (= runtime overwrite; runtime keys untouched). breaker-minimized both to one root cause.
   • MUTUAL-RECURSION / SCC (CDZ0101 ×2): 14b mutually-recursive performing pair threading one handler state · 14c
     caller-observed pure-mutual SCC group-wide multi-value fold (a fn in the SCC not re-emitted → unbound name).
   • do-local recursive-fn double-inlining (CDZ0201 ×1, 02) · newtype-from-PERFORM @invariant (CDZ0201 ×1, 14b).
