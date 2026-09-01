@@ -31,6 +31,15 @@
 # is answerable after the fact (there was no durable record before).
 set -uo pipefail
 
+# SILENT-CRON OBSERVABILITY (v-fleet-tooling 2026-09-01; matches drain-nudge #7339 / prune-*.sh / baseline-
+# drift-monitor). This reaper only writes REAP_LOG on a WEDGE event; a quiet pass (nothing wedged — the
+# healthy common case) is silent, so an all-silent run is indistinguishable from a DEAD cron. OVERWRITE a
+# `.last-run` next to this script on EVERY run via an EXIT trap (fires on any exit path — the "daemon
+# dispatching" / "no candidates" early exits included); its MTIME is the fired-proof, distinct from the
+# event REAP_LOG. Best-effort; never affects behavior or the exit code.
+_cdz_lastrun="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/reap-wedged-nix-clients.last-run"
+trap 'printf "%s\n" "$(date -Is 2>/dev/null || echo now)" > "$_cdz_lastrun" 2>/dev/null || true' EXIT
+
 WEDGED_CLIENT_MIN="${WEDGED_CLIENT_MIN:-180}"      # a `nix build .#checks` client older than this (min) is a CANDIDATE
 PROGRESS_WINDOW_SEC="${PROGRESS_WINDOW_SEC:-300}"  # watch for daemon dispatch over this window (5min: strong no-progress signal)
 PROGRESS_SAMPLE_SEC="${PROGRESS_SAMPLE_SEC:-3}"    # builder-presence sample interval

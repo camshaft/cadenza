@@ -19,6 +19,15 @@
 # exits 0 so a sampler tick never spams cron mail.
 set -uo pipefail
 
+# SILENT-CRON OBSERVABILITY (v-fleet-tooling 2026-09-01; matches drain-nudge #7339 / prune-*.sh / baseline-
+# drift-monitor). cpu-monitor only WRITES on an event (a reap, or a deadlock-suspect sample into its own
+# logs); a quiet */2 pass produces nothing, so an all-silent run is indistinguishable from a DEAD cron.
+# OVERWRITE a `.last-run` next to this script on EVERY run via an EXIT trap (fires on any exit path — the
+# case-branch exits included); its MTIME is the fired-proof, distinct from the event logs. Best-effort; never
+# affects behavior or the exit code.
+_cdz_lastrun="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/cpu-monitor.last-run"
+trap 'printf "%s\n" "$(date -Is 2>/dev/null || echo now)" > "$_cdz_lastrun" 2>/dev/null || true' EXIT
+
 LOG_DIR="${CDZ_CPU_MONITOR_DIR:-$HOME/.cdz-cpu-monitor}"
 LOG="$LOG_DIR/samples.tsv"
 MAX_LINES="${CDZ_CPU_MONITOR_MAX_LINES:-200000}"   # rotate: keep only the last N lines (~tens of MB cap)
