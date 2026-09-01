@@ -1283,10 +1283,39 @@ fn emit_expr_viewed(
                 ))
             })?;
             let head = b.name(sym);
+            // PEEL a Qty-typed operand of a BARE-NUMERIC-result operator. An erased `Qty.value` peel
+            // (`(Qty.value (+ q r))`) folds so the ARITH RESULT type peels to the bare inner while the
+            // OPERANDS keep `Ty::Qty` — then each operand self-constructs `(Qty.of a u)` via the `Ty::Qty`
+            // emit arm, and the recompiled `(+ (Qty.of a u) (Qty.of a u))` re-grounds to a QUANTITY, DROPPING
+            // the peel (returns `(Qty.of 42 u)` not `42` — a value miscompile; 14b handler-state Qty). Emit the
+            // operand's bare MAGNITUDE (view = inner) instead: value-equivalent (a Qty is the erased magnitude,
+            // so arith over Qtys == arith over the bare inner) and recompiles to the same bare op. Gated on a
+            // BARE-NUMERIC result (an Arith — a Compare/StrCmp/FloatCompare result is `Bool`, so its Qty
+            // operands are left untouched) whose numeric matches the operand's Qty inner, so a GENUINE
+            // Qty-result arith (result `Ty::Qty`, never a bare numeric here) never peels → no regression.
+            let result_ty = crate::infer::type_of(db, id);
+            let numeric_result = matches!(
+                result_ty,
+                Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational
+            );
+            let emit_operand = |db: &mut Db,
+                                b: &mut Builder,
+                                n: StructId,
+                                env: &mut BinderEnv|
+             -> Result<StructId, Reject> {
+                if numeric_result
+                    && let Ty::Qty { inner, .. } = crate::infer::type_of(db, n)
+                    && *inner == result_ty
+                {
+                    emit_expr_viewed(db, b, n, Some((*inner).clone()), None, env, emitted)
+                } else {
+                    emit_expr(db, b, n, None, env, emitted)
+                }
+            };
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
-            let l = emit_expr(db, b, lhs, None, env, emitted)?;
-            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            let l = emit_operand(db, b, lhs, env)?;
+            let r = emit_operand(db, b, rhs, env)?;
             Ok(b.list(vec![head, l, r]))
         }
         // RATIONAL constructors / accessors — member-access ops `((. Rational <member>) <op>…)` (member
