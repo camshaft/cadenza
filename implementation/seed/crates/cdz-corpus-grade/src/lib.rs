@@ -1470,13 +1470,19 @@ fn not_leaf(a: &Arenas, id: StructId) -> Option<String> {
 /// it the one canonical value-canon both graders share.
 pub fn canonical_output_value(text: &str) -> Result<String, String> {
     let a = cadenza_syntax::sexpr::read(text.trim()).map_err(|e| e.0)?;
-    let root = a.root;
-    // A top-level `(: value type)` ascription → the VALUE child; a bare value → the root itself.
-    let value_id = if a.head_name(root) == Some(":") {
-        children(&a, root).first().copied().unwrap_or(root)
-    } else {
-        root
-    };
+    // Strip ALL leading top-level `(: value type)` ascriptions to the bare value. Annotation is type
+    // METADATA, not value identity, so a value annotated once, twice (a redundant `(: (: v T) T)`), or not
+    // at all all denote the SAME value — looping makes the value compare ANNOTATION-INVARIANT. (Fixes the
+    // guarded-all double-annotation drift: a `(: (: (Some 5) (Option Int64)) (Option Int64))` expected vs a
+    // single-annotated `(: (Some 5) (Option Int64))` ran now both reduce to `(Some 5)`.) A genuine value
+    // never heads with the reserved `:` ascription operator, so this only unwraps real ascriptions.
+    let mut value_id = a.root;
+    while a.head_name(value_id) == Some(":") {
+        match children(&a, value_id).first().copied() {
+            Some(child) => value_id = child,
+            None => break, // a malformed bare `(:)` with no value child — stop, don't spin
+        }
+    }
     Ok(cadenza_syntax::sexpr::print_from(&a, value_id))
 }
 
@@ -1759,6 +1765,21 @@ mod tests {
             "\"parse error\""
         );
         assert_eq!(canonical_output_value("bare").unwrap(), "bare");
+    }
+
+    #[test]
+    fn canonical_output_value_is_annotation_invariant() {
+        // Annotation is type metadata, not value identity: a value annotated ZERO, ONE, or MORE times all
+        // reduce to the same bare value. The guarded-all double-annotation drift (#7329 fold): a
+        // `(: (: v T) T)` expected and a single-annotated `(: v T)` ran must BOTH canonicalize to `v`.
+        let bare = canonical_output_value("(Some 5)").unwrap();
+        let single = canonical_output_value("(: (Some 5) (Option Int64))").unwrap();
+        let double =
+            canonical_output_value("(: (: (Some 5) (Option Int64)) (Option Int64))").unwrap();
+        assert_eq!(bare, "(Some 5)");
+        assert_eq!(single, "(Some 5)");
+        assert_eq!(double, "(Some 5)");
+        assert_eq!(single, double); // the guarded-all case: expected(double) == ran(single) after canon
     }
 
     #[test]
