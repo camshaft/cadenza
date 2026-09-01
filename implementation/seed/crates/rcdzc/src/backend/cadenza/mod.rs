@@ -945,6 +945,31 @@ fn emit_expr_viewed(
         // `Ty::Symbol` value came back a `String`, confirmed). So a plain scalar emits its literal and a
         // wrapper constant emits `(X.of …)`. (`Ty::Qty` — a scaled/unit-bearing wrapper — needs unit
         // reconstruction and still declines, a later slice.) `radix` is display-only (Core drops it).
+        // A NON-default-Int64 integer constant must ASCRIBE its type: a bare integer literal re-grounds to
+        // the DEFAULT signed `Int64` on recompile, so an UNSIGNED value (e.g. `UInt64`) or one BEYOND i64
+        // range re-reads as out-of-range for Int64 (CDZ0201, "it fits `UInt64`; annotate it (: … UInt64)") —
+        // a round-trip break the bare literal caused (breaker-confirmed: `(: 18446744073709551615 UInt64)`).
+        // Emit the DIRECT ascription `(: <v> <IntTy>)` (mirrors the `BigInt` arm just below + the `ConstFloat`
+        // non-64-width ascription). Scoped to the VERIFIED classes — unsigned OR value out of i64 range; an
+        // in-range signed value keeps the bare literal via the next arm (default Int64 needs no ascription).
+        Core::ConstInt(v) if matches!(&eff_ty, Ty::Int(it) if !it.ground_signed() || v.to_i64().is_none()) =>
+        {
+            // The ascription type is built by `int_module_ast` (NOT `render_name`): it yields the RECOMPILABLE
+            // surface — a bare `UInt64`/`Int32` for a standard width, but the CTOR form `(UInt 48)` for a
+            // non-standard width (a bare `UInt48` is an unbound name → CDZ0101). The corpus writes exactly
+            // `(: <v> (UInt 48))`, so this round-trips at every width.
+            let it = match &eff_ty {
+                Ty::Int(it) => *it,
+                _ => unreachable!("guarded Ty::Int"),
+            };
+            let colon = b.name(":");
+            let n = b.atom_leaf(Leaf::Int {
+                value: v,
+                radix: Radix::Dec,
+            });
+            let ty = int_module_ast(b, it);
+            Ok(b.list(vec![colon, n, ty]))
+        }
         Core::ConstInt(v) if matches!(eff_ty, Ty::Int(_)) => Ok(b.atom_leaf(Leaf::Int {
             value: v,
             radix: Radix::Dec,
