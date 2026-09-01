@@ -1,3 +1,0 @@
-# pr455: of-int order property FALSE (i64->f64 non-decreasing, >=2^53 collapses)
-
-Copilot inline on merged PR #455 (spec/semantics/22-property-based-testing.sexp:111, comment id 3593216199). Float64.of-int is IEEE i64->f64: monotonic NON-decreasing, not strictly increasing (two distinct i64 beyond 2^53 round to the same f64). So the property a<b => of(a)<of(b) is FALSE for such inputs — a generator picking large adjacent-after-rounding ints finds a counterexample (or it's vacuously passing on a small range). FIX: use of(a) <= of(b), or constrain the generated domain to |n| < 2^53. Property-testing corpus correctness. Fix on trunk. Quote + link in queue file.
