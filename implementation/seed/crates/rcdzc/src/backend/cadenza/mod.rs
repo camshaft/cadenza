@@ -1376,7 +1376,34 @@ fn emit_expr_viewed(
             for &arg in args.iter() {
                 children.push(emit_expr(db, b, arg, None, env, emitted)?);
             }
-            Ok(b.list(children))
+            let call = b.list(children);
+            // PEEL an erased-newtype RETURN: the callee returns `Nominal{decl, inner}` but THIS node's solved
+            // type is `inner` — an `unwrap(mk(x))` fold peeled the TYPE but left the nominal-returning call as
+            // the value (e.g. the @invariant `mk` synthesized as `__invariant_construct_Percent : … -> Percent`,
+            // whose result reaches `(+ …)` un-peeled). The bare call yields the nominal where the inner is
+            // required (CDZ0201 "arithmetic is not defined on Percent"). Wrap `(match <call> ((<Ctor> n) n))` to
+            // peel to inner — value-equivalent (single-variant destructure of the erased value) + recompiles
+            // through the same erasure. Only when the mismatch is REAL: ret is an EMITTED single-variant/
+            // single-payload newtype whose inner EQUALS eff_ty and eff_ty is NOT the nominal itself.
+            let ret = callee_return_ty(db, callee);
+            if let Some(Ty::Nominal { decl, inner, .. }) = &ret
+                && eff_ty == **inner
+                && emitted.contains(decl)
+                && db
+                    .type_decl_by_occ(*decl)
+                    .is_some_and(|t| t.variants.len() == 1 && t.variants[0].payloads.len() == 1)
+                && let Some(ctor) = crate::lower::variant_head_ast(db, b, *decl, 0)
+            {
+                let x = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                let x_pat = b.name(x.clone());
+                let pat = b.list(vec![ctor, x_pat]);
+                let body = b.name(x);
+                let arm = b.list(vec![pat, body]);
+                let match_head = b.name("match");
+                return Ok(b.list(vec![match_head, call, arm]));
+            }
+            Ok(call)
         }
         // A scalar MATCH over a runtime Int/Bool/Char scrutinee — re-emit as an `if`-CHAIN of literal-equality
         // probes: `(match s (l0 b0) … (_ bn))` → `(if (= s l0) b0 (if … bn))`. This is VALUE-equivalent
@@ -4158,6 +4185,14 @@ fn map_key_const_sig(db: &mut Db, k: StructId) -> Option<String> {
         Core::ConstBytes(b) => Some(format!("Y{b:?}")),
         _ => None,
     }
+}
+
+/// The RETURN type of a callee def (index into `db.defs`) — the type of its BODY (a def's body evaluates to
+/// its return value). `None` for a body-less def. Used by the `Core::Call` emit to detect an erased-newtype
+/// return whose peel folded into the call node's own type.
+fn callee_return_ty(db: &mut Db, callee: usize) -> Option<Ty> {
+    let body = db.defs[callee].body?;
+    Some(crate::infer::type_of(db, body))
 }
 
 fn ty_has_free_arg(ty: &Ty) -> bool {
