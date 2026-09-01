@@ -1,0 +1,3 @@
+def safe(a, b) =
+  let s = try(Int64.checked-add(a, b)) in
+  Some(s)
