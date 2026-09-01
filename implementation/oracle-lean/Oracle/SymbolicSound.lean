@@ -1749,6 +1749,50 @@ theorem valEqB_sound (a b : Value) (h : valEqB a b = true) : a = b := by
       | exact eq_of_beq (by assumption)
       | (rename_i hh; exact ⟨eq_of_beq hh.1, hh.2⟩))
 
+/-- Element-wise `symExprEqB` (+ equal sizes) ⇒ the two arrays are propositionally equal. The shared
+`Array.ext` step for the app/tuple/ctor cases of `symExprEqB_sound`; `Array.all_eq_true`'s index form gives
+`symExprEqB a1[i] a2[i] = true` per index, then the per-element IH closes each. -/
+theorem arrEqB_sound (a1 a2 : Array SymExpr)
+    (hsz : (a1.size == a2.size) = true)
+    (hall : (a1.attach.zip a2).all (fun p => symExprEqB p.1.val p.2) = true)
+    (ih : ∀ (p : { x // x ∈ a1 } × SymExpr), symExprEqB p.fst.val p.snd = true → p.fst.val = p.snd) :
+    a1 = a2 := by
+  have hs : a1.size = a2.size := by simpa using hsz
+  apply Array.ext hs; intro i h1 h2
+  have hz : i < (a1.attach.zip a2).size := by simp only [Array.size_zip, Array.size_attach]; omega
+  have hb := Array.all_eq_true.mp hall i hz
+  simp only [Array.getElem_zip, Array.getElem_attach] at hb
+  exact ih (⟨a1[i], Array.getElem_mem h1⟩, a2[i]) hb
+
+/-- SOUNDNESS of the reducible `symExprEqB` (Symbolic.lean): `symExprEqB a b = true → a = b`. UNCONDITIONAL
+(it bottoms out at `valEqB`, which is `false` on any float, so a `true` result never involved a float ⇒
+structural equality is propositional). This is the primitive the capstone's `.app`-IDENTITY IDEMPOTENCE case
+(`x or x → x`) needs — the derived `SymExpr` BEq is `opaque`, so its `a == b` guard cannot be reduced in a
+proof; `symExprEqB`'s can. Proven by `symExprEqB.induct`; the app/tuple/ctor array cases via `arrEqB_sound`,
+ByteArray tags via `ByteArray.ext`, the `_ => false` shapes vacuously. -/
+theorem symExprEqB_sound (a b : SymExpr) (h : symExprEqB a b = true) : a = b := by
+  induction a, b using symExprEqB.induct with
+  | case1 a b => simp only [symExprEqB, beq_iff_eq] at h; exact congrArg _ h
+  | case2 a b => simp only [symExprEqB] at h; exact congrArg _ (valEqB_sound _ _ h)
+  | case3 o1 a1 o2 a2 ih =>
+      simp only [symExprEqB, Bool.and_eq_true, beq_iff_eq] at h
+      obtain ⟨⟨ho, hsz⟩, hall⟩ := h; subst ho; rw [arrEqB_sound a1 a2 (by simpa using hsz) hall ih]
+  | case4 c1 t1 e1 c2 t2 e2 ih3 ih2 ih1 =>
+      simp only [symExprEqB, Bool.and_eq_true] at h
+      obtain ⟨⟨hc, ht⟩, he⟩ := h; rw [ih3 hc, ih2 ht, ih1 he]
+  | case5 a1 a2 ih =>
+      simp only [symExprEqB, Bool.and_eq_true] at h
+      obtain ⟨hsz, hall⟩ := h; rw [arrEqB_sound a1 a2 (by simpa using hsz) hall ih]
+  | case6 t1 a1 t2 a2 ih =>
+      simp only [symExprEqB, Bool.and_eq_true] at h
+      obtain ⟨⟨ht, hsz⟩, hall⟩ := h
+      have htb : t1 = t2 := ByteArray.ext (eq_of_beq ht); subst htb
+      rw [arrEqB_sound a1 a2 (by simpa using hsz) hall ih]
+  | case7 b1 s1 b2 s2 ih =>
+      simp only [symExprEqB, Bool.and_eq_true] at h
+      obtain ⟨hb, hs⟩ := h; rw [ih hb, ByteArray.ext (eq_of_beq hs)]
+  | _ => simp [symExprEqB] at h
+
 theorem normalizeAppIdentities_or_true_l (b : SymExpr) :
     normalizeAppIdentities "or" #[.const (.bool true), b] = .const (.bool true) := by
   simp [normalizeAppIdentities, isConstBool]
