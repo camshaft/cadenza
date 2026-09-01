@@ -8601,6 +8601,23 @@ fn select_arm_convertible(db: &mut Db, id: StructId) -> bool {
     if matches!(core_of(db, id), Core::SumNew { .. }) && node_is_enum_disc(db, id) {
         return true;
     }
+    // HEAP-RESULT exclusion (mirror the `Core::If` select gate, emit.rs:3462 `!is_heap_type(&result) ||
+    // ty_is_enum_disc`): a `select` EVALUATES BOTH arms, so a heap-RESULT arm's freshly-allocated cell
+    // (a `Tuple`/`ListNew`/`Record`/`MapNew`/`SetOf`/non-enum-disc `SumNew`) — or any dup'd heap handle —
+    // on the NON-selected path is discarded off the stack with NO Perceus drop → a per-evaluation LEAK
+    // (the 05:26545 33-variant `(W.V33 k)`-arm leak: v-runtime rc-trace — `select` builds the un-taken
+    // `(W.V33 k)` sum shell then drops the immortal `V32` handle from `select`, orphaning the alloc). Only
+    // an ENUM-DISC sum (an i32 discriminant, no alloc — admitted above) or a scalar/float result is
+    // select-safe. `is_trap_free` conservatively covers TRAP-freedom but NOT allocation-freedom (a SumNew
+    // of trap-free payloads is trap-free yet allocates), so it mis-admits an allocating arm; this heap gate
+    // is what the branchless-select dispatch gates (dispatch.rs int/list/sum-disc terminal-pair selects)
+    // rely on — unlike the `Core::If` gate, they have no separate `is_heap_type(result)` check. Excluding a
+    // heap arm falls the match back to the structured `if` (evaluates only the taken arm) — value-identical,
+    // no leak.
+    let ty = crate::infer::type_of(db, id);
+    if is_heap_type(&ty) && !ty_is_enum_disc(db, &ty) {
+        return false;
+    }
     crate::lower::is_trap_free(db, id)
 }
 
