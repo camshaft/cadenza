@@ -686,6 +686,47 @@ mod tests {
     }
 
     #[test]
+    fn render_binary_is_depth_safe_on_a_pathologically_nested_doc() {
+        // ROBUSTNESS GATE: render_binary is the decode+render entry for UNTRUSTED binary AST — the guide's
+        // `(cdz …)` inline tag (base64 AST) and the AST-to-string refactor tool both hand it arbitrary bytes,
+        // and "binary-AST is THE exchange format" makes it a broad decode surface. A pathologically DEEP doc
+        // must NOT stack-overflow (a crash/DoS): the codec decode + the canonical printer must stay ITERATIVE
+        // (post-order arena traversal), not recursive-descent. This pins that a 50k-deep nested list renders on
+        // the DEFAULT (~2MB) test-thread stack — a depth well beyond what naive per-node recursion survives — so
+        // a future refactor that reintroduces unbounded recursion fails HERE (stack overflow aborts the run)
+        // instead of shipping a crash on the guide's untrusted input. render_ty has its own MAX_RENDER_DEPTH
+        // guard; render_binary's safety is structural (iterative), and this locks that in.
+        use crate::ast::{Builder, CompoundCtor, Leaf};
+        const DEPTH: usize = 50_000;
+        let mut b = Builder::new();
+        let mut node = b.atom_leaf(Leaf::FloatNan);
+        for _ in 0..DEPTH {
+            node = b.compound(CompoundCtor::List, &[node]);
+        }
+        let a = b.finish(node);
+        let bytes = crate::codec::encode(&a);
+        // Direct call (NOT catch_unwind — a stack overflow aborts the process, which is the desired loud
+        // signal if this regresses). Reaching the assert at all means decode + print stayed iterative.
+        let out = render_binary(
+            &bytes,
+            Format::Sexpr,
+            FragmentKind::Expr,
+            Options::default(),
+        )
+        .expect("a deeply-nested doc decodes + renders without error");
+        // `#list(` * DEPTH + `nan` + `)` * DEPTH → len == 3 + 7*DEPTH (`#list(` = 6, trailing `)` = 1, `nan` = 3).
+        assert_eq!(
+            out.len(),
+            3 + 7 * DEPTH,
+            "the {DEPTH}-deep nested list renders to the expected linear-size surface (no truncation, no collapse)"
+        );
+        assert!(
+            out.starts_with("#list(#list(") && out.contains("#list(nan)") && out.ends_with(")"),
+            "the render is the fully-nested list surface with `nan` at the core (no collapse)"
+        );
+    }
+
+    #[test]
     fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
         // A multi-line s-expr parse error's trailing `at byte N` becomes `at line:col`.
         let src = "(module m\n  (def (main)\n    (+ 1 2)))\n  )))";
