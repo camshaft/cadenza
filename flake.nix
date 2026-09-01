@@ -5058,6 +5058,9 @@
           fileset = pkgs.lib.fileset.unions [
             ./implementation/oracle-lean/lakefile.toml
             ./implementation/oracle-lean/lean-toolchain
+            # the offline lake-manifest (v-wasm-oracle talos pin): pins Interpreter + its 9 deps as path
+            # entries so lake resolves against the pre-staged .lake/packages (below) with no network.
+            ./implementation/oracle-lean/lake-manifest.json
             ./implementation/oracle-lean/Oracle.lean
             ./implementation/oracle-lean/Main.lean
             ./implementation/oracle-lean/OracleTest.lean
@@ -5074,12 +5077,32 @@
           # pkgs.lean4 (4.30.0) as part of the talos co-land: this MUST land atomically with the oracle-lean
           # lean-toolchain bump to v4.32.2 (v-wasm-oracle's zone, added on this branch) — flipping alone while
           # the committed lean-toolchain still says v4.30.0 mismatches. WIP on this co-iteration branch.
-          nativeBuildInputs = [ lean4_432 ];
+          # lean4_432 is the PREBUILT elan release → its leanc links the produced exes against the FHS
+          # interpreter /lib/ld-linux-aarch64.so.1, which is ABSENT in the pure nix sandbox → "required file
+          # not found" at runtime (dev-shell masks it since the host has /lib/ld-linux). v-nix's fix, applied
+          # here as part of the talos co-land: autoPatchelfHook rewrites the exes' interpreter → the nix ld +
+          # rpath; buildInputs supply the runtime libs (libleanshared via lean4_432, + libcc/gmp/zlib);
+          # appendRunpaths add lean's shared-lib dirs so the patched exes resolve libleanshared.
+          nativeBuildInputs = [ lean4_432 pkgs.autoPatchelfHook ];
+          buildInputs = [ lean4_432 pkgs.gmp pkgs.zlib (pkgs.lib.getLib pkgs.stdenv.cc.cc) ];
+          appendRunpaths = [ "${lean4_432}/lib" "${lean4_432}/lib/lean" ];
           buildPhase = ''
             runHook preBuild
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             # fileset.toSource copies are read-only; lake writes .lake/ into the tree.
             chmod -R u+w .
+            # Stage talos + its 9 lake deps into .lake/packages WRITABLE for OFFLINE lake resolution
+            # (v-wasm-oracle validated: lake writes .lake/ metadata into every manifest dep incl. unbuilt
+            # mathlib, so read-only store symlinks EACCES; git-type manifest entries trigger re-clone → the
+            # committed lake-manifest.json uses path-type; talos's package is at interpreter/ (name
+            # "Interpreter") so stage THAT as .lake/packages/talos). Mathlib-free: lake builds only the
+            # imported exec closure (SmallStep+Decoder.Wat, Std-only) → mathlib fetched but 0 oleans built.
+            mkdir -p .lake/packages
+            cp -r ${talosLakePackages}/talos/interpreter .lake/packages/talos
+            for d in mathlib batteries aesop Qq proofwidgets plausible importGraph LeanSearchClient Cli; do
+              cp -r ${talosLakePackages}/$d .lake/packages/$d
+            done
+            chmod -R u+w .lake/packages
             lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check
             runHook postBuild
           '';
