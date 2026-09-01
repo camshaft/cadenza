@@ -1124,6 +1124,35 @@ fn apply_lambda_uncached(
         Some(lam) => lam,
         None => return Ok(None),
     };
+    // VARARGS (`DESIGN-variable-arity-functions.md` §3.1): a rest LAST-parameter `(.. binder)` absorbs
+    // the TRAILING arguments as a single LIST value. Gather `args[fixed..]` (fixed = the count of leading
+    // fixed params) into a synth `#list(…)` and rewrite the argument list to `[fixed args…, list]` — of
+    // length exactly `params.len()` — so the ORDINARY positional zip below binds the rest binder to that
+    // list, reusing curry/pin/evalonce unchanged (and zero trailing args → the empty list `#list()`).
+    // Below the fixed count it is left alone (the existing partial-application curry keeps the `(.. binder)`
+    // param in the residual). Each gathered arg is `resolve_subtree`-pinned to its CALLER scope BEFORE it
+    // is reparented into the synth list (`push_compound` reparents; pinning memoizes resolution against the
+    // caller position — the SAME discipline the per-arg `resolve_subtree` in the zip loop uses).
+    let gathered_args: Option<Vec<StructId>> =
+        if params.last().is_some_and(|&p| is_rest_param(db, p)) && args.len() >= params.len() - 1 {
+            let fixed = params.len() - 1;
+            for &a in &args[fixed..] {
+                crate::resolve::resolve_subtree(db, a);
+            }
+            let list_value =
+                db.push_compound(crate::ast::CompoundCtor::List, args[fixed..].to_vec());
+            crate::resolve::resolve_subtree(db, list_value);
+            Some(
+                args[..fixed]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(list_value))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+    let args: &[StructId] = gathered_args.as_deref().unwrap_or(args);
     // A RECURSIVE function is not β-reducible to a normal form at compile time — decline BEFORE
     // inlining (the static check, not the depth backstop, is what stops the exponential node blow-up on
     // a branching recursive body). This is the one place every lambda application funnels through (both
@@ -1342,6 +1371,13 @@ fn copy_param(db: &mut Db, param: StructId) -> StructId {
 /// parameter resolves to (via resolve's `binder_in`), so β-substitution keys on it. Mirrors resolve's
 /// `param_name` on the evaluator side (a param occurrence is either a name atom or a `(: name T)` list).
 pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
+    // A REST parameter `(.. binder)` (varargs, `DESIGN-variable-arity-functions.md` §2): peel the `..`
+    // marker to its binder (a bare name or a `(: name T)`), then fall through to the name-of-binder logic.
+    if let Some(tail) = db.ast.as_form(param, "..")
+        && let Some(&inner) = tail.first()
+    {
+        return param_name_occ(db, inner);
+    }
     if db.ast.as_name(param).is_some() {
         return param;
     }
@@ -1351,6 +1387,23 @@ pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
         return name_occ;
     }
     param
+}
+
+/// Whether a parameter occurrence is a REST parameter `(.. binder)` — the varargs marker
+/// (`DESIGN-variable-arity-functions.md` §2). The binder inside is the name (bare or `(: name T)`) the
+/// gathered arguments bind to; `param_name_occ` peels the `..` to reach it.
+pub(crate) fn is_rest_param(db: &Db, param: StructId) -> bool {
+    db.ast.as_form(param, "..").is_some()
+}
+
+/// Whether the function `head` resolves to is VARARGS — its LAST parameter is a rest `(.. binder)`
+/// (`DESIGN-variable-arity-functions.md` §3.1). Reads the RAW parameter occurrences via [`lambda_of`]
+/// (NOT `lambda_params_of`, which peels each to its name so a `(..)` marker would be invisible), so the
+/// application arity checks can allow the surplus arguments a rest param absorbs into its list.
+pub(crate) fn callee_is_varargs(db: &mut Db, head: StructId) -> bool {
+    lambda_of(db, head)
+        .and_then(|(ps, _)| ps.last().copied())
+        .is_some_and(|p| is_rest_param(db, p))
 }
 
 /// The value to β-substitute for a parameter, carrying the parameter's TYPE ANNOTATION so its argument
