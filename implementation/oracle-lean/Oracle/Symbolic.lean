@@ -1573,7 +1573,14 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                  match callEnv with
                  | some ce => symEval m ce (fuel - 1) defaultIntTy lbodyId
                  | none => .cannotProve "symeval: a curry-chain argument is unmodelable"
-           | .sym _ => .cannotProve "symeval: non-name head is not a closure"
+           | .sym e =>
+             -- a NULLARY application `(e)` (single child, NO args) is a GROUPING — identity: `(x)` = `x`.
+             -- Mirrors eval (Eval.lean:1123-1126: a size-1 computed head returns its value). Skips the
+             -- grouping layer, matching the compiler's `skip_grouping_up` (the oracle's version of the #7227
+             -- bug — v-cdz-smith's regression-guard GROUPED magnitudes `(Qty.of (6) …)` hit this). A computed
+             -- non-closure head APPLIED to args (size > 1) stays a boundary.
+             if children.size == 1 then .sym e
+             else .cannotProve "symeval: non-name head is not a closure (computed non-function head applied)"
            | .cannotProve r => .cannotProve r)
         | none => .cannotProve "symeval: empty application (no head)"
   | none => .cannotProve "symeval: node index out of range"
@@ -2382,6 +2389,19 @@ private def _qtyAddExpr : Module :=
                .atom 0, .atom 1, .atom 2, .list #[26,27,28], .list #[29,25]],
     root := 30 }
 #guard symEval _qtyAddExpr [] symDefaultFuel defaultIntTy 30 == SymOutcome.sym (.const (.int 9))
+
+-- QTY with a GROUPED magnitude: `(Qty.value (Qty.of (0) (Unit.base #"s")))` → 0. The `(0)` is a nullary
+-- application (grouping) that symEval reduces to `0` (identity), so the Qty folds. (v-cdz-smith's #7227
+-- regression-guard grouped magnitudes hit the non-name-head grouping path.)
+private def _qtyGroupedExpr : Module :=
+  { leaves := #[.name ".".toUTF8, .name "Qty".toUTF8, .name "value".toUTF8, .name "of".toUTF8,
+                .name "Unit".toUTF8, .name "base".toUTF8, .intLit false .dec (ByteArray.mk #[0]),
+                .sym "s".toUTF8],
+    nodes := #[.atom 0, .atom 4, .atom 5, .list #[0, 1, 2], .atom 7, .list #[3, 4],
+               .atom 0, .atom 1, .atom 3, .list #[6, 7, 8], .atom 6, .list #[10], .list #[9, 11, 5],
+               .atom 0, .atom 1, .atom 2, .list #[13, 14, 15], .list #[16, 12]],
+    root := 17 }
+#guard symEval _qtyGroupedExpr [] symDefaultFuel defaultIntTy 17 == SymOutcome.sym (.const (.int 0))
 
 -- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
 -- deduped, last-wins via canonMap).
