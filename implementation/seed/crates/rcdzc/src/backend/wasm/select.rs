@@ -4427,12 +4427,35 @@ fn emit_loop_iteration(
         // self-child-proj → skip the reclaim (leak, safe). This keeps the dead-shell invariant (G3): the shell
         // is dead once its children are extracted, and the carried child is one of those extractions.
         let i = tl.param_slots.iter().position(|&s| s == slot)?;
-        if is_identity[i] {
+        // G7 (NOT DOUBLE-DROPPED): skip if this slot is ALREADY reclaimed/handled by another loop path —
+        // else our op_drop is a SECOND free of the same shell → double-free (the 10 harden traps' §5-fold
+        // class). `is_sumpayload_consume` = the §5 sum-spine reclaim (dup rest + drop old shell) already frees
+        // it; `drop_old_borrowed` = the borrowed-accumulator drop; `is_restfrom_consume` = the RestFrom
+        // vec-drop consumes it; `is_identity` = a whole re-pass (no consumption, and aliases the live slot).
+        if is_identity[i]
+            || is_sumpayload_consume[i]
+            || drop_old_borrowed[i]
+            || is_restfrom_consume[i]
+        {
             return None;
         }
-        let carried_is_self_child_proj = match core_of(db, args[i]) {
+        // G3 (dead-after-iteration via child-projection): the arg carried BACK into the scrutinee's own slot
+        // must be a CHILD-PROJECTION of it (`SumPayload`/`Proj` rooting at that same param slot) — never the
+        // node carried WHOLE. Follow a `LocalRef` to its bound value first: the projection is often
+        // let-bound (inorder's `r` = a `let`-bound `arr-get(p,2)`, read back as a `LocalRef`), so the carried
+        // arg is a `LocalRef` whose binder's core is the `Proj`/`SumPayload`. A shape we can't prove is a
+        // self-child-proj → skip (leak, safe).
+        let mut carried = args[i];
+        if let Core::LocalRef { binder } = core_of(db, carried) {
+            carried = binder;
+        }
+        let carried_is_self_child_proj = match core_of(db, carried) {
             Core::SumPayload { scrutinee: s, .. } | Core::Proj { operand: s, .. } => {
-                matches!(core_of(db, s), Core::Param { binder } | Core::LocalRef { binder }
+                let mut root = s;
+                if let Core::LocalRef { binder } = core_of(db, root) {
+                    root = binder;
+                }
+                matches!(core_of(db, root), Core::Param { binder } | Core::LocalRef { binder }
                     if slots.get(&binder) == Some(&slot))
             }
             _ => false,
