@@ -1795,7 +1795,7 @@
         (handle
           Env
           0
-          ((vars (u) s (resume (Map.insert (Map.insert Map.empty 1 10) 2 20) s)))
+          ((vars (u) s (resume #map((= 1 10) (= 2 20)) s)))
           (match (Map.lookup (Env.vars unit) k) ((Some v) v) ((None u) -1))))
       (export main)))
   (call main (: 2 Int64))
@@ -3923,7 +3923,7 @@
       (def
         (main (: n Int64))
         (do
-          (def table (Map.insert Map.empty 1 #set(2 5 9)))
+          (def table #map((= 1 #set(2 5 9))))
           (handle
             St
             n
@@ -3951,7 +3951,7 @@
       (def
         (main (: n Int64))
         (do
-          (def inner (Map.insert (Map.insert Map.empty 5 100) 6 250))
+          (def inner #map((= 5 100) (= 6 250)))
           (handle
             St
             n
@@ -3980,7 +3980,7 @@
       (def
         (main (: n Int64))
         (do
-          (def table (Map.insert (Map.insert Map.empty 1 100) 2 250))
+          (def table #map((= 1 100) (= 2 250)))
           (handle
             St
             0
@@ -5354,7 +5354,7 @@
           ((index
               (u)
               s
-              (resume (Map.insert (Map.insert Map.empty "a" #list(1 2 n)) "b" #list(40)) s)))
+              (resume #map((= "a" #list(1 2 n)) (= "b" #list(40))) s)))
           (let
             ((m (St.index)))
             (+
@@ -5630,7 +5630,7 @@
           0
           ((stamp (m) s (resume (Map.insert m (if (= s 0) "first" "second") (+ s n)) (+ s 1))))
           (let
-            ((m2 (St.stamp (St.stamp (Map.insert Map.empty "seed" 1)))))
+            ((m2 (St.stamp (St.stamp #map((= "seed" 1))))))
             (+
               (* 100 (Map.len m2))
               (+
@@ -6780,7 +6780,7 @@
               (k m)
               s
               (resume (+ (* 10 (match (Map.lookup m k) ((Some v) v) ((None _u) -1))) (Map.len m)) s)))
-          (St.find (String.concat "k" "1") (Map.insert (Map.insert Map.empty "k1" n) "k2" 30))))
+          (St.find (String.concat "k" "1") #map((= "k1" n) (= "k2" 30)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 52 Int64)))
@@ -6924,7 +6924,7 @@
         (main (: n Int64))
         (handle
           Db
-          (Map.insert (Map.insert (Map.insert Map.empty "a" n) "b" 7) "c" 9)
+          #map((= "a" n) (= "b" 7) (= "c" 9))
           ((evict (k) m (resume (Map.len (Map.remove m k)) (Map.remove m k))))
           (+ (* 100 (Db.evict "a")) (+ (* 10 (Db.evict "b")) (Db.evict "c")))))
       (export main)))
@@ -6975,7 +6975,7 @@
         (main (: n Int64))
         (handle
           Db
-          (Map.insert (Map.insert Map.empty "a" n) "b" 30)
+          #map((= "a" n) (= "b" 30))
           ((dump (u) m (resume (Map.to-list m) m)))
           (let ((xs (Db.dump))) (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
       (export main)))
