@@ -941,15 +941,14 @@ fn body_rest_mints_binder(
     if !seen.insert(id) {
         return false;
     }
-    if let Core::SumPayload { scrutinee, path } = core_of(db, id) {
-        if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
-            && matches!(
-                core_of(db, scrutinee),
-                Core::Param { binder } | Core::LocalRef { binder } if binder == sb
-            )
-        {
-            return true;
-        }
+    if let Core::SumPayload { scrutinee, path } = core_of(db, id)
+        && matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+        && matches!(
+            core_of(db, scrutinee),
+            Core::Param { binder } | Core::LocalRef { binder } if binder == sb
+        )
+    {
+        return true;
     }
     core_child_ids(db, id)
         .into_iter()

@@ -8778,6 +8778,7 @@ pub fn body_has_caller_drop(db: &mut Db, body: StructId, layout: &Layout) -> boo
     walk(db, body, layout, &mut HashSet::new())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_call_args(
     db: &mut Db,
     callee: usize,
