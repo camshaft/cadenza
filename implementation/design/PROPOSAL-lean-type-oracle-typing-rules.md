@@ -1,8 +1,9 @@
 # Proposal — the Lean type-oracle's typing judgment (T1 core), for operator review
 
 **Author:** `design-type-oracle`.
-**Status:** PROPOSAL for operator sign-off — open PR, **not to be merged by the fleet** (the operator reviews,
-comments, and merges when ready; operator directive 2026-09-01).
+**Status:** MERGED (#7438, operator-approved "looks good", 2026-09-01). This revision is a follow-up amendment
+folding in a later operator direction — run the oracle on ALL inputs so it also catches false-ACCEPTS (§1a) —
+submitted as a fresh open PR for the operator to review and merge (the fleet does not merge it).
 **Relationship to the merged design:** this REFINES, does not replace, the landed
 [`DESIGN-lean-type-system-oracle.md`](DESIGN-lean-type-system-oracle.md) (#7421). That doc fixed the oracle's
 *shape* — the verdict algebra, the differential classification, the `(typecheck …)` wire, the increment
@@ -57,6 +58,50 @@ verdict (`WellTyped`/`IllTyped`) on a program every construct of which it fully 
 meets a deferred construct anywhere in the program, the whole program's verdict is `Unsupported`. This is the
 same soundness contract the semantics oracle uses for `Unsupported`/`Diverges` and the `differential.rs`
 `Declined⇒Agree` arm (design §1.2). §5 argues it rigorously.
+
+---
+
+## 1a. The differential runs on ALL inputs — bidirectional from the first increment (operator direction, 2026-09-01)
+
+> Operator, verbatim: *"For the type check oracle we should make sure to run it on all inputs I think. Cause
+> then we can also check that the compiler does not accept a poorly typed program as well."*
+
+The T2 fuzzer differential (design §2) feeds the oracle **every** generated program together with rcdzc's
+`cdz check` verdict — **both the accepted bucket and the rejected bucket**, not just rejects. This makes the
+oracle bidirectional from its first fuzzer increment, at the *accept/reject boundary* — no principal-type
+comparison (T4) is needed to catch either direction of a boundary-level disagreement:
+
+| rcdzc `cdz check` | oracle `infer` | finding |
+|-------------------|----------------|---------|
+| reject(code)      | `WellTyped`    | **false-reject** — over-strict coded reject (the operator's first-priority direction) |
+| decline (codeless)| `WellTyped`    | capability-gap — should-work-not-yet-built (backlog TODO) |
+| **accept**        | **`IllTyped`** | **FALSE-ACCEPT / soundness hole** — rcdzc accepted a poorly-typed program (the operator's ask here) |
+| accept            | `WellTyped`    | agree at the boundary (principal-type agreement compared at T4) |
+| reject / decline  | `IllTyped`     | agree |
+| any               | `Unsupported`  | skip — sound coverage gap |
+
+`judgeTypecheck` **already implements every row** (built, #7433): its `.illTyped _, .accept` arm emits
+`mismatch "false-accept: … (soundness hole)"`. So the false-accept direction needs no verdict-protocol change
+and no new Lean — only that the fuzzer *feed the accepted bucket too*, which is a cheap change (the `cdz check`
+verdict is already computed per program; the accept bucket streams the same `(typecheck <program> (accept))`
+item). This is the design's §1.2 row `accept + IllTyped ⇒ FALSE-ACCEPT` promoted from "reached at T4" to
+**caught at the boundary from T2**, superseding the design's earlier scheduling of the false-accept direction
+solely at T4.
+
+**Two false-accept tiers, so both land at their natural rung:**
+- **Boundary false-accept (T2):** rcdzc *accepts*, the oracle *positively rejects* (`IllTyped`) a fully-modeled
+  program → a soundness hole caught the moment T1's rules can reject. This is the operator's "compiler does not
+  accept a poorly-typed program" check, and it is available as soon as T1 lands (no T4 dependency).
+- **Principal-type false-accept (T4):** *both* accept but the inferred principal types disagree — rcdzc accepted
+  the program at the *wrong type*. This subtler hole needs the T4 type-agreement comparison (design §2 Phase T4,
+  OQ-C) and lands there.
+
+**Soundness is unchanged (§5).** The accept bucket produces a finding ONLY when the oracle returns a *positive*
+`IllTyped` on a program it *fully models*; an `Unsupported` over an accept is a `skip`, exactly as an
+`Unsupported` over a reject is. So running on all inputs strictly *adds* the false-accept checks the moment
+coverage permits and introduces **zero** new false-alarm risk — the same monotone-coverage guarantee (§5 bucket
+4). Priority is unchanged: **false-reject remains the first shipped increment** (design §6, operator); the
+accepted bucket rides the same T2 wiring at the same time because it costs nothing extra to feed it.
 
 ---
 
@@ -191,9 +236,11 @@ From this, each `mismatch` bucket is genuinely one of the four design-§1.2 outc
 2. **`WellTyped` vs codeless decline (capability-gap).** Sound by construction — routed as a backlog TODO, not
    a bug. Even if the oracle's `WellTyped` were wrong, the consequence is a spurious backlog item, not a false
    bug report against the compiler.
-3. **`IllTyped` vs accept (false-accept / soundness hole).** Reached at T4 on rcdzc's *accepted* programs. The
-   oracle rejects only on a modeled fault with a concrete code (§4). A wrong reject here is again an oracle bug
-   caught in triage, never silently filed.
+3. **`IllTyped` vs accept (false-accept / soundness hole).** Caught at the accept/reject **boundary from T2**
+   (§1a) — the fuzzer feeds rcdzc's *accepted* programs to the oracle, and a positive `IllTyped` over an accept
+   is a soundness hole, available as soon as T1's rules can reject (no T4 dependency); T4 adds the subtler
+   both-accept-but-principal-types-disagree tier. The oracle rejects only on a modeled fault with a concrete
+   code (§4). A wrong reject here is again an oracle bug caught in triage, never silently filed.
 4. **`Unsupported` — always `skip`.** Zero risk. Adding coverage strictly moves programs from bucket 4 into
    buckets 1-3, so **coverage growth is monotone: it can only ADD checks, never create a false alarm on a
    program that previously skipped correctly** (the same property `differential.rs`'s `Declined⇒Agree` relies
@@ -247,7 +294,7 @@ with a chosen default the vertical may take without escalating:
 
 ## 8. Reviewer checklist (the concrete sign-off points)
 
-The operator's review reduces to five yes/no questions:
+The operator's review reduces to six yes/no questions:
 
 1. **Is the T1 modeled subset (§1) the right first cut** — pure total core in, rows/effects/nominal/generics/
    units out until their fragment slices?
@@ -259,6 +306,9 @@ The operator's review reduces to five yes/no questions:
    disagrees on a fully-modeled program, and coverage growth is monotone" hold up?
 5. **Any construct that should move into or out of T1**, or any code mapping to change, before `v-lean-oracle`
    builds T1 on top of the landed T0.1?
+6. **Is the all-inputs / bidirectional differential (§1a) right** — the T2 fuzzer feeds both rcdzc-accepted and
+   rcdzc-rejected programs, catching boundary-level false-accepts from T2 (not deferring the whole false-accept
+   direction to T4), while false-reject stays the first shipped increment?
 
 On sign-off, `v-lean-oracle` builds T1 per §3-§4 (it owns `oracle-lean/` + `cdz-smith/src/lean.rs`; design §5).
 This proposal changes nothing already merged and blocks nothing already building — T0.1's all-declining skeleton
