@@ -109,6 +109,30 @@ decreasing_by
   · simp_wf; rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega
   · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
 
+/-- A REDUCIBLE STRUCTURAL equality on `Value` for the scalar + single-payload fragment (int/bool/str/char/
+bytes/rational/unit/none, and some/ok/err/variant recursively). Returns `false` on any FLOAT ctor
+(`float`/`floatNan`/`floatInf`/`f64`) and on the collection ctors (`tuple`/`list`/`set`/`map`/`record`).
+Foundation of the reducible SymExpr equality the capstone's `.app`-IDENTITY IDEMPOTENCE case needs (the
+derived `Value`/`SymExpr` `BEq` is `opaque` — kernel-irreducible — so a proof cannot reduce `a == b`).
+The `false`-on-float design makes soundness UNCONDITIONAL: `valEqB a b = true` can only hold when NO float
+is involved, hence structural equality ⇒ propositional equality (`valEqB_sound`). ByteArray fields compare
+via `.data` (`Array UInt8` IS `LawfulBEq`, unlike `ByteArray`). Collections `false` = sound but incomplete
+(a first increment; compound-collection equality is a follow-up). -/
+def valEqB : Value → Value → Bool
+  | .int a, .int b => a == b
+  | .bool a, .bool b => a == b
+  | .str a, .str b => a.data == b.data
+  | .char a, .char b => a.data == b.data
+  | .bytes a, .bytes b => a.data == b.data
+  | .rational a b, .rational c d => a == c && b == d
+  | .unit, .unit => true
+  | .none, .none => true
+  | .some a, .some b => valEqB a b
+  | .ok a, .ok b => valEqB a b
+  | .err a, .err b => valEqB a b
+  | .variant t1 p1, .variant t2 p2 => t1.data == t2.data && valEqB p1 p2
+  | _, _ => false
+
 /-- Is the VALUE `v` the boolean literal `b`? A REDUCIBLE STRUCTURAL check (`match` + `Bool` `==`), unlike
 `v == .bool b` whose `Value` derived `BEq` is `opaque` (kernel-irreducible). Behavior-identical to
 `v == .bool b`. Lets `foldConst?`'s `and`/`or` arm REDUCE in proofs (the capstone bool-identity cases need

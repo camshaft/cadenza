@@ -1736,6 +1736,19 @@ theorem valIsBool_eq (v : Value) (b : Bool) (h : valIsBool v b = true) : v = .bo
   · rename_i c; simp only [beq_iff_eq] at h; subst h; rfl
   · exact absurd h (by simp)
 
+/-- SOUNDNESS of the reducible `valEqB` (Symbolic.lean): `valEqB a b = true → a = b`. UNCONDITIONAL — the
+`false`-on-float design means a `true` result never involved a float, so structural equality is propositional
+equality. This is the leaf primitive for the eventual reducible SymExpr equality that discharges the
+capstone's `.app`-IDENTITY IDEMPOTENCE case (`x or x → x`) — the derived `Value`/`SymExpr` BEq is `opaque`,
+so its `a == b` guard cannot be reduced in a proof; `valEqB` can. Proven by `valEqB.induct`; ByteArray goals
+close via `ByteArray.ext_iff` + `eq_of_beq` on `.data` (`Array UInt8` is `LawfulBEq`; `ByteArray` is not). -/
+theorem valEqB_sound (a b : Value) (h : valEqB a b = true) : a = b := by
+  induction a, b using valEqB.induct <;>
+    simp_all [valEqB, Bool.and_eq_true, ByteArray.ext_iff] <;>
+    (first
+      | exact eq_of_beq (by assumption)
+      | (rename_i hh; exact ⟨eq_of_beq hh.1, hh.2⟩))
+
 theorem normalizeAppIdentities_or_true_l (b : SymExpr) :
     normalizeAppIdentities "or" #[.const (.bool true), b] = .const (.bool true) := by
   simp [normalizeAppIdentities, isConstBool]
