@@ -2556,6 +2556,24 @@ fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId
 /// checked op is shareable too. NOTE: not restricted to scalar HERE — the caller applies the scalar filter
 /// (`is_heap_type`); this predicate is purely about determinism/effect-freedom.
 fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
+    // Memoize on id ALONE: the verdict is a pure function of the immutable Core subtree (see
+    // `Db::is_cse_shareable_memo`). The worker's recursion calls THIS wrapper, so nested queries memoize —
+    // turning the per-candidate subtree re-walk (O(N²)+ on deeply-nested expressions) into O(N).
+    if let Some(&v) = db.is_cse_shareable_memo.get(&id) {
+        return v;
+    }
+    let v = is_cse_shareable_inner(db, id);
+    db.is_cse_shareable_memo.insert(id, v);
+    v
+}
+
+fn is_cse_shareable_inner(db: &mut Db, id: StructId) -> bool {
+    // Per-`Db` compile-cost counter (a memo MISS) — surfaced via `CompileOutput::is_cse_shareable_uncached_calls`
+    // for the regression guard; scoped to one `Db` so the parallel test harness can't pollute it.
+    #[cfg(test)]
+    {
+        db.is_cse_shareable_uncached_calls += 1;
+    }
     match core_of(db, id) {
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit | Core::Param { .. } => true,
         // A `let`-LOCAL reference is NOT shareable by this pass: its slot is established only when the
