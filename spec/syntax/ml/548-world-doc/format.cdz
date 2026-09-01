@@ -1,0 +1,4 @@
+/// a reducer world
+world W =
+  | export i =
+    | m : () -> u8
