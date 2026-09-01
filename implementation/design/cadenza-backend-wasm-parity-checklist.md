@@ -12,6 +12,17 @@ backend's work). A case where **both decline = SHARED** (a language/lowering lim
 cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (declines) and
 `/tmp/parity_xref.sh` (GAP-vs-SHARED classification). Re-run when closing a category to re-measure.
 
+## 🚨 VALIDATION INTEGRITY (2026-09-01) — the two gates every close MUST pass, and the trap
+A cadenza close needs BOTH: (1) the case no longer declines, AND (2) the emitted surface RECOMPILES
+(hop2: `-t cadenza` to a `.ast`, then `-t wasm` that `.ast`) AND is value-equivalent. 🪤 TRAP: detect
+emit-success by the OUTPUT FILE (`-o X; [ -s X ]`), NEVER by `compile 2>/dev/null | grep -q wrote` — cdz
+prints "wrote" to STDERR, so that grep never matches and the hop2 check silently no-ops (a HOLLOW gate that
+reports 0 breaks while checking nothing; it hid breaker's #7298 catch). Also hand-probe a RUNTIME-vs-const
+survivor for any value-emitting arm (a corpus sweep is blind to value arms whose const folds away). A
+corrected hop2 sweep on clean main (2026-09-01) found **~65 emit-but-don't-recompile breaks** — a standing
+backlog: big-UInt64-literal ascription-drop (the ConstInt arm doesn't ascribe unsigned/over-i64), List/type
+ascriptions, nested/generic user sums, Map-runtime-keys, Rational. (Reported to breaker + concierge.)
+
 ## Tally (2026-09-01 baseline scan): **968 GAP-cases** vs 1919 SHARED.
 ## Re-measured (2026-09-01, post #7268/#7257/#7259/#7278): **340 GAP** / 1543 SHARED (1883 total declines,
 down from 2887 — ~1000 more cases now compile to cadenza as the landed slices closed). Top remaining GAPs:
@@ -106,10 +117,15 @@ now ONLY binary-matching 104 (BinIntRead/Rest/Sized — owner-coordinate). EVERY
   `crate::lower::type_ast(&ty)`; it returns `None` (→ decline) when the sum type can't be rendered — chiefly
   `ncx.name_of(decl) == None` (an UNNAMED / anonymous / not-registered sum decl) or a nested unrenderable type (a
   type `Var`, a fn type, `Type`). Same family as the "generic / open user sum value" decline (mod.rs:803, 2 cases).
-  So it's a TYPE-SURFACE-RENDERING gap in the `(: value Type)` ascription path, not a value-shape gap. ⏭️ NEEDS
-  case-level diagnosis at a LOW-LOAD tick: run the 12 cases to see WHICH sum types hit `name_of==None` — if a named
-  sum just isn't in `ncx` it's a fixable registration/lookup; if genuinely ANONYMOUS (no surface name) it may be an
-  un-writable surface = reclassify SHARED. Likely overlaps the type-surface renderer (render_ty / type_ast) lane.
+  So it's a TYPE-SURFACE-RENDERING gap in the `(: value Type)` ascription path, not a value-shape gap.
+  🔬 DIAGNOSED (2026-09-01): the 12 are variant values with an un-pinned type PARAMETER (a free type ARG) — e.g.
+  `(Ok 6)` is `Result Int64 <?E>` (only Ok exercised, Err's param free). An escaping under-determined value is
+  CDZ0203-rejected by BOTH backends (SHARED); the GAP cases are consumed INTERNALLY (`=`/`match`).
+  ❌ ATTEMPTED + ABANDONED (unsound): defaulting the free arg to `Unit` for the ascription. The corrected hop2 gate
+  caught it — the free arg is NOT always unobserved: NON-LOCAL context the node can't see can fix it (a `(None)` fed
+  to a param `acc: Option Int64` → my `(Option Unit)` emit → hop2 CDZ0203 payload mismatch); the node-local
+  `expected`-fallback doesn't capture it. ⏭️ Needs REAL propagation of the surrounding-context type into the SumNew
+  ascription (not node-local defaulting) — a harder slice; STILL OPEN.
 - [x] **`TrapDivZero` 7.** NOT true-parity — a real GAP, now CLOSED #7313 (c438bc88a0). These are const `(/ x 0)`/
   `(% x 0)` demoted in a conditionally-reached branch (`demote_conditional_trap`); wasm compiles + traps "integer
   divide by zero", cadenza previously declined. Re-emit the kind-preserving source form `(: (/ 1 0) <IntTy>)` — it
