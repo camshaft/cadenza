@@ -435,7 +435,7 @@ def normalize : SymExpr → SymExpr
       -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`) AND the branch is
       -- FLOAT-FREE (`symFloatFree`): the derived `==` uses IEEE float equality where `+0.0 == -0.0`, so
       -- collapsing float branches is not meaning-preserving (`1.0/+0.0` ≠ `1.0/-0.0`) — a false `proven`.
-      | _, _ => if t' == e' && !mayTrap c' && symFloatFree t' then t' else .ite c' t' e'
+      | _, _ => if symExprEqB t' e' && !mayTrap c' && symFloatFree t' then t' else .ite c' t' e'
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
