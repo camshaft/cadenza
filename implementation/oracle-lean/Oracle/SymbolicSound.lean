@@ -1933,6 +1933,67 @@ theorem denote_normalize_app_ident_and_true_l (ρ : Nat → Value) (w : IntTy) (
   subst hu0'
   rw [ih1 u1 hu1, denoteBinary_and_true_l w u1 v h]
 
+/-! ### `.app`-IDENTITY IDEMPOTENCE (`x or x → x`, `x and x → x`) — the payoff of the reducible-equality arc
+(valEqB #7265 / symExprEqB #7304 / symExprEqB_sound #7308 / the guard swap #7312). `normalizeAppIdentities`'s
+idempotence branch now fires on `symExprEqB (normalize a0) (normalize a1)` (returns `normalize a0`, taken as
+`heq`), and `symExprEqB_sound` turns that into `normalize a0 = normalize a1` — which via the operand IHs
+gives `denote a0 = denote a1` (equal values `u0 = u1`), so `denoteBinary or/and` on two EQUAL values folds
+idempotently to that value (`denoteBinary_{or,and}_self`). BITWISE idempotence (`x&x`/`x|x`/`x^x`) is
+VACUOUS (denoteBinary bitwise is `.unsupported`, #7260), so `or`/`and` cover all non-vacuous idempotence. -/
+theorem denoteBinary_or_self (w : IntTy) (u v : Value)
+    (h : denoteBinary "or" w (.value u) (.value u) = .value v) : v = u := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool, arithOps] at h
+  cases u <;> simp_all [arithOps] <;> (rename_i b; cases b <;> simp_all)
+theorem denoteBinary_and_self (w : IntTy) (u v : Value)
+    (h : denoteBinary "and" w (.value u) (.value u) = .value v) : v = u := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool, arithOps] at h
+  cases u <;> simp_all [arithOps] <;> (rename_i b; cases b <;> simp_all)
+
+/-- CAPSTONE `.app`-IDENTITY (IDEMPOTENCE): `x or x → x`. `heq` = the idempotence branch fired
+(`normalizeAppIdentities "or" #[na0, na1] = na0`, discharged by the top assembly from the branch guards);
+`hsym` = its condition `symExprEqB na0 na1`. `symExprEqB_sound` gives `na0 = na1`, so via the IHs the
+operands denote to the SAME value, and `or` folds idempotently. -/
+theorem denote_normalize_app_ident_or_idem (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "or" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hsym : symExprEqB (normalize a0) (normalize a1) = true)
+    (heq : normalizeAppIdentities "or" #[normalize a0, normalize a1] = normalize a0)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "or" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "or" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "or" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "or" w _ _ v h
+  rw [hu0, hu1] at h
+  have hna : normalize a0 = normalize a1 := symExprEqB_sound _ _ hsym
+  have h01 : u0 = u1 := by
+    have e0 := ih0 u0 hu0; have e1 := ih1 u1 hu1; rw [hna] at e0; rw [e1] at e0; exact (Outcome.value.inj e0).symm
+  subst h01
+  rw [ih0 u0 hu0, denoteBinary_or_self w u0 v h]
+
+/-- CAPSTONE `.app`-IDENTITY (IDEMPOTENCE): `x and x → x`. -/
+theorem denote_normalize_app_ident_and_idem (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "and" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hsym : symExprEqB (normalize a0) (normalize a1) = true)
+    (heq : normalizeAppIdentities "and" #[normalize a0, normalize a1] = normalize a0)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "and" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "and" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "and" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "and" w _ _ v h
+  rw [hu0, hu1] at h
+  have hna : normalize a0 = normalize a1 := symExprEqB_sound _ _ hsym
+  have h01 : u0 = u1 := by
+    have e0 := ih0 u0 hu0; have e1 := ih1 u1 hu1; rw [hna] at e0; rw [e1] at e0; exact (Outcome.value.inj e0).symm
+  subst h01
+  rw [ih0 u0 hu0, denoteBinary_and_self w u0 v h]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
