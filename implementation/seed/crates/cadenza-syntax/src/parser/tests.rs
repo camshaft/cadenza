@@ -1465,20 +1465,10 @@ fn exhaustive_short_token_soup_always_terminates_well_formed() {
     assert!(count > 8_000, "swept a meaningful space, got {count}");
 }
 
-#[test]
-fn nested_error_reports_once_and_outer_form_survives() {
-    // A bad token nested two levels deep is reported, and every enclosing construct is still
-    // recovered up to the root.
-    let p = recovered("g(f(a, @), b)");
-    assert!(!p.ok());
-    let a = &p.arenas;
-    // outer call `(g (f a <error>) b)`
-    let g = a.as_form(a.root, "g").expect("outer call recovered");
-    assert_eq!(g.len(), 2, "outer call keeps both args: {g:?}");
-    let f = a.as_form(g[0], "f").expect("inner call recovered");
-    assert_eq!(f.len(), 2, "inner call keeps both args: {f:?}");
-    assert_eq!(a.as_name(g[1]), Some("b"), "arg after the bad one survives");
-}
+// `nested_error_reports_once_and_outer_form_survives` (a bad token two levels deep is recovered, every
+// enclosing construct survives to the root) MIGRATED to the spec/syntax corpus (parser-corpus inc-8):
+// ml/544-nested-error-outer-survives, `g(f(a, @), b)` -> recovered `(g (f a (@ <error> <error>)) b)` — the
+// outer call keeps both args, the inner call keeps both args, and `b` survives past the nested error.
 
 // ---- first-class embedded syntaxes (front-end syntax-switch) ----
 
