@@ -6809,7 +6809,7 @@ fn sum_path_tag(path: &[crate::core::PathStep]) -> String {
     tag
 }
 
-fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
+pub(super) fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
     let decl_occ = match ty.strip_nominal() {
         Ty::Sum { decl, .. } => *decl,
         _ => return Err(Reject::decline("sum construction node is not a sum type")),

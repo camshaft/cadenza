@@ -14,10 +14,11 @@
 //!   `(: (tuple 1 2) …)`        → the value is List[ Name "tuple", <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
-//! WIP (built incrementally, per concierge): covers Int / Bool / Tuple. Record / Option / Result / List /
-//! Sum / Set / Map / Float / String / Bytes / Qty are follow-up increments (each a `doc_value_node` +
-//! `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the driver keeps `cdz_render_at`
-//! for it until covered, so partial coverage is safe.
+//! WIP (built incrementally, per concierge): covers Int / Bool / Tuple / Record and the single-payload /
+//! nullary SUM (Option / Result / a bare-head user sum). List / Float / String / Bytes / Set / Map / Qty,
+//! plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up increments
+//! (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the
+//! driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -124,6 +125,74 @@ fn doc_value_node(
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
             Ok(v)
         }
+        // A SUM (Option / Result / a user sum) → a `match` over the emitted enum. Each variant arm builds
+        // the canonical `(<Variant> <payload…>)` node the wasm `value_codec` emits (value_codec.rs §Sum): a
+        // `Name <variant>` head then, for a NULLARY variant, the bare `unit` atom (`(None unit)`); for a
+        // SINGLE-payload variant, the payload's own value-node (`(Some 5)`). Head is the BARE variant name.
+        //
+        // Scope of THIS increment (Option/Result-shaped): a QUALIFIED-head sum (`sum_needs_qualified_heads`
+        // — a variant name shadowed by a type-ctor/module, so the head must render `((. Ast Str) …)`), a
+        // MULTI-field variant (a `Tuple`/`Spread` payload the codec FLATTENS as `(V p0 p1 …)`), and a
+        // RECURSIVE sum (a self-referential/`Box`ed payload needing a helper fn to terminate) each DECLINE —
+        // they are follow-up increments. A decline is never a miscompile (the driver keeps `cdz_render_at`).
+        Ty::Sum { decl, .. } => {
+            let decl_occ = *decl;
+            let sum_ty = ty.strip_nominal_and_qty().clone();
+            // A qualified-head sum needs the `(. Type Variant)` head form — not covered yet.
+            if crate::lower::sum_needs_qualified_heads(db, decl_occ) {
+                return Err(Reject::decline(
+                    "value-doc: qualified-head sum not yet covered by the rust value-doc emit (WIP)",
+                ));
+            }
+            let variant_count = db
+                .type_decl_by_occ(decl_occ)
+                .map(|t| t.variants.len())
+                .ok_or_else(|| Reject::decline("value-doc: sum has no declaration"))?;
+            let mut arms = String::new();
+            for disc in 0..variant_count as u32 {
+                // The BARE Cadenza variant name (the node head) and the Rust `<Enum>::<Variant>` match path.
+                let vname = db
+                    .type_decl_by_occ(decl_occ)
+                    .and_then(|t| t.variants.get(disc as usize).map(|v| v.name.to_string()))
+                    .ok_or_else(|| Reject::decline("value-doc: sum variant name not found"))?;
+                let path = super::expr::sum_variant_path_of_ty(db, &sum_ty, disc)?;
+                match super::expr::variant_payload_ty(db, &sum_ty, disc) {
+                    // Nullary → `(<Variant> unit)`: head atom then the canonical `unit` name atom.
+                    None => {
+                        arms.push_str(&format!(
+                            "        {path} => {{ let __hv = __b.name({vname:?}); let __u = __b.name(\"unit\"); __b.list(vec![__hv, __u]) }}\n"
+                        ));
+                    }
+                    Some(payload_ty) => {
+                        // A recursive variant boxes its payload (needs a helper to terminate) — decline.
+                        if super::enums::variant_is_recursive(db, &sum_ty, disc) {
+                            return Err(Reject::decline(
+                                "value-doc: recursive sum not yet covered by the rust value-doc emit (WIP)",
+                            ));
+                        }
+                        // A multi-field variant's payload is a `Tuple` the codec FLATTENS (`(V p0 p1 …)`) —
+                        // not the single-payload `(V p)` this increment covers. Decline (follow-up increment).
+                        if matches!(payload_ty.strip_nominal_and_qty(), Ty::Tuple(_)) {
+                            return Err(Reject::decline(
+                                "value-doc: multi-field sum variant not yet covered by the rust value-doc emit (WIP)",
+                            ));
+                        }
+                        // Single payload → `(<Variant> <payload-node>)`. The arm binds the payload by value
+                        // (moving it out of the owned enum) and walks it into a per-arm buffer, so the arm is
+                        // a block evaluating to the assembled node.
+                        let pbind = fresh(ctr);
+                        let mut armbuf = String::new();
+                        let pnode = doc_value_node(db, &payload_ty, &pbind, &mut armbuf, ctr)?;
+                        arms.push_str(&format!(
+                            "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {pnode}])\n        }}\n"
+                        ));
+                    }
+                }
+            }
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = match ({val_expr}) {{\n{arms}    }};\n"));
+            Ok(v)
+        }
         _ => Err(Reject::decline(
             "value-doc: result shape not yet covered by the rust value-doc emit (WIP)",
         )),
@@ -168,6 +237,32 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
             let v = fresh(ctr);
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
             Ok(v)
+        }
+        // A SUM TYPE → its NOMINAL name applied to type ARGS (the `render_name` shape): a MONOMORPHIC sum
+        // (`args` empty) is the bare `Name <name>` (`Sign`); a GENERIC sum is `(<Name> <T…>)` — `(Option
+        // Int64)`, `(Result Int64 Bool)` — built structurally so the head + args render as a list (NOT the
+        // whole `render_name` string in one atom, which would render `(Option Int64)` as a quoted leaf).
+        Ty::Sum { decl, args } => {
+            let args = args.clone();
+            let name = {
+                let ncx = db.name_ctx();
+                ncx.name_of(*decl).unwrap_or("<sum>").to_string()
+            };
+            if args.is_empty() {
+                let v = fresh(ctr);
+                out.push_str(&format!("    let {v} = __b.name({name:?});\n"));
+                Ok(v)
+            } else {
+                let head = fresh(ctr);
+                out.push_str(&format!("    let {head} = __b.name({name:?});\n"));
+                let mut kids = vec![head];
+                for a in args.iter() {
+                    kids.push(doc_type_node(db, a, out, ctr)?);
+                }
+                let v = fresh(ctr);
+                out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+                Ok(v)
+            }
         }
         // A leaf type — its `render_name` is the bare name (`Int64`, `Bool`, …); one `Name` atom. `{name:?}`
         // quotes it as a Rust string literal.
