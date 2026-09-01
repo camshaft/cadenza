@@ -398,7 +398,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(31) {
+    match c.variant(32) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -492,6 +492,10 @@ fn gen_main_body<C: Choice>(
         // SEMANTICS (perform / handle / resume / state-fold), a family the value-diff never reached (effects
         // were crash-checked only, via the text generator). Value-comparable.
         30 => gen_effect_body(c, out),
+        // A MULTI-OP effect body: one effect with TWO ops, each with its own handler arm, the body
+        // performing BOTH — the op DISPATCH/selection lowering (which arm discharges which perform),
+        // distinct from the single-op handler. Value-comparable (deterministic Int64).
+        31 => gen_effect_multiop_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -641,6 +645,26 @@ fn gen_effect_body<C: Choice>(c: &mut C, out: &mut String) {
         )
         .ok();
     }
+}
+
+/// A MULTI-OP effect body: `(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64))) (handle E 0
+/// ((o1 (p) s (resume <rv1> s)) (o2 (p) s (resume <rv2> s))) (+ (E.o1 <a>) (E.o2 <b>))))` — ONE effect
+/// declaring TWO operations, a handler with a per-op arm, and a body that performs BOTH. Grades the op
+/// DISPATCH/selection lowering (each perform routes to its matching arm) — distinct from the single-op
+/// [`gen_effect_body`]. Both arms resume (state unchanged; dispatch, not state-fold, is the focus).
+/// Deterministic Int64 result; small `0..=9` args; each op resumes once so it terminates. Form choices
+/// drawn BEFORE the operand literals (cursor-exhaustion trap).
+fn gen_effect_multiop_body<C: Choice>(c: &mut C, out: &mut String) {
+    let rv1 = ["(+ p 1)", "p", "(+ s p)"][c.variant(3)];
+    let rv2 = ["(* p 2)", "p", "(- p 1)"][c.variant(3)];
+    let a = c.int_bounded(0, 9);
+    let b = c.int_bounded(0, 9);
+    write!(
+        out,
+        "(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64))) \
+         (handle E 0 ((o1 (p) s (resume {rv1} s)) (o2 (p) s (resume {rv2} s))) (+ (E.o1 {a}) (E.o2 {b}))))"
+    )
+    .ok();
 }
 
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
@@ -2904,6 +2928,34 @@ mod tests {
             saw_abort,
             "effect body should reach the ABORT (non-resumptive) form"
         );
+    }
+
+    /// `gen_effect_multiop_body` emits a well-formed TWO-op effect program (one effect declaring `o1`+`o2`,
+    /// a per-op handler arm, a body performing BOTH) and every body COMPILES — the op-dispatch value
+    /// coverage the single-op handler never reached. Asserts both ops + both arms are present.
+    #[test]
+    fn gen_effect_multiop_body_is_well_formed_and_compiles() {
+        let (mut saw_two_ops, mut saw_both_performs) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1601);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_multiop_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_two_ops |= body.contains("(op o1 ") && body.contains("(op o2 ");
+            saw_both_performs |= body.contains("(E.o1 ") && body.contains("(E.o2 ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "multi-op effect body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_two_ops, "should declare two ops (o1 + o2)");
+        assert!(saw_both_performs, "should perform both ops (E.o1 + E.o2)");
     }
 
     /// `gen_list_producing_op_body` REACHES all forms (List.push, List.prepend, Set.to-list, Map.to-list)
