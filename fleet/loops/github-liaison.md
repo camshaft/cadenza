@@ -40,7 +40,10 @@ This is the source of truth for "have I already handled this" — GitHub labels 
      carrying (in `--ref` or `--body`) the GitHub issue number or the queue-file name it resolved.
      On such a note: verify the work really landed (see step 6), then **close the GitHub issue**.
    - `answer` from the concierge (a human decision you asked for).
-   Move each handled message to `processed/`.
+   Archive each handled message with `cargo xtask fleet inbox github-liaison --processed <msg>` (the
+   cwd-safe consume: it resolves the hub path on BOTH sides and moves the message for you — NEVER hand-`cd
+   <inbox> && mv`, which can target an empty worktree shadow copy, leave the real hub message unconsumed,
+   and strand you as the next-tick drain-stall the watchdog escalates).
 3. **Sync your base** per the contract (`git fetch`; rebase onto `trunk`). You don't build.
 4. **Pull NEW GitHub issues.** `gh issue list --state open --json
    number,title,body,author,labels,createdAt`. For each open issue **authored by the operator**
