@@ -972,6 +972,19 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                       | _ => .sym (SymExpr.app hs args))
                    | _, _ => .sym (SymExpr.app hs args))
                 else .sym (SymExpr.app hs args)
+              -- QUANTITY arith over two `Qty` values (`.ctor "qty" #[mag, unit]`): fold the MAGNITUDE (const
+              -- ints via `evalArithOp` at width `ty`; else keep the symbolic `.app`) and carry the first unit.
+              -- Cadenza's type system guarantees `+`/`-` share a unit; `*` multiplies units, but `Qty.value`
+              -- reads only the magnitude so the first unit is faithful for the value-extracting programs
+              -- (v-cdz-smith Qty widening #7282). `/`/`%` over Qty stay symbolic (unit division not modeled).
+              | _, #[SymExpr.ctor t1 #[m1, u1], SymExpr.ctor t2 #[m2, _]] =>
+                if t1 == "qty".toUTF8 && t2 == "qty".toUTF8 && (hs == "+" || hs == "-" || hs == "*") then
+                  let mag := match m1, m2 with
+                    | SymExpr.const (Value.int a), SymExpr.const (Value.int b) =>
+                      (match evalArithOp hs a b ty with | .value v => SymExpr.const v | _ => SymExpr.app hs #[m1, m2])
+                    | _, _ => SymExpr.app hs #[m1, m2]
+                  .sym (SymExpr.ctor "qty".toUTF8 #[mag, u1])
+                else .sym (SymExpr.app hs args)
               | _, _ => .sym (SymExpr.app hs args)
           else
             -- a call `(f arg…)` to a top-level def `f` (not shadowed by a local): INLINE it — bind each
@@ -1454,6 +1467,34 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Bytes.of on a non-list value")
            | none => .cannotProve "symeval: malformed Bytes.of")
+        else if q == "Unit".toUTF8 && mem == "base".toUTF8 then
+          -- `Unit.base n` → a base UNIT value, modeled as `.ctor "unit" #[n]` (n the base-unit name/bytes).
+          -- (v-cdz-smith Qty widening #7282; a Qty is a (magnitude, unit) pair — see `Qty.of`/`Qty.value`.)
+          (match children[1]? with
+           | some nId => (match symEval m senv fuel ty nId with
+                          | .sym e => .sym (.ctor "unit".toUTF8 #[e])
+                          | .cannotProve r => .cannotProve r)
+           | none => .cannotProve "symeval: malformed Unit.base")
+        else if q == "Qty".toUTF8 && mem == "of".toUTF8 then
+          -- `Qty.of mag unit` → a QUANTITY value `.ctor "qty" #[mag, unit]` (magnitude + unit). `Qty.value`
+          -- extracts the magnitude; same-unit `+`/`-` and `*` fold the magnitude (in the arith path below).
+          (match children[1]?, children[2]? with
+           | some mId, some uId =>
+             (match symEval m senv fuel ty mId, symEval m senv fuel ty uId with
+              | .sym me, .sym ue => .sym (.ctor "qty".toUTF8 #[me, ue])
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r)
+           | _, _ => .cannotProve "symeval: malformed Qty.of")
+        else if q == "Qty".toUTF8 && mem == "value".toUTF8 then
+          -- `Qty.value q` → the MAGNITUDE of a `Qty` (`.ctor "qty" #[mag, _]`). Non-qty operand → boundary.
+          (match children[1]? with
+           | some qId =>
+             (match symEval m senv fuel ty qId with
+              | .sym (.ctor t #[me, _]) =>
+                if t == "qty".toUTF8 then .sym me else .cannotProve "symeval: Qty.value on a non-qty value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Qty.value on a non-qty value")
+           | none => .cannotProve "symeval: malformed Qty.value")
         else if (parseIntTyName? q).isSome && (mem == "of".toUTF8 || mem == "wrap".toUTF8) then
           -- INT-CONVERSION `(<IntTy>.of x)` / `.wrap x` (Int8/16/32/64 + UInt8/16/32/64) — byte-faithful to
           -- evalNode (Eval.lean:1783-1805): `.wrap` reinterprets x mod 2^w (total, two's-complement);
@@ -2305,6 +2346,34 @@ private def _setReorderCompoundExpr : Module :=
 #guard symEval _setReorderCompoundExpr [] symDefaultFuel defaultIntTy 9
        == SymOutcome.sym (.ctor "set".toUTF8 #[.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)],
                                               .ctor "list".toUTF8 #[.const (.int 3), .const (.int 4)]])
+
+-- QTY (v-cdz-smith #7282 widening): `(Qty.value (Qty.of 5 (Unit.base #"g")))` → 5 (Qty.of builds the
+-- (magnitude, unit) `.ctor "qty"`; Qty.value extracts the magnitude; Unit.base builds the unit).
+private def _qtyDirectExpr : Module :=
+  { leaves := #[.name ".".toUTF8, .name "Qty".toUTF8, .name "value".toUTF8, .name "of".toUTF8,
+                .name "Unit".toUTF8, .name "base".toUTF8, .intLit false .dec (ByteArray.mk #[5]),
+                .bytesLit "g".toUTF8],
+    nodes := #[.atom 0, .atom 4, .atom 5, .list #[0, 1, 2], .atom 7, .list #[3, 4],
+               .atom 0, .atom 1, .atom 3, .list #[6, 7, 8], .atom 6, .list #[9, 10, 5],
+               .atom 0, .atom 1, .atom 2, .list #[12, 13, 14], .list #[15, 11]],
+    root := 16 }
+#guard symEval _qtyDirectExpr [] symDefaultFuel defaultIntTy 16 == SymOutcome.sym (.const (.int 5))
+
+-- QTY same-unit ADD: `(Qty.value (+ (Qty.of 6 (Unit.base #"s")) (Qty.of 3 (Unit.base #"s"))))` → 9
+-- (the arith path folds two `.ctor "qty"` operands → magnitude 6+3=9; Qty.value extracts it).
+private def _qtyAddExpr : Module :=
+  { leaves := #[.name ".".toUTF8, .name "Qty".toUTF8, .name "value".toUTF8, .name "of".toUTF8,
+                .name "Unit".toUTF8, .name "base".toUTF8, .name "+".toUTF8,
+                .intLit false .dec (ByteArray.mk #[6]), .intLit false .dec (ByteArray.mk #[3]),
+                .bytesLit "s".toUTF8],
+    nodes := #[.atom 0, .atom 4, .atom 5, .list #[0,1,2], .atom 9, .list #[3,4],
+               .atom 0, .atom 1, .atom 3, .list #[6,7,8], .atom 7, .list #[9,10,5],
+               .atom 0, .atom 4, .atom 5, .list #[12,13,14], .atom 9, .list #[15,16],
+               .atom 0, .atom 1, .atom 3, .list #[18,19,20], .atom 8, .list #[21,22,17],
+               .atom 6, .list #[24,11,23],
+               .atom 0, .atom 1, .atom 2, .list #[26,27,28], .list #[29,25]],
+    root := 30 }
+#guard symEval _qtyAddExpr [] symDefaultFuel defaultIntTy 30 == SymOutcome.sym (.const (.int 9))
 
 -- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
 -- deduped, last-wins via canonMap).
