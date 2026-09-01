@@ -3380,7 +3380,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 22117 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "pushing through ONE alias of a doubly-held list leaves the sibling field intact"
@@ -4844,7 +4844,7 @@
   (call main (: 2 Int64))
   (output (: 4021 Int64))
   ; if-join-shared-child family residual (honest known-leak, coord v-corpus-harness/v-core-opt family fix)
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Map.remove on a derived generation unshares the path without touching the ancestor"
@@ -5695,7 +5695,7 @@
   (output (: 4 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
@@ -7437,7 +7437,7 @@
       (def (main) (sm (count 5)))
       (export main)))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix"
@@ -7462,7 +7462,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 115 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
@@ -9520,7 +9520,7 @@
       (def (main) (ev (build 4)))
       (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a function returns a heap sub-node selected by a match arm"
@@ -9966,7 +9966,7 @@
               #tuple("+" (Node.NInt 20) (Node.NPrim #tuple("*" (Node.NInt 2) (Node.NInt 11))))))))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
@@ -10093,7 +10093,7 @@
   (output (: 50 Int64))
   (call main (: 3 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree"
@@ -10492,7 +10492,7 @@
       (export main)))
   (call main (: 8 Int64))
   (output (: 256 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT"
@@ -11982,7 +11982,7 @@
       (def (main) (. (go 3 #tuple(0 0)) 0))
       (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an association list is searched by key with a tuple-carrying Option match"
@@ -12638,7 +12638,7 @@
   (call main (: 10 Int64))
   (output (: 167961 Int64))
   ; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "KTH PERMUTATION decodes the factorial number system by indexed removal from the pool"
@@ -13538,7 +13538,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent"
@@ -15903,7 +15903,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 532271521 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a comparison-driven MERGE of two sorted lists interleaves and drains the remainder"
@@ -16025,7 +16025,7 @@
   (output (: 214351 Int64))
   (call main (: 3 Int64))
   (output (: 71 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "WAVE reorder alternates <= and >= by index parity through a carried-element walk"
@@ -16807,7 +16807,7 @@
   (output (: 1051 Int64))
   (call main (: 3 Int64))
   (output (: 1101 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
@@ -16940,7 +16940,7 @@
   (output (: 30509101 Int64))
   (call main (: -6 Int64))
   (output (: 29701021 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "EQUILIBRIUM INDEX finds where left and right sums balance using total minus running"
@@ -17117,7 +17117,7 @@
   (output (: 1040604011 Int64))
   (call main (: 6 Int64))
   (output (: 10615201506011 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut"
@@ -17315,7 +17315,7 @@
   (output (: 6 Int64))
   (call main (: 20 Int64))
   (output (: 23 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "PAINT FENCE threads same/diff state tracks where no three consecutive posts match"
@@ -17388,7 +17388,7 @@
   (output (: 90 Int64))
   (call main (: 7 Int64))
   (output (: 71 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MAX PROFIT tracks the running minimum and best spread in one forward pass"
@@ -17604,7 +17604,7 @@
   (output (: 12134 Int64))
   (call main (: 3 Int64))
   (output (: 13234 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "LONGEST RUN tracks the current and best streak, first run winning ties"
@@ -17724,7 +17724,7 @@
   (output (: 2092204 Int64))
   (call main (: -5 Int64))
   (output (: -4908996 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
@@ -18224,7 +18224,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer"
@@ -18246,7 +18246,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a sum type NAMED after a primitive scalar does not collide with the primitive"
@@ -18371,7 +18371,7 @@
       (export main)))
   (call main (: 500 Int64))
   (output (: 500 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity"
@@ -20263,7 +20263,7 @@
       (def (main) (len (lower (Core.KAdd #tuple((Core.KConst 20) (Core.KConst 22))))))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The Map OPERATION surface (collections-and-text.md §A Map Is Built By Functional Construction,
 ; §Keys Are Compared By Value, §A Map Renders As Its Entries In Canonical Key Order). The map value
@@ -21949,7 +21949,7 @@
   (output (: #list() (List Int64)))
   (call main (: 5 Int64))
   (output (: #list(5) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a parameterized export returns a runtime-selected empty-or-nonempty map"
@@ -21964,7 +21964,7 @@
   (output (: #map() (Map Int64 Int64)))
   (call main (: 5 Int64))
   (output (: #map((= 5 5)) (Map Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a parameterized export returns a runtime-selected empty-or-nonempty set"
@@ -21978,7 +21978,7 @@
   (output (: #set() (Set Int64)))
   (call main (: 5 Int64))
   (output (: #set(5) (Set Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
 ; return — a `(List (Tuple …))` (an association / key-value list) or a `(List (List …))` — is the shape a
@@ -23727,7 +23727,7 @@
   ; live-objects grade); the value fix unmasked the latent leak. Re-pinned known-leak pending the
   ; caller-side reclaim fix (blocked on the caller-owns/lambda-lift ownership model — co-design with
   ; v-inference/v-core-opt/v-runtime; see the memory-safety log).
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a guard combines the payload binder with the rest binder"
@@ -23774,7 +23774,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 207 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "literal payload refinement works in a non-head element position"
@@ -26467,7 +26467,7 @@
   (call main (: 7 Int64))
   (output (: 107 Int64))
   ; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The config-table read idiom and the api-error dispatch idiom. ---
 (case
@@ -29928,7 +29928,7 @@
   (call main)
   (drop)
   (output (: (tuple 0 7) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 491 (2026-08-27): the OPAQUE-consumer cells v-core-opt requested as Stage-B
 ; negative witnesses — with an INVERTED result: an extraction-Some payload consumed by an opaque
@@ -30257,7 +30257,7 @@
       (export main)))
   (call main)
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 511 (2026-08-27): the Tuple/Record members of the static-data fence family,
 ; verified the hour incr6 (#4181) landed (build-once immortal emit for constant Tuples/Records).
@@ -34470,7 +34470,7 @@
       (def (main) (+ (* 10 (slen (sbuild 2))) (tlen (tbuild 1))))
       (export main)))
   (output (: 21 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "pim1 constant-payloaded immortal variants keep payload identity and stay census-excluded (scalar + deep heap child)"
