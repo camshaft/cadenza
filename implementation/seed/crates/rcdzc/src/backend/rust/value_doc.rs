@@ -14,11 +14,11 @@
 //!   `(: (tuple 1 2) …)`        → the value is List[ Name "tuple", <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
-//! WIP (built incrementally, per concierge): covers Int / Bool / Float / Tuple / Record / List and the
-//! single-payload / nullary SUM (Option / Result / a bare-head user sum). String / Bytes / Set / Map / Qty,
-//! plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up increments
-//! (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the
-//! driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
+//! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
+//! Tuple / Record / List and the single-payload / nullary SUM (Option / Result / a bare-head user sum).
+//! Set / Map / Qty, plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are
+//! follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never
+//! a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -84,6 +84,42 @@ fn doc_value_node(
             let v = fresh(ctr);
             out.push_str(&format!(
                 "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Bool({val_expr}));\n"
+            ));
+            Ok(v)
+        }
+        // A string → a `Leaf::Str` (renders `"…"`, the escape codec in the printer). Rust value is a
+        // `String`; `.as_str().into()` copies into the `Arc<str>` the leaf holds.
+        Ty::String => {
+            let v = fresh(ctr);
+            out.push_str(&format!(
+                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Str(({val_expr}).as_str().into()));\n"
+            ));
+            Ok(v)
+        }
+        // A symbol → a `Leaf::Sym` (renders `#\"…\"`) — the guest-result `Symbol` disambiguation cdz-run's
+        // typed render makes (`Leaf::Sym` vs `Leaf::Str`), here driven DIRECTLY off the `Ty`. Rust rep is a
+        // `String` (Symbol erases to String), same `.as_str().into()` copy.
+        Ty::Symbol => {
+            let v = fresh(ctr);
+            out.push_str(&format!(
+                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Sym(({val_expr}).as_str().into()));\n"
+            ));
+            Ok(v)
+        }
+        // Bytes → a `Leaf::Bytes` (renders `b\"…\"`). Rust value is a `Vec<u8>`; `.into()` moves it into the
+        // `Arc<[u8]>` the leaf holds.
+        Ty::Bytes => {
+            let v = fresh(ctr);
+            out.push_str(&format!(
+                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Bytes(({val_expr}).into()));\n"
+            ));
+            Ok(v)
+        }
+        // A char → a `Leaf::Char` (renders `#\\c`). Rust value is a `char` (Copy) — no clone/borrow needed.
+        Ty::Char => {
+            let v = fresh(ctr);
+            out.push_str(&format!(
+                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Char({val_expr}));\n"
             ));
             Ok(v)
         }
