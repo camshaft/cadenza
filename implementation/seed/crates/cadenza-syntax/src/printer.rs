@@ -6778,18 +6778,12 @@ mod tests {
         assert_eq!(print(&sexpr::read("(\"map\")").unwrap(), 80), "#{}");
     }
 
-    #[test]
-    fn literals_break_all_or_nothing_when_wide() {
-        let out = assert_roundtrip(
-            "{ name = \"alice\", scores = [90, 85, 95], active = true }",
-            30,
-        );
-        assert_eq!(
-            out,
-            "{\n  name = \"alice\",\n  scores = [90, 85, 95],\n  active = true\n}"
-        );
-    }
-
+    // `literals_break_all_or_nothing_when_wide` (a record literal too wide for the line breaks ALL fields
+    // one-per-line, not partially) MIGRATED to the spec/syntax corpus (parser-corpus inc-8) via the new
+    // WIDTH-GOLDEN harness extension (a per-case `width` file threaded through the in-process fmt +
+    // `cdz fmt --width N` grader): ml/562-record-breaks-all-or-nothing-wide, `{ name = "alice", scores =
+    // [90, 85, 95], active = true }` at width 30 → format.cdz breaks every field one-per-line. First
+    // consumer of the width-golden capability; unblocks the width-specific printer-layout family.
     // `paren_grouping_is_not_a_tuple` (`(1 + 2) * 3` — the parens are transparent grouping, NOT a 1-tuple)
     // MIGRATED to the spec/syntax corpus (inc-6 batch-10): ml/79-paren-grouping-not-tuple → `(* (+ 1 2) 3)`
     // (the tree pins that the parens produce a plain `(+ 1 2)` sub-node, no tuple wrapper).

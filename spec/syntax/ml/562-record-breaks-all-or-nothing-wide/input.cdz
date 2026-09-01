@@ -1,0 +1,1 @@
+{ name = "alice", scores = [90, 85, 95], active = true }
