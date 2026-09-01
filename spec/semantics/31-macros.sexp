@@ -131,3 +131,24 @@
       (export main)))
   (call main)
   (output (: 1 Int64)))
+
+(case
+  "a macro may introduce a HELPER FUNCTION and its parameter resolves in the function's body"
+  (doc
+    "An expansion may declare a nested FUNCTION, not only a value binding (metaprogramming.md §Expansion
+           Precedes And Feeds The Core Guarantees). `(def (via-fn (quote arg)) (quasiquote (do (def (helper
+           p) (+ p 100)) (helper (unquote arg)))))` introduces a do-local function `helper` whose body
+           `(+ p 100)` references its OWN parameter `p`, then calls it with the spliced caller argument.
+           `(via-fn 5)` expands to `(do (def (helper p) (+ p 100)) (helper 5))` and evaluates to `105 :
+           Int64`. Pins that a macro-introduced function-def's PARAMETER resolves in its body: the expander
+           seeds the spliced signature's parameter scope (a macro-introduced `(def (f p…) …)` is past the
+           load-time binder index, so the resolver falls back to a live parameter scan) — otherwise the
+           body's `p` would spuriously unbind (CDZ0101). The caller's argument is spliced at the CALL site
+           (`(helper 5)`), evaluated in the caller's scope, so no capture question arises.")
+  (input
+    (do
+      (def (via-fn (quote arg)) (quasiquote (do (def (helper p) (+ p 100)) (helper (unquote arg)))))
+      (def (main) (via-fn 5))
+      (export main)))
+  (call main)
+  (output (: 105 Int64)))

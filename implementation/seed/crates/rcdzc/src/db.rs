@@ -3848,7 +3848,56 @@ impl Db {
     ///
     /// [`scope_binders`]: Db::scope_binders
     pub fn binder_in_scope(&self, scope: StructId, name: &str) -> Option<StructId> {
-        self.scope_binders.get(&scope)?.get(name).copied()
+        // An INDEXED scope (a load-time `fn`/`def` with parameters) is AUTHORITATIVE — its map answers
+        // (Some binder, or None if it declares no such param). This is the O(1) common path.
+        if let Some(map) = self.scope_binders.get(&scope) {
+            return map.get(name).copied();
+        }
+        // LIVE FALLBACK for a scope ABSENT from the index: a `(fn …)`/`(def …)` SPLICED by
+        // `lower::expand_macros` (a macro that INTRODUCES a helper function) is past the load-time arena, so
+        // `build_scope_binders` never saw it — a body reference to its OWN parameter would spuriously
+        // unbind (CDZ0101). Scan the signature's params LIVE (last-wins), mirroring `build_scope_binders`'
+        // extraction. Only reached on an index MISS, so a load-time scope pays nothing; a param-less
+        // load-time def/fn is likewise absent and returns `None` here in O(1) (no params to scan).
+        self.live_param_binder(scope, name)
+    }
+
+    /// Live parameter scan for a scope absent from [`scope_binders`] (a post-load, macro-spliced `fn`/`def`).
+    /// Mirrors `build_scope_binders`' `param_binder` — a param is a bare name `a` or an annotated `(: a T)`
+    /// (whose binder is the `:` form's first child) — with last-wins shadowing. `None` if `scope` is not a
+    /// `fn`/`def` with a list signature, or declares no param named `name`.
+    fn live_param_binder(&self, scope: StructId, name: &str) -> Option<StructId> {
+        let (params_occ, is_def) = if let Some(tail) = self.ast.as_form(scope, "fn") {
+            (tail.first().copied()?, false)
+        } else if let Some(tail) = self.ast.as_form(scope, "def") {
+            (tail.first().copied()?, true)
+        } else {
+            return None;
+        };
+        let Struct::List(children) = self.ast.get(params_occ) else {
+            return None;
+        };
+        // A `def` signature's first child is the def NAME (not a param) — skip it; a `fn` param-list is all
+        // params.
+        let params = if is_def {
+            &children[1.min(children.len())..]
+        } else {
+            &children[..]
+        };
+        let mut found = None;
+        for &p in params {
+            if let Some(n) = self.ast.as_name(p) {
+                if n == name {
+                    found = Some(p); // bare param `a`; last-wins
+                }
+            } else if let Some(tail) = self.ast.as_form(p, ":")
+                && let Some(&name_occ) = tail.first()
+                && self.ast.as_name(name_occ) == Some(name)
+            {
+                found = Some(name_occ); // annotated param `(: a T)` — the binder is `a`
+            }
+        }
+        found
     }
 
     /// The value occurrence of the LAST bare binding of `name` in the let bindings-list `bindings_occ`

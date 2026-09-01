@@ -2670,6 +2670,7 @@ pass	a lowercase-named type is referenceable in a field (types are values, not g
 pass	a macro builds new syntax from its argument via quasiquote and the expansion is type-checked directly
 pass	a macro may INTRODUCE a local binding in its expansion and reference it within that expansion
 pass	a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)
+pass	a macro may introduce a HELPER FUNCTION and its parameter resolves in the function's body
 pass	a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)
 pass	a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)
 pass	a macro-introduced binder does NOT capture a caller identifier of the same name (hygiene, do-local def)
