@@ -2532,9 +2532,11 @@ fn emit_switch_tree(
                 crate::core::Probe::Str(s) => b.atom_leaf(Leaf::Str(s.as_str().into())),
                 crate::core::Probe::Char(c) => b.atom_leaf(Leaf::Char(*c)),
                 _ => {
+                    // Reconstructing a Bytes / ListLen / MapHasKeys slot probe is a future slice; that
+                    // not-yet intent stays in this comment, NOT the user-facing message (operator seq-280).
                     return Err(Reject::unsupported(
                         "the Cadenza backend reconstructs a literal-at-slot test only for an Int / Bool / \
-                         Str / Char probe (a Bytes / ListLen / MapHasKeys slot probe is a later slice)"
+                         Str / Char probe (a Bytes / ListLen / MapHasKeys slot probe is not supported)"
                             .to_string(),
                     ));
                 }
