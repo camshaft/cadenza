@@ -1681,6 +1681,24 @@
   (output (: 42 Int64)))
 
 (case
+  "a CLOSED single-variant sum's sole-constructor arm is exhaustive without a `_` (the newtype-erasure control)"
+  (doc
+    "The closed-sum CONTROL that isolates open-ness as the cause of the open case's CDZ0210 above: the
+           SAME `(Wrap n)` sole-constructor arm over a CLOSED `(type Box (Wrap Int64))` (no `.. r`) IS
+           exhaustive with NO `_` arm — a single-variant closed sum erases to a newtype whose sole
+           constructor pattern is irrefutable (type-system.md #A Sum Type May Be Open …). Pins that ONLY the
+           open declaration mandates the open-tail arm; without the row variable the newtype erasure makes the
+           match exhaustive, so it compiles clean and reads the `Wrap` payload → 42. Without this control the
+           open case's CDZ0210 could be a spurious over-fire on ALL single-variant sums rather than open ones.")
+  (input
+    (do
+      (type Box (Wrap Int64))
+      (def (unwrap (: b Box)) (match b ((Wrap n) n)))
+      (def (main) (unwrap (Wrap 42)))
+      (export main)))
+  (output (: 42 Int64)))
+
+(case
   "an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones"
   (doc
     "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm (the open-tail
