@@ -16,7 +16,7 @@
 /// with no cross-host byte-reproducibility requirement); absent, the committed default is used.
 pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
     Some(h) => h,
-    None => "053gqMLOhJAfiai8pNmBFbE04mLkVXLxUJj8wWRug8kih",
+    None => "05DHRMHLULMilJZvJKwI2UqUoc0FHdsOYbm6Q54NvkCG0",
 };
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
@@ -26,7 +26,7 @@ pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
 /// Overridable at compile time via the `CDZ_DEBUG_RUNTIME_HASH` env (see `REQUIRED_RUNTIME_HASH`).
 pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05Y7E2xEoLuMHyqx3p6j2n7czcIBYHCcG5MXEG6Hb2wpl",
+    None => "052tkDkRRsOAWD3yxau01xg5TDsdNOJIfArVhqh2QZUXP",
 };
 /// The BLAKE3 content address of the NFC component (`cdz-nfc`) the RUNTIME imports. Regenerated
 /// from the built NFC-component bytes like `REQUIRED_RUNTIME_HASH`, so it tracks an NFC-code
