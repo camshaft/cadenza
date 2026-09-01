@@ -36,3 +36,10 @@ cdz-corpus-grade = { path = "../cdz-corpus-grade" }
 # Typed CLI with generated --help — the same parser the rest of the workspace uses.
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+# The canonical binary-AST -> surface renderer (`convert::render_binary`) — the ONE printer cdz-run's wasm
+# value render also uses, so the rust value-doc render is byte-identical (op-seq-283: canonical path, not
+# bespoke). Consumes the `(: value type)` codec doc the emitted rust guest produces. `cadenza-ast` gives the
+# `Builder`/`codec` used to CONSTRUCT that doc (test + future emit). Both are cadenza-syntax's own transitive
+# deps already (via cdz-corpus-grade), so no new closure; made direct to `use` them here.
+cadenza-syntax = { path = "../cadenza-syntax" }
+cadenza-ast = { path = "../cadenza-ast" }
