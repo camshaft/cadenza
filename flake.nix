@@ -5408,6 +5408,74 @@
           { shreds = oracleLeanShreds; } ''
           for s in $shreds; do find "$s" -name oracle-trial.ast; done | sed 's|/oracle-trial.ast$||' | sort > "$out"
         '';
+
+        # ── wasm-oracle emit-extraction harness (v-wasm-oracle #3) ──────────────────────────────────────────
+        # Per corpus case, produce the triple v-lean-oracle's `oracle-wasm-diff` runner consumes:
+        #   core.wat        — `wasm-tools print` of the unbundled core module (the emitted wasm the differential
+        #                     interprets via talos), from mkCorpusBuild's `emit.wasm` (cached component)
+        #   result-type.ast — raw `@custom "cdz-result-type"` section bytes (rtBytes for resultScalarTy?)
+        #   core.ast        — the OPTIMIZED Core binary-AST (`-t cadenza`) that `reduce` runs (the Core reference)
+        # A case that did NOT compile to a component (declined/errored → no emit.wasm), has no unbundlable core
+        # module, or no cdz-result-type section → EMPTY $out (the manifest lists only dirs with a core.wat, so
+        # such cases are simply absent → the runner never sees them). Import-bearing (heap) core modules DO get a
+        # core.wat but talos declines them at run → differential `.skip` (sound gap) until the W5+ runtime host.
+        mkWasmExtract = { name, shred, build, idx }:
+          pkgs.runCommand "wasm-extract-${name}-${idx}"
+            {
+              nativeBuildInputs = [ pkgs.wasm-tools cdzCompile ];
+              # Content-addressed (v-nix flake review): each extraction caches on {emit.wasm bytes + wasm-tools},
+              # so a compiler-rev bump that re-emits identical bytes reuses the extraction. Mirrors mkCorpusBuild.
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -uo pipefail
+            mkdir -p "$out"
+            [ -e "${build}/emit.wasm" ] || exit 0
+            case=$(echo ${shred}/${name}/${idx}-*)
+            [ -d "$case" ] || exit 0
+            mkdir -p cores
+            wasm-tools component unbundle "${build}/emit.wasm" --threshold 0 --module-dir cores -o /dev/null 2>/dev/null || { rm -rf "$out"/* ; exit 0; }
+            [ -e cores/unbundled-module0.wasm ] || { rm -rf "$out"/* ; exit 0; }
+            wasm-tools print cores/unbundled-module0.wasm > "$out/core.wat" 2>/dev/null || { rm -rf "$out"/* ; exit 0; }
+            cdz-compile "ast:main=$case/program.ast" -t cadenza -o "$out/core.ast" 2>/dev/null || { rm -rf "$out"/* ; exit 0; }
+            # result-type.ast: the cdz-result-type custom-section byte range (objdump), sliced from emit.wasm.
+            # The range points directly at the `cdzast…` blob (no name prefix — v-wasm-oracle verified).
+            off=$(wasm-tools objdump "${build}/emit.wasm" 2>/dev/null | grep 'cdz-result-type' | grep -oE '0x[0-9a-f]+' | head -2)
+            s=$(echo "$off" | sed -n 1p); e=$(echo "$off" | sed -n 2p)
+            { [ -n "$s" ] && [ -n "$e" ]; } || { rm -rf "$out"/* ; exit 0; }
+            dd if="${build}/emit.wasm" of="$out/result-type.ast" bs=1 skip=$((s)) count=$(( $((e)) - $((s)) )) status=none 2>/dev/null
+          '';
+        # Per corpus file → the list of per-case extraction dirs (empty for skipped cases). STEP A (uncapped):
+        # every case of the scoped scalar files. The FIRST-PROOF CAP is gone — the per-case emit.wasm builds are
+        # now cache-warm on cachix (corpus-emit-wasm-warm → cache-warm-emit-wasm.yml), so mkCorpusBuild is pulled,
+        # not recompiled. The mkWasmExtract layer (unbundle/print + cdz-compile -t cadenza + objdump/dd) still
+        # runs cold on the first full build (CA-cached after); v-lean-oracle chose momentum over pre-warming it,
+        # so the first uncapped run goes via `with-lease`. STEP B (later): widen `wasmOracleFiles` to the whole
+        # corpus once Step A is proven green at ~1478 cases.
+        wasmExtractFileDirs = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in map (idx: mkWasmExtract { inherit name shred idx; build = mkCorpusBuild { inherit name shred idx; }; }) idxs;
+        # SCOPE (Step A): scalar-heavy corpus files so the initial differential run is tractable; widen to
+        # `corpusFileNames` once the pipeline is proven green over these.
+        wasmOracleFiles = [ "01-literals.sexp" "06-numeric-model.sexp" ];
+        # The manifest v-lean-oracle's oracle-wasm-diff check reads: one line per per-case dir that HAS a
+        # core.wat (a runnable extraction), sorted. Mirrors oracleLeanCaseDirs.
+        oracleWasmCaseDirs = pkgs.runCommand "oracle-wasm-case-dirs"
+          {
+            dirs = pkgs.lib.concatLists (map
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
+              wasmOracleFiles);
+          } ''
+          : > "$out"
+          for d in $dirs; do [ -e "$d/core.wat" ] && echo "$d" >> "$out" || true; done
+          sort -o "$out" "$out"
+          echo "oracle-wasm-case-dirs: $(wc -l < "$out") runnable extractions" >&2
+        '';
         oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
           { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
           # Derive the program.ast paths from the shared case-dir manifest (computed once), never a fresh find.
@@ -5697,6 +5765,10 @@
         # v-nix wires `.#packages.<sys>.corpus-emit-wasm-warm` into cache-warm.yml). Warms the wasm-oracle
         # emit-extraction harness's mkCorpusBuild reuse → the uncapped full-corpus Core↔wasm differential.
         packages.corpus-emit-wasm-warm = corpusEmitWasmWarm;
+        # The wasm-oracle emit-extraction MANIFEST (v-wasm-oracle #3): newline-separated per-case dir paths,
+        # each dir = {core.wat, result-type.ast, core.ast}. v-lean-oracle's oracle-wasm-diff check reads this
+        # to run the Core↔wasm differential over the corpus. `nix build .#oracle-wasm-case-dirs`.
+        packages.oracle-wasm-case-dirs = oracleWasmCaseDirs;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
