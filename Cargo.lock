@@ -532,6 +532,8 @@ name = "cdz-rust-run"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cadenza-ast",
+ "cadenza-syntax",
  "cdz-corpus-grade",
  "cdz-rust-render",
  "clap",
