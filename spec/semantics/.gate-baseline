@@ -10842,3 +10842,5 @@ pass	a macro-introduced type's BARE variant ctor follows the ctor name's own pro
 pass	a macro-introduced type with a caller-spliced bare ctor name binds the bare constructor visibly
 pass	sqtv1 a runtime Symbol tuple element renders as the (Symbol.of …) constructor, not a bare string
 pass	a misspelled Ast module member Sym is rejected CDZ0201 with Symbol leading the did-you-mean (prefix-rank)
+pass	one macro splices a TYPE and a fn over it via a wrapping (do …) — the type splice-flattens alongside the def
+pass	a macro-internal type in a wrapping (do …) splice stays hygienic-local
