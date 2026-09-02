@@ -4163,6 +4163,10 @@
             # Forward the imposed WIT-world (if any) so the exec can pass --wit-world → cdz-rust-run declines
             # the imposed-world case to todo (#7726: rust has no external-world ingest). Presence-only.
             if [ -e "$case/wit-world.ast" ]; then cp "$case/wit-world.ast" "$out/wit-world.ast"; fi
+            # Forward any cross-component PEER (peer-*.ast) so the exec can pass --peer → cdz-rust-run declines
+            # the peer case to todo (#7835: rust emits a standalone .rs, no component/peer boundary). Presence-
+            # only (the path is a signal, not read). Copy all; the exec passes the first.
+            for p in "$case"/peer-*.ast; do [ -e "$p" ] && cp "$p" "$out/"; done
           '';
 
         # EXEC — grade one case's RUST emit. Closure = the COMPILER-FREE `cdzRustRun` + `rustRlibs` + the ambient
@@ -4190,6 +4194,7 @@
                   --workdir "$TMPDIR/w")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
             if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
+            for p in ${build}/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
             cdz-rust-run "''${args[@]}"
             echo "ok: corpus-rust ${name} case ${idx}" > "$out"
           '';
@@ -4285,6 +4290,7 @@
                   --workdir "$TMPDIR/w")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
             if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
+            for p in ${build}/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
             cdz-rust-run "''${args[@]}"
             echo "ok: corpus-rust-async ${name} case ${idx}" > "$out"
           '';
@@ -4347,6 +4353,7 @@
                   --workdir "$TMPDIR/w" --emit-verdict "$out")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
             if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
+            for p in ${build}/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
             cdz-rust-run "''${args[@]}"
             # $out is written by cdz-rust-run (--emit-verdict). Guard an empty write (a real bug would leave it
             # absent → the aggregate `cat` fails loud, catching a broken emit-verdict rather than a silent gap).
@@ -4394,6 +4401,7 @@
                   --workdir "$TMPDIR/w" --emit-verdict "$out")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
             if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
+            for p in ${build}/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
             cdz-rust-run "''${args[@]}"
             [ -s "$out" ] || { echo "corpus-rust-async-verdict ${name} ${idx}: cdz-rust-run --emit-verdict wrote no verdict" >&2; exit 1; }
           '';
@@ -4473,6 +4481,7 @@
                      --workdir "$work/w" --emit-verdict "$work/verdict")
               if [ -e "$work/emit.rs" ]; then args+=(--module "$work/emit.rs"); fi
               if [ -e "$case/wit-world.ast" ]; then args+=(--wit-world "$case/wit-world.ast"); fi
+              for p in "$case"/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
               cdz-rust-run "''${args[@]}"
               [ -s "$work/verdict" ] || { echo "corpus-verdicts-${tag}-coarse ${name}: $case wrote no verdict" >&2; exit 1; }
               cat "$work/verdict" >> "$out"
