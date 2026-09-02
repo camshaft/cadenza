@@ -6969,10 +6969,19 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
                 continue;
             }
-            // Effectful statements are KEPT by the lowering (their host call is observable and must run) —
+            // Effectful statements are KEPT by the lowering (their effect is observable and must run) —
             // sequencing them for effect is exactly why a non-final form is allowed to have a value at all,
-            // so they are not dead. Only a PURE statement's discarded value is the defect.
-            if crate::lower::subtree_reaches_host_call(db, s) {
+            // so they are not dead. Only a PURE statement's discarded value is the defect. TWO effect
+            // channels count: a HOST call (`subtree_reaches_host_call`), AND a user-defined effect-op
+            // PERFORM (`subtree_reaches_effect_perform`) — a statement-position `(L.emit)` under an
+            // in-program `(handle L …)` folds away from a bare `Core::HostCall` (so the host-call walk
+            // MISSES it) yet still runs its handler (state advances; removing it changes the value). Without
+            // the perform check CDZ0307 FALSELY fired on such a discarded effect-op call and its delete-fix
+            // was SEMANTICS-BREAKING (breaker repro: `(do (L.emit) (L.emit) (L.emit))` under a resuming
+            // handler — each non-final emit performs, `main` returns n*10+2, delete → n*10+0).
+            if crate::lower::subtree_reaches_host_call(db, s)
+                || crate::lower::subtree_reaches_effect_perform(db, s)
+            {
                 continue;
             }
             // Deleting a pure, value-discarded, non-final form preserves the block's meaning (it still

@@ -238,6 +238,57 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     result
 }
 
+/// Whether the subtree at `id` REACHES an effect-op PERFORM — an application whose head names an effect
+/// operation (`eval::effect_op_of`), or a `(host …)` block, directly or through a called function's body.
+/// Such a statement has an OBSERVABLE effect even though it is NOT a `Core::HostCall`: an in-program
+/// `handle` folds the perform away from a bare `HostCall`, so [`subtree_reaches_host_call`] MISSES it, yet
+/// the handler still runs (a discarded `(L.emit)` under `(handle L …)` advances the handler's state —
+/// removing the statement CHANGES the program's value). Read alongside `subtree_reaches_host_call` by
+/// `compile::collect_discarded_value_warnings` so CDZ0307 does NOT flag an effect-performing non-final
+/// statement as "computed but discarded … has no effect" — a lint whose delete-fix would be
+/// SEMANTICS-BREAKING (it drops an observable perform). RESOLVED walk (pre-core), so handler folding cannot
+/// hide the perform; follows a callee body once (cycle-guarded); CONSERVATIVE — over-reports past the depth
+/// bound (a missed CDZ0307 beats a false one, matching the discard pass's own conservatism). Mirrors
+/// `effects::body_reached_effects` / `match_tree::scrutinee_reaches_host_perform`, keyed on the shared
+/// `eval::effect_op_of` primitive.
+pub(crate) fn subtree_reaches_effect_perform(db: &mut Db, id: StructId) -> bool {
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        depth: u32,
+        visited: &mut std::collections::HashSet<StructId>,
+    ) -> bool {
+        if depth > 64 {
+            return true; // too deep — assume it may perform (safe over-report; suppresses the warning)
+        }
+        if let Resolved::Apply { head, .. } = resolved_of(db, node) {
+            // An application whose HEAD names an effect operation IS a perform (handled or host-delegated).
+            if crate::eval::effect_op_of(db, head).is_some() {
+                return true;
+            }
+            // Follow a (possibly recursive) callee's body ONCE so a cross-function perform still counts;
+            // `visited.insert` false on re-entry stops a cycle.
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                && visited.insert(callee)
+                && walk(db, callee, depth + 1, visited)
+            {
+                return true;
+            }
+        }
+        // A `(host (E) body)` block delegates its body's effects to the host boundary — observable.
+        if let Resolved::Host { .. } = resolved_of(db, node) {
+            return true;
+        }
+        if let crate::ast::Struct::List(children) = db.ast.get(node).clone() {
+            return children.iter().any(|&c| walk(db, c, depth, visited));
+        }
+        false
+    }
+    let mut visited = std::collections::HashSet::new();
+    walk(db, id, 0, &mut visited)
+}
+
 /// Whether a tuple-projection operand is (transitively, through nested projections) a CAPTURED binding of
 /// an enclosing closure — its base occurrence reads the env cell (`db.captured_ref`). Used to keep the
 /// projection a runtime `Core::Proj` instead of folding it to the tuple ELEMENT: reducing through a

@@ -1843,3 +1843,32 @@ fn an_undetermined_escape_result_names_the_unconstrained_part_not_a_canned_type(
         "the canned `(Option Int64)` example (unrelated to the reported type) must be gone: {m}"
     );
 }
+
+#[test]
+fn a_discarded_effect_op_perform_does_not_warn_cdz0307_and_pure_still_does() {
+    // Breaker repro: a statement-position effect-op perform under a resuming in-program handler. Each
+    // non-final `(L.emit)` PERFORMS (the handler's `resume s (+ s 1)` advances state), so removing it
+    // CHANGES the program's value — CDZ0307 must NOT flag it (its delete-fix would be semantics-breaking).
+    // The perform folds away from a bare `Core::HostCall`, so `subtree_reaches_host_call` missed it; the
+    // new `subtree_reaches_effect_perform` guard (keyed on `eval::effect_op_of`) catches it.
+    let src = "(module m (effect L (op emit (-> Unit Int64))) \
+        (def (main (: a Int64)) \
+          (handle L a ((emit () s (resume s (+ s 1)))) (do (L.emit) (L.emit) (L.emit)))) \
+        (export main))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0307")),
+        "a discarded effect-op perform must NOT warn CDZ0307 (it performs; the delete-fix is semantics-breaking): {:?}",
+        all.iter()
+            .map(|d| (d.code.clone(), d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+    // CONTROL — a genuinely PURE discarded non-final value STILL warns (the fix must not over-suppress).
+    let pure = "(module m (def (main) (do (+ 1 2) 5)) (export main))";
+    assert!(
+        diags_of(pure)
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0307")),
+        "a pure discarded non-final value must still warn CDZ0307 (no over-suppression)"
+    );
+}
