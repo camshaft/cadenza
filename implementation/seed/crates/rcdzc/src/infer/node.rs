@@ -1864,6 +1864,60 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         .at(id),
                     );
                 }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::TypeAst { .. })
+            ) {
+                // `Type.ast <T>` / `Type.ast-generic <T>` — the argument is a TYPE EXPRESSION (the type to
+                // reflect), NOT a value. A direct type-constructor application — `(Box Int64)` (a USER
+                // generic) or `(List Int64)` (a builtin) — is a type INSTANTIATION in this position, so it
+                // must not be value-checked: value-checking `(Box Int64)` mis-grounds it as a value
+                // application whose head `Box` is a bare-`Type` type-value (not an arrow scheme), which
+                // yields the spurious CDZ0203 "its type argument must be a type, but a value appears here"
+                // (Int64 IS a type — the message is self-contradictory). The fold (`lower_type_ast`) already
+                // grounds the argument via `typeval_of`; mirror that here — if the argument grounds as a
+                // TYPE it is a well-formed type-expression that needs no value descent. Otherwise (a
+                // `(Type.of e)` reflection, or a genuinely non-type argument) descend normally so its own
+                // faults surface. v-spec-oracle ruling (2026-09-02): user + builtin generics are UNIFORM in
+                // a type context, and the builtin-direct / value-mediated / user-direct forms MUST cohere —
+                // all reflect the instantiated decl. (The type-context twin of the `AstLift`/`AstSpliceLift`
+                // reflection-arg early-returns in `check_application`.)
+                // NARROWED (PR #7688 Copilot review): exempt ONLY a correct-arity USER sum-ctor
+                // application `(Box Int64)` — the one shape the value-check mis-grounds → spurious CDZ0203.
+                // A `(Type.of e)` reflection holds a VALUE `e` whose faults (unbound name, wrong arity)
+                // MUST surface, a builtin `(List Int64)` already checks fine, and a wrong-arity
+                // `(Box Int64 Int64)` must DECLINE — so all of those descend normally (an earlier broad
+                // `typeval_of(arg).is_some()` skip suppressed the `(Type.of e)` faults).
+                for &arg in args.iter() {
+                    // Extract the argument's head + type-arg count first (releasing the `resolved_of`
+                    // borrow) so the `&mut db` reflection queries below are free to run.
+                    let inner = match resolved_of(db, arg) {
+                        Resolved::Apply {
+                            head: ah,
+                            args: aargs,
+                        } => Some((ah, aargs.len())),
+                        _ => None,
+                    };
+                    let exempt = if let Some((ah, nargs)) = inner
+                        && crate::eval::meta_apply_of(db, ah)
+                            == Some(crate::resolved::Prim::SumCtor)
+                    {
+                        // A user sum/newtype ctor application — exempt IFF it grounds as that type at the
+                        // declared arity (this guards `typeval_of`'s tolerance of an over-applied sum ctor).
+                        match crate::eval::typeval_of(db, arg) {
+                            Some(crate::ty::Ty::Sum { decl, .. })
+                            | Some(crate::ty::Ty::Nominal { decl, .. }) => {
+                                db.type_decl_by_occ(decl).map(|d| d.params.len()) == Some(nargs)
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    if !exempt {
+                        collect(db, arg, out);
+                    }
+                }
             } else {
                 for &arg in args.iter() {
                     collect(db, arg, out);
