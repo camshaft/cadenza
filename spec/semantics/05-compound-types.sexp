@@ -5007,7 +5007,7 @@
         (main (: mode Int64))
         (do
           (def inner #map((= 1 10) (= 2 20)))
-          (def outer1 (Map.insert (Map.insert Map.empty 100 inner) 200 (Map.insert Map.empty 3 30)))
+          (def outer1 #map((= 100 inner) (= 200 #map((= 3 30)))))
           (def outer2 (Map.insert outer1 200 (Map.insert Map.empty 4 40)))
           (def keep (if (= mode 1) outer1 outer2))
           (def v (get (getm keep 100) 2))
@@ -23338,7 +23338,7 @@
       (def
         (main (: n Int64))
         (do
-          (def direct (Map.insert (Map.insert Map.empty -7 70) 7 77))
+          (def direct #map((= -7 70) (= 7 77)))
           (def churned (shrink 1 n (grow 1 n direct)))
           (+
             (* 10 (if (= (Map.to-list churned) (Map.to-list direct)) 1 0))
@@ -23640,7 +23640,7 @@
       (def
         (main (: n Int64))
         (do
-          (def a (Map.insert (Map.insert Map.empty 1 10) n 20))
+          (def a #map((= 1 10) (= n 20)))
           (def b #map((= 1 5) (= 7 40)))
           (def m (merge-into (Map.to-list b) a))
           (+ (* (Map.len m) 100000) (+ (* (get m 1) 1000) (+ (* (get m n) 10) (get m 7))))))
@@ -26484,7 +26484,7 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty "" 10) (String.concat "a" "") 20))
+          (def m #map((= "" 10) (= (String.concat "a" "") 20)))
           (+
             (* 100 (Map.len m))
             (+
