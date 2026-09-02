@@ -1139,24 +1139,60 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             | none => .error (.unsupported
                 "type oracle: unmodeled application head / construct (App/Match — prelude heads decline)")
         | none =>
-          -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
-          -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum (unify
-          -- the arg with M's payload; a nullary M takes an optional unit arg). Over-application → `CDZ0203`.
-          (match (Eval.qualHead? m children).bind (fun (q, mem) =>
-                    (userSumMap m).bind (fun mp =>
-                      (mp.find? (fun e => e.1 == mem)).bind (fun ent =>
-                        if ent.2.1 == q then some ent else none))) with
-           | some (_, (_, sumTy, some τp)) =>
-             if children.size > 2 then .error (.illTyped "CDZ0203")
-             else (match children[1]? with
-                   | some xId => (match inferE m env st xId with
-                                  | .ok (τ, st') => (match unifyInfer τ τp st' with
-                                                     | .ok st'' => .ok (sumTy, st'')
-                                                     | .error e => .error e)
-                                  | .error e => .error e)
-                   | none => .error (.unsupported "type oracle: malformed qualified user-sum constructor"))
-           | some (_, (_, sumTy, none)) =>
-             if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
+          (match Eval.qualHead? m children with
+           | some (q, op) =>
+             if q == "List".toUTF8 then
+               -- T1.30 — total List OPS `(List.<op> …)`: `len (xs:List α) → Int64`; `at (xs:List α)(i:Int) → α`
+               -- (out-of-range traps at RUNTIME — type is `α`); `push (xs:List α)(x:α) → List α`. Each unifies
+               -- the list arg with `List β` (fresh β) — a non-list arg is `IllTyped CDZ0203`; an index/element
+               -- clash is `CDZ0203`. Any other List op → `Unsupported` (declined, sound).
+               (match children[1]? with
+                | some xsId =>
+                  (match inferE m env st xsId with
+                   | .ok (τxs, st1) =>
+                     let β : Ty := .var st1.next
+                     let st2 := { st1 with next := st1.next + 1 }
+                     (match unifyInfer τxs (.listTy β) st2 with
+                      | .error e => .error e
+                      | .ok st3 =>
+                        if op == "len".toUTF8 && children.size == 2 then .ok (.int 64 true, st3)
+                        else if op == "at".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some iId => (match inferE m env st3 iId with
+                                          | .ok (τi, st4) => (match unifyInfer τi (.numVar st4.next) { st4 with next := st4.next + 1 } with
+                                                              | .ok st5 => .ok (applySubst st5.subst β, st5)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed List.at"))
+                        else if op == "push".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some xId => (match inferE m env st3 xId with
+                                          | .ok (τx, st4) => (match unifyInfer τx β st4 with
+                                                              | .ok st5 => .ok (.listTy (applySubst st5.subst β), st5)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed List.push"))
+                        else .error (.unsupported "type oracle: unmodeled List op"))
+                   | .error e => .error e)
+                | none => .error (.unsupported "type oracle: malformed List op (no list arg)"))
+             else
+               -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
+               -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
+               -- (unify the arg with M's payload; nullary M takes an optional unit arg). Over-apply → CDZ0203.
+               (match (userSumMap m).bind (fun mp =>
+                        (mp.find? (fun e => e.1 == op)).bind (fun ent => if ent.2.1 == q then some ent else none)) with
+                | some (_, (_, sumTy, some τp)) =>
+                  if children.size > 2 then .error (.illTyped "CDZ0203")
+                  else (match children[1]? with
+                        | some xId => (match inferE m env st xId with
+                                       | .ok (τ, st') => (match unifyInfer τ τp st' with
+                                                          | .ok st'' => .ok (sumTy, st'')
+                                                          | .error e => .error e)
+                                       | .error e => .error e)
+                        | none => .error (.unsupported "type oracle: malformed qualified user-sum constructor"))
+                | some (_, (_, sumTy, none)) =>
+                  if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
+                | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
            | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -1839,6 +1875,17 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[7, 6, 4], .atom 7, .atom 2, .list #[9, 10], .atom 0,
                            .list #[12, 8, 11]],
                 root := 13 } == .wellTyped (.listTy (.int 64 true)))
+-- T1.30 (List op): `(do (def (main) (List.len (list 1 2 3))) (export main))` → WellTyped Int64. `List.len`
+-- = `((. List len) …)`; the arg unifies with `List β` → the op yields Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "List".toUTF8, .name "len".toUTF8, .name "list".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .atom 8, .atom 9,
+                           .list #[4, 5, 6, 7], .list #[3, 8], .atom 2, .list #[10], .atom 1,
+                           .list #[12, 11, 9], .atom 10, .atom 2, .list #[14, 15], .atom 0,
+                           .list #[17, 13, 16]],
+                root := 18 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
