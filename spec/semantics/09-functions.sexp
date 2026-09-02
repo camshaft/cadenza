@@ -13589,3 +13589,34 @@
       (export main)))
   (call main 2)
   (output (: 125 Int64)))
+
+; --- Call-site splat INSIDE an effect-handler body (idealistic; pending handler-fold expansion) ---
+; A call-site splat `(.. t)` is an ordinary call-argument construct, so it must expand the same way
+; when the call happens to sit lexically inside a `handle` body. `one(.. #tuple(7))` = `one(7)` = 21,
+; and the enclosing `handle T` discharges the (never-performed) `T` effect, so `main(n) = 21` for any
+; `n` — identical to the non-splat `(one 7)`. This is the IDEALISTIC spec: the splat SHOULD spread.
+; The compiler does not YET expand a splat inside a handler body — the tail-resumptive fold types and
+; lowers its body through a path that bypasses the shared call-splat expansion — so it SOUNDLY DECLINES
+; (CDZ0900 "handler not reducible") rather than miscompile. That earlier shipped a BROKEN artifact on
+; both backends (invalid wasm / non-compiling Rust); the decline is the safe reject (fix f043df7c6e,
+; PR #7826). This case is graded `todo` while it declines, GUARDS that the decline never regresses back
+; to a miscompile (a wrong value / trap would grade `fail`), and auto-flips to `pass` when the follow-up
+; threads the call-splat expansion through the handler fold. (breaker EMIT-INVALID probe, varargs A.7)
+(case
+  "a tuple splat inside an effect-handler body spreads its elements"
+  (doc
+    "`main(n)` runs `(one (.. #tuple(7)))` inside `(handle T n …)`. The splat spreads the one-tuple into
+           `one`'s single parameter — `one(7) = 7 * 3 = 21` — and the handler discharges the unperformed
+           `T` effect, so the result is `21` regardless of `n`. Pins that a call-site splat expands the
+           same inside a handler body as anywhere else. Currently DECLINES (CDZ0900) pending the
+           handler-fold splat expansion; a sound decline, never a miscompile.")
+  (input
+    (do
+      (effect T (op tick (-> Int64)))
+      (def (one (: a Int64)) (* a 3))
+      (def (main (: n Int64))
+        (handle T n ((tick () s (resume s (+ s 1))))
+          (one (.. #tuple(7)))))
+      (export main)))
+  (call main 0)
+  (output (: 21 Int64)))
