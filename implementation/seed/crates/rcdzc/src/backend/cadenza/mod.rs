@@ -4841,6 +4841,21 @@ fn emit_match_list(
         Ty::List(e) => Some(*e),
         _ => None,
     };
+    // KEYING RECONCILIATION (nested list-in-list re-emit — the #7880 fix's LIST twin). When THIS list match's
+    // scrutinee is itself a nested read `SumPayload{root, prefix}` — e.g. an INNER list that an OUTER list
+    // match bound whole (`(match xs ((list (list a)) …))`, whose element re-match runs `emit_match_list` on
+    // `SumPayload{xs, [Elem(0)]}`) — a body `Core::SumPayload` read of THIS match's element/rest is keyed
+    // ROOT-relative `(root, prefix ++ [Elem(i)])`, NOT `(scrutinee, [Elem(i)])` (the optimizer composed the
+    // outer element read into the inner one). So mirror each element/rest binder under the composed root key
+    // too (below, per arm). Additive — the composed key names EXACTLY this element (never shadows a distinct
+    // binder). See `emit_match_sum`'s identical reconciliation (#7880).
+    let root_alias: Option<(StructId, Vec<PathStep>)> = match core_of(db, scrutinee) {
+        Core::SumPayload {
+            scrutinee: root,
+            path: prefix,
+        } if root != scrutinee => Some((root, prefix.to_vec())),
+        _ => None,
+    };
     for arm in arms {
         // Build the arm's surface pattern, registering each binder's `SumPayload` path for the body.
         let pattern = match arm.cond {
@@ -4889,6 +4904,29 @@ fn emit_match_list(
             // comes through the scrutinee's own name (not a `SumPayload`), so no binder is registered.
             ListArmCond::Any => b.name("_"),
         };
+        // Mirror this arm's freshly-registered element/rest binders under the composed root-relative key when
+        // this list match's scrutinee is itself a nested read (see `root_alias` above). Runs BEFORE the guard
+        // + body emit (both read those binders). OVERWRITES (`insert`, not `or_insert`): sibling arms reuse the
+        // SAME composed path (`[Elem(0),Elem(0)]`) for their OWN inner element, and arms emit sequentially, so
+        // the CURRENT arm's binder must win for its body — an `or_insert` would leak the first arm's binder into
+        // a later arm's body (a cross-arm miscompile). Mirrors `emit_match_sum`'s reconciliation (#7880), which
+        // also `insert`s. The composed key `(root, prefix ++ p)` is exactly what a nested-list body read carries.
+        if let Some((root, prefix)) = &root_alias {
+            let mirror: Vec<(Vec<PathStep>, std::rc::Rc<str>)> = env
+                .payloads
+                .iter()
+                .filter(|((s, _), _)| *s == scrutinee)
+                .map(|((_, p), nm)| (p.clone(), nm.clone()))
+                .collect();
+            for (p, nm) in mirror {
+                let composed: Vec<PathStep> =
+                    prefix.iter().cloned().chain(p.iter().cloned()).collect();
+                if let Some(ty) = env.payload_tys.get(&(scrutinee, p.clone())).cloned() {
+                    env.payload_tys.insert((*root, composed.clone()), ty);
+                }
+                env.payloads.insert((*root, composed), nm);
+            }
+        }
         // A GUARDED arm wraps its pattern in the `(guard <pattern> <cond>)` surface form (`resolve.rs`
         // Case 6lg): the arm fires only when its length condition AND `cond` hold, and otherwise FALLS
         // THROUGH to the next arm — the surface reader re-lowers `(guard …)` with that same fall-through.
