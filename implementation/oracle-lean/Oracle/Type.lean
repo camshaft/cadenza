@@ -744,10 +744,20 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                       | none => .error (.unsupported "type oracle: malformed local-fn param"))
                                     (acc.1, [], acc.2) with
                                  | .ok (bodyEnv, ptysRev, stP) =>
-                                   (match inferE m bodyEnv stP valId with
+                                   -- T1.22 — MONOMORPHIC RECURSION: pre-bind `fnm : (params → fresh ρ)` MONO
+                                   -- so the body may call itself, infer the body, then unify its type with ρ.
+                                   -- Generalize the resolved arrow (let-gen at the def). Non-recursive defs are
+                                   -- unaffected (fnm unused → ρ := bodyτ → same arrow as before).
+                                   let ρ : Ty := .var stP.next
+                                   let recArrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                                   let stP1 := { stP with next := stP.next + 1 }
+                                   (match inferE m ((fnm, ([], recArrow)) :: bodyEnv) stP1 valId with
                                     | .ok (bodyτ, stB) =>
-                                      let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) bodyτ
-                                      .ok (((fnm, generalizeScheme acc.1 stB.subst arrow) :: acc.1), stB)
+                                      (match unifyInfer bodyτ ρ stB with
+                                       | .ok stB2 =>
+                                         let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                                         .ok (((fnm, generalizeScheme acc.1 stB2.subst arrow) :: acc.1), stB2)
+                                       | .error e => .error e)
                                     | .error e => .error e)
                                  | .error e => .error e)
                               | none => .error (.unsupported "type oracle: local fn-def head not a name"))
