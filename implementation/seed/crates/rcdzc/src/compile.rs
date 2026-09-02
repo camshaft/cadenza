@@ -2012,6 +2012,22 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // MACRO EXPANSION NON-TERMINATION — a self- or mutually-recursive macro whose expansion keeps
+    // producing another macro call never reaches a fixpoint. `lower::expand_macros` caps the expansion
+    // fuel and records the culprit call here instead of looping forever (which HUNG the compiler +
+    // `cdz check`/LSP). Reported as a coded reject (CDZ0999, the compile-time-reduction-bound band — macro
+    // expansion is compile-time evaluation) so a non-terminating macro is a diagnosable error, not a hang.
+    for &occ in &db.macro_expansion_overflow.clone() {
+        faults.push(
+            Reject::coded(
+                crate::diag::Code::RecursionBound,
+                "macro expansion did not terminate within the expansion-depth budget — a self- or \
+                 mutually-recursive macro whose expansion keeps producing another macro call. Give the \
+                 macro a base case that stops emitting a further macro call.",
+            )
+            .at(occ),
+        );
+    }
     // INLINE-POLICY CONFLICTS (Addendum 4). `inline-always` on a RECURSIVE def is a contradiction — a
     // recursive def CANNOT inline (it would inline without end; it is always emitted once), so the marker
     // is meaningless and almost certainly an author error. Reject it (CDZ0201) rather than silently ignore.

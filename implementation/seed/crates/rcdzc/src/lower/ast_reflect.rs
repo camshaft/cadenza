@@ -659,7 +659,16 @@ pub(crate) fn expand_macros(db: &mut Db) {
     if db.quote_params.is_empty() {
         return;
     }
+    // FUEL: cap the expansion fixpoint so a self/mutually-recursive macro — whose expansion keeps producing
+    // another macro call — cannot loop forever (that HUNG the compiler + `cdz check`/LSP with no
+    // diagnostic). A round expands every macro call present at its start, so macro NESTING DEPTH ≈ rounds;
+    // a legit macro converges in a handful of rounds (even deep nesting is far under the cap), while a
+    // non-terminating macro trips the cap and is reported as a coded reject (see the fuel-exhausted branch).
+    const MAX_EXPANSION_ROUNDS: usize = 256;
+    let mut rounds: usize = 0;
+    let mut last_expanded: Option<StructId> = None;
     loop {
+        rounds += 1;
         let mut changed = false;
         // Scan only nodes present at the START of the round; freshly-spliced nodes are handled next round
         // (after the memo invalidation below re-resolves them).
@@ -719,10 +728,21 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 // `id` lets the fresh structure be walked. (mrf1 nested-macro follow-up.)
                 db.reduced_callable_walked.remove(&id);
                 db.register_reduced_callables(id);
+                last_expanded = Some(id);
                 changed = true;
             }
         }
         if !changed {
+            break;
+        }
+        // FUEL EXHAUSTED: still expanding after the budget → the macro expansion is not converging (a self-
+        // or mutually-recursive macro). Record the last-expanded call as the culprit and STOP, instead of
+        // looping forever; `compile::collect_faults` reports it as a coded reject so the program gets a
+        // diagnostic rather than a hang.
+        if rounds >= MAX_EXPANSION_ROUNDS {
+            if let Some(culprit) = last_expanded {
+                db.macro_expansion_overflow.push(culprit);
+            }
             break;
         }
         // Rebuild the PARENT index over the now-spliced arena. `reconstruct_macro` builds its
