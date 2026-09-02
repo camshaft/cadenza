@@ -240,13 +240,20 @@ pub fn generate_typecheck(entropy: &[u8]) -> Program {
     let mut iscope: Vec<String> = Vec::new();
     let mut bscope: Vec<String> = Vec::new();
     let mut fresh = 0usize;
-    // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed Int64/Bool body.
+    // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed body — an Int64, a
+    // Bool, or a COMPOUND/SUM value (tuple/record construction + Option/Ordering construct — the oracle
+    // models tuple/proj + closed records T1.13/14 + sum-construct T1.15, so these judge, not skip).
     let body = if c.variant(5) == 0 {
         gen_typefuzz_illtyped(&mut c, &mut iscope, &mut bscope, &mut fresh)
-    } else if c.variant(2) == 0 {
-        gen_typefuzz_int(&mut c, 3, &mut iscope, &mut bscope, &mut fresh)
     } else {
-        gen_typefuzz_bool(&mut c, 3, &mut iscope, &mut bscope, &mut fresh)
+        // Keep the scalar arms dominant (they + their tuple/record PROJECTION sub-arms are near-always
+        // judged); the compound/sum VALUE-returning arm skips more (a compound-returning `main` is less
+        // fully modeled), so cap it at ~1/5 for construction coverage without over-diluting density.
+        match c.variant(5) {
+            0 | 1 => gen_typefuzz_int(&mut c, 3, &mut iscope, &mut bscope, &mut fresh),
+            2 | 3 => gen_typefuzz_bool(&mut c, 3, &mut iscope, &mut bscope, &mut fresh),
+            _ => gen_typefuzz_value(&mut c, &mut iscope, &mut bscope, &mut fresh),
+        }
     };
     Program {
         source: format!("(do (def (main) {body}) (export main))"),
@@ -262,7 +269,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 6 };
+    let arms = if depth == 0 { 2 } else { 7 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -306,9 +313,20 @@ fn gen_typefuzz_int<C: Choice>(
             format!("(let (({name} {val})) {body})")
         }
         // Ascription `(: <int> Int64)` — a constrain-not-contradict that must SOLVE (well-typed).
-        _ => {
+        5 => {
             let e = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
             format!("(: {e} Int64)")
+        }
+        // Project an Int64 out of a freshly-built tuple/record (exercises tuple-proj / record-field
+        // access — modeled T1.13/14). Both branches yield Int64, keeping the arm well-typed.
+        _ => {
+            let a = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (tuple {a} {b}) 0)")
+            } else {
+                format!("(. (record (= a {a}) (= b {b})) a)")
+            }
         }
     }
 }
@@ -321,7 +339,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 6 };
+    let arms = if depth == 0 { 2 } else { 7 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -365,7 +383,7 @@ fn gen_typefuzz_bool<C: Choice>(
             format!("(if {cnd} {t} {e})")
         }
         // `(let ((bN <bool>)) <bool-using-bN>)`.
-        _ => {
+        5 => {
             let name = format!("b{}", *fresh);
             *fresh += 1;
             let val = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
@@ -373,6 +391,16 @@ fn gen_typefuzz_bool<C: Choice>(
             let body = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
             bscope.pop();
             format!("(let (({name} {val})) {body})")
+        }
+        // Project a Bool out of a freshly-built tuple/record (Bool-typed element/field → Bool).
+        _ => {
+            let a = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (tuple {a} {b}) 0)")
+            } else {
+                format!("(. (record (= a {a}) (= b {b})) a)")
+            }
         }
     }
 }
@@ -426,6 +454,40 @@ fn gen_typefuzz_illtyped<C: Choice>(
         }
         // An unbound name (resolution error).
         _ => "zz".to_string(),
+    }
+}
+
+/// A WELL-TYPED COMPOUND / SUM value in the modeled fragment — exercises CONSTRUCTION typing (not just
+/// scalar projection): a tuple, a closed record, an `(Some <int>)` (Option Int64), or an Ordering nullary
+/// variant. The oracle models tuple construction, closed records (T1.13/14), and sum-construct (T1.15),
+/// so these are JUDGED. (`(Ok …)` / `None` need a type annotation to determine the other Result/Option
+/// param — omitted here to keep every shape a clean, fully-determined well-typed value.)
+fn gen_typefuzz_value<C: Choice>(
+    c: &mut C,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+) -> String {
+    match c.variant(4) {
+        // A tuple of an Int64 and a Bool.
+        0 => {
+            let a = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_bool(c, 1, iscope, bscope, fresh);
+            format!("(tuple {a} {b})")
+        }
+        // A closed record with an Int64 and a Bool field.
+        1 => {
+            let a = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_bool(c, 1, iscope, bscope, fresh);
+            format!("(record (= a {a}) (= b {b}))")
+        }
+        // `(Some <int>)` — Option Int64 construction (fully determined).
+        2 => {
+            let a = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
+            format!("(Some {a})")
+        }
+        // An Ordering nullary variant.
+        _ => ["Less", "Equal", "Greater"][c.variant(3)].to_string(),
     }
 }
 
