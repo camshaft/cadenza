@@ -596,6 +596,14 @@ pub(super) enum ShapeNode {
     /// leaf orders/compares as before; the tag change is render-only. (Was `ShapeNode::Int` until the
     /// char-as-bool ruling; the render tag makes a runtime `String.scalar-at` char display as `#\c`.)
     Char,
+    /// A `Symbol` — shares the constant-STRING runtime rep (a Symbol's identity IS its UTF-8 text, see
+    /// `Symbol.of`), so value-EQ/-CMP/hash/ORDER treat a Symbol IDENTICALLY to `Str` (a Set/Map Symbol key
+    /// orders by its text). This is a pure RENDER tag (descriptor tag 20), the `Char`-over-`Int` analog:
+    /// the runtime reads the string like `Str` but renders the CONSTRUCTION form `((. Symbol of) "text")`
+    /// (the #7694 member-compound, byte-matching `const_value_ast` + the rust backend), NOT the bare `Str`
+    /// leaf `"text"` (which is ambiguous with a real String). (Was `ShapeNode::Str` — a runtime Symbol in a
+    /// compound then mis-rendered as a bare string, divergent from rust; the render tag fixes the parity.)
+    Symbol,
     Float,
     Float32,
     Str,
@@ -762,16 +770,17 @@ impl ShapeTableBuilder {
             Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
             Ty::Float(ft) if ft.ground_width() == 32 => self.push(ShapeNode::Float32),
             Ty::String => self.push(ShapeNode::Str),
-            // A SYMBOL is a String byte-leaf at run time (tagless heap — no `Shape::Sym`, no intern
-            // table; a Symbol IS its canonical UTF-8 leaf, shared rep with String, see `Symbol.of`). So its
-            // orderable descriptor is `ShapeNode::Str` exactly like the String it wraps — the runtime sorts
-            // and renders it through the same `Shape::Str` path. Without this arm a `(Set Symbol)`/`(Map
-            // Symbol _)` passed the `orderable_leaf_or_compound` guard (Symbol IS orderable — its `<`/`=`
-            // pins compute) but then declined at `set_shape_descriptor`/`map_shape_descriptor` ("no
-            // orderable descriptor"), a check/emit divergence: wasm `Set.to-list`/`Map.to-list` over a
-            // Symbol element/key declined while both rust targets computed the content-byte order. The
-            // value form renders `(: … Symbol)` via `type_node_of`'s `Ty::Symbol` leaf.
-            Ty::Symbol => self.push(ShapeNode::Str),
+            // A SYMBOL shares the String byte-leaf runtime rep (tagless heap — no intern table; a Symbol IS
+            // its canonical UTF-8 leaf, see `Symbol.of`), so it stays orderable-like-Str: `orderable_leaf_or_
+            // compound` admits `Ty::Symbol` (a `(Set Symbol)`/`(Map Symbol _)` key orders by content) and the
+            // runtime `value_cmp_shaped` orders `Shape::Symbol` IDENTICALLY to `Shape::Str`. But its descriptor
+            // is now the RENDER-ONLY `ShapeNode::Symbol` (tag 20, the `Char`-over-`Int` analog) so the runtime
+            // renders the CONSTRUCTION form `((. Symbol of) "text")` (byte-matching `const_value_ast` + rust),
+            // NOT the bare `Str` leaf. (Was `ShapeNode::Str`: a runtime Symbol in a compound then mis-rendered
+            // as a bare string `"text"`, ambiguous with a real String + divergent from rust's `(Symbol.of …)`
+            // — the #7694/breaker parity gap. The const path already bakes the member form via `const_value_
+            // ast`; this closes the RUNTIME value-encode path.)
+            Ty::Symbol => self.push(ShapeNode::Symbol),
             // A CHAR is a scalar — an i32 Unicode code-point slot at run time (Char-rep). Its value-op
             // descriptor is `ShapeNode::Char` (the bool-analog RENDER tag, descriptor tag 19): the runtime
             // reads the i32 code-point and RENDERS it as a `#\c` char literal (via the codec's KIND_CHAR),
@@ -934,7 +943,8 @@ impl ShapeTableBuilder {
                 ShapeNode::Rational => d.push(18), // matches the runtime `decode_shape` tag 18 = Rational
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Char => d.push(19), // matches the runtime `decode_shape` tag 19 = Char (render-only; value = i32 code-point, cmp/eq/hash as Int)
-                ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
+                ShapeNode::Symbol => d.push(20), // matches the runtime `decode_shape` tag 20 = Symbol (render-only; value = str, cmp/eq/hash/order as Str; renders `((. Symbol of) "…")`)
+                ShapeNode::Float => d.push(2),   // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
                 ShapeNode::Str => d.push(3),      // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes

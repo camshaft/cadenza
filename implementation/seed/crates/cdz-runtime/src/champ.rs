@@ -519,7 +519,7 @@ pub(crate) fn compare_scalar_leaf(
         Shape::Unit => Some(Ordering::Equal),
         Shape::BigInt => Some(op_bigint_cmp(a, b).cmp(&0)),
         Shape::Rational => Some(op_rational_cmp(a, b).cmp(&0)),
-        Shape::Str => {
+        Shape::Str | Shape::Symbol => {
             // Content-lexicographic over the flattened UTF-8 bytes — a rope String is flattened first
             // (content-preserving/unobservable), then the borrowed leaf slices compare with NO `to_vec`
             // (the zero-alloc discipline `champ_eq` uses). This is the arm the string-keyed-map sort hits.
@@ -644,7 +644,7 @@ pub(crate) fn value_cmp_shaped(
                     // allocating (the same zero-alloc discipline `champ_eq` uses). Bytes composes soundly here
                     // inside a compound (its order is total), unlike a float — the compiler admits Bytes in
                     // lockstep (`orderable_leaf_or_compound`).
-                    Shape::Str | Shape::Bytes => {
+                    Shape::Str | Shape::Symbol | Shape::Bytes => {
                         bytes_flatten(a);
                         bytes_flatten(b);
                         let ord = {
@@ -864,7 +864,7 @@ pub(crate) fn value_eq_shaped(
             }
             // Byte-canonical leaves — equality by canonical raw bytes (float eq TOTAL per §313; Bytes/String
             // byte-canonical). This is the KEY difference from value_cmp_shaped, which DECLINES these.
-            Shape::Float | Shape::Float32 | Shape::Bytes | Shape::Str => {
+            Shape::Float | Shape::Float32 | Shape::Bytes | Shape::Str | Shape::Symbol => {
                 if !leaf_bytes_eq(a, b) {
                     return Some(false);
                 }
@@ -1082,7 +1082,7 @@ pub(crate) fn value_canonicalize_shaped(
                     }
                     // A String/Bytes may be a ROPE → flatten to its canonical flat leaf (in place, content-
                     // preserving/unobservable even on a shared node), then retain. A flat leaf flattens no-op.
-                    Some(Shape::Str | Shape::Bytes) => {
+                    Some(Shape::Str | Shape::Symbol | Shape::Bytes) => {
                         bytes_flatten(h);
                         op_dup(h);
                         results.push(h);
