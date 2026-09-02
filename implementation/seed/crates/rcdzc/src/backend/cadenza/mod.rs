@@ -257,6 +257,147 @@ fn node_references(
         .any(|c| node_references(db, c, target, seen))
 }
 
+/// Scan `body` for every `Core::SumPayload { scrutinee == scrut, path }` whose path begins with `prefix`,
+/// and classify the reads UNDER that prefix. Returns:
+///   - `Some(field_indices)` if EVERY such read is exactly `prefix ++ [Elem(j)]` (a ONE-LEVEL positional
+///     field/slot read) — the sorted-unique set of `j`s the body reads. This is the BIND-EARLY-eligible
+///     shape: the element can be destructured by a field PATTERN binding just those slots (transferring the
+///     read fields at match time, dropping the shell + unread siblings — the corpus "bind-early is CLEAN,
+///     arg-position projection leaks" profile, ksd3/ksd4).
+///   - `None` if ANY read is the WHOLE element (`path == prefix`) or DEEPER (`prefix ++ [Elem(j), …]`) — a
+///     bind-early field pattern would not cover it; fall back to the whole-element binder (prior behavior).
+///     (`None` on no reads too — an unused element needs no destructure; the whole-element binder handles it.)
+fn collect_one_level_field_reads(
+    db: &mut Db,
+    body: StructId,
+    scrut: StructId,
+    prefix: &[crate::core::PathStep],
+) -> Option<Vec<usize>> {
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        scrut: StructId,
+        prefix: &[crate::core::PathStep],
+        seen: &mut std::collections::HashSet<StructId>,
+        fields: &mut std::collections::BTreeSet<usize>,
+        ok: &mut bool,
+    ) {
+        if !seen.insert(node) {
+            return;
+        }
+        if let Core::SumPayload { scrutinee, path } = core_of(db, node)
+            && scrutinee == scrut
+            && path.starts_with(prefix)
+        {
+            match path.get(prefix.len()) {
+                // Exactly one step past the prefix, and it is the LAST step, and it is an `Elem` → a
+                // one-level positional field/slot read. Bind-early-eligible.
+                Some(crate::core::PathStep::Elem(j)) if path.len() == prefix.len() + 1 => {
+                    fields.insert(*j);
+                }
+                // The whole element (path == prefix) or a deeper / non-`Elem` read → not eligible.
+                _ => *ok = false,
+            }
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, node) {
+            walk(db, c, scrut, prefix, seen, fields, ok);
+        }
+    }
+    let mut fields = std::collections::BTreeSet::new();
+    let mut ok = true;
+    walk(
+        db,
+        body,
+        scrut,
+        prefix,
+        &mut std::collections::HashSet::new(),
+        &mut fields,
+        &mut ok,
+    );
+    if ok && !fields.is_empty() {
+        Some(fields.into_iter().collect())
+    } else {
+        None
+    }
+}
+
+/// Emit the surface PATTERN + register the binders for ONE list-element slot at `elem_prefix` (`[Elem(i)]`).
+/// When the element is a Record/Tuple whose body-reads are ALL one-level positional fields
+/// ([`collect_one_level_field_reads`] → `Some`), emit a BIND-EARLY destructure pattern binding just those
+/// slots (others `_`) — `#record((= f v)…)` / `#tuple(…)`. Bind-early TRANSFERS the read fields at match
+/// time so the element shell + unread siblings DROP, matching the direct path's CLEAN reclaim profile and
+/// avoiding the arg-position-projection leak (a whole-element binder + `(. elem f)` retains the shell +
+/// siblings — the corpus ksd3/ksd4 "1→9/11 leak" the direct bind-early form avoids). Otherwise (whole-element
+/// or deeper read, or a non-Record/Tuple element) fall back to a single whole-element binder — prior
+/// behavior; a body read then resolves via the longest-registered-prefix walk. VALUE-preserving either way
+/// (same fields bound); only the reclaim shape differs.
+fn emit_list_elem_binder(
+    db: &mut Db,
+    b: &mut Builder,
+    scrutinee: StructId,
+    elem_prefix: &[crate::core::PathStep],
+    elem_ty: Option<&Ty>,
+    body: StructId,
+    env: &mut BinderEnv,
+) -> StructId {
+    use crate::core::PathStep;
+    if let Some(et) = elem_ty
+        && let Some(reads) = collect_one_level_field_reads(db, body, scrutinee, elem_prefix)
+    {
+        // Positional slots: (surface field NAME for a Record, `None` for a Tuple slot; field TYPE).
+        let slots: Option<Vec<(Option<String>, Ty)>> = match et {
+            Ty::Record(fields) => Some(
+                fields
+                    .iter()
+                    .map(|(k, v)| (Some(k.name.to_string()), v.clone()))
+                    .collect(),
+            ),
+            Ty::Tuple(ts) => Some(ts.iter().map(|t| (None, t.clone())).collect()),
+            _ => None,
+        };
+        if let Some(slots) = slots {
+            let ctor = if matches!(et, Ty::Record(_)) {
+                crate::ast::CompoundCtor::Record
+            } else {
+                crate::ast::CompoundCtor::Tuple
+            };
+            let mut children = Vec::with_capacity(slots.len());
+            for (j, (fname, fty)) in slots.iter().enumerate() {
+                let slot_pat = if reads.contains(&j) {
+                    let nm = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    let mut key = elem_prefix.to_vec();
+                    key.push(PathStep::Elem(j));
+                    env.payload_tys
+                        .insert((scrutinee, key.clone()), fty.clone());
+                    env.payloads.insert((scrutinee, key), nm.clone());
+                    b.name(nm)
+                } else {
+                    b.name("_")
+                };
+                match fname {
+                    Some(name) => {
+                        let kn = b.name(name.as_str());
+                        children.push(b.field_pair(kn, slot_pat));
+                    }
+                    None => children.push(slot_pat),
+                }
+            }
+            return b.compound(ctor, &children);
+        }
+    }
+    // Fallback: a single whole-element binder (a body read resolves via the longest-prefix walk).
+    let name = synth_payload_name(env.next_payload);
+    env.next_payload += 1;
+    if let Some(et) = elem_ty {
+        env.payload_tys
+            .insert((scrutinee, elem_prefix.to_vec()), et.clone());
+    }
+    env.payloads
+        .insert((scrutinee, elem_prefix.to_vec()), name.clone());
+    b.name(name)
+}
+
 /// The deterministic synthesized surface name for the `i`th sum-match PAYLOAD binder minted in an emit
 /// walk (monotone across the whole def, so binders of a nested match never collide with an outer match's).
 /// The `_cdz_m` prefix keeps it clear of source identifiers AND silences the unused-binding warning
@@ -4207,15 +4348,16 @@ fn emit_match_list(
                 let list_head = b.name("list");
                 let mut pat = vec![list_head];
                 for i in 0..n {
-                    let name = synth_payload_name(env.next_payload);
-                    env.next_payload += 1;
-                    if let Some(et) = &elem_ty {
-                        env.payload_tys
-                            .insert((scrutinee, vec![PathStep::Elem(i)]), et.clone());
-                    }
-                    env.payloads
-                        .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
-                    pat.push(b.name(name));
+                    let slot = emit_list_elem_binder(
+                        db,
+                        b,
+                        scrutinee,
+                        &[PathStep::Elem(i)],
+                        elem_ty.as_ref(),
+                        arm.body,
+                        env,
+                    );
+                    pat.push(slot);
                 }
                 b.list(pat)
             }
@@ -4223,15 +4365,16 @@ fn emit_match_list(
                 let list_head = b.name("list");
                 let mut pat = vec![list_head];
                 for i in 0..lead {
-                    let name = synth_payload_name(env.next_payload);
-                    env.next_payload += 1;
-                    if let Some(et) = &elem_ty {
-                        env.payload_tys
-                            .insert((scrutinee, vec![PathStep::Elem(i)]), et.clone());
-                    }
-                    env.payloads
-                        .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
-                    pat.push(b.name(name));
+                    let slot = emit_list_elem_binder(
+                        db,
+                        b,
+                        scrutinee,
+                        &[PathStep::Elem(i)],
+                        elem_ty.as_ref(),
+                        arm.body,
+                        env,
+                    );
+                    pat.push(slot);
                 }
                 // The `..` separator, then the rest binder (the tail sublist from `lead` onward).
                 pat.push(b.name(".."));
