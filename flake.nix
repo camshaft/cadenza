@@ -3804,6 +3804,69 @@
             fi
           '';
 
+        # COARSE per-file WASM GATE (v-nix, the gateCheckNix swap): the fail-on-regression twin of
+        # mkCorpusVerdictsFileCoarse — same per-file loop (cdz-compile -t wasm + cdz-run --grade), but passes
+        # ONLY `--baseline .gate-baseline` (NOT --emit-verdict), so cdz-run exits non-zero on a pass→not-pass
+        # regression → set -e fails the derivation. Intended per-MR localGate replacement for the in-process
+        # `gateCheck` (which is wasm-only + has the warning-capture BLIND SPOT — its diagnostics are fed here
+        # via --diagnostics, so the coarse nix gate is strictly-better coverage; #7329 single-sourced
+        # canonical_output_value on both paths). NO CDZ_VALUE_DOC (the wasm baseline is the bare-render coarse
+        # harvest). Swap into localGate is HELD until the bare-(tuple)→#tuple corpus nativization settles (else
+        # it gates against a baseline about to change on ~127 cases); the derivation itself is baseline-agnostic.
+        mkCorpusGateFileCoarse = { name, file }:
+          let shred = mkCorpusShred { inherit name file; };
+          in
+          pkgs.runCommand "corpus-gate-coarse-${name}"
+            {
+              nativeBuildInputs = [ cdzCompile cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            for case in ${shred}/${name}/*/; do
+              [ -d "$case" ] || continue
+              case="''${case%/}"
+              work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work"
+              inputs=("ast:main=$case/program.ast")
+              entry=()
+              for m in "$case"/module-*.ast; do
+                if [ -e "$m" ]; then
+                  mn=$(basename "$m" .ast); mn=''${mn#module-}
+                  inputs+=("ast:$mn=$m")
+                  entry=(--entry main)
+                fi
+              done
+              cfg=()
+              if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
+              if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
+              if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err"; then
+                status=0
+              else
+                status=$?
+              fi
+              for p in "$case"/peer-*.ast; do
+                [ -e "$p" ] || continue
+                pn=$(basename "$p" .ast)
+                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                  -o "$work/$pn.wasm" 2>>"$work/compile.err" || true
+              done
+              # --grade + --baseline (NO --emit-verdict) → cdz-run exits non-zero on a pass→not-pass regression.
+              args=(--grade "$case/test-run.ast" --compile-status "$status" --compile-diag "$work/compile.err"
+                    --baseline ${./spec/semantics/.gate-baseline})
+              if [ -e "$work/diagnostics" ]; then args+=(--diagnostics "$work/diagnostics"); fi
+              if [ -e "$work/emit.wasm" ]; then args=("$work/emit.wasm" "''${args[@]}"); fi
+              if [ -e "$case/component-name" ]; then args+=(--component-name "$(cat "$case/component-name")"); fi
+              for pw in "$work"/peer-*.wasm; do
+                [ -e "$pw" ] || continue
+                pn=$(basename "$pw" .wasm)
+                args+=(--peer "$(cat "$case/$pn.iface")=$pw")
+              done
+              args+=(--runtime ${runtimeDebug})
+              cdz-run "''${args[@]}"
+            done
+            echo "ok: corpus-gate-coarse ${name} — graded vs .gate-baseline (no regression)" > "$out"
+          '';
+
         # `.#packages.corpus-verdicts-coarse` — the whole-corpus COARSE harvest (~35 file derivations), the
         # storm-free replacement for corpusVerdictsAll that apps.save-baseline will consume once v-corpus-harness
         # signs off the parity acceptance test. Kept SEPARATE from corpusVerdictsAll for now so the existing gate
@@ -3814,6 +3877,21 @@
               (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
                 ''cat ${mkCorpusVerdictsFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
               corpusFileNames}
+        '';
+        # WHOLE-CORPUS COARSE WASM GATE (the gateCheckNix swap target) — the fail-on-regression aggregate over
+        # all files via mkCorpusGateFileCoarse. Each per-file gate FAILS its build on a pass→not-pass regression
+        # vs .gate-baseline, so this aggregate cannot build if ANY file regresses (fail-on-any). Cats the per-file
+        # "ok" markers (forces each to build). This REPLACES the in-process `gateCheck` in localGate — same
+        # case-set + #7329 single-sourced canonical_output_value grader, PLUS the diagnostics wire (--diagnostics)
+        # that fixes gateCheck's warning-capture blind spot → strictly-better coverage. Committed .gate-baseline
+        # == the #7692 coarse harvest by construction, so this is green on a clean main.
+        corpusGateCoarse = pkgs.runCommand "corpus-gate-coarse" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline (no regression)" >> "$out"
         '';
 
         # PARITY SPIKE — the coarse per-file harvest MUST be byte-identical to the per-case verdictsFileAgg for
@@ -5789,6 +5867,13 @@
         # source once v-corpus-harness signs off parity. `.#corpus-verdicts-coarse-parity` is the per-file
         # byte-identity spike (coarse == per-case verdictsFileAgg). See mkCorpusVerdictsFileCoarse's def note.
         packages.corpus-verdicts-coarse = corpusVerdictsCoarseAll;
+        # COARSE WASM GATE (gateCheckNix swap) test packages — build a file to VERIFY green against the
+        # committed .gate-baseline (== the #7692 coarse harvest by construction). 05-compound-types carries the
+        # tuple cases (the bare-(tuple)-vs-#tuple render); a green here confirms the wasm baseline is
+        # self-consistent (the harvest graded them, the gate re-grades identically). Full-aggregate wasm swap
+        # into localGate follows once the corpus nativization settles.
+        packages.corpus-gate-coarse-01-literals = mkCorpusGateFileCoarse { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; };
+        packages.corpus-gate-coarse-05-compound-types = mkCorpusGateFileCoarse { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; };
         packages.corpus-verdicts-coarse-parity = corpusVerdictsCoarseParity;
         # DIVERSE-SAMPLE per-file parity packages (v-corpus-harness acceptance step 2): distinct case shapes —
         # 05-compound-types (value-heavy #record/#tuple), 11-modules (multi-module → --entry main),
@@ -6534,6 +6619,10 @@
             # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
             # aggregate; the per-file `corpus-rust-<file>` aggregates are spread in below.
             corpus-rust = corpusRustAll;
+            # corpus-gate-coarse (gateCheckNix swap): the whole-corpus coarse WASM fail-on-regression gate,
+            # the localGate replacement for the in-process `gateCheck`. Exposed as a check for the full verify;
+            # the gateCheck→corpus-gate-coarse localGate fold lands in a follow-up (coordinated w/ v-xtask delete).
+            corpus-gate-coarse = corpusGateCoarse;
             # The RUST-ASYNC target's whole-corpus aggregate (the async/gas-metered rust backend) — the last
             # corpus target to move off the native in-process `xtask gate --target rust-async` into a cached
             # nix check. Per-file `corpus-rust-async-<file>` aggregates spread in below.
