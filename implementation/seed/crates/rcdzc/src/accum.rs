@@ -76,18 +76,30 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
 /// its recursion actually became — so `fac` reads `transformed→fac$acc` rather than the literal
 /// `inlined` (its seed wrapper folds, but the loop is emitted under the copy's name). Empty when no def
 /// matches (byte-identical to before — a non-matching def is untouched).
-pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) -> Vec<(usize, usize)> {
+pub(crate) fn introduce(
+    ast: &mut Arenas,
+    defs: &mut Vec<Def>,
+    effect_decls: &[crate::db::EffectDecl],
+) -> Vec<(usize, usize)> {
     // Index each top-level `(def sig body)` FORM by its signature occurrence ONCE, up front — an O(items)
     // pass. `match_linear_recursion` needs the enclosing form (to swap its body child), and the parent
     // index is not built yet; a per-def LINEAR scan of the module items (the old `find_def_form`) made
     // this O(defs²) — a module of N defs spent ~50% of the whole compile re-scanning items, each an
     // `as_form(item, "def")` string compare. The map turns that into an O(1) lookup per def.
     let def_forms = index_def_forms(ast);
+    // The DECLARED-EFFECT NAMES (built once). Used to reject a per-step term that PERFORMS a discharged
+    // effect — reassociating an effectful term changes eval order (see `term_performs_effect`). Built from
+    // `effect_decls` (populated by `scan_top_level`, available at the load-time call site) so the syntactic
+    // `(. E op)` perform-detection is PRECISE — it fires on a member access whose base names a declared
+    // effect, NOT on a pure record/field access `(. r x)` (which would over-decline and regress the stack
+    // wins accum exists for). Effect performs at this pre-resolve stage are member accesses off the effect.
+    let effect_names: crate::fxhash::FxHashSet<String> =
+        effect_decls.iter().map(|e| e.name.clone()).collect();
     // Collect the rewrites first (an immutable scan of `defs`), then apply — so the synthesis (which
     // reads `defs` for name collisions) sees a stable view.
     let mut plans: Vec<(usize, Match)> = Vec::new();
     for (i, d) in defs.iter().enumerate() {
-        if let Some(m) = match_linear_recursion(ast, d, &def_forms) {
+        if let Some(m) = match_linear_recursion(ast, d, &def_forms, &effect_names) {
             plans.push((i, m));
         }
     }
@@ -164,6 +176,7 @@ fn match_linear_recursion(
     ast: &Arenas,
     d: &Def,
     def_forms: &crate::fxhash::FxHashMap<u32, StructId>,
+    effect_names: &crate::fxhash::FxHashSet<String>,
 ) -> Option<Match> {
     // At least one parameter, each a bare name (an annotated `(: n T)` is fine — take the inner name).
     // Extra parameters (pass-throughs like a limit/config, or a second recursion variable) are threaded
@@ -182,6 +195,19 @@ fn match_linear_recursion(
     let (dispatch, op_occ, identity, term, rec_args) =
         match_if_shape(ast, body, &d.name, &param_names)
             .or_else(|| match_list_fold_shape(ast, body, &d.name, &param_names))?;
+    // EFFECTFUL-TERM SAFE-FLOOR (concierge/v-effects 14b:13175): decline when the per-step term `g` PERFORMS
+    // a discharged effect. Accumulator introduction REASSOCIATES `g` into a left fold, which reorders WHEN
+    // `g` runs relative to the recursion; for a PURE `g` that is value-exact (the pass's whole soundness
+    // argument), but for an EFFECTFUL `g` — e.g. the abortive `(if (= k 2) (E.bail unit) k)` — the eval-order
+    // change is observable, so the reassociation is unsound. Declining here (leaving the def a plain
+    // non-tail recursion) removes that LATENT unsoundness and lets the effects pass see the term
+    // un-reassociated, so v-effects' non-local-exit CC can fold it correctly. Sound-toward-decline: a false
+    // positive only costs the stack optimization on an effectful recursion (a rare shape), never a
+    // miscompile. This is a strict correctness improvement over the prior `abortive_perform_off_tail` guard,
+    // which bandaged the post-reassociation form. See `term_performs_effect` for the PRECISE syntactic test.
+    if term_performs_effect(ast, term, effect_names) {
+        return None;
+    }
     // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
     // index is not built yet at load time, so this is an O(1) read of the prebuilt `sig_occ → form` index
     // (was a per-def linear scan of the module items → O(defs²)). Only reached once every cheaper check
@@ -623,6 +649,42 @@ fn mentions_name(ast: &Arenas, id: StructId, name: &str) -> bool {
     }
 }
 
+/// Whether the per-step term `g` PERFORMS a discharged effect — the safe-floor test that keeps accumulator
+/// introduction from reassociating an EFFECTFUL term (which would reorder its evaluation, an observable
+/// change — unlike a pure term, whose reassociation is value-exact). PRECISE by design: an effect
+/// performance at this pre-resolve load stage is a MEMBER ACCESS `(. E op)` whose base `E` names a DECLARED
+/// EFFECT (`effect_names`, from `scan_top_level`'s `effect_decls`). Matching the base against the declared
+/// effects is what separates a genuine perform (`(E.bail unit)` → `((. E bail) unit)`, base `E` a declared
+/// effect) from a pure record/field access (`(. r x)`, base `r` not an effect) — so a pure `(+ (. r x) 1)`
+/// term still accumulates, and only a real perform declines. We flag the member-access OCCURRENCE itself
+/// (applied or not), which subsumes both a nullary `(E.done)` and an arg-bearing `(E.bail unit)` and is
+/// sound-toward-decline: reading an effect op at all in the reassociated term is the eval-order-sensitive
+/// signal. A structural walk over the whole term (the perform may be nested in a branch, as in the witness
+/// `(if (= k 2) (E.bail unit) k)`); a member access on a non-effect base recurses into its children.
+fn term_performs_effect(
+    ast: &Arenas,
+    term: StructId,
+    effect_names: &crate::fxhash::FxHashSet<String>,
+) -> bool {
+    // A member access `(. E op)` (head ".", two children `[base, method]`) whose base names a declared
+    // effect IS a perform site — the eval-order-sensitive node we decline on.
+    if let Some([base, _method]) = ast.as_form(term, ".")
+        && let Some(base_name) = ast.as_name(*base)
+        && effect_names.contains(base_name)
+    {
+        return true;
+    }
+    // Otherwise recurse into children (an atom has none; a `(. r x)` on a non-effect base recurses too, so
+    // a nested effect perform inside a pure member access is still found).
+    match ast.get(term) {
+        Struct::Atom(_) => false,
+        Struct::List(c) => c
+            .clone()
+            .iter()
+            .any(|&ch| term_performs_effect(ast, ch, effect_names)),
+    }
+}
+
 /// A fresh accumulator-def name not colliding with any existing def (`f$acc`, then `f$acc$` …).
 fn fresh_acc_name(defs: &[Def], base: &str) -> String {
     let mut name = format!("{base}$acc");
@@ -777,6 +839,42 @@ mod tests {
         assert!(
             db.def_by_name("f$acc").is_none(),
             "a non-associative member op must NOT be reassociated"
+        );
+    }
+
+    /// EFFECTFUL-TERM SAFE FLOOR (14b:13175): a linear recursion whose per-step term PERFORMS a discharged
+    /// effect must NOT be accumulator-transformed — reassociating the effectful term reorders WHEN it runs,
+    /// an observable change. The witness: `(+ (loop (- k 1)) (if (= k 2) (E.bail unit) k))` — the term
+    /// `(if … (E.bail unit) k)` performs `E.bail`. Declined so the effects pass sees it un-reassociated.
+    #[test]
+    fn introduce_declines_a_term_that_performs_an_effect() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (loop (: k Int64)) \
+                 (if (> k 0) (+ (loop (- k 1)) (if (= k 2) (E.bail unit) k)) 0)) (export loop))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("loop$acc").is_none(),
+            "a recursion whose per-step term performs a discharged effect must NOT be reassociated"
+        );
+    }
+
+    /// PRECISION GUARD (the concierge's regression concern): a per-step term that is a PURE member/field
+    /// access `(. r x)` — base `r` NOT a declared effect — must STILL transform even when an effect is
+    /// declared in the module. The perform-detection keys on the declared-effect NAMES, so a pure record
+    /// access does not over-decline (which would forfeit accum's stack win on record-folding recursions).
+    #[test]
+    fn introduce_transforms_a_pure_member_access_term_despite_a_declared_effect() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (f (: n Int64) r) \
+                 (if (= n 0) 0 (+ (. r x) (f (- n 1) r)))) (export f))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("f$acc").is_some(),
+            "a pure member-access term (base not an effect) still accumulator-transforms"
         );
     }
 
