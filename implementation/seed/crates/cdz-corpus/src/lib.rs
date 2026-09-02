@@ -132,6 +132,12 @@ pub struct Record {
     /// must NOT also leak an uncoded heap-walk decline", "a malformed pattern must NOT also warn its dead
     /// binders unused".)
     pub no_diagnostic: Vec<String>,
+    /// `true` iff the case authored a bare `(diagnostic-quality)` marker — the C1 opt-in that asserts EVERY
+    /// emitted CODED diagnostic meets the golden-standard rubric (`DESIGN-diagnostic-quality-rubric.md`): no
+    /// forbidden phrase (§1) + the per-code required tokens (§2). A bare case-level flag like
+    /// `(no-other-errors)`; graded on the diagnostics-wire path (`cdz_corpus_grade::grade_diagnostic_quality`),
+    /// not the flat direct-gate manifest. Opt-in per scope first, default once the corpus is clean.
+    pub diagnostic_quality: bool,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -915,6 +921,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
+    let mut diagnostic_quality = false;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -1204,6 +1211,9 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // `(no-other-errors)` — a bare CASE-LEVEL no-cascade assertion: no error-severity diagnostic
             // outside the case's own `(error CODE …)` codes. Errors only (see the `Record` field doc).
             Some("no-other-errors") => no_other_errors = true,
+            // `(diagnostic-quality)` — a bare CASE-LEVEL C1 opt-in: every emitted coded diagnostic must meet
+            // the golden-standard rubric (§1 no forbidden phrase, §2 per-code required tokens).
+            Some("diagnostic-quality") => diagnostic_quality = true,
             // `(no-diagnostic "phrase")` — a CASE-LEVEL program-scoped cross-kind message-ABSENCE pin: the
             // phrase must appear in NO diagnostic emitted for the program (any kind). Repeatable (each an
             // independent required-absence). See the `Record` field doc. Non-string / empty children are
@@ -1310,6 +1320,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         live_objects_per_call,
         no_other_errors,
         no_diagnostic,
+        diagnostic_quality,
     })
 }
 

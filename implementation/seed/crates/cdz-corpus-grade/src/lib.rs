@@ -287,6 +287,15 @@ pub struct TestRun {
     /// diagnostic), which is what distinguishes it from a trial's KIND-scoped `(not "phrase")` and from the
     /// coded-error-only `(no-other-errors)`. Repeatable (AND — every phrase must be absent). Empty = no clause.
     pub no_diagnostic: Vec<String>,
+    /// `true` iff the case authored a bare `(diagnostic-quality)` marker — the C1 opt-in: assert EVERY
+    /// emitted CODED diagnostic meets the golden-standard rubric (`DESIGN-diagnostic-quality-rubric.md`):
+    /// no forbidden phrase (§1 — future-promise/deferral + internal-implementation leak) AND, for a coded
+    /// fault whose code is in the per-code map (§2), the message carries that code's required tokens
+    /// (`expected`/`found`, `unbound`, `not covered`, …). Graded by [`grade_diagnostic_quality`] against the
+    /// captured structured faults — so it composes with the per-trial `(fix …)`/`(count …)` facets and the
+    /// per-case `(no-other-errors)`/`(no-diagnostic …)`, on the SAME nix diagnostics bar. Opt-in per scope
+    /// first (no flag-day red); tightened to default once the corpus is clean. `false` = no marker.
+    pub diagnostic_quality: bool,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -641,6 +650,17 @@ where
             )));
             break;
         }
+    }
+
+    // CASE-LEVEL `(diagnostic-quality)` — the C1 general rubric lint: every emitted CODED diagnostic must
+    // meet `DESIGN-diagnostic-quality-rubric.md` (§1 no forbidden phrase, §2 per-code required tokens).
+    // Only when the diagnostics wire was captured (`Some(faults)`) — like `(no-other-errors)` + the
+    // `(fix …)`/`(count …)` facets, it grades on the nix diagnostics bar, not the sidecar-blind in-process gate.
+    if test_run.diagnostic_quality
+        && let Some(faults) = &faults
+        && let Some(msg) = grade_diagnostic_quality(faults)
+    {
+        worst = worst.worse(Grade::Fail(msg));
     }
 
     // C1 check-vs-compile diagnostic PARITY (#7143): when BOTH the compile-phase diagnostics wire and a
@@ -1164,6 +1184,121 @@ pub fn grade_diag_quality(
     Grade::Pass
 }
 
+/// §1 of `DESIGN-diagnostic-quality-rubric.md` — the GLOBALLY-forbidden message phrases (future-promise /
+/// deferral framing + internal-implementation leak). A coded diagnostic message containing ANY of these
+/// (matched case-insensitively at a WORD BOUNDARY — see [`contains_word_ci`]) fails the C1 lint. The set is
+/// grounded false-positive-free on the current corpus (the doc's Grounding section): the deferral phrases
+/// live only in Rust source comments, and `unsupported`/`not supported`/`trap` are DELIBERATELY carved out
+/// (honest CDZ0900 / CDZ0309 semantics). `None`/`Some` are the calibration pair — word-boundaried here
+/// (`\bNone\b` does not match the test id `Nonesuch`); v-diagnostics validates them against the full corpus.
+const C1_FORBIDDEN_PHRASES: &[&str] = &[
+    // §1a future-promise / deferral (a decline states a PERMANENT fact, never promises a future version)
+    "not yet",
+    "unimplemented",
+    "WIP",
+    "TODO",
+    "for now",
+    "coming soon",
+    "will be supported",
+    "will support",
+    "later increment",
+    // §1b internal-implementation leak (a user must never see Rust-internal vocabulary)
+    "internal error",
+    "ICE",
+    "panicked",
+    "panic!",
+    "unwrap",
+    "compiler bug",
+    "unreachable!",
+    // §1b calibration pair (bare Rust `Option` leaks) — v-diagnostics validates against the full corpus
+    "None",
+    "Some",
+];
+
+/// Case-insensitive, WORD-BOUNDARIED substring test — the `\b…\b` match §1 requires so a forbidden phrase
+/// does not false-trip inside a larger word (the doc's `None` ⊂ `Nonesuch` case: `contains_word_ci("Nonesuch",
+/// "None")` is `false`). A match is a word match iff the char immediately before its start and immediately
+/// after its end are both non-alphanumeric (or the string edge). Phrases with internal spaces (`not yet`)
+/// or a trailing `!` (`panic!`) are matched verbatim; the boundary check only guards the alphanumeric flanks.
+fn contains_word_ci(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = hay.to_lowercase();
+    let n = needle.to_lowercase();
+    let mut from = 0;
+    while let Some(rel) = h[from..].find(&n) {
+        let i = from + rel;
+        let j = i + n.len();
+        let before_ok = i == 0 || !h[..i].chars().next_back().unwrap().is_alphanumeric();
+        let after_ok = j == h.len() || !h[j..].chars().next().unwrap().is_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// §2 of the rubric — for a coded fault, the token(s) a golden message MUST contain (plain case-insensitive
+/// `contains`, since it is a presence check). `msg_lc` is the message pre-lowercased. Returns `Some(<what is
+/// required>)` when the message is MISSING the code's required tokens, else `None` (satisfied, or the code
+/// carries no §2 constraint). The advisory `did you mean` (CDZ0101) is intentionally NOT enforced here — it
+/// is conditional on a near-name existing, which the message alone cannot decide (the corpus keeps its
+/// per-case `(fix …)`/`(message "did you mean")` pins for those); the lint asserts only the unconditional token.
+fn c1_missing_required_tokens(code: &str, msg_lc: &str) -> Option<&'static str> {
+    let has = |t: &str| msg_lc.contains(t);
+    let expected_found = has("expected") && has("found");
+    match code {
+        "CDZ0203" => (!(expected_found || (has("should be") && has("but"))))
+            .then_some("`expected` AND `found` (or `should be` AND `but`)"),
+        "CDZ0301" => (!(expected_found || has("different")))
+            .then_some("`expected` AND `found` (or `different`)"),
+        "CDZ0101" => (!(has("unbound") || has("not found"))).then_some("`unbound` or `not found`"),
+        "CDZ0210" => {
+            (!(has("not covered") || has("exhaustive"))).then_some("`not covered` or `exhaustive`")
+        }
+        "CDZ0213" | "CDZ0308" => (!(has("unreachable") || has("never reached")))
+            .then_some("`unreachable` or `never reached`"),
+        "CDZ0306" => (!has("unused")).then_some("`unused`"),
+        "CDZ0307" => {
+            (!(has("never used") || has("discarded"))).then_some("`never used` or `discarded`")
+        }
+        "CDZ0302" => (!has("range")).then_some("`range`"),
+        _ => None, // code not in the §2 map — no required-token constraint (widened incrementally)
+    }
+}
+
+/// The C1 GENERAL diagnostic-quality lint (`(diagnostic-quality)` opt-in) — assert every emitted CODED
+/// diagnostic meets `DESIGN-diagnostic-quality-rubric.md`: (§1) its message contains no globally-forbidden
+/// phrase, AND (§2) if its code is in the required-token map, the message carries those tokens. Applies to
+/// CODED faults only (a codeless decline's ICE-flavored leak is caught separately by `is_ice_signature`);
+/// both severities (some §2 codes are warnings — unused/discarded/unreachable). Returns the FIRST violation
+/// as a Fail reason, else `None` (all clean). Order-stable: faults are scanned in wire order, §1 before §2.
+pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
+    for f in faults {
+        let Some(code) = f.code.as_deref() else {
+            continue; // codeless — out of scope (message-quality of a coded diagnostic only)
+        };
+        for phrase in C1_FORBIDDEN_PHRASES {
+            if contains_word_ci(&f.message, phrase) {
+                return Some(format!(
+                    "(diagnostic-quality): {code} message contains the forbidden phrase {phrase:?} \
+                     (rubric §1) — {:?}",
+                    f.message
+                ));
+            }
+        }
+        if let Some(need) = c1_missing_required_tokens(code, &f.message.to_lowercase()) {
+            return Some(format!(
+                "(diagnostic-quality): {code} message must contain {need} (rubric §2) — {:?}",
+                f.message
+            ));
+        }
+    }
+    None
+}
+
 /// The FIRST error diagnostic in a compiler stderr as `(code, message)` — `error [CODE] (node N): msg`
 /// (coded) or `error: msg` (codeless). Ported verbatim from the `xtask gate`.
 pub fn first_error_diag(diag: &str) -> (Option<String>, String) {
@@ -1282,6 +1417,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
+    let mut diagnostic_quality = false;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -1356,6 +1492,8 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
             }
             // `(no-other-errors)` — the bare case-level no-cascade flag (shredded from the case clause).
             Some("no-other-errors") => no_other_errors = true,
+            // `(diagnostic-quality)` — the bare C1 opt-in marker (assert every coded diagnostic meets §1+§2).
+            Some("diagnostic-quality") => diagnostic_quality = true,
             // `(no-diagnostic "phrase")` — a case-level program-scoped cross-kind absence pin (one per form,
             // repeatable). Read the phrase as the first string leaf; ignore a malformed/empty clause.
             Some("no-diagnostic") => {
@@ -1382,6 +1520,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         live_objects_per_call,
         no_other_errors,
         no_diagnostic,
+        diagnostic_quality,
     })
 }
 
@@ -2129,6 +2268,78 @@ mod tests {
         ));
     }
 
+    fn coded_fault(code: &str, message: &str) -> DiagFault {
+        DiagFault {
+            severity: Severity::Error,
+            code: Some(code.to_string()),
+            node: None,
+            fix: None,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn contains_word_ci_is_word_boundaried_and_case_insensitive() {
+        // The doc's calibration case: `None` must NOT match inside `Nonesuch`.
+        assert!(!contains_word_ci("case Nonesuch escapes", "None"));
+        assert!(contains_word_ci("the value is None here", "None"));
+        // Case-insensitive; multi-word phrase; trailing-`!` phrase.
+        assert!(contains_word_ci("This is NOT YET reducible", "not yet"));
+        assert!(contains_word_ci("hit unreachable! macro", "unreachable!"));
+        // Not a false-trip inside a larger word.
+        assert!(!contains_word_ci("unimplementedness", "unimplemented"));
+        assert!(contains_word_ci("marked unimplemented.", "unimplemented"));
+    }
+
+    #[test]
+    fn c1_lint_flags_forbidden_phrase_and_missing_required_tokens() {
+        // §1 forbidden phrase on a coded diagnostic → flagged.
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0900",
+                "this construct is not yet supported"
+            )])
+            .is_some()
+        );
+        // §1 internal-leak.
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0201", "internal error: unwrap on None")])
+                .is_some()
+        );
+        // §2 CDZ0203 missing expected/found → flagged; the golden form passes.
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0203", "the types are incompatible")])
+                .is_some()
+        );
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0203", "expected Int64 but found Bool")])
+                .is_none()
+        );
+        // §2 CDZ0101 golden alt token; §2 unmapped code has no token constraint.
+        assert!(grade_diagnostic_quality(&[coded_fault("CDZ0101", "unbound name `x`")]).is_none());
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ9999", "a clean message with no tokens")])
+                .is_none()
+        );
+        // The CDZ0900 carve-out: `unsupported`/`not supported` is NOT forbidden (honest semantics).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0900",
+                "the cadenza backend does not support this construct"
+            )])
+            .is_none()
+        );
+        // A CODELESS fault is out of scope (no code → skipped), even with a leak phrase.
+        let codeless = DiagFault {
+            severity: Severity::Error,
+            code: None,
+            node: None,
+            fix: None,
+            message: "internal error: panicked".to_string(),
+        };
+        assert!(grade_diagnostic_quality(&[codeless]).is_none());
+    }
+
     #[test]
     fn grade_trial_trap_by_kind_and_miscompile() {
         assert_eq!(
@@ -2478,6 +2689,7 @@ mod tests {
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: vec![],
+            diagnostic_quality: false,
         };
         // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
         // code-check reads.
@@ -2560,6 +2772,7 @@ mod tests {
             live_objects_per_call: None,
             no_other_errors: no_other,
             no_diagnostic: vec![],
+            diagnostic_quality: false,
         };
         let diag = "cdz: error [CDZ0201] (node 1): bad thing";
         use cadenza_compile_abi::Severity as S;
@@ -2628,6 +2841,7 @@ mod tests {
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: phrases,
+            diagnostic_quality: false,
         };
         let pin = || mk(vec!["needs a heap walk".into()]);
 

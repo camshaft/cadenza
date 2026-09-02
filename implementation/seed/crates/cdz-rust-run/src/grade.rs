@@ -209,6 +209,7 @@ mod tests {
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: vec![],
+            diagnostic_quality: false,
         }
     }
 
