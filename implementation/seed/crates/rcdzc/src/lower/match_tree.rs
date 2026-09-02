@@ -1504,6 +1504,25 @@ pub(super) fn enrich_pattern_head_suggestion(
     }
 }
 
+/// A located anchor for a pattern-destructure reject: `pat` itself when it is a user node (the common
+/// case — the pattern the author wrote), else its nearest USER-NODE ANCESTOR. A `(tuple …)`/`(list …)`/
+/// `(record …)` sub-pattern reached during RE-ENTRANT pattern-type compilation (typing a handler
+/// next-state that reconstructs the destructured value routes back through match compilation of the same
+/// pattern) is SYNTHESIZED — a fresh copy with no span and no `synth_name_origin` copy-provenance — so
+/// `.at(pat)` on it would be nulled by `sanitize_origin` → a POSITION-LESS "cannot destructure a value of
+/// type _" (v-inference vA repro). Anchoring at the enclosing user construct (the arm/handle it sits
+/// under) points the reader at roughly the right place instead of nothing. Done AT THE SITE (not in the
+/// shared `sanitize_origin`) because these are SINGLE faults — unlike an unanchored fault reported via two
+/// paths, whose relocation would defeat the by-core dedup. `pat` is returned unchanged when it is already
+/// a user node or has no user ancestor (no worse than before).
+fn located_pattern_anchor(db: &Db, pat: StructId) -> StructId {
+    if db.is_user_node(pat) {
+        pat
+    } else {
+        db.nearest_located_ancestor(pat).unwrap_or(pat)
+    }
+}
+
 pub(super) fn pattern_constraints(
     db: &mut Db,
     pat: StructId,
@@ -1723,7 +1742,9 @@ pub(super) fn pattern_constraints(
                         other.render_name(&db.name_ctx())
                     )
                 };
-                return Err(Reject::coded(Code::Malformed, message).at(pat));
+                return Err(
+                    Reject::coded(Code::Malformed, message).at(located_pattern_anchor(db, pat))
+                );
             }
         };
         let mut out = Vec::new();
@@ -1786,7 +1807,7 @@ pub(super) fn pattern_constraints(
                         other.render_name(&db.name_ctx())
                     ),
                 )
-                .at(pat));
+                .at(located_pattern_anchor(db, pat)));
             }
         };
         // The LENGTH test — exactly `leads.len()` for a fixed pattern, AT LEAST `leads.len()` when a
@@ -1908,7 +1929,7 @@ pub(super) fn pattern_constraints(
                         other.render_name(&db.name_ctx())
                     ),
                 )
-                .at(pat));
+                .at(located_pattern_anchor(db, pat)));
             }
         };
         let mut out = Vec::new();

@@ -4054,6 +4054,29 @@ impl Db {
         None
     }
 
+    /// The nearest USER-node ANCESTOR of a synthesized `id` by walking the AST parent chain — the
+    /// STRUCTURAL fallback for [`source_of_synth`] when a synth node carries no `synth_name_origin`
+    /// copy-provenance (a node built fresh during query, e.g. a re-entrant match-tree pattern copy, not a
+    /// β-copy of a named source). A position-less diagnostic is a worse failure than an APPROXIMATE one:
+    /// anchoring at the enclosing user construct (the match arm / scrutinee the synth node sits under)
+    /// points the reader at roughly the right place, which is what rustc does when the precise node is
+    /// synthetic. Returns `None` for a node with no user ancestor (a fully-synthesized/detached subtree —
+    /// no worse than the current null). Bounded by the arena size (cycle backstop, like `source_of_synth`).
+    pub fn nearest_located_ancestor(
+        &self,
+        id: crate::ast::StructId,
+    ) -> Option<crate::ast::StructId> {
+        let mut cur = id;
+        for _ in 0..self.ast.structure.len() {
+            let parent = self.parent_of(cur)?;
+            if self.is_user_node(parent) {
+                return Some(parent);
+            }
+            cur = parent;
+        }
+        None
+    }
+
     // ── Append-during-query — the evaluator builds new nodes on demand ─────────────────────────────
     //
     // The one compile-time evaluator constructs new AST nodes as it reduces — e.g. `(Int 64)` builds a

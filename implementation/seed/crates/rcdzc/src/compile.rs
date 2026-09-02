@@ -1264,6 +1264,11 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
         // spliced copy — then anchors at the real source reference instead of being un-anchored (a bare
         // "unbound name `x`" with nothing to point at, the hard-to-debug symptom). If there is no
         // recorded provenance to a user node, fall back to the old behavior: null the unmappable anchor.
+        // (A nearest-user-ANCESTOR fallback was tried here but is UNSAFE at this shared edge: some faults
+        // are reported via TWO paths — one anchored, one unanchored — and `dedup_faults` collapses the
+        // UNANCHORED copy against the anchored one by core; relocating the unanchored copy defeats that
+        // dedup → a double report. A reject that WANTS an approximate anchor relocates AT ITS SITE instead,
+        // where it is a single fault — e.g. the pattern-destructure rejects via `located_pattern_anchor`.)
         reject.at = db.source_of_synth(id);
     }
 }
