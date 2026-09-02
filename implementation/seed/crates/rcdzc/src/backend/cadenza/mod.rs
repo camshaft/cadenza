@@ -4895,10 +4895,13 @@ fn try_emit_bin_match(
 ) -> Option<Result<StructId, Reject>> {
     // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin arm cond.
     let (scrut_binder, _, _, _) = parse_bin_len_cond(db, body)?;
-    // One merged bin segment: a LITERAL probe (from the cond) or a BINDER read (from the body).
+    // One merged bin segment: a LITERAL probe (from the cond), a BINDER read (from the body), or a WILDCARD
+    // (an UNREAD segment — an `_`/unused binder that neither the cond probes nor the body reads, so it leaves
+    // a gap in the tiling; emitted as a `(u8 _)`-per-byte filler, value-equivalent since the bytes are unread).
     enum Seg {
         Lit(u8, bool, bool, IntValue), // width, signed, little_endian, literal value
         Binder(u8, bool, bool),        // width, signed, little_endian
+        Wild,                          // one unread byte → `(u8 _)`
     }
     struct BinReArm {
         segs: Vec<(u32, Seg)>, // (byte_offset, segment), offset-sorted + contiguous, tiling [0, prefix)
@@ -4944,19 +4947,28 @@ fn try_emit_bin_match(
                 return None;
             }
         }
+        // Tile `[0, total)`: consume the literal/binder segment at each offset, and FILL any gap (an unread
+        // `_`/unused segment the cond doesn't probe + the body doesn't read) with a `(u8 _)` wildcard byte —
+        // value-equivalent (the bytes are unread; only the total length + the probed/read segments matter). A
+        // segment whose offset is skipped (INSIDE a wider preceding segment → an overlap) stays in `by_off`
+        // and is caught as leftover below.
         let mut expect_off: u32 = 0;
-        let mut segs: Vec<(u32, Seg)> = Vec::with_capacity(by_off.len());
-        for (off, seg) in by_off {
-            if off != expect_off {
-                return None; // gap/overlap → an unused/`_` or unmodeled segment
+        let mut segs: Vec<(u32, Seg)> = Vec::new();
+        while expect_off < total {
+            if let Some(seg) = by_off.remove(&expect_off) {
+                let w = match &seg {
+                    Seg::Lit(w, ..) | Seg::Binder(w, ..) => u32::from(*w),
+                    Seg::Wild => 1,
+                };
+                segs.push((expect_off, seg));
+                expect_off += w;
+            } else {
+                segs.push((expect_off, Seg::Wild));
+                expect_off += 1;
             }
-            expect_off += u32::from(match &seg {
-                Seg::Lit(w, ..) | Seg::Binder(w, ..) => *w,
-            });
-            segs.push((off, seg));
         }
-        if expect_off != total {
-            return None; // fixed widths do not account for the fixed prefix length
+        if !by_off.is_empty() {
+            return None; // a segment past `total`, or overlapping a wider one → unmodeled
         }
         arms.push(BinReArm {
             segs,
@@ -4987,6 +4999,7 @@ fn try_emit_bin_match(
         for (offset, seg) in &arm.segs {
             let (width, signed, le) = match seg {
                 Seg::Lit(w, s, l, _) | Seg::Binder(w, s, l) => (*w, *s, *l),
+                Seg::Wild => (1, false, false), // an unread byte → `(u8 _)`
             };
             let bits = u32::from(width) * 8;
             let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
@@ -5001,6 +5014,7 @@ fn try_emit_bin_match(
                     env.bin_fields.insert((*offset, width), name.clone());
                     b.name(name)
                 }
+                Seg::Wild => b.name("_"),
             };
             let mut seg_children = vec![ty, value];
             if le {
