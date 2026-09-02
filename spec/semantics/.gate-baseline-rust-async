@@ -8998,3 +8998,4 @@ pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-
 pass	a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)
 pass	a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
+pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)

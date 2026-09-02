@@ -750,3 +750,25 @@
       (export main)))
   (call main)
   (output (: 11 Int64)))
+
+(case
+  "two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)"
+  (doc
+    "Preserve-by-default hygiene already provides the freshness an explicit `gensym` would: a macro whose
+           expansion introduces an INTERNAL `(def (helper) …)` is alpha-renamed FRESH PER EXPANSION, so TWO
+           invocations do not collide — each call's helper is its own. `(mk f1 10)` and `(mk f2 20)` expand a
+           macro binding a caller-named fn `(f1)`/`(f2)` over a macro-internal `(def (helper) v)`; f1's helper
+           returns 10, f2's returns 20, so `(+ (f1) (f2))` = `(+ (* 10 2) (* 20 2))` = 60. Without per-expansion
+           renaming the two macro-internal `helper` defs would collide (a duplicate top-level def) or the second
+           would clobber the first; the value 60 pins that each expansion draws a distinct fresh helper. So the
+           gensym facility is unnecessary for macro-internal name freshness — hygiene delivers it with zero user
+           effort (the capture-avoidance half is pinned by the caller-identifier hygiene cases above).")
+  (input
+    (do
+      (def (mk (quote nm) (quote v)) (quasiquote (do (def (helper) (unquote v)) (def (unquote nm) (* (helper) 2)) 0)))
+      (mk f1 10)
+      (mk f2 20)
+      (def (main) (+ (f1) (f2)))
+      (export main)))
+  (call main)
+  (output (: 60 Int64)))
