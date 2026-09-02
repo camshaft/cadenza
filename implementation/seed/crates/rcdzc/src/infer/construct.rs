@@ -559,10 +559,16 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // compound, NOT the ctor record). This is checked BEFORE the zero-arg identity short-circuit below so
     // `(list)` types as `List Any` rather than as the `list` ctor record's type. (The TupleNew/RecordNew/
     // ListNew arms are the ones that can be nullary; a scheme-typed head falls through.)
+    // SetNew is HERE too (the `(set …)` alias as an ARGUMENT stays `Apply{SetNew}` rather than reader-
+    // flipping to `Resolved::Set`): without it a `(set 1 2)` argument fell through to `Ty::Any`, so its
+    // element type was never checked and `(Set.contains (set 1 2) true)` accepted a Bool on a `Set Int64`
+    // (SOUNDNESS false-accept, v-cdz-smith --typegen T1.32). Routes to `compound_ctor_type`'s `SetNew` arm
+    // = `Set <join elems>`, exactly like its `ListNew` sibling.
     if let Some(
         prim @ (crate::resolved::Prim::TupleNew
         | crate::resolved::Prim::RecordNew
-        | crate::resolved::Prim::ListNew),
+        | crate::resolved::Prim::ListNew
+        | crate::resolved::Prim::SetNew),
     ) = crate::eval::meta_apply_of(db, head)
     {
         return compound_ctor_type(db, prim, args);
