@@ -158,6 +158,14 @@ enum CorpusCmd {
         /// terse pre-commit hook). Errors + the vanished lines still print.
         #[arg(long)]
         quiet: bool,
+        /// REWRITE each baseline in place, DELETING every orphan-vanished `<verdict>\t<title>` entry line
+        /// (title with no corpus case) — the one-command manual/backstop fix for the union-merge-driver
+        /// orphan re-add hazard, instead of hand-editing. `#`-comment, blank, and tab-less lines are
+        /// preserved verbatim; only real entry lines are pruned. FAIL-OPEN: if the corpus title set is
+        /// EMPTY (a `--corpus` glob that matched no readable cases), pruning is REFUSED (exit 2) so a bad
+        /// glob can never strip every entry. With `--prune` the exit is 0 (the orphans are now gone).
+        #[arg(long)]
+        prune: bool,
     },
 }
 
@@ -173,9 +181,10 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         baselines,
         corpus,
         quiet,
+        prune,
     } = &args.command
     {
-        return match vanished_across(baselines, corpus, *quiet) {
+        return match vanished_across(baselines, corpus, *quiet, *prune) {
             Ok(0) => ExitCode::SUCCESS,
             Ok(_) => ExitCode::from(3), // vanished detected → BLOCK
             Err(msg) => {
@@ -314,15 +323,47 @@ fn vanished_across(
     baselines: &[String],
     corpus_files: &[String],
     quiet: bool,
+    prune: bool,
 ) -> Result<usize, String> {
     let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for path in corpus_files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
         corpus.extend(corpus_descriptions(&text).map_err(|e| format!("{path}: {e}"))?);
     }
+    // FAIL-OPEN guard for `--prune`: an empty corpus set would make EVERY baseline entry look vanished, so
+    // an in-place prune would wipe the file. Refuse (mapped to exit 2 by the caller) rather than delete.
+    // Mirrors the `corpus-case-titles` crate's whole-corpus-or-nothing contract.
+    if prune && corpus.is_empty() {
+        return Err(
+            "--prune refused: the corpus title set is EMPTY (the --corpus glob matched no readable \
+             cases); pruning would strip every baseline entry. Fix the --corpus glob (pass the full \
+             spec/semantics/*.sexp)."
+                .to_string(),
+        );
+    }
     let mut total_vanished = 0usize;
     for bl in baselines {
         let text = std::fs::read_to_string(bl).map_err(|e| format!("reading {bl}: {e}"))?;
+        // `--prune`: rewrite the file dropping orphan entry lines. This FIXES the drift (rather than
+        // blocking on it), so a successful prune leaves `total_vanished` at 0 → the caller exits 0.
+        if prune {
+            let (new_text, removed) = prune_baseline(&text, &corpus);
+            if removed.is_empty() {
+                if !quiet {
+                    println!("vanished-check: {bl}: 0 orphan title(s) — nothing to prune");
+                }
+            } else {
+                std::fs::write(bl, &new_text).map_err(|e| format!("writing {bl}: {e}"))?;
+                println!(
+                    "vanished-check: {bl}: PRUNED {} orphan baseline title(s) with no corpus case:",
+                    removed.len()
+                );
+                for r in &removed {
+                    println!("  - pruned {r:?}");
+                }
+            }
+            continue;
+        }
         let descs = baseline_descriptions(&text);
         let (vanished, _missing) = baseline_drift(&corpus, &descs);
         if vanished.is_empty() {
@@ -562,6 +603,42 @@ fn baseline_drift(
         .cloned()
         .collect();
     (vanished, missing)
+}
+
+/// Pure baseline rewrite for `--prune`: return `(new_text, removed_titles)` where `new_text` is `text`
+/// with every orphan-VANISHED entry line (a `<verdict>\t<title>` whose `title` is absent from `corpus`)
+/// DELETED, and everything else — `#`-comment lines, blank lines, and any tab-less line — kept verbatim.
+/// The trailing-newline shape of `text` is preserved. Pure so it is unit-testable; the empty-corpus
+/// fail-open guard lives at the call site (`corpus` here is assumed the complete set).
+fn prune_baseline(
+    text: &str,
+    corpus: &std::collections::BTreeSet<String>,
+) -> (String, Vec<String>) {
+    let ends_with_newline = text.ends_with('\n');
+    let mut out = String::new();
+    let mut removed = Vec::new();
+    for line in text.lines() {
+        // Only a real entry line (`<verdict>\t<title>`, not `#`-comment / blank) is prunable; a tab-less
+        // line has no title column and is left alone (matches `baseline_descriptions`'s entry shape).
+        let orphan_title = (!line.starts_with('#') && !line.is_empty())
+            .then(|| line.split_once('\t'))
+            .flatten()
+            .map(|(_, title)| title)
+            .filter(|title| !corpus.contains(*title));
+        match orphan_title {
+            Some(title) => removed.push(title.to_string()),
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    // `str::lines()` drops a final trailing newline; we appended one per kept line. If the original had no
+    // trailing newline, remove the one we over-added so the file's shape is byte-preserved.
+    if !ends_with_newline && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, removed)
 }
 
 /// `records --out-dir DIR FILE…`: SHRED each corpus file into one directory per case under
@@ -1387,17 +1464,17 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         let corpus_files = [corpus];
         // All-clean → Ok(0).
         assert_eq!(
-            vanished_across(std::slice::from_ref(&clean), &corpus_files, false).unwrap(),
+            vanished_across(std::slice::from_ref(&clean), &corpus_files, false, false).unwrap(),
             0
         );
         // A mix → Ok(count) counting only the stale baseline's vanished title ("gamma").
         assert_eq!(
-            vanished_across(&[clean, stale.clone()], &corpus_files, true).unwrap(),
+            vanished_across(&[clean, stale.clone()], &corpus_files, true, false).unwrap(),
             1
         );
         // A single stale baseline → Ok(1) (vanished is NOT an Err — the caller maps count>0 to exit 3).
         assert_eq!(
-            vanished_across(std::slice::from_ref(&stale), &corpus_files, false).unwrap(),
+            vanished_across(std::slice::from_ref(&stale), &corpus_files, false, false).unwrap(),
             1
         );
         // A tooling error (nonexistent baseline file) → Err (the caller maps to exit 2, fail-open).
@@ -1406,10 +1483,102 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
             vanished_across(
                 &[missing.to_str().unwrap().to_string()],
                 &corpus_files,
+                false,
                 false
             )
             .is_err()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `prune_baseline` (the pure core of `--prune`) DELETES orphan-vanished entry lines and preserves
+    /// everything else BYTE-for-byte: the `#` header, the blank line, a live entry, and the trailing
+    /// newline all survive; only the `gamma` orphan (no corpus case) is removed and reported.
+    #[test]
+    fn prune_baseline_drops_only_orphan_entries_preserving_layout() {
+        let corpus: std::collections::BTreeSet<String> =
+            ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
+        let text = "# gate baseline — verdict\\tdescription\n\
+                    pass\talpha\n\
+                    \n\
+                    pass\tgamma\n\
+                    todo\tbeta\n";
+        let (out, removed) = prune_baseline(text, &corpus);
+        assert_eq!(removed, vec!["gamma".to_string()]);
+        assert_eq!(
+            out,
+            "# gate baseline — verdict\\tdescription\n\
+             pass\talpha\n\
+             \n\
+             todo\tbeta\n"
+        );
+    }
+
+    /// A baseline with no orphan is returned UNCHANGED (byte-identical), and a file with NO trailing
+    /// newline keeps that shape after a prune (no spurious newline appended).
+    #[test]
+    fn prune_baseline_is_a_noop_when_clean_and_preserves_no_trailing_newline() {
+        let corpus: std::collections::BTreeSet<String> =
+            ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
+
+        let clean = "pass\talpha\ntodo\tbeta\n";
+        let (out, removed) = prune_baseline(clean, &corpus);
+        assert!(removed.is_empty());
+        assert_eq!(out, clean);
+
+        // No trailing newline + one orphan to drop: the surviving line keeps its no-newline shape.
+        let no_nl = "pass\talpha\npass\tgamma";
+        let (out, removed) = prune_baseline(no_nl, &corpus);
+        assert_eq!(removed, vec!["gamma".to_string()]);
+        assert_eq!(out, "pass\talpha");
+    }
+
+    /// `--prune` via `vanished_across`: an empty corpus set is REFUSED (fail-open, `Err` → exit 2) so a
+    /// bad glob can never wipe a baseline; a real prune rewrites the file in place and returns Ok(0).
+    #[test]
+    fn vanished_across_prune_fails_open_on_empty_corpus_and_rewrites_in_place() {
+        let dir = std::env::temp_dir().join(format!("vanished-prune-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        let corpus = w(
+            "corpus.sexp",
+            "(case \"alpha\" (input 1) (output (: 1 Int64)))\n",
+        );
+        let empty_corpus = w("empty.sexp", "; no cases here\n");
+        let bl = w("b.gate-baseline", "pass\talpha\npass\tgamma\n");
+
+        // FAIL-OPEN: an empty corpus title set refuses the prune (and leaves the file untouched).
+        assert!(
+            vanished_across(
+                std::slice::from_ref(&bl),
+                std::slice::from_ref(&empty_corpus),
+                true,
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&bl).unwrap(),
+            "pass\talpha\npass\tgamma\n",
+            "a refused prune must not modify the file"
+        );
+
+        // Real prune: rewrites the file dropping the orphan, returns Ok(0) (the drift is FIXED, not blocked).
+        assert_eq!(
+            vanished_across(
+                std::slice::from_ref(&bl),
+                std::slice::from_ref(&corpus),
+                true,
+                true
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(std::fs::read_to_string(&bl).unwrap(), "pass\talpha\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
