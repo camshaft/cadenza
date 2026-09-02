@@ -50,6 +50,13 @@ jobs:
           # ca-derivations so the per-case content-addressed extraction cache is built + reused (#3363); the
           # cachix substituter so an already-warm extraction (and the emit.wasm layer beneath it) cache-HITS.
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix root-cause):
+      # the Determinate daemon applies the 20220326-ca-derivations migration on first db open; without this, the
+      # cachix push-hook's concurrent nix op races to apply the SAME migration → duplicate INSERT → intermittent
+      # "SchemaMigrations UNIQUE" red (self-heals on re-dispatch). One serial `nix store ping` opens the db + applies
+      # the migration ONCE up front, so the later push-hook sees it present and skips re-applying.
+      - name: warm the nix daemon (serialize the ca-derivations migration before the cachix post-build-hook)
+        run: nix store ping
       # The cachix-action post-step pushes every path built during this run to camshaft.cachix.org (DEDUPs —
       # an already-present extraction is a cheap no-op). Placed BEFORE the build so it captures it. Push gated
       # to the default branch (the schedule only fires on main anyway; explicit gate future-proofs it).
