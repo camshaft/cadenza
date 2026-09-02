@@ -1,5 +1,7 @@
 ; Effects and handlers (part 2 of 3) — continuation of 14-effects-and-handlers.sexp, split 2026-08-11
 ; for parallel-append throughput (glob-enumerated spec/semantics/*.sexp; baselines key on description). Same genre.
+(diagnostic-quality)
+
 (case
   "a handler whose STATE is a sum destructures it in the arm"
   (doc
