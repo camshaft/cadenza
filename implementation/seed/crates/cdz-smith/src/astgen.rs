@@ -178,6 +178,35 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
     }
 }
 
+/// Short, valid symbol bodies for the Symbol-in-compound shapes — plain lowercase, so `#"<s>"` needs
+/// no escaping and always parses.
+const SYMS: [&str; 6] = ["a", "foo", "bar", "tag", "x", "key"];
+
+/// Build a param-less `main` body producing a SYMBOL-IN-COMPOUND value — the tag-20 value_codec path
+/// landed by v-nix #7710. cdz-smith emitted NO symbols before, so this codec was entirely un-fuzzed.
+/// Every shape is a comparable value (the differential normalizes the `(. Symbol of)` vs `(Symbol.of …)`
+/// rendering, verified): a Symbol in a tuple / a homogeneous `(List Symbol)` / a record field / a NESTED
+/// symbol / structural symbol equality (→ Bool). Self-contained (no top-level defs). Returns the body.
+fn gen_symbol_compound_body<C: Choice>(c: &mut C) -> String {
+    let shape = c.variant(5);
+    let n = c.int_bounded(0, 9);
+    let a = SYMS[c.variant(SYMS.len())];
+    let b = SYMS[c.variant(SYMS.len())];
+    let d = SYMS[c.variant(SYMS.len())];
+    match shape {
+        // Symbol in a heterogeneous tuple: (Tuple Symbol Int64).
+        0 => format!("(tuple #\"{a}\" {n})"),
+        // Homogeneous (List Symbol).
+        1 => format!("(list #\"{a}\" #\"{b}\" #\"{d}\")"),
+        // Symbol in a record field.
+        2 => format!("(record (= t #\"{a}\") (= n {n}))"),
+        // NESTED symbol — a symbol inside an inner tuple inside an outer tuple.
+        3 => format!("(tuple (tuple #\"{a}\" {n}) #\"{b}\")"),
+        // Structural symbol equality → Bool (exercises the Symbol compare path).
+        _ => format!("(= #\"{a}\" #\"{b}\")"),
+    }
+}
+
 /// Build a RECURSIVE-PERFORM effect program — the "dynamic-extent, statically-resolved" self-hosting
 /// shape: a TOP-LEVEL recursive `loop` def PERFORMS the effect op deep inside itself, and `main`'s
 /// `handle` (wrapping the `(loop k)` call) discharges every perform across the recursion. This value-grades
@@ -346,6 +375,16 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
         8 => {
             let (defs, body) = gen_recursive_collection_body(c);
             write!(source, "{defs} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        // ~1/9: a SYMBOL-IN-COMPOUND value program — a Symbol leaf inside a tuple/list/record (+ nested
+        // + structural symbol equality), the tag-20 value_codec path v-nix landed in #7710. cdz-smith
+        // emitted no symbols before, so this codec was un-fuzzed; a param-less `main` returns the value
+        // directly (self-contained). Grades Symbol-in-compound VALUE correctness — the cadenza-differential
+        // renders + round-trips it; the lean type oracle skips Symbol as Unsupported (sound).
+        4 => {
+            let body = gen_symbol_compound_body(c);
+            write!(source, "(def (main) {body}) (export main))").ok();
             return Program { source };
         }
         _ => {}
@@ -2318,6 +2357,52 @@ mod tests {
         ProgramGen
             .generate(&mut driver)
             .expect("ProgramGen always produces a program")
+    }
+
+    /// Every SYMBOL-IN-COMPOUND shape (v-nix #7710, tag-20 value_codec) is a well-formed program the
+    /// compiler cleanly handles — cdz-smith emitted no symbols before, so this pins the new coverage
+    /// and the coercion invariant (never a crash / invalid wasm / parse error) over symbol programs.
+    #[test]
+    fn symbol_compound_shapes_are_cleanly_handled() {
+        for seed in 0u8..40 {
+            let bytes = [
+                seed,
+                seed.wrapping_mul(3),
+                seed.wrapping_add(7),
+                1,
+                2,
+                3,
+                4,
+                5,
+            ];
+            let mut c = ByteCursorChoice::new(&bytes);
+            let body = gen_symbol_compound_body(&mut c);
+            assert!(
+                body.contains("#\""),
+                "a symbol-compound shape must carry a symbol: {body}"
+            );
+            let prog = format!("(do (def (main) {body}) (export main))");
+            match compile_catching(&prog) {
+                Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
+                other => panic!("symbol-compound program not cleanly handled: {prog}\n{other:?}"),
+            }
+        }
+    }
+
+    /// `generate_coerced` actually REACHES the symbol special-program (variant slot 4) for some entropy —
+    /// so the Symbol-in-compound widening is live in the real coercion path, not merely callable directly.
+    #[test]
+    fn generate_coerced_reaches_a_symbol_program() {
+        let hit = (0u64..4000).any(|s| {
+            let bytes: Vec<u8> = (0..24)
+                .map(|i| ((s.wrapping_mul(0x9E37_79B9).wrapping_add(i)) & 0xff) as u8)
+                .collect();
+            generate_coerced(&bytes).source.contains("#\"")
+        });
+        assert!(
+            hit,
+            "the symbol-in-compound special program (variant slot 4) must be reachable"
+        );
     }
 
     /// The coercion invariant: ANY entropy → a valid, well-formed program the compiler CLEANLY handles
