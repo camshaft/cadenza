@@ -128,7 +128,7 @@
           ((Exp.Mul #tuple(a b)) (* (eval a) (eval b)))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The simp case above WORKS AROUND a limitation, worth pinning directly: it simplifies children with
 ; `let`-bound `x`/`y` and probes them with the single-scrutinee `is-lit` helper (its doc notes "a
@@ -267,7 +267,7 @@
           ((Exp.Mul #tuple(a b)) (+ 1 (+ (size a) (size b))))))
       (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the built-in Ast is transformed as an ordinary value"
@@ -477,7 +477,7 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a rewrite whose fall-through arm reads a switched slot WHOLE round-trips through the cadenza backend"
