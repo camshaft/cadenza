@@ -356,8 +356,54 @@ fn run_wasm_bytes(
 /// (whitespace / empty-compound-spacing agnostic). A genuine value difference still fails (the parsed
 /// structures differ → different codec bytes). Falls back to `false` if either side does not parse.
 /// (v-rust-backend owns migrating cdz-rust-render to canonical `#ctor(…)`; drop this once it lands.)
+/// Strip a value-doc `(: <value> <Type>)` ascription down to its bare `<value>` render. `cdz run-rust`
+/// (the differential's rust side) renders via the Ty-direct value-doc as of cdz #7673 — the ascribed
+/// `(: v T)` form — while `cdz run` (wasm) renders the bare `v`; an ascription is render metadata, not a
+/// value, so the comparison must see through it. Extracts the FIRST balanced sub-expression after the
+/// `(:` head (the value), leaving the trailing `<Type>` and the closing paren. Returns the input UNCHANGED
+/// if it is not an ascription (no `(:` head) or if the value scan does not balance — so a non-ascribed or
+/// malformed render is never corrupted.
+fn strip_ascription(s: &str) -> String {
+    let t = s.trim();
+    let Some(rest) = t.strip_prefix("(:") else {
+        return s.to_string();
+    };
+    let rest = rest.trim_start();
+    // Read one balanced sub-expression: the value ends at the first depth-0 whitespace (a bare atom) or
+    // when the group that started it closes (a `(…)`/`#ctor(…)`/`{…}` compound). `#ctor(` opens on the `(`.
+    let mut depth: i32 = 0;
+    let mut end = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    // Hit the ascription's own closing paren before any value — malformed; don't strip.
+                    return s.to_string();
+                }
+            }
+            c if c.is_whitespace() && depth == 0 => {
+                end = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    match end {
+        Some(i) if depth == 0 => rest[..i].to_string(),
+        _ => s.to_string(), // no separating whitespace / unbalanced → not a clean ascription; leave as-is
+    }
+}
+
 fn renders_agree(a: &str, b: &str) -> bool {
-    let (na, nb) = (normalize_render_dialect(a), normalize_render_dialect(b));
+    // Strip a value-doc `(: <value> <Type>)` ascription first: as of cdz #7673 (op-seq-210, default-on),
+    // `cdz run-rust` renders the boundary value via the Ty-direct value-doc — the ASCRIBED `(: v T)` form
+    // — while `cdz run` (wasm) still renders the BARE `v`. Same value, different render dialect; comparing
+    // the bare values keeps the oracle sound (an ascription is metadata, not a value difference — the lean
+    // oracle strips it the same way). Applied to BOTH sides so it is robust whichever ascribes.
+    let (a, b) = (strip_ascription(a), strip_ascription(b));
+    let (na, nb) = (normalize_render_dialect(&a), normalize_render_dialect(&b));
     if na == nb {
         return true;
     }
@@ -1309,6 +1355,43 @@ mod tests {
         assert!(!renders_agree("41", "42"));
     }
 
+    #[test]
+    fn renders_agree_sees_through_the_value_doc_ascription() {
+        // cdz #7673: `cdz run-rust` ascribes `(: v T)`, wasm renders bare `v`. Same value → AGREE.
+        assert!(renders_agree("0", "(: 0 Int64)"));
+        assert!(renders_agree("14.43", "(: 14.43 Float32)"));
+        assert!(renders_agree(
+            "#list(#tuple(1 1))",
+            "(: #list(#tuple(1 1)) (List (Tuple Int64 Int64)))"
+        ));
+        assert!(renders_agree("(: 5 Int64)", "(: 5 Int64)")); // both ascribed
+        assert!(renders_agree(
+            "(: #tuple(1 2) (Tuple Int64 Int64))",
+            "#tuple(1 2)"
+        ));
+        // A GENUINE value difference must NOT be masked even under ascription.
+        assert!(!renders_agree("(: 5 Int64)", "(: 6 Int64)"));
+        assert!(!renders_agree("5", "(: 6 Int64)"));
+        assert!(!renders_agree(
+            "(: #list(1 2) (List Int64))",
+            "(: #list(1 3) (List Int64))"
+        ));
+    }
+
+    #[test]
+    fn strip_ascription_extracts_the_value_or_leaves_non_ascriptions() {
+        assert_eq!(strip_ascription("(: 0 Int64)"), "0");
+        assert_eq!(strip_ascription("(: 14.43 Float32)"), "14.43");
+        assert_eq!(
+            strip_ascription("(: #list(#tuple(1 1)) (List (Tuple Int64 Int64)))"),
+            "#list(#tuple(1 1))"
+        );
+        // Not an ascription → unchanged.
+        assert_eq!(strip_ascription("#tuple(1 2)"), "#tuple(1 2)");
+        assert_eq!(strip_ascription("42"), "42");
+        assert_eq!(strip_ascription("(tuple 1 2)"), "(tuple 1 2)");
+    }
+
     /// A non-zero `run-rust` exit (a usage/harness error for one program) must classify as a
     /// non-comparable `Side::Declined`, NOT bubble as an `Err` (→ `Diff::Unavailable`). Driving a
     /// program `cdz run-rust` rejects at the usage layer would need a multi-export program; instead we
@@ -1349,7 +1432,12 @@ mod tests {
         );
         match run_rust(&cdz, program) {
             Ok(rust) => {
-                assert_eq!(rust, Side::Value("\"ayg\"".into()), "rust side");
+                // `cdz run-rust` value-doc-ascribes as of cdz #7673 (`(: "ayg" String)`); assert it ran to
+                // a value and the wasm-vs-rust comparison AGREES (the ascription is stripped).
+                assert!(
+                    matches!(rust, Side::Value(_)),
+                    "rust ran to a value: {rust:?}"
+                );
                 assert_eq!(compare(&wasm, &rust), Diff::Agree);
             }
             Err(e) => eprintln!("skipping rust side: {e}"),
@@ -1378,7 +1466,13 @@ mod tests {
 
         match run_rust(&cdz, program) {
             Ok(rust) => {
-                assert_eq!(rust, Side::Value("3".into()), "rust side");
+                // `cdz run-rust` renders via the value-doc as of cdz #7673 — the ascribed `(: 3 Int64)`,
+                // not the bare `3` — so assert the meaningful invariant: it ran to a value and the
+                // wasm-vs-rust comparison AGREES (the ascription is stripped by `renders_agree`).
+                assert!(
+                    matches!(rust, Side::Value(_)),
+                    "rust ran to a value: {rust:?}"
+                );
                 assert_eq!(compare(&wasm, &rust), Diff::Agree);
             }
             Err(e) => eprintln!("skipping rust side: {e}"),
