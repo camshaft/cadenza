@@ -8852,6 +8852,7 @@ pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Som
 pass	oc4 an Option state with a RESET cycle — put promotes None to Some or accumulates inside Some; reset reports and returns to None; a fresh put re-promotes
 pass	oc5 TWO Option slots in one tuple state — independent put lifecycles, a SWAP op exchanges them, reads confirm the exchange
 pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair updated element-wise per dispatch, a final read reports both
+pass	oc7 an Option-of-(Int,String) tuple accumulator — the mixed-scalar payload grounds from concrete resume next-states, no annotation on the (None) seed
 pass	od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)
 pass	od2 string order across fifty rope seams discriminates at the final divergent char
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
