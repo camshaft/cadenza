@@ -3937,6 +3937,13 @@ fn emit_switch_tree(
                 // reconstructs what actually arrives here. Keeps the round-trip idempotent (literal → LitTest).
                 crate::core::Probe::Str(s) => b.atom_leaf(Leaf::Str(s.as_str().into())),
                 crate::core::Probe::Char(c) => b.atom_leaf(Leaf::Char(*c)),
+                // A BYTE-STRING literal probe (`(#tuple(a b"AB") …)` / a `(Some b"…")` sum-payload refine): emit
+                // the `b"…"` literal IN the pattern, exactly as Str/Char — recompile re-lowers it to the same
+                // `Probe::Bytes` LitTest (idempotent). The probe carries the raw bytes as `Rc<[u8]>`; the leaf
+                // wants an `Arc<[u8]>` (the canonical value-form byte leaf), so copy across.
+                crate::core::Probe::Bytes(bytes) => {
+                    b.atom_leaf(Leaf::Bytes(std::sync::Arc::from(bytes.as_ref())))
+                }
                 // A LIST-LENGTH probe (a `(list …)` sub-pattern's length test on a list slot nested in the sum
                 // decision tree). Unlike a scalar literal there is no single atom to emit — the surface
                 // `(list e0 … e{len-1} [.. rest])` pattern is BUILT by `build_arm_pat` (recursing each element
@@ -3947,17 +3954,17 @@ fn emit_switch_tree(
                 // slot probe stays declined (later slices).
                 crate::core::Probe::ListLen { .. } => b.name("list"),
                 _ => {
-                    // Reconstructing a Bytes / MapHasKeys slot probe is a future slice; that not-yet intent
+                    // Reconstructing a MapHasKeys slot probe is a future slice; that not-yet intent
                     // stays in this comment, NOT the user-facing message (operator seq-280).
                     tracing::debug!(
                         target: "rcdzc::backend::cadenza",
                         ?path,
                         ?probe,
-                        "cadenza: declining a non-scalar (Bytes/MapHasKeys) literal-at-slot probe"
+                        "cadenza: declining a non-scalar (MapHasKeys) literal-at-slot probe"
                     );
                     return Err(Reject::unsupported(
                         "the Cadenza backend reconstructs a literal-at-slot test only for an Int / Bool / \
-                         Str / Char / ListLen probe (a Bytes / MapHasKeys slot probe is not supported)"
+                         Str / Char / Bytes / ListLen probe (a MapHasKeys slot probe is not supported)"
                             .to_string(),
                     ));
                 }
