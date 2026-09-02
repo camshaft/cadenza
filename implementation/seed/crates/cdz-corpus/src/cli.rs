@@ -1238,6 +1238,11 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
     if rec.diagnostic_quality {
         kids.push(form(&mut b, "diagnostic-quality", vec![]));
     }
+    // `(no-diagnostic-quality)` — the C1 opt-OUT escape hatch carried to the grade side (suppresses the
+    // default-on §1 lint); `decode_test_run` reads it into `TestRun::diagnostic_quality_opt_out`.
+    if rec.diagnostic_quality_opt_out {
+        kids.push(form(&mut b, "no-diagnostic-quality", vec![]));
+    }
     // `(no-diagnostic "phrase")` — each case-level program-scoped absence pin carried verbatim (the phrase
     // as one string leaf); `decode_test_run` collects them into `TestRun::no_diagnostic`. One form per pin.
     for phrase in &rec.no_diagnostic {
@@ -1739,6 +1744,39 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
                 && tr.contains(r#"(no-diagnostic "unused binding")"#),
             "both pins shred into the test-run as their own forms: {tr}"
         );
+    }
+
+    /// A bare `(no-diagnostic-quality)` marker (the C1 opt-OUT hatch, post default-flip) parses onto the
+    /// Record (case-level AND file-level) and shreds into the test-run — read into
+    /// `TestRun::diagnostic_quality_opt_out`. Absence leaves it off (the norm: §1-enforced by default).
+    #[test]
+    fn no_diagnostic_quality_opt_out_marker_reaches_shredded_test_run() {
+        // Case-level.
+        let recs = crate::read(r#"(case "q" (input 1_) (error CDZ0201) (no-diagnostic-quality))"#)
+            .unwrap();
+        assert!(
+            recs[0].diagnostic_quality_opt_out,
+            "case-level opt-out parses"
+        );
+        let tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            tr.contains("(no-diagnostic-quality)"),
+            "opt-out shreds into the test-run: {tr}"
+        );
+        // File-level (a bare top-level form) opts out EVERY case in the file.
+        let fl = crate::read(
+            r#"(no-diagnostic-quality)
+               (case "a" (input 1_) (error CDZ0201))
+               (case "b" (input 2_) (error CDZ0201))"#,
+        )
+        .unwrap();
+        assert!(
+            fl.iter().all(|r| r.diagnostic_quality_opt_out),
+            "file-level opt-out enrolls every case"
+        );
+        // Absent → off (the norm: default §1-enforced).
+        let plain = crate::read(r#"(case "p" (input 1_) (error CDZ0201))"#).unwrap();
+        assert!(!plain[0].diagnostic_quality_opt_out);
     }
 
     /// A bare `(diagnostic-quality)` marker (the C1 opt-in) parses onto the Record and shreds into the

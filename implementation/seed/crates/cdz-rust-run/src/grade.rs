@@ -210,6 +210,7 @@ mod tests {
             no_other_errors: false,
             no_diagnostic: vec![],
             diagnostic_quality: false,
+            diagnostic_quality_opt_out: false,
         }
     }
 

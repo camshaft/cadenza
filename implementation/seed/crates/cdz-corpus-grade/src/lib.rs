@@ -293,9 +293,16 @@ pub struct TestRun {
     /// required-token check was withdrawn as unsound for umbrella codes — see [`grade_diagnostic_quality`];
     /// message SHAPE lives in per-case `(message …)` pins.) Graded by [`grade_diagnostic_quality`] against
     /// the captured structured faults — composes with the per-trial `(fix …)`/`(count …)` facets and the
-    /// per-case `(no-other-errors)`/`(no-diagnostic …)`, on the SAME nix diagnostics bar. Opt-in per scope
-    /// first (no flag-day red); tightened to default once the corpus is clean. `false` = no marker.
+    /// per-case `(no-other-errors)`/`(no-diagnostic …)`, on the SAME nix diagnostics bar. NOW A NO-OP: the
+    /// C1 lint is DEFAULT-ON (the opt-in→default flip landed after the warm-lane full-corpus verify), so
+    /// this legacy `(diagnostic-quality)` opt-IN marker no longer gates anything (grading runs regardless).
+    /// Retained so the ~36 chapters' existing markers still parse harmlessly; sweepable later.
     pub diagnostic_quality: bool,
+    /// `true` iff the case (or its file) authored `(no-diagnostic-quality)` — the C1 opt-OUT escape hatch:
+    /// SUPPRESS the default-on §1 lint for this case (a case that legitimately must carry a §1 forbidden
+    /// phrase in its diagnostic — none known today; reversible safety net for a post-flip surprise). The
+    /// only gate on the default-on `grade_diagnostic_quality`; `false` (the norm) = §1-enforced.
+    pub diagnostic_quality_opt_out: bool,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -652,21 +659,17 @@ where
         }
     }
 
-    // CASE-LEVEL `(diagnostic-quality)` — the C1 general rubric lint: every emitted CODED diagnostic's
-    // message must contain no forbidden phrase (`DESIGN-diagnostic-quality-rubric.md` §1; §2 withdrawn).
-    // Only when the diagnostics wire was captured (`Some(faults)`) — like `(no-other-errors)` + the
-    // `(fix …)`/`(count …)` facets, it grades on the nix diagnostics bar, not the sidecar-blind in-process gate.
-    //
-    // DEFAULT-ON ENABLER (the opt-in→default flip, concierge-greenlit): the env `CDZ_C1_DEFAULT_ON` makes
-    // the lint grade EVERY case (no marker needed) — the true corpus-wide golden-standard guarantee. It is
-    // an ENV so the flip is inert in the required gate until activated: unset (today) = current opt-in
-    // behavior (marker-driven, required gate UNCHANGED — zero red risk); set = default-on. v-diagnostics
-    // runs the full-corpus §1 verify with it SET — cache-fast (a grade-time op on the already-cached
-    // KIND_DIAGNOSTICS wire; no corpus-file change → the compile/run drvs stay cache-HITS, no rebuild
-    // starvation). Once that verify is 0-flags-green, the final flip (make default-on the true default /
-    // wire the gate to set the env + add the `(no-diagnostic-quality)` opt-OUT hatch) lands per the greenlight.
-    let c1_default_on = std::env::var_os("CDZ_C1_DEFAULT_ON").is_some();
-    if (test_run.diagnostic_quality || c1_default_on)
+    // C1 §1 diagnostic-quality lint — DEFAULT-ON (the opt-in→default flip; concierge-greenlit, warm-lane
+    // full-corpus §1 verify GREEN = 0 forbidden-phrase / 0 dq-fails across all 36 files, v-gha-green). Every
+    // emitted CODED diagnostic's message must contain no forbidden phrase (`DESIGN-diagnostic-quality-
+    // rubric.md` §1; §2 withdrawn) — the corpus-wide golden-standard guarantee. Runs on EVERY case UNLESS it
+    // opts OUT via `(no-diagnostic-quality)` (the reversible per-case/file escape hatch). It is a CODE
+    // default (not an env) so it enforces in BOTH the in-process gate AND the hermetic nix corpus-exec (a
+    // shell env does not propagate into the nix drv — v-gha-green's caveat). Only when the diagnostics wire
+    // was captured (`Some(faults)`), like `(no-other-errors)` + the `(fix …)`/`(count …)` facets — the
+    // sidecar-blind in-process path skips it. The legacy `(diagnostic-quality)` opt-IN markers are now
+    // no-ops (harmless; sweepable later). A post-flip §1 surprise is one `(no-diagnostic-quality)` + a rewrite.
+    if !test_run.diagnostic_quality_opt_out
         && let Some(faults) = &faults
         && let Some(msg) = grade_diagnostic_quality(faults)
     {
@@ -1478,6 +1481,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
     let mut diagnostic_quality = false;
+    let mut diagnostic_quality_opt_out = false;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -1554,6 +1558,8 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
             Some("no-other-errors") => no_other_errors = true,
             // `(diagnostic-quality)` — the bare C1 opt-in marker (assert every coded diagnostic meets §1+§2).
             Some("diagnostic-quality") => diagnostic_quality = true,
+            // `(no-diagnostic-quality)` — the C1 opt-OUT escape hatch (suppress the default-on §1 lint).
+            Some("no-diagnostic-quality") => diagnostic_quality_opt_out = true,
             // `(no-diagnostic "phrase")` — a case-level program-scoped cross-kind absence pin (one per form,
             // repeatable). Read the phrase as the first string leaf; ignore a malformed/empty clause.
             Some("no-diagnostic") => {
@@ -1581,6 +1587,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         no_other_errors,
         no_diagnostic,
         diagnostic_quality,
+        diagnostic_quality_opt_out,
     })
 }
 
@@ -2844,6 +2851,7 @@ mod tests {
             no_other_errors: false,
             no_diagnostic: vec![],
             diagnostic_quality: false,
+            diagnostic_quality_opt_out: false,
         };
         // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
         // code-check reads.
@@ -2907,6 +2915,63 @@ mod tests {
     }
 
     #[test]
+    fn c1_is_default_on_and_the_no_diagnostic_quality_marker_opts_out() {
+        // The opt-in→default flip: grade_diagnostic_quality now runs on EVERY case (no marker), UNLESS
+        // `(no-diagnostic-quality)` opts out. A §1-violating fault reds by default; opt-out suppresses it.
+        use cadenza_compile_abi::Severity as S;
+        let never =
+            |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
+        let mk = |opt_out: bool| TestRun {
+            description: "c1-default".into(),
+            trials: vec![GTrial {
+                call: None,
+                expect: GExpect::Error("CDZ0900".into(), vec![], vec![]),
+                diag: None,
+            }],
+            host_responses: vec![],
+            host_calls: vec![],
+            warns: vec![],
+            live_objects: None,
+            live_objects_known_leak: false,
+            live_objects_per_call: None,
+            no_other_errors: false,
+            no_diagnostic: vec![],
+            diagnostic_quality: false, // NO opt-in marker — default-on still grades it
+            diagnostic_quality_opt_out: opt_out,
+        };
+        let diag = "cdz: error [CDZ0900] (node 1): this construct is not yet supported";
+        // A §1-forbidden phrase ("not yet") in the emitted diagnostic's message.
+        let wire = bin_wire(&[(
+            S::Error,
+            Some("CDZ0900"),
+            Some(1),
+            None,
+            "this construct is not yet supported",
+        )]);
+        // DEFAULT-ON: no marker, not opted out → §1 flags the "not yet" → Fail.
+        assert!(
+            matches!(
+                grade_run(&mk(false), 1, diag, Some(&wire), None, never)
+                    .unwrap()
+                    .grade,
+                Grade::Fail(_)
+            ),
+            "default-on §1 must flag a forbidden phrase with no marker"
+        );
+        // OPT-OUT: `(no-diagnostic-quality)` suppresses the §1 lint → the forbidden phrase is not flagged.
+        // (grade_compile_error still passes: CDZ0900 declined matches the (error CDZ0900) trial.)
+        assert!(
+            !matches!(
+                grade_run(&mk(true), 1, diag, Some(&wire), None, never)
+                    .unwrap()
+                    .grade,
+                Grade::Fail(_)
+            ),
+            "(no-diagnostic-quality) must suppress the §1 lint"
+        );
+    }
+
+    #[test]
     fn no_other_errors_flags_an_unasserted_cascade_code() {
         let never =
             |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
@@ -2927,6 +2992,7 @@ mod tests {
             no_other_errors: no_other,
             no_diagnostic: vec![],
             diagnostic_quality: false,
+            diagnostic_quality_opt_out: false,
         };
         let diag = "cdz: error [CDZ0201] (node 1): bad thing";
         use cadenza_compile_abi::Severity as S;
@@ -2996,6 +3062,7 @@ mod tests {
             no_other_errors: false,
             no_diagnostic: phrases,
             diagnostic_quality: false,
+            diagnostic_quality_opt_out: false,
         };
         let pin = || mk(vec!["needs a heap walk".into()]);
 
