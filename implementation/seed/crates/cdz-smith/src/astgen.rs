@@ -210,9 +210,10 @@ fn gen_effect_recursive_body<C: Choice>(c: &mut C) -> (String, String) {
 /// result (a heap list crosses the boundary, consumed by `List.len`).
 fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
     // Each form exports a fn whose RESULT TYPE crosses the module import/export boundary as a distinct WIT
-    // marshal (scalar / tuple / Option / record / sized-int / Bool / heap list), and `main` consumes it to
-    // a deterministic value the wasm-vs-rust diff grades. Operator seq-22: stress import/export.
-    let form = c.variant(7);
+    // marshal (scalar / tuple / Option / record / sized-int / Bool / heap list / arbitrary-precision
+    // BigInt), and `main` consumes it to a deterministic value the wasm-vs-rust diff grades. Operator
+    // seq-22: stress import/export.
+    let form = c.variant(8);
     let a = c.int_bounded(0, 9);
     let b = c.int_bounded(0, 9);
     match form {
@@ -252,9 +253,17 @@ fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
             format!("(. (M.rec {a}) a)"),
         ),
         // a BOOL crosses the boundary (the result type is Bool, not Int64).
-        _ => (
+        6 => (
             "(module M (def (lt (: x Int64)) (< x 5)) (export lt))".to_string(),
             format!("(M.lt {a})"),
+        ),
+        // an arbitrary-precision BIGINT (a beyond-i64 heap value) crosses the boundary → compared to a
+        // Bool. A distinct runtime marshal (the heap bignum codec across the module link), and a positive
+        // product `(* (a+1)N (a+1)N)` is always `> 0N` regardless of `a`, so the result is deterministic.
+        _ => (
+            "(module M (def (big (: x Int64)) (* 99999999999999999999999N 3N)) (export big))"
+                .to_string(),
+            format!("(> (M.big {a}) 0N)"),
         ),
     }
 }
@@ -2838,9 +2847,9 @@ mod tests {
     fn build_program_reaches_cross_module_shape_and_compiles() {
         // Each cross-module form crosses the boundary as a distinct type; every one must compile.
         let markers = [
-            "(M.f ", "(M.g ", "(M.mk ", "(M.tup ", "(M.opt ", "(M.rec ", "(M.lt ",
+            "(M.f ", "(M.g ", "(M.mk ", "(M.tup ", "(M.opt ", "(M.rec ", "(M.lt ", "(M.big ",
         ];
-        let mut seen = [false; 7];
+        let mut seen = [false; 8];
         let mut saw = false;
         for seed in 0u64..2048 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1013);
