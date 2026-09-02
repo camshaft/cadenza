@@ -10894,6 +10894,14 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
     }
 }
 
+/// The `sh -c` body the detached gate-local build runs under `setsid`. `$1`=lease path, `$2`=log path,
+/// `$3..`=nix + its args. It RE-KEYS the lease to its own pid (`$$` — the `sh` that lives for the build's
+/// full lifetime) via an atomic `mv` (preserving the class suffix `${lease##*-}`), so the dead-PID reaper
+/// tracks the LIVE build rather than the short-lived launcher xtask (the v-core-opt lease-vs-pid gap); then
+/// a `trap … EXIT` removes the RE-KEYED lease when the build exits. No `exec` (a trap does not survive
+/// exec). Extracted to a const so the shell contract is unit-testable (bash-validity + the re-key + the trap).
+const GATE_LOCAL_DETACHED_WRAPPER: &str = r#"lease="$1"; log="$2"; shift 2; if [ -n "$lease" ]; then _nl="$(dirname "$lease")/$$-${lease##*-}"; mv -f "$lease" "$_nl" 2>/dev/null && lease="$_nl"; fi; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1"#;
+
 fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // Acquire a NON-priority check-lease slot BEFORE building. Under the current land model gate-local is
     // the AUTHORITATIVE pre-merge gate that EVERY agent runs (contract 2026-08-28), so with ~28 agents it
@@ -10951,12 +10959,21 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // no SIGPIPE). The build now SURVIVES session churn → completes + CACHES in the store, so the restarted/
     // compacted agent's re-run of gate-local hits the nix cache → fast verdict, no manual --admin.
     //
-    // LEASE RELEASE (concierge caveat): the RAII `_lease` releases on this fn's normal return (unchanged),
-    // BUT if the agent is SIGKILLed mid-build the RAII never runs → the lease would leak. So the detached
-    // wrapper ALSO releases the lease via a `trap … EXIT` when the BUILD exits (completion or a trappable
-    // kill) — the PRIMARY release for the detached case, not relying on the dead-PID reaper. Both target the
-    // same lease file idempotently. (The lease is named with THIS xtask's pid, so the dead-PID reaper is a
-    // bounded backstop for the narrow window where xtask dies before the build finishes.)
+    // LEASE OWNERSHIP — RE-KEY TO THE DETACHED PID (v-core-opt issue 2026-09-02, the lease-vs-pid liveness
+    // gap). The lease file is named `<pid>-gate.lease` by `acquire_check_lease_weighted` at THIS xtask's pid,
+    // and both the RAII `_lease` drop (on this fn's return) and the dead-PID reaper (`/proc/<pid>`) key on it.
+    // But the DETACHED build OUTLIVES this xtask (that is the whole point of setsid): when this fn returns
+    // (or the agent is killed, or `setsid -w` returns early), the lease is removed (RAII) or reaped (xtask
+    // pid now dead) WHILE THE nix BUILD IS STILL ALIVE — a false-done signal, and worse the unleased-but-alive
+    // build ESCAPES the CDZ_CHECK_LEASE_MAX cap (observed: a 2nd concurrent gate-local oversubscribed the box).
+    // FIX: the wrapper RE-KEYS the lease to ITS OWN pid (`$$`, the `sh` that lives for the build's full
+    // lifetime) at start via an atomic `mv`, preserving the class suffix. Then: the reaper tracks the LIVE
+    // build (not the dead launcher) → the slot is held for exactly the build's lifetime, so the cap holds;
+    // and the RAII drop below — still holding the ORIGINAL `<xtask-pid>-gate.lease` path — becomes a harmless
+    // NO-OP (the file was renamed away), so a foreground return/early-exit can no longer strip a live build's
+    // lease. The wrapper's `trap … EXIT` removes the RE-KEYED lease when the build actually exits (the primary
+    // release). FAIL-SAFE: if the `mv` hiccups, `lease` stays the original path → behaviour degrades to the
+    // prior (xtask-pid) semantics, and the mtime-TTL reaper is the ultimate backstop either way.
     //
     // Positional-argv wrapper (NO string interpolation of paths/args → no quoting hazards): `$1`=lease,
     // `$2`=log, `$3..`=nix + its args. No `exec` (a trap does not survive exec), so `sh` runs nix as a child,
@@ -10969,7 +10986,9 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
         "gate-local: running `{nix_bin} build {target}` DETACHED (survives session churn; --max-jobs {NIX_GATE_MAX_JOBS}); live log: {}",
         log.display()
     );
-    let script = r#"lease="$1"; log="$2"; shift 2; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1"#;
+    // Re-key the lease to the wrapper's own pid ($$) so the reaper tracks the build, not the launcher; then
+    // the trap removes the re-keyed file on build exit. `${lease##*-}` keeps the class suffix (e.g. `gate.lease`).
+    let script = GATE_LOCAL_DETACHED_WRAPPER;
     let mut cmd = Command::new("setsid");
     cmd.arg("-w")
         .arg("sh")
@@ -20771,6 +20790,42 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 String::from_utf8_lossy(&o.stderr)
             ),
             Err(_) => { /* bash absent — skip */ }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gate_local_detached_wrapper_re_keys_the_lease_to_the_build_pid_and_is_valid_bash() {
+        // The v-core-opt lease-vs-pid fix (2026-09-02): the detached wrapper must RE-KEY the lease to its
+        // own pid ($$, which lives for the build) so the reaper tracks the LIVE build not the short-lived
+        // launcher, and remove the re-keyed file on EXIT. A broken wrapper would break EVERY gate-local.
+        let w = GATE_LOCAL_DETACHED_WRAPPER;
+        assert!(w.contains("mv -f"), "re-keys the lease via an atomic mv");
+        assert!(
+            w.contains("$$-${lease##*-}"),
+            "re-keys to the wrapper pid $$, preserving the class suffix"
+        );
+        assert!(
+            w.contains(r#"trap 'test -n "$lease" && rm -f "$lease"' EXIT"#),
+            "removes the (re-keyed) lease on build exit"
+        );
+        assert!(
+            w.contains(r#""$@" >"$log" 2>&1"#),
+            "runs nix as a CHILD (no exec, so the EXIT trap survives) with output to the log file"
+        );
+        // Valid bash — `bash -n` parses without executing (the positional $1/$2/$@ are fine to parse).
+        let dir = std::env::temp_dir().join(format!("ft-gatewrap-syntax-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("wrapper.sh");
+        if std::fs::write(&f, w).is_err() {
+            return;
+        }
+        if let Ok(o) = Command::new("bash").arg("-n").arg(&f).output() {
+            assert!(
+                o.status.success(),
+                "GATE_LOCAL_DETACHED_WRAPPER has a bash syntax error:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
