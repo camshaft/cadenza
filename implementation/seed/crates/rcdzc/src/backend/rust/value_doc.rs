@@ -244,7 +244,7 @@ fn doc_value_node(
                 iter.clone()
             } else {
                 return Err(Reject::decline(
-                    "value-doc: compound-float Set element not yet covered (needs per-position __CdzF unwrap)",
+                    "value-doc: compound-float Set element not covered (needs per-position __CdzF unwrap)",
                 ));
             };
             out.push_str(&format!("    let {head} = __b.name(\"set\");\n"));
@@ -278,7 +278,7 @@ fn doc_value_node(
                 format!("{kv}.0")
             } else {
                 return Err(Reject::decline(
-                    "value-doc: compound-float Map key not yet covered (needs per-position __CdzF unwrap)",
+                    "value-doc: compound-float Map key not covered (needs per-position __CdzF unwrap)",
                 ));
             };
             out.push_str(&format!("    let {head} = __b.name(\"map\");\n"));
@@ -309,7 +309,7 @@ fn doc_value_node(
             // A qualified-head sum needs the `(. Type Variant)` head form — not covered yet.
             if crate::lower::sum_needs_qualified_heads(db, decl_occ) {
                 return Err(Reject::decline(
-                    "value-doc: qualified-head sum not yet covered by the rust value-doc emit (WIP)",
+                    "value-doc: qualified-head sum not covered by the rust value-doc emit",
                 ));
             }
             let variant_count = db
@@ -335,7 +335,7 @@ fn doc_value_node(
                         // A recursive variant boxes its payload (needs a helper to terminate) — decline.
                         if super::enums::variant_is_recursive(db, &sum_ty, disc) {
                             return Err(Reject::decline(
-                                "value-doc: recursive sum not yet covered by the rust value-doc emit (WIP)",
+                                "value-doc: recursive sum not covered by the rust value-doc emit",
                             ));
                         }
                         // The DECLARED arity distinguishes a MULTI-field variant `(V a b)` (arity ≥ 2 — the
@@ -390,7 +390,7 @@ fn doc_value_node(
             Ok(v)
         }
         _ => Err(Reject::decline(
-            "value-doc: result shape not yet covered by the rust value-doc emit (WIP)",
+            "value-doc: result shape not covered by the rust value-doc emit",
         )),
     }
 }
