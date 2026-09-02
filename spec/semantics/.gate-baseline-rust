@@ -8985,3 +8985,5 @@ pass	one macro splices a TYPE and a fn over it via a wrapping (do …) — the t
 pass	a macro-internal type in a wrapping (do …) splice stays hygienic-local
 pass	splice-flatten RECURSES through a nested statement-position (do …) — a def in a non-final inner do binds visibly
 pass	splice-flatten does NOT descend a TAIL-position nested (do …) — its defs stay scoped (the boundary)
+pass	a macro-internal helper introduced in a NESTED do is usable by an outer sibling (structural flatten, intra-expansion visibility)
+pass	a macro-internal helper flattened from a nested do stays CALLER-hygienic-local (orthogonal to intra-expansion visibility)

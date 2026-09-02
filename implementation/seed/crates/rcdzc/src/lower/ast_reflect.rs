@@ -694,6 +694,51 @@ fn collect_flatten_forms(
     }
 }
 
+/// STRUCTURAL FLATTEN of a macro-spliced statement-position `(do …)` (v-spec-oracle gf6b ruling): a
+/// NON-FINAL child that is itself a `(do …)` is INLINED — its own (recursively-flattened) children replace
+/// it in the parent's sequence — so a binding introduced in a nested statement-position do becomes a DIRECT
+/// sibling of the outer forms (intra-expansion mutual visibility via `do_local_binds`, matching the
+/// direct-sibling case). A FINAL nested do (the do's value = expression position) stays a SCOPED block,
+/// un-inlined. Rewrites `do_node`'s child list in place (no new nodes; the round's parent-index rebuild +
+/// scope-skip re-seed cover it). A no-op if `do_node` is not a `(do …)`.
+fn flatten_spliced_do(ast: &mut crate::ast::Arenas, do_node: StructId) {
+    let crate::ast::Struct::List(items) = ast.get(do_node) else {
+        return;
+    };
+    if items.first().and_then(|&h| ast.as_name(h)) != Some("do") {
+        return;
+    }
+    let head = items[0];
+    let tail: Vec<StructId> = items[1..].to_vec();
+    let flat = flattened_do_tail(ast, &tail);
+    // Rewrite only if flattening actually changed the sequence (avoid churn on a flat do).
+    if flat.len() == tail.len() {
+        return;
+    }
+    let mut new_items = Vec::with_capacity(flat.len() + 1);
+    new_items.push(head);
+    new_items.extend(flat);
+    ast.structure[do_node.0 as usize] = crate::ast::Struct::List(new_items);
+}
+
+/// The flattened statement sequence for a do's tail (children after the `do` head): a NON-FINAL child that
+/// is a `(do …)` is replaced by its OWN flattened tail (recursively); every other child — and the FINAL
+/// child (the do's value/expression position) — is kept as-is. Read-only.
+fn flattened_do_tail(ast: &crate::ast::Arenas, tail: &[StructId]) -> Vec<StructId> {
+    let n = tail.len();
+    let mut out: Vec<StructId> = Vec::new();
+    for (i, &c) in tail.iter().enumerate() {
+        let is_final = i + 1 == n;
+        if !is_final && let Some(inner) = ast.as_form(c, "do") {
+            let inner: Vec<StructId> = inner.to_vec();
+            out.extend(flattened_do_tail(ast, &inner));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub(crate) fn expand_macros(db: &mut Db) {
     // FAST BAIL: no quote-param anywhere → no macro to expand (the overwhelming common case).
     if db.quote_params.is_empty() {
@@ -761,6 +806,19 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 db.ast.structure[id.0 as usize] = entry;
                 if src.0 as usize >= n {
                     db.ast.structure[src.0 as usize] = crate::ast::Struct::List(Vec::new());
+                }
+                // gap#6b STRUCTURAL FLATTEN (v-spec-oracle ruling): a macro-spliced STATEMENT-position
+                // `(do …)` is meaning-equivalent to the INLINE sequence, so a NON-FINAL nested `(do …)`
+                // inside it flattens UP — its children become direct siblings — giving INTRA-EXPANSION
+                // mutual visibility (a nested-do helper `deep` usable by an outer sibling's body via
+                // `do_local_binds`, matching gf4's direct-sibling case). A FINAL nested do (the do's value,
+                // an expression position) stays a SCOPED block. Rewrite `id`'s child list HERE — before the
+                // round's rebuild_parent_index + scope-skip + reduced-callable/def/type registration — so
+                // all downstream sees the flattened structure. Only a ROOT statement-position splice (an
+                // expression-position do is a scoped value, untouched). CALLER-visibility (def_name_index /
+                // type index, per-name provenance) is ORTHOGONAL, handled by the registration below.
+                if db.parent_of(id) == Some(db.ast.root) {
+                    flatten_spliced_do(&mut db.ast, id);
                 }
                 // Defer scope-skip seeding to AFTER the round's parent-index rebuild (below): a match ARM
                 // is a binding candidate only via `parent_of` (it is a headless `(pattern body)` whose
