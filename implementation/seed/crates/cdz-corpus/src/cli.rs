@@ -101,6 +101,14 @@ enum CorpusCmd {
         /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
         #[arg(required = true)]
         files: Vec<String>,
+        /// APPLY the nativize codemod in place: rewrite each non-native file's classic name-head input
+        /// compounds (`(list …)`/`(tuple …)`/…) to native `#ctor` form (`--skip-outputs` semantics —
+        /// `(output …)` expected values untouched) and write it back. Idempotent; a file already native is
+        /// left byte-identical. The one-command fix for the RECURRING M3 nativize red (a peer re-introducing
+        /// a classic-form input); exits 0 after fixing. Without `--fix` the default is the check (exits
+        /// non-zero on a non-native file). Re-run the check (or ML round-trip) after to confirm.
+        #[arg(long)]
+        fix: bool,
     },
     /// GUARD a corpus git-diff for `(live-objects …)` clause EDITS — the fresh-store-before-repin discipline.
     ///
@@ -208,7 +216,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             list_missing,
             count,
         } => check_baseline_drift(files, baseline, *list_missing, *count),
-        CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
+        CorpusCmd::NativizeCheck { files, fix } => check_nativize_idempotence(files, *fix),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
         CorpusCmd::VanishedCheck { .. } => {
@@ -404,7 +412,7 @@ fn vanished_across(
 /// leaves `(output …)` expected values untouched, so this is orthogonal to any render re-pin. Exits
 /// NON-ZERO on any non-native file (fix: run the nativize codemod). The PR-time guard for operator M3's
 /// native-form corpus, replacing by-hand drift catching.
-fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
+fn check_nativize_idempotence(files: &[String], fix: bool) -> Result<(), String> {
     let mut non_native: Vec<String> = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
@@ -412,6 +420,15 @@ fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
             .map_err(|e| format!("{path}: nativize failed: {e:?}"))?;
         if nativized != text {
             non_native.push(path.clone());
+            // `--fix`: APPLY the codemod in place (write the nativized text). The check side just records
+            // the file; the write happens here so a dry check never mutates.
+            if fix {
+                std::fs::write(path, &nativized)
+                    .map_err(|e| format!("writing nativized {path}: {e}"))?;
+                println!(
+                    "nativize-check: FIXED {path} — classic-form input compounds → native #ctor"
+                );
+            }
         }
     }
     if non_native.is_empty() {
@@ -419,18 +436,26 @@ fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
             "nativize-check: OK — all {} file(s) in native #ctor compound-value input form",
             files.len()
         );
-        Ok(())
-    } else {
-        for p in &non_native {
-            eprintln!(
-                "nativize-check: NON-NATIVE input compound in {p} — a classic name-head (list …)/(tuple …)/… ; run the nativize codemod"
-            );
-        }
-        Err(format!(
-            "{} file(s) have classic-form input compounds — corpus must use native #ctor form (operator M3)",
-            non_native.len()
-        ))
+        return Ok(());
     }
+    if fix {
+        // Every non-native file was just rewritten in place → success (the codemod applied). Re-run the
+        // plain check (or the ML round-trip) to confirm; the rewrite is idempotent so a re-check is clean.
+        println!(
+            "nativize-check: nativized {} file(s) in place — re-run the check to confirm",
+            non_native.len()
+        );
+        return Ok(());
+    }
+    for p in &non_native {
+        eprintln!(
+            "nativize-check: NON-NATIVE input compound in {p} — a classic name-head (list …)/(tuple …)/… ; run the nativize codemod (--fix)"
+        );
+    }
+    Err(format!(
+        "{} file(s) have classic-form input compounds — corpus must use native #ctor form (operator M3)",
+        non_native.len()
+    ))
 }
 
 /// Diagnostic codes that are CAPABILITY / implementation-LIMITS (a not-yet-built construct), NOT semantic

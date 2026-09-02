@@ -5767,7 +5767,7 @@
   (input
     (do
       (def (main)
-        (Set.len (Set.of (list (Map.to-list (Map.insert Map.empty (: 1.5 Float32) (Ok 9)))))))
+        (Set.len (Set.of #list((Map.to-list (Map.insert Map.empty (: 1.5 Float32) (Ok 9)))))))
       (export main)))
   (error CDZ0203 (message "not fully determined")))
 
