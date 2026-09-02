@@ -1170,8 +1170,10 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
           (match Eval.qualHead? m children with
            | some (q, op) =>
              if q == "List".toUTF8 then
-               -- T1.30/31 — total List OPS `(List.<op> …)`: `len (xs:List α) → Int64`; `at (xs:List α)(i:Int) → α`
-               -- (out-of-range traps at RUNTIME — type is `α`); `push (xs:List α)(x:α) → List α`;
+               -- T1.30/31 — total List OPS `(List.<op> …)`: `len (xs:List α) → Int64`; `at (xs:List α)(i:Int)
+               -- → (Option α)` (T1.34 fix: indexing is TOTAL-FALLIBLE per collections-and-text.md:134 — it
+               -- yields `Some α` in-bounds / `None` OOB, it does NOT trap and is NOT bare `α`; rcdzc types it
+               -- `(Option α)`, so bare-`α` was a FALSE-ACCEPT — v-cdz-smith --typegen); `push (xs:List α)(x:α) → List α`;
                -- `prepend (xs:List α)(x:α) → List α` (receiver-first, front-growth twin of push);
                -- `concat (xs:List α)(ys:List α) → List α`; `update (xs:List α)(i:Int)(x:α) → List α`.
                -- Each unifies the list arg with `List β` (fresh β) — a non-list arg is `IllTyped CDZ0203`; an
@@ -1190,7 +1192,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                           (match children[2]? with
                            | some iId => (match inferE m env st3 iId with
                                           | .ok (τi, st4) => (match unifyInfer τi (.numVar st4.next) { st4 with next := st4.next + 1 } with
-                                                              | .ok st5 => .ok (applySubst st5.subst β, st5)
+                                                              | .ok st5 => .ok (optionTy (applySubst st5.subst β), st5)
                                                               | .error e => .error e)
                                           | .error e => .error e)
                            | none => .error (.unsupported "type oracle: malformed List.at"))
@@ -2038,6 +2040,20 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.listTy (.int 64 true)))
+-- T1.34 (List.at is TOTAL-FALLIBLE): `(do (def (main) (List.at (list 1 2 3) 0)) (export main))` →
+-- WellTyped (Option Int64) — NOT bare Int64 (the T1.30 false-accept v-cdz-smith --typegen caught). The
+-- element defaults to Int64, indexing yields `(Option Int64)`; the Some payload is determined so it does
+-- not trip the undetermined-sum escape guard.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "List".toUTF8, .name "at".toUTF8, .name "list".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .intLit false .dec (ByteArray.mk #[0]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .atom 8, .atom 9,
+                           .list #[4, 5, 6, 7], .atom 10, .list #[3, 8, 9], .atom 2, .list #[11], .atom 1,
+                           .list #[13, 12, 10], .atom 11, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (optionTy (.int 64 true)))
 -- T1.32 (Set construction): `(do (def (main) (set 1 2 3)) (export main))` → WellTyped (Set Int64). Like a
 -- list — the three int elements unify to one element type, defaulting to Int64 → `.setTy Int64`.
 #guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "set".toUTF8,
