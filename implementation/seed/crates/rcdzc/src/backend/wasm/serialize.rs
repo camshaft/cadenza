@@ -10176,3 +10176,37 @@ mod host_import_functype_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod bump_realloc_grow_tests {
+    use super::*;
+
+    /// True iff `needle` occurs as a contiguous subsequence of `hay`.
+    fn contains_subseq(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    // The §3c bytes-roundtrip member module's `cabi_realloc` bump allocator MUST grow linear memory to
+    // cover its allocation — a >64-KiB `list<u8>` the host lowers here (or a >1-page result buffer) would
+    // otherwise write OOB past the initial single 64-KiB page (the rcw4 page-boundary class; twin of the
+    // DEFINE-mode `cabi_realloc` grow in `core_module_impl`). Pin that the emitted body carries the grow:
+    // `memory.grow` of mem 0 encodes as the byte pair `[0x40, 0x00]` (opcode 0x40 + mem-index 0), and
+    // `memory.size` of mem 0 as `[0x3f, 0x00]`. Neither pair occurs elsewhere in this body: the only other
+    // `0x40` is the `if`'s BLOCK_EMPTY block-type, which is followed by `local.get` (`0x20`) not `0x00`; and
+    // `i32.const 0` is `0x41 0x00`, not `0x40 0x00`. So their presence is a precise witness of the grow
+    // guard — if a future edit drops the grow, this test reds in fast-gate before the OOB can regress.
+    #[test]
+    fn bump_realloc_body_grows_memory_to_cover_its_allocation() {
+        // A non-`63`/`64` global index so a stray `0x3f`/`0x40` can't come from the `global.get/set` operand.
+        let body = emit_bump_realloc_body(5);
+        assert!(
+            contains_subseq(&body, &[0x40, 0x00]),
+            "emit_bump_realloc_body must emit `memory.grow 0` ([0x40,0x00]) so a >64-KiB list<u8> lowered \
+             here does not write OOB past the initial page — the grow-to-cover was dropped: {body:02x?}"
+        );
+        assert!(
+            contains_subseq(&body, &[0x3f, 0x00]),
+            "emit_bump_realloc_body must query `memory.size 0` ([0x3f,0x00]) to guard the grow: {body:02x?}"
+        );
+    }
+}
