@@ -120,6 +120,16 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// IF-JOIN PER-ARM DROP plan (v-memory-safety co-design, the Core::If analog of the loop-join per-arm
+    /// reconciliation). Keyed by a `Core::If` node id → the `(slot, d_is_then)` of each DIVERGENT heap
+    /// let-binding live-in to it: a binding that ESCAPES on one arm (W) but is DEAD on the other (D). The
+    /// post-body scope-drop (whole-body `binding_escapes_dup_aware`) sees escapes-on-the-W-arm and SUPPRESSES
+    /// the drop → the D arm would LEAK. Populated at the `Core::Let` handler (before the body emit, using the
+    /// upfront `dup_sites`); consumed at the `Core::If` handler, which emits an rc-aware `op_drop(slot)` on
+    /// the D arm ONLY (never the W arm — the UAF bar) before that arm's join value. This is the SOLE reclaim
+    /// for the divergent binder (the post-body drop is already off for it → no double-drop). Closes the
+    /// map-select / tree / effects-tuple if-join leakers.
+    ifjoin_arm_drops: HashMap<StructId, Vec<(u32, bool)>>,
     /// 05:18721 SURPLUS keep-alive sites: the SUBSET of `dup_sites` occurrences (`Core::LocalRef`/`Core::Param`)
     /// whose retain `dup` is PROVABLY REDUNDANT and may be skipped — the narrowed replacement for the too-broad
     /// `body_is_boundary_owned`-alone trial gate that caused 159 corpus UAFs. An occurrence of binder `b` is
