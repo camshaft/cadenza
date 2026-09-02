@@ -587,7 +587,21 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(4) {
+    match c.variant(5) {
+        // A LET-POLYMORPHIC identity used at BOTH Int64 and Bool → tuple[Int64,Bool] (HM let-
+        // generalization, T1.18): the let-bound `id` is GENERALIZED, so its two uses instantiate at
+        // different types. Both rcdzc and the oracle generalize a let-bound fn → WellTyped agreement.
+        // (NOTE: a LAMBDA-param used at two types is NOT a reliable clash — rcdzc per-call-site
+        // monomorphizes a polymorphic arg and accepts it — so that shape is deliberately NOT generated.)
+        4 => {
+            let f = format!("f{}", *fresh);
+            *fresh += 1;
+            let x = format!("i{}", *fresh);
+            *fresh += 1;
+            let i = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_bool(c, 1, iscope, bscope, fresh);
+            format!("(let (({f} (fn ({x}) {x}))) (tuple ({f} {i}) ({f} {b})))")
+        }
         // A tuple of an Int64 and a Bool.
         0 => {
             let a = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
