@@ -370,7 +370,9 @@ pub fn differential_sweep(
     let mut rng = SplitMix64::new(cfg.run_seed);
     for i in 0..count {
         let seed = rng.next();
-        let source = program_for_seed(seed);
+        // Honor the config's grammar: `--astgen` draws the coercing (type-correct, comparable,
+        // terminating, Symbol-emitting) grammar; the default text grammar is the broad crash-shaped one.
+        let source = program_for_seed_with(seed, cfg.gen_mode);
         match differential(&source, store, cdz) {
             Diff::Agree => stats.agreed += 1,
             Diff::Unavailable(msg) => {
