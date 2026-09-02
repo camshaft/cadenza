@@ -1819,6 +1819,7 @@ pass	a bytes-param leaf and a spilled record result in one member run through bo
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
+pass	a call-site splat of a computed (effect-free) tuple spreads its elements
 pass	a called def's zero-arm scalar match reports the non-exhaustive reject exactly once, not at the call site too
 pass	a called function's body resolves its free names lexically, not in the caller's scope
 pass	a called scalar member access surfaces the type-naming message, not the bare one
@@ -5650,6 +5651,7 @@ pass	a tuple payload at a late variant projects both fields by its own layout
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
+pass	a tuple relayed through an intermediate parameter hop still splats at the callee
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
 pass	a tuple splat composes with inline arguments
 pass	a tuple splat feeds a rest parameter — the caller spreads, the callee gathers

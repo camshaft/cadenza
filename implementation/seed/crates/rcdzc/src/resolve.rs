@@ -1121,13 +1121,22 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // never denotes a value; a `..`-LED name is not a thing.) The uppercase/`?`/`_` sibling of the
     // sigil-in-value-position family.
     if name == ".." {
-        trace!(target: "rcdzc::resolve", node = id.0, "`..` rest marker used as a value (CDZ0201)");
+        // `..` reached here as a value/head — either a misplaced marker, OR a call-site splat `(.. op)`
+        // whose operand `expand_call_splat_args` declined to expand (a runtime LIST into a fixed/tuple-rest
+        // position, or an EFFECTFUL computed-tuple operand — A.7b). The message names BOTH valid roles so it
+        // does NOT contradict the landed call-site splat (`DESIGN-variable-arity-functions.md` A.2/A.7): as a
+        // call ARGUMENT it splats a statically-arity tuple's elements (or a list into a rest parameter); as a
+        // PATTERN element it binds the tail. (Resolve holds `&Db` here, so the callee-splattability refinement
+        // is left to a surface-time enrichment follow-up; this text is accurate for every `..` misuse.)
+        trace!(target: "rcdzc::resolve", node = id.0, "`..` rest/spread marker used as a value/head (CDZ0201)");
         return Resolved::Poison(
             Reject::coded(
                 Code::Malformed,
-                "`..` is a rest/spread marker, valid only inside a collection PATTERN — a `(list …)`, \
-                 `(map …)`, `(tuple …)`, `(record …)`, or `(set …)` pattern (e.g. `(list a .. rest)`, \
-                 which binds the leading elements and the tail) — it is not a value or a form head here",
+                "`..` is a rest/spread marker. As a call ARGUMENT `(f (.. t))` it splats a tuple's elements \
+                 into the call — the operand must be a tuple of statically-known arity (a tuple literal, a \
+                 `(Tuple …)`-typed value or parameter, or an effect-free call that computes one), or a list \
+                 spread into a rest parameter. As a collection PATTERN element `(list a .. rest)` it binds \
+                 the tail. It is not a value or a bare form head on its own here.",
             )
             .at(id),
         );
