@@ -1422,7 +1422,7 @@ fn an_escaped_value_with_an_unresolved_type_reports_an_ambiguity_not_an_export_s
         "an ambiguous escaped type is a type fault"
     );
     assert!(
-        err.message.contains("not fully determined") && err.message.contains("annotate"),
+        err.message.contains("not fully determined") && err.message.contains("Annotate the export"),
         "the message must name the unresolved type + the annotation fix, got: {}",
         err.message
     );
@@ -1462,7 +1462,7 @@ fn an_undetermined_escape_type_is_reported_by_check_not_only_compile() {
         let d = check_err(src).unwrap_or_else(|| panic!("check must report the ambiguity: {src}"));
         assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
         assert!(
-            d.message.contains("not fully determined") && d.message.contains("annotate"),
+            d.message.contains("not fully determined") && d.message.contains("Annotate the export"),
             "check names the undetermined type + fix: {}",
             d.message
         );
