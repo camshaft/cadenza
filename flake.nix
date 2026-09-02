@@ -5909,6 +5909,13 @@
         packages.corpus-verdicts-rust-async-coarse-parity-25-verification = mkRustCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; async = true; };
         packages.corpus-verdicts-rust-async-coarse-parity-26-program-conditions = mkRustCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; async = true; };
         packages.corpus-verdicts-rust-async-coarse-parity-29-cross-component-peers = mkRustCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; async = true; };
+        # EFFECTS coverage for the coarse-rust parity (v-xtask-decompose co-verify ask: certify coarse==per-case
+        # across records/effects/modules/async before gateCheckRust leaves localGate). 14 + 14b exercise the
+        # effect/handler shapes (handler-state, resume, abort) the scalar/compound files don't.
+        packages.corpus-verdicts-rust-coarse-parity-14-effects-and-handlers = mkRustCoarseParity { name = "14-effects-and-handlers"; file = ./spec/semantics/14-effects-and-handlers.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-14b-effects-and-handlers = mkRustCoarseParity { name = "14b-effects-and-handlers"; file = ./spec/semantics/14b-effects-and-handlers.sexp; };
+        packages.corpus-verdicts-rust-async-coarse-parity-14-effects-and-handlers = mkRustCoarseParity { name = "14-effects-and-handlers"; file = ./spec/semantics/14-effects-and-handlers.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-14b-effects-and-handlers = mkRustCoarseParity { name = "14b-effects-and-handlers"; file = ./spec/semantics/14b-effects-and-handlers.sexp; async = true; };
 
         # `.#corpus-verdicts-rust` / `.#corpus-verdicts-rust-async` — the RUST + RUST-ASYNC verdict harvests
         # (v-xtask-decompose, the flake.nix:3514 follow-up). Same `<tag>\t<description>` shape as the wasm
