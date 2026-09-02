@@ -889,8 +889,24 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                       | .ok (τa, st1) =>
                         let β : Ty := .var st1.next
                         let st2 := { st1 with next := st1.next + 1 }
-                        (match unifyInfer (applySubst st2.subst acc.1) (.fn τa β) st2 with
+                        let headTy := applySubst st2.subst acc.1
+                        (match unifyInfer headTy (.fn τa β) st2 with
                          | .ok st3 => .ok (applySubst st3.subst β, st3)
+                         | .error (.illTyped c) =>
+                           -- 🪤 MONOMORPHIZATION (rcdzc, v-cdz-smith probe): rcdzc monomorphizes a fn-PARAM
+                           -- per call-site, so a param re-used at conflicting types is ACCEPTED when the
+                           -- actual arg is polymorphic (e.g. `(fn (f) (tuple (f 5) (f true)))` applied to
+                           -- `(fn (x) x)`) but REJECTED for a concrete arg. Typing the fn in ISOLATION can't
+                           -- see the call-site arg, so if the head type STILL carries a free var at the clash
+                           -- (a re-used param, not a concrete fn), DECLINE (`Unsupported`) rather than assert
+                           -- `CDZ0203` — sound (skip, never a false reject). A CONCRETE-fn head clash (no var)
+                           -- is a genuine arg-type error → keep `CDZ0203` (rcdzc rejects it too). Use
+                           -- `hasGenVar` (a true polymorphic var), NOT `hasVar`: a `.numVar`-typed head (e.g.
+                           -- `(fn (x) (+ x 1)) : numVar→numVar` applied to `#t`) is a GENUINE numeric-vs-Bool
+                           -- reject rcdzc also makes — a numVar defaults to Int, it is not a monomorphizable param.
+                           if hasGenVar headTy then .error (.unsupported
+                             "type oracle: higher-order fn-param applied at conflicting types — monomorphization-dependent, declined")
+                           else .error (.illTyped c)
                          | .error e => .error e)
                       | .error e => .error e) (τf, stInst) with
                  | .ok (τres, st') => .ok (τres, st')
