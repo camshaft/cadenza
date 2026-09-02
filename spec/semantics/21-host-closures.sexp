@@ -8229,5 +8229,5 @@
       (def (mk) (fn ((: n Int64)) (dbl n "ab")))
       (export mk)))
   (call mk (: 15 Int64))
-  (output-byte-len 622412)
+  (output-byte-len 311199)
   (live-objects known-leak))
