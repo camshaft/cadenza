@@ -303,6 +303,56 @@ fn gen_typefuzz_localdef_program<C: Choice>(c: &mut C, fresh: &mut usize) -> Str
     format!("(do (def (main) {body}) (export main))")
 }
 
+/// A TOP-LEVEL helper-fn / value-def program (T1.24 — sibling-of-`main` defs now type). Three shapes:
+/// TWO first-order Int64 helpers chained `(f (g arg))`; ONE helper `(h arg)` (Int64- or Bool-result); or
+/// a NON-scalar top-level value def `(def p (tuple i b))` projected by `main`. Params are ascribed
+/// scalar Int64 and bodies are well-typed IN ISOLATION (the oracle declines an isolated-ill-typed body —
+/// rcdzc monomorphizes per call-site — so we never emit that); no higher-order params, no mutual
+/// recursion, no duplicate param names (all skip/decline). Returns the whole program.
+fn gen_typefuzz_toplevel_helpers<C: Choice>(
+    c: &mut C,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+) -> String {
+    let helper =
+        |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize, want_bool: bool| {
+            let name = format!("f{}", *f);
+            *f += 1;
+            let p = format!("i{}", *f);
+            *f += 1;
+            is.push(p.clone());
+            let body = typefuzz_scalar(c, 2, is, bs, f, want_bool);
+            is.pop();
+            let def = format!("(def ({name} (: {p} Int64)) {body})");
+            (name, def)
+        };
+    match c.variant(3) {
+        // TWO first-order Int64 helpers, main chains them: (f (g <arg>)).
+        0 => {
+            let (g, gdef) = helper(c, iscope, bscope, fresh, false);
+            let (f, fdef) = helper(c, iscope, bscope, fresh, false);
+            let arg = c.int_bounded(0, 9);
+            format!("(do {gdef} {fdef} (def (main) ({f} ({g} {arg}))) (export main))")
+        }
+        // ONE helper (Int64- or Bool-result), main calls it once.
+        1 => {
+            let want_bool = c.variant(2) == 0;
+            let (h, hdef) = helper(c, iscope, bscope, fresh, want_bool);
+            let arg = c.int_bounded(0, 9);
+            format!("(do {hdef} (def (main) ({h} {arg})) (export main))")
+        }
+        // A NON-scalar top-level value def, projected by main.
+        _ => {
+            let p = format!("p{}", *fresh);
+            *fresh += 1;
+            let i = c.int_bounded(0, 9);
+            let b = ["true", "false"][c.variant(2)];
+            format!("(do (def {p} (tuple {i} {b})) (def (main) (. {p} 0)) (export main))")
+        }
+    }
+}
+
 pub fn generate_typecheck(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
     let mut iscope: Vec<String> = Vec::new();
@@ -314,6 +364,13 @@ pub fn generate_typecheck(entropy: &[u8]) -> Program {
     if c.variant(6) == 0 {
         return Program {
             source: gen_typefuzz_localdef_program(&mut c, &mut fresh),
+        };
+    }
+    // ~1/6: a TOP-LEVEL helper-fn / value-def program (T1.24 — sibling-of-main defs now type). Its own
+    // whole-program shape, so it returns early.
+    if c.variant(6) == 0 {
+        return Program {
+            source: gen_typefuzz_toplevel_helpers(&mut c, &mut iscope, &mut bscope, &mut fresh),
         };
     }
     // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed body — an Int64, a
@@ -658,7 +715,7 @@ fn gen_typefuzz_illtyped<C: Choice>(
                 let a = int(c, iscope, bscope, fresh);
                 format!("(match (Some {a}) ((Some x) x))") // omits `None`
             } else {
-                format!("(match Less ((Less) 1) ((Equal) 2))") // omits `Greater`
+                "(match Less ((Less) 1) ((Equal) 2))".to_string() // omits `Greater`
             }
         }
         // An unbound name (resolution error).
