@@ -3172,14 +3172,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
-            } else if set_ty.has_free_var()
+            } else if types::has_open_or_any(&set_ty)
                 && let Some(exp) = &ctx.expected_ty
                 && matches!(exp, Ty::Set(_))
-                && !exp.has_free_var()
+                && !types::has_open_or_any(exp)
             {
-                // The node's element is unsolved here (an empty `Set.of (list)` at a CALL-ARG position),
-                // but the consuming context (the callee's param type) FIXES it — annotate from the expected
-                // `Set` type, not the default `i64` ground (which would clash with the param → E0308).
+                // The node's element is unsolved here (an empty `Set.of (list)` at a CALL-ARG position) — a
+                // free `Ty::Var` OR a `Ty::Any` (inference leaves an empty `#set()` as `Set(Any)`, which
+                // `has_free_var` does NOT flag — the Set-of-Bytes E0308 v-nix found), but the consuming
+                // context (the callee's param type) FIXES it — annotate from the expected `Set` type, not the
+                // default `i64` ground (which would clash with the param → E0308).
                 match types::rust_type(&ncx, exp) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
