@@ -1824,12 +1824,14 @@
 (case
   "a reachable unbound name found by two passes is reported exactly once"
   (input (do (def (main) nope) (export main)))
-  (error CDZ0101 (count 1)))
+  (error CDZ0101 (count 1))
+  (diagnostic-quality))
 
 (case
   "two distinct occurrences of the same unbound name are each reported, not merged to one"
   (input (do (def (main) (+ nope nope)) (export main)))
-  (error CDZ0101 (count 2)))
+  (error CDZ0101 (count 2))
+  (diagnostic-quality))
 
 ; The unbound-name check (and well-formedness generally) applies to EVERY definition in a module, not
 ; only the ones reachable from `main`. core-semantics.md #Binding Is Lexical: "A reference to a name with
