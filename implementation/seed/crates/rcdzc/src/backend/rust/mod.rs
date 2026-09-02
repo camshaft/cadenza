@@ -815,7 +815,11 @@ pub struct __CdzF64(u64);
 #[allow(dead_code)]
 impl __CdzF64 {
     fn new(v: f64) -> Self { __CdzF64(if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }) }
-    fn get(self) -> f64 { f64::from_bits(self.0) }
+    // `pub`: the render DRIVER (out-of-module `cdz_render_at`) unwraps a float Set-element/Map-key via
+    // `.get()`, so it must be visible cross-module. The export scanner that once miscounted this as a
+    // program export is fixed at its source (anchors `pub fn` at line start, skipping indented impl methods
+    // — `sole_export_name`/`emitted_pub_fn_names`), so `pub` here no longer trips it.
+    pub fn get(self) -> f64 { f64::from_bits(self.0) }
 }
 impl PartialEq for __CdzF64 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
 impl Eq for __CdzF64 {}
@@ -835,7 +839,8 @@ pub struct __CdzF32(u32);
 #[allow(dead_code)]
 impl __CdzF32 {
     fn new(v: f32) -> Self { __CdzF32(if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() }) }
-    fn get(self) -> f32 { f32::from_bits(self.0) }
+    // `pub` for the same reason as `__CdzF64::get` — the out-of-module render driver unwraps via `.get()`.
+    pub fn get(self) -> f32 { f32::from_bits(self.0) }
 }
 impl PartialEq for __CdzF32 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
 impl Eq for __CdzF32 {}
