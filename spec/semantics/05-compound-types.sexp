@@ -35749,9 +35749,9 @@
       (def (main (: n Int64)) (dbl n "ab"))
       (export main)))
   (call main (: 15 Int64))
-  (output-byte-len 65573)
+  (output-byte-len 65553)
   (call main (: 16 Int64))
-  (output-byte-len 131109))
+  (output-byte-len 131089))
 
 (case
   "szf2 a bytes value built past the 64-KiB page escapes whole"
@@ -35761,9 +35761,9 @@
       (def (main (: n Int64)) (dblb n (Bytes.of #list(1 2))))
       (export main)))
   (call main (: 15 Int64))
-  (output-byte-len 65572)
+  (output-byte-len 65553)
   (call main (: 16 Int64))
-  (output-byte-len 131108))
+  (output-byte-len 131089))
 
 (case
   "szf3 a list built past the 64-KiB page escapes whole (the #7793 face)"
@@ -35775,6 +35775,6 @@
       (def (main (: n Int64)) (dbll n #list(1 2)))
       (export main)))
   (call main (: 15 Int64))
-  (output-byte-len 622412)
+  (output-byte-len 311199)
   (call main (: 16 Int64))
-  (output-byte-len 1277772))
+  (output-byte-len 638879))
