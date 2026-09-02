@@ -3824,7 +3824,7 @@
       (def
         (main (: n Int64))
         (do
-          (def m0 (Map.insert (Map.insert Map.empty 5000 50) 6000 60))
+          (def m0 #map((= 5000 50) (= 6000 60)))
           (def big (grow 1 n m0))
           (def back (shrink 1 n big))
           (+
@@ -5006,7 +5006,7 @@
       (def
         (main (: mode Int64))
         (do
-          (def inner (Map.insert (Map.insert Map.empty 1 10) 2 20))
+          (def inner #map((= 1 10) (= 2 20)))
           (def outer1 (Map.insert (Map.insert Map.empty 100 inner) 200 (Map.insert Map.empty 3 30)))
           (def outer2 (Map.insert outer1 200 (Map.insert Map.empty 4 40)))
           (def keep (if (= mode 1) outer1 outer2))
