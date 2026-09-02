@@ -510,10 +510,26 @@ fn doc_value_node(
                         ));
                     }
                     Some(payload_ty) => {
-                        // A recursive variant boxes its payload (needs a helper to terminate) — decline.
-                        if super::enums::variant_is_recursive(db, &sum_ty, disc) {
+                        // A RECURSIVE sum declines: building the value-doc node walks the payload's own
+                        // value-node, so a self-referential payload makes `doc_value_node` recurse forever
+                        // (no helper-fn/terminator emitted yet). `variant_is_recursive` catches a BY-VALUE
+                        // self-reference (`(Node Ast Ast)`), but the walk ALSO recurses through a CONTAINER
+                        // payload — `(type Ast (Lit Int64) (Node (List Ast)))`: `doc_value_node(List Ast)` →
+                        // `doc_value_node(Ast)` → this Sum arm → `(List Ast)` → … an INFINITE HANG at
+                        // COMPILE time (v-nix (C)-gate "compile timeout", the Ast-sum crash). `reaches_decl`
+                        // (behind `variant_is_recursive`) deliberately SKIPS List/Map/Set (the by-value Box
+                        // logic — a `Vec`/`BTree` pointer breaks the SIZE cycle, so the enum emits fine), so
+                        // it misses this; `mentions_decl` (which DOES follow containers) is the right guard
+                        // for the value-doc WALK — decline when the payload reaches the decl through ANY
+                        // position, container included. (Same List-recursion-vs-by-value distinction as the
+                        // rose-tree newtype fix #7913.)
+                        if super::enums::variant_is_recursive(db, &sum_ty, disc)
+                            || super::enums::mentions_decl(&payload_ty, *decl)
+                        {
                             return Err(Reject::decline(
-                                "value-doc: recursive sum not covered by the rust value-doc emit",
+                                "value-doc: recursive sum (self-referential payload, incl. through a \
+                                 List/Map/Set) not covered by the rust value-doc emit — the doc walk \
+                                 would recurse without a terminator",
                             ));
                         }
                         // The DECLARED arity distinguishes a MULTI-field variant `(V a b)` (arity ≥ 2 — the
