@@ -5240,6 +5240,7 @@ pass	a set rest pattern still requires the named elements PRESENT (absent named 
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
+pass	a set-literal argument binds its element type — a Set.contains element clash is rejected
 pass	a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared CHAMP map survives per-level path-copied inserts that are read or dropped

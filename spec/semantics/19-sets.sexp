@@ -1643,6 +1643,20 @@
   (error CDZ0201))
 
 (case
+  "a set-literal argument binds its element type — a Set.contains element clash is rejected"
+  (doc
+    "A `(set 1 2)` literal has element type Int64, so `Set.contains`'s second argument must be Int64;
+           a Bool clashes → CDZ0203, exactly as it does on a `Set.of`-built set (`Set.contains : ∀a. (Set
+           a) → a → Bool`). Pins that a `(set …)` literal used as an ARGUMENT binds its element type.
+           Regression guard for a SOUNDNESS false-accept (v-cdz-smith --typegen T1.32): as an argument the
+           `(set …)` alias stays `Apply{SetNew}` (it does not reader-flip to `Resolved::Set`), and
+           `apply_type` did not route `SetNew` to `compound_ctor_type`, so it fell to `Ty::Any` — the Bool
+           element sailed through unchecked. The SetNew ctor application now types as `Set <join elems>`
+           like its `ListNew` twin, so the element type IS bound and the clash rejects.")
+  (input (do (def (main) (if (Set.contains (set 1 2) true) 1 0)) (export main)))
+  (error CDZ0203))
+
+(case
   "a set built at run time escapes to the host as its value form"
   (doc
     "A Set built at RUN TIME (an insert-loop, not a constant `Set.of`) crosses the host boundary.

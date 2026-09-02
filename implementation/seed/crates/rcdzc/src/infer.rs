@@ -5853,6 +5853,20 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
             }
             Ty::List(Box::new(elem_ty))
         }
+        // The SET twin of `ListNew`: a `(set e…)` name-alias application (`Apply{SetNew}`) — the shape a
+        // `(set …)` literal takes as an ARGUMENT (a top-level `(set …)` reader-flips to `Resolved::Set`, but
+        // nested as an arg it stays this `Apply`). Without this arm it fell to the `_ => Ty::Any` default, so
+        // a `(set 1 2)` argument typed as `Any` and its element type was never checked — `(Set.contains (set
+        // 1 2) true)` accepted a `Bool` on a `Set Int64` (SOUNDNESS false-accept, v-cdz-smith --typegen
+        // T1.32). Its type is `Set <elem>` where `<elem>` is the JOIN of the element types, exactly like the
+        // `Resolved::Set` literal arm (`type_of`) and its `ListNew` sibling here.
+        Prim::SetNew => {
+            let mut elem_ty = Ty::Any;
+            for &e in args {
+                elem_ty = elem_ty.join(&type_of(db, e));
+            }
+            Ty::Set(Box::new(elem_ty))
+        }
         // `ast-splice-lift : (List Int64) → (List Ast)` — the quasiquote-splice lift (compiler-internal).
         // Its result is a list of `Ast` nodes; a bad operand shape is caught at the fold (declines), so
         // typing is unconditional here.
