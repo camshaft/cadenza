@@ -523,8 +523,37 @@ fn read_cases<T>(
 
 /// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
 /// parse as s-expressions; a malformed individual case is reported as an error record inline.
+///
+/// Also honors a FILE-LEVEL `(diagnostic-quality)` marker — a bare top-level form (a sibling of the
+/// `(case …)` forms, outside any case) that enrolls EVERY case in the file into the C1 §1 lint. This is
+/// the rollout-leverage form: opt a whole clean chapter in with ONE line instead of a per-case marker on
+/// each of its 100+ diagnostic cases. It is OR'd into every record's `diagnostic_quality` here at parse
+/// time, so it reuses the per-case emit/decode/grade path verbatim (nothing downstream changes); a per-case
+/// `(diagnostic-quality)` still works and either source enables it. (Own loop rather than `read_cases` so
+/// the file-scope marker and the records come from the same parse.)
 pub fn read(text: &str) -> Result<Vec<Record>, String> {
-    read_cases(text, "case", parse_case)
+    let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
+    let top = match arenas.get(arenas.root) {
+        cadenza_syntax::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
+        _ => return Ok(Vec::new()),
+    };
+    let mut records = Vec::new();
+    let mut file_diagnostic_quality = false;
+    for &top_id in top {
+        let form_id = arenas.peel_comments(top_id);
+        match arenas.head_name(form_id) {
+            Some("case") => records.push(parse_case(&arenas, form_id)?),
+            // A bare top-level `(diagnostic-quality)` (not inside a case) — file-scope C1 opt-in.
+            Some("diagnostic-quality") => file_diagnostic_quality = true,
+            _ => {} // any other top-level form is skipped (as `read_cases` does)
+        }
+    }
+    if file_diagnostic_quality {
+        for r in &mut records {
+            r.diagnostic_quality = true;
+        }
+    }
+    Ok(records)
 }
 
 /// Parse a PLATFORM-conformance file's `text` into [`PlatformRecord`]s — the separate `spec/platform/`
@@ -1826,6 +1855,32 @@ mod tests {
             text.contains("expect\toutput-byte-len 65552\n"),
             "flat manifest must carry the byte-len expect line, got: {text:?}"
         );
+    }
+
+    /// A FILE-LEVEL `(diagnostic-quality)` marker (a bare top-level form) enrolls EVERY case in the file
+    /// into C1 §1 — every record's `diagnostic_quality` is set, without a per-case marker. Absent → off;
+    /// a per-case marker still works independently (either source enables it).
+    #[test]
+    fn file_level_diagnostic_quality_enrolls_every_case() {
+        let recs = read(
+            r#"(diagnostic-quality)
+               (case "a" (input 1_) (error CDZ0201))
+               (case "b" (input 2_) (error CDZ0201))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 2);
+        assert!(
+            recs.iter().all(|r| r.diagnostic_quality),
+            "the file-level marker enrolls every case"
+        );
+        // No file-level marker → off (opt-in), unless a case carries its own.
+        let mixed = read(
+            r#"(case "a" (input 1_) (error CDZ0201))
+               (case "b" (input 2_) (error CDZ0201) (diagnostic-quality))"#,
+        )
+        .unwrap();
+        assert!(!mixed[0].diagnostic_quality, "no marker → off");
+        assert!(mixed[1].diagnostic_quality, "per-case marker still works");
     }
 
     /// A single-result case (the common shape) parses to ONE trial — no call, one output.
