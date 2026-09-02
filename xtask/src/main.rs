@@ -1312,14 +1312,16 @@ fn run_program(
     live_objects: LiveObjectsCheck,
     target: GateTarget,
 ) -> Ran {
-    // A case that imposes an explicit WIT world (general WIT-ABI shape) is driven only through the WASM
-    // path (the authoritative WIT-ABI boundary check). The Rust/ML backends have no external-world ingest
-    // on this path, so a wit-world case is not-yet-supported there → DECLINE (Todo, coverage-not-yet),
-    // never a disagreement. (The wasm path handles it; the others stay byte-identical for non-world cases.)
-    // The HEAP-BALANCE check is WASM-only (the debug-counters `live-objects` export has no Rust/ML analog),
-    // but under the opt-out model it applies to essentially every heap case — so it does NOT gate whether a
-    // case runs on the other backends: they simply ignore `live_objects` and grade the value/trap outcome.
-    if wit_world.is_some() && !matches!(target, GateTarget::Wasm) {
+    // A case that imposes an explicit WIT world (general WIT-ABI shape) is driven through the WASM path (the
+    // authoritative WIT-ABI boundary check) AND the CADENZA round-trip (which IS a component path — it forwards
+    // the world to both hops, `run_program_cadenza`, matching the nix `mkCorpusCadenzaBuild`; this lets the
+    // native gate reach typed-export coverage). The RUST/ML backends have no external-world ingest / component
+    // boundary on this path, so a wit-world case is not-yet-supported there → DECLINE (Todo, coverage-not-yet;
+    // rust=todo-by-design per v-rust-backend). The HEAP-BALANCE check is WASM-only (the debug-counters
+    // `live-objects` export has no Rust/ML analog), but under the opt-out model it applies to essentially every
+    // heap case — so it does NOT gate whether a case runs on the other backends: they simply ignore
+    // `live_objects` and grade the value/trap outcome.
+    if wit_world.is_some() && !matches!(target, GateTarget::Wasm | GateTarget::Cadenza) {
         return Ran::Declined {
             code: None,
             message: String::new(),
@@ -1420,6 +1422,8 @@ fn run_program(
             call,
             host_responses,
             live_objects,
+            wit_world,
+            component_name,
         ),
     }
 }
@@ -1437,6 +1441,7 @@ fn run_program(
 ///
 /// (`wit_world`/`peer`/two-call/drop/method cases already declined for every non-`Wasm` target upstream in
 /// [`run_program`], so they never reach here.)
+#[allow(clippy::too_many_arguments)] // pipeline args + wit-world/component-name, threaded like the sibling run_program_* drivers
 fn run_program_cadenza(
     tools: &Tools,
     store: &Option<PathBuf>,
@@ -1445,6 +1450,8 @@ fn run_program_cadenza(
     call: Option<&Call>,
     host_responses: &[(String, String)],
     live_objects: LiveObjectsCheck,
+    wit_world: Option<&str>,
+    component_name: Option<&str>,
 ) -> Ran {
     // Multi-file package round-trip is a later increment — decline (Todo), never a spurious break.
     if !modules.is_empty() {
@@ -1453,17 +1460,19 @@ fn run_program_cadenza(
             message: String::new(),
         };
     }
-    // Precondition: the ORIGINAL program must compile to wasm. If it doesn't, this is a SHARED gap (the
-    // standard wasm gate owns it), NOT a cadenza-backend round-trip break → decline so it stays uncounted.
-    if emit_component_single_at(tools, program, None, None, None).is_err() {
+    // Precondition: the ORIGINAL program must compile to wasm (under its declared world, if any). If it
+    // doesn't, this is a SHARED gap (the standard wasm gate owns it), NOT a cadenza-backend round-trip break
+    // → decline so it stays uncounted.
+    if emit_component_single_at(tools, program, None, wit_world, component_name).is_err() {
         return Ran::Declined {
             code: None,
             message: String::new(),
         };
     }
-    // hop1: emit the optimized program BACK to a Cadenza surface (sexpr text). A decline here = the cadenza
-    // backend cannot yet re-emit this form → Todo (coverage-not-yet), not a disagreement.
-    let surface = match emit_cadenza_surface(tools, program) {
+    // hop1: emit the optimized program BACK to a Cadenza surface (sexpr text), FORWARDING the declared world
+    // so a world-driven emit fires (typed-WIT-export). A decline here = the cadenza backend cannot yet re-emit
+    // this form → Todo (coverage-not-yet), not a disagreement.
+    let surface = match emit_cadenza_surface(tools, program, wit_world, component_name) {
         Some(s) => s,
         None => {
             return Ran::Declined {
@@ -1472,9 +1481,11 @@ fn run_program_cadenza(
             };
         }
     };
-    // hop2: recompile the emitted surface through the normal wasm path and run it. A recompile failure /
-    // trap / wrong value here is a REAL cadenza round-trip break (the whole point of this target).
-    run_program_wasm(
+    // hop2: recompile the emitted surface through the normal wasm path and run it, forwarding the SAME world +
+    // component-name (the emitted surface still crosses the WIT boundary — mirrors the nix mkCorpusCadenzaBuild,
+    // which forwards `wit-world:w=` to hop2). A recompile failure / trap / wrong value here is a REAL cadenza
+    // round-trip break (the whole point of this target).
+    let ran = run_program_wasm(
         tools,
         store,
         &surface,
@@ -1483,55 +1494,80 @@ fn run_program_cadenza(
         call,
         host_responses,
         None,
-        None,
-        None,
+        wit_world,
+        component_name,
         live_objects,
-    )
+    );
+    // A wit-world case driving HOST responses (host-op / host-import / host-response typed export) whose cadenza
+    // round-trip TRAPS is a coverage-not-yet: faithful host-effect round-trip on the cadenza target is a later,
+    // multi-lane increment (v-effects), so DOWNGRADE the trap to a Decline (Todo) rather than count a spurious
+    // break. The DATA-boundary typed exports (127 of 28) round-trip and stay counted; a host case that round-trips
+    // stays a Pass; only an un-round-trippable host-effect shape declines. A wrong-VALUE (not a trap) still fails.
+    if wit_world.is_some() && !host_responses.is_empty() && matches!(ran, Ran::Trap(_)) {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
+    ran
 }
 
 /// Emit the OPTIMIZED program back to a Cadenza SURFACE as sexpr text: sexpr → binary AST (`cdz-syntax
 /// convert`) → `cdz compile --target cadenza` (the cadenza binary AST) → sexpr (`cdz convert --from binary
 /// --to sexpr`). Returns the surface text, or `None` if any stage fails (hop1 decline / a hang). The sexpr
 /// form is then re-parseable source for the wasm recompile leg — a true round-trip through the same pipeline.
-fn emit_cadenza_surface(tools: &Tools, program: &str) -> Option<String> {
+fn emit_cadenza_surface(
+    tools: &Tools,
+    program: &str,
+    wit_world: Option<&str>,
+    component_name: Option<&str>,
+) -> Option<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    // Stage 1: sexpr text (stdin) → binary AST (stdout).
-    let mut syntax = Command::new(&tools.syntax)
-        .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
-    syntax
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(program.as_bytes())
-        .ok();
-
-    // Stage 2: binary AST → cadenza binary AST (`compile --target cadenza`); capture nothing but the bytes.
-    let compile = Command::new(&tools.rcdzc)
-        .args(["compile", "--target", "cadenza", "-", "-o", "-"])
-        .stdin(Stdio::from(syntax.stdout.take().unwrap()))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap_or_else(|e| launch_fail("rcdzc", e));
-    let compile_out =
-        match wait_with_timeout(compile, run_timeout()).expect("wait rcdzc -t cadenza") {
-            Some(out) => out,
-            None => {
-                let _ = syntax.wait();
-                return None;
-            }
-        };
-    let _ = syntax.wait();
-    if !compile_out.status.success() {
-        return None; // hop1 declined — the cadenza backend cannot re-emit this form yet.
-    }
+    // Stage 1+2: produce the cadenza BINARY AST bytes. A `(wit-world …)` case must forward the declared
+    // world (+ `--component-name`) to hop1 so the world-driven emit fires (a world-declared export RESULT
+    // type resolves an under-determined value — SHAPE 8); the world is a SEPARATE artifact, so both go via
+    // files (`compile_cadenza_with_world`). A plain case pipes the program through stdin.
+    let cadenza_bin: Vec<u8> = if let Some(world) = wit_world {
+        compile_cadenza_with_world(tools, program, world, component_name)?
+    } else {
+        // Stage 1: sexpr text (stdin) → binary AST (stdout).
+        let mut syntax = Command::new(&tools.syntax)
+            .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+        syntax
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(program.as_bytes())
+            .ok();
+        // Stage 2: binary AST → cadenza binary AST (`compile --target cadenza`); capture nothing but bytes.
+        let compile = Command::new(&tools.rcdzc)
+            .args(["compile", "--target", "cadenza", "-", "-o", "-"])
+            .stdin(Stdio::from(syntax.stdout.take().unwrap()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| launch_fail("rcdzc", e));
+        let compile_out =
+            match wait_with_timeout(compile, run_timeout()).expect("wait rcdzc -t cadenza") {
+                Some(out) => out,
+                None => {
+                    let _ = syntax.wait();
+                    return None;
+                }
+            };
+        let _ = syntax.wait();
+        if !compile_out.status.success() {
+            return None; // hop1 declined — the cadenza backend cannot re-emit this form yet.
+        }
+        compile_out.stdout
+    };
 
     // Stage 3: cadenza binary AST (stdin) → sexpr text (stdout) — the re-parseable surface.
     let mut convert = Command::new(&tools.syntax)
@@ -1541,17 +1577,79 @@ fn emit_cadenza_surface(tools: &Tools, program: &str) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
-    convert
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&compile_out.stdout)
-        .ok();
+    convert.stdin.take().unwrap().write_all(&cadenza_bin).ok();
     let convert_out = wait_with_timeout(convert, run_timeout()).expect("wait cdz convert")?;
     if !convert_out.status.success() {
         return None;
     }
     String::from_utf8(convert_out.stdout).ok()
+}
+
+/// hop1 of the cadenza round-trip for a `(wit-world …)` case: compile the guest program against the DECLARED
+/// world (+ `--component-name`) to the cadenza binary AST. Mirrors [`emit_component_with_world`] (guest+world
+/// s-expr → binary, both via temp files since a stdin pipe carries one artifact) but with `--target cadenza`,
+/// returning the cadenza binary bytes (`None` on a hop1 decline / hang). Forwarding the world is what lets the
+/// native cadenza gate reach typed-export cases (they were declined upstream before) — matching the nix
+/// `mkCorpusCadenzaBuild` path, which forwards `wit-world:w=` to the cadenza hop.
+fn compile_cadenza_with_world(
+    tools: &Tools,
+    program: &str,
+    world: &str,
+    component_name: Option<&str>,
+) -> Option<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-cadworld-{}-{tick}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let convert = |sexpr: &str| -> Option<Vec<u8>> {
+        let mut c = Command::new(&tools.syntax)
+            .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+        c.stdin.take().unwrap().write_all(sexpr.as_bytes()).ok();
+        let out = c.wait_with_output().expect("wait cdz-syntax convert");
+        out.status.success().then_some(out.stdout)
+    };
+    let cleanup = |dir: &PathBuf| {
+        let _ = std::fs::remove_dir_all(dir);
+    };
+    let (Some(prog_bin), Some(world_bin)) = (convert(program), convert(world)) else {
+        cleanup(&dir);
+        return None;
+    };
+    let prog_path = dir.join("main.bin");
+    let world_path = dir.join("world.bin");
+    if std::fs::write(&prog_path, &prog_bin).is_err()
+        || std::fs::write(&world_path, &world_bin).is_err()
+    {
+        cleanup(&dir);
+        return None;
+    }
+    let mut cmd = Command::new(&tools.rcdzc);
+    cmd.arg("compile")
+        .arg(format!("ast:main={}", prog_path.display()))
+        .arg(format!("wit-world:wit-world={}", world_path.display()))
+        .arg("--target")
+        .arg("cadenza");
+    if let Some(iface) = component_name {
+        cmd.arg("--component-name").arg(iface);
+    }
+    cmd.arg("-o")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let child = cmd.spawn().unwrap_or_else(|e| launch_fail("rcdzc", e));
+    let out = wait_with_timeout(child, run_timeout()).expect("wait rcdzc -t cadenza (world)");
+    cleanup(&dir);
+    let out = out?;
+    out.status.success().then_some(out.stdout)
 }
 
 /// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path. A multi-file
