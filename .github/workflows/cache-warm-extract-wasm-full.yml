@@ -1,0 +1,73 @@
+# WEEKLY full-corpus Core↔wasm differential — Step B (v-wasm-oracle, checks.<sys>.oracle-wasm-diff-full over
+# the FULL corpus ~10.7k cases, vs the DAILY cache-warm-extract-wasm.yml's cheap 2-file Step-A scalar set).
+#
+# WHY SEPARATE + WEEKLY (v-gha-green cadence/cost call, 2026-09-02): the full corpus is ~7x the daily's
+# extraction layer (1478 → ~10.7k) and mostly SKIPs (heap-importing W5+ / compound non-scalar), so its extra
+# AGREE yield is modest. Its real value is BROAD MISCOMPILE HUNTING — does compilation stay 0-diverge across
+# strings/collections/effects/metaprog, not just numerics. That's worth a WEEKLY sweep, not a 7x DAILY cost.
+# It is content-addressed: the FIRST run is cold-expensive (~10.7k extractions), every run after mostly
+# cache-HITS (only re-keys on a compiler-rev bump), and the cachix post-step pushes the realized full closure
+# so the next weekly PULLS warm. The daily Step-A stays the cheap day-to-day 0-diverge regression alarm.
+#
+# SCHEDULED Sunday 04:00 UTC — a low-traffic off-peak slot well clear of the daily emit-warm (08:00), extract-
+# warm (10:00) and the nightly (07:00), so the heavy full warm never contends with them for the shared nix
+# daemon. NON-required / advisory: a failure just means "cold / not-measured this week", never reds a PR.
+name: cache-warm-extract-wasm-full
+
+on:
+  schedule:
+    - cron: "0 4 * * 0" # weekly, Sunday 04:00 UTC (off-peak, clear of daily emit-08/extract-10 + nightly-07)
+  workflow_dispatch: {} # manual on-demand (the FIRST measurement + any ad-hoc full-corpus sweep) — v-gha-green may retune
+
+# Own group, fully outside ci's push-supersede group + cache-warm's group + the daily emit/extract groups, so
+# the heavy full-corpus warm never contends with or supersedes the critical dep-cache warm or the daily warms.
+concurrency:
+  group: cache-warm-extract-wasm-full
+  cancel-in-progress: false
+
+# Least-privilege: only READS the repo + PUSHES to cachix (no GHA-cache save/purge), so contents:read suffices.
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  full-diff:
+    # aarch64 only: the full-corpus extraction the oracle-wasm-diff-full check consumes is produced on the
+    # aarch64 corpus path (matching the runtime-hash arch the gate + oracle build against), same as the daily.
+    name: full-corpus Core↔wasm differential (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # ca-derivations so the per-case content-addressed extraction cache is built + reused (#3363); the
+          # cachix substituter so an already-warm extraction (+ the emit.wasm/oracle-lean layers) cache-HITS.
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix root-cause,
+      # #7874): the Determinate daemon applies the 20220326-ca-derivations migration on first db open; without this
+      # the cachix push-hook's concurrent nix op races to apply the SAME migration → duplicate INSERT → intermittent
+      # "SchemaMigrations UNIQUE" red (self-heals on re-dispatch). One serial `nix store ping` opens the db + applies
+      # the migration ONCE up front, so the later push-hook sees it present and skips re-applying.
+      - name: warm the nix daemon (serialize the ca-derivations migration before the cachix post-build-hook)
+        run: nix store ping
+      # The cachix-action post-step pushes every path realized during this run (the ~10.7k full extractions +
+      # the diff's outputs) to camshaft.cachix.org so the NEXT weekly run PULLS them warm. DEDUPs. Placed BEFORE
+      # the build so it captures it. Push gated to the default branch (schedule only fires on main anyway).
+      - uses: cachix/cachix-action@v16
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          name: camshaft
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # The bundled full-corpus differential (v-wasm-oracle, checks.<sys>.oracle-wasm-diff-full): self-realizes
+      # the whole ~10.7k-case extraction closure + runs oracle-wasm-diff over it + tees the agree/diverge/skip
+      # tally (report-only, like the daily). --keep-going so one bad case doesn't abort the whole sweep.
+      # continue-on-error: a real Core↔wasm DIVERGE reds only this advisory step, not the warm's cachix-push
+      # purpose; the cachix post-step still pushes the realized full extractions. v-gha-green relays the tally to
+      # v-wasm-oracle, who triages any DIVERGE to v-cadenza-backend.
+      - name: build + run oracle-wasm-diff-full (advisory full-corpus differential)
+        continue-on-error: true
+        run: nix build .#checks.aarch64-linux.oracle-wasm-diff-full --print-build-logs --keep-going
