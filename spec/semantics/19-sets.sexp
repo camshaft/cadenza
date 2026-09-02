@@ -2378,24 +2378,24 @@
   (output (: 3 Int64)))
 
 (case
-  "Set.to-list orders float-carrying sums discriminant-first then by float payload"
+  "Set.to-list over a float-carrying SUM is a coded CDZ0203 — a float-containing compound offers no total order (§319; concierge uniform-decline)"
   (doc
-    "The ORDER face of the float-sum key family: to-list of {Missing, Temp 2.5, Temp 1.5} yields
-           Temp(1.5), Temp(2.5), Missing — same-discriminant values order by their float payload's
-           canonical bytes, and the later-declared variant sorts after. (wasm: todo until its to-list
-           over a custom-Ord float-sum lands; rust + rust-async pin the pass.)")
+    "The SUM sibling of the float-leaf-tuple to-list decline above: a sum with a Float64-payload variant
+           (Reading = Temp Float64 | Missing) is a float-CONTAINING COMPOUND, and per core-semantics §319
+           (compound-ordering, core-semantics.md:399) a floating-point component makes the compound
+           UNORDERED — a float offers only the IEEE partial order (NaN unordered), so a to-list has no total
+           order to enumerate by (concierge RULED (a) uniform decline; matches the float-leaf-tuple case).
+           The canonical-BYTE form still gives EQUALITY — so a float-sum MAP KEY is found by a reconstructed
+           equal key (the companion case below stays a pass) — but NOT ordering. (Was mis-asserted as
+           ordering discriminant-first-then-float-payload; corrected to the spec+ruling CDZ0203 — rust's
+           prior `pass` was a backend bug that ordered a float-compound against §319; wasm correctly
+           declined. v-rust-backend flips the rust/rust-async baselines to match.)")
   (input
     (do
       (type Reading (Temp Float64) (Missing))
-      (def (rank (: r Reading)) (match r ((Temp f) (if (< f 2.0) 1 2)) ((Missing) 9)))
-      (def
-        (main (: x Float64))
-        (let
-          ((sorted (Set.to-list #set((Missing) (Temp x) (Temp 1.5)))))
-          (match sorted (#list(a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c))))) (_ -1))))
+      (def (main (: x Float64)) (List.len (Set.to-list #set((Missing) (Temp x) (Temp 1.5)))))
       (export main)))
-  (call main (: 2.5 Float64))
-  (output (: 921 Int64)))
+  (error CDZ0203 (message "IEEE partial order")))
 
 (case
   "a float-carrying sum as a MAP key is found by a reconstructed equal key"
