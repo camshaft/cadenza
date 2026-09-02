@@ -656,7 +656,17 @@ where
     // message must contain no forbidden phrase (`DESIGN-diagnostic-quality-rubric.md` §1; §2 withdrawn).
     // Only when the diagnostics wire was captured (`Some(faults)`) — like `(no-other-errors)` + the
     // `(fix …)`/`(count …)` facets, it grades on the nix diagnostics bar, not the sidecar-blind in-process gate.
-    if test_run.diagnostic_quality
+    //
+    // DEFAULT-ON ENABLER (the opt-in→default flip, concierge-greenlit): the env `CDZ_C1_DEFAULT_ON` makes
+    // the lint grade EVERY case (no marker needed) — the true corpus-wide golden-standard guarantee. It is
+    // an ENV so the flip is inert in the required gate until activated: unset (today) = current opt-in
+    // behavior (marker-driven, required gate UNCHANGED — zero red risk); set = default-on. v-diagnostics
+    // runs the full-corpus §1 verify with it SET — cache-fast (a grade-time op on the already-cached
+    // KIND_DIAGNOSTICS wire; no corpus-file change → the compile/run drvs stay cache-HITS, no rebuild
+    // starvation). Once that verify is 0-flags-green, the final flip (make default-on the true default /
+    // wire the gate to set the env + add the `(no-diagnostic-quality)` opt-OUT hatch) lands per the greenlight.
+    let c1_default_on = std::env::var_os("CDZ_C1_DEFAULT_ON").is_some();
+    if (test_run.diagnostic_quality || c1_default_on)
         && let Some(faults) = &faults
         && let Some(msg) = grade_diagnostic_quality(faults)
     {
