@@ -794,6 +794,178 @@ fn spawn_watchdog(progress: Arc<Progress>, epoch: Instant, cfg: Config) {
         .expect("spawn watchdog thread");
 }
 
+/// Tallies for one TYPE-ORACLE differential sweep (design `DESIGN-lean-type-system-oracle.md` §2,
+/// Phase T2 — the operator's "oracles in both directions" ask).
+#[cfg(feature = "differential")]
+#[derive(Default, Debug, Clone)]
+pub struct TypeDiffStats {
+    /// Programs the oracle JUDGED (a `holds`/`mismatch` — it modeled the program).
+    pub judged: u64,
+    /// The oracle and rcdzc AGREED (both accept, or both reject) — `holds`.
+    pub agreed: u64,
+    /// The oracle declined to model the program (`Unsupported` → `skip`) — a sound coverage gap.
+    pub skipped: u64,
+    /// FALSE-REJECT findings: oracle WELL-TYPED over an rcdzc CODED reject (a compiler bug — the
+    /// highest-value direction).
+    pub false_rejects: u64,
+    /// CAPABILITY-GAP findings: oracle WELL-TYPED over an rcdzc CODELESS decline (a should-work
+    /// feature gap — backlog, not a soundness bug).
+    pub capability_gaps: u64,
+    /// FALSE-ACCEPT findings: oracle ILL-TYPED over an rcdzc accept (a soundness hole).
+    pub false_accepts: u64,
+    /// Any other typing disagreement (e.g. a code-mismatch) — filed as a `TypeOracle` finding.
+    pub other_mismatches: u64,
+    /// Programs EXCLUDED from the typing population — a parse error (a generator-quality signal) or a
+    /// compiler crash (the crash oracle's job, not a typing question).
+    pub parse_errors: u64,
+    /// New finding buckets created this sweep.
+    pub new_buckets: u64,
+    /// Existing buckets re-hit this sweep.
+    pub duplicate_hits: u64,
+}
+
+/// Map rcdzc's in-process compile verdict for `source` into the type oracle's `(reject|accept|decline)`
+/// carried verdict (design §1.2). `Compiled`/`InvalidWasm` ⇒ `Accept` (the front-end accepted it — a
+/// backend-invalid-wasm is still a front-end ACCEPT for typing purposes); a CODED `Declined` ⇒
+/// `Reject(code)` (a coded front-end fault — the false-reject target); a CODELESS `Declined` ⇒
+/// `Decline` (a capability gap). `None` for a parse-error or a crash — neither is a typing question,
+/// so both are excluded from the typing population.
+#[cfg(feature = "differential")]
+pub fn rcdzc_typecheck_verdict(source: &str) -> Option<crate::lean::RcdzcVerdict> {
+    use crate::lean::RcdzcVerdict;
+    match compile_catching(source) {
+        Verdict::Compiled { .. } | Verdict::InvalidWasm { .. } => Some(RcdzcVerdict::Accept),
+        Verdict::Declined { code: Some(c), .. } => Some(RcdzcVerdict::Reject(c)),
+        Verdict::Declined { code: None, .. } => Some(RcdzcVerdict::Decline),
+        Verdict::ParseError(_) | Verdict::Crash(_) => None,
+    }
+}
+
+/// Run the TYPE-ORACLE differential (design §2, Phase T2). For each generated program: take rcdzc's
+/// in-process [`compile_catching`] verdict — `Compiled`/`InvalidWasm` ⇒ `accept`,
+/// `Declined{code:Some}` ⇒ `reject(code)`, `Declined{code:None}` ⇒ `decline` — parse the source to an
+/// AST, and stream a `(typecheck <program> <verdict>)` item to the INDEPENDENT Lean type oracle
+/// (batched, one process per batch). The oracle runs its own `infer` and, per §1.2, emits `holds`
+/// (agree), `skip` (`Unsupported` — a sound coverage gap), or `mismatch("<direction>: …")` — a typing
+/// disagreement rcdzc's SAME-front-end wasm-vs-rust differential is structurally blind to (there a
+/// decline is never a mismatch). The mismatch direction (`false-reject`/`capability-gap`/
+/// `false-accept`/`code-mismatch`, §1.3) is carried in the detail and classified into the tallies +
+/// the filed [`Category::TypeOracle`] finding. The broad TEXT grammar is the population: it declines
+/// ~73%, so it actually EXERCISES the reject/decline bucket the type oracle validates (the coercing
+/// astgen grammar is type-correct-by-construction and rarely rejects).
+#[cfg(feature = "differential")]
+pub fn typecheck_sweep(
+    cfg: &Config,
+    oracle: &std::path::Path,
+    count: u64,
+) -> std::io::Result<TypeDiffStats> {
+    use crate::lean::{BatchItem, TypecheckItem, Verdict as LeanVerdict, judge_batch_items};
+
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = TypeDiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+
+    const BATCH: usize = 32;
+    let mut items: Vec<BatchItem> = Vec::new();
+    let mut srcs: Vec<String> = Vec::new();
+    let mut seeds: Vec<u64> = Vec::new();
+
+    for i in 0..count {
+        let seed = rng.next();
+        let source = program_for_seed_with(seed, GenMode::Text);
+
+        // rcdzc's carried verdict (design §1.2). Sound even though this is the full in-process compile:
+        // the oracle returns `Unsupported` for any backend-only construct, so a backend-only decline
+        // just `skip`s rather than firing a spurious capability-gap. `None` = a parse error or a crash,
+        // neither of which is a typing question, so it is excluded from the typing population.
+        let Some(rcdzc_verdict) = rcdzc_typecheck_verdict(&source) else {
+            stats.parse_errors += 1;
+            continue;
+        };
+
+        let program = match cadenza_syntax::sexpr::read(&source) {
+            Ok(a) => a,
+            Err(_) => {
+                stats.parse_errors += 1;
+                continue;
+            }
+        };
+
+        items.push(BatchItem::Typecheck(TypecheckItem {
+            program,
+            rcdzc_verdict,
+        }));
+        srcs.push(source);
+        seeds.push(seed);
+
+        let last = i + 1 == count;
+        if items.len() >= BATCH || (last && !items.is_empty()) {
+            let verdicts = judge_batch_items(oracle, &items)?;
+            for ((src, seed), v) in srcs.iter().zip(&seeds).zip(&verdicts) {
+                match v {
+                    LeanVerdict::Holds => {
+                        stats.judged += 1;
+                        stats.agreed += 1;
+                    }
+                    LeanVerdict::Skip(_) => stats.skipped += 1,
+                    LeanVerdict::Mismatch(detail) => {
+                        stats.judged += 1;
+                        let d = detail.trim_start();
+                        let label = if d.starts_with("false-reject") {
+                            stats.false_rejects += 1;
+                            "type-oracle FALSE-REJECT"
+                        } else if d.starts_with("capability-gap") {
+                            stats.capability_gaps += 1;
+                            "type-oracle capability-gap"
+                        } else if d.starts_with("false-accept") {
+                            stats.false_accepts += 1;
+                            "type-oracle FALSE-ACCEPT"
+                        } else {
+                            stats.other_mismatches += 1;
+                            "type-oracle mismatch"
+                        };
+                        let finding = Finding {
+                            category: Category::TypeOracle,
+                            program: src.clone(),
+                            crash: None,
+                            detail: Some(detail.clone()),
+                            commit: cfg.commit.clone(),
+                        };
+                        file_and_tally(
+                            &fstore,
+                            &finding,
+                            &mut stats.new_buckets,
+                            &mut stats.duplicate_hits,
+                            *seed,
+                            label,
+                        );
+                    }
+                }
+            }
+            items.clear();
+            srcs.clear();
+            seeds.clear();
+        }
+
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] type-differential {}/{count} | {} judged ({} agreed), {} skip | \
+                 {} false-reject, {} cap-gap, {} false-accept, {} other ({} buckets)",
+                i + 1,
+                stats.judged,
+                stats.agreed,
+                stats.skipped,
+                stats.false_rejects,
+                stats.capability_gaps,
+                stats.false_accepts,
+                stats.other_mismatches,
+                stats.new_buckets
+            );
+        }
+    }
+    Ok(stats)
+}
+
 fn file_timeout(seed: u64, cfg: &Config) {
     let program = program_for_seed(seed);
     if let Ok(store) = FindingStore::open(&cfg.findings_dir) {
@@ -910,6 +1082,32 @@ pub fn detect_commit() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rcdzc→oracle verdict mapping (design §1.2), on hand-written programs so it is hang-free and
+    /// oracle-independent: a well-formed program ⇒ Accept; a coded type fault ⇒ Reject(code); a parse
+    /// error ⇒ excluded (None). This pins the carried verdict the false-reject differential feeds.
+    #[cfg(feature = "differential")]
+    #[test]
+    fn rcdzc_typecheck_verdict_maps_the_frontend_decision() {
+        use crate::lean::RcdzcVerdict;
+        // A clean, well-typed program: the front-end accepts.
+        assert!(matches!(
+            rcdzc_typecheck_verdict("(do (def (main) 42) (export main))"),
+            Some(RcdzcVerdict::Accept)
+        ));
+        // An ill-typed program (adding an Int and a String): a CODED front-end reject.
+        match rcdzc_typecheck_verdict("(do (def (main) (+ 1 \"x\")) (export main))") {
+            Some(RcdzcVerdict::Reject(code)) => {
+                assert!(
+                    code.starts_with("CDZ"),
+                    "coded reject carries a CDZ code, got {code}"
+                );
+            }
+            other => panic!("an ill-typed (+ Int String) must be a coded Reject, got {other:?}"),
+        }
+        // Unparseable text is excluded from the typing population (not a typing question).
+        assert!(rcdzc_typecheck_verdict("(do (def (main)").is_none());
+    }
 
     #[test]
     fn splitmix_is_deterministic_and_varied() {
