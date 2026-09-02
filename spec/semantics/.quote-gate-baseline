@@ -1,5 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	20000 owned-temporary List.push results each reclaim the fresh list (leak-drift stress)
@@ -6542,6 +6541,7 @@ pass	rbw2 a four-hundred-binding let chain threads sequentially
 pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does not exhaust the stack)
 pass	rcw2 a hundred-field record projects its first and last fields
 pass	rcw3 a fifty-element tuple projects its first and last positions
+pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
 pass	rcw5 a wide record reads every field and sums them at their sorted indices
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
