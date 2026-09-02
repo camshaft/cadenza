@@ -7517,7 +7517,6 @@ todo	Rational.of over TWO perform results — ctor-arg order observable through 
 todo	Record.with over a perform result — the ORIGINAL record survives beside the update
 todo	Set.contains on a Map-looked-up Set with a perform-threaded element
 todo	Set.to-list of the state crosses resume ORDERED — the body reads elements positionally
-todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
 todo	Set.to-list over a newtype (Int64-payload) element enumerates via the newtype's orderable payload
 todo	Set.to-list over an all-nullary sum enumerates in discriminant order
 todo	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
