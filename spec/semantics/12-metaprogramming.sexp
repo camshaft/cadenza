@@ -232,6 +232,27 @@
   (live-objects 0))
 
 (case
+  "a bare Eval.in-caller perform in NON-macro code has no home — the compile-time Eval effect is discharged only at a macro expansion, so an unfolded perform is a CDZ0401, never a silent miscompile"
+  (doc
+    "Witnesses the COMPILE-TIME Eval effect's discharge contract (metaprogramming.md / DESIGN-macro-system.md
+           §3): `(effect Eval (op in-caller (-> Ast Ast)))` is a prelude-injected compile-time effect a MACRO
+           carries in its written row; `(Eval.in-caller ast)` evaluates an Ast in the caller's env and is
+           DISCHARGED (folded away, ERASING the effect) by the macro EXPANDER at a macro CALL SITE's
+           reconstructed expansion — so a correctly-used in-caller never survives to the effect system. This
+           pins the DUAL guarantee for a bare `(Eval.in-caller …)` written in ORDINARY (non-macro) code, which
+           the expander never folds: (1) `Eval`/`in-caller` RESOLVE (the effect is prelude-injected into every
+           `(do …)`/`(module …)` program — NOT a misleading `unbound name Eval`), and (2) the un-erased perform
+           reaches the no-home check and is a clean CDZ0401 ('neither an enclosing handler nor a host
+           delegation, so it has no home'), NEVER a silent miscompile. This is the guard that keeps the
+           compile-time-effect erasure honest: if the expander's fold ever fails to erase an in-caller, the
+           effect system catches it here. (A LITERAL in-caller INSIDE a macro folds → runs; see 31-macros.)")
+  (input
+    (do
+      (def (main) (Eval.in-caller (quote 1)))
+      (export main)))
+  (error CDZ0401 (message "neither an enclosing handler nor a host delegation")))
+
+(case
   "an Ast.Int carries a BEYOND-64-bit literal losslessly through quote"
   (doc
     "The lossless-storage acceptance witness of the Ast.Int Int64→BigInt flip: a 26-digit literal
