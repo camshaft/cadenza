@@ -13497,3 +13497,29 @@
       (def (main) (let ((ys #list(1 2 3 4))) (count (.. ys))))
       (export main)))
   (output (: 4 Int64)))
+
+(case
+  "a list splat composes with inline arguments into a rest parameter"
+  (doc
+    "Inline arguments and a list splat interleave: `count(10, 20, .. ys)` with `ys = [1, 2, 3]` gathers
+           `[10, 20, 1, 2, 3]` into the rest — length 5. Pins that a splat is not restricted to the sole
+           argument; leading inline arguments and the spread combine in order.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (let ((ys #list(1 2 3))) (count 10 20 (.. ys))))
+      (export main)))
+  (output (: 5 Int64)))
+
+(case
+  "several list splats concatenate into a rest parameter"
+  (doc
+    "Multiple splats compose: `count(.. a, .. b)` with `a = [1, 2]` and `b = [3, 4, 5]` gathers the
+           concatenation `[1, 2, 3, 4, 5]` into the rest — length 5. Pins that more than one spread in a
+           call combines left-to-right.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (let ((a #list(1 2)) (b #list(3 4 5))) (count (.. a) (.. b))))
+      (export main)))
+  (output (: 5 Int64)))

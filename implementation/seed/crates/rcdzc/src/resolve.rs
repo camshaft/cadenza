@@ -164,6 +164,39 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, "memo hit");
         return r.clone();
     }
+    // CALL-SITE SPLAT `(.. operand)` (`DESIGN-variable-arity-functions.md` addendum A.2): as a non-head
+    // ARGUMENT of a non-construction application that `apply_lambda` splat-EXPANDS — a VARARGS callee, or a
+    // compile-time (syntactic) TUPLE operand — resolve TRANSPARENTLY as the operand, so the bare `..` head
+    // never reaches `resolve_name` (which would CDZ0201). This is the SINGLE source that removes the reject
+    // everywhere downstream (type_of / collect / check_application) at once — `apply_lambda` still expands
+    // the splat via the AST-level `spread_operand` marker, and the printer still renders it from the AST.
+    // A MISPLACED `..` (a non-varargs, non-tuple position, e.g. `(+ (.. x) 1)`) is NOT transparent and
+    // still rejects. STRUCTURAL guard only (no `type_of` — a type query here would recurse through
+    // `resolved_of`); the inferred-tuple / annotated-tuple-param cases are left to the existing decline.
+    if let Some(operand) = db.ast.spread_operand(id)
+        && let Some(parent) = db.parent_of(id)
+        && db.ast.compound_ctor_leaf(parent).is_none()
+    {
+        let (callee, is_arg) = match db.ast.get(parent) {
+            Struct::List(ch) => (
+                ch.first().copied(),
+                ch.first() != Some(&id) && ch.contains(&id),
+            ),
+            _ => (None, false),
+        };
+        let syntactic_tuple = db
+            .ast
+            .compound_form_of(operand, crate::ast::CompoundCtor::Tuple)
+            .is_some();
+        if is_arg
+            && let Some(callee) = callee
+            && (syntactic_tuple || crate::eval::callee_is_varargs(db, callee))
+        {
+            let r = resolved_of(db, operand);
+            db.resolved.fill(id, r.clone());
+            return r;
+        }
+    }
     let mut r = compute(db, id);
     // Anchor a resolver "no" to THIS node if it carries none — an unbound name or a malformed form is
     // about the node being resolved, so its diagnostic points there. (The ABI edge later drops the
