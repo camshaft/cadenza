@@ -10770,10 +10770,28 @@ fn parse_failing_subchecks(nix_output: &str) -> Vec<String> {
 /// treat it as a REAL sub-check failure to route/fix. ADVISORY ONLY — never changes the RED verdict, so a
 /// genuine failure mislabeled here is at worst re-run, never merged. Pure so the classification is
 /// unit-tested without running nix.
+/// A nix SUBSTITUTER / binary-cache FETCH transient in a gate's output — a download of a cached path or
+/// realisation failed with a server-side 5xx (`HTTP error 5xx`) or nix's `unable to download` wrapper.
+/// This is INFRA (the cache/CDN hiccuped), NOT a test/compile failure and NOT a remote-BUILDER transient
+/// (so [`crate::fast_gate_output_is_remote_transient`], whose family is daemon/builder shapes, misses it) —
+/// a re-run typically hits the cache or a recovered substituter. Bit me TWICE landing #7650: a 502
+/// fetching a realisation from install.determinate.systems got the "REAL failure to route/fix" advisory,
+/// a false alarm. NARROW so a genuine failure can't trip it: only a server-side `HTTP error 5` (5xx — a
+/// 4xx like 403/404 is a real misconfig, NOT transient, and is deliberately excluded) or nix's
+/// `unable to download` fetch wrapper. Advisory-only (never flips the RED verdict), so at worst a real
+/// failure is re-run, never merged. Pure so the match rule is unit-tested without running nix.
+fn gate_output_is_substituter_fetch_transient(output: &str) -> bool {
+    output.contains("unable to download") || output.contains("HTTP error 5")
+}
+
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
          family dev-gate auto-retries #4562); RE-RUN gate-local before treating this as a regression."
+    } else if gate_output_is_substituter_fetch_transient(captured) {
+        "gate-local: NOTE — the failure output carries a nix SUBSTITUTER FETCH transient (a 5xx / \
+         `unable to download` from the binary cache/CDN, NOT a test/compile failure); RE-RUN gate-local \
+         (a retry usually hits the cache or a recovered substituter) before treating this as a regression."
     } else if crate::fast_gate_output_is_contention_kill(captured) {
         "gate-local: NOTE — a sub-check builder was KILLED (exit 137/143 or signal 9/15 = SIGKILL/SIGTERM \
          from the OOM-killer, a reaper, or the loop timeout under check-lease contention), NOT a test/compile \
@@ -17739,6 +17757,22 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         let crashed = "error: builder for '/nix/store/dddddddddddddddddddddddddddddddd-oracle.drv' \
                        failed due to signal 11 (SIGSEGV)";
         assert!(gate_local_hold_advisory(crashed).contains("REAL sub-check"));
+        // A SUBSTITUTER FETCH 5xx / `unable to download` (bit #7650: a 502 fetching a realisation from the
+        // binary cache used to fall to REAL) → advise RE-RUN, not a regression.
+        let fetch502 = "error: unable to download \
+                        'https://install.determinate.systems/realisations/sha256:abc%21out.doi': \
+                        HTTP error 502";
+        assert!(gate_local_hold_advisory(fetch502).contains("SUBSTITUTER FETCH"));
+        assert!(gate_local_hold_advisory(fetch502).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(fetch502).contains("REAL sub-check"));
+        // The `unable to download` wrapper alone (no explicit HTTP code) still trips it.
+        assert!(gate_output_is_substituter_fetch_transient(
+            "error: unable to download 'foo'"
+        ));
+        // NARROWNESS: a 4xx is a real misconfig, NOT transient → must NOT be classified as a fetch flake.
+        assert!(!gate_output_is_substituter_fetch_transient(
+            "error: cached failure of ... HTTP error 404"
+        ));
     }
 
     #[test]
