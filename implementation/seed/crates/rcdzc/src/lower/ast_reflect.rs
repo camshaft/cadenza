@@ -748,6 +748,35 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 // `id` lets the fresh structure be walked. (mrf1 nested-macro follow-up.)
                 db.reduced_callable_walked.remove(&id);
                 db.register_reduced_callables(id);
+                // gap#7: a macro-spliced `(type …)` at a ROOT statement position is a top-level type decl
+                // ABSENT from the load-frozen type/ctor index → `W`/`W.Mk`/bare `Mk` report CDZ0101.
+                // Register it (synth + every type/ctor index) HERE — at the splice site, BEFORE the round's
+                // `rebuild_parent_index` (below), so the appended synth record/ctor nodes get parent-indexed
+                // + scope-seeded this round (v-inference review pt 1). Gated: `id`'s parent is the ROOT `do`
+                // (stable across the in-place overwrite — the call was a root statement) AND the TYPE NAME
+                // node is CALLER-ORIGIN (a caller-spliced type name binds visibly; a macro-template-internal
+                // one stays hygienic-local, never registered — v-spec-oracle per-name provenance). The
+                // QUALIFIED `W.Mk` then rides on `W`'s visibility (member projection); a bare `Mk` follows
+                // that ctor name's own provenance via `variant_ctor_index` (registered above per variant).
+                if db.parent_of(id) == Some(db.ast.root) {
+                    let name_node = db
+                        .ast
+                        .as_form(id, "type")
+                        .and_then(|tail| tail.first().copied())
+                        .map(|head| match db.ast.get(head) {
+                            // `(type (NAME p…) …)` — the parenthesized head's first child is the name;
+                            // `(type NAME …)` — the bare atom IS the name.
+                            crate::ast::Struct::List(items) => {
+                                items.first().copied().unwrap_or(head)
+                            }
+                            _ => head,
+                        });
+                    if let Some(nn) = name_node
+                        && caller_origin.contains(&nn.0)
+                    {
+                        db.register_spliced_type_decl(id, id, &caller_origin);
+                    }
+                }
                 last_expanded = Some(id);
                 changed = true;
             }

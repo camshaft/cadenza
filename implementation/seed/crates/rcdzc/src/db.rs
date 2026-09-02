@@ -1249,6 +1249,12 @@ pub struct Db {
     /// after load (there is none today, but the fallback keeps it total).
     type_decl_by_occ_index: crate::fxhash::FxHashMap<StructId, usize>,
 
+    /// The PRE-INJECTION snapshot of prelude type/module names (`prelude.keys()` before the built-in sums
+    /// inject their data-constructor names) — the guard `register_spliced_type_decl` needs so a macro-spliced
+    /// type's colliding variant (`Int`/`List`/`Name`) is kept qualified-only, matching the load-time
+    /// build (db.rs colliding-variant guard). Captured at load; read only by the post-load type registration.
+    pub(crate) prelude_type_module_names: crate::fxhash::FxHashSet<String>,
+
     /// For each EFFECT NAME, its synthesized record occurrence (first-declared wins) — the effect analogue
     /// of [`type_decl_index`], for `effect_decl_by_name`'s step-3b resolve lookup (was a linear
     /// `effect_decls.iter().find`). Built once at load.
@@ -3172,6 +3178,7 @@ impl Db {
             same_name_newtype_ctor_index,
             same_name_monomorphic_ctor_index,
             type_decl_by_occ_index,
+            prelude_type_module_names,
             effect_decl_index,
             scope_binders,
             arm_pattern_names,
@@ -4238,6 +4245,129 @@ impl Db {
         {
             fs.visible[file].entry(name.to_string()).or_insert(idx);
         }
+    }
+
+    /// Register a macro-spliced `(type …)` declaration at node `item` (spliced at real-file node `at`) into
+    /// every type/constructor index — the TYPE analogue of [`push_specialized_def`]/[`register_file_scoped_def`]
+    /// for gap#7. The type/ctor indexes FREEZE at load (`scan_top_level` + `sums::synthesize` run before
+    /// `expand_macros`), so a macro-spliced `(type W …)` is invisible: `W`/`W.Mk`/bare `Mk` report CDZ0101.
+    /// This re-runs the per-decl synthesis + index build for the ONE spliced decl, mirroring the load-time
+    /// build EXACTLY. IDEMPOTENT — a macro round re-scans, so an already-registered decl (by name or occ) is
+    /// a no-op. Caller gates on caller-origin provenance (a caller-spliced type name is program-visible; a
+    /// macro-internal one stays hygienic-local — never registered). MUST run at the splice site BEFORE the
+    /// round's `rebuild_parent_index`, since `synthesize` appends the record/ctor arena nodes that then need
+    /// parent-indexing + scope-seeding.
+    pub(crate) fn register_spliced_type_decl(
+        &mut self,
+        at: StructId,
+        item: StructId,
+        caller_origin: &crate::fxhash::FxHashSet<u32>,
+    ) {
+        // Scan the `(type …)` form (borrows `self.ast`; `decl` is owned, so later `self` mutation is free).
+        let Some(mut decl) = scan_type_decl(&self.ast, item) else {
+            return;
+        };
+        // IDEMPOTENT + never shadow: a re-walk, or a name/occ already registered (load-time or an earlier
+        // round), is a no-op — the load-time decl / first registration wins.
+        if decl.name.is_empty()
+            || self.type_decl_index.contains_key(&decl.name)
+            || self.type_decl_by_occ_index.contains_key(&decl.occ)
+        {
+            return;
+        }
+        // Synthesize this ONE decl's sum RECORD + per-variant CONSTRUCTOR nodes (fills `decl.synth` +
+        // `variant.ctor`, APPENDS arena nodes — self-contained per decl, no `Db` deps).
+        crate::sums::synthesize(&mut self.ast, std::slice::from_mut(&mut decl));
+        // PER-NAME PROVENANCE (v-spec-oracle gap#7 ruling): the caller gated the TYPE name as caller-origin,
+        // so the TYPE (`type_decl_index`/`synth`) + the QUALIFIED `T.V` member path (rides on the type's
+        // visibility, structural) register unconditionally. But a BARE variant-ctor name is a SEPARATELY-gated
+        // top-level binding: it enters the bare indexes ONLY when the VARIANT NAME node is itself caller-origin
+        // (`v.name_occ` ∈ `caller_origin`); a macro-internal ctor name stays hygienic-local (reachable only
+        // qualified `T.V`, never bare). Mirror the load per-decl build, adding that per-variant gate.
+        for v in &decl.variants {
+            if !caller_origin.contains(&v.name_occ.0) {
+                continue; // macro-internal ctor name — no BARE binding (qualified path still works via synth)
+            }
+            if self.prelude_type_module_names.contains(&v.name) {
+                if let Some(ctor) = v.ctor {
+                    self.prelude_colliding_variant_ctor_index
+                        .entry(v.name.clone())
+                        .or_insert(ctor);
+                }
+                continue;
+            }
+            if let Some(ctor) = v.ctor {
+                self.variant_ctor_index
+                    .entry(v.name.clone())
+                    .or_insert(ctor);
+            }
+        }
+        if let Some(synth) = decl.synth {
+            self.type_decl_index
+                .entry(decl.name.clone())
+                .or_insert(synth);
+        }
+        // SAME-NAME ctor (a variant sharing the type name) — head-position construct resolves to the ctor.
+        // A BARE binding, so gate on the SAME-NAME VARIANT's own provenance (caller-origin) too.
+        if let Some(ctor) = decl
+            .variants
+            .iter()
+            .find(|v| v.name == decl.name && caller_origin.contains(&v.name_occ.0))
+            .and_then(|v| v.ctor)
+        {
+            self.same_name_newtype_ctor_index
+                .entry(decl.name.clone())
+                .or_insert(ctor);
+            if decl.params.is_empty() {
+                self.same_name_monomorphic_ctor_index
+                    .insert(decl.name.clone());
+            }
+        }
+        // Variant payload TYPE-EXPRESSION nodes — so a payload head (`(List Ast)`) is not hijacked as a
+        // bare construct. (`&self.ast` + `&mut self.type_expr_nodes` are disjoint fields.)
+        for v in &decl.variants {
+            for &p in &v.payloads {
+                mark_subtree(&self.ast, p, &mut self.type_expr_nodes);
+            }
+        }
+        // FILE-SCOPE (multi-file): make the type + its ctors visible in the SPLICE-SITE's file — a spliced
+        // decl node has no file of its own, so key on `at` (the real-file macro-call position). No-op in a
+        // single-file compile (`file_scope` is `None`). Own-decl visibility = all ctors (`CtorVis::All`).
+        if let Some(file) = self.file_scope.as_ref().and_then(|fs| fs.file_of(at)) {
+            let synth = decl.synth;
+            let name = decl.name.clone();
+            // Per variant: (name, ctor, prelude-colliding, BARE-visible). The QUALIFIED `T.V` path admits
+            // every ctor (rides on the type); the BARE surface admits a ctor only when its name is
+            // caller-origin AND not a prelude-name collision (a macro-internal ctor stays qualified-only).
+            let ctors: Vec<(String, StructId, bool)> = decl
+                .variants
+                .iter()
+                .filter_map(|v| {
+                    v.ctor.map(|c| {
+                        let bare = caller_origin.contains(&v.name_occ.0)
+                            && !self.prelude_type_module_names.contains(&v.name);
+                        (v.name.clone(), c, bare)
+                    })
+                })
+                .collect();
+            if let Some(fs) = self.file_scope.as_mut() {
+                if let Some(s) = synth {
+                    fs.visible_types[file].entry(name).or_insert(s);
+                }
+                for (vname, ctor, bare) in ctors {
+                    fs.visible_ctors_qualified[file]
+                        .entry(vname.clone())
+                        .or_insert(ctor);
+                    if bare {
+                        fs.visible_ctors[file].entry(vname).or_insert(ctor);
+                    }
+                }
+            }
+        }
+        // occ → index (before the push, so the index is the decl's slot), then append.
+        let idx = self.type_decls.len();
+        self.type_decl_by_occ_index.insert(decl.occ, idx);
+        self.type_decls.push(decl);
     }
 
     /// Fill a reserved specialized def's parameters + body (see [`push_specialized_def`]) — the two-step
