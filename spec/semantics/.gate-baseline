@@ -10800,7 +10800,7 @@ todo	a self-call gated behind a nested if IN an if-condition declines cleanly, n
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-todo	an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)
+pass	an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an escaping captured continuation is refused, not miscompiled
 todo	an under-applied built-in operation curries — completing it yields a value (should-work)

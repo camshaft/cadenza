@@ -13202,17 +13202,19 @@
   (doc
     "The INTERPROC sibling of the abortive accum case above: the perform is hidden in a HELPER the
            per-step term calls — `(+ (loop (- k 1)) (helper k))` with `(def (helper k) (if (= k 2) (E.bail 99)
-           k))`. Accumulator introduction would reassociate `(helper k)` onto the accumulator arg, where the
-           abort rides buried in a callee and the non-local-exit CC cannot see it to short-circuit — a SILENT
-           MISCOMPILE (main(3) ran 103; the pending `+` frames were summed instead of abandoned). FIXED by
-           declining accum when the per-step term calls a (transitively) performing def (accum's
-           `compute_performing_defs` / `term_calls_performing_def`): the recursion stays a plain non-tail form
-           the effects safe-floor rejects (CDZ0900) — a safe decline, never a wrong value. Idealistically
-           main(1)=1 (k never hits the bail) and main(3)=99 (the k==2 bail abandons everything); flips to those
-           when the non-local-exit calling convention folds the INDIRECT case (the abortive-accumulator fold
-           handles the DIRECT term of the case above; the indirect-through-a-helper fold is the remaining gap).
-           Contrast the case above, whose DIRECT-term abort accum still reassociates — direct-perform
-           reassociation is sound, so only the indirect (helper-hidden) perform declines.")
+           k))`. Accumulator introduction reassociates `(helper k)` onto the accumulator arg; naively the abort
+           would ride buried in a callee and the non-local-exit CC could not see it to short-circuit — a SILENT
+           MISCOMPILE (main(3) ran 103; the pending `+` frames were summed instead of abandoned). FOLDED by
+           INLINING the simple performing helper into the per-step term BEFORE reassociation (accum's
+           `plan_helper_inline` / `build_inlined_term`): the whole-term helper call `(helper k)` is replaced by
+           the helper's body with its params bound to the call args — `(if (= k 2) (E.bail 99) k)` — so the
+           perform becomes DIRECT in the reassociated combine `(+ acc (if (= k 2) (E.bail 99) k))`, the exact
+           shape the DIRECT-term abortive-accumulator fold of the case above already handles. The inline is
+           narrow + capture/duplication-safe (simple atom args, binder-free helper body, a single direct
+           perform); anything outside that shape keeps the original safe decline (`term_calls_performing_def`
+           → a plain non-tail form the effects safe-floor rejects, CDZ0900) — never a wrong value. main(1)=1
+           (k never hits the bail) and main(3)=99 (the k==2 bail abandons the pending `+` frames, homing the
+           perform arg 99 to the `(bail (v) s v)` arm) on all three backends.")
   (input
     (do
       (effect E (op bail (-> Int64 Int64)))
