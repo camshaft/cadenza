@@ -2697,8 +2697,8 @@
                 s
                 ((Some rec)
                   (resume (+ (. rec tot) (String.byte-len (. rec tag)))
-                    (Some (record (= tot (+ (. rec tot) v)) (= tag (. rec tag))))))
-                ((None _u) (resume 0 (Some (record (= tot 1) (= tag "ab"))))))))
+                    (Some #record((= tot (+ (. rec tot) v)) (= tag (. rec tag))))))
+                ((None _u) (resume 0 (Some #record((= tot 1) (= tag "ab"))))))))
           (+ (R.step n) (+ (* 10 (R.step n)) (* 100 (R.step n))))))
       (export main)))
   (call main (: 5 Int64))
