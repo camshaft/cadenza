@@ -48,6 +48,14 @@ pub fn grade(
     // (the fuzzer differential) + honestly characterizes the rust column (imposed-WIT-world = rust todo-by-
     // design). The compiler cannot self-decline this — the world is a corpus sibling clause it never sees.
     wit_world: Option<&Path>,
+    // The case's PEER provider artifact (`peer-*.ast`), present ONLY for a `(peer …)`-clause case (a
+    // cross-component-peer program). PRESENCE-ONLY: when `Some`, this RUST target DECLINES the case → `Todo`,
+    // skipping emit/compile/run — the standalone `.rs` emit has no component model / peer boundary, so a
+    // `host (A B) …` bound to a peer interface has no provider to compose against; the rust pipeline would
+    // otherwise emit an unbound-peer-op panic-stub that TRAPS at runtime = a dishonest FAIL. The exact twin of
+    // `wit_world` (both are wasm-only corpus sibling clauses the compiler never sees, so it cannot
+    // self-decline). Keeps declined≠error (the fuzzer differential) + honestly characterizes the rust column.
+    peer: Option<&Path>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     let result = if wit_world.is_some() {
@@ -55,6 +63,15 @@ pub fn grade(
             grade: Grade::Todo(
                 "imposed WIT-world: the rust backend has no external-world ingest (wasm-only) — \
                  declines by design"
+                    .to_string(),
+            ),
+            ran_a_trial: false,
+        }
+    } else if peer.is_some() {
+        GradeResult {
+            grade: Grade::Todo(
+                "cross-component peer: the rust backend emits a standalone .rs with no component model / \
+                 peer boundary — declines by design"
                     .to_string(),
             ),
             ran_a_trial: false,
