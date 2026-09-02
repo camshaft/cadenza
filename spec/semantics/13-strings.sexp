@@ -2,6 +2,8 @@
 ; for error messages, name encoding (export names → bytes in wasm), and instruction tag dispatch.
 ; String equality is already witnessed in 01-literals; these cover the remaining operations
 ; the compiler needs.
+(diagnostic-quality)
+
 (case
   "string concatenation"
   (doc "The compiler builds error messages and export names via string concatenation.")

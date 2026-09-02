@@ -60,6 +60,8 @@
 ; ============================================================================================
 ; Construction and observation — Qty.of attaches a unit; Qty.value recovers the numeric value
 ; ============================================================================================
+(diagnostic-quality)
+
 (case
   "a quantity is constructed from a numeric value and a unit"
   (doc
