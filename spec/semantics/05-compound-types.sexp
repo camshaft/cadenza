@@ -4905,7 +4905,6 @@
   (output (: 3020 Int64))
   (call main (: 2 Int64))
   (output (: 4021 Int64))
-  ; if-join-shared-child family residual (honest known-leak, coord v-corpus-harness/v-core-opt family fix)
   (live-objects 0))
 
 (case
@@ -16142,7 +16141,7 @@
       (export main)))
   (call main (: 999 Int64))
   (output (: 140 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "run-length encode/decode round-trips a runtime list of tuples"
@@ -16364,7 +16363,7 @@
   (output (: 452311 Int64))
   (call main (: 3 Int64))
   (output (: 121 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
@@ -17296,7 +17295,7 @@
   (output (: 0 Int64))
   (call main (: 4 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
@@ -17478,7 +17477,7 @@
   (output (: 11 Int64))
   (call main (: 20 Int64) (: 10 Int64))
   (output (: 1847561 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
@@ -17789,7 +17788,7 @@
   (output (: 1302400001 Int64))
   (call main (: 9 Int64))
   (output (: 1309241 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len"
@@ -18644,7 +18643,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a two-parameter sum whose variants use the parameters in different orders instantiates correctly"
