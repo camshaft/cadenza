@@ -1684,6 +1684,49 @@
             pkgs.runCommand "standalone-wasm-workspace-assert" { } ''
               echo "ok: rcdzc-wasm + cdz-wasm src filesets cover every local crate in their leaf locks" > $out
             '';
+        # MEMBER-REGISTRATION drift-guard (v-nix 2026-09-02): every non-excluded ROOT workspace member MUST
+        # be registered in rootWorkspaceCrates — else nonClosureManifests/stubNonClosure (which enumerate from
+        # the REGISTRY, not the members glob) omit it from every crane fileset. That is SILENT: the crate is
+        # simply absent, uncovered by the per-crate clippy/test shards (testCrateCoverageAssert only checks
+        # rootCrateNames ⊆ tests, NOT members ⊆ registry, so it does NOT catch this), and it detonates the
+        # instant a STAGED member path-deps the unregistered one — cargo cannot read the unstaged manifest and
+        # the whole workspace load fails, cascading fleet-wide. This is exactly the #7646/#7650 class
+        # (corpus-case-titles landed unregistered in #7646, broke cdz-gate-check when #7650 path-dep'd it).
+        # Pure-eval: expand the root Cargo.toml `members` globs against the tree (readDir + Cargo.toml exists),
+        # drop `exclude`, and assert each is a VALUE in rootWorkspaceCrates. A new member landed without a
+        # flake reg now throws LOUD here instead of silently going uncovered until a path-dep bites. Mirrors
+        # standaloneWasmWorkspaceAssert / crateClosureAssert fail-fast discipline.
+        memberRegistrationAssert =
+          let
+            ws = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace;
+            excluded = ws.exclude or [ ];
+            registeredPaths = builtins.attrValues rootWorkspaceCrates;
+            expand = m:
+              if pkgs.lib.hasSuffix "/*" m then
+                let
+                  base = pkgs.lib.removeSuffix "/*" m;
+                  entries = builtins.readDir (./. + "/${base}");
+                  dirs = builtins.filter
+                    (n: entries.${n} == "directory"
+                      && builtins.pathExists (./. + "/${base}/${n}/Cargo.toml"))
+                    (builtins.attrNames entries);
+                in
+                map (n: "${base}/${n}") dirs
+              else [ m ];
+            liveMembers = builtins.filter (m: !(builtins.elem m excluded))
+              (pkgs.lib.concatMap expand ws.members);
+            unregistered = builtins.filter (m: !(builtins.elem m registeredPaths)) liveMembers;
+          in
+          if unregistered != [ ] then
+            throw ("flake.nix member-registration-assert: root workspace member(s) NOT in rootWorkspaceCrates: "
+              + builtins.toString unregistered
+              + " — an unregistered member is omitted from every crane fileset (silently uncovered by the "
+              + "per-crate checks, and it breaks the moment a staged member path-deps it — the #7646/#7650 "
+              + "class). Register each in rootWorkspaceCrates + add its clippy/test crane.")
+          else
+            pkgs.runCommand "member-registration-assert" { } ''
+              echo "ok: every non-excluded root workspace member is registered in rootWorkspaceCrates" > $out
+            '';
         rcdzcWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c))
@@ -6384,7 +6427,7 @@
                   # (cached seedCompiler bin, no store/runtime), green-confirmed standalone before the fold.
                   cdzFmtCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
-                  wasmtimeSingleHolderAssert compilerPureLibraryAssert
+                  wasmtimeSingleHolderAssert compilerPureLibraryAssert memberRegistrationAssert
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
                   # so a future binary-AST wire flip can't silently re-break them (the #6324/#6342 hole).
                   cdzWasmNativeCheck
@@ -6527,6 +6570,7 @@
             wasmtime-single-holder-assert = wasmtimeSingleHolderAssert;
             compiler-pure-library-assert = compilerPureLibraryAssert;
             standalone-wasm-workspace-assert = standaloneWasmWorkspaceAssert;
+            member-registration-assert = memberRegistrationAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
             # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
