@@ -4380,6 +4380,58 @@
             fi
           '';
 
+        # COARSE per-file RUST GATE (v-nix, concierge (C) 2026-09-02) — the fail-on-regression twin of
+        # mkCorpusRustVerdictsFileCoarse: same per-file loop (cdz-compile -t rust + cdz-rust-run --grade) but
+        # passes `--baseline .gate-baseline-rust` (NOT --emit-verdict), so cdz-rust-run exits non-zero on a
+        # pass→not-pass regression → set -e fails the derivation. Intended per-MR nix RUST gate to REPLACE the
+        # in-process gateCheckRust (unblocks v-xtask's full grade-machinery delete with no per-MR coverage loss).
+        # UNFILTERED first cut (grades ALL cases): a baseline-ABSENT case is not a regression (cdz-corpus-grade
+        # check_regression), so it should not red. This variant MEASURES cost + empirically tests the #3984
+        # absent-to-pass hazard v-corpus-harness flagged; if absent cases red or the cost is too high, a
+        # title-membership filter (grade IFF title ∈ .gate-baseline-rust) follows (needs a pre-grade title source).
+        mkCorpusRustGateFileCoarse = { name, file }:
+          let shred = mkCorpusShred { inherit name file; };
+          in
+          pkgs.runCommand "corpus-rust-gate-coarse-${name}"
+            {
+              nativeBuildInputs = [ cdzCompile cdzRustRun rustToolchain ];
+              # VALUE-DOC (same as the corpus-rust build/exec gate #7682): .gate-baseline-rust is value-doc-
+              # ASCRIBED ((: <v> <T>) render), so the gate MUST render value-doc to match it — else a curated
+              # case reds on a bare-vs-ascribed render mismatch (e.g. got #tuple(..) vs expected (: (tuple ..) ..)).
+              # Set on both the emit (cdz-compile -t rust: rcdzc emits __cdz_doc) + the exec (cdz-rust-run driver).
+              CDZ_VALUE_DOC = "1";
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            n=0
+            for case in ${shred}/${name}/*/; do
+              [ -d "$case" ] || continue
+              case="''${case%/}"
+              work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work/w"
+              inputs=("ast:main=$case/program.ast")
+              entry=()
+              for m in "$case"/module-*.ast; do
+                if [ -e "$m" ]; then
+                  mn=$(basename "$m" .ast); mn=''${mn#module-}
+                  inputs+=("ast:$mn=$m")
+                  entry=(--entry main)
+                fi
+              done
+              if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t rust -o "$work/emit.rs" 2>"$work/compile.err"; then
+                status=0
+              else
+                status=$?
+              fi
+              args=(--grade "$case/test-run.ast" --compile-status "$status" --compile-diag "$work/compile.err"
+                    --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                    --baseline ${./spec/semantics/.gate-baseline-rust} --workdir "$work/w")
+              if [ -e "$work/emit.rs" ]; then args+=(--module "$work/emit.rs"); fi
+              cdz-rust-run "''${args[@]}"
+              n=$((n + 1))
+            done
+            echo "ok: corpus-rust-gate-coarse ${name} — $n cases graded vs .gate-baseline-rust (no regression)" > "$out"
+          '';
+
         corpusRustVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-rust-coarse" { } ''
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
@@ -5790,6 +5842,12 @@
         # byte-identity spike (coarse == per-case verdictsFileAgg). See mkCorpusVerdictsFileCoarse's def note.
         packages.corpus-verdicts-coarse = corpusVerdictsCoarseAll;
         packages.corpus-verdicts-coarse-parity = corpusVerdictsCoarseParity;
+        # COARSE per-file RUST GATE (concierge (C)) test packages — build one file to VERIFY green + MEASURE
+        # per-file cost + empirically test the #3984 absent-case behavior (06-numeric has incremental rust
+        # cases some absent from .gate-baseline-rust). Full-aggregate `.#corpus-rust-gate-coarse` follows once
+        # the per-file cost + #3984 behavior are confirmed. NOT yet wired into localGate.
+        packages.corpus-rust-gate-coarse-01-literals = mkCorpusRustGateFileCoarse { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; };
+        packages.corpus-rust-gate-coarse-06-numeric-model = mkCorpusRustGateFileCoarse { name = "06-numeric-model"; file = ./spec/semantics/06-numeric-model.sexp; };
         # DIVERSE-SAMPLE per-file parity packages (v-corpus-harness acceptance step 2): distinct case shapes —
         # 05-compound-types (value-heavy #record/#tuple), 11-modules (multi-module → --entry main),
         # 25-verification (big, cross-module type-import), 26-program-conditions (traps/@invariant/diagnostics),
