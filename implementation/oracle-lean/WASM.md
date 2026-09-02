@@ -179,6 +179,73 @@ capstone (research-grade), theorem-shaped ⇒ co-owned with v-lean-oracle's WP l
 dimension alongside value-equivalence. Sequences after W5 (heap host); capturing it now makes rc+liveness a
 W5 design constraint.
 
+## W5 scoping — banked design (import surface + increment plan)
+
+Banked 2026-09-02 after the core mission closed (full-corpus 0-diverge: 4275 agree / 0 diverge / 4197 skip of
+8472; **2707 of the 4197 skips are heap/runtime-importing cases** — the single biggest gap, what W5 covers).
+Concierge greenlit W5 as the next increment; this section is the design bank for a fresh-context reboot of
+the heavy multi-increment build.
+
+### The import surface — 100 ops on `"heap"` (from `rcdzc/src/backend/wasm/runtime_abi.rs`)
+
+The emitted wasm imports (by NAME, resolved per-program — no baked op index) a subset of these 100 value-heap
+runtime ops. Talos declines any module with imports today; W5 supplies them as clean-room Lean `HostFn`s.
+Categories (all params/results are `u32` handles / scalars per the ABI — a handle is a `u32` into the host):
+
+- **Refcount core:** `dup(h)`, `drop(h)` — the Perceus ops. `mark-immortal(h)`, `mark-immortal-deep(h)`,
+  `live-objects() -> u32` (census — the leak oracle), `reset()`.
+- **Boxing:** `box-int/box-float/box-float32/box-bool`, `get-int/get-float/get-float32/get-bool`.
+- **Arrays:** `arr-alloc(n)`, `arr-alloc-reuse`, `arr-get(h,i)`, `arr-set(h,i,v)`, `arr-len(h)`.
+- **Vecs:** `vec-empty/of-arr/push/prepend/concat/split/get/len/update/drop`.
+- **Maps:** `map-alloc/empty/insert/lookup/remove/set/get/merge/len/size/key/val/to-list` + iter
+  (`map-iter/-next/-key/-val`).
+- **Sets:** `set-empty/insert/contains/remove/union/intersection/difference/size/to-list` + iter
+  (`set-iter/-next/-elem`).
+- **Sums (variants):** `sum-new`, `sum-new-reuse`, `sum-disc(h)`, `sum-payload(h)`.
+- **Bytes/strings:** `bytes-alloc/get/set/len/slice/concat/compact/scalar-at`, `str-new/from-bytes/get/
+  nfc-normalize`.
+- **Bignum:** `bigint-of-i64/of-bytes/to-i64-checked/add/sub/mul/div/rem/cmp`,
+  `rational-of/num/den/add/sub/mul/div/cmp`.
+- **Value transport / AST / hash:** `value-encode/decode/canonicalize/cmp/eq/eq-shaped`,
+  `ast-encode/decode/print`, `hash-blake3`.
+
+### Host-state design (rc + liveness aware from the start — the operator's Perceus constraint)
+
+`Store α` with `α = HeapState`: `handle(u32) → { value : HeapValue, rc : Nat, status : Live | Freed,
+immortal : Bool }` (+ Perceus reuse tokens). Per-op:
+- **alloc** (`arr-alloc`, `map-*`, `set-*`, `sum-new`, `box-*`, `bytes-alloc`, …): fresh handle, `rc := 1`,
+  `status := Live`; `value` per the spec's semantics for that op.
+- **dup(h)**: `rc++` (require `Live` — else UAF trap). **drop(h)**: `rc--`; at 0 → `status := Freed` +
+  recursively drop child handles.
+- **access** (`arr-get`, `map-lookup`, `get-int`, `sum-payload`, …): require `Live` — a `Freed`/unknown
+  handle ⇒ `HostResult.Trap` (**UAF**). **drop** of `Freed`/rc-0 ⇒ Trap (**double-free**).
+- **mark-immortal**: `immortal := true` (excluded from the leak check). **live-objects**: count `Live &&
+  !immortal`. **Leak**: at program end, that count must be 0 — else a leak finding.
+- **⚠ REUSE SPECIALIZATION** (`arr-alloc-reuse`, `sum-new-reuse`, `vec-update`): rc==1 in-place reuse +
+  reuse tokens threaded through alloc. The hardest + highest-value bit — a reuse bug is a subtle
+  UAF/aliasing class. Model faithfully from the spec.
+
+Independence: implement `HeapValue` + op semantics from the SPEC (`deterministic-value-form.md` + heap/
+collection semantics), NOT by linking the real cdz-runtime wasm — else the oracle shares a runtime with rcdzc
+and a runtime bug hides on both sides (the whole point of the differential).
+
+### Increment breakdown (each: implement the HostFn's → those heap cases move skip→runnable; land + weekly picks up)
+
+- **W5.1 — rc/liveness host core + arrays + boxing:** `HeapState`, `dup/drop/mark-immortal/live-objects/
+  reset`, `box-*/get-*`, `arr-*`. Wire the `HostRegistry` (name→HostFn over `m.imports`) into `talosDriver`
+  (drop the "reject imports" early-return for modeled imports). First end-to-end HEAP differential + the
+  Perceus witness (UAF/double-free trap + end-of-run empty-live-set assertion). Proves the whole approach.
+- **W5.2 — maps + sets** (incl. iterators). **W5.3 — bytes/strings + bigint/rational.** **W5.4 — sums +
+  vecs + the REUSE specialization** (the hard part; highest soundness value). **W5.5 — value-*/ast-*/hash**
+  (transport + canonical compare).
+- **W6 (dynamic Perceus):** every heap-case run already witnesses no-UAF/double-free/leak (free once W5's
+  host tracks rc+liveness). **W7 (symbolic):** WP + a `HostContract` rc-invariant — the aspirational capstone,
+  co-owned w/ v-lean-oracle.
+
+The `talosDriver` seam change (W5.1) is the pivot: it must build a `HostEnv`/`HostRegistry` from the modeled
+ops keyed by `m.imports` name, and only decline imports it does NOT model (so partial coverage still runs the
+scalar parts). Everything downstream (result decode, differential) is unchanged.
+
 ## Gate coverage
 
 `Oracle.Wasm`'s invariants are pinned by compiled `example` witnesses in the module (no corpus case
