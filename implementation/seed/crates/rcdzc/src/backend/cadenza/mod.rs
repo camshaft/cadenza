@@ -233,6 +233,14 @@ struct BinderEnv {
     /// round-trip (v-effects, dispatched by v-core-opt). Empty for a program with no congruent specs (the
     /// common case → identity, byte-identical output). Set once per program (cloned into each def's env).
     spec_merge: std::collections::HashMap<usize, usize>,
+    /// (BIN-MATCH re-emit) The segment binders of the runtime bin-match arm CURRENTLY being emitted, keyed by
+    /// `(byte_offset, width)` — the exact fields a `Core::BinIntRead` carries. `emit_bin_match` reconstructs a
+    /// `(match s ((bin (uN x)…) body) … (_ …))` from the desugared length-guard if-chain (`lower_match_bin`),
+    /// registers each binder-segment's name here BEFORE emitting that arm's body, and CLEARS it after — so a
+    /// `Core::BinIntRead { byte_offset, width, .. }` in the body resolves to its segment binder NAME instead of
+    /// hitting the generic node decline. Scoped per arm (offsets repeat across sibling arms); absent ⇒ a
+    /// `BinIntRead` outside a recognized bin-match declines (it has no surface form of its own).
+    bin_fields: std::collections::HashMap<(u32, u8), std::rc::Rc<str>>,
 }
 
 /// True iff `ty` is a fully-solved NON-DEFAULT-width numeric: a non-`Float64` float (`Float32`) or a
@@ -1913,8 +1921,14 @@ fn emit_expr_viewed(
             }
             let bindings_list = b.list(binding_nodes);
             // The body is the `let`'s value/tail position — it has the whole `let`'s type, so it inherits
-            // this `let`'s `expected`; the bindings' initializers are operands (no expected).
-            let body_node = emit_expr(db, b, body, expected, env, emitted)?;
+            // this `let`'s `expected`; the bindings' initializers are operands (no expected). A runtime
+            // BIN-MATCH desugars to a self-materializing `Let{(s,s), <bin-length if-chain>}` (lower_match_bin):
+            // recognize + reconstruct the surface `(match s ((bin …) …) (_ …))` here (the bindings above bound
+            // `s` in `env.lets`), else emit the ordinary body.
+            let body_node = match try_emit_bin_match(db, b, body, &expected, env, emitted) {
+                Some(r) => r?,
+                None => emit_expr(db, b, body, expected, env, emitted)?,
+            };
             for v in shared_values {
                 env.scrut_lets.remove(&v);
             }
@@ -3305,6 +3319,21 @@ fn emit_expr_viewed(
             }
             Ok(acc)
         }
+        // A binary PATTERN segment READ inside a recognized bin-match arm — resolve to the segment binder NAME
+        // that `try_emit_bin_match` registered in `env.bin_fields` for THIS arm (keyed by the read's
+        // `(byte_offset, width)`). Outside a recognized bin-match the map is empty → decline (a bare
+        // `BinIntRead` has no surface form of its own; the `(bin …)` pattern is what re-lowers back to it).
+        Core::BinIntRead {
+            byte_offset,
+            width,
+            ..
+        } => match env.bin_fields.get(&(byte_offset, width)) {
+            Some(name) => Ok(b.name(name.clone())),
+            None => Err(Reject::unsupported(
+                "the Cadenza backend does not support a binary segment read outside a recognized bin-match"
+                    .to_string(),
+            )),
+        },
         other => Err(Reject::unsupported(format!(
             "the Cadenza backend does not support lowering this Core node back to Cadenza: {}",
             core_node_kind(&other)
@@ -4802,6 +4831,211 @@ fn emit_nested_switch_chain(
         }
     }
     Ok(())
+}
+
+/// The `StructId` binder a node reads if it is a bare `Core::LocalRef`/`Core::Param` (the scrutinee occurrence
+/// a bin-match's `BytesLen` operand + each `BinIntRead.bytes` carry — different occurrences, same binder).
+fn local_binder(db: &mut Db, node: StructId) -> Option<StructId> {
+    match core_of(db, node) {
+        Core::LocalRef { binder } | Core::Param { binder } => Some(binder),
+        _ => None,
+    }
+}
+
+/// Recognize the desugared runtime BIN-MATCH and reconstruct `(match <s> ((bin (uN x)…) <body>) … (_ <c>))`.
+/// `lower_match_bin` (match_tree.rs) lowers a runtime `(match b ((bin …) …) (_ …))` to a materialized
+/// `Core::Let{(s,s), <if-chain>}` where each arm is `(if (= (bytes-len s) TOTAL) <arm-body> <else>)`, the
+/// arm-body reads each binder segment via `Core::BinIntRead{bytes:s, byte_offset, width, signed, le}`, and the
+/// terminal else is the catch-all body. This runs from the `Core::Let` BODY emit (so `s` is already bound in
+/// `env.lets`), and reconstructs the surface match from that if-chain.
+///
+/// SUB-SLICE 1: binder-only FIXED-WIDTH INT segments — every arm's cond is exactly `bytes-len(s) == TOTAL`
+/// (no `And`-ed literal probes), every read is a static-offset `BinIntRead` (no `off_plus` / `BinRestRead` /
+/// `BinSizedRead`), and the read widths tile `[0, TOTAL)` contiguously (no unused/`_` segment). Anything else
+/// → `None` (fall through to the ordinary `if` emit, which declines on the unhandled read → a clean todo, no
+/// regression). Literal segments / le-signed-mix / rest / dependent / bit-fields are later sub-slices.
+fn try_emit_bin_match(
+    db: &mut Db,
+    b: &mut Builder,
+    body: StructId,
+    expected: &Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Option<Result<StructId, Reject>> {
+    // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin-length probe.
+    let (scrut_binder, _) = parse_bin_len_cond(db, body)?;
+    // Walk the if-chain, collecting (segments, arm_body) per arm + the terminal catch-all body.
+    struct BinReArm {
+        segs: Vec<(u32, u8, bool, bool)>, // (byte_offset, width, signed, little_endian), offset-sorted
+        body: StructId,
+    }
+    let mut arms: Vec<BinReArm> = Vec::new();
+    let mut cur = body;
+    let catchall = loop {
+        let Core::If { cond, then_, else_ } = core_of(db, cur) else {
+            break cur; // terminal else = catch-all body
+        };
+        // Each arm's cond must be a bin-length probe over the SAME scrutinee.
+        let Some((sb, _total)) = parse_bin_len_cond(db, cur) else {
+            // A non-bin-length if in the chain (a guard / literal probe / unrelated if) → not sub-slice 1.
+            return None;
+        };
+        if sb != scrut_binder {
+            return None;
+        }
+        let _ = cond;
+        // Collect the arm body's static-offset int-segment reads over the scrutinee; bail on any shape this
+        // sub-slice does not handle (dynamic offset, rest/dependent reads).
+        let segs = collect_bin_int_segs(db, then_, scrut_binder)?;
+        arms.push(BinReArm { segs, body: then_ });
+        cur = else_;
+    };
+    if arms.is_empty() {
+        return None;
+    }
+    // Reconstruct. The scrutinee reads by its `env.lets` name (bound by the enclosing `Let`).
+    let scrut_node = match env.lets.get(&scrut_binder).cloned() {
+        Some(nm) => b.name(nm),
+        None => return None, // scrutinee not a let-bound name → outside the recognized shape
+    };
+    let match_head = b.name("match");
+    let mut children = vec![match_head, scrut_node];
+    for arm in &arms {
+        // Build `(bin (uN xK) …)` + register each segment binder in `env.bin_fields` so the arm body's
+        // `BinIntRead` reads resolve to the binder NAME. Scoped to THIS arm (saved/restored) — sibling arms
+        // reuse the same `(offset, width)` keys.
+        let saved = std::mem::take(&mut env.bin_fields);
+        let bin_head = b.name("bin");
+        let mut pat_children = vec![bin_head];
+        for &(offset, width, signed, le) in &arm.segs {
+            let name = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            let bits = u32::from(width) * 8;
+            let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
+            let binder = b.name(name.clone());
+            let mut seg = vec![ty, binder];
+            if le {
+                seg.push(b.name("le"));
+            }
+            pat_children.push(b.list(seg));
+            env.bin_fields.insert((offset, width), name);
+        }
+        let pat = b.list(pat_children);
+        let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
+        env.bin_fields = saved;
+        let body_node = match body_res {
+            Ok(n) => n,
+            Err(e) => return Some(Err(e)),
+        };
+        children.push(b.list(vec![pat, body_node]));
+    }
+    // The catch-all arm `(_ <body>)` — a bin match is non-exhaustive without one (upstream guarantees it), so
+    // the wildcard keeps the emitted match exhaustive. Its body reads the whole scrutinee (if at all) through
+    // the `env.lets` name, so a bare `_` pattern suffices.
+    let wild = b.name("_");
+    let catchall_node = match emit_expr(db, b, catchall, expected.clone(), env, emitted) {
+        Ok(n) => n,
+        Err(e) => return Some(Err(e)),
+    };
+    children.push(b.list(vec![wild, catchall_node]));
+    Some(Ok(b.list(children)))
+}
+
+/// Parse a node as a bin-match arm's length probe `Compare{Eq, BytesLen(s), ConstInt(total)}` (the `cond` of
+/// the desugared `(if (= (bytes-len s) total) …)`). Returns `(scrutinee-binder, total)` when it matches
+/// EXACTLY that shape — NOT an `And` (a literal-probe conjunction), NOT `Ge` (a final-rest length) — so
+/// sub-slice 1 admits only the whole-scrutinee binder-only arm. `node` may be the `If` itself or its `cond`.
+fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<(StructId, u32)> {
+    let cond = match core_of(db, node) {
+        Core::If { cond, .. } => cond,
+        _ => node,
+    };
+    let Core::Compare { op, lhs, rhs } = core_of(db, cond) else {
+        return None;
+    };
+    if op != crate::resolved::Prim::Eq {
+        return None;
+    }
+    let Core::BytesLen { operand } = core_of(db, lhs) else {
+        return None;
+    };
+    let sb = local_binder(db, operand)?;
+    let Core::ConstInt(total) = core_of(db, rhs) else {
+        return None;
+    };
+    let total = total.to_i64().filter(|&t| t >= 0)? as u32;
+    Some((sb, total))
+}
+
+/// Collect an arm body's fixed-width int-segment reads (`Core::BinIntRead`) over the scrutinee `scrut_binder`,
+/// returned offset-sorted as `(byte_offset, width, signed, little_endian)`. Returns `None` (not sub-slice 1)
+/// if the body carries any read this slice does not reconstruct — a DYNAMIC-offset int read (`off_plus`),
+/// a `BinRestRead` / `BinSizedRead` (rest / dependent-size segments) — or if the collected int widths do NOT
+/// tile `[0, Σwidth)` contiguously from 0 (an unused/`_` segment leaves a gap the reads cannot witness).
+fn collect_bin_int_segs(
+    db: &mut Db,
+    body: StructId,
+    scrut_binder: StructId,
+) -> Option<Vec<(u32, u8, bool, bool)>> {
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        scrut: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        out: &mut Vec<(u32, u8, bool, bool)>,
+        bail: &mut bool,
+    ) {
+        if *bail || !seen.insert(node) {
+            return;
+        }
+        match core_of(db, node) {
+            Core::BinIntRead {
+                bytes,
+                byte_offset,
+                off_plus,
+                width,
+                signed,
+                little_endian,
+            } => {
+                if off_plus.is_some() || local_binder(db, bytes) != Some(scrut) {
+                    *bail = true;
+                    return;
+                }
+                out.push((byte_offset, width, signed, little_endian));
+            }
+            // A rest / dependent-size read over the scrutinee is a later sub-slice — bail.
+            Core::BinRestRead { bytes, .. } | Core::BinSizedRead { bytes, .. }
+                if local_binder(db, bytes) == Some(scrut) =>
+            {
+                *bail = true;
+                return;
+            }
+            _ => {}
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, node) {
+            walk(db, c, scrut, seen, out, bail);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(u32, u8, bool, bool)> = Vec::new();
+    let mut bail = false;
+    walk(db, body, scrut_binder, &mut seen, &mut out, &mut bail);
+    if bail || out.is_empty() {
+        return None;
+    }
+    // Dedup identical (offset,width,signed,le) reads, sort by offset, and require a contiguous tiling from 0
+    // (each segment starts where the previous ended) — else a gap/overlap means an unused or non-int segment
+    // this sub-slice cannot faithfully reconstruct.
+    out.sort_unstable();
+    out.dedup();
+    let mut expect_off: u32 = 0;
+    for &(off, width, _, _) in &out {
+        if off != expect_off {
+            return None;
+        }
+        expect_off += u32::from(width);
+    }
+    Some(out)
 }
 
 /// Reconstruct the surface `(match <scrutinee> (<list-pattern> <body>)…)` for a `Core::MatchList` — a match
