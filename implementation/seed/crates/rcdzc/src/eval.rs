@@ -404,7 +404,8 @@ pub(crate) fn pin_free_vars(
         if let Some(binder) = ref_binder(db, node)
             && (db.is_user_node(binder)
                 || db.module_by_synth_record(binder).is_some()
-                || is_synth_captured_value_binder(db, binder))
+                || is_synth_captured_value_binder(db, binder)
+                || is_synth_match_scrutinee_binder(db, binder))
             && !db.is_within(binder, lam_body)
             && !own_params.contains(&binder)
         {
@@ -458,6 +459,26 @@ fn is_synth_captured_value_binder(db: &Db, binder: StructId) -> bool {
         return true;
     }
     false
+}
+
+/// Whether `binder` is the SCRUTINEE of a `(match scrutinee arm…)` — the binder a match-arm payload
+/// binder resolves THROUGH (`ref_binder`'s `SumPayload => Some(scrutinee)` arm returns it). Used by
+/// `pin_free_vars` to pin a captured match-arm binder that is a SYNTH node (a β-COPIED match, `is_user_node`
+/// false) — the `is_user_node` arm already covers the user-arena case; this is the copied-arena twin, the
+/// match-scrutinee analogue of [`is_synth_captured_value_binder`] (which covers let/def-RHS binders). When
+/// an inner lambda CAPTURES a match-arm payload binder and the OWNING match is inlined (β-copied) first, the
+/// copied scrutinee is synth, so the `is_user_node` gate skipped pinning → the copied captured binder was
+/// plainly copied into an orphan and re-resolved UNBOUND (spurious CDZ0101 — the lambda-captured-match-arm
+/// binder inline bug). Pinning it makes `beta_reduce`'s SumPayload capture-share exception SHARE it (its
+/// `SumPayload` keeps reading the copied scrutinee, which resolves against the copied match). Recognized by
+/// the binder being the FIRST tail element (the scrutinee) of a `match` form.
+fn is_synth_match_scrutinee_binder(db: &Db, binder: StructId) -> bool {
+    let Some(parent) = db.parent_of(binder) else {
+        return false;
+    };
+    db.ast
+        .as_form(parent, "match")
+        .is_some_and(|t| t.first() == Some(&binder))
 }
 
 /// The binder occurrence a name reference resolves to (following `Ref`s / a `Param`, or a `Lambda`'s
