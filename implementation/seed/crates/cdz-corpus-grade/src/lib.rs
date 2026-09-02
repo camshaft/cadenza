@@ -915,6 +915,51 @@ pub fn count_faults(faults: &[DiagFault], severity: Severity, code: &str) -> usi
     faults.iter().filter(|f| f.is(severity, code)).count()
 }
 
+/// The set of CODED-ERROR codes (`error CDZ####`) in a `KIND_DIAGNOSTICS` wire — the parity key. Uncoded
+/// declines (`code == None`) and warnings are excluded (see [`grade_check_parity`]).
+fn coded_error_codes(wire: &[u8]) -> std::collections::BTreeSet<String> {
+    parse_diagnostics(wire)
+        .into_iter()
+        .filter(|f| f.severity == Severity::Error)
+        .filter_map(|f| f.code)
+        .collect()
+}
+
+/// Check-vs-compile diagnostic PARITY (C1 diagnostic-quality): assert that `cdz check` surfaces every
+/// CODED fault `cdz compile` does. Given the two `KIND_DIAGNOSTICS` wires (the compile-phase capture and a
+/// `cdz check --emit-diagnostics` capture of the SAME case), returns `Some(msg)` iff some coded ERROR
+/// present in `compile_diag` is ABSENT from `check_diag` — the `#7143` violation class (a coded rejection
+/// silent under `cdz check` but caught under `cdz compile`, e.g. the CDZ0203 that was invisible to check in
+/// a parameterized export until #7375). Returns `None` when parity holds.
+///
+/// SCOPE — coded ERRORS only. Two things are intentionally OUT of scope because including them would
+/// false-red a check that legitimately does less work than a full compile:
+/// * CODELESS not-yets (`code == None`) — `cdz check` MAY under-report these; a strict subset is fine.
+/// * coded WARNINGS — `cdz check` is a rejection-surfacing pass; a warning-only analysis (e.g. the
+///   CDZ0305 dead-trap sweep) that only a full compile runs need not be mirrored.
+///
+/// So the contract is precisely: check's coded-error set ⊇ compile's coded-error set (check must NEVER
+/// MISS a coded rejection; it MAY add or under-report the excluded classes). Widening the scope to
+/// warnings is a future option once the fleet's check-path is proven parity-clean.
+///
+/// This is the PURE set-superset mechanism (reuses [`parse_diagnostics`] to decode both wires); WHICH cases
+/// opt into the parity leg (a default for coded-error cases vs an explicit `(check-parity)` facet) is a
+/// wiring-layer decision for the 3-way with the `cdz check --emit-diagnostics` capture (v-nix / cdz-run).
+/// On `Some`, the caller downgrades the grade to `Fail` (mirroring the `check_live_objects` → `Fail` path).
+pub fn grade_check_parity(compile_diag: &[u8], check_diag: &[u8]) -> Option<String> {
+    let compile_codes = coded_error_codes(compile_diag);
+    let check_codes = coded_error_codes(check_diag);
+    let missing: Vec<String> = compile_codes.difference(&check_codes).cloned().collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "check-vs-compile parity: cdz check did not surface coded fault(s) that cdz compile rejects: {} \
+         (check must never miss a coded fault — #7143 parity contract)",
+        missing.join(", ")
+    ))
+}
+
 /// How a corpus `(fix …)` clause matches a fault's `replacement` text: `Exact` demands equality (the
 /// spelling/wrap-form the repair substitutes, order-sensitive); `Contains` demands a substring (the repair
 /// merely mentions a name/arm). Both are common in the migrated tests (≈19 exact / 23 substring), so the
@@ -2546,6 +2591,115 @@ mod tests {
         assert_eq!(count_faults(&faults, Severity::Warning, "CDZ9999"), 0);
         assert!(faults[0].is(Severity::Warning, "CDZ0305"));
         assert!(!faults[0].is(Severity::Error, "CDZ0305"));
+    }
+
+    /// `grade_check_parity`: parity HOLDS (`None`) when `cdz check` surfaces every coded ERROR `cdz compile`
+    /// does — equal sets, and a check that OVER-reports (an extra coded error) is still fine (superset).
+    #[test]
+    fn check_parity_holds_when_check_covers_every_coded_compile_error() {
+        use cadenza_compile_abi::Severity as S;
+        let compile = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0203"),
+                Some(4),
+                None,
+                "compound out of order",
+            ),
+            (
+                S::Error,
+                Some("CDZ0101"),
+                Some(7),
+                None,
+                "not a type variable",
+            ),
+        ]);
+        // Exact match → parity holds.
+        assert_eq!(grade_check_parity(&compile, &compile), None);
+        // Check reports a SUPERSET (adds CDZ0201) → still parity (check never MISSED a compile fault).
+        let check_more = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0203"),
+                Some(4),
+                None,
+                "compound out of order",
+            ),
+            (
+                S::Error,
+                Some("CDZ0101"),
+                Some(7),
+                None,
+                "not a type variable",
+            ),
+            (
+                S::Error,
+                Some("CDZ0201"),
+                Some(9),
+                None,
+                "extra check-only fault",
+            ),
+        ]);
+        assert_eq!(grade_check_parity(&compile, &check_more), None);
+    }
+
+    /// `grade_check_parity`: the #7143 VIOLATION — a coded ERROR `cdz compile` rejects is SILENT under `cdz
+    /// check` → `Some(msg)` naming the missing code (the caller downgrades to `Fail`).
+    #[test]
+    fn check_parity_flags_a_coded_fault_silent_under_check() {
+        use cadenza_compile_abi::Severity as S;
+        let compile = bin_wire(&[(
+            S::Error,
+            Some("CDZ0203"),
+            Some(4),
+            None,
+            "coded fault in a parameterized export",
+        )]);
+        // check emits NOTHING for the same case → the CDZ0203 vanished from check.
+        let check_empty: &[u8] = &[];
+        let msg =
+            grade_check_parity(&compile, check_empty).expect("a missing coded fault must red");
+        assert!(
+            msg.contains("CDZ0203"),
+            "message must name the missing code, got {msg:?}"
+        );
+    }
+
+    /// `grade_check_parity` SCOPE: a check that under-reports only CODELESS not-yets or coded WARNINGS is
+    /// NOT a violation — both are out of scope (a check legitimately does less than a full compile).
+    #[test]
+    fn check_parity_ignores_codeless_declines_and_coded_warnings() {
+        use cadenza_compile_abi::Severity as S;
+        let compile = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0203"),
+                Some(4),
+                None,
+                "the one coded rejection",
+            ),
+            (S::Error, None, Some(5), None, "an UNCODED not-yet decline"),
+            (
+                S::Warning,
+                Some("CDZ0305"),
+                Some(6),
+                None,
+                "a dead-trap WARNING",
+            ),
+        ]);
+        // check surfaces ONLY the coded error, dropping the uncoded decline + the coded warning.
+        let check = bin_wire(&[(
+            S::Error,
+            Some("CDZ0203"),
+            Some(4),
+            None,
+            "the one coded rejection",
+        )]);
+        assert_eq!(
+            grade_check_parity(&compile, &check),
+            None,
+            "under-reporting a codeless decline or a coded warning is in-scope-allowed, not a parity miss"
+        );
     }
 
     /// `grade_diag_quality` checks the corpus fix/count assertions against parsed structured faults — the
