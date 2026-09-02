@@ -11,6 +11,8 @@
 ; digest would be a DIFFERENT named function, never a silent change to a generic `Hash`. Over a
 ; compile-time-visible `Bytes` it FOLDS to a compile-time constant via `blake3::hash`; that constant is
 ; BYTE-IDENTICAL to the runtime `hash-blake3` heap op (design §9 — same crate, same bytes, both places).
+(diagnostic-quality)
+
 (case
   "Blake3.of of the empty byte string is the official empty-input BLAKE3-256 digest"
   (doc
