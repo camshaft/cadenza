@@ -431,6 +431,9 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             cli.compile_status,
             &compile_diag,
             diag_wire.as_deref(),
+            // C1 check-vs-compile parity (#7143): `None` until the `--check-diag PATH` RunArgs sidecar +
+            // the per-case `cdz check --diagnostics-wire` capture land (v-nix's leg); parity stays inert.
+            None,
             baseline.as_deref(),
             cli.emit_verdict.as_deref(),
             &peers,
