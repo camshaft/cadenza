@@ -92,7 +92,7 @@ is to make the site unreachable / not a user diagnostic, not to reword.
 | `internal error` | leaks implementation state |
 | `\bICE\b` | "internal compiler error" jargon |
 | `panicked` / `panic!` | Rust runtime-failure leak |
-| `\bunwrap\b` | Rust `Option`/`Result` API leak |
+| `unwrap(` / `.unwrap` | Rust `Option`/`Result` API leak — **CALL-SYNTAX only** (see the unwrap calibration below); the bare word `unwrap` is NOT forbidden |
 | `compiler bug` | should-never-fire invariant text; if a corpus case hits it, the guard is misplaced |
 | `unreachable!` | Rust macro leak |
 
@@ -106,6 +106,16 @@ Forbidding them — even word-boundaried — would wrongly red these. They are n
 (valid in did-you-mean/closest-matches across many codes). See the NOT-forbidden carve-out below. A genuine
 Rust-`Option` leak would be Rust *syntax* (`Option::None`, a `Some(` with Rust call semantics), not the
 bare constructor names — do not attempt to lint those two words.
+
+**Calibration RESOLVED (2026-09-02): bare `unwrap` is NOT forbidden — scope to CALL syntax.** The rollout
+flagged 05's CDZ0202 (NominalMismatch) newtype-boundary messages: `"Age and Int64 are not comparable
+across the nominal boundary (unwrap the nominal to compare the underlying value)"` (fix: `"unwrap the
+nominal with (match … ((variant n) n))"`). Same class as None/Some: **`unwrap` is a Cadenza SURFACE
+operation** — `(unwrap …)` appears 81× in the corpus — so guiding the user to "unwrap the nominal" is
+golden, not a leak. The genuine Rust leak is the **call form** `.unwrap()` / `unwrap()` (a panic-y
+`Option::unwrap()` in an internal-error message), never the bare word. So §1 matches `unwrap(` / `.unwrap`
+(call syntax) only; the bare word `unwrap` is exempt. (Routed to v-corpus-harness for the lint tuning,
+2026-09-02; 05 enrollment deferred until it lands — the messages are golden and need NO change.)
 
 ### NOT forbidden (explicit carve-outs — do NOT add these)
 
