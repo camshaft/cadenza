@@ -269,7 +269,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 8 };
+    let arms = if depth == 0 { 2 } else { 9 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -331,7 +331,7 @@ fn gen_typefuzz_int<C: Choice>(
         // A let-bound lambda applied by NAME: `(let ((fN (fn ((: iM Int64)) <int-body>))) (fN <int-arg>))`.
         // Exercises Fn introduction (T1.11) + CONCRETE-HEAD App (T1.12 — the oracle models application of
         // a NAME, not an inline lambda, so the head must be a bound name to be judged). Returns Int64.
-        _ => {
+        7 => {
             let f = format!("f{}", *fresh);
             *fresh += 1;
             let p = format!("i{}", *fresh);
@@ -342,6 +342,10 @@ fn gen_typefuzz_int<C: Choice>(
             iscope.pop();
             format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
         }
+        // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
+        // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
+        // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
+        _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, false),
     }
 }
 
@@ -353,7 +357,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 8 };
+    let arms = if depth == 0 { 2 } else { 9 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -418,7 +422,7 @@ fn gen_typefuzz_bool<C: Choice>(
         }
         // A let-bound lambda applied by NAME returning Bool: `(let ((fN (fn ((: iM Int64)) <bool-body>)))
         // (fN <int-arg>))` — Fn intro + CONCRETE-HEAD App (the head must be a bound name to be judged).
-        _ => {
+        7 => {
             let f = format!("f{}", *fresh);
             *fresh += 1;
             let p = format!("i{}", *fresh);
@@ -429,6 +433,59 @@ fn gen_typefuzz_bool<C: Choice>(
             iscope.pop();
             format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
         }
+        // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
+        // Bool (Mat rule T1.16).
+        _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, true),
+    }
+}
+
+/// A scalar body of the requested type — Bool if `want_bool`, else Int64. Shared by the match arm so
+/// its arm bodies unify to one result type.
+fn typefuzz_scalar<C: Choice>(
+    c: &mut C,
+    depth: u32,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+    want_bool: bool,
+) -> String {
+    if want_bool {
+        gen_typefuzz_bool(c, depth, iscope, bscope, fresh)
+    } else {
+        gen_typefuzz_int(c, depth, iscope, bscope, fresh)
+    }
+}
+
+/// An EXHAUSTIVE `match` over a built-in sum (Mat rule T1.16), arms producing Int64 (`want_bool=false`)
+/// or Bool. Option (`(Some x)` binds the Int64 payload / `(None)`) or Ordering (all three nullary
+/// variants). Flat `(Ctor binder)` patterns only + fully covered — nested/literal/tuple patterns and
+/// non-exhaustive matches are out of the oracle's fragment (they skip), so this stays a dense-judged shape.
+fn gen_typefuzz_match<C: Choice>(
+    c: &mut C,
+    depth: u32,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+    want_bool: bool,
+) -> String {
+    let d = depth.saturating_sub(1);
+    if c.variant(2) == 0 {
+        // Option: scrutinize a fresh `(Some <int>)`; `(Some x)` binds x (Int64) in that arm's body.
+        let s = gen_typefuzz_int(c, d, iscope, bscope, fresh);
+        let x = format!("i{}", *fresh);
+        *fresh += 1;
+        iscope.push(x.clone());
+        let some = typefuzz_scalar(c, d, iscope, bscope, fresh, want_bool);
+        iscope.pop();
+        let none = typefuzz_scalar(c, d, iscope, bscope, fresh, want_bool);
+        format!("(match (Some {s}) ((Some {x}) {some}) ((None) {none}))")
+    } else {
+        // Ordering: scrutinize a nullary variant; all three arms required for exhaustiveness.
+        let scrut = ["Less", "Equal", "Greater"][c.variant(3)];
+        let l = typefuzz_scalar(c, d, iscope, bscope, fresh, want_bool);
+        let e = typefuzz_scalar(c, d, iscope, bscope, fresh, want_bool);
+        let g = typefuzz_scalar(c, d, iscope, bscope, fresh, want_bool);
+        format!("(match {scrut} ((Less) {l}) ((Equal) {e}) ((Greater) {g}))")
     }
 }
 
