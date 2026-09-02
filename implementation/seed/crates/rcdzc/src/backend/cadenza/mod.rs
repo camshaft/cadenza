@@ -190,6 +190,17 @@ struct BinderEnv {
     /// matches never collide; a slot ABSENT here → `_` (prior behavior), so the change is purely ADDITIVE
     /// (turns a decline into a pass, touches no currently-passing wildcard).
     whole_slot_reads: std::collections::HashSet<(StructId, Vec<crate::core::PathStep>)>,
+    /// (M4a B2) The reconstructions a flattened arm's body needs: `(whole-slot binder, construction expr)`
+    /// pairs for each payload slot the arm DESTRUCTURES but the body reads WHOLE. A destructured slot's
+    /// pattern (`(Lit _cdz_m3)`) does not bind the pre-registered whole-slot binder (`_cdz_m0`), so the body's
+    /// whole-slot read dangles → CDZ0101 on recompile (the destructure twin of the B1 wildcard case). The fix
+    /// binds it back at the top of the arm body: `(let ((_cdz_m0 (Lit _cdz_m3))) <body>)`, reconstructing the
+    /// whole slot from the destructure — a constructor PATTERN and its CONSTRUCTION expression share the same
+    /// surface shape, so the pattern node is reused as the value expr (value-equivalent: the arm proved the
+    /// slot equals that construction of the matched inner binders). Populated by `build_arm_pat` during the
+    /// arm's pattern build, DRAINED by `emit_switch_tree`'s `Leaf` arm to wrap the body. A destructure carrying
+    /// a WILDCARD cannot be reconstructed (the sub-value was never bound) → `build_arm_pat` declines instead.
+    slot_reconstructions: Vec<(std::rc::Rc<str>, StructId)>,
     /// The set of effect NAMES a `Core::HostCall` performed while emitting the CURRENT definition's body.
     /// [`emit_def`] reads it after the body and, if non-empty, wraps the body in one `(host (E…) <body>)`
     /// delegation so each re-emitted perform `((. E o) …)` re-lowers to a host-delegated `HostCall` (else
@@ -267,38 +278,21 @@ fn node_references(
         .any(|c| node_references(db, c, target, seen))
 }
 
-/// (M4a) Collect every `Core::SumPayload { scrutinee == scrut, path }` read path reachable from a
-/// decision-tree `cont`'s bodies (`Leaf`/`Guarded`/`LitTest`/`Switch` — every `cond`, `then_`, `els`, and
-/// nested-arm body), recording `(scrut, path)` into `out`. Called at the `emit_switch_tree` deep-tree branch
-/// so [`build_arm_pat`] can tell which WHOLE payload slots a flattened arm's body reads whole — a DEFAULT
-/// (wildcard) slot the body reads whole then emits the pre-registered whole-slot binder NAME instead of `_`
-/// (M4a: register-vs-emit decoupling → CDZ0101 unbound on recompile). See `BinderEnv::whole_slot_reads`.
-fn collect_cont_sum_payload_reads(
+/// (M4a) Collect every `Core::SumPayload { scrutinee == scrut, path }` read path reachable from ONE
+/// decision-tree LEAF `body` (transitively via `core_child_ids`, so a nested match's reads of the outer
+/// scrutinee's slots are caught), recording `(scrut, path)` into `out`. Populated PER-LEAF (scoped to the
+/// body being emitted, not the whole cont) into `env.whole_slot_reads` so [`build_arm_pat`] knows which
+/// WHOLE payload slots THIS body reads whole: a DEFAULT (wildcard) slot the body reads whole emits the
+/// pre-registered whole-slot binder instead of `_` (B1), and a DESTRUCTURED slot the body reads whole gets
+/// its whole-slot binder reconstructed in the arm body (B2) — the register-vs-emit decoupling that dangled
+/// to CDZ0101 on recompile. Per-leaf precision avoids a spurious reconstruction/binder in a SIBLING arm whose
+/// body does NOT read the slot whole (e.g. an `(Add (Lit 0) r)` arm returning only `r`).
+fn collect_body_sum_payload_reads(
     db: &mut Db,
-    cont: &crate::core::SumCont,
+    body: StructId,
     scrut: StructId,
     out: &mut std::collections::HashSet<(StructId, Vec<crate::core::PathStep>)>,
 ) {
-    use crate::core::SumCont;
-    fn gather_bodies(cont: &SumCont, bodies: &mut Vec<StructId>) {
-        match cont {
-            SumCont::Leaf(body) => bodies.push(*body),
-            SumCont::Guarded { cond, body, els } => {
-                bodies.push(*cond);
-                bodies.push(*body);
-                gather_bodies(els, bodies);
-            }
-            SumCont::LitTest { then_, els, .. } => {
-                gather_bodies(then_, bodies);
-                gather_bodies(els, bodies);
-            }
-            SumCont::Switch { arms, .. } => {
-                for a in arms {
-                    gather_bodies(&a.cont, bodies);
-                }
-            }
-        }
-    }
     fn walk(
         db: &mut Db,
         node: StructId,
@@ -318,12 +312,8 @@ fn collect_cont_sum_payload_reads(
             walk(db, c, scrut, seen, out);
         }
     }
-    let mut bodies = Vec::new();
-    gather_bodies(cont, &mut bodies);
     let mut seen = std::collections::HashSet::new();
-    for body in bodies {
-        walk(db, body, scrut, &mut seen, out);
-    }
+    walk(db, body, scrut, &mut seen, out);
 }
 
 /// Scan `body` for every `Core::SumPayload { scrutinee == scrut, path }` whose path begins with `prefix`,
@@ -3304,8 +3294,78 @@ fn emit_expr_viewed(
 /// irrefutable-in-pattern step; else it is a LEAF, bound to a fresh name (keyed at the FULL `path` — the exact
 /// `Core::SumPayload` key the body reads). A payload slot `k` of variant `disc` sits at `path ++ [Payload {,
 /// Elem(k)}]` — the same keying `emit_match_sum` / `emit_nested_switch_chain` use.
+/// True iff the surface PATTERN subtree rooted at `id` contains a `_` wildcard anywhere. (M4a B2) A
+/// destructured payload slot the body reads whole is reconstructed by reusing the pattern node as a
+/// CONSTRUCTION expr; a `_` is not a valid expression (the sub-value was never bound), so a pattern
+/// carrying one cannot be reconstructed → the caller declines rather than emit an unbuildable expr.
+fn pattern_has_wildcard(b: &Builder, id: StructId) -> bool {
+    if b.as_name(id) == Some("_") {
+        return true;
+    }
+    match b.get(id) {
+        crate::ast::Struct::List(items) => {
+            let items = items.clone();
+            items.iter().any(|&c| pattern_has_wildcard(b, c))
+        }
+        crate::ast::Struct::Atom(_) => false,
+    }
+}
+
+/// Build the surface PATTERN for one decision-tree leaf position (see [`build_arm_pat_inner`]), then apply
+/// the M4a B2 whole-slot reconstruction: if the body reads THIS whole slot AND the built pattern DESTRUCTURES
+/// it (a compound, not a bare binder/wildcard — those already bind the slot, incl. the B1 wildcard case),
+/// the pre-registered whole-slot binder is NOT bound by the flattened pattern → CDZ0101 on recompile. Record
+/// `(binder, pattern-reused-as-construction-expr)` in `env.slot_reconstructions` for [`emit_switch_tree`]'s
+/// `Leaf` arm to wrap the body in `(let ((<binder> <recon>)) <body>)`. A destructure carrying a wildcard is
+/// unreconstructable → decline (reject, never miscompile).
 #[allow(clippy::too_many_arguments)]
 fn build_arm_pat(
+    db: &mut Db,
+    b: &mut Builder,
+    root_scrut: StructId,
+    ty: &Ty,
+    path: &[crate::core::PathStep],
+    read_path: &[crate::core::PathStep],
+    choices: &std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
+    lit_choices: &std::collections::HashMap<
+        Vec<crate::core::PathStep>,
+        Option<(StructId, crate::core::Probe)>,
+    >,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    let pat = build_arm_pat_inner(
+        db,
+        b,
+        root_scrut,
+        ty,
+        path,
+        read_path,
+        choices,
+        lit_choices,
+        env,
+        emitted,
+    )?;
+    if env
+        .whole_slot_reads
+        .contains(&(root_scrut, read_path.to_vec()))
+        && let Some(binder) = env.payloads.get(&(root_scrut, read_path.to_vec())).cloned()
+        && b.as_name(pat).is_none()
+    {
+        if pattern_has_wildcard(b, pat) {
+            return Err(Reject::unsupported(
+                "the Cadenza backend cannot reconstruct a destructured whole payload slot the body reads \
+                 whole when the destructure contains a wildcard"
+                    .to_string(),
+            ));
+        }
+        env.slot_reconstructions.push((binder, pat));
+    }
+    Ok(pat)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_arm_pat_inner(
     db: &mut Db,
     b: &mut Builder,
     root_scrut: StructId,
@@ -3675,6 +3735,15 @@ fn emit_switch_tree(
     use crate::core::SumCont;
     match cont {
         SumCont::Leaf(body) => {
+            // (M4a) Compute which whole payload slots THIS leaf body reads whole (per-leaf precision — a
+            // sibling arm's reads must not leak in), scoped for the pattern build; restore after. Then scope
+            // the whole-slot reconstructions to this arm: take the (empty) slot so a nested match in the body
+            // starts fresh, capture what building THIS arm's pattern recorded, restore the outer set (for a
+            // caller mid-build), and wrap the body in `(let ((<binder> <recon>)…) <body>)` so a destructured
+            // slot the body reads whole (B2) rebinds its pre-registered whole-slot binder.
+            let saved_reads = std::mem::take(&mut env.whole_slot_reads);
+            collect_body_sum_payload_reads(db, *body, root_scrut, &mut env.whole_slot_reads);
+            let outer = std::mem::take(&mut env.slot_reconstructions);
             let pat = build_arm_pat(
                 db,
                 b,
@@ -3687,8 +3756,24 @@ fn emit_switch_tree(
                 env,
                 emitted,
             )?;
+            let recons = std::mem::replace(&mut env.slot_reconstructions, outer);
+            env.whole_slot_reads = saved_reads;
             let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
-            children.push(b.list(vec![pat, body_node]));
+            let arm_body = if recons.is_empty() {
+                body_node
+            } else {
+                let let_head = b.name("let");
+                let binding_nodes: Vec<StructId> = recons
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let name_atom = b.name(name);
+                        b.list(vec![name_atom, value])
+                    })
+                    .collect();
+                let bindings_list = b.list(binding_nodes);
+                b.list(vec![let_head, bindings_list, body_node])
+            };
+            children.push(b.list(vec![pat, arm_body]));
             Ok(())
         }
         SumCont::Switch { path, arms } => {
@@ -4329,15 +4414,6 @@ fn emit_match_sum(
                         // becomes one deep surface arm.
                         SumCont::Switch { .. } => {
                             let root_ty = crate::infer::type_of(db, scrutinee);
-                            // (M4a) Record which WHOLE payload slots this arm's flattened bodies read whole, so
-                            // a DEFAULT (wildcard) slot the body reads whole emits the pre-registered whole-slot
-                            // binder (`_cdz_m0`) instead of `_` (register-vs-emit decoupling → CDZ0101 unbound).
-                            collect_cont_sum_payload_reads(
-                                db,
-                                cont,
-                                scrutinee,
-                                &mut env.whole_slot_reads,
-                            );
                             let mut choices: std::collections::HashMap<
                                 Vec<crate::core::PathStep>,
                                 Option<u32>,
