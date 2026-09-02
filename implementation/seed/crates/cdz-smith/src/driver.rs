@@ -40,6 +40,11 @@ pub enum GenMode {
     /// same shapes the lean/cadenza differential grades, but run here through the crash/reachability
     /// oracle so a codeless (class-2) decline the coercing grammar reaches is surfaced too.
     Astgen,
+    /// The NARROW type-fuzzing grammar (`astgen::generate_typecheck`) — programs STRICTLY inside the Lean
+    /// type oracle's modeled fragment (Int64/Bool · arith · cmp · bool · if · let · ascription), ~80%
+    /// well-typed / ~20% ill-typed. Nearly every program is JUDGED (vs ~3% for text/astgen), giving the
+    /// `type-differential` false-reject/false-accept hunt real density (the operator #1-for-types lever).
+    TypeFuzz,
 }
 
 /// Configuration for a fuzzing run.
@@ -852,9 +857,10 @@ pub fn rcdzc_typecheck_verdict(source: &str) -> Option<crate::lean::RcdzcVerdict
 /// disagreement rcdzc's SAME-front-end wasm-vs-rust differential is structurally blind to (there a
 /// decline is never a mismatch). The mismatch direction (`false-reject`/`capability-gap`/
 /// `false-accept`/`code-mismatch`, §1.3) is carried in the detail and classified into the tallies +
-/// the filed [`Category::TypeOracle`] finding. The broad TEXT grammar is the population: it declines
-/// ~73%, so it actually EXERCISES the reject/decline bucket the type oracle validates (the coercing
-/// astgen grammar is type-correct-by-construction and rarely rejects).
+/// the filed [`Category::TypeOracle`] finding. Population follows `cfg.gen_mode`: default TEXT declines
+/// ~73% (the false-reject bucket, but mostly out-of-fragment ⇒ ~3% judged); `TypeFuzz` (`--typegen`) is
+/// the NARROW in-fragment grammar ⇒ nearly all judged, the dense hunt. (`Astgen` is out-of-fragment ⇒
+/// all-skip — see S192; not used here.)
 #[cfg(feature = "differential")]
 pub fn typecheck_sweep(
     cfg: &Config,
@@ -874,7 +880,10 @@ pub fn typecheck_sweep(
 
     for i in 0..count {
         let seed = rng.next();
-        let source = program_for_seed_with(seed, GenMode::Text);
+        // Honor the config's grammar: default TEXT (~73% declines → the false-reject population, mostly
+        // out-of-fragment ⇒ ~3% judged); `--typegen` (GenMode::TypeFuzz) draws the NARROW in-fragment
+        // grammar ⇒ nearly all judged, the dense false-reject/false-accept hunt.
+        let source = program_for_seed_with(seed, cfg.gen_mode);
 
         // rcdzc's carried verdict (design §1.2). Sound even though this is the full in-process compile:
         // the oracle returns `Unsupported` for any backend-only construct, so a backend-only decline
@@ -1001,6 +1010,7 @@ pub fn program_for_seed_with(seed: u64, mode: GenMode) -> String {
     match mode {
         GenMode::Text => generate(&seed_entropy(seed)).source,
         GenMode::Astgen => crate::astgen::generate_coerced(&astgen_seed_entropy(seed)).source,
+        GenMode::TypeFuzz => crate::astgen::generate_typecheck(&astgen_seed_entropy(seed)).source,
     }
 }
 

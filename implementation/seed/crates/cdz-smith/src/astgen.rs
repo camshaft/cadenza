@@ -226,6 +226,209 @@ fn gen_nominal_symbol_program<C: Choice>(c: &mut C) -> (String, String) {
     ("(type Tag (T Symbol))".to_string(), body)
 }
 
+/// The NARROW TYPE-FUZZING generator (S194 — the operator #1-for-types false-reject/false-accept lever).
+/// Emit a `(do (def (main) <body>) (export main))` whose body is STRICTLY inside the Lean type oracle's
+/// modeled fragment — Int64/Bool scalars, arithmetic, comparison, boolean connectives, `if`, `let`, and
+/// ascription — so nearly every program is JUDGED (not skipped), unlike the broad text/astgen grammars
+/// (~3% judged). Biased ~80% WELL-TYPED (rcdzc accepts + oracle WellTyped ⇒ holds; an rcdzc CODED reject
+/// over a well-typed program is a FALSE-REJECT) and ~20% genuinely ILL-TYPED (rcdzc rejects + oracle
+/// IllTyped ⇒ holds; an rcdzc ACCEPT of an ill-typed program is a FALSE-ACCEPT / soundness hole). Both
+/// directions are the operator's "oracles in both directions". Int64/Bool only in this first slice;
+/// tuple/record/fn/sum + match arms are additive follow-ups (v-lean-oracle's fragment widens under them).
+pub fn generate_typecheck(entropy: &[u8]) -> Program {
+    let mut c = ByteCursorChoice::new(entropy);
+    let mut iscope: Vec<String> = Vec::new();
+    let mut bscope: Vec<String> = Vec::new();
+    let mut fresh = 0usize;
+    // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed Int64/Bool body.
+    let body = if c.variant(5) == 0 {
+        gen_typefuzz_illtyped(&mut c, &mut iscope, &mut bscope, &mut fresh)
+    } else if c.variant(2) == 0 {
+        gen_typefuzz_int(&mut c, 3, &mut iscope, &mut bscope, &mut fresh)
+    } else {
+        gen_typefuzz_bool(&mut c, 3, &mut iscope, &mut bscope, &mut fresh)
+    };
+    Program {
+        source: format!("(do (def (main) {body}) (export main))"),
+    }
+}
+
+/// A WELL-TYPED Int64 expression in the modeled fragment (bounded by `depth`).
+fn gen_typefuzz_int<C: Choice>(
+    c: &mut C,
+    depth: u32,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+) -> String {
+    // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
+    let arms = if depth == 0 { 2 } else { 6 };
+    match c.variant(arms) {
+        // Edge-biased Int64 literal.
+        0 => {
+            let mut s = String::new();
+            gen_int_literal(c, &mut s);
+            s
+        }
+        // An in-scope Int64 var (else a literal).
+        1 => {
+            if iscope.is_empty() {
+                let mut s = String::new();
+                gen_int_literal(c, &mut s);
+                s
+            } else {
+                iscope[c.int_bounded(0, iscope.len() as i64 - 1) as usize].clone()
+            }
+        }
+        // Arithmetic over two Int64 subexprs (`+`/`-`/`*` — total; `/`/`%` add a zero-divisor trap the
+        // VALUE oracle handles, but for the TYPING oracle any Int64→Int64→Int64 op is fine — keep it total).
+        2 => {
+            let op = ["+", "-", "*"][c.variant(3)];
+            let a = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            format!("({op} {a} {b})")
+        }
+        // `(if <bool> <int> <int>)`.
+        3 => {
+            let cnd = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            let t = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            let e = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            format!("(if {cnd} {t} {e})")
+        }
+        // `(let ((iN <int>)) <int-using-iN>)` — binds an Int64 var in scope for the body.
+        4 => {
+            let name = format!("i{}", *fresh);
+            *fresh += 1;
+            let val = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            iscope.push(name.clone());
+            let body = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            iscope.pop();
+            format!("(let (({name} {val})) {body})")
+        }
+        // Ascription `(: <int> Int64)` — a constrain-not-contradict that must SOLVE (well-typed).
+        _ => {
+            let e = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            format!("(: {e} Int64)")
+        }
+    }
+}
+
+/// A WELL-TYPED Bool expression in the modeled fragment (bounded by `depth`).
+fn gen_typefuzz_bool<C: Choice>(
+    c: &mut C,
+    depth: u32,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+) -> String {
+    let arms = if depth == 0 { 2 } else { 6 };
+    match c.variant(arms) {
+        // Bool literal.
+        0 => ["true", "false"][c.variant(2)].to_string(),
+        // An in-scope Bool var (else a literal).
+        1 => {
+            if bscope.is_empty() {
+                ["true", "false"][c.variant(2)].to_string()
+            } else {
+                bscope[c.int_bounded(0, bscope.len() as i64 - 1) as usize].clone()
+            }
+        }
+        // Comparison of two Int64 → Bool.
+        2 => {
+            let op = ["<", ">", "<=", ">=", "="][c.variant(5)];
+            let a = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            format!("({op} {a} {b})")
+        }
+        // Boolean connective.
+        3 => match c.variant(3) {
+            0 => {
+                let a = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+                let b = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+                format!("(and {a} {b})")
+            }
+            1 => {
+                let a = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+                let b = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+                format!("(or {a} {b})")
+            }
+            _ => {
+                let a = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+                format!("(not {a})")
+            }
+        },
+        // `(if <bool> <bool> <bool>)`.
+        4 => {
+            let cnd = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            let t = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            let e = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            format!("(if {cnd} {t} {e})")
+        }
+        // `(let ((bN <bool>)) <bool-using-bN>)`.
+        _ => {
+            let name = format!("b{}", *fresh);
+            *fresh += 1;
+            let val = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            bscope.push(name.clone());
+            let body = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            bscope.pop();
+            format!("(let (({name} {val})) {body})")
+        }
+    }
+}
+
+/// A GENUINELY ILL-TYPED body in the modeled fragment — rcdzc must reject (a CODED type fault) and the
+/// oracle must infer IllTyped ⇒ holds; an rcdzc ACCEPT here is a FALSE-ACCEPT (soundness hole). Each
+/// shape is a real type error the oracle's rules cover: arith-on-Bool, an ascription conflict, a
+/// non-Bool `if` condition, a bool-connective-on-Int, a heterogeneous comparison, an unbound name.
+fn gen_typefuzz_illtyped<C: Choice>(
+    c: &mut C,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+) -> String {
+    let int = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
+        gen_typefuzz_int(c, 1, is, bs, f)
+    };
+    let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
+        gen_typefuzz_bool(c, 1, is, bs, f)
+    };
+    match c.variant(6) {
+        // Arithmetic with a Bool operand.
+        0 => {
+            let a = int(c, iscope, bscope, fresh);
+            let b = boolean(c, iscope, bscope, fresh);
+            format!("(+ {a} {b})")
+        }
+        // Ascription conflict: an Int64 expr ascribed Bool.
+        1 => {
+            let e = int(c, iscope, bscope, fresh);
+            format!("(: {e} Bool)")
+        }
+        // Non-Bool `if` condition (an Int64 where a Bool is required).
+        2 => {
+            let cnd = int(c, iscope, bscope, fresh);
+            let t = int(c, iscope, bscope, fresh);
+            let e = int(c, iscope, bscope, fresh);
+            format!("(if {cnd} {t} {e})")
+        }
+        // Boolean connective with an Int64 operand.
+        3 => {
+            let a = boolean(c, iscope, bscope, fresh);
+            let b = int(c, iscope, bscope, fresh);
+            format!("(and {a} {b})")
+        }
+        // Heterogeneous comparison (Int64 vs Bool).
+        4 => {
+            let a = int(c, iscope, bscope, fresh);
+            let b = boolean(c, iscope, bscope, fresh);
+            format!("(< {a} {b})")
+        }
+        // An unbound name (resolution error).
+        _ => "zz".to_string(),
+    }
+}
+
 /// Build a RECURSIVE-PERFORM effect program — the "dynamic-extent, statically-resolved" self-hosting
 /// shape: a TOP-LEVEL recursive `loop` def PERFORMS the effect op deep inside itself, and `main`'s
 /// `handle` (wrapping the `(loop k)` call) discharges every perform across the recursion. This value-grades
@@ -2448,6 +2651,36 @@ mod tests {
         assert!(
             hit,
             "the symbol-in-compound special program (variant slot 4) must be reachable"
+        );
+    }
+
+    /// The NARROW type-fuzzing grammar (S194): every generated program parses + is cleanly handled by
+    /// the compiler (Compiled or a correct coded Declined — the ~20% ill-typed arm), never a crash /
+    /// invalid wasm / parse error. A well-formed in-fragment population for the false-reject hunt.
+    #[test]
+    fn typecheck_grammar_is_cleanly_handled() {
+        let mut compiled = 0;
+        let mut declined = 0;
+        for s in 0u64..120 {
+            let bytes: Vec<u8> = (0..64)
+                .map(|i| ((s.wrapping_mul(0x9E37_79B9).wrapping_add(i)) & 0xff) as u8)
+                .collect();
+            let src = generate_typecheck(&bytes).source;
+            match compile_catching(&src) {
+                Verdict::Compiled { .. } => compiled += 1,
+                Verdict::Declined { .. } => declined += 1,
+                other => panic!("type-fuzz program not cleanly handled: {src}\n{other:?}"),
+            }
+        }
+        // The 80/20 split means BOTH outcomes must actually occur (well-typed compiles + ill-typed
+        // declines) — a witness that the grammar exercises both directions, not just one.
+        assert!(
+            compiled > 0,
+            "the well-typed arm must produce compiled programs"
+        );
+        assert!(
+            declined > 0,
+            "the ill-typed arm must produce coded declines"
         );
     }
 

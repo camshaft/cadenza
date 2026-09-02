@@ -156,7 +156,7 @@ fn usage() {
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
-         \x20 cdz-smith type-differential [--count N] [--seed S] [--oracle PATH] [--findings DIR]   (Lean TYPE oracle — false-reject/false-accept hunt)\n\
+         \x20 cdz-smith type-differential [--count N] [--seed S] [--oracle PATH] [--findings DIR] [--typegen]   (Lean TYPE oracle — false-reject/false-accept hunt; --typegen = dense in-fragment grammar)\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
@@ -1282,6 +1282,7 @@ fn cmd_type_differential(args: &[String]) -> ExitCode {
     let mut seed: Option<u64> = None;
     let mut findings: Option<PathBuf> = None;
     let mut oracle: Option<PathBuf> = None;
+    let mut typegen = false;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1290,6 +1291,9 @@ fn cmd_type_differential(args: &[String]) -> ExitCode {
             "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
             "--findings" => findings = it.next().map(PathBuf::from),
             "--oracle" => oracle = it.next().map(PathBuf::from),
+            // Draw the NARROW in-fragment type-fuzzing grammar (nearly all judged) instead of the default
+            // broad text grammar (~3% judged) — the dense false-reject/false-accept hunt (S194).
+            "--typegen" => typegen = true,
             other => {
                 eprintln!("cdz-smith type-differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1321,13 +1325,18 @@ fn cmd_type_differential(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 100,
-        gen_mode: driver::GenMode::default(),
+        gen_mode: if typegen {
+            driver::GenMode::TypeFuzz
+        } else {
+            driver::GenMode::default()
+        },
     };
     eprintln!(
-        "[cdz-smith] type-differential @{} | seed {} | count {} | oracle {} | findings → {}",
+        "[cdz-smith] type-differential @{} | seed {} | count {} | grammar {} | oracle {} | findings → {}",
         cfg.commit,
         cfg.run_seed,
         count,
+        if typegen { "typefuzz" } else { "text" },
         oracle.display(),
         findings_dir.display()
     );
