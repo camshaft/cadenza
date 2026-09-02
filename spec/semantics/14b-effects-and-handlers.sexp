@@ -3044,35 +3044,40 @@
       (export main)))
   (output (: 3 Int64)))
 
-; A NON-recursive performing helper called TWICE in one continuation (breaker eg1). The single-
-; helper inline (the accum/simple-helper inline, #7797) discharges ONE cross-function performing-
-; helper call by inlining its body into the handled region; a SECOND such call in the continuation
-; is not reached, so the tail-resumptive fold declines CDZ0900 (an honest todo — reject-don't-
-; miscompile; effect-context monomorphization would emit the helper once and discharge both). The
-; trigger is the SECOND CALL, not genericity: a single monomorphic performing helper called twice
-; declines identically, while a single call (annotated, eg2) OR both calls manually inlined into the
-; body computes. Here `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` is generic (used at
-; (String,Bool) and (Int64,String)); it stamps each tuple with a fresh tick. The handler seeds n,
-; `tick` hands back the current state and threads s+1, so the first stamp's tick reads t1=n and the
-; second t2=n+1; the result is byte-len("hi")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n. The
-; recorded outputs (n=3 -> 40309, n=0 -> 10009, n=5 -> 60509) are VERIFIED via the both-inlined
-; control (performs in-body, which the fold discharges); they are the semantics a monomorphizing
-; generation realizes. Extends the single-return inline frontier past ONE performing-helper call.
+; NESTED match-scrutinee destructuring of a TUPLE-returning performing helper (breaker eg1). `stamp`
+; returns a tuple with a fresh `(C.tick)` embedded (`stamp p = match p (#tuple(a b) -> #tuple(a b
+; (C.tick)))`); `main` calls it as the scrutinee of an outer match, then AGAIN as the scrutinee of an
+; inner match in the outer arm — two levels of tuple-destructure over a performing helper. The tail-
+; resumptive fold declines CDZ0900 (honest todo — reject-don't-miscompile; effect-context
+; monomorphization would emit the helper once and discharge both). NARROWED (verified with controls):
+; the trigger is this NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT "two
+; calls" and NOT genericity. Two cross-function performing-helper calls in OPERATOR / LET / DO position
+; COMPILE (even monomorphic: `(+ (bump 10) (bump 20))`, `(let ((a (bump 10))) (let ((b (bump 20))) …))`,
+; `(do (bump 10) (bump 20))` all fold); a SINGLE tuple-destructure call compiles (eg2); and nested
+; match-scrutinee performs over a BARE-BINDER (non-destructured) result compile. It is specifically the
+; tuple-RETURNING helper destructured by a tuple pattern, nested, that declines (a monomorphic single-
+; type nesting declines identically — genericity is orthogonal). Handler seeds n, `tick` returns the
+; current state and threads s+1, so the first stamp's tick reads t1=n and the second t2=n+1; the result
+; is byte-len("hi")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n. The recorded outputs (n=3 -> 40309,
+; n=0 -> 10009, n=5 -> 60509) are VERIFIED via the both-performs-inlined control (performs in-body,
+; which the fold discharges); they are the semantics a monomorphizing generation realizes.
 (case
-  "TWO sequential cross-function performing-helper calls in one continuation decline (the single inline reaches one, not the second) — generic stamp used at two tuple types"
+  "NESTED match-scrutinee destructure of a tuple-returning performing helper declines (single call + operator/let/do-position calls fold; the nested tuple-destructure over the helper does not)"
   (doc
-    "breaker eg1, the effects x cross-function-inline frontier. `stamp` is an unannotated GENERIC
-           helper `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` that stamps a tuple with a fresh
-           `(C.tick)`; `main` calls it TWICE under one `handle C` — at (String,Bool) then (Int64,String). The
-           simple-helper inline (#7797) discharges the FIRST cross-function performing-helper call by inlining
-           it into the handled region, but the SECOND call in the continuation is not reached, so the tail-
-           resumptive fold declines CDZ0900 (honest todo, never a hang or miscompile). The trigger is the
-           SECOND CALL, NOT the genericity: a single MONOMORPHIC performing helper called twice declines
-           identically, while a single call (eg2, annotated) or both stamps manually inlined into the body
-           computes. Handler seeds n, `tick` returns the current state and threads s+1 -> first stamp reads
+    "breaker eg1, the effects x cross-function-inline frontier. `stamp` is a performing helper
+           `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` returning a tuple with a fresh `(C.tick)`
+           embedded; `main` calls it as the scrutinee of an OUTER match, then AGAIN as the scrutinee of an
+           INNER match in the outer arm (here generic, used at (String,Bool) then (Int64,String)). The tail-
+           resumptive fold declines CDZ0900 (honest todo, never a hang or miscompile). NARROWED with controls:
+           the trigger is this NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT the
+           number of calls and NOT genericity. Two cross-function performing-helper calls in OPERATOR / LET /
+           DO position COMPILE (even monomorphic); a single tuple-destructure call compiles (eg2); nested
+           match-scrutinee performs over a BARE-BINDER result compile. Only the tuple-RETURNING helper
+           destructured by a tuple pattern, nested, declines — a monomorphic single-type nesting declines
+           identically. Handler seeds n, `tick` returns the current state and threads s+1 -> first stamp reads
            t1=n, second reads t2=n+1; result = byte-len(\"hi\")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n.
            The recorded outputs are VERIFIED via the both-performs-inlined control. Effect-context
-           monomorphization (emit the helper once, read the handler as evidence) discharges both calls.")
+           monomorphization (emit the helper once, read the handler as evidence) discharges both.")
   (input
     (do
       (effect C (op tick (-> Int64)))
