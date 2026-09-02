@@ -7167,6 +7167,8 @@ pass	oc4 an Option state with a RESET cycle — put promotes None to Some or acc
 pass	oc5 TWO Option slots in one tuple state — independent put lifecycles, a SWAP op exchanges them, reads confirm the exchange
 pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair updated element-wise per dispatch, a final read reports both
 pass	oc7 an Option-of-(Int,String) tuple accumulator — the mixed-scalar payload grounds from concrete resume next-states, no annotation on the (None) seed
+pass	oc8 a NESTED-tuple Option accumulator — (Option (Tuple Int64 (Tuple Int64 String))) grounds recursively from concrete next-states, no annotation
+pass	oc9 a RECORD-payload Option accumulator — (Option (Record tot tag)) grounds from concrete next-states, no annotation on the (None) seed
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
 pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
