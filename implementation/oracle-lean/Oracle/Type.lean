@@ -241,22 +241,23 @@ def programModeled? (m : Ast.Module) : Bool :=
     stmts.all (fun sid =>
       match Eval.asDef? m sid with
       | some dc =>
-        match dc[1]? with
-        | some tid =>
-          match Eval.nameOf? m tid with
-          | some _ => (topLevelValueDefTy? m dc).isSome            -- bare-name target ⇒ scalar value def
-          | none => (Eval.defName? m dc) == some "main".toUTF8     -- list target ⇒ only `main` (fn-defs decline)
-        | none => false
+        -- T1.24: any def (bare-name value def OR list-target fn-def) is a MODELED KIND — `topLevelEnv`
+        -- types it (an ill-typed/unmodeled def → IllTyped/Unsupported there). Only a malformed def (no
+        -- target) is rejected here; `(type …)`/`(effect …)`/import stmts fall to the `none` arm below.
+        (dc[1]?).isSome
       | none =>
         match m.nodes[sid]? with
         | some node =>
           (match m.headName? node with
            | some h =>
              if h == "export".toUTF8 then
+               -- EVERY exported name must resolve to a definition (a multi-name `(export a b …)` scans ALL
+               -- names — an undefined 2nd+ name is rcdzc CDZ0101; checking only the first was a false-reject).
                (match node with
-                | .list cs => (match (cs[1]?).bind (Eval.nameOf? m) with
-                               | some nm => definedNames.any (· == nm)
-                               | none => false)
+                | .list cs => (cs.extract 1 cs.size).all (fun nid =>
+                                match Eval.nameOf? m nid with
+                                | some nm => definedNames.any (· == nm)
+                                | none => false)
                 | _ => false)
              else h == "pragma".toUTF8
            | none => false)
@@ -756,17 +757,27 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                    -- so the body may call itself, infer the body, then unify its type with ρ.
                                    -- Generalize the resolved arrow (let-gen at the def). Non-recursive defs are
                                    -- unaffected (fnm unused → ρ := bodyτ → same arrow as before).
-                                   let ρ : Ty := .var stP.next
-                                   let recArrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
-                                   let stP1 := { stP with next := stP.next + 1 }
-                                   (match inferE m ((fnm, ([], recArrow)) :: bodyEnv) stP1 valId with
-                                    | .ok (bodyτ, stB) =>
-                                      (match unifyInfer bodyτ ρ stB with
-                                       | .ok stB2 =>
-                                         let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
-                                         .ok (((fnm, generalizeScheme acc.1 stB2.subst arrow) :: acc.1), stB2)
-                                       | .error e => .error e)
-                                    | .error e => .error e)
+                                   -- T1.24 SOUNDNESS (as topLevelEnv): duplicate param → decline (rcdzc
+                                   -- CDZ0102); body ill-typed in isolation → decline (monomorphization-
+                                   -- dependent), never a positive reject.
+                                   let pnames := (bodyEnv.take ptysRev.length).map (·.1)
+                                   if pnames.eraseDups.length != pnames.length then
+                                     .error (.unsupported "type oracle: duplicate local-fn param name — declined (rcdzc CDZ0102)")
+                                   else if ptysRev.any (fun τ => match τ with | .fn _ _ => true | _ => false) then
+                                     .error (.unsupported "type oracle: higher-order local fn-def (function-typed param) — context/monomorphization-dependent, declined")
+                                   else
+                                     let ρ : Ty := .var stP.next
+                                     let recArrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                                     let stP1 := { stP with next := stP.next + 1 }
+                                     (match inferE m ((fnm, ([], recArrow)) :: bodyEnv) stP1 valId with
+                                      | .ok (bodyτ, stB) =>
+                                        (match unifyInfer bodyτ ρ stB with
+                                         | .ok stB2 =>
+                                           let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                                           .ok (((fnm, generalizeScheme acc.1 stB2.subst arrow) :: acc.1), stB2)
+                                         | .error _ => .error (.unsupported "type oracle: local fn-def body ill-typed in isolation — monomorphization-dependent, declined"))
+                                      | .error (.illTyped _) => .error (.unsupported "type oracle: local fn-def body ill-typed in isolation — monomorphization-dependent, declined")
+                                      | .error (.unsupported r) => .error (.unsupported r))
                                  | .error e => .error e)
                               | none => .error (.unsupported "type oracle: local fn-def head not a name"))
                            | _ => .error (.unsupported "type oracle: malformed local fn-def target")))
@@ -996,8 +1007,8 @@ partial def hasUndeterminedSum : Ty → Bool
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
 the verdict algebra. A resolved type (with the final substitution applied, unresolved numeric literals
 defaulted to `Int64`) is `WellTyped`; a modeled fault is `IllTyped`; a coverage gap is `Unsupported`. -/
-def inferBody (m : Ast.Module) (env : List (ByteArray × Scheme)) (nodeId : Nat) : TypeVerdict :=
-  match inferE m env {} nodeId with
+def inferBody (m : Ast.Module) (env : List (ByteArray × Scheme)) (st0 : InferState) (nodeId : Nat) : TypeVerdict :=
+  match inferE m env st0 nodeId with
   | .ok (τ, st) =>
     let final := defaultNumVars (applySubst st.subst τ)
     if hasUndeterminedSum final then
@@ -1006,21 +1017,105 @@ def inferBody (m : Ast.Module) (env : List (ByteArray × Scheme)) (nodeId : Nat)
   | .error (.illTyped c) => .illTyped c
   | .error (.unsupported r) => .unsupported r
 
-/-- The type oracle (T1.1b). Extract the `main` export's body (`Eval.namedParamsBody?`), build the
-top-level value environment, and infer the body: a scalar literal (T1.1a) or a name resolving to a
-top-level value binding (T1.1b, the V rule) is `WellTyped`. A parameterized main, an unresolved name, or
-any other non-literal body declines (`Unsupported` — a sound coverage gap). HM unification over
-app/if/let/fn/match lands in the following T1 slices. -/
+/-- T1.24 — build the TOP-LEVEL environment by typing EVERY sibling def (value def AND fn-def) in the
+root `(do …)`, in order, so `main`'s body may reference them. A value def `(def x e)` binds `x :
+GENERALIZE(τ)`; a fn-def `(def (f p…) body)` binds `f` via the Fn logic + monomorphic self-recursion +
+generalization (mirrors the do-rule T1.9/21/22). `main` itself is skipped (typed separately). Returns the
+env AND the final `InferState`, so `main`'s inference CONTINUES the var counter (no id collision with the
+env's free `numVar`s). An ill-typed sibling → `IllTyped` (rcdzc rejects the program too); an unmodeled
+sibling → `Unsupported` (sound skip — the whole program declines, never a false positive). -/
+partial def topLevelEnv (m : Ast.Module) : Except InferFail (List (ByteArray × Scheme) × InferState) :=
+  match m.nodes[m.root]? with
+  | some (.list stmtsRaw) =>
+    (stmtsRaw.extract 1 stmtsRaw.size).foldlM (m := Except InferFail)
+      (fun (acc : List (ByteArray × Scheme) × InferState) sid =>
+        match Eval.asDef? m sid with
+        | none => .ok acc                                        -- export / pragma / non-def → not a binding
+        | some dc =>
+          (match dc[1]?, dc[dc.size - 1]? with
+           | some targetId, some valId =>
+             (match Eval.nameOf? m targetId with
+              | some nm =>                                       -- value def `(def x e)`
+                if nm == "main".toUTF8 then .ok acc
+                else (match inferE m acc.1 acc.2 valId with
+                      | .ok (τ, st') => .ok (((nm, generalizeScheme acc.1 st'.subst τ) :: acc.1), st')
+                      | .error e => .error e)
+              | none =>                                          -- fn-def `(def (f p…) body)`
+                (match m.nodes[targetId]? with
+                 | some (Ast.Node.list tc) =>
+                   (match (tc[0]?).bind (Eval.nameOf? m) with
+                    | some fnm =>
+                      if fnm == "main".toUTF8 then .ok acc
+                      else (match (tc.extract 1 tc.size).foldlM (m := Except InferFail)
+                          (fun (pacc : List (ByteArray × Scheme) × List Ty × InferState) pid =>
+                            match m.nodes[pid]? with
+                            | some (Ast.Node.atom plid) =>
+                              (match m.leaves[plid]? with
+                               | some (.name pnm) =>
+                                 let α : Ty := .var pacc.2.2.next
+                                 .ok ((pnm, ([], α)) :: pacc.1, α :: pacc.2.1, { pacc.2.2 with next := pacc.2.2.next + 1 })
+                               | _ => .error (.unsupported "type oracle: malformed top-level-fn param"))
+                            | some (Ast.Node.list ppc) =>
+                              (match ppc[1]?, ppc[2]? with
+                               | some pnId, some ptId =>
+                                 (match Eval.nameOf? m pnId, parseTy? m ptId with
+                                  | some pnm, some pτ => .ok ((pnm, ([], pτ)) :: pacc.1, pτ :: pacc.2.1, pacc.2.2)
+                                  | some _, none => .error (.unsupported "type oracle: top-level-fn param unmodeled annotation")
+                                  | none, _ => .error (.unsupported "type oracle: top-level-fn param missing name"))
+                               | _, _ => .error (.unsupported "type oracle: malformed top-level-fn param spec"))
+                            | none => .error (.unsupported "type oracle: malformed top-level-fn param"))
+                          (acc.1, [], acc.2) with
+                       | .ok (bodyEnv, ptysRev, stP) =>
+                         -- T1.24 SOUNDNESS: (a) duplicate param names → decline (rcdzc rejects CDZ0102; a
+                         -- positive would be a false-reject). (b) a body ill-typed IN ISOLATION → decline,
+                         -- NOT reject: rcdzc monomorphizes params per call site, so a param used at a
+                         -- compound/context type (tuple/record projection, int8-from-context) can be
+                         -- well-typed at the actual arg though our fresh-var HM rejects it → skip is sound.
+                         let pnames := (bodyEnv.take ptysRev.length).map (·.1)
+                         if pnames.eraseDups.length != pnames.length then
+                           .error (.unsupported "type oracle: duplicate top-level-fn param name — declined (rcdzc CDZ0102)")
+                         else if ptysRev.any (fun τ => match τ with | .fn _ _ => true | _ => false) then
+                           -- HIGHER-ORDER param (a function-typed param, e.g. `(: g (-> Int8 Int8))`): the
+                           -- body's use of it is monomorphized/context-typed per call site (narrow-width
+                           -- context propagation, etc.) beyond our fresh-var HM → decline (sound skip).
+                           .error (.unsupported "type oracle: higher-order fn-def (function-typed param) — context/monomorphization-dependent, declined")
+                         else
+                           let ρ : Ty := .var stP.next
+                           let recArrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                           let stP1 := { stP with next := stP.next + 1 }
+                           (match inferE m ((fnm, ([], recArrow)) :: bodyEnv) stP1 valId with
+                            | .ok (bodyτ, stB) =>
+                              (match unifyInfer bodyτ ρ stB with
+                               | .ok stB2 =>
+                                 let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) ρ
+                                 .ok (((fnm, generalizeScheme acc.1 stB2.subst arrow) :: acc.1), stB2)
+                               | .error _ => .error (.unsupported "type oracle: top-level fn-def body ill-typed in isolation — monomorphization-dependent, declined"))
+                            | .error (.illTyped _) => .error (.unsupported "type oracle: top-level fn-def body ill-typed in isolation — monomorphization-dependent, declined")
+                            | .error (.unsupported r) => .error (.unsupported r))
+                       | .error e => .error e)
+                    | none => .error (.unsupported "type oracle: top-level fn-def head not a name"))
+                 | _ => .error (.unsupported "type oracle: malformed top-level fn-def target")))
+           | _, _ => .error (.unsupported "type oracle: malformed top-level def")))
+      ([], {})
+  | _ => .ok ([], {})
+
+/-- The type oracle. Vet the whole program (`programModeled?`), type all sibling top-level defs into an env
+(`topLevelEnv` — value defs + fn-defs, generalized), then infer `main`'s body under that env (continuing the
+var counter). A modeled fault (in a sibling or in `main`) is `IllTyped`; a coverage gap is `Unsupported`. -/
 def infer (m : Ast.Module) : TypeVerdict :=
-  -- WHOLE-PROGRAM soundness gate (design §5): decline unless every top-level statement is fully modeled,
-  -- so a positive verdict is never over-claimed on a program with unvetted other defs/exports/decls.
+  -- WHOLE-PROGRAM soundness gate (design §5): decline unless every top-level statement is a modeled KIND
+  -- (value def / fn-def / export-of-defined / pragma); a `(type …)`/`(effect …)`/import or unbound export
+  -- declines. The def TYPING gate is `topLevelEnv` (an ill-typed/unmodeled sibling → IllTyped/Unsupported).
   if !programModeled? m then
-    .unsupported "type oracle: program has unmodeled top-level structure (fn-def / non-scalar def / type-or-effect decl / unbound export) — declined for soundness"
+    .unsupported "type oracle: program has unmodeled top-level structure (type-or-effect decl / import / unbound export) — declined for soundness"
   else match Eval.namedParamsBody? m "main".toUTF8 with
   | none => .unsupported "type oracle: program has no (def (main) …) export"
   | some (specs, bodyId) =>
     if specs.size != 0 then .unsupported "type oracle: parameterized main not yet modeled (T1)"
-    else inferBody m (topLevelValueEnv m) bodyId
+    else match topLevelEnv m with
+    | .error (.illTyped c) => .illTyped c
+    | .error (.unsupported r) => .unsupported r
+    | .ok (env, st0) => inferBody m env st0 bodyId
 
 /-- Is `code` a rejection the TYPE oracle actually judges (a type-system error, §4), vs a rejection from a
 DIFFERENT compile phase the oracle does not model? A `WellTyped` verdict against a NON-type reject is NOT a
@@ -1336,14 +1431,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                 root := 24 } == .illTyped "CDZ0203")
 -- (T1.12's `(let ((id (fn (x) x))) (id 5))` → Unsupported guard removed — T1.18 let-generalization now
 -- types it WellTyped Int64; the T1.18 #guard above asserts that superseding behavior.)
--- SOUNDNESS GATE: a program with an extra fn-def `(def (f x) x)` is NOT fully modeled → Unsupported
--- (declined, NOT a false WellTyped — the whole-program gate prevents over-claiming on unvetted defs).
-#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "f".toUTF8, .name "x".toUTF8,
-                                  .name "main".toUTF8, .intLit false .dec (ByteArray.mk #[42]), .name "export".toUTF8],
-                      nodes := #[.atom 2, .atom 3, .list #[0, 1], .atom 1, .atom 3, .list #[3, 2, 4],  -- (def (f x) x)
-                                 .atom 4, .list #[6], .atom 1, .atom 5, .list #[8, 7, 9],              -- (def (main) 42)
-                                 .atom 6, .atom 4, .list #[11, 12], .atom 0, .list #[14, 5, 10, 13]],
-                      root := 15 } with | .unsupported _ => true | _ => false)
+-- T1.24: a top-level sibling fn-def `(def (f x) x)` is now TYPED (f : ∀α.α→α into the env), so
+-- `(do (def (f x) x) (def (main) 42) (export main))` → WellTyped Int64 (main's body is 42). (Was
+-- Unsupported pre-T1.24, when any fn-def declined the whole program; a well-typed sibling no longer does.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "f".toUTF8, .name "x".toUTF8,
+                            .name "main".toUTF8, .intLit false .dec (ByteArray.mk #[42]), .name "export".toUTF8],
+                nodes := #[.atom 2, .atom 3, .list #[0, 1], .atom 1, .atom 3, .list #[3, 2, 4],  -- (def (f x) x)
+                           .atom 4, .list #[6], .atom 1, .atom 5, .list #[8, 7, 9],              -- (def (main) 42)
+                           .atom 6, .atom 4, .list #[11, 12], .atom 0, .list #[14, 5, 10, 13]],
+                root := 15 } == .wellTyped (.int 64 true))
 -- SOUNDNESS GATE: an export of an UNBOUND name `(export bad)` → Unsupported (the program isn't fully
 -- modeled — rcdzc rejects it CDZ0101, but the oracle soundly declines rather than guessing).
 #guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
@@ -1480,6 +1576,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 8, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.fn (.int 64 true) (.int 64 true)))
+-- T1.24 (top-level fn-def): `(do (def (inc x) (+ x 1)) (def (main) (inc 5)) (export main))` → WellTyped
+-- Int64. The sibling `inc` is typed into the top-level env (numVar→numVar), then `main`'s body `(inc 5)`
+-- resolves it. Also validates the InferState is THREADED from topLevelEnv into main (else inc's numVar id
+-- would collide with main's fresh vars).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "inc".toUTF8, .name "x".toUTF8,
+                            .name "+".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .name "main".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 2, .atom 3, .list #[0, 1], .atom 4, .atom 3, .atom 5, .list #[3, 4, 5],
+                           .atom 1, .list #[7, 2, 6], .atom 6, .list #[9], .atom 2, .atom 7, .list #[11, 12],
+                           .atom 1, .list #[14, 10, 13], .atom 8, .atom 6, .list #[16, 17], .atom 0,
+                           .list #[19, 8, 15, 18]],
+                root := 20 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
