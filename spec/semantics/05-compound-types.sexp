@@ -35702,3 +35702,35 @@
     (do (def (main) (do (def u #tuple(1 (.. #tuple(2 3)) 4)) (+ (. u 1) (. u 2)))) (export main)))
   (call main)
   (output (: 5 Int64)))
+
+; rbx1: an ERASED-newtype RETURN destructured at the caller — the unwrap-fold can peel the match
+; down to the nominal-PRODUCING node itself; the re-emitted producer must stay typed as the erased
+; INNER (rb4, fixed #7755: the cadenza re-emission previously lost the scrutinee's identity under
+; the erased-Box top). Pins the whole triangle: direct, hop re-emission, and the fold path. 2n.
+(case
+  "an erased-newtype return destructured at the caller peels to its inner on every path"
+  (input
+    (do
+      (type (Box a) (Mk a))
+      (def (wrap (: n Int64)) (Mk (* n 2)))
+      (def (main (: n Int64)) (match (wrap n) ((Mk v) v)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 4 Int64))
+  (call main (: 6 Int64))
+  (output (: 12 Int64)))
+
+; rbx2: the DOUBLY-erased nesting — (Mk (Mk (+ n 1))) unwrapped by two stacked matches; each peel
+; re-types to the next inner. (n+1)*3.
+(case
+  "a doubly-nested erased newtype unwraps through two stacked matches"
+  (input
+    (do
+      (type (Box a) (Mk a))
+      (def (wrap2 (: n Int64)) (Mk (Mk (+ n 1))))
+      (def (main (: n Int64)) (match (wrap2 n) ((Mk inner) (match inner ((Mk v) (* v 3))))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 9 Int64))
+  (call main (: 6 Int64))
+  (output (: 21 Int64)))
