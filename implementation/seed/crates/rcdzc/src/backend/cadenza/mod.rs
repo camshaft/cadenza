@@ -4251,6 +4251,23 @@ fn emit_match_sum(
                 // slots (multi-payload) or the sole type (arity 1); index slot `i` accordingly.
                 let sum_ty = crate::infer::type_of(db, scrutinee);
                 let payload_expected = sum_payload_expected(db, decl, disc, &sum_ty);
+                // KEYING RECONCILIATION (nested list/sum re-emit — the `desugar_refutable_ctor_list_elements`
+                // idiom). When THIS match's scrutinee is itself a nested read `SumPayload{root, prefix}` — e.g.
+                // a list element re-matched by the desugar's body re-match `(match __lc (( C.V a) …))`, whose
+                // scrutinee resolves to `SumPayload{root_list, [Elem(i)]}` — a downstream `Core::SumPayload`
+                // read of this arm's payload is keyed ROOT-relative `(root, prefix ++ [Payload…])`, NOT
+                // `(scrutinee, [Payload…])` (the optimizer composed the element read into the payload read). So
+                // register each binder under BOTH keys: the direct `(scrutinee, path)` AND the composed
+                // `(root, prefix ++ path)`. The composed key names EXACTLY this payload (additive — it never
+                // shadows a distinct binder), so a root-relative read resolves instead of declining at the
+                // nested-`SumPayload` walk. See `backend/cadenza/DESIGN-nested-list-pattern-reemit.md`.
+                let root_alias: Option<(StructId, Vec<PathStep>)> = match core_of(db, scrutinee) {
+                    Core::SumPayload {
+                        scrutinee: root,
+                        path: prefix,
+                    } if root != scrutinee => Some((root, prefix.to_vec())),
+                    _ => None,
+                };
                 for slot in 0..arity {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
@@ -4259,12 +4276,22 @@ fn emit_match_sum(
                     } else {
                         vec![PathStep::Payload, PathStep::Elem(slot)]
                     };
-                    if let Some(slot_ty) = match (&payload_expected, arity) {
+                    let slot_ty = match (&payload_expected, arity) {
                         (Some(Ty::Tuple(ts)), n) if n > 1 => ts.get(slot).cloned(),
                         (Some(t), 1) => Some(t.clone()),
                         _ => None,
-                    } {
+                    };
+                    if let Some(slot_ty) = slot_ty.clone() {
                         env.payload_tys.insert((scrutinee, path.clone()), slot_ty);
+                    }
+                    // Mirror both registrations under the composed root-relative key when nested.
+                    if let Some((root, prefix)) = &root_alias {
+                        let composed: Vec<PathStep> =
+                            prefix.iter().cloned().chain(path.iter().cloned()).collect();
+                        if let Some(slot_ty) = slot_ty {
+                            env.payload_tys.insert((*root, composed.clone()), slot_ty);
+                        }
+                        env.payloads.insert((*root, composed), name.clone());
                     }
                     env.payloads.insert((scrutinee, path), name.clone());
                     binder_names.push(name);
