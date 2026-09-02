@@ -625,23 +625,26 @@ fn doc_type_node(
         // (sorted-key order), the canonical ASCRIPTION node `List[Name ":", Name <field>, <type-node>]`
         // (matching `render_name` + the corpus `(Record (: x Int64) …)` form — NOT a bare `[field, ty]`).
         Ty::Record(fields) => {
+            // A record TYPE-annotation crosses in the BOUNDARY value-doc form `(record (name Type) …)` — a
+            // LOWERCASE `record` head + BARE `(name Type)` field pairs — the shape `lower::value_form::
+            // type_node_of` (the escaping-value type-annotation baker, value_form.rs:525) builds + the wasm
+            // value_codec doc carries. It is NOT the render_ty SURFACE type spelling `(Record (: name Type))`
+            // (uppercase + `:` ascriptions), which is for error/query display — emitting that here is a
+            // structurally-different binary-AST than the wasm value-doc → rust-vs-wasm split (v-runtime/breaker,
+            // static-source confirmed). Mirror type_node_of exactly: lowercase head, bare pairs.
             let fields: Vec<(String, Ty)> = fields
                 .iter()
                 .map(|(k, t)| (k.name.to_string(), t.clone()))
                 .collect();
             let head = fresh(ctr);
-            out.push_str(&format!("    let {head} = __b.name(\"Record\");\n"));
+            out.push_str(&format!("    let {head} = __b.name(\"record\");\n"));
             let mut kids = vec![head];
             for (fname, fty) in fields.iter() {
-                let colon = fresh(ctr);
-                out.push_str(&format!("    let {colon} = __b.name(\":\");\n"));
                 let fnn = fresh(ctr);
                 out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
                 let ft = doc_type_node(db, fty, out, ctr)?;
                 let pair = fresh(ctr);
-                out.push_str(&format!(
-                    "    let {pair} = __b.list(vec![{colon}, {fnn}, {ft}]);\n"
-                ));
+                out.push_str(&format!("    let {pair} = __b.list(vec![{fnn}, {ft}]);\n"));
                 kids.push(pair);
             }
             let v = fresh(ctr);
