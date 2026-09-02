@@ -3,7 +3,7 @@ fail	CATALAN numbers grow by convolving the table with itself and agree with the
 fail	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 fail	a 33-VARIANT sum dispatches across the discriminant range with a payload variant last
 fail	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
-fail	a Qty with a bad inner TYPE and a bad unit gets position-aware guidance — type guidance inner, unit guidance outer
+pass	a Qty with a bad inner TYPE and a bad unit gets position-aware guidance — type guidance inner, unit guidance outer
 fail	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
 fail	a select between a base map and its derived generation frees the loser but not shared nodes
