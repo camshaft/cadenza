@@ -294,6 +294,27 @@
   (output (: true Bool)))
 
 (case
+  "a bare qualified perform of a MODULE-MEMBER effect (no host delegation) is a delegation-required error, not a misleading unbound-name"
+  (doc
+    "Witnesses capabilities-and-effects.md #Undeclared Capability Is A Compile-Time Error: a module's
+           effects are reached ONLY through `(host (E) …)` delegation — that delegation is what records the
+           authority in the `(meta capabilities)` manifest. So a BARE qualified perform `(E.ask)` inside a
+           module def, with NO enclosing `(host (E) …)`, must be rejected: performing it undelegated would
+           exercise an effect the manifest never grants (bypassing the delegation-derived authority). The
+           diagnostic is the delegation-required CDZ0401 (an effect reached with no home), NAMING the fix —
+           NOT the misleading `unbound name E` the module-member effect's root-only registration used to
+           leak (v-effects me2, reassigned from v-module-system; the top-level bare-module case already gave
+           this CDZ0401, the nested-module case now agrees). Contrast the working delegated form
+           `(host (E) (E.op …))` above (04-cap:263/287), which compiles and appears in the manifest.")
+  (input
+    (do
+      (module m
+        (effect E (op ask (-> Int64)))
+        (def (compute (: k Int64)) (+ k (E.ask))))
+      0))
+  (error CDZ0401 (message "module-member effect reached with no host delegation")))
+
+(case
   "one entrypoint's host authority is not reachable by another that does not delegate it"
   (doc
     "Witnesses capabilities-and-effects.md #Authority Availability Is Not Authority: authority is
