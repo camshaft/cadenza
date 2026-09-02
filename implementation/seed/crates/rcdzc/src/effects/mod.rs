@@ -8124,6 +8124,34 @@ mod desugar_tests {
         );
     }
 
+    /// The injection only fires into a `(do …)`/`(module …)` top-level-ITEMS container — NOT a program
+    /// whose ROOT is a BARE single form. Appending the Eval member to a bare `(def sig body)` root would
+    /// corrupt it into a two-body def (`(def sig body (effect Eval …))`) → a spurious CDZ0201 "more than
+    /// one body" on a valid single-def program (the #7859 regression: it broke the cdz lsp diagnostic-count
+    /// tests + GHA). So a bare-def root gets NO injected Eval; the def is left intact (one body). Direct
+    /// rcdzc-level guard for that invariant (the cdz lsp tests catch it only cross-crate). See
+    /// `inject_prelude_eval_effect`.
+    #[test]
+    fn prelude_eval_injection_skips_a_bare_single_form_root() {
+        let ast = parse("(def (main) 1)");
+        let db = crate::db::Db::load(ast);
+        assert!(
+            db.effect_decls.iter().all(|e| e.name != "Eval"),
+            "a bare single-def root is not a container — Eval must NOT be injected (else the def is \
+             corrupted into a two-body def, #7859)"
+        );
+        // The single def survives intact with exactly one body — no spurious extra body from an append.
+        let main = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .expect("the bare def is scanned as `main`");
+        assert!(
+            main.body.is_some(),
+            "the bare def keeps its single body (not split/corrupted by an injected member)"
+        );
+    }
+
     /// The CANONICAL handle `(handle E seed (bare-arm…) body)` desugars to the INTERNAL
     /// `(handle-internal seed ((. E op)-arm…) body)` the resolver consumes: the head is RE-SPELLED, `E`
     /// leaves the head, and each arm's bare op becomes its `(. E op)` projection, params/state/body kept.
