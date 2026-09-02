@@ -42,6 +42,17 @@ fn main() -> ExitCode {
         "cadenza-differential" => cmd_cadenza_differential(&args[1..]),
         #[cfg(feature = "differential")]
         "cadenza-equiv" => cmd_cadenza_equiv(&args[1..]),
+        #[cfg(feature = "differential")]
+        "type-differential" => cmd_type_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "type-differential" => {
+            eprintln!(
+                "cdz-smith: the `type-differential` subcommand needs the `differential` feature \
+                 (it runs the Lean type oracle) — rebuild: \
+                 `cargo run --features differential -- type-differential …`."
+            );
+            ExitCode::from(2)
+        }
         #[cfg(not(feature = "differential"))]
         "cadenza-differential" => {
             eprintln!(
@@ -145,6 +156,7 @@ fn usage() {
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
+         \x20 cdz-smith type-differential [--count N] [--seed S] [--oracle PATH] [--findings DIR]   (Lean TYPE oracle — false-reject/false-accept hunt)\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
@@ -1243,6 +1255,99 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith: cadenza-equiv sweep failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The TYPE-ORACLE differential (design `DESIGN-lean-type-system-oracle.md` §2, Phase T2 — the
+/// operator's "oracles in both directions" ask). For each generated program it streams a
+/// `(typecheck <program> <rcdzc-verdict>)` item to the INDEPENDENT Lean type checker and reports any
+/// disagreement with rcdzc's own accept/reject decision — a false-reject (over-strict coded reject),
+/// a capability-gap (codeless decline of a well-typed program), or a false-accept (soundness hole).
+/// In-process (no store/cdz needed): rcdzc's verdict comes from the linked `compile_catching`.
+#[cfg(feature = "differential")]
+fn cmd_type_differential(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut oracle: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--oracle" => oracle = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith type-differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let oracle = match oracle
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::lean::discover_oracle_check)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith type-differential: no `oracle-check` found (build it — `nix build .#oracle-lean` \
+                 → result/bin/oracle-check — and set CDZ_SMITH_ORACLE_CHECK or pass --oracle PATH)."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+        gen_mode: driver::GenMode::default(),
+    };
+    eprintln!(
+        "[cdz-smith] type-differential @{} | seed {} | count {} | oracle {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        oracle.display(),
+        findings_dir.display()
+    );
+    // Arm the in-process compile-hang watchdog — each `compile_catching` is unguarded, so a compiler
+    // non-termination would wedge this sweep; the watchdog captures it as a Timeout + aborts (cron relaunches).
+    cdz_smith::compile_guard::install(
+        findings_dir.clone(),
+        cfg.commit.clone(),
+        cdz_smith::compile_guard::compile_timeout(),
+    );
+    match driver::typecheck_sweep(&cfg, &oracle, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] type-differential done: {} judged ({} agreed), {} skip, {} parse-err | \
+                 {} FALSE-REJECT, {} capability-gap, {} FALSE-ACCEPT, {} other ({} new buckets, {} dup)",
+                stats.judged,
+                stats.agreed,
+                stats.skipped,
+                stats.parse_errors,
+                stats.false_rejects,
+                stats.capability_gaps,
+                stats.false_accepts,
+                stats.other_mismatches,
+                stats.new_buckets,
+                stats.duplicate_hits,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("cdz-smith type-differential: oracle run failed: {e}");
             ExitCode::FAILURE
         }
     }

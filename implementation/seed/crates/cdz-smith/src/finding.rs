@@ -39,6 +39,15 @@ pub enum Category {
     /// a reachable-but-uncoded feature gap that should be CODED. Both are findings routed to
     /// v-deferral-declines to triage. `detail` carries the codeless decline message (dedup key).
     ReachabilityInvariant,
+    /// The independent Lean TYPE oracle disagrees with rcdzc's `cdz check` accept/reject decision
+    /// (design `DESIGN-lean-type-system-oracle.md` §1.2). Unlike the wasm-vs-rust [`Differential`]
+    /// (both sides share the front-end, so a decline is never a mismatch there), the type oracle
+    /// shares ZERO code with rcdzc, so it catches the front-end's OWN blind spots. `detail` carries
+    /// the oracle's mismatch direction — `false-reject:…` (rcdzc coded-rejected a well-typed
+    /// program — a compiler bug), `capability-gap:…` (codeless decline of a well-typed program — a
+    /// should-work feature gap, backlog), `false-accept:…` (rcdzc accepted an ill-typed program — a
+    /// soundness hole), or `code-mismatch:…` (both reject, different CDZ code — diagnostic quality).
+    TypeOracle,
 }
 
 impl Category {
@@ -49,6 +58,7 @@ impl Category {
             Category::InvalidWasm => "invalid-wasm",
             Category::Differential => "differential",
             Category::ReachabilityInvariant => "reachability-invariant",
+            Category::TypeOracle => "type-oracle",
         }
     }
 }
@@ -103,6 +113,13 @@ impl Finding {
                 let d = self.detail.as_deref().unwrap_or("reachability-invariant");
                 format!("reachability-invariant::{}", mask_message(d))
             }
+            // Bucket type-oracle findings by the (masked) mismatch detail — the direction word
+            // (`false-reject`/`capability-gap`/`false-accept`/`code-mismatch`) plus the inferred
+            // type/code, so distinct typing disagreements get distinct buckets.
+            (None, Category::TypeOracle) => {
+                let d = self.detail.as_deref().unwrap_or("type-oracle");
+                format!("type-oracle::{}", mask_message(d))
+            }
             (None, _) => "unknown".to_string(),
         };
         slugify(&raw)
@@ -144,6 +161,10 @@ impl Finding {
             (None, Category::ReachabilityInvariant) => format!(
                 "REACHED an assumed-unreachable (codeless) decline: {}",
                 first_line(self.detail.as_deref().unwrap_or("codeless decline"))
+            ),
+            (None, Category::TypeOracle) => format!(
+                "type oracle DISAGREES with rcdzc's accept/reject: {}",
+                first_line(self.detail.as_deref().unwrap_or("typing disagreement"))
             ),
             (None, _) => "compiler finding".to_string(),
         }
@@ -261,6 +282,32 @@ impl FindingStore {
             s.push_str(
                 "v-deferral-declines to triage (bug vs code-it). Rename `.RESOLVED.md`/`.REJECTED.md` on triage._\n\n",
             );
+        } else if finding.category == Category::TypeOracle {
+            s.push_str(
+                "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: the\n",
+            );
+            s.push_str(
+                "independent Lean TYPE oracle (which shares ZERO code with rcdzc) disagrees with rcdzc's\n",
+            );
+            s.push_str(
+                "`cdz check` accept/reject decision. A `false-reject` (rcdzc coded-rejected a program the\n",
+            );
+            s.push_str(
+                "oracle types as WELL-TYPED) is a compiler BUG — an over-strict coded diagnostic; file as\n",
+            );
+            s.push_str(
+                "an issue to the type-system owner. A `capability-gap` (codeless decline of a well-typed\n",
+            );
+            s.push_str(
+                "program) is a should-work-but-unimplemented feature — route as a backlog / `(output V)`\n",
+            );
+            s.push_str(
+                "TODO, not a soundness bug. A `false-accept` (rcdzc accepted an ill-typed program) is a\n",
+            );
+            s.push_str(
+                "SOUNDNESS hole. A `code-mismatch` (both reject, different CDZ code) is diagnostic-quality.\n",
+            );
+            s.push_str("Rename `.RESOLVED.md`/`.REJECTED.md` on triage._\n\n");
         } else {
             s.push_str(
                 "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
@@ -397,6 +444,28 @@ impl FindingStore {
                     "- **Codeless decline message:** {}\n",
                     first_line(d)
                 ));
+            }
+        } else if finding.category == Category::TypeOracle {
+            s.push_str(
+                "## Type-oracle disagreement (rcdzc vs the independent Lean type checker)\n\n",
+            );
+            s.push_str(
+                "cdz-smith ran the program through rcdzc's front-end (`cdz check`) AND through an\n",
+            );
+            s.push_str(
+                "independent Lean type checker that shares no code with rcdzc. The two disagree on\n",
+            );
+            s.push_str(
+                "whether the program is well-typed. Because the oracle is independent, this catches\n",
+            );
+            s.push_str(
+                "front-end blind spots the same-front-end wasm-vs-rust differential cannot (there a\n",
+            );
+            s.push_str(
+                "decline is never a mismatch). See the intro for how to route each direction.\n\n",
+            );
+            if let Some(d) = &finding.detail {
+                s.push_str(&format!("- **Disagreement:** {}\n", first_line(d)));
             }
         }
         s
@@ -730,6 +799,65 @@ mod tests {
         assert!(
             !live.contains("PANIC, HANG"),
             "differential intro must not claim panic/hang:\n{live}"
+        );
+    }
+
+    fn type_oracle(detail: &str) -> Finding {
+        Finding {
+            category: Category::TypeOracle,
+            program: "(do (def (main) 0) (export main))".into(),
+            crash: None,
+            detail: Some(detail.into()),
+            commit: "abc".into(),
+        }
+    }
+
+    #[test]
+    fn type_oracle_buckets_by_mismatch_direction() {
+        let fr1 = type_oracle("false-reject: oracle infers Int64 over CDZ0203").signature();
+        // Same direction + shape, differing only in a code number → one bucket (digits masked).
+        let fr2 = type_oracle("false-reject: oracle infers Int64 over CDZ0201").signature();
+        let cap = type_oracle("capability-gap: oracle infers Bool").signature();
+        let fa = type_oracle("false-accept: oracle rejects CDZ0203").signature();
+        assert_eq!(
+            fr1, fr2,
+            "same false-reject shape → one bucket: {fr1} vs {fr2}"
+        );
+        assert_ne!(
+            fr1, cap,
+            "false-reject and capability-gap are distinct buckets"
+        );
+        assert_ne!(
+            fr1, fa,
+            "false-reject and false-accept are distinct buckets"
+        );
+        assert!(fr1.starts_with("type-oracle"), "sig namespaced: {fr1}");
+    }
+
+    #[test]
+    fn type_oracle_note_reads_as_a_typing_disagreement() {
+        let store = FindingStore::open(std::env::temp_dir()).unwrap();
+        let note = store.render_note(
+            &type_oracle("false-reject: oracle infers Int64 over rcdzc CDZ0203"),
+            std::path::Path::new("x.smith.sexp"),
+        );
+        // The note must describe an independent-type-oracle disagreement, route by direction, and NOT
+        // reuse the crash/hang/invalid-wasm or wasm-vs-rust value wording.
+        assert!(
+            note.contains("type-oracle"),
+            "category tag in note:\n{note}"
+        );
+        assert!(
+            note.contains("false-reject") && note.contains("independent"),
+            "intro must explain the independent oracle + direction routing:\n{note}"
+        );
+        assert!(
+            !note.contains("PANIC, HANG") && !note.contains("wasm vs rust"),
+            "must not reuse crash/wasm-vs-rust wording:\n{note}"
+        );
+        assert!(
+            note.contains("- **Disagreement:**"),
+            "note surfaces the disagreement detail:\n{note}"
         );
     }
 
