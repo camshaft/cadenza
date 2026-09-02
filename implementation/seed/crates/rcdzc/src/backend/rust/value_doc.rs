@@ -23,9 +23,10 @@
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
 //! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap), a
 //! QTY (any unit — base / power / product / `Unit./` quotient, `(Qty.of <mag> <unit>)`), and a bare-head SUM
-//! (Option / Result / a user sum) — nullary, single-payload, AND multi-field (flattened by declared arity). A
-//! COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes (qualified-head, recursive) are
-//! follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
+//! (Option / Result / a user sum) — nullary, single-payload, multi-field (flattened by declared arity), AND
+//! QUALIFIED-head (`<Type>.<Variant>` dotted head when a variant name collides with a prelude binding). A
+//! COMPOUND-float (tuple-with-float) key/element + a RECURSIVE sum (needs a runtime helper fn to terminate)
+//! are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
 //! DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage
 //! is safe.
 
@@ -413,12 +414,21 @@ fn doc_value_node(
         Ty::Sum { decl, .. } => {
             let decl_occ = *decl;
             let sum_ty = ty.strip_nominal_and_qty().clone();
-            // A qualified-head sum needs the `(. Type Variant)` head form — not covered yet.
-            if crate::lower::sum_needs_qualified_heads(db, decl_occ) {
-                return Err(Reject::decline(
-                    "value-doc: qualified-head sum not covered by the rust value-doc emit",
-                ));
-            }
+            // A QUALIFIED-head sum (`sum_needs_qualified_heads` — a variant name shadowed by a prelude
+            // type-ctor/module, e.g. reflection `Ast`) renders each head as the TYPE-QUALIFIED dotted name
+            // `<Type>.<Variant>` (a single `Name` atom the canonical printer sugars from `(. Type Variant)` —
+            // verified `(T.List 5)` / `(Ast.Str "x")` round-trip), so a bare `Str` head can't resolve to the
+            // colliding prelude binding. A non-qualified sum keeps the bare variant name.
+            let qualified = crate::lower::sum_needs_qualified_heads(db, decl_occ);
+            let type_name = if qualified {
+                db.type_decl_by_occ(decl_occ)
+                    .map(|t| t.name.to_string())
+                    .ok_or_else(|| {
+                        Reject::decline("value-doc: qualified sum has no declaration name")
+                    })?
+            } else {
+                String::new()
+            };
             let variant_count = db
                 .type_decl_by_occ(decl_occ)
                 .map(|t| t.variants.len())
@@ -430,12 +440,19 @@ fn doc_value_node(
                     .type_decl_by_occ(decl_occ)
                     .and_then(|t| t.variants.get(disc as usize).map(|v| v.name.to_string()))
                     .ok_or_else(|| Reject::decline("value-doc: sum variant name not found"))?;
+                // The node HEAD name: the bare variant for a normal sum, or the `<Type>.<Variant>` dotted
+                // qualified name when the sum needs qualified heads.
+                let head_name = if qualified {
+                    format!("{type_name}.{vname}")
+                } else {
+                    vname.clone()
+                };
                 let path = super::expr::sum_variant_path_of_ty(db, &sum_ty, disc)?;
                 match super::expr::variant_payload_ty(db, &sum_ty, disc) {
                     // Nullary → `(<Variant> unit)`: head atom then the canonical `unit` name atom.
                     None => {
                         arms.push_str(&format!(
-                            "        {path} => {{ let __hv = __b.name({vname:?}); let __u = __b.name(\"unit\"); __b.list(vec![__hv, __u]) }}\n"
+                            "        {path} => {{ let __hv = __b.name({head_name:?}); let __u = __b.name(\"unit\"); __b.list(vec![__hv, __u]) }}\n"
                         ));
                     }
                     Some(payload_ty) => {
@@ -476,7 +493,7 @@ fn doc_value_node(
                                 )?);
                             }
                             arms.push_str(&format!(
-                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {}])\n        }}\n",
+                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({head_name:?}); __b.list(vec![__hv, {}])\n        }}\n",
                                 enodes.join(", ")
                             ));
                         } else {
@@ -484,7 +501,7 @@ fn doc_value_node(
                             // (moving it out of the owned enum) and walks it into a per-arm buffer.
                             let pnode = doc_value_node(db, &payload_ty, &pbind, &mut armbuf, ctr)?;
                             arms.push_str(&format!(
-                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {pnode}])\n        }}\n"
+                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({head_name:?}); __b.list(vec![__hv, {pnode}])\n        }}\n"
                             ));
                         }
                     }
