@@ -180,6 +180,16 @@ struct BinderEnv {
     /// the inner scalar is needed (CDZ0203, e.g. a map-key `(Box.Mk n)` sub-pattern). A key ABSENT here → no
     /// peel (bare binder, prior behavior), so a missing / imprecise type degrades safely to today's emit.
     payload_tys: HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
+    /// (M4a) The set of `(scrutinee, path)` WHOLE payload slots a deep-decision-tree arm's BODIES read whole
+    /// (a `Core::SumPayload { scrutinee, path }`), populated at the `emit_switch_tree` deep-tree branch. Its
+    /// ONLY use: at a `build_arm_pat` DEFAULT (wildcard) slot, if the body reads that whole slot, emit the
+    /// pre-registered whole-slot binder NAME (a binder matches anything, semantically == `_`) instead of `_`
+    /// — so the body's read resolves. Without it the flat-loop registers the whole-slot binder (`_cdz_m0`) but
+    /// the flattened `_` never EMITS it → CDZ0101 `unbound name _cdz_m0` on recompile (a register-vs-emit
+    /// decoupling; validate-caught, never a silent miscompile). Keyed by scrutinee (like `payloads`) so nested
+    /// matches never collide; a slot ABSENT here → `_` (prior behavior), so the change is purely ADDITIVE
+    /// (turns a decline into a pass, touches no currently-passing wildcard).
+    whole_slot_reads: std::collections::HashSet<(StructId, Vec<crate::core::PathStep>)>,
     /// The set of effect NAMES a `Core::HostCall` performed while emitting the CURRENT definition's body.
     /// [`emit_def`] reads it after the body and, if non-empty, wraps the body in one `(host (E…) <body>)`
     /// delegation so each re-emitted perform `((. E o) …)` re-lowers to a host-delegated `HostCall` (else
@@ -255,6 +265,65 @@ fn node_references(
     crate::backend::wasm::select::core_child_ids(db, node)
         .into_iter()
         .any(|c| node_references(db, c, target, seen))
+}
+
+/// (M4a) Collect every `Core::SumPayload { scrutinee == scrut, path }` read path reachable from a
+/// decision-tree `cont`'s bodies (`Leaf`/`Guarded`/`LitTest`/`Switch` — every `cond`, `then_`, `els`, and
+/// nested-arm body), recording `(scrut, path)` into `out`. Called at the `emit_switch_tree` deep-tree branch
+/// so [`build_arm_pat`] can tell which WHOLE payload slots a flattened arm's body reads whole — a DEFAULT
+/// (wildcard) slot the body reads whole then emits the pre-registered whole-slot binder NAME instead of `_`
+/// (M4a: register-vs-emit decoupling → CDZ0101 unbound on recompile). See `BinderEnv::whole_slot_reads`.
+fn collect_cont_sum_payload_reads(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+    out: &mut std::collections::HashSet<(StructId, Vec<crate::core::PathStep>)>,
+) {
+    use crate::core::SumCont;
+    fn gather_bodies(cont: &SumCont, bodies: &mut Vec<StructId>) {
+        match cont {
+            SumCont::Leaf(body) => bodies.push(*body),
+            SumCont::Guarded { cond, body, els } => {
+                bodies.push(*cond);
+                bodies.push(*body);
+                gather_bodies(els, bodies);
+            }
+            SumCont::LitTest { then_, els, .. } => {
+                gather_bodies(then_, bodies);
+                gather_bodies(els, bodies);
+            }
+            SumCont::Switch { arms, .. } => {
+                for a in arms {
+                    gather_bodies(&a.cont, bodies);
+                }
+            }
+        }
+    }
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        scrut: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        out: &mut std::collections::HashSet<(StructId, Vec<crate::core::PathStep>)>,
+    ) {
+        if !seen.insert(node) {
+            return;
+        }
+        if let Core::SumPayload { scrutinee, path } = core_of(db, node)
+            && scrutinee == scrut
+        {
+            out.insert((scrut, path.to_vec()));
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, node) {
+            walk(db, c, scrut, seen, out);
+        }
+    }
+    let mut bodies = Vec::new();
+    gather_bodies(cont, &mut bodies);
+    let mut seen = std::collections::HashSet::new();
+    for body in bodies {
+        walk(db, body, scrut, &mut seen, out);
+    }
 }
 
 /// Scan `body` for every `Core::SumPayload { scrutinee == scrut, path }` whose path begins with `prefix`,
@@ -3355,7 +3424,22 @@ fn build_arm_pat(
     }
     if let Some(choice) = choices.get(path) {
         return match choice {
-            None => Ok(b.name("_")),
+            // A DEFAULT (wildcard) slot. (M4a) If the arm body reads THIS whole slot, emit the pre-registered
+            // whole-slot binder NAME (registered in the flat-loop at `[Payload, Elem(i)]`) — a binder matches
+            // anything, semantically identical to `_`, so the body's `Core::SumPayload` read resolves instead
+            // of dangling to a `_`-wildcarded, never-emitted binder → CDZ0101 unbound on recompile. Only when
+            // the body actually reads this slot whole (else `_`, unchanged) → purely additive.
+            None => {
+                if env
+                    .whole_slot_reads
+                    .contains(&(root_scrut, read_path.to_vec()))
+                    && let Some(nm) = env.payloads.get(&(root_scrut, read_path.to_vec())).cloned()
+                {
+                    Ok(b.name(nm))
+                } else {
+                    Ok(b.name("_"))
+                }
+            }
             Some(disc) => {
                 let decl = match ty {
                     Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => *decl,
@@ -4245,6 +4329,15 @@ fn emit_match_sum(
                         // becomes one deep surface arm.
                         SumCont::Switch { .. } => {
                             let root_ty = crate::infer::type_of(db, scrutinee);
+                            // (M4a) Record which WHOLE payload slots this arm's flattened bodies read whole, so
+                            // a DEFAULT (wildcard) slot the body reads whole emits the pre-registered whole-slot
+                            // binder (`_cdz_m0`) instead of `_` (register-vs-emit decoupling → CDZ0101 unbound).
+                            collect_cont_sum_payload_reads(
+                                db,
+                                cont,
+                                scrutinee,
+                                &mut env.whole_slot_reads,
+                            );
                             let mut choices: std::collections::HashMap<
                                 Vec<crate::core::PathStep>,
                                 Option<u32>,
