@@ -4964,6 +4964,27 @@
   (live-objects 0))
 
 (case
+  "a value survives a self-aliased map-merge — lookup after (Map.merge m m) returns m's own value"
+  (doc
+    "The VALUE-PRESERVATION companion to the self-alias no-leak pin above: after `(Map.merge m m)`
+           (the SAME handle as both operands — last-writer-wins runs over the aliased operand, but
+           `m == m` so the write preserves the value rather than corrupting or dropping it), key `n`
+           still looks up to its own value 10. Confirms the self-merge preserves a surviving VALUE
+           while reclaiming the aliased operand — the value-correctness face of the same
+           self-aliased-operand reclaim under guarded-all (live-objects 0). (The genuine cross-map
+           b-overwrites-a last-writer semantics are pinned separately by the map-merge Phase-3 pin.)")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20)))
+          (match (Map.lookup (Map.merge m m) n) ((Some v) v) ((None u) -1))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (live-objects 0))
+
+(case
   "an inner map shared between two outer generations survives the loser's drop"
   (doc
     "One level DEEPER than the node-sharing pins above: here the shared thing is a heap VALUE —
