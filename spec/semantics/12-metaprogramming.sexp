@@ -3,6 +3,8 @@
 ; construction. The AST is a sum type deconstructible by pattern matching, so the compiler
 ; operates on AST values natively rather than using string-tagged reflection. Eval (executing
 ; AST as code) is optional for macros/REPL, not needed by the core compiler.
+(diagnostic-quality)
+
 (case
   "quote produces an AST value without evaluating"
   (doc

@@ -23,6 +23,8 @@
 ; binary form (16-binary-matching.sexp): `b"…"` is a whole-value literal (matches by equality, splices
 ; into `(bytes …)`), where `(bin …)` is a structured segment application — orthogonal surfaces that
 ; both denote an ordinary Bytes value.
+(diagnostic-quality)
+
 (case
   "a byte sequence is constructed from a list of integers in range"
   (doc
