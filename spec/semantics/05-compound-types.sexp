@@ -35806,3 +35806,26 @@
   (output (: 2105 Int64))
   (call main (: 2 Int64))
   (output (: -2 Int64)))
+
+; rose1: a ROSE tree — a SINGLE-variant (erased) recursive sum whose recursion runs THROUGH a
+; collection type argument ((List Rose) inside Rose) — built literally and folded by a mutually-
+; recursive traversal pair. Computes on wasm; the rust backend honestly declines pending the named-
+; struct back-edge fix (#7913 closed the E0425 broken-artifact; the full lowering is the follow-up),
+; so the rust column grades todo and auto-flips. (breaker rose probe 2026-09-02.)
+(case
+  "a rose tree (single-variant recursion through a list) folds by a mutual traversal pair"
+  (input
+    (do
+      (type Rose (Node Int64 (List Rose)))
+      (def (total (: r Rose)) (match r ((Node v kids) (+ v (sum-kids kids)))))
+      (def
+        (sum-kids (: ks (List Rose)))
+        (match ks (#list() 0) (#list(h (.. rest)) (+ (total h) (sum-kids rest)))))
+      (def
+        (main (: n Int64))
+        (total (Node n #list((Node 1 #list((Node 2 #list()))) (Node 3 #list())))))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 16 Int64))
+  (call main (: 0 Int64))
+  (output (: 6 Int64)))
