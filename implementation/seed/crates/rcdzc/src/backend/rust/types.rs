@@ -908,3 +908,47 @@ pub fn unsigned_bits_type(it: IntTy) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod has_open_or_any_tests {
+    use super::has_open_or_any;
+    use crate::ty::Ty;
+
+    // `has_open_or_any` mirrors `ground_open_vars`: true iff the type contains a free `Ty::Var` OR a `Ty::Any`
+    // (the two things `ground_open_vars` defaults to `Int64`). The #7829 bug was that `Ty::has_free_var` MISSES
+    // `Ty::Any` (an `Any` is a no-free-var leaf there), so an empty `#set()` whose element inference left as
+    // `Set(Any)` was mis-grounded to `BTreeSet<i64>` instead of deferring to a concrete expected type at a
+    // call-arg. Pin that `has_open_or_any` flags BOTH under-determined kinds (and NOT a fully-concrete type),
+    // so the SetOf/MapNew expected-type annotation guard fires for `Set(Any)`/`Map(Any, _)`.
+    #[test]
+    fn flags_any_and_nested_any_but_not_concrete() {
+        // The #7829 case: an empty `#set()` element is `Ty::Any` — under-determined (would ground to i64).
+        assert!(has_open_or_any(&Ty::Set(Box::new(Ty::Any))));
+        // A concrete Set element is NOT under-determined (renders directly, no expected-type override needed).
+        assert!(!has_open_or_any(&Ty::Set(Box::new(Ty::Bytes))));
+        assert!(!has_open_or_any(&Ty::Set(Box::new(Ty::int64()))));
+        // Bare leaves.
+        assert!(has_open_or_any(&Ty::Any));
+        assert!(!has_open_or_any(&Ty::Bytes));
+        // The Map twin: an `Any` key OR value is under-determined.
+        assert!(has_open_or_any(&Ty::Map(
+            Box::new(Ty::Any),
+            Box::new(Ty::int64())
+        )));
+        assert!(has_open_or_any(&Ty::Map(
+            Box::new(Ty::int64()),
+            Box::new(Ty::Any)
+        )));
+        assert!(!has_open_or_any(&Ty::Map(
+            Box::new(Ty::Bytes),
+            Box::new(Ty::int64())
+        )));
+        // Nested: recurses through compounds — `List(Set(Any))` is under-determined.
+        assert!(has_open_or_any(&Ty::List(Box::new(Ty::Set(Box::new(
+            Ty::Any
+        ))))));
+        assert!(!has_open_or_any(&Ty::List(Box::new(Ty::Set(Box::new(
+            Ty::Bytes
+        ))))));
+    }
+}
