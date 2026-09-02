@@ -905,7 +905,14 @@ fn emit_def(
             .iter()
             .flat_map(|iface| &iface.members)
             .find(|m| kebab_extern_name(&m.name) == kebab)?;
-        crate::wit_world::wit_type_to_ty(db, &member.func.result)
+        // BEST-EFFORT: never let ONE unmappable field (a `variant`/`enum` — e.g. an `outcome` field) drop the
+        // WHOLE result type; the mappable siblings (a `requests: list<record{…: option<u64>}>`) still thread
+        // their resolved args down so a deeply-nested bare `Option.None` recovers its element type. `Ty::Any`
+        // at the unmappable position is a harmless `expected` fallback (its determined value ignores it).
+        Some(crate::wit_world::wit_type_to_ty_lossy(
+            db,
+            &member.func.result,
+        ))
     });
     let body_node = match def_result_ty(db, def, params.len()) {
         Some(Ty::Qty { inner, unit }) if qty_leaf(db, body) == LeafKind::BareInner => {
@@ -1912,10 +1919,25 @@ fn emit_expr_viewed(
             let mut children = Vec::with_capacity(elems.len());
             // Each element's `expected` is the tuple's own type at that position — so an under-determined
             // element (a bare `(None)` in `(tuple (None) 3)`) recovers its type from the tuple's slot type.
+            // When the OWN slot type is under-determined (a free arg reaching down), fall back to the PASSED
+            // `expected`'s slot type — a world/context type supplies the resolved args the bare element can't
+            // infer. Mirrors the `Core::Record`/`ListNew`/`MapNew` under-determined fallback (a nested tuple
+            // layer must not DROP the world/context `expected`); a determined own slot is used unchanged.
             for (i, e) in elems.iter().copied().enumerate() {
-                let ex = match &eff_ty {
+                let own_slot = match &eff_ty {
                     Ty::Tuple(ts) => ts.get(i).cloned(),
                     _ => None,
+                };
+                let exp_slot = || {
+                    expected.as_ref().and_then(|e| match e {
+                        Ty::Tuple(ts) => ts.get(i).cloned(),
+                        _ => None,
+                    })
+                };
+                let ex = match &own_slot {
+                    Some(t) if ty_has_free_arg(t) => exp_slot().or_else(|| own_slot.clone()),
+                    None => exp_slot(),
+                    _ => own_slot.clone(),
                 };
                 children.push(emit_expr(db, b, e, ex, env, emitted)?);
             }
@@ -1961,9 +1983,28 @@ fn emit_expr_viewed(
             let mut children = Vec::with_capacity(elems.len());
             // Every element's `expected` is the list's element type — so a bare `(None)` element (in
             // `(list (Some n) (None) …)`, whose own type is `Option<?>`) recovers `Option Int64` from it.
-            let elem_ty = match &eff_ty {
+            // When the node's OWN element type is UNDER-DETERMINED (a free type arg reaching down — e.g. a
+            // list of records with a bare `None` field, whose own element type is `Record{d: Option<?>}`),
+            // fall back to the PASSED `expected`'s element type: a world-declared export result (a nested
+            // `list<record{d: option<u64>}>`) or a context join supplies the resolved type args the bare
+            // element can't infer. Mirrors the `Core::Record` field fallback above — without it, a nested
+            // list layer DROPS the world/context `expected` and a deeply-nested bare variant DECLINES
+            // (28-wit typed-reducer host-op-result shapes: the `requests` list of records with a bare
+            // `deadline-nanos: None`). A DETERMINED own element type is used unchanged (no regression).
+            let own_elem = match &eff_ty {
                 Ty::List(e) => Some((**e).clone()),
                 _ => None,
+            };
+            let exp_elem = || {
+                expected.as_ref().and_then(|e| match e {
+                    Ty::List(e) => Some((**e).clone()),
+                    _ => None,
+                })
+            };
+            let elem_ty = match &own_elem {
+                Some(t) if ty_has_free_arg(t) => exp_elem().or_else(|| own_elem.clone()),
+                None => exp_elem(),
+                _ => own_elem.clone(),
             };
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
@@ -1982,11 +2023,27 @@ fn emit_expr_viewed(
             // M2: a native MAP ctor-leaf head; entries are `(= k v)` FieldPair leaves (distinguished from a
             // record only by the MAP head). Stored order (a map is unordered → value-eq is order-independent).
             // Key/value `expected` are the map type's key/value types (an under-determined key or value —
-            // e.g. a `(None)` value — recovers its type from there).
-            let (key_ty, val_ty) = match &eff_ty {
+            // e.g. a `(None)` value — recovers its type from there). When the OWN key/value type is
+            // under-determined (a free arg reaching down), fall back to the PASSED `expected`'s key/value
+            // type — a world/context type supplies the resolved args the bare entry can't infer. Mirrors the
+            // `Core::Record`/`Core::ListNew` under-determined fallback (a nested map layer must not DROP the
+            // world/context `expected`). A determined own type is used unchanged (no regression).
+            let (own_key, own_val) = match &eff_ty {
                 Ty::Map(k, v) => (Some((**k).clone()), Some((**v).clone())),
                 _ => (None, None),
             };
+            let exp_kv = |pick_val: bool| {
+                expected.as_ref().and_then(|e| match e {
+                    Ty::Map(k, v) => Some((if pick_val { &**v } else { &**k }).clone()),
+                    _ => None,
+                })
+            };
+            let resolve = |own: &Option<Ty>, pick_val: bool| match own {
+                Some(t) if ty_has_free_arg(t) => exp_kv(pick_val).or_else(|| own.clone()),
+                None => exp_kv(pick_val),
+                _ => own.clone(),
+            };
+            let (key_ty, val_ty) = (resolve(&own_key, false), resolve(&own_val, true));
             // LAST-WINS dedup of FOLDED-CONSTANT keys. The optimizer folds a bound key NAME to a literal (a
             // `(let ((a 5)) #map((= a 1) (= 5 2)))` folds to `#map((= 5 1) (= 5 2))`), so two entries can
             // collapse to the SAME literal key — and the front-end REJECTS a `#map` with duplicate literal keys
