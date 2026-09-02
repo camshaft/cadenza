@@ -49,6 +49,8 @@
 ; ({8,16,32,64}) suggests the bound `UInt8.wrap`/`UInt8.of`; a non-aliased bit width `(UInt 4)` (no bound
 ; module) suggests the member form `(. (UInt 4) wrap)`, never the unbound `UInt4.wrap`. (migrated from rcdzc
 ; a_bin_segment_requires_its_width_typed_value_cdz0203.)
+(diagnostic-quality)
+
 (case
   "an Int64 value into a u8 segment is a width type error naming the aliased wrap+of conversions"
   (input (do (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main)))

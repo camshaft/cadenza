@@ -25,6 +25,8 @@
 ; record witnessed above — the two are distinct surfaces. (A library body should carry ≥2 forms in its
 ; `(do …)`: a single-form `do` collapses on the ML surface, so the markdown round-trip would not
 ; preserve it — write at least a def plus its `(export …)`.)
+(diagnostic-quality)
+
 (case
   "a module declaration binds its name in the enclosing scope"
   (doc
