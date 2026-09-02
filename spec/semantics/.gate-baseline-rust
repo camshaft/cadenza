@@ -8798,7 +8798,7 @@ todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
 todo	a continuation call whose body ITSELF performs is not effect-free and declines
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
-todo	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
+pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 todo	a diamond peer graph shares one provider across two middle peers
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 todo	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
