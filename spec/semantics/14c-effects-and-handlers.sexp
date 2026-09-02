@@ -3606,7 +3606,7 @@
   (output (: 71 Int64))
   (call main (: 1 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── fa: FOLD-style accumulators through a performing recursion ───────────────
 ; The draw feeds an accumulator PARAMETER rather than the return path. fa1's
@@ -5263,7 +5263,7 @@
   (output (: 4041 Int64))
   (call main (: 0 Int64))
   (output (: 71 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate"
@@ -14983,8 +14983,10 @@
   ; accumulator (the escape guard excludes the share-hazards). The RESIDUAL 1 is the FINAL handler-state tuple,
   ; live at loop EXIT and never dropped — a distinct handler-COMPLETION reclaim locus (the resume-seam / #st-drop
   ; that the bounded dbn1 case's Increment B also needs), NOT the per-iteration rebind. Ideal is (live-objects 0);
-  ; pinned known-leak to track the residual final-state gap, routed to v-effects. (faithful-nix pending.)
-  (live-objects known-leak))
+  ; That residual final-state tuple is NOW ALSO reclaimed at loop exit (the handler-completion #st-drop, v-effects
+  ; domain), so this reclaims FULLY to (live-objects 0) — verified stable + no-trap under guarded-all
+  ; (v-memory-safety corpus-wide reclaim probe 2026-09-02; tightened known-leak→0 by v-effects).
+  (live-objects 0))
 
 (case
   "rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds"
@@ -18235,7 +18237,7 @@
   (output (: 2080600071523 Int64))
   (call main (: 0 Int64))
   (output (: 2060600071521 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players"
