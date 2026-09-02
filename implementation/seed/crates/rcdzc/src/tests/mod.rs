@@ -2827,6 +2827,48 @@ fn ast_print_and_read_resolve_and_type_as_the_printer_and_reader() {
     );
 }
 
+/// func-12 (v-core-opt route): a handler STATE seeded `(Option.None)` types as `(Option _)` — `None`
+/// fixes no payload — but the arm resumes thread `(Option.Some #list(v))` / `(Option.Some (List.push xs
+/// v))`, the SAME state, so the state type MUST ground to `(Option (List Int64))`. Before, `handle_arm_state_ty`
+/// returned the raw init-seed type (ungrounded), so a live `SumPayload` read of the unsolved payload
+/// emitted at the wrong width (invalid wasm: an i32 heap handle read as i64). Witness: the state binder's
+/// type grounds its Option payload from the resume next-states — no free var survives.
+#[test]
+fn handler_state_option_payload_grounds_from_the_resume_next_states() {
+    use crate::ast::{Struct, StructId};
+    use crate::db::Db;
+    let src = "(do (effect St (op feed (-> Int64 Int64))) \
+        (def (main (: a Int64)) \
+          (handle St (Option.None) \
+            ((feed (v) s (match s \
+              ((Option.None) (resume 0 (Option.Some #list(v)))) \
+              ((Option.Some xs) (resume (List.len xs) (Option.Some (List.push xs v))))))) \
+            (+ (* 100 (St.feed a)) (+ (* 10 (St.feed (+ a 1))) (St.feed (+ a 2)))))) \
+        (export main))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    // The handler-arm STATE binder `s` — element 2 of the arm `(feed (v) s body)`.
+    let n = db.ast.structure.len() as u32;
+    let state_binder = (0..n)
+        .map(StructId)
+        .find(|&id| crate::resolve::is_handle_arm(&db, id))
+        .and_then(|arm| match db.ast.get(arm) {
+            Struct::List(parts) => parts.get(2).copied(),
+            _ => None,
+        })
+        .expect("the handler has an arm with a state binder");
+    let ty = crate::effects::handle_arm_state_ty(&mut db, state_binder)
+        .expect("the state binder has a grounded type");
+    let rendered = ty.render_name(&db.name_ctx());
+    assert!(
+        rendered.contains("Option") && rendered.contains("List") && rendered.contains("Int64"),
+        "the handler state grounds to Option (List Int64) from the Some-resume next-states, got {rendered}"
+    );
+    assert!(
+        !rendered.contains('_') && !rendered.contains('?'),
+        "the Option payload must be GROUNDED (no free var) — the func-12 invalid-wasm root, got {rendered}"
+    );
+}
+
 /// SELF-REFLECTION `Ast.module` (front-end): the reflection member on the built-in `Ast` record resolves via
 /// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
 /// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace

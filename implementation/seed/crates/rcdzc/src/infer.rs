@@ -6371,6 +6371,60 @@ fn collect_tail_resume_next_states(db: &mut Db, node: StructId, out: &mut Vec<St
     }
 }
 
+/// Ground the free type params of a handler-STATE seed type from the arms' tail-resume next-state values.
+/// A handler threads ONE state: the `init` seed, then each resume's next-state, so they all share a single
+/// type. An `(Option.None)` seed types as `(Option _)` — `None` does not constrain the Option's payload —
+/// but a resume `(Option.Some #list(v))` pins that payload to `(List Int64)`. So unify the seed with EVERY
+/// tail next-state's type (across ALL arms, recursing if/match/do/let joins via
+/// [`collect_tail_resume_next_states`]) and apply the resulting substitution, yielding the grounded
+/// `(Option (List Int64))`. Best-effort: a genuine seed/next-state clash is a SEPARATE CDZ0201
+/// ([`check_resume_next_state_type`]), so unify errors are ignored here. Without this the state binder
+/// types as the ungrounded `(Option _)`, and a LIVE `SumPayload` read of the unsolved payload emits at the
+/// wrong width (the func-12 invalid-wasm: an i32 heap handle read as i64). `arms_list` is the handler's
+/// arms-list AST node (each child an arm `(op (params…) state body)`, body at index 3).
+pub(crate) fn ground_handler_state_ty(db: &mut Db, seed_ty: Ty, arms_list: StructId) -> Ty {
+    if !ty_has_free_var(db, &seed_ty) {
+        return seed_ty;
+    }
+    // RE-ENTRANCY GUARD: typing a resume next-state that references the state's OWN match binder
+    // (`(Option.Some (List.push xs v))`, `xs` bound by `(Option.Some xs)` on the scrutinee `s`) re-enters
+    // this grounding for the SAME handler — `type_of(xs)` needs `s`'s type, which routes back through
+    // `handle_arm_state_ty`. Return the seed as-is to break the cycle; an INDEPENDENT next-state
+    // (`(Option.Some #list(v))`, `v` an op param, no state dependency) still grounds the payload in the
+    // outer call, and the self-referential next-state's type then unifies harmlessly on top.
+    if GROUNDING_ARMS.with(|s| s.borrow().contains(&arms_list)) {
+        return seed_ty;
+    }
+    let crate::ast::Struct::List(arm_nodes) = db.ast.get(arms_list).clone() else {
+        return seed_ty;
+    };
+    GROUNDING_ARMS.with(|s| s.borrow_mut().push(arms_list));
+    let mut next_states = Vec::new();
+    for arm in arm_nodes {
+        if let crate::ast::Struct::List(parts) = db.ast.get(arm).clone()
+            && let Some(&body) = parts.get(3)
+        {
+            collect_tail_resume_next_states(db, body, &mut next_states);
+        }
+    }
+    let mut subst = Subst::new();
+    for next_state in next_states {
+        let next_ty = type_of(db, next_state);
+        let ncx = db.name_ctx();
+        let _ = crate::unify::unify(&mut subst, &seed_ty, &next_ty, &ncx);
+    }
+    GROUNDING_ARMS.with(|s| {
+        s.borrow_mut().pop();
+    });
+    subst.apply(&seed_ty)
+}
+
+thread_local! {
+    /// Handler arms-lists currently being grounded by [`ground_handler_state_ty`] — the re-entrancy stack
+    /// that stops a state-referencing resume next-state from recursing back into its own state grounding.
+    static GROUNDING_ARMS: std::cell::RefCell<Vec<StructId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Whether a handler-arm match SCRUTINEE `scrutinee_binder` ESCAPES via a resume — i.e. it is referenced in
 /// any arm's tail resume VALUE or NEXT-STATE (recursing if/match-joins + do/let tails, per the #4966
 /// collectors). This is the PRE-REDUCTION signal a shell-reclaim fence (v-core-opt's FIND3 MatchTuple

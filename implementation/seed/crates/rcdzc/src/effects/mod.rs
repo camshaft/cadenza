@@ -2450,6 +2450,12 @@ pub fn handle_arm_state_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::T
         .as_form(handle, HANDLE_INTERNAL)
         .and_then(|t| t.first().copied())?;
     let seed_ty = crate::infer::type_of(db, init);
+    // Ground the seed's free type params from the arms' resume next-states before returning. An
+    // `(Option.None)` seed types as `(Option _)` (`None` fixes no payload), but the resumes thread
+    // `(Option.Some …)` — the SAME state — so unifying grounds the payload to `(Option (List Int64))`.
+    // Otherwise the state binder keeps the ungrounded `(Option _)` and a live `SumPayload` read of the
+    // unsolved payload emits at the wrong width (func-12: an i32 heap handle read as i64).
+    let seed_ty = crate::infer::ground_handler_state_ty(db, seed_ty, arms_list);
     if matches!(seed_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
         return None;
     }
