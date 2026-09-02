@@ -353,6 +353,32 @@ fn gen_typefuzz_toplevel_helpers<C: Choice>(
     }
 }
 
+/// A USER NOMINAL SUM program (T1.25/T1.26): a top-level `(type …)` decl + a `main` that constructs and
+/// matches over it. Two shapes: a TAGGED sum `(type Tn (Mn Int64) (Zn))` (a payload variant + a nullary
+/// variant), constructed `(Mn a)` and matched; or a BARE-NAME nullary enum `(type En Rn Gn Bn)` matched
+/// over one of its variants. All names are FRESH-suffixed with a counter so they never collide with a
+/// built-in ctor/type (Some/None/Ok/Err/Less/Equal/Greater/Option/Result/Ordering), a scalar type, or a
+/// prelude type — the oracle's SOUND nominal gate declines any such collision (would be a false-reject).
+/// Unqualified variants only (qualified `T.A`, recursion, compound payloads still skip). Whole program.
+fn gen_typefuzz_usersum_program<C: Choice>(c: &mut C, fresh: &mut usize) -> String {
+    let n = *fresh;
+    *fresh += 1;
+    if c.variant(2) == 0 {
+        // Tagged: a payload variant `(Mn Int64)` + a nullary variant `(Zn)`.
+        let a = c.int_bounded(0, 9);
+        let z = c.int_bounded(0, 9);
+        format!(
+            "(do (type T{n} (M{n} Int64) (Z{n})) (def (main) (match (M{n} {a}) ((M{n} v) v) ((Z{n}) {z}))) (export main))"
+        )
+    } else {
+        // Bare-name nullary enum with 3 variants; match over one of them.
+        let pick = ["R", "G", "B"][c.variant(3)];
+        format!(
+            "(do (type E{n} R{n} G{n} B{n}) (def (main) (match {pick}{n} (R{n} 1) (G{n} 2) (B{n} 3))) (export main))"
+        )
+    }
+}
+
 pub fn generate_typecheck(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
     let mut iscope: Vec<String> = Vec::new();
@@ -371,6 +397,13 @@ pub fn generate_typecheck(entropy: &[u8]) -> Program {
     if c.variant(6) == 0 {
         return Program {
             source: gen_typefuzz_toplevel_helpers(&mut c, &mut iscope, &mut bscope, &mut fresh),
+        };
+    }
+    // ~1/6: a USER NOMINAL SUM program (T1.25/T1.26 — construct + match over a `(type …)` decl). Whole
+    // program shape (top-level type decl), so it returns early.
+    if c.variant(6) == 0 {
+        return Program {
+            source: gen_typefuzz_usersum_program(&mut c, &mut fresh),
         };
     }
     // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed body — an Int64, a
