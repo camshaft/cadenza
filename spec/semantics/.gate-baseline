@@ -10727,7 +10727,7 @@ todo	a partial built-in operation (slice at 2 of 3 args) curries — completing 
 todo	a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
-todo	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
+pass	a recursive abortive callee feeding a PENDING handle-body continuation abandons it (folds to 507)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
@@ -10738,7 +10738,7 @@ todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm r
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
-todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
+pass	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an escaping captured continuation is refused, not miscompiled
 todo	an under-applied built-in operation curries — completing it yields a value (should-work)
@@ -10784,7 +10784,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 todo	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
-todo	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
+pass	the zero-recursion abortive-callee shape with a pending continuation folds too (static shape)
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention

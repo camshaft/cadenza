@@ -12744,13 +12744,16 @@
   (output (: 11 Int64)))
 
 (case
-  "a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly"
+  "a recursive abortive callee feeding a PENDING handle-body continuation abandons it (folds to 507)"
   (doc
     "The recursive callee `go` is tail-recursive and bails, but is called at a NON-TAIL position in the
            handle body: `(+ (go 2) 999999)`. The abort must ABANDON the pending `(+ _ 999999)` (arm value
-           500 → handle value), but a specialized ordinary return would let the pending `+` consume it → a
-           silent 1000506. Abandoning past a pending continuation at the outer call site needs the
-           br-out-of-handle convention (a later increment); until then this declines cleanly.")
+           500 → handle value), NOT let the pending `+` consume it (a silent 1000506). The non-local-exit
+           TAGGED-RETURN CC folds it: `reduce_handle` detects the abortive-recursive callee at a non-tail
+           handle-body operand, forces `go` into tagged mode (`go#eff` returns `#tuple(tag value)`), and
+           short-circuits the pending op on the abort tag — `(let ((r (go#eff 2 0))) (if (= (. r 0) 1)
+           (. r 1) (+ (. r 1) 999999)))` — so the abort value 500 becomes the handle value and `+ 7`
+           outside → 507. (v1: a shareable-constant seed + a single pure-op pending continuation.)")
   (input
     (do
       (effect Mx (op bail (-> Int64 Int64)))
@@ -12761,11 +12764,12 @@
   (output (: 507 Int64)))
 
 (case
-  "the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)"
+  "the zero-recursion abortive-callee shape with a pending continuation folds too (static shape)"
   (doc
-    "The zero-dynamic-recursion twin `(go 0)` (base case hit immediately) must ALSO decline — the
-           trigger is the static self-recursive SHAPE fed to a pending non-tail continuation, not actual
-           recursion depth.")
+    "The zero-dynamic-recursion twin `(go 0)` (base case hit immediately) folds the SAME way — the
+           tagged-return CC keys on the static self-recursive SHAPE fed to a pending non-tail continuation,
+           not actual recursion depth, so `(go 0)` bails at once and the pending `+ 999999` is abandoned →
+           507.")
   (input
     (do
       (effect Mx (op bail (-> Int64 Int64)))

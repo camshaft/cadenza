@@ -2147,6 +2147,17 @@ pub struct Db {
     /// (else that shape stays declined at the 4499 non-local-exit guard). (v-effects non-local-exit CC.)
     pub(crate) tagged_abort_specs: std::collections::HashSet<String>,
 
+    /// Callee DEF INDICES whose specialization must be FORCED into the tagged-abort CC even though the callee
+    /// is TAIL-recursive (so `recursive_self_calls_all_tail` is true and the ordinary `tagged_abort` trigger —
+    /// keyed on a NON-tail self-call — does not fire). Populated by `reduce_handle` when it detects the
+    /// PENDING-IN-HANDLE-BODY shape: an abortive tail-recursive callee called at a NON-TAIL operand of a pure
+    /// strict op in the handle body — `(+ (go 2) 999999)` — where the abort must ABANDON the pending op at the
+    /// OUTER call site (adv-52). `specialize_recursive`'s tagged gate ORs this in (relaxing ONLY the all-tail
+    /// requirement; the single-slot / non-mutual / tail-abort / not-caller-observed guards still apply), so the
+    /// callee returns `#tuple(tag value)` and the handle-body short-circuit reads its tag. (v-effects
+    /// non-local-exit CC, pending-in-handle-body increment.)
+    pub(crate) force_tagged_abort: std::collections::HashSet<usize>,
+
     /// Per synthesized specialization NAME, the CAPTURED enclosing-fn param names that its handler arms
     /// reference free (e.g. a handler arm `converse(q,s) => resume(tool,0)` where `tool` is the enclosing
     /// `run-with`'s param — NOT the arm's own params/state, NOT the recursive def's params). Such a name is
@@ -3239,6 +3250,7 @@ impl Db {
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
             tagged_abort_specs: std::collections::HashSet::new(),
+            force_tagged_abort: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
             handler_region_nodes: std::collections::HashSet::new(),

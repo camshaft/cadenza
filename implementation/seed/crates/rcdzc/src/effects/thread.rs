@@ -165,7 +165,7 @@ pub(crate) fn thread_returning_tuple(
 }
 
 /// A fresh `Int` leaf `n` (decimal). The tag literals 0/1 and the abort-tag comparison operand.
-fn tagged_int_lit(db: &mut Db, n: i64) -> StructId {
+pub(crate) fn tagged_int_lit(db: &mut Db, n: i64) -> StructId {
     db.push_atom(Leaf::Int {
         value: IntValue::from_i64(n),
         radix: Radix::Dec,
@@ -175,7 +175,7 @@ fn tagged_int_lit(db: &mut Db, n: i64) -> StructId {
 /// A TAGGED-return tuple `#tuple(tag value)` — the non-local-exit CC's carrier. `tag` = 1 marks an ABORT
 /// (the value is the abort value to propagate up every pending frame), 0 marks a NORMAL result (the value is
 /// the ordinary function result). Both live in slot 1, so the handle collapse reads `(. r 1)` regardless.
-fn build_tag_tuple(db: &mut Db, tag: i64, value: StructId) -> StructId {
+pub(crate) fn build_tag_tuple(db: &mut Db, tag: i64, value: StructId) -> StructId {
     let head = db.push_atom(Leaf::Ctor(CompoundCtor::Tuple));
     let tag_atom = tagged_int_lit(db, tag);
     db.push_list(vec![head, tag_atom, value])
@@ -188,7 +188,7 @@ fn build_tag_tuple(db: &mut Db, tag: i64, value: StructId) -> StructId {
 /// tagged threader emits (which must stay raw `(spec …)` tuple-returning calls for the tag-check to read).
 /// Args are pure in v1 (copied), so no state threads through them. `None` if `head` is not a recursive call
 /// or the callee cannot specialize.
-fn build_spec_call(
+pub(crate) fn build_spec_call(
     db: &mut Db,
     head: StructId,
     orig_args: &[StructId],
