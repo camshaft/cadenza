@@ -309,6 +309,61 @@ def orderingCtorTy? (nm : ByteArray) : Option Ty :=
   | some "Greater" => some orderingTy
   | _ => none
 
+/-- Classify a MATCH pattern `patId` against the scrutinee sum's variant list `vs` (Mat rule, T1.16).
+Returns `some (covered, catchAll, binds)` for a MODELED pattern: `covered` = the variant name(s) this
+pattern matches (for the exhaustiveness check), `catchAll` = the pattern matches EVERY remaining value
+(a `_` wildcard or a fresh binder), `binds` = payload binders introduced (name → type) to extend the
+body env. Returns `none` for an UNMODELED pattern (a literal, a `(tuple …)`, a NESTED constructor
+sub-pattern, or a foreign/user constructor) → the caller DECLINES the whole match (`Unsupported`),
+never a false reject. Narrow first cut: only `_`, a bare binder, and the uniform `(Ctor binder)` form
+with ONE flat binder/wildcard — `(Some x)`/`(Ok _)` (payload-bearing, binder REQUIRED) and `(None _)`/
+`(Less _)` (nullary, unit payload) plus the bare `(None)` sugar (size-1, no binder). A bare name that IS
+a variant of `vs` is that variant's nullary pattern (spec prelude-and-resolution §A), not a binder. -/
+def matchPatClassify? (m : Ast.Module) (vs : List (ByteArray × Option Ty)) (scrutTy : Ty) (patId : Nat) :
+    Option (List ByteArray × Bool × List (ByteArray × Ty)) :=
+  let variantPayload? : ByteArray → Option (Option Ty) := fun nm => (vs.find? (·.1 == nm)).map (·.2)
+  match m.nodes[patId]? with
+  | some (.atom lid) =>
+    (match m.leaves[lid]? with
+     | some (.name b) =>
+       if b == "_".toUTF8 then some ([], true, [])
+       else match variantPayload? b with
+            | some none => some ([b], false, [])              -- bare nullary variant pattern (None/Less/…)
+            | some (some _) => none                           -- bare unary ctor name = ill-formed pattern → decline
+            | none => some ([], true, [(b, scrutTy)])         -- fresh binder = catch-all, binds the whole value
+     | _ => none)                                             -- a literal pattern on a sum → decline
+  | some (.list pc) =>
+    (match m.headName? (.list pc) with
+     | some hp =>
+       -- A modeled variant pattern. Its payload type is `.unit` for a NULLARY variant (None/Less/…), else
+       -- the variant's payload `τp` (Some/Ok/Err). Patterns are UNIFORMLY `(Ctor binder)` (spec
+       -- core-semantics.md): `(Some x)`, `(None _)`, `(Ok _)`. A nullary variant ALSO admits the bare
+       -- `(None)` (size 1) sugar with no binder; a payload-bearing variant REQUIRES its one binder.
+       (match variantPayload? hp with
+        | some payloadOpt =>
+          let payloadTy : Ty := match payloadOpt with | some τp => τp | none => .unit
+          if pc.size == 1 then
+            (match payloadOpt with
+             | none => some ([hp], false, [])                  -- `(None)` bare nullary (no binder)
+             | some _ => none)                                 -- bare `(Some)` = ill-formed pattern → decline
+          else if pc.size == 2 then
+            (match pc[1]? with
+             | some subId =>
+               (match (m.nodes[subId]? : Option Ast.Node) with
+                | some (Ast.Node.atom sl) =>
+                  (match (m.leaves[sl]? : Option Ast.Leaf) with
+                   | some (Ast.Leaf.name sb) =>
+                     if sb == "_".toUTF8 then some ([hp], false, [])
+                     else if (variantPayload? sb).isSome then none    -- a nested variant name → decline
+                     else some ([hp], false, [(sb, payloadTy)])       -- flat binder for the payload
+                   | _ => none)                                       -- a literal sub-pattern → decline
+                | _ => none)                                          -- a nested ctor/tuple sub-pattern → decline
+             | none => none)
+          else none                                             -- over-applied pattern → decline
+        | none => none)                                        -- a foreign / user constructor pattern → decline
+     | none => none)
+  | none => none
+
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
 disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
 positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
@@ -374,7 +429,11 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.12 — **App** (`ts:36`): `(f a…)` with `f` a name bound to a CONCRETE function type unifies the
   arrow against each arg to a fresh result var → the codomain; a domain clash / non-fn head is `CDZ0203`.
   A polymorphic (var-containing) head or an unbound head → `Unsupported` (defers `let`-generalization).
-Any other construct → `Unsupported` until its rule lands (Match). -/
+* T1.16 — **Mat** (`match`): `(match scrut (pat body)…)` over a built-in sum — infer the scrutinee to a
+  concrete sum, classify each arm's pattern (variant + payload binder, or catch-all) via
+  `matchPatClassify?`, bind payloads, and unify all arm bodies to one result type. Non-sum scrutinee /
+  unmodeled pattern / non-exhaustive arms → `Unsupported`; arm-body type clash → `CDZ0203`.
+Any other construct → `Unsupported` until its rule lands. -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -693,6 +752,54 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
             -- `(Less u v)` (size > 2) → CDZ0203.
             if children.size > 2 then .error (.illTyped "CDZ0203")
             else .ok (orderingTy, st)                        -- `(Less)`/`(Less unit)`/… → Ordering
+          else if h == "match".toUTF8 then
+            -- T1.16 — Mat: `(match scrut (pat body)…)` over a built-in sum. Infer the scrutinee to a
+            -- CONCRETE sum type; each arm's pattern selects a variant (binding its payload via
+            -- `matchPatClassify?`) or is a catch-all; all arm bodies unify to one result type. NARROW +
+            -- SOUND: a non-sum scrutinee, any unmodeled pattern, or a non-exhaustive arm set → `Unsupported`
+            -- (declined), never a false reject. The only asserted rejects are a propagated scrutinee fault
+            -- and an arm-body TYPE CLASH (`CDZ0203` via `unifyInfer`). Exhaustive-reject `CDZ0210` is a
+            -- deliberate later increment: here a non-exhaustive match DECLINES rather than asserting it.
+            match children[1]? with
+            | none => .error (.unsupported "type oracle: malformed match (no scrutinee)")
+            | some scrutId =>
+              (match inferE m env st scrutId with
+               | .error e => .error e
+               | .ok (τs0, st0) =>
+                 (match applySubst st0.subst τs0 with
+                  | .sum vs =>
+                    let arms := children.extract 2 children.size
+                    if arms.size == 0 then .error (.unsupported "type oracle: match with no arms")
+                    else (match arms.foldlM (m := Except InferFail)
+                        (fun (acc : List ByteArray × Bool × Option Ty × InferState) armId =>
+                          match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                          | none => .error (.unsupported "type oracle: malformed match arm")
+                          | some ac =>
+                            (match ac[0]?, ac[1]? with
+                             | some patId, some bodyId =>
+                               (match matchPatClassify? m vs (.sum vs) patId with
+                                | none => .error (.unsupported "type oracle: unmodeled match pattern — declined")
+                                | some (cov, catchAll, binds) =>
+                                  (match inferE m (binds ++ env) acc.2.2.2 bodyId with
+                                   | .error e => .error e
+                                   | .ok (τb, st') =>
+                                     (match acc.2.2.1 with
+                                      | none => .ok (acc.1 ++ cov, acc.2.1 || catchAll, some τb, st')
+                                      | some τr =>
+                                        (match unifyInfer τb τr st' with
+                                         | .error e => .error e
+                                         | .ok st'' => .ok (acc.1 ++ cov, acc.2.1 || catchAll, some τr, st'')))))
+                             | _, _ => .error (.unsupported "type oracle: malformed match arm")))
+                        (([], false, none, st0) : List ByteArray × Bool × Option Ty × InferState) with
+                     | .error e => .error e
+                     | .ok (covered, catchAll, resTy, stF) =>
+                       (match resTy with
+                        | none => .error (.unsupported "type oracle: match produced no result type")
+                        | some τr =>
+                          let exhaustive := catchAll || (vs.map (·.1)).all (fun vn => covered.any (· == vn))
+                          if exhaustive then .ok (τr, stF)
+                          else .error (.unsupported "type oracle: non-exhaustive match — declined (CDZ0210 reject is a later increment)")))
+                  | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
           else
             -- T1.12 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env to a
             -- function; unify the (curried) fn type against each argument to a fresh result var, yielding the
@@ -1182,6 +1289,26 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                       nodes := #[.atom 3, .list #[0], .atom 2, .list #[2], .atom 1, .list #[4, 3, 1],
                                  .atom 4, .atom 2, .list #[6, 7], .atom 0, .list #[9, 5, 8]],
                       root := 10 } with | .unsupported _ => true | _ => false)
+-- T1.16 (Mat): exhaustive Option match `(match (Some 5) ((Some x) x) ((None _) 0))` → WellTyped Int64
+-- (Some binds x:numVar, None arm covers the rest, both bodies numeric → unify → default Int64).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "match".toUTF8,
+                            .name "Some".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "x".toUTF8,
+                            .name "None".toUTF8, .name "_".toUTF8, .intLit false .dec (ByteArray.mk #[0]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .list #[0, 1], .atom 4, .atom 6, .list #[3, 4], .atom 6,
+                           .list #[5, 6], .atom 7, .atom 8, .list #[8, 9], .atom 9, .list #[10, 11],
+                           .atom 3, .list #[13, 2, 7, 12], .atom 2, .list #[15], .atom 1, .list #[17, 16, 14],
+                           .atom 10, .atom 2, .list #[19, 20], .atom 0, .list #[22, 18, 21]],
+                root := 23 } == .wellTyped (.int 64 true))
+-- T1.16 (Mat): NON-exhaustive `(match (Some 5) ((Some x) x))` (None uncovered, no catch-all) → Unsupported
+-- (declined; asserting the CDZ0210 reject is a deliberate later increment, never a false claim here).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "match".toUTF8,
+                                  .name "Some".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "x".toUTF8,
+                                  .name "export".toUTF8],
+                      nodes := #[.atom 4, .atom 5, .list #[0, 1], .atom 4, .atom 6, .list #[3, 4], .atom 6,
+                                 .list #[5, 6], .atom 3, .list #[8, 2, 7], .atom 2, .list #[10], .atom 1,
+                                 .list #[12, 11, 9], .atom 7, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
+                      root := 18 } with | .unsupported _ => true | _ => false)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
