@@ -1118,6 +1118,26 @@ fn instantiations_value(
 ///  2. else a BUILT-IN binding's `(meta doc)` channel — resolve the name to its prelude record, then read
 ///     the channel generically (`eval::project_meta`), never matching the name against a key;
 ///  3. else a GRAMMAR KEYWORD's doc (a small table, the doc analogue of `resolve::GRAMMAR`).
+/// Resolve a NAME to its RECORD occurrence for doc/member lookup — the union of every "record-shaped"
+/// binding a name can denote, so the doc ladder handles built-in AND user namespaces uniformly:
+///  - a built-in prelude MODULE (`Map`, `List`) — `db.prelude`;
+///  - a user def bound to a record value;
+///  - a user `(module NAME …)` — its synthesized record (`ModuleDecl::synth`), the same record the module
+///    NAME resolves to at a call site, so `lib.twice` docs resolve like `Map.insert`.
+/// `None` if the name is not a record. No hardcoded key match (each step is the generic binding lookup).
+fn record_by_name(db: &mut Db, name: &str) -> Option<StructId> {
+    db.prelude
+        .get(name)
+        .copied()
+        .or_else(|| db.def_by_name(name).and_then(|i| db.defs[i].body))
+        .or_else(|| {
+            db.modules
+                .iter()
+                .find(|m| m.name == name)
+                .and_then(|m| m.synth)
+        })
+}
+
 fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
     // 1. A user definition's captured doc.
     if let Some(idx) = db.def_by_name(name) {
@@ -1126,31 +1146,42 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
             return Some(doc.to_string());
         }
     }
-    // 2. A built-in binding's `(meta doc)` channel — read off its prelude record, generically.
-    if let Some(&rec) = db.prelude.get(name)
+    // 2. A RECORD name's own `(meta doc)` channel — a built-in prelude module (`Map`), a user def bound to
+    // a record, or a user `(module …)`. Read the channel generically (`project_meta`), never by key.
+    if let Some(rec) = record_by_name(db, name)
         && let Some(doc_node) = crate::eval::project_meta(db, rec, "doc")
         && let Some(text) = db.ast.as_str(doc_node)
     {
         return Some(text.to_string());
     }
-    // 2b. A DOTTED MEMBER `Prefix.member` (`Map.insert`) — the common editor case (hovering a member
-    // call). The plain-name steps above miss it: the prelude holds `Map` (the module record), not
-    // `Map.insert`. Resolve the PREFIX to its record (a built-in prelude module, or a user def bound to
-    // a record), then read the MEMBER's `(meta doc)` channel through the SAME generic member path a
-    // `(. Map insert)` access takes (`member_value` → `project_meta`), never a hardcoded key. Split on
-    // the LAST `.` so a nested prefix (were one to exist) still names its record.
+    // 2b. A DOTTED MEMBER `Prefix.member` (`Map.insert`, `lib.twice`) — the common editor case (hovering a
+    // member call). The plain-name steps above miss it: the prelude holds `Map`, not `Map.insert`, and a
+    // user module `lib` is not a top-level def. Resolve the PREFIX to its record (`record_by_name` —
+    // prelude module, user record, OR user `(module …)`), then read the MEMBER's `(meta doc)` channel
+    // through the SAME generic member path a `(. Prefix member)` access takes. Split on the LAST `.`.
     if let Some(dot) = name.rfind('.') {
         let (prefix, member) = (&name[..dot], &name[dot + 1..]);
-        if !prefix.is_empty() && !member.is_empty() {
-            let rec = db
-                .prelude
-                .get(prefix)
-                .copied()
-                .or_else(|| db.def_by_name(prefix).and_then(|i| db.defs[i].body));
-            if let Some(rec) = rec
-                && let crate::eval::Member::Field(v) =
-                    crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member))
-                && let Some(doc_node) = crate::eval::project_meta(db, v, "doc")
+        if !prefix.is_empty()
+            && !member.is_empty()
+            && let Some(rec) = record_by_name(db, prefix)
+            && let crate::eval::Member::Field(v) =
+                crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member))
+        {
+            // A USER def member carries its doc in `db.doc_of_def` (keyed by the def's signature), NOT a
+            // `(meta doc)` channel: the field value is the member def's body (a value member) or a synth
+            // `(fn params body)` wrapping it (a function member), so map it back to the member def
+            // (`def_index_by_body`, directly or through `lambda_body`) and read its captured doc.
+            let member_def = db
+                .def_index_by_body(v)
+                .or_else(|| crate::eval::lambda_body(db, v).and_then(|b| db.def_index_by_body(b)));
+            if let Some(di) = member_def {
+                let sig = db.defs[di].sig_occ;
+                if let Some(doc) = db.doc_of_def(sig) {
+                    return Some(doc.to_string());
+                }
+            }
+            // A BUILT-IN member carries its doc as a `(meta doc)` channel on the value (`Map.insert`).
+            if let Some(doc_node) = crate::eval::project_meta(db, v, "doc")
                 && let Some(text) = db.ast.as_str(doc_node)
             {
                 return Some(text.to_string());
@@ -1168,28 +1199,26 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
 /// tests the prelude record's existence — the generic path a name resolution takes).
 fn name_is_known(db: &mut Db, name: &str) -> bool {
     if db.def_by_name(name).is_some()
-        || db.prelude.contains_key(name)
         || grammar_keyword_doc(name).is_some()
+        || record_by_name(db, name).is_some()
     {
+        // `record_by_name` covers a prelude module, a user record, AND a user `(module …)` — so a bare
+        // module NAME (`Map`, `lib`) with no module-level doc is "undocumented", not "no such definition".
         return true;
     }
     // A DOTTED MEMBER `Prefix.member` that RESOLVES (mirrors `doc_of_name`'s step 2b) — a real member
-    // with no `(meta doc)` is "undocumented", not "no such definition". Resolve the prefix record + test
-    // the member field exists (no doc-text read).
+    // with no `(meta doc)` is "undocumented", not "no such definition". Resolve the prefix record
+    // (`record_by_name` — prelude module, user record, or user `(module …)`) + test the member exists.
     if let Some(dot) = name.rfind('.') {
         let (prefix, member) = (&name[..dot], &name[dot + 1..]);
-        if !prefix.is_empty() && !member.is_empty() {
-            let rec = db
-                .prelude
-                .get(prefix)
-                .copied()
-                .or_else(|| db.def_by_name(prefix).and_then(|i| db.defs[i].body));
-            if let Some(rec) = rec {
-                return matches!(
-                    crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member)),
-                    crate::eval::Member::Field(_)
-                );
-            }
+        if !prefix.is_empty()
+            && !member.is_empty()
+            && let Some(rec) = record_by_name(db, prefix)
+        {
+            return matches!(
+                crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member)),
+                crate::eval::Member::Field(_)
+            );
         }
     }
     false
@@ -2546,6 +2575,54 @@ mod tests {
         assert!(
             matches!(bogus, DocAnswer::NoSuchDef { .. }),
             "`Map.nope` is a bogus member → NoSuchDef: {bogus:?}"
+        );
+    }
+
+    #[test]
+    fn doc_of_a_user_module_member_surfaces_its_captured_doc() {
+        // ITEM C residual (breaker /tmp/doc3.sexp): a USER `(module …)`'s exported member must resolve on
+        // `cdz doc lib.twice` — reading the member DEF's captured `(doc "…")` (in `db.doc_of_def`, NOT a
+        // `(meta doc)` channel like a builtin), via `record_by_name` resolving the module's synth record +
+        // mapping the member value back to its def. A bogus member (`lib.nope`) stays `NoSuchDef`; the
+        // module name itself (`lib`) resolves (Undocumented — no module-level doc). Regression witness for
+        // the user-module-namespace gap the builtin fix (#7747) left.
+        use cadenza_compile_abi::DocAnswer;
+        let src = "(do (module lib (def (twice (: k Int64)) (doc \"member doc: twice\") (* k 2)) \
+                   (export twice)) (def (main) (lib.twice 21)) (export main))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let m = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "lib.twice".into(),
+                },
+            )
+            .bytes,
+        );
+        assert_eq!(
+            m,
+            DocAnswer::Doc("member doc: twice".into()),
+            "`lib.twice` surfaces the user-module member's captured doc: {m:?}"
+        );
+        let bogus = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "lib.nope".into(),
+                },
+            )
+            .bytes,
+        );
+        assert!(
+            matches!(bogus, DocAnswer::NoSuchDef { .. }),
+            "`lib.nope` is a bogus member → NoSuchDef: {bogus:?}"
+        );
+        let module = cadenza_compile_abi::decode_doc(
+            &run_query(&mut db, &Query::DocOf { name: "lib".into() }).bytes,
+        );
+        assert!(
+            !matches!(module, DocAnswer::NoSuchDef { .. }),
+            "the module `lib` itself resolves (Undocumented, not a typo): {module:?}"
         );
     }
 
