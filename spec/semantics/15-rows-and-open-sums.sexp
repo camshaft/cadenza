@@ -2121,13 +2121,13 @@
            one level down would flip the tens digit while top-level fields still agree.")
   (input
     (do
-      (def (via (: a Int64)) (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 2))
+      (def (via (: a Int64)) (Map.remove #map((= 1 a) (= 2 20)) 2))
       (def
         (main (: a Int64))
         (let
           ((recv #record((= m (via a)) (= t 1)))
-            (recd #record((= m (Map.insert Map.empty 1 a)) (= t 1)))
-            (decoy #record((= m (Map.insert Map.empty 1 a)) (= t 2))))
+            (recd #record((= m #map((= 1 a))) (= t 1)))
+            (decoy #record((= m #map((= 1 a))) (= t 2))))
           (+ (* 10 (if (= recv recd) 1 0)) (if (= recv decoy) 1 0))))
       (export main)))
   (call main (: 10 Int64))

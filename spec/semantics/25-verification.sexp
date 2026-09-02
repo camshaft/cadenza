@@ -3157,7 +3157,7 @@
       (def
         (main (: k Int64))
         (do
-          (def store (Map.insert (Map.insert Map.empty 1 (refl k)) 2 (refl (+ k 1))))
+          (def store #map((= 1 (refl k)) (= 2 (refl (+ k 1)))))
           (match (Map.lookup store 2) ((Option.Some th) (is-refl (concl th))) ((Option.None _u) -1))))
       (export main)))
   (call main (: 5 Int64))

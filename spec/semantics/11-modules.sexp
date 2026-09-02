@@ -2732,7 +2732,7 @@
       (export main)))
   (module "counter"
     (do
-      (def secret (Map.insert Map.empty 1 100))
+      (def secret #map((= 1 100)))
       (def
         (mk (: base Int64))
         (fn ((: x Int64)) (+ base (+ x (match (Map.lookup secret 1) ((Some v) v) ((None _u) 0))))))
