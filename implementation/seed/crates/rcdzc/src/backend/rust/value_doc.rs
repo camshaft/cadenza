@@ -6,12 +6,18 @@
 //! and returns the `CDZDOC:<hex>` marker string. The gate driver calls this (flag-gated `CDZ_VALUE_DOC`)
 //! instead of cdz-rust-render's type-note-driven `cdz_render_at` string walk: the value walk moves HERE and
 //! consults the `Ty` DIRECTLY (no sexpr note re-parse), which is what lets us delete `parse_head_type` /
-//! `cdz_render_at` / `rust_call_arg`. A value tuple then renders `(tuple …)` (canonical), NOT `#tuple` —
-//! closing op-seq-283 by construction.
+//! `cdz_render_at` / `rust_call_arg`.
 //!
-//! Node shapes (verified via `cdz convert -t debug`):
+//! A compound VALUE head is a `Leaf::Ctor(CompoundCtor::…)` (via `Builder::compound`), so it renders the
+//! canonical `#tuple(…)` / `#record(…)` / `#list(…)` / `#set(…)` / `#map(…)` — MATCHING cdz-run's `render_val`,
+//! the corpus expected outputs, and the grader's `canonical_output_value` (all of which use the `#`-ctor form;
+//! a bare `Name "tuple"` head would render the DIVERGENT `(tuple …)` and red every compound case on the flip).
+//! A record/map ENTRY is a `Builder::field_pair` `(= key value)`. The TYPE head stays a `Name` (`(Tuple …)` —
+//! types have no `#` form). A SUM value head is the bare variant `Name` (`(Some 5)`), matching cdz-run.
+//!
+//! Node shapes (verified via `cdz convert`):
 //!   `(: 42 Int64)`             → List[ Name ":", Int 42, Name "Int64" ]
-//!   `(: (tuple 1 2) …)`        → the value is List[ Name "tuple", <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
+//!   `(: #tuple(1 2) …)`        → the value is List[ Ctor(Tuple), <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
@@ -125,12 +131,13 @@ fn doc_value_node(
             ));
             Ok(v)
         }
-        // A tuple → `(tuple <e0> <e1> …)`: a `Name "tuple"` head then each element's node (walked at `.i`).
+        // A tuple → `#tuple(<e0> <e1> …)`: a `Leaf::Ctor(CompoundCtor::Tuple)` head (via `Builder::compound`)
+        // then each element's node (walked at `.i`). The Ctor head renders `#tuple(…)` — the canonical form
+        // cdz-run's `render_val`, the corpus, and the grader all use (NOT a `Name "tuple"` head, which renders
+        // the divergent bare `(tuple …)`).
         Ty::Tuple(elems) => {
             let elems = elems.clone();
-            let head = fresh(ctr);
-            out.push_str(&format!("    let {head} = __b.name(\"tuple\");\n"));
-            let mut kids = vec![head];
+            let mut kids = Vec::with_capacity(elems.len());
             for (i, e) in elems.iter().enumerate() {
                 kids.push(doc_value_node(
                     db,
@@ -142,39 +149,32 @@ fn doc_value_node(
             }
             let v = fresh(ctr);
             out.push_str(&format!(
-                "    let {v} = __b.list(vec![{}]);\n",
+                "    let {v} = __b.compound(cadenza_ast::ast::CompoundCtor::Tuple, &[{}]);\n",
                 kids.join(", ")
             ));
             Ok(v)
         }
-        // A record → `(record (= <f0> <v0>) (= <f1> <v1>) …)`: a `Name "record"` head then, per field (in
-        // BTreeMap = SORTED-key order, matching the emitted tuple's `.i`), a `List[FieldPair, Name <field>,
-        // <value-node>]` (the `=` marker is a `Leaf::FieldPair`).
+        // A record → `#record((= <f0> <v0>) (= <f1> <v1>) …)`: a `Leaf::Ctor(CompoundCtor::Record)` head (via
+        // `Builder::compound`) then, per field (in BTreeMap = SORTED-key order, matching the emitted tuple's
+        // `.i`), a `(= <field> <value>)` entry built by `Builder::field_pair` (the `=` marker is a
+        // `Leaf::FieldPair`). The Ctor head renders `#record(…)` — the canonical form cdz-run/corpus/grader use.
         Ty::Record(fields) => {
             let fields: Vec<(String, Ty)> = fields
                 .iter()
                 .map(|(k, t)| (k.name.to_string(), t.clone()))
                 .collect();
-            let head = fresh(ctr);
-            out.push_str(&format!("    let {head} = __b.name(\"record\");\n"));
-            let mut kids = vec![head];
+            let mut kids = Vec::with_capacity(fields.len());
             for (i, (fname, fty)) in fields.iter().enumerate() {
-                let fp = fresh(ctr);
-                out.push_str(&format!(
-                    "    let {fp} = __b.atom_leaf(cadenza_ast::ast::Leaf::FieldPair);\n"
-                ));
                 let fnn = fresh(ctr);
                 out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
                 let fv = doc_value_node(db, fty, &format!("({val_expr}).{i}"), out, ctr)?;
                 let pair = fresh(ctr);
-                out.push_str(&format!(
-                    "    let {pair} = __b.list(vec![{fp}, {fnn}, {fv}]);\n"
-                ));
+                out.push_str(&format!("    let {pair} = __b.field_pair({fnn}, {fv});\n"));
                 kids.push(pair);
             }
             let v = fresh(ctr);
             out.push_str(&format!(
-                "    let {v} = __b.list(vec![{}]);\n",
+                "    let {v} = __b.compound(cadenza_ast::ast::CompoundCtor::Record, &[{}]);\n",
                 kids.join(", ")
             ));
             Ok(v)
@@ -210,18 +210,18 @@ fn doc_value_node(
         // bindings into the LOOP-BODY buffer (re-run per element) and returns the built-node var to push.
         Ty::List(elem) => {
             let elem = (**elem).clone();
-            let head = fresh(ctr);
             let kids = fresh(ctr);
             let iter = fresh(ctr);
-            out.push_str(&format!("    let {head} = __b.name(\"list\");\n"));
-            out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
+            out.push_str(&format!("    let mut {kids} = Vec::new();\n"));
             let mut body = String::new();
             let enode = doc_value_node(db, &elem, &iter, &mut body, ctr)?;
             out.push_str(&format!(
                 "    for {iter} in ({val_expr}) {{\n{body}        {kids}.push({enode});\n    }}\n"
             ));
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list({kids});\n"));
+            out.push_str(&format!(
+                "    let {v} = __b.compound(cadenza_ast::ast::CompoundCtor::List, &{kids});\n"
+            ));
             Ok(v)
         }
         // A SET → `(set e1 e2 …)` (ctor word `set`): a `Name "set"` head then each element's value-node in
@@ -235,7 +235,6 @@ fn doc_value_node(
         // (it is neither a direct float nor `ty_is_ord`).
         Ty::Set(elem) => {
             let elem = (**elem).clone();
-            let head = fresh(ctr);
             let kids = fresh(ctr);
             let iter = fresh(ctr);
             let elem_val = if matches!(elem, Ty::Float(_)) {
@@ -247,15 +246,16 @@ fn doc_value_node(
                     "value-doc: compound-float Set element not covered (needs per-position __CdzF unwrap)",
                 ));
             };
-            out.push_str(&format!("    let {head} = __b.name(\"set\");\n"));
-            out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
+            out.push_str(&format!("    let mut {kids} = Vec::new();\n"));
             let mut body = String::new();
             let enode = doc_value_node(db, &elem, &elem_val, &mut body, ctr)?;
             out.push_str(&format!(
                 "    for {iter} in ({val_expr}) {{\n{body}        {kids}.push({enode});\n    }}\n"
             ));
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list({kids});\n"));
+            out.push_str(&format!(
+                "    let {v} = __b.compound(cadenza_ast::ast::CompoundCtor::Set, &{kids});\n"
+            ));
             Ok(v)
         }
         // A MAP → `(map (= k1 v1) (= k2 v2) …)` (ctor word `map`): a `Name "map"` head then, per entry in
@@ -267,10 +267,8 @@ fn doc_value_node(
         Ty::Map(k, val_ty) => {
             let kty = (**k).clone();
             let vty = (**val_ty).clone();
-            let head = fresh(ctr);
             let kids = fresh(ctr);
             let kv = fresh(ctr);
-            let fp = fresh(ctr);
             let entry = fresh(ctr);
             let key_val = if matches!(kty, Ty::Float(_)) {
                 format!("{kv}.0.get()")
@@ -281,16 +279,17 @@ fn doc_value_node(
                     "value-doc: compound-float Map key not covered (needs per-position __CdzF unwrap)",
                 ));
             };
-            out.push_str(&format!("    let {head} = __b.name(\"map\");\n"));
-            out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
+            out.push_str(&format!("    let mut {kids} = Vec::new();\n"));
             let mut body = String::new();
             let knode = doc_value_node(db, &kty, &key_val, &mut body, ctr)?;
             let vnode = doc_value_node(db, &vty, &format!("{kv}.1"), &mut body, ctr)?;
             out.push_str(&format!(
-                "    for {kv} in ({val_expr}) {{\n{body}        let {fp} = __b.atom_leaf(cadenza_ast::ast::Leaf::FieldPair);\n        let {entry} = __b.list(vec![{fp}, {knode}, {vnode}]);\n        {kids}.push({entry});\n    }}\n"
+                "    for {kv} in ({val_expr}) {{\n{body}        let {entry} = __b.field_pair({knode}, {vnode});\n        {kids}.push({entry});\n    }}\n"
             ));
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list({kids});\n"));
+            out.push_str(&format!(
+                "    let {v} = __b.compound(cadenza_ast::ast::CompoundCtor::Map, &{kids});\n"
+            ));
             Ok(v)
         }
         // A SUM (Option / Result / a user sum) → a `match` over the emitted enum. Each variant arm builds
