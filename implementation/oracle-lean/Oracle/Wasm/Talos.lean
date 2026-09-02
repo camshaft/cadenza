@@ -48,7 +48,17 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
       | some idx =>
         let store0 := m.runActiveSegments fuel (m.runConstGlobals fuel (m.initialStore (α := Unit)) {}) {}
         let inst : _root_.Wasm.SmallStep.ModuleInstance Unit := { module := m, host := {} }
-        match _root_.Wasm.SmallStep.initConfig inst idx store0 [] with
+        -- Zero-init the entry's params so a PARAM-TAKING `main` (a program `(def (main x) …)` → a wasm `main`
+        -- with params) runs `f(0⃗)` instead of failing `local.get 0` on an unbound param slot (the dominant
+        -- skip cluster). Imports are already rejected above, so the entry function is `m.funcs[idx]`. Passed
+        -- REVERSED: talos binds `(args.take numParams).reverse` to local 0.. (params are reversed on entry per
+        -- the wasm calling convention), so a param-order zero list must be reversed to land in position.
+        -- v-lean-oracle's runCorpus applies Core `main` to the SAME typed zeros (co-landed) so both compute
+        -- `f(0⃗)`; a NON-SCALAR Core param makes the Core side SKIP (per-wasm-param zeros ≠ per-Core-param zeros
+        -- for a compound that lowered to several wasm params) → the case skips, never a false differential.
+        let zeroArgs : List _root_.Wasm.Value :=
+          (((m.funcs[idx]?).map (fun fn => fn.params.map _root_.Wasm.ValueType.zero)).getD []).reverse
+        match _root_.Wasm.SmallStep.initConfig inst idx store0 zeroArgs with
         | .error err => .err s!"small-step init: {err.message}"
         | .ok cfg =>
           match (_root_.Wasm.SmallStep.runSteps fuel cfg).result with
@@ -80,5 +90,12 @@ example :
       { entry := "main" } == .value (.int 5)) = true := by native_decide
 -- an unknown export declines (not a differential mismatch)
 example : (talosDriver wat5 { entry := "nope" } == .err "unknown export `nope`") = true := by native_decide
+
+/-- A PARAM-TAKING `main : (i64) -> i64` returning its param (identity). Proves the driver zero-inits the
+entry's param slot: with no supplied arg it runs `main(0) = 0`, not a `local.get 0` failure (the dominant
+skip cluster before this fix). -/
+private def watIdI64 : String :=
+  "(module (func (export \"main\") (param i64) (result i64) local.get 0))"
+example : (talosDriver watIdI64 { entry := "main" } == .ok #[.i64 0]) = true := by native_decide
 
 end Oracle.Wasm
