@@ -323,6 +323,43 @@
   (error CDZ0101 (message "unbound name")))
 
 (case
+  "splice-flatten RECURSES through a nested statement-position (do …) — a def in a non-final inner do binds visibly"
+  (doc
+    "Splice-flatten applies RECURSIVELY, position-per-level (v-spec-oracle recursion ruling): a nested
+           `(do …)` that is at a NON-FINAL (statement) position within a flattened outer do ITSELF flattens.
+           `(def (mko (quote na)) (quasiquote (do (do (def (unquote na) 9) 0) 0)))` — `(mko answer)` splices
+           `(do (do (def answer 9) 0) 0)`; the inner `(do (def answer 9) 0)` is the outer's NON-FINAL
+           statement (the outer tail is the final `0`), so it flattens, and its non-final `(def answer 9)`
+           registers → `answer` binds VISIBLY (`main`=`answer`=9). Pins recursion at every nesting level for a
+           statement-position do; the final `0`s are discarded values.")
+  (input
+    (do
+      (def (mko (quote na)) (quasiquote (do (do (def (unquote na) 9) 0) 0)))
+      (mko answer)
+      (def (main) answer)
+      (export main)))
+  (call main)
+  (output (: 9 Int64)))
+
+(case
+  "splice-flatten does NOT descend a TAIL-position nested (do …) — its defs stay scoped (the boundary)"
+  (doc
+    "The tail boundary of recursive splice-flatten: a nested `(do …)` at the FINAL/TAIL (value/expression)
+           position of a flattened do STAYS SCOPED — its bindings are do-local, not enclosing-visible.
+           `(quasiquote (do 0 (do (def (unquote na) 9) 0)))` — the inner `(do (def answer 9) 0)` IS the outer
+           do's tail (its value), so it does NOT flatten: a caller reference `answer` is CDZ0101 unbound.
+           Pins the non-final=flatten / final=scoped rule per level — a macro wanting a scoped block returns a
+           do in value position, and it is never spuriously flattened. Contrast the non-final case above
+           (`answer`=9).")
+  (input
+    (do
+      (def (mko (quote na)) (quasiquote (do 0 (do (def (unquote na) 9) 0))))
+      (mko answer)
+      (def (main) answer)
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same

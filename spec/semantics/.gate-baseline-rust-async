@@ -8983,3 +8983,5 @@ pass	sqtv1 a runtime Symbol tuple element renders as the (Symbol.of …) constru
 pass	a misspelled Ast module member Sym is rejected CDZ0201 with Symbol leading the did-you-mean (prefix-rank)
 pass	one macro splices a TYPE and a fn over it via a wrapping (do …) — the type splice-flattens alongside the def
 pass	a macro-internal type in a wrapping (do …) splice stays hygienic-local
+pass	splice-flatten RECURSES through a nested statement-position (do …) — a def in a non-final inner do binds visibly
+pass	splice-flatten does NOT descend a TAIL-position nested (do …) — its defs stay scoped (the boundary)
