@@ -1307,6 +1307,25 @@ fn emit_expr_viewed(
             {
                 return emit_expr_viewed(db, b, id, Some(inner.clone()), None, env, emitted);
             }
+            // REFINE a `Core::Call`'s ambiguous `Decline` with the CALLEE's return type (the caller has `inner`,
+            // which `nominal_disposition` does not). The peel rescue above already handled the case where THIS
+            // node is typed the nominal but the CONTEXT wants the inner (`expected == inner`). Outside that:
+            //  - a call whose result IS this nominal  → PASS-THROUGH (it produces the nominal; emit the bare call);
+            //  - a call whose result is the INNER type → CONSTRUCT (it produces the inner value a `(Ctor …)` wraps
+            //    HERE — e.g. `(B.Wrap (rep …))` where `rep : … → Bytes` and `eq` inlined, so the erased wrap left
+            //    the Bytes-returning call typed `B`; wrap `(B.Wrap <call>)`, value-eq'd over a runtime Bytes payload);
+            //  - anything else stays the conservative `Decline` (a genuinely ambiguous producer).
+            let disp = if matches!(disp, NominalDisp::Decline)
+                && let Core::Call { callee, .. } = core_of(db, id)
+            {
+                match callee_return_ty(db, callee) {
+                    Some(Ty::Nominal { decl: rd, .. }) if rd == decl => NominalDisp::PassThrough,
+                    Some(rt) if rt == inner => NominalDisp::Construct,
+                    _ => disp,
+                }
+            } else {
+                disp
+            };
             match disp {
                 NominalDisp::Construct => {
                     let head = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
@@ -5137,6 +5156,17 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::Tuple { .. }
         | Core::Record { .. }
         | Core::ListNew { .. }
+        // `ListConcat` (a fresh concatenated list), and the BYTES producers `ConstBytes` / `BytesOf` /
+        // `BytesConcat` (a byte-string literal, a `(Bytes.of …)` build, a `(Bytes.concat …)`), all
+        // intrinsically yield their own fresh collection/bytes value — NEVER a pre-existing nominal — so a
+        // newtype over them (`(B.Wrap (Bytes.of …))` / `(B.Wrap (Bytes.concat …))` : `(type B (Wrap Bytes))`)
+        // is a CONSTRUCTION site here, exactly like `ListNew`/`ConstStr`. Without them the erased newtype
+        // value's Core fell to the ambiguous `_ => Decline` → CDZ0900 on a runtime Bytes-newtype value-eq
+        // (`(= (B.Wrap a) (B.Wrap c))` over rope/flat runtime Bytes).
+        | Core::ListConcat { .. }
+        | Core::ConstBytes(_)
+        | Core::BytesOf { .. }
+        | Core::BytesConcat { .. }
         | Core::MapNew { .. }
         | Core::SetOf { .. } => NominalDisp::Construct,
         // A binder: construction iff its DECLARED type is NOT already this nominal (a wrapped inner value);
