@@ -936,3 +936,28 @@
   (output (: -1 Int64))
   (call main (: 5 Int64))
   (output (: -1 Int64)))
+
+(case
+  "trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err (should-work; today declines the runtime operand — try-operator lane)"
+  (doc
+    "Idealistic TODO fence (corpus policy; breaker adv 2026-09-02, cross-verified). A `?`/`try` over a
+     RUNTIME-selected `Result` operand — `step`'s param `r` fed a runtime `(if … (Ok 41) (Err …))` — must
+     UNWRAP on the Ok leg (42 = 41+1, re-wrapped through the `(Result …)` boundary) and PROPAGATE on the Err
+     leg (`(try (Err …))` short-circuits `step` to the Err, which the outer match maps to -1). Today the
+     try-operator lowering (`diag.rs` TRY_ONLY_CONSTANT_OPERAND / `lower.rs`) handles only a CONSTANT operand,
+     so this RUNTIME operand DECLINES CDZ0900 on all three targets — the SAFE FLOOR (matches rust; the wasm
+     wrong-value miscompile the breaker found at a d33a2d1045-era main is FIXED — it now declines, no garbage).
+     The CONST-arg twin `(step (Ok 41))` folds 42 (the fold path is fine). Auto-flips to PASS when the
+     runtime-Result `?` lowering (the `Core::MatchSum` block-br emit, BRICK 3b) lands. OWNER: try-operator lane
+     (not effects — no handlers); fenced here per corpus policy so it tracks + auto-flips.")
+  (input
+    (do
+      (def (step (: r (Result Int64 String))) (: (Ok (+ 1 (try r))) (Result Int64 String)))
+      (def
+        (main (: k Int64))
+        (match (step (if (> k 0) (Ok 41) (Err "nope"))) ((Ok v) v) ((Err _s) -1)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
