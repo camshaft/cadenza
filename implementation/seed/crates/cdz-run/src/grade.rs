@@ -37,6 +37,10 @@ pub fn grade(
     // captured it — feeds `grade_diag_quality` so a case's `(fix …)`/`(count …)` facets are asserted. `None`
     // when uncaptured (diagnostic-QUALITY grading OFF; the code+message checks still run from `compile_diag`).
     diag_wire: Option<&[u8]>,
+    // The `cdz check --diagnostics-wire` capture for the SAME case (C1 check-vs-compile parity, #7143):
+    // forwarded to `grade_run`, which reds if `cdz check` misses a coded fault `cdz compile` rejects. `None`
+    // (today's callers) = parity OFF; the upstream per-case capture (v-nix) flips it on. Purely additive.
+    check_diag: Option<&[u8]>,
     baseline: Option<&str>,
     // CLASSIFY mode (`--emit-verdict PATH`, gate-delete `--save` replacement): when set, write this case's
     // current verdict (`<tag>\t<description>`) to PATH and return success WITHOUT the baseline regression
@@ -86,6 +90,7 @@ pub fn grade(
         compile_status,
         compile_diag,
         diag_wire,
+        check_diag,
         |trial: &GTrial| {
             // Record the scalar-vs-heap-return classification FIRST (before any early-return below), so it
             // stays index-aligned with `per_trial_live` even when a trial short-circuits (bad artifact).

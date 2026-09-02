@@ -426,6 +426,11 @@ pub fn grade_run<F>(
     compile_status: i32,
     compile_diag: &str,
     diag_wire: Option<&[u8]>,
+    // The `cdz check --diagnostics-wire` capture for the SAME case, for the C1 check-vs-compile parity leg
+    // (see [`grade_check_parity`]). `None` = the pipeline did not capture a check wire (parity OFF, today's
+    // default); the upstream capture flips it on. Parity is graded only when BOTH this and `diag_wire` are
+    // `Some` (nothing to compare otherwise).
+    check_diag: Option<&[u8]>,
     mut run_trial: F,
 ) -> Result<GradeResult>
 where
@@ -602,6 +607,16 @@ where
             )));
             break;
         }
+    }
+
+    // C1 check-vs-compile diagnostic PARITY (#7143): when BOTH the compile-phase diagnostics wire and a
+    // `cdz check` wire were captured for this case, `cdz check` must surface every CODED fault `cdz compile`
+    // rejects. INERT unless the pipeline threads `check_diag` (today's callers pass `None`); the upstream
+    // per-case `cdz check --diagnostics-wire` capture flips it on. A miss downgrades the grade to Fail.
+    if let (Some(compile_wire), Some(check_wire)) = (diag_wire, check_diag)
+        && let Some(msg) = grade_check_parity(compile_wire, check_wire)
+    {
+        worst = worst.worse(Grade::Fail(msg));
     }
 
     Ok(GradeResult {
@@ -2118,14 +2133,14 @@ mod tests {
         let bytes = codec::encode(&b.finish(root));
 
         let tr = decode_test_run(&bytes).expect("decodes");
-        let res = grade_run(&tr, 0, "", None, |_| {
+        let res = grade_run(&tr, 0, "", None, None, |_| {
             Ok(Outcome::Value("42".into(), vec![]))
         })
         .unwrap();
         assert_eq!(res.grade, Grade::Pass);
         assert!(res.ran_a_trial);
         // A wrong value → Fail.
-        let res = grade_run(&tr, 0, "", None, |_| {
+        let res = grade_run(&tr, 0, "", None, None, |_| {
             Ok(Outcome::Value("41".into(), vec![]))
         })
         .unwrap();
@@ -2138,6 +2153,7 @@ mod tests {
             &tr,
             1,
             "cdz: error: parameter reference has no local slot",
+            None,
             None,
             never,
         )
@@ -2155,6 +2171,7 @@ mod tests {
             1,
             "cdz: error: a function parameter's type has no machine representation",
             None,
+            None,
             never,
         )
         .unwrap();
@@ -2169,6 +2186,7 @@ mod tests {
             1,
             "error [CDZ0210] (node 3): match is non-exhaustive",
             None,
+            None,
             never,
         )
         .unwrap();
@@ -2178,7 +2196,7 @@ mod tests {
             res.grade
         );
         // A silent decline (no error line at all) stays Todo.
-        let res = grade_run(&tr, 1, "", None, never).unwrap();
+        let res = grade_run(&tr, 1, "", None, None, never).unwrap();
         assert!(
             matches!(res.grade, Grade::Todo(_)),
             "silent decline → todo: {:?}",
@@ -2223,7 +2241,7 @@ mod tests {
         let diag = "cdz: error [CDZ0201] (node 1): bad separator";
 
         // (a) Wire ABSENT → quality NOT graded; the case grades Pass on code alone (today's behavior).
-        let res = grade_run(&tr, 1, diag, None, never).unwrap();
+        let res = grade_run(&tr, 1, diag, None, None, never).unwrap();
         assert_eq!(res.grade, Grade::Pass, "no wire → quality ungraded");
 
         // (b) Wire present, ONE error CDZ0201 fault carrying a `replace` fix whose replacement is "foo",
@@ -2236,7 +2254,7 @@ mod tests {
             Some((FixKind::Replace, 1, "foo", true)),
             "bad separator",
         )]);
-        let res = grade_run(&tr, 1, diag, Some(&wire_ok), never).unwrap();
+        let res = grade_run(&tr, 1, diag, Some(&wire_ok), None, never).unwrap();
         assert_eq!(res.grade, Grade::Pass, "matching fix+count → pass");
 
         // (c) Wire present but the fix's replacement is "bar" (≠ pinned "foo") → the quality grade FAILS.
@@ -2247,7 +2265,7 @@ mod tests {
             Some((FixKind::Replace, 1, "bar", true)),
             "bad separator",
         )]);
-        let res = grade_run(&tr, 1, diag, Some(&wire_bad), never).unwrap();
+        let res = grade_run(&tr, 1, diag, Some(&wire_bad), None, never).unwrap();
         assert!(
             matches!(res.grade, Grade::Fail(_)),
             "mismatched fix replacement → fail: {:?}",
@@ -2271,7 +2289,7 @@ mod tests {
                 "two",
             ),
         ]);
-        let res = grade_run(&tr, 1, diag, Some(&wire_two), never).unwrap();
+        let res = grade_run(&tr, 1, diag, Some(&wire_two), None, never).unwrap();
         assert!(
             matches!(res.grade, Grade::Fail(_)),
             "count mismatch → fail: {:?}",
@@ -2305,7 +2323,7 @@ mod tests {
         // (a) EXACTLY the asserted code emitted → Pass.
         let wire_one = bin_wire(&[(S::Error, Some("CDZ0201"), Some(1), None, "bad thing")]);
         assert_eq!(
-            grade_run(&mk(true), 1, diag, Some(&wire_one), never)
+            grade_run(&mk(true), 1, diag, Some(&wire_one), None, never)
                 .unwrap()
                 .grade,
             Grade::Pass
@@ -2317,7 +2335,7 @@ mod tests {
         ]);
         assert!(
             matches!(
-                grade_run(&mk(true), 1, diag, Some(&wire_cascade), never)
+                grade_run(&mk(true), 1, diag, Some(&wire_cascade), None, never)
                     .unwrap()
                     .grade,
                 Grade::Fail(_)
@@ -2326,7 +2344,7 @@ mod tests {
         );
         // (c) WITHOUT the clause the same cascade is NOT flagged by this facet → Pass.
         assert_eq!(
-            grade_run(&mk(false), 1, diag, Some(&wire_cascade), never)
+            grade_run(&mk(false), 1, diag, Some(&wire_cascade), None, never)
                 .unwrap()
                 .grade,
             Grade::Pass,
@@ -2338,7 +2356,7 @@ mod tests {
             (S::Warning, Some("CDZ0305"), Some(2), None, "dead arm"),
         ]);
         assert_eq!(
-            grade_run(&mk(true), 1, diag, Some(&wire_warn), never)
+            grade_run(&mk(true), 1, diag, Some(&wire_warn), None, never)
                 .unwrap()
                 .grade,
             Grade::Pass,
@@ -2373,7 +2391,9 @@ mod tests {
         // (a) the pinned CDZ0201 error alone, phrase ABSENT anywhere → Pass.
         let diag_clean = "cdz: error [CDZ0201] (node 1): bad separator";
         assert_eq!(
-            grade_run(&pin(), 1, diag_clean, None, never).unwrap().grade,
+            grade_run(&pin(), 1, diag_clean, None, None, never)
+                .unwrap()
+                .grade,
             Grade::Pass
         );
         // (b) the phrase leaked as a SEPARATE uncoded decline line (a sibling of the matched error — the exact
@@ -2381,7 +2401,7 @@ mod tests {
         let diag_uncoded = "cdz: error [CDZ0201] (node 1): bad separator\ncdz: error: needs a heap walk (not yet built)";
         assert!(
             matches!(
-                grade_run(&pin(), 1, diag_uncoded, None, never)
+                grade_run(&pin(), 1, diag_uncoded, None, None, never)
                     .unwrap()
                     .grade,
                 Grade::Fail(_)
@@ -2392,7 +2412,9 @@ mod tests {
         let diag_warn = "cdz: error [CDZ0201] (node 1): bad separator\ncdz: warning [CDZ0306] (node 2): needs a heap walk";
         assert!(
             matches!(
-                grade_run(&pin(), 1, diag_warn, None, never).unwrap().grade,
+                grade_run(&pin(), 1, diag_warn, None, None, never)
+                    .unwrap()
+                    .grade,
                 Grade::Fail(_)
             ),
             "a warning carrying the forbidden phrase must fail (cross-kind)"
@@ -2400,7 +2422,7 @@ mod tests {
         // (d) WITHOUT the pin the same leaking diag is NOT flagged by this facet → Pass (additive: no clause,
         // no new failure — nothing regresses for cases that don't author it).
         assert_eq!(
-            grade_run(&mk(vec![]), 1, diag_warn, None, never)
+            grade_run(&mk(vec![]), 1, diag_warn, None, None, never)
                 .unwrap()
                 .grade,
             Grade::Pass,
