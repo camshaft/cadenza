@@ -1943,11 +1943,20 @@ fn emit_component_single_at(
         compile_args.push("--component-name");
         compile_args.push(cn);
     }
-    let rcdzc = Command::new(&tools.rcdzc)
+    let mut rcdzc_cmd = Command::new(&tools.rcdzc);
+    rcdzc_cmd
         .args(&compile_args)
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // VALUE-DOC flip (op-seq-210): set CDZ_VALUE_DOC for the rcdzc RUST emit so it emits the Ty-direct
+    // `__cdz_doc` + `// cdz-value-doc:` marker; the driver-build above then renders via it (gated on the
+    // marker) — the `(: value type)` codec doc, byte-identical to `cdz run`. ON by DEFAULT in this gate
+    // harness; `CDZ_VALUE_DOC=0` is the kill-switch (fall back to cdz_render_at). rcdzc treats "0" as OFF.
+    if std::env::var("CDZ_VALUE_DOC").as_deref() != Ok("0") {
+        rcdzc_cmd.env("CDZ_VALUE_DOC", "1");
+    }
+    let rcdzc = rcdzc_cmd
         .spawn()
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
     let rcdzc_out = match wait_with_timeout(rcdzc, run_timeout()).expect("wait rcdzc") {
@@ -2170,11 +2179,20 @@ fn emit_rust_single(
         compile_args.push("--opt-level");
         compile_args.push(level);
     }
-    let rcdzc = Command::new(&tools.rcdzc)
+    let mut rcdzc_cmd = Command::new(&tools.rcdzc);
+    rcdzc_cmd
         .args(&compile_args)
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // VALUE-DOC flip (op-seq-210): set CDZ_VALUE_DOC for the rcdzc RUST emit so it emits the Ty-direct
+    // `__cdz_doc` + `// cdz-value-doc:` marker; the driver-build above then renders via it (gated on the
+    // marker) — the `(: value type)` codec doc, byte-identical to `cdz run`. ON by DEFAULT in this gate
+    // harness; `CDZ_VALUE_DOC=0` is the kill-switch (fall back to cdz_render_at). rcdzc treats "0" as OFF.
+    if std::env::var("CDZ_VALUE_DOC").as_deref() != Ok("0") {
+        rcdzc_cmd.env("CDZ_VALUE_DOC", "1");
+    }
+    let rcdzc = rcdzc_cmd
         .spawn()
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
     let rcdzc_out = match wait_with_timeout(rcdzc, run_timeout()).expect("wait rcdzc") {
@@ -2869,9 +2887,11 @@ fn run_program_rust(
     // `cdz_render_expr` string walk. The grader's stdout read decodes the marker. Marker absent (flag off, or
     // an arg-taking/factory/consumer export the marker is never emitted for) => the ordinary render below
     // (byte-identical). Keyed by `export` (== rust_ident), matching the module's `// cdz-*` note keys.
+    // Gate on the MARKER's PRESENCE — rcdzc emits `// cdz-value-doc: <export>` iff its compile had
+    // CDZ_VALUE_DOC set to non-"0" (this gate harness sets it by default in the emit step), so the marker IS
+    // the authoritative signal (no env re-check — the emit decision already happened + is recorded here).
     let value_doc = !is_factory
         && !is_consumer
-        && std::env::var("CDZ_VALUE_DOC").is_ok()
         && module
             .lines()
             .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));

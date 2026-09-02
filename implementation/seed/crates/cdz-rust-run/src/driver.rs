@@ -418,9 +418,11 @@ pub fn build_driver_source(
     // the marker. Marker absent (flag off) => the ordinary render path below (byte-identical). A factory/
     // consumer export keeps its special render (no nullary __cdz_doc). NOTE keyed by `ident` (== rust_ident),
     // matching the other `// cdz-*` notes.
+    // Gate on the MARKER's PRESENCE — rcdzc emits `// cdz-value-doc: <ident>` iff its compile had
+    // CDZ_VALUE_DOC set to non-"0" (the nix corpus-rust-exec layer sets it for the flip), so the marker IS
+    // the authoritative signal (no env re-check — the emit decision already happened + is recorded here).
     let value_doc = !is_factory
         && !is_consumer
-        && std::env::var("CDZ_VALUE_DOC").is_ok()
         && module
             .lines()
             .any(|l| l.trim() == format!("// cdz-value-doc: {ident}"));

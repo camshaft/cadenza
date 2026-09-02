@@ -612,8 +612,16 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // driver only links (and only calls `__cdz_doc`) when the flag is set — so with the flag UNSET this emits
     // nothing and the module is byte-identical (zero gate impact). A `// cdz-value-doc: <name>` marker note
     // (inert to rustc) tells the driver-gen which exports have a `__cdz_doc` to call. An export whose result
-    // shape is not yet covered emits no `__cdz_doc` (and no marker) → the driver falls back to `cdz_render_at`.
-    if std::env::var("CDZ_VALUE_DOC").is_ok() {
+    // shape is not covered emits no `__cdz_doc` (and no marker) → the driver falls back to `cdz_render_at`.
+    //
+    // ENABLED when `CDZ_VALUE_DOC` is set to anything OTHER than "0" — a gate/oracle harness sets it to "1"
+    // (the flip); a real `cdz compile --target rust` never sets it (so a user's module stays free of the
+    // `cadenza_ast` dep `__cdz_doc` references); and "0" is the explicit KILL-SWITCH (fall back to
+    // cdz_render_at) — treated as OFF here so the value survives a child inheriting an outer "0".
+    if std::env::var("CDZ_VALUE_DOC")
+        .as_deref()
+        .is_ok_and(|v| v != "0")
+    {
         for &def in &layout.order {
             let Some(e) = layout.export_plan(def) else {
                 continue;

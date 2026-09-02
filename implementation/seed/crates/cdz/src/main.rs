@@ -1645,10 +1645,12 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // read side). This replaces the type-note-driven `cdz_render_expr` string render with the rcdzc Ty-direct
     // walk. The marker is absent unless the flag was set for the `cdz compile` child (env-inherited), so with
     // the flag off this is byte-identical to the render path below.
-    let value_doc = std::env::var("CDZ_VALUE_DOC").is_ok()
-        && module
-            .lines()
-            .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
+    // Gate on the MARKER's PRESENCE — rcdzc emits `// cdz-value-doc: <export>` iff the compile child had
+    // CDZ_VALUE_DOC set (which `emit_rust_module` does by default now), so the marker IS the authoritative
+    // signal. (No env re-check here: the emit decision already happened in the child; the marker records it.)
+    let value_doc = module
+        .lines()
+        .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
     let driver = if value_doc {
         format!(
             "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    println!(\"{{}}\", prog::__cdz_doc_{export}());\n}}\n"
@@ -1800,12 +1802,21 @@ fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
     if let Err(e) = std::fs::write(&src, source) {
         return EmitOutcome::Harness(format!("write source: {e}"));
     }
-    let out = match Command::new(exe)
-        .arg("compile")
+    let mut cmd = Command::new(exe);
+    cmd.arg("compile")
         .arg(&src)
-        .args(["-o", "-", "--target", "rust"])
-        .output()
-    {
+        .args(["-o", "-", "--target", "rust"]);
+    // VALUE-DOC flip (op-seq-210): the run-rust ORACLE renders the boundary value via the rcdzc-emitted
+    // Ty-direct `__cdz_doc` (the `(: value type)` codec doc — byte-identical to `cdz run`'s wasm render) rather
+    // than cdz-rust-render's type-note string walk. That is enabled by setting `CDZ_VALUE_DOC` for THIS child
+    // `cdz compile` (so rcdzc emits the `__cdz_doc` fn + marker); the driver then calls it (gated on the marker
+    // below). ON by DEFAULT here (the gate/oracle harness) — a real `cdz compile --target rust` never sets it,
+    // so a user's module stays free of the `cadenza_ast` dep. KILL-SWITCH: set `CDZ_VALUE_DOC=0` to fall back
+    // to cdz_render_at (A/B / rollback without a revert).
+    if std::env::var("CDZ_VALUE_DOC").as_deref() != Ok("0") {
+        cmd.env("CDZ_VALUE_DOC", "1");
+    }
+    let out = match cmd.output() {
         Ok(o) => o,
         Err(e) => return EmitOutcome::Harness(format!("spawn compile: {e}")),
     };
