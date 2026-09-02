@@ -1162,8 +1162,13 @@ pub fn emit(
                 ));
             }
         }
-        let result =
-            serialize::export_result(&e.result, &db.name_ctx()).map_err(Reject::decline)?;
+        // ANCHOR the boundary decline at the export BODY `e.body` (a user node — the value expression that
+        // cannot cross) — a non-boundary-representable RESULT (a `Char`, a mid-width scalar) declines here,
+        // and `Reject::decline(msg)` alone is UNANCHORED → a bare, position-less `cdz: error:` with no
+        // file:line:col (the breaker's `(def (main) #\a)` repro). `.at(e.body)` points the reader at the
+        // returned value. WASM-emit only, so a `Char` RESULT the rust backend represents fine is untouched.
+        let result = serialize::export_result(&e.result, &db.name_ctx())
+            .map_err(|m| Reject::decline(m).at(e.body))?;
         // Each parameter's COMPONENT-boundary valtype (distinct from the core valtype — a signed 64
         // integer is `s64` at the boundary, `i64` in the core). A parameter is a scalar (a `list<u8>`
         // INPUT is not yet a surface type), so its faithful primitive byte is required.
