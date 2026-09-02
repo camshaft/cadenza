@@ -35864,3 +35864,25 @@
   (output (: 99910701510 Int64))
   (call main (: 0 Int64))
   (output (: 99910201010 Int64)))
+
+; gtx1: a GENERIC recursive multi-variant sum — (Tree a) instantiated at String — built literally
+; and folded by a recursive traversal. Round-trips on the cadenza hop since #7940 (the instantiated
+; slot type threads to multi-arg variant payloads through the recursive occurrence); previously
+; hop-1 declined "under-determined sum type" while generic-alone and recursive-alone both hopped.
+; (breaker gt1 probe, promoted at v-cadenza-backend's ask.)
+(case
+  "a generic recursive tree at a string instantiation folds its payload lengths"
+  (input
+    (do
+      (type (Tree a) (Leaf) (Node (Tree a) a (Tree a)))
+      (def
+        (lens (: t (Tree String)))
+        (match t ((Leaf) 0) ((Node l v r) (+ (lens l) (+ (String.byte-len v) (lens r))))))
+      (def
+        (main (: n Int64))
+        (+ (* n 1000) (lens (Node (Node (Leaf) "ab" (Leaf)) "cde" (Node (Leaf) "f" (Leaf))))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2006 Int64))
+  (call main (: 5 Int64))
+  (output (: 5006 Int64)))
