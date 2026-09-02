@@ -70,10 +70,17 @@ policy — agents have already scrubbed "(not yet built)" suffixes from real mes
 | `coming soon` / `will be supported` / `will support` | explicit future promise |
 | `later increment` / `not yet built` / `not yet reducible` | project-internal roadmap leak |
 
-**§1-note (TODO carve-out):** a `(trap "TODO")` / `(trap "TODO: …")` string inside a **suggested fix
-template** (the code we tell the user to fill in) is legitimate and must NOT trip — the forbidden check
-is on the diagnostic **message**, not on `(fix …)` suggestion payloads. Scope the `TODO` match to the
-message field only.
+**§1-note (fix-stub carve-out) — REFINED 2026-09-02 after the first real flag:** a `(trap "…")` string is
+a **suggested fix STUB** — runnable user-code the diagnostic tells the user to fill in (the Cadenza
+analogue of Rust's `todo!()`), NOT diagnostic prose. Its contents (`(trap "TODO: collect")`,
+`(trap "TODO")`, etc.) must NOT trip §1. This holds whether the stub is a separate `(fix …)` facet OR
+**inline in the message text** — and CDZ0405 (HandlerNotExhaustive) emits it inline: `…add (collect () s
+(resume (trap "TODO: collect") s))`. That message is golden (it hands the user a concrete completable
+stub); flagging its `TODO` is a false positive. **Precise lint rule:** before the §1 scan, ignore the
+contents of any `(trap "…")` s-expression in the message (strip them, or skip a forbidden-token match
+that falls inside a `(trap "…")`). §1 governs the compiler's diagnostic PROSE — never the user-code it
+suggests. (Surfaced by 14b `a handler that does not discharge every operation …`; routed to v-corpus-harness
+for the lint tuning, 2026-09-02.)
 
 ### 1b. Internal-implementation leak (GLOBAL — every coded diagnostic)
 
