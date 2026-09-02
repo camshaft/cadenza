@@ -3546,7 +3546,14 @@
       (def (g (: k Int64)) (if (= k 0) 1 (lib.f (- k 1))))
       (def (main (: n Int64)) (lib.f n))
       (export main)))
-  (error CDZ0900 (message "recursive function needs runtime specialization")))
+  ; IDEALISTIC should-work (operator: corpus is the impl-independent spec; a not-yet-implemented DECLINE is
+  ; a TODO `(output V)`, NEVER `(error CDZ0900 …)`): the cross-module cycle SHOULD compute like its
+  ; root-level twin — f(even)=0, f(odd)=1 — auto-Passing when the specializer lowers cross-module cycles;
+  ; today it DECLINES (CDZ0900), so this grades TODO (decline-don't-crash: it must not ICE, #7916/breaker).
+  (call main (: 4 Int64))
+  (output (: 0 Int64))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
 
 ; Cross-module mutual recursion: a module fn and a ROOT fn (or two modules) in a recursion CYCLE
 ; through the projection. Idealistically the cycle lowers like a root-level mutual pair (which
