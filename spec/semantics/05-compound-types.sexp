@@ -10211,15 +10211,17 @@
            in-order after = 3,5,8,9 (103589); mode 2 — the ROOT is the min (no left subtree; the
            extraction fires immediately and the whole right subtree becomes the tree — 200057);
            mode 3 — a single node (min 4, EMPTY remainder, in-order 0 → 400000). Encoding:
-           min·100000 + in-order digits of the remainder. MEMORY (why `known-leak`, not merely an
-           unclosed reclaim gap): del-min's extraction arm `((Empty _u) #tuple(k r))` returns `r` —
-           the matched node's RIGHT-subtree payload — in the result, so dropping the matched `Node`
-           shell would free a still-returned value (a use-after-free). The compiler correctly
-           FENCE-EXCLUDES those shells from reclaim (payload/return-escape: a payload that escapes in
-           the result is un-reclaimable without a UAF — the sound floor for the del-min shells, not a
-           gap). The separable, closable part is `inorder`'s tail-fold spine leak, which the
-           self-tail-loop reclaim (Perceus INC1 pt3, dup-of-moved-children before the shell drop)
-           frees; when pt3 lands this count shrinks toward the del-min payload-escape residual.")
+           min·100000 + in-order digits of the remainder. MEMORY (why `live-objects 0` — the reclaim is
+           now COMPLETE): del-min's extraction arm `((Empty _u) #tuple(k r))` returns `r` (the matched
+           node's RIGHT-subtree payload) in the result — but `r` is DUP-FORWARDED before the result tuple
+           is built, so the matched `Node` shell drop is UAF-safe (`r` survives at its own reference). The
+           earlier "payload/return-escape floor" reading was STALE: that escape was already dup-backed,
+           never the actual leak. The real residual was the intermediate `(del-min l)` recursive-call
+           RESULT tuples — an owned COMPUTED compound-sum result, destructured `#tuple(m l2)` then rebuilt
+           — closed by the owned-computed-compound-sum scrutinee husk-drop (#7857): `(match (del-min l) …)`
+           and main's `(match (del-min t) …)` now drop each consumed result-tuple shell after extracting
+           its fields (dup ⊇ drop, no double-free). Together with `inorder`'s self-tail-loop spine reclaim
+           (Perceus INC1 pt3, #7399), the whole del-min family is leak-free.")
   (input
     (do
       (type BST (Empty) (Node (Tuple BST Int64 BST)))
@@ -10272,7 +10274,7 @@
   (output (: 200057 Int64))
   (call main (: 3 Int64))
   (output (: 400000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a self-tail-loop inorder tree-fold reclaims its whole traversed spine (INC1 pt3)"
