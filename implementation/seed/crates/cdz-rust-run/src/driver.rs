@@ -460,8 +460,9 @@ pub fn build_driver_source(
                 // delete cdz_render_at/parse_head_type; the driver-side scalar builder was the bootstrap.
                 let render = if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
                     // A host-closure String/Bytes RESULT crosses the wasm boundary as `list<u8>` → the corpus
-                    // records the bare byte-int list `(104 105)`/`()`, NOT `"hi"`/`b"…"`. Render `__r` (a
-                    // `String`/`Vec<u8>`) as the byte list (also avoids the E0277 `Vec<u8>: Display`). Mirrors xtask.
+                    // records the canonical byte-int list `#list(104 105)`/`#list()`, NOT `"hi"`/`b"…"`. Render
+                    // `__r` (a `String`/`Vec<u8>`) as the #list byte form (also avoids the E0277 `Vec<u8>:
+                    // Display`). Mirrors xtask.
                     cdz_render_bytes_list(ty)
                 } else if is_factory && factory_result_is_value_form_sum(ty, &sums) {
                     // A host-closure FACTORY SUM RESULT (Option/Result/user-sum) crosses value-ENCODED → the
@@ -550,6 +551,9 @@ fn factory_result_is_value_form_sum(
 /// Render `__r` (a host-closure String/Bytes RESULT) as the boundary byte-int list `(104 105)` / `()`.
 /// `__r` is a `String` (String result — iterate its UTF-8 bytes) or `Vec<u8>` (Bytes result). Returns a
 /// Rust block expression usable as the `println!("{}", …)` arg. Mirrors xtask's `cdz_render_bytes_list`.
+/// Emits the CANONICAL `#list(b0 b1 …)` compound (`#list()` when empty), matching cdz-run's `render_val`
+/// and the wasm boundary — the corpus rolled to `#ctor`-everywhere, so the bare `(b0 b1 …)` form this once
+/// produced regressed every `list<u8>` closure-result case (v-corpus-harness ruled `#list` canonical).
 fn cdz_render_bytes_list(ty: &str) -> String {
     let iter = if ty == "String" {
         "(__r).bytes()"
@@ -557,7 +561,7 @@ fn cdz_render_bytes_list(ty: &str) -> String {
         "(__r).iter().copied()"
     };
     format!(
-        "{{ let mut __s = String::from(\"(\"); let mut __first = true; for __b in {iter} {{ \
+        "{{ let mut __s = String::from(\"#list(\"); let mut __first = true; for __b in {iter} {{ \
          if !__first {{ __s.push(' '); }} __first = false; __s.push_str(&__b.to_string()); }} \
          __s.push(')'); __s }}"
     )
