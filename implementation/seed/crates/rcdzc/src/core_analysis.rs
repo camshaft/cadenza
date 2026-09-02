@@ -461,6 +461,291 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
     kept
 }
 
+/// COMPOUND-CSE (v-cadenza-backend co-design, the cadenza-O1 reclaim-gap cluster: rsv1 + the 4 O1
+/// live-objects leaks): a CANONICAL STRUCTURAL FINGERPRINT of the Core subtree at `id` — EQUAL for two
+/// subtrees of identical Core shape+leaves+resolved-references regardless of their distinct `StructId`s. This
+/// is the DUPLICATED-node analog of `shared_node_bind_plan` (which finds ONE node reached by ≥2 parent edges);
+/// the cadenza re-materialization produces N structurally-EQUAL but DISTINCT nodes (each count=1 — so
+/// `shared_node_bind_plan` sees no share), which this fingerprint groups so a later CSE can hoist them to one
+/// shared `Core::Let`.
+///
+/// CORRECTNESS (a false MATCH = a miscompile): (1) a REFERENCE (`Param`/`LocalRef`) fingerprints by its
+/// RESOLVED BINDER id, so two subtrees reading DIFFERENT variables never collide (and same-variable reads DO,
+/// which is only value-equal in a NON-recursive/straight-line body — the caller MUST gate on `!is_recursive`,
+/// where a binder id denotes one value). (2) Only the EXPLICITLY-handled variants recurse into their OWN
+/// fields (so EVERY value child is captured); any UNHANDLED variant appends its unique `id` (`U<n>`) → its
+/// fingerprint can never equal another node's → it is NEVER CSE'd (conservative: forfeits a share, never a
+/// false match). So a subtree containing an unhandled node (a `Call`/`If`/`Closure`/effectful op) gets a
+/// unique fingerprint and is excluded — which also keeps effectful subtrees out (belt to the caller's
+/// `subtree_reaches_host_call` gate).
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
+pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut String) {
+    // ALPHA-EQUIVALENCE: a scope map of BOUND-local binder → de-Bruijn ordinal, so two subtrees identical up
+    // to their OWN let-binder names match (rsv1's re-materialized state-chains bind _cdz_let1 vs _cdz_let3 but
+    // are otherwise identical). A reference to a binder IN this map is BOUND → its ordinal; NOT in it is
+    // FREE → its resolved-binder id (different free vars never collide; same ones do — value-equal only in a
+    // straight-line body, the caller's `!is_recursive` gate). Fresh per top-level fingerprint.
+    let mut locals: HashMap<StructId, usize> = HashMap::new();
+    core_subtree_fingerprint_inner(db, id, out, &mut locals);
+}
+
+fn core_subtree_fingerprint_inner(
+    db: &mut Db,
+    id: StructId,
+    out: &mut String,
+    locals: &mut HashMap<StructId, usize>,
+) {
+    use std::fmt::Write;
+    match core_of(db, id) {
+        // Leaves — fingerprint by value.
+        Core::ConstInt(v) => {
+            let _ = write!(out, "i{};", v.to_decimal_string());
+        }
+        Core::ConstBool(b) => out.push(if b { 'T' } else { 'F' }),
+        Core::ConstFloat(d) => {
+            let _ = write!(out, "f{};", d.to_f64_bits());
+        }
+        Core::ConstFloatNan => out.push_str("fN;"),
+        Core::ConstFloatInf => out.push_str("fI;"),
+        Core::ConstStr(s) => {
+            let _ = write!(out, "s{}:{};", s.len(), s);
+        }
+        Core::Unit => out.push_str("u;"),
+        // References — BOUND local → de-Bruijn ordinal (alpha-insensitive); FREE var → resolved-binder id.
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            if let Some(&ord) = locals.get(&binder) {
+                let _ = write!(out, "b#{ord};");
+            } else {
+                let _ = write!(out, "F{:?};", binder);
+            }
+        }
+        // Pure ops — tag by op + recurse operands.
+        Core::Arith { op, lhs, rhs } => {
+            let _ = write!(out, "A{op:?}(");
+            core_subtree_fingerprint_inner(db, lhs, out, locals);
+            core_subtree_fingerprint_inner(db, rhs, out, locals);
+            out.push(')');
+        }
+        Core::Compare { op, lhs, rhs } => {
+            let _ = write!(out, "Cmp{op:?}(");
+            core_subtree_fingerprint_inner(db, lhs, out, locals);
+            core_subtree_fingerprint_inner(db, rhs, out, locals);
+            out.push(')');
+        }
+        Core::Convert { op, operand } => {
+            let _ = write!(out, "Cv{op:?}(");
+            core_subtree_fingerprint_inner(db, operand, out, locals);
+            out.push(')');
+        }
+        Core::Not { operand } => {
+            out.push_str("Not(");
+            core_subtree_fingerprint_inner(db, operand, out, locals);
+            out.push(')');
+        }
+        Core::Proj { operand, index } => {
+            let _ = write!(out, "Pr{index}(");
+            core_subtree_fingerprint_inner(db, operand, out, locals);
+            out.push(')');
+        }
+        Core::If { cond, then_, else_ } => {
+            out.push_str("If(");
+            core_subtree_fingerprint_inner(db, cond, out, locals);
+            core_subtree_fingerprint_inner(db, then_, out, locals);
+            core_subtree_fingerprint_inner(db, else_, out, locals);
+            out.push(')');
+        }
+        // A `let*` — each init sees EARLIER binders; assign each binder a de-Bruijn ordinal (`locals.len()`
+        // at insertion) AFTER its init, then the body; POP the binders on scope exit so a sibling subtree
+        // never sees them (scope-local + consistent across siblings).
+        Core::Let { bindings, body } => {
+            out.push_str("Let(");
+            let mut bound_here: Vec<StructId> = Vec::with_capacity(bindings.len());
+            for (binder, init) in bindings.iter() {
+                core_subtree_fingerprint_inner(db, *init, out, locals);
+                let ord = locals.len();
+                locals.insert(*binder, ord);
+                bound_here.push(*binder);
+            }
+            core_subtree_fingerprint_inner(db, body, out, locals);
+            for b in bound_here {
+                locals.remove(&b);
+            }
+            out.push(')');
+        }
+        // Compound value producers.
+        Core::SumNew { disc, payloads } => {
+            let _ = write!(out, "S{disc}(");
+            for &p in payloads.iter() {
+                core_subtree_fingerprint_inner(db, p, out, locals);
+            }
+            out.push(')');
+        }
+        Core::Tuple { elems } => {
+            out.push_str("Tup(");
+            for &e in elems.iter() {
+                core_subtree_fingerprint_inner(db, e, out, locals);
+            }
+            out.push(')');
+        }
+        Core::Record { fields } => {
+            out.push_str("Rec(");
+            // BTreeMap iterates in a stable key order, so the fingerprint is canonical.
+            for (name, &v) in fields.iter() {
+                let _ = write!(out, "{name:?}=");
+                core_subtree_fingerprint_inner(db, v, out, locals);
+            }
+            out.push(')');
+        }
+        Core::ListNew { elems } => {
+            out.push_str("LN(");
+            for &e in elems.iter() {
+                core_subtree_fingerprint_inner(db, e, out, locals);
+            }
+            out.push(')');
+        }
+        Core::ListPush { list, elem } => {
+            out.push_str("LP(");
+            core_subtree_fingerprint_inner(db, list, out, locals);
+            core_subtree_fingerprint_inner(db, elem, out, locals);
+            out.push(')');
+        }
+        Core::ListPrepend { elem, list } => {
+            out.push_str("LPre(");
+            core_subtree_fingerprint_inner(db, elem, out, locals);
+            core_subtree_fingerprint_inner(db, list, out, locals);
+            out.push(')');
+        }
+        Core::SumPayload { scrutinee, path } => {
+            let _ = write!(out, "SP{path:?}(");
+            core_subtree_fingerprint_inner(db, scrutinee, out, locals);
+            out.push(')');
+        }
+        // Any OTHER variant (Call/Match/MatchSum/Closure/effectful ops/…) → UNIQUE id → never matches
+        // another node → never CSE'd. Conservative by construction: no false match, only a forfeited share.
+        // (Match/MatchSum bind arm-pattern binders not yet alpha-normalized here → correctly left unique.)
+        _ => {
+            let _ = write!(out, "U{:?};", id);
+        }
+    }
+}
+
+/// COMPOUND-CSE candidate detection (PART-1, v-core-opt lane; v-cadenza-backend installs the hoist). Groups
+/// the COMPOUND-typed, side-effect-FREE subtrees of `body` that are STRUCTURALLY EQUAL but DISTINCT nodes
+/// (each `Vec` is one such group, ≥2 members, all sharing a `core_subtree_fingerprint`). A later slice turns
+/// each group into a plan {canonical → occurrences} that v-cadenza emits as a shared source `(let …)`.
+/// GATED for O1-reclaim-safety by the caller: only STRAIGHT-LINE bodies (`!eval::is_recursive`) — a
+/// loop-carried hoist leaks on the cadenza-O1 round-trip (the general-B2-at-O1 blocker). Detection-only for
+/// now (not wired into emit); safe no-op until the plan + v-cadenza install land.
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
+pub(crate) fn compound_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
+    // Straight-line only (O1-reclaim-safety, mirrors b2_bind_plan_scrutinee_only): a recursive body's hoisted
+    // let is not O1-recompile-reclaim-safe.
+    if crate::eval::is_recursive(db, body) {
+        return Vec::new();
+    }
+    // Collect every reachable subtree id (dedup by id).
+    let mut seen: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    let mut order: Vec<StructId> = Vec::new();
+    fn walk(
+        db: &mut Db,
+        id: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        order: &mut Vec<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        order.push(id);
+        for c in licm_children(db, id) {
+            walk(db, c, seen, order);
+        }
+    }
+    walk(db, body, &mut seen, &mut order);
+    // Group COMPOUND-typed, pure (no host-call) subtrees by fingerprint.
+    let mut by_fp: HashMap<String, Vec<StructId>> = HashMap::new();
+    for id in order {
+        let ty = crate::infer::type_of(db, id);
+        if !is_heap_type(&ty) {
+            continue;
+        }
+        if crate::lower::subtree_reaches_host_call(db, id) {
+            continue;
+        }
+        let mut fp = String::new();
+        core_subtree_fingerprint(db, id, &mut fp);
+        // A `U`-prefixed fingerprint is unique (unhandled root) — never a shareable candidate.
+        if fp.starts_with('U') {
+            continue;
+        }
+        by_fp.entry(fp).or_default().push(id);
+    }
+    by_fp.into_values().filter(|g| g.len() >= 2).collect()
+}
+
+/// COMPOUND-CSE BIND PLAN (PART-1 output, v-core-opt lane): turn each structurally-equal duplicate GROUP
+/// (`compound_cse_candidate_groups`) into a [`B2BindPlanEntry`] so v-cadenza-backend's cadenza-O1 install
+/// (`run_sharing_aware_emit`, concat onto `b2_bind_plan_scrutinee_only`) hoists it to ONE shared source
+/// `(let …)` + repoints the occurrences — the b2 Option-ii division, entry shape mirrored EXACTLY.
+///
+/// Per group: `members` = all occurrences (distinct structurally-equal nodes), `shared_id` = the canonical
+/// (copy source — its core IS the shared subtree), `scope_node` = the members' LCA (`b2_members_lca`).
+///
+/// SOUNDNESS (reuses b2's gates + one relaxation, all safe because `compound_cse_candidate_groups` already
+/// gates `!is_recursive` (straight-line) + `!subtree_reaches_host_call` (pure) + `is_heap_type`):
+/// - P1 FULLY-SOLVED type (slot valtype) — same as b2.
+/// - gate-4 BIND-SAFE: `is_trap_free(canonical)` OR the scope_node's dominating frontier contains ≥1 member
+///   (byte-neutral — bound on paths already evaluated) — same as b2; needed since a state-chain has `%`/`*`.
+/// - gate-3a (free binders all Params) DELIBERATELY SKIPPED: a compound-CSE candidate reads STRAIGHT-LINE
+///   let-locals (rsv1's `_cdz_let0`), bound ONCE in a non-recursive body ⟹ stable ⟹ value-equal (and the
+///   fingerprint already keyed free vars by RESOLVED BINDER, so a group only unifies same-free-var reads).
+///   The `scope_node`=members'-LCA GUARANTEES scope validity: a binder free in EVERY member dominates all
+///   members ⟹ is at-or-above their LCA ⟹ in scope at `scope_node`, so the hoisted let can read it.
+///
+/// Detection-only; consumed by v-cadenza's install (not wired here). NESTING NOTE: groups may nest (rsv1's
+/// outer size-3 group contains the inner size-12 chain); the install order + the opt-sweep O0..O3 equivalence
+/// gate is the correctness backstop for that (a nesting bug shows as a sweep divergence, never a silent ship).
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
+pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    let mut groups = compound_cse_candidate_groups(db, body);
+    // Deterministic order: members sorted by id; groups largest-canonical-first (so a nested-outer group is
+    // offered before the inner it contains — the install can prefer the outer, or apply inner-first).
+    for g in &mut groups {
+        g.sort();
+    }
+    groups.sort_by_key(|g| std::cmp::Reverse(subtree_size(db, g[0])));
+    let mut plan: Vec<B2BindPlanEntry> = Vec::new();
+    for group in groups {
+        let shared_id = group[0];
+        let ty = crate::infer::type_of(db, shared_id);
+        // NOTE: NO `is_fully_solved` gate here (unlike b2). b2's fully-solved gate is a WASM-SLOT requirement
+        // (its Let-bind lands in a wasm local needing a concrete valtype). Compound-CSE entries flow ONLY
+        // through v-cadenza's cadenza-O1 install, which emits a SOURCE `(let …)` whose binder type the
+        // RE-COMPILE re-infers — so a deferred INT-AXIS inside an otherwise-solved heap shape (rsv1's
+        // re-materialized `(Tuple Int64 Int64 Int64)` renders Int64 but the width/sign axes aren't `Fixed`
+        // at this pass point) is fine. `is_heap_type` (in the candidate gate) already excludes `Var`/`Any`,
+        // so `ty` is a real heap compound; only its scalar sub-axes may be deferred (recompile-solvable).
+        // scope_node = the members' LCA (deepest node containing all occurrences).
+        let Some(scope_node) = b2_members_lca(db, body, &group) else {
+            continue;
+        };
+        // gate-4: trap-free OR the scope_node unconditionally reaches ≥1 member (byte-neutral speculation).
+        if !crate::lower::is_trap_free(db, shared_id) {
+            let mut frontier = std::collections::HashSet::new();
+            collect_dominating_frontier(db, scope_node, &mut frontier);
+            if !group.iter().any(|m| frontier.contains(m)) {
+                continue;
+            }
+        }
+        plan.push(B2BindPlanEntry {
+            scope_node,
+            shared_id,
+            ty,
+            members: group,
+        });
+    }
+    plan
+}
+
 /// Per-node ELIGIBILITY for a share KIND: returns `Some(ty)` when the node at `id` (reached by `count`
 /// parent edges, reachable from `body`) is an eligible SHARE for this kind, `None` to skip it. ONLY the
 /// KIND-SPECIFIC gates live here — B2's heap gate-2 + P1/P3 (`b2_heap_eligible`), or the O2 CSE's scalar
