@@ -103,6 +103,10 @@ pub fn grade_to_result(
         compile_status,
         compile_diag,
         diag_wire,
+        // check_diag: the C1 check-vs-compile parity leg's `cdz check` wire. This rust-exec path captures no
+        // check wire, so parity is OFF here (`None`) — matching grade_run's documented default. (Caller-update
+        // for the grade_run signature that added this param; the cdz-rust-run caller was missed.)
+        None,
         |trial: &GTrial| {
             let module = module.ok_or_else(|| {
             anyhow::anyhow!(
