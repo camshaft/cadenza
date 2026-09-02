@@ -729,3 +729,24 @@
       (export main)))
   (call main)
   (output (: 6 Int64)))
+
+(case
+  "a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)"
+  (doc
+    "The fuller `Eval` realization (DESIGN-macro-system.md §3): `(Eval.in-caller (quote y))` evaluates
+           the name `y` in the CALLER's environment — a caller LOCAL that is NOT passed as a macro argument
+           — and reifies the result. Here `main` binds `y` = 10 in the `do` enclosing the call `(m 0)`; the
+           macro's `(Eval.in-caller (quote y))` should evaluate `y` in that caller scope → 10, so the
+           expansion `(+ 10 1)` computes 11. Asserts the idealistic value; TODAY this DECLINES (the
+           reconstructed caller-var argument is not scope-seeded to resolve in the caller scope, so it is a
+           clean CDZ0401 no-home rather than a miscompile), so it grades TODO and auto-flips to PASS when
+           slice 2 (caller-scope env capture) is built. The PRIMARY in-caller-of-arguments use is delivered
+           (a literal / closed-compound macro argument const-folds); this exotic caller-LOCAL capture is the
+           deferred fuller realization (operator: core suffices for now).")
+  (input
+    (do
+      (def (m (quote x)) (quasiquote (+ (unquote (Eval.in-caller (quote y))) 1)))
+      (def (main) (do (def y 10) (m 0)))
+      (export main)))
+  (call main)
+  (output (: 11 Int64)))
