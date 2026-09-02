@@ -27,6 +27,8 @@
 ; producible top-level value (mirroring the map cases in 05-compound-types.sexp); the equality still
 ; forces the set to be built, exercising the uniqueness and order-independence invariants.
 ; ============================================================================================
+(diagnostic-quality)
+
 (case
   "a set is constructed from a list of its elements"
   (doc

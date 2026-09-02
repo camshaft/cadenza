@@ -21,6 +21,8 @@
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 1 — Instant / Duration newtypes over UInt64 nanoseconds (§3.2)
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
+(diagnostic-quality)
+
 (case
   "a Duration constructor `secs` scales a UInt64 count to nanoseconds"
   (doc

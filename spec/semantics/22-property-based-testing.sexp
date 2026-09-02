@@ -24,6 +24,8 @@
 ; conforming run." The generator is a pure function of the seed, so re-running it on the same seed
 ; yields the identical value. These pin determinism (same seed → same value) at BOTH the compile-time
 ; folding path (a constant seed) and the runtime-boundary path (a `seed` parameter that cannot fold).
+(diagnostic-quality)
+
 (case
   "the generator is a deterministic function of its seed (same seed, same value) — folds"
   (doc

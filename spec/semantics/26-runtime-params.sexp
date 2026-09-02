@@ -19,6 +19,8 @@
 ; FIRST BRICK: a single SCALAR `@!param` generates one `(op name (-> Unit Type))` accessor. The widget
 ; MANIFEST + the Quantity (num/den) host ABI are later increments; these cases pin the core scan+generate
 ; contract — a `@!param` site makes `Param.<name>` a host-delegated accessor of the annotated type.
+(diagnostic-quality)
+
 (case
   "an @param site generates a Param accessor a host delegation reads at run time"
   (doc
