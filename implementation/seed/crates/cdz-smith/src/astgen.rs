@@ -207,6 +207,25 @@ fn gen_symbol_compound_body<C: Choice>(c: &mut C) -> String {
     }
 }
 
+/// Build a NOMINAL-over-Symbol program — v-nix #7714: a const nominal newtype wrapping a Symbol must
+/// recover the `(Symbol.of "…")` value-form, not the bare `String` the erasure would leave. A
+/// `(type Tag (T Symbol))` newtype (erases to its Symbol field) constructed as `(Tag.T #"…")`, returned
+/// bare or inside a tuple/list. Returns `(type_decl, body)`; the decl MUST be top-level (a local
+/// `(type …)` SKIPs in the oracle, and the newtype ctor `Tag.T` must resolve). Pins #7714's value-form.
+fn gen_nominal_symbol_program<C: Choice>(c: &mut C) -> (String, String) {
+    let a = SYMS[c.variant(SYMS.len())];
+    let b = SYMS[c.variant(SYMS.len())];
+    let body = match c.variant(3) {
+        // Bare nominal-Symbol value (the #7714 shape: a const nominal-over-Symbol value).
+        0 => format!("(Tag.T #\"{a}\")"),
+        // Nominal-Symbol inside a tuple.
+        1 => format!("(tuple (Tag.T #\"{a}\") (Tag.T #\"{b}\"))"),
+        // Nominal-Symbol inside a list.
+        _ => format!("(list (Tag.T #\"{a}\"))"),
+    };
+    ("(type Tag (T Symbol))".to_string(), body)
+}
+
 /// Build a RECURSIVE-PERFORM effect program — the "dynamic-extent, statically-resolved" self-hosting
 /// shape: a TOP-LEVEL recursive `loop` def PERFORMS the effect op deep inside itself, and `main`'s
 /// `handle` (wrapping the `(loop k)` call) discharges every perform across the recursion. This value-grades
@@ -383,8 +402,15 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
         // directly (self-contained). Grades Symbol-in-compound VALUE correctness — the cadenza-differential
         // renders + round-trips it; the lean type oracle skips Symbol as Unsupported (sound).
         4 => {
-            let body = gen_symbol_compound_body(c);
-            write!(source, "(def (main) {body}) (export main))").ok();
+            // FLIP between a bare Symbol-in-compound value and a NOMINAL-over-Symbol program (#7714 —
+            // a nominal newtype wrapping a Symbol, which must recover the `(Symbol.of …)` value-form).
+            if c.variant(2) == 0 {
+                let body = gen_symbol_compound_body(c);
+                write!(source, "(def (main) {body}) (export main))").ok();
+            } else {
+                let (type_decl, body) = gen_nominal_symbol_program(c);
+                write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
+            }
             return Program { source };
         }
         _ => {}
@@ -2385,6 +2411,26 @@ mod tests {
             match compile_catching(&prog) {
                 Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
                 other => panic!("symbol-compound program not cleanly handled: {prog}\n{other:?}"),
+            }
+        }
+    }
+
+    /// Every NOMINAL-over-Symbol shape (v-nix #7714 — a nominal newtype wrapping a Symbol) is a
+    /// well-formed program the compiler cleanly handles, pinning the `(Symbol.of …)` value-form recovery.
+    #[test]
+    fn nominal_symbol_shapes_are_cleanly_handled() {
+        for seed in 0u8..24 {
+            let bytes = [seed, seed.wrapping_mul(5), seed.wrapping_add(3), 2, 4, 6];
+            let mut c = ByteCursorChoice::new(&bytes);
+            let (type_decl, body) = gen_nominal_symbol_program(&mut c);
+            assert!(
+                body.contains("Tag.T") && body.contains("#\""),
+                "shape carries a nominal symbol: {body}"
+            );
+            let prog = format!("(do {type_decl} (def (main) {body}) (export main))");
+            match compile_catching(&prog) {
+                Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
+                other => panic!("nominal-symbol program not cleanly handled: {prog}\n{other:?}"),
             }
         }
     }
