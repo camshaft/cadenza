@@ -1332,24 +1332,53 @@ pub mod suggest {
     /// Function Of The Source). The name itself, `_`, and the empty name are never offered (same as
     /// `nearest`); duplicates collapse (a candidate appearing twice is listed once). Returns an empty Vec
     /// when there are no usable candidates.
+    ///
+    /// A PREFIX relationship between the query and a candidate ranks ahead of pure edit distance: a query
+    /// that is a proper prefix of a candidate (`Sym` → `Symbol`) — or a candidate that is a proper prefix
+    /// of the query (`Symbolz` → `Symbol`) — is a truncated/over-typed name, a stronger intent signal than
+    /// a same-distance unrelated typo, and the edit distance alone would sink a long prefix-extension below
+    /// the `limit` cutoff (`Sym`→`Symbol` is distance 3, losing to `Str`/`Int`/`Name` and getting
+    /// truncated away entirely). So `Sym` now lists `Symbol` FIRST. The prefix bonus is gated on a
+    /// ≥2-char query (a single leading char is too weak a signal — it would front-load every candidate
+    /// starting with that letter), matching `nearest`'s one-char suppression.
     pub fn closest_matches<I, S>(name: &str, candidates: I, limit: usize) -> Vec<String>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut scored: Vec<(usize, String)> = Vec::new();
+        // 0 = a prefix relationship with the query (either direction), 1 = none. Sorted BEFORE edit
+        // distance so a prefix-extension is never truncated away by a nearer unrelated typo.
+        let prefix_rank = |cand: &str| -> u8 {
+            if name.chars().count() >= 2
+                && cand != name
+                && (cand.starts_with(name) || name.starts_with(cand))
+            {
+                0
+            } else {
+                1
+            }
+        };
+        let mut scored: Vec<(u8, usize, String)> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cand in candidates {
             let cand = cand.as_ref();
             if cand == name || cand == "_" || cand.is_empty() || !seen.insert(cand.to_string()) {
                 continue;
             }
-            scored.push((edit_distance(name, cand), cand.to_string()));
+            scored.push((
+                prefix_rank(cand),
+                edit_distance(name, cand),
+                cand.to_string(),
+            ));
         }
-        // Nearest first; ties break lexicographically for determinism.
-        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        // Prefix-related first, then nearest, then lexicographic — a DETERMINISTIC function of the set.
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
         scored.truncate(limit);
-        scored.into_iter().map(|(_, n)| n).collect()
+        scored.into_iter().map(|(_, _, n)| n).collect()
     }
 
     /// A "did you mean?" HINT suffix for a wrong `name`, two-tiered: a CONFIDENT single suggestion when a
@@ -1508,6 +1537,40 @@ pub mod suggest {
             assert_eq!(dedup, vec!["map".to_string()]); // "fold" (self), dup "map", "_", "" all dropped
             // No candidates → empty.
             assert!(closest_matches("x", Vec::<&str>::new(), 3).is_empty());
+
+            // PREFIX-FIRST: a candidate the query is a proper prefix of ranks ahead of a nearer typo, so
+            // a long prefix-extension is not truncated away. `Sym` (dist 3 to `Symbol`) would otherwise
+            // lose to `Str`/`Int`/`Name` and drop off a limit-3 list entirely; now `Symbol` leads.
+            assert_eq!(
+                closest_matches("Sym", ["Str", "Int", "Name", "Symbol"], 3)
+                    .first()
+                    .map(String::as_str),
+                Some("Symbol"),
+                "the prefix-extension `Symbol` leads over nearer unrelated candidates"
+            );
+            // The reverse direction (candidate is a proper prefix of the query) also gets the bonus.
+            assert_eq!(
+                closest_matches("Symbolz", ["Str", "Symbol"], 3)
+                    .first()
+                    .map(String::as_str),
+                Some("Symbol"),
+                "an over-typed query prefers the candidate it extends"
+            );
+            // A ≥2-char prefix bonus only: a single leading char is too weak to front-load every candidate
+            // starting with it — `S` falls back to pure nearest-first (all dist 1 here → lexicographic).
+            assert_eq!(
+                closest_matches("S", ["Str", "Symbol", "Set"], 3),
+                vec!["Set".to_string(), "Str".to_string(), "Symbol".to_string()],
+                "a one-char query gets no prefix bonus (pure distance-then-lex order)"
+            );
+            // Among two prefix-extensions, the nearer (shorter edit distance) still wins the secondary key.
+            assert_eq!(
+                closest_matches("ab", ["abcdefghij", "abc", "zz"], 3)
+                    .first()
+                    .map(String::as_str),
+                Some("abc"),
+                "nearest prefix-extension first among prefix matches"
+            );
         }
 
         #[test]
