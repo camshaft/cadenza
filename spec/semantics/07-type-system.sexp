@@ -3125,6 +3125,17 @@
   (call main (: -3 Int64))
   (output (: -3 Int64)))
 
+(case
+  "asserting a value has a type is Type.try-as fed to Option.expect"
+  (doc
+    "There is no dedicated assert-of-type primitive — the caller composes the existing pieces:
+           `Option.expect((Type.try-as x : Option T), msg)` yields the value when its type matches `T` and
+           traps with `msg` otherwise. `Option.expect((Type.try-as 5 : Option Int64), \"not an int\")` is
+           `5` — `5` IS an `Int64`, so `Some 5` is unwrapped. Pins the composition as the assert-of-type
+           idiom (the reason no `Type.assert-as` primitive exists).")
+  (input (Option.expect (: (Type.try-as 5) (Option Int64)) "not an int"))
+  (output (: 5 Int64)))
+
 ; ---- Same-name MONOMORPHIC constructor in a VALUE position: the ctor wins, in a helper AND multi-variant.
 ; The cases above are the TYPE-position complement (an applied same-name generic denotes the TYPE). These pin
 ; the VALUE-position rule for a MONOMORPHIC same-name sum: `(N a)` builds the VARIANT, not the type — direct
