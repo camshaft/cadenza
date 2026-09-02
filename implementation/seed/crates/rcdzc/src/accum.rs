@@ -76,18 +76,41 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
 /// its recursion actually became — so `fac` reads `transformed→fac$acc` rather than the literal
 /// `inlined` (its seed wrapper folds, but the loop is emitted under the copy's name). Empty when no def
 /// matches (byte-identical to before — a non-matching def is untouched).
-pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) -> Vec<(usize, usize)> {
+pub(crate) fn introduce(
+    ast: &mut Arenas,
+    defs: &mut Vec<Def>,
+    effect_decls: &[crate::db::EffectDecl],
+) -> Vec<(usize, usize)> {
     // Index each top-level `(def sig body)` FORM by its signature occurrence ONCE, up front — an O(items)
     // pass. `match_linear_recursion` needs the enclosing form (to swap its body child), and the parent
     // index is not built yet; a per-def LINEAR scan of the module items (the old `find_def_form`) made
     // this O(defs²) — a module of N defs spent ~50% of the whole compile re-scanning items, each an
     // `as_form(item, "def")` string compare. The map turns that into an O(1) lookup per def.
     let def_forms = index_def_forms(ast);
+    // The DECLARED-EFFECT NAMES (built once). Used to reject a per-step term that PERFORMS a discharged
+    // effect — reassociating an effectful term changes eval order (see `term_performs_effect`). Built from
+    // `effect_decls` (populated by `scan_top_level`, available at the load-time call site) so the syntactic
+    // `(. E op)` perform-detection is PRECISE — it fires on a member access whose base names a declared
+    // effect, NOT on a pure record/field access `(. r x)` (which would over-decline and regress the stack
+    // wins accum exists for). Effect performs at this pre-resolve stage are member accesses off the effect.
+    let effect_names: crate::fxhash::FxHashSet<String> =
+        effect_decls.iter().map(|e| e.name.clone()).collect();
+    // The set of def NAMES whose body TRANSITIVELY performs a discharged effect — a direct `(. E op)`
+    // (base case, via `term_performs_effect`) OR a call to another performing def (call-graph fixpoint).
+    // Used to decline accum on a per-step term that performs INDIRECTLY (through a helper call). A DIRECT
+    // perform in the term is NOT declined (see `match_linear_recursion`): reassociating a direct-perform
+    // term is sound (a resumptive perform threads through the tail form; an abortive one is folded by the
+    // effects non-local-exit CC), and declining it regresses currently-passing resumptive recursions
+    // (rw1/rw3/rw-match, corpus 14b). But an INDIRECT (helper-hidden) perform can neither thread nor be
+    // folded once buried in a callee — accum reassociates it and the result MISCOMPILES (the abort rides
+    // the accumulator arg with no tag to short-circuit). Declining the indirect case leaves the recursion
+    // a plain non-tail form (a safe decline instead of a miscompile).
+    let performing_defs = compute_performing_defs(ast, defs, &effect_names);
     // Collect the rewrites first (an immutable scan of `defs`), then apply — so the synthesis (which
     // reads `defs` for name collisions) sees a stable view.
     let mut plans: Vec<(usize, Match)> = Vec::new();
     for (i, d) in defs.iter().enumerate() {
-        if let Some(m) = match_linear_recursion(ast, d, &def_forms) {
+        if let Some(m) = match_linear_recursion(ast, d, &def_forms, &performing_defs) {
             plans.push((i, m));
         }
     }
@@ -164,6 +187,7 @@ fn match_linear_recursion(
     ast: &Arenas,
     d: &Def,
     def_forms: &crate::fxhash::FxHashMap<u32, StructId>,
+    performing_defs: &crate::fxhash::FxHashSet<String>,
 ) -> Option<Match> {
     // At least one parameter, each a bare name (an annotated `(: n T)` is fine — take the inner name).
     // Extra parameters (pass-throughs like a limit/config, or a second recursion variable) are threaded
@@ -182,6 +206,20 @@ fn match_linear_recursion(
     let (dispatch, op_occ, identity, term, rec_args) =
         match_if_shape(ast, body, &d.name, &param_names)
             .or_else(|| match_list_fold_shape(ast, body, &d.name, &param_names))?;
+    // INDIRECT-PERFORM SAFE-FLOOR (v-effects 14b:13175-family): decline when the per-step term `g` performs
+    // a discharged effect INDIRECTLY — through a call to a def that (transitively) performs. Accumulator
+    // introduction REASSOCIATES `g` into a left fold; for an indirect perform buried in a helper, the
+    // reassociation MISCOMPILES — the perform (e.g. an abort) rides the accumulator arg with no way to
+    // thread it (resumptive) or short-circuit it (abortive, the effects CC needs the perform VISIBLE, not
+    // hidden in a callee). Declining leaves the recursion a plain non-tail form (a safe decline, not a
+    // miscompile). We do NOT decline a term that performs DIRECTLY (`(. E op)` in the term itself): a
+    // direct resumptive perform threads correctly through the reassociated tail form, and a direct abortive
+    // perform is folded by v-effects' non-local-exit CC — declining direct-perform terms REGRESSES
+    // currently-passing resumptive recursions (rw1/rw3/rw-match, 14b) and is unnecessary for the abortive
+    // ones. So the decline is INDIRECT-ONLY, keyed on `performing_defs`. See `term_calls_performing_def`.
+    if term_calls_performing_def(ast, term, performing_defs) {
+        return None;
+    }
     // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
     // index is not built yet at load time, so this is an O(1) read of the prebuilt `sig_occ → form` index
     // (was a per-def linear scan of the module items → O(defs²)). Only reached once every cheaper check
@@ -623,6 +661,141 @@ fn mentions_name(ast: &Arenas, id: StructId, name: &str) -> bool {
     }
 }
 
+/// Whether the per-step term `g` PERFORMS a discharged effect — the safe-floor test that keeps accumulator
+/// introduction from reassociating an EFFECTFUL term (which would reorder its evaluation, an observable
+/// change — unlike a pure term, whose reassociation is value-exact). PRECISE by design: an effect
+/// performance at this pre-resolve load stage is a MEMBER ACCESS `(. E op)` whose base `E` names a DECLARED
+/// EFFECT (`effect_names`, from `scan_top_level`'s `effect_decls`). Matching the base against the declared
+/// effects is what separates a genuine perform (`(E.bail unit)` → `((. E bail) unit)`, base `E` a declared
+/// effect) from a pure record/field access (`(. r x)`, base `r` not an effect) — so a pure `(+ (. r x) 1)`
+/// term still accumulates, and only a real perform declines. We flag the member-access OCCURRENCE itself
+/// (applied or not), which subsumes both a nullary `(E.done)` and an arg-bearing `(E.bail unit)` and is
+/// sound-toward-decline: reading an effect op at all in the reassociated term is the eval-order-sensitive
+/// signal. A structural walk over the whole term (the perform may be nested in a branch, as in the witness
+/// `(if (= k 2) (E.bail unit) k)`); a member access on a non-effect base recurses into its children.
+fn term_performs_effect(
+    ast: &Arenas,
+    term: StructId,
+    effect_names: &crate::fxhash::FxHashSet<String>,
+) -> bool {
+    // A member access `(. E op)` (head ".", two children `[base, method]`) whose base names a declared
+    // effect IS a perform site — the eval-order-sensitive node we decline on.
+    if let Some([base, _method]) = ast.as_form(term, ".")
+        && let Some(base_name) = ast.as_name(*base)
+        && effect_names.contains(base_name)
+    {
+        return true;
+    }
+    // Otherwise recurse into children (an atom has none; a `(. r x)` on a non-effect base recurses too, so
+    // a nested effect perform inside a pure member access is still found).
+    match ast.get(term) {
+        Struct::Atom(_) => false,
+        Struct::List(c) => c
+            .clone()
+            .iter()
+            .any(|&ch| term_performs_effect(ast, ch, effect_names)),
+    }
+}
+
+/// The set of top-level def NAMES whose body TRANSITIVELY performs a discharged effect — a def whose body
+/// DIRECTLY performs (a `(. E op)`, via `term_performs_effect`), or one that CALLS such a def (a call-graph
+/// fixpoint). Drives the INDIRECT-perform accum decline in `match_linear_recursion`: a per-step term that
+/// calls a def in this set performs indirectly, and reassociating it miscompiles. A DIRECT perform in the
+/// term is intentionally NOT declined (reassociation is sound for it), so this set drives ONLY the indirect
+/// (helper-hidden) case. Pre-resolution: a "call" is an application whose head is a bare `Name` matching a
+/// top-level def name (the same flat-namespace match `self_call_args` uses); member accesses / builtins are
+/// not top-level defs, so a `(. E op)` perform or a `(List.len …)` never enters the set on its own.
+///
+/// CONSERVATISM (sound-toward-decline): a def whose body merely CONTAINS a `(handle E …((. E op)-arm)…)` is
+/// flagged (the arm's `(. E op)` reads as a perform), even though a handle DISCHARGES rather than performs.
+/// That can over-flag a handler def and decline accum on a term that calls it — a MISSED optimization, never
+/// a miscompile. Accepted for a first cut (no corpus case regresses — verified).
+fn compute_performing_defs(
+    ast: &Arenas,
+    defs: &[Def],
+    effect_names: &crate::fxhash::FxHashSet<String>,
+) -> crate::fxhash::FxHashSet<String> {
+    let def_names: crate::fxhash::FxHashSet<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+    // Seed with the defs that perform DIRECTLY, and record each def's callee names for the fixpoint.
+    let mut performing: crate::fxhash::FxHashSet<String> = crate::fxhash::FxHashSet::default();
+    let mut callees: Vec<(String, Vec<String>)> = Vec::with_capacity(defs.len());
+    for d in defs {
+        let mut cs = Vec::new();
+        if let Some(body) = d.body {
+            if term_performs_effect(ast, body, effect_names) {
+                performing.insert(d.name.clone());
+            }
+            collect_called_defs(ast, body, &def_names, &mut cs);
+        }
+        callees.push((d.name.clone(), cs));
+    }
+    // Fixpoint: a def performs if it calls any performing def. Each round adds ≥1 name or stops, so the
+    // def count bounds the iterations. Modules are small at load; a naive fixpoint suffices.
+    loop {
+        let mut changed = false;
+        for (name, cs) in &callees {
+            if !performing.contains(name) && cs.iter().any(|c| performing.contains(c)) {
+                performing.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    performing
+}
+
+/// Collect the names of TOP-LEVEL defs that `node` calls — an application `(g arg…)` whose head `g` is a
+/// bare `Name` in `def_names`. A structural walk (a call may be nested anywhere in the body). Only names in
+/// `def_names` count, so a member-access head `(. E op)` or a builtin never enters the callee set.
+fn collect_called_defs(
+    ast: &Arenas,
+    node: StructId,
+    def_names: &crate::fxhash::FxHashSet<&str>,
+    out: &mut Vec<String>,
+) {
+    if let Struct::List(children) = ast.get(node) {
+        let children = children.clone();
+        if let Some(&head) = children.first()
+            && let Some(hname) = ast.as_name(head)
+            && def_names.contains(hname)
+        {
+            out.push(hname.to_string());
+        }
+        for &c in &children {
+            collect_called_defs(ast, c, def_names, out);
+        }
+    }
+}
+
+/// Whether the per-step term `g` performs a discharged effect INDIRECTLY — it contains an application whose
+/// head names a def that (transitively) performs (`performing_defs`). The accum-decline predicate: an
+/// indirect (helper-hidden) perform in a reassociated term MISCOMPILES (the effects CC cannot fold a perform
+/// buried in a callee). It deliberately does NOT flag a DIRECT `(. E op)` in the term — direct-perform
+/// reassociation is sound (resumptive threads through the tail form; abortive folds via v-effects' CC), and
+/// declining it regresses currently-passing resumptive recursions (rw1/rw3/rw-match). A structural walk (the
+/// call may be nested in a branch, e.g. `(if c (helper k) 0)`).
+fn term_calls_performing_def(
+    ast: &Arenas,
+    term: StructId,
+    performing_defs: &crate::fxhash::FxHashSet<String>,
+) -> bool {
+    if let Struct::List(children) = ast.get(term) {
+        let children = children.clone();
+        if let Some(&head) = children.first()
+            && let Some(hname) = ast.as_name(head)
+            && performing_defs.contains(hname)
+        {
+            return true;
+        }
+        return children
+            .iter()
+            .any(|&c| term_calls_performing_def(ast, c, performing_defs));
+    }
+    false
+}
+
 /// A fresh accumulator-def name not colliding with any existing def (`f$acc`, then `f$acc$` …).
 fn fresh_acc_name(defs: &[Def], base: &str) -> String {
     let mut name = format!("{base}$acc");
@@ -777,6 +950,63 @@ mod tests {
         assert!(
             db.def_by_name("f$acc").is_none(),
             "a non-associative member op must NOT be reassociated"
+        );
+    }
+
+    /// INDIRECT-PERFORM SAFE FLOOR (v-effects 14b:13175-family): a linear recursion whose per-step term
+    /// performs a discharged effect INDIRECTLY — through a call to a helper that performs — must NOT be
+    /// accumulator-transformed. Reassociating it buries the perform in the accumulator arg where the effects
+    /// CC cannot fold it → a miscompile. Witness: `(+ (loop (- k 1)) (helper k))` with `(def (helper k) (if
+    /// (= k 2) (E.bail unit) k))` — the term `(helper k)` calls the performing `helper`. Declined.
+    #[test]
+    fn introduce_declines_a_term_that_indirectly_performs_via_a_helper() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (helper (: k Int64)) (if (= k 2) (E.bail unit) k)) \
+               (def (loop (: k Int64)) \
+                 (if (> k 0) (+ (loop (- k 1)) (helper k)) 0)) (export loop))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("loop$acc").is_none(),
+            "a recursion whose per-step term calls a performing helper must NOT be reassociated"
+        );
+    }
+
+    /// A per-step term that performs a discharged effect DIRECTLY (`(E.bail)` in the term itself, no helper
+    /// call) IS still accumulator-transformed — direct-perform reassociation is sound (a resumptive perform
+    /// threads through the tail form; an abortive one is folded by v-effects' non-local-exit CC), and
+    /// declining it would regress currently-passing resumptive recursions (rw1/rw3/rw-match). Only the
+    /// INDIRECT (helper-hidden) perform declines.
+    #[test]
+    fn introduce_transforms_a_term_that_performs_directly() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (loop (: k Int64)) \
+                 (if (> k 0) (+ (loop (- k 1)) (if (= k 2) (E.bail unit) k)) 0)) (export loop))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("loop$acc").is_some(),
+            "a direct-perform term is still transformed (only indirect helper-performs decline)"
+        );
+    }
+
+    /// PRECISION GUARD: a per-step term that is a PURE member/field access `(. r x)` — base `r` NOT a
+    /// declared effect and not a performing-def call — STILL transforms even when an effect is declared.
+    /// The indirect-perform detection keys on performing-DEF call heads, so a pure record access neither
+    /// enters the performing set nor is flagged.
+    #[test]
+    fn introduce_transforms_a_pure_member_access_term_despite_a_declared_effect() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (f (: n Int64) r) \
+                 (if (= n 0) 0 (+ (. r x) (f (- n 1) r)))) (export f))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("f$acc").is_some(),
+            "a pure member-access term (base not an effect) still accumulator-transforms"
         );
     }
 

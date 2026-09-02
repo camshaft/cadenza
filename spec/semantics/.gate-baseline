@@ -6252,6 +6252,7 @@ pass	an abortive perform in a connective that is an if-condition abandons the co
 pass	an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)
 pass	an abortive perform in a fused-match arm carries the payload binder out and abandons the rest
 pass	an abortive perform in a let body tail referencing the let binding stays in scope
+todo	an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)
 todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
 pass	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
