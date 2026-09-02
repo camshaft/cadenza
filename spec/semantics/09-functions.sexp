@@ -5199,7 +5199,7 @@
         (match (check (Exp.If (Exp.Num 1) (Exp.Num 2))) ((Result.Ok _) 1) ((Result.Err _) 0)))
       (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the well-typed branch of the mutual check returns the Ok result"
