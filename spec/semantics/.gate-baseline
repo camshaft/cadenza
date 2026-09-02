@@ -3412,7 +3412,7 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match with a float arm and a later int-literal arm retypes the int-literal arm up
 pass	a match with an int-literal arm and a later float arm retypes the int-literal arm up
-todo	a match-arm binder CAPTURED BY A LAMBDA survives inlining the helper that owns it
+pass	a match-arm binder CAPTURED BY A LAMBDA survives inlining the helper that owns it
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a match-based self-tail-recursion loops in constant stack
 pass	a match-based tail recursion with an earlier literal arm loops correctly
