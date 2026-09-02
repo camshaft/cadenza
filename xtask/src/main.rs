@@ -27,7 +27,9 @@
 //! defaults to `release-debug` (optimized, so the corpus gate is fast). Pass `--profile dev` for a
 //! quick unoptimized build when iterating on the tools themselves.
 
-use cdz_corpus_grade::{TrapCode, canonical_output_value, classify, is_ice_signature};
+use cdz_corpus_grade::{
+    TrapCode, canonical_output_value, classify, is_ice_signature, value_encoding_byte_len,
+};
 use cdz_rust_render::*;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -5107,6 +5109,51 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                 )),
             }
         }
+        // `output-byte-len N`: the run must produce a value whose canonical binary-AST encoding is exactly
+        // N bytes (the size-only pin — a >64KiB value-escape fence at O(1) corpus bytes). Measured by the
+        // SHARED `cdz_corpus_grade::value_encoding_byte_len` (verdict-identical to the exec grader). The
+        // measured length is printed (pass or fail) so a `--case` run surfaces the exact N to author.
+        "output-byte-len" => {
+            let want: u64 = match payload.trim().parse() {
+                Ok(n) => n,
+                Err(e) => {
+                    return Grade::Fail(format!("malformed output-byte-len {payload:?}: {e}"));
+                }
+            };
+            match ran {
+                Ran::Value(v, _, _) => match value_encoding_byte_len(v) {
+                    Ok(got) => {
+                        eprintln!("grade: output-byte-len: measured {got} bytes (ran → {v})");
+                        if got as u64 == want {
+                            Grade::Pass
+                        } else {
+                            Grade::Fail(format!(
+                                "expected output-byte-len {want}, ran → {v} (canonical binary-AST \
+                                 encoding {got} bytes)"
+                            ))
+                        }
+                    }
+                    Err(e) => Grade::Fail(format!(
+                        "ran value {v} did not parse as a canonical value (compiler emit bug): {e}"
+                    )),
+                },
+                // A coded/honest decline (compiler can't build the value yet) stays Todo; an ICE-signature
+                // codeless decline on a case that should yield a value is a compiler bug → Fail.
+                Ran::Declined {
+                    code: None,
+                    message,
+                } if is_ice_signature(message) => Grade::Fail(format!(
+                    "ICE (compiler bug) on a case expecting output-byte-len {want}: {message}"
+                )),
+                Ran::Declined { .. } => Grade::Todo,
+                Ran::Trap(t) => {
+                    Grade::Fail(format!("expected output-byte-len {want}, trapped: {t}"))
+                }
+                Ran::BadArtifact(e) => Grade::Fail(format!(
+                    "expected output-byte-len {want}, artifact did not build: {e}"
+                )),
+            }
+        }
         // `error CODE`: the corpus says this program is REJECTED with diagnostic `CODE`. Grade by what
         // the compiler DID (the same rule as `output`, applied to rejections):
         //  - rejected with the MATCHING code  → Pass (the check fired, correctly coded);
@@ -8080,6 +8127,55 @@ mod trap_grading_tests {
                 &Ran::Value("43".to_string(), vec![], vec![])
             ),
             Grade::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn grade_trial_output_byte_len_arm_mirrors_the_shared_measure() {
+        // The `output-byte-len N` arm single-sources `cdz_corpus_grade::value_encoding_byte_len` — the same
+        // measure the exec grader uses (the two-mechanism verdict-identity discipline). Measure a value's
+        // encoding, assert the exact N passes and N+1 fails, and that a spelling variant passes the same pin.
+        let v = "#list(1 2 3 4 5)";
+        let n = value_encoding_byte_len(v).unwrap() as u64;
+        assert!(matches!(
+            grade_trial(
+                &format!("output-byte-len {n}"),
+                &Ran::Value(v.to_string(), vec![], vec![])
+            ),
+            Grade::Pass
+        ));
+        assert!(matches!(
+            grade_trial(
+                &format!("output-byte-len {}", n + 1),
+                &Ran::Value(v.to_string(), vec![], vec![])
+            ),
+            Grade::Fail(_)
+        ));
+        // Spelling-invariant (classic head render of the SAME value passes).
+        assert!(matches!(
+            grade_trial(
+                &format!("output-byte-len {n}"),
+                &Ran::Value("(list 1 2 3 4 5)".to_string(), vec![], vec![])
+            ),
+            Grade::Pass
+        ));
+        // A trap where a value was expected is a Fail (never a hidden pass); a coded decline stays Todo.
+        assert!(matches!(
+            grade_trial(
+                &format!("output-byte-len {n}"),
+                &Ran::Trap("boom".to_string())
+            ),
+            Grade::Fail(_)
+        ));
+        assert!(matches!(
+            grade_trial(
+                &format!("output-byte-len {n}"),
+                &Ran::Declined {
+                    code: Some("CDZ0101".to_string()),
+                    message: "not yet".to_string()
+                }
+            ),
+            Grade::Todo
         ));
     }
 

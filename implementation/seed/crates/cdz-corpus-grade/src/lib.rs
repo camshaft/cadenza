@@ -218,6 +218,16 @@ pub struct GCall {
 /// `Declines` are COMPILE outcomes (graded against the captured compiler diagnostic).
 pub enum GExpect {
     Output(String),
+    /// `(output-byte-len N)` — a RUN outcome that pins ONLY the SIZE of the escaped value: its canonical
+    /// binary-AST ENCODING must be exactly `N` bytes. Type-AGNOSTIC (one grade path for String / Bytes /
+    /// list / closure-result) and impl-INDEPENDENT (the binary-AST encoding is THE canonical data-exchange
+    /// format — every backend produces identical bytes for the same value), so a >64KiB value-escape (the
+    /// #7793/#7800 OOB class) is corpus-fenceable at O(1) bytes: the case BUILDS the big value at runtime (a
+    /// tiny doubling source) and lets it ESCAPE as the result; this clause asserts its encoded length without
+    /// spelling the 64KiB literal (which would blow the 512KB source mandate). Deliberately WEAKER than a full
+    /// `Output` value pin (a wrong-CONTENT, right-LENGTH payload passes) — a size-class fence; pair with a
+    /// consumed scalar `(output …)` in-case for content coverage. Graded by [`value_encoding_byte_len`].
+    OutputByteLen(u64),
     Trap(String),
     /// `(expect-error CODE msg* (not "phrase")*)` — the compiler must REFUSE with exactly `CODE` (+ required
     /// message substrings AND + required-ABSENCE substrings the message must NOT contain, seq-29).
@@ -511,7 +521,7 @@ where
                 }
                 continue;
             }
-            GExpect::Output(_) | GExpect::Trap(_) => {}
+            GExpect::Output(_) | GExpect::Trap(_) | GExpect::OutputByteLen(_) => {}
         }
 
         // RUN outcome. A value/trap case whose compiler did NOT emit is graded from the DIAGNOSTIC, never run.
@@ -704,6 +714,35 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             Outcome::Trap(t) => Grade::Fail(format!("expected output {payload}, but trapped: {t}")),
             Outcome::BadArtifact(e) => Grade::Fail(format!(
                 "expected output {payload}, but the artifact did not build: {e}"
+            )),
+        },
+        // SIZE-ONLY pin: measure the escaped value's canonical binary-AST ENCODING length and compare to N.
+        // A parse failure on the run value is a LOUD Fail (a compiler emit bug — the decode-validity
+        // invariant), never a silent pass; a trap / bad artifact where a value was expected is a Fail.
+        // The measured length is ALWAYS printed (pass or fail) so a `--case` run surfaces the exact N to
+        // author the pin against (the "grader prints the measured byte-len" affordance).
+        GExpect::OutputByteLen(want) => match outcome {
+            Outcome::Value(v, _) => match value_encoding_byte_len(v) {
+                Ok(got) => {
+                    eprintln!("grade: output-byte-len: measured {got} bytes (run value {v})");
+                    if got as u64 == *want {
+                        Grade::Pass
+                    } else {
+                        Grade::Fail(format!(
+                            "expected output-byte-len {want}, got {got} (canonical binary-AST \
+                             encoding of run value {v})"
+                        ))
+                    }
+                }
+                Err(e) => Grade::Fail(format!(
+                    "run value {v} did not parse as a canonical value (compiler emit bug): {e}"
+                )),
+            },
+            Outcome::Trap(t) => {
+                Grade::Fail(format!("expected output-byte-len {want}, but trapped: {t}"))
+            }
+            Outcome::BadArtifact(e) => Grade::Fail(format!(
+                "expected output-byte-len {want}, but the artifact did not build: {e}"
             )),
         },
         GExpect::Trap(reason) => match outcome {
@@ -1414,6 +1453,15 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     .and_then(|vid| str_leaf(a, vid))
                     .map(GExpect::Trap);
             }
+            // `(expect-output-byte-len N)` — the size-only pin (leaf = the decimal N as text).
+            Some("expect-output-byte-len") => {
+                expect = a
+                    .as_form(child, "expect-output-byte-len")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|vid| str_leaf(a, vid))
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(GExpect::OutputByteLen);
+            }
             Some("expect-error") => {
                 if let Some(t) = a.as_form(child, "expect-error") {
                     let code = t.first().copied().and_then(|id| str_leaf(a, id));
@@ -1595,6 +1643,20 @@ pub fn canonical_output_value(text: &str) -> Result<String, String> {
         }
     }
     Ok(cadenza_syntax::sexpr::print_from(&a, value_id))
+}
+
+/// The byte-length of a value's CANONICAL BINARY-AST ENCODING — the number a `(output-byte-len N)` pin
+/// asserts. `text` is a value render (bare or `(: v T)`); it is first canonicalized by
+/// [`canonical_output_value`] (ascription-stripped, `#ctor`-nativized, reprinted) so the measured length
+/// is ANNOTATION- and SPELLING-invariant, then re-read and encoded via the shared `codec` (the binary-AST
+/// data-exchange format). Two spellings of the same value therefore measure identically; a genuine content
+/// or arity difference measures differently. `Err` (propagated from `canonical_output_value` or a re-read
+/// failure) is surfaced LOUDLY by the caller — never a silent pass. The SINGLE SOURCE both graders (the
+/// in-process `xtask gate` and the exec bins) call, keeping the two-mechanism paths verdict-identical.
+pub fn value_encoding_byte_len(text: &str) -> Result<usize, String> {
+    let canon = canonical_output_value(text)?;
+    let a = cadenza_syntax::sexpr::read(&canon).map_err(|e| e.0)?;
+    Ok(codec::encode(&a).len())
 }
 
 /// A STANDARD, CLOSED set of runtime trap KINDS — the "trap code" analogue of a diagnostic `Code` (operator
@@ -1999,6 +2061,75 @@ mod tests {
     }
 
     #[test]
+    fn value_encoding_byte_len_is_annotation_and_spelling_invariant() {
+        // Ascription is metadata, not value identity → stripped before measuring.
+        assert_eq!(
+            value_encoding_byte_len("(: #list(1 2 3) (List Int64))").unwrap(),
+            value_encoding_byte_len("#list(1 2 3)").unwrap()
+        );
+        // Two spellings of the SAME value (classic name-head vs native `#ctor`) encode to the same bytes.
+        assert_eq!(
+            value_encoding_byte_len("(tuple 1 2)").unwrap(),
+            value_encoding_byte_len("#tuple(1 2)").unwrap()
+        );
+        // A genuine content/arity difference measures differently (the fence is a real size check).
+        assert_ne!(
+            value_encoding_byte_len("#list(1 2 3)").unwrap(),
+            value_encoding_byte_len("#list(1 2 3 4 5 6)").unwrap()
+        );
+        // A larger list encodes to strictly more bytes than a smaller one (monotone in content — the
+        // property the >64KiB escape fence relies on).
+        assert!(
+            value_encoding_byte_len("#list(1 2 3 4)").unwrap()
+                > value_encoding_byte_len("#list(1 2)").unwrap()
+        );
+        // An unparsable run value surfaces LOUDLY as an Err (never a silent 0-length pass).
+        assert!(value_encoding_byte_len("#list(1 2").is_err());
+    }
+
+    #[test]
+    fn grade_trial_output_byte_len_pass_fail_and_wrong_outcome() {
+        // Measure a value's encoding, then assert the exact N passes and N±1 fails — no hand-derived
+        // constant (the codec owns the length; the grade just compares to whatever the grader measures).
+        let v = "#list(1 2 3 4 5)";
+        let n = value_encoding_byte_len(v).unwrap() as u64;
+        assert_eq!(
+            grade_trial(
+                &GExpect::OutputByteLen(n),
+                &Outcome::Value(v.into(), vec![])
+            ),
+            Grade::Pass
+        );
+        assert!(matches!(
+            grade_trial(
+                &GExpect::OutputByteLen(n + 1),
+                &Outcome::Value(v.into(), vec![])
+            ),
+            Grade::Fail(_)
+        ));
+        // Spelling-invariant: the classic-head render of the SAME value passes the same pin.
+        assert_eq!(
+            grade_trial(
+                &GExpect::OutputByteLen(n),
+                &Outcome::Value("(list 1 2 3 4 5)".into(), vec![])
+            ),
+            Grade::Pass
+        );
+        // A trap / bad artifact where a value was expected is a Fail (never a hidden pass).
+        assert!(matches!(
+            grade_trial(&GExpect::OutputByteLen(n), &Outcome::Trap("boom".into())),
+            Grade::Fail(_)
+        ));
+        assert!(matches!(
+            grade_trial(
+                &GExpect::OutputByteLen(n),
+                &Outcome::BadArtifact("nope".into())
+            ),
+            Grade::Fail(_)
+        ));
+    }
+
+    #[test]
     fn grade_trial_trap_by_kind_and_miscompile() {
         assert_eq!(
             grade_trial(
@@ -2176,6 +2307,51 @@ mod tests {
             ),
             Grade::Todo(_)
         ));
+    }
+
+    #[test]
+    fn grade_run_decodes_and_orchestrates_an_output_byte_len_trial() {
+        // Build a (test-run …) with one (expect-output-byte-len N) trial, decode it (the binary-manifest
+        // path the nix exec bins use), and grade with a stub runner — proving the decode → GExpect →
+        // grade_run wiring round-trips. N is measured off the value so no constant is hand-derived.
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        let v = "#list(1 2 3 4 5)";
+        let n = value_encoding_byte_len(v).unwrap();
+        let mut b = Builder::new();
+        let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+        let head = b.name("test-run");
+        let dh = b.name("description");
+        let dv = s(&mut b, "byte-len case");
+        let desc = b.list(vec![dh, dv]);
+        let th = b.name("trial");
+        let eh = b.name("expect-output-byte-len");
+        let ev = s(&mut b, &n.to_string());
+        let expect = b.list(vec![eh, ev]);
+        let trial = b.list(vec![th, expect]);
+        let trials_head = b.name("trials");
+        let trials = b.list(vec![trials_head, trial]);
+        let root = b.list(vec![head, desc, trials]);
+        let bytes = codec::encode(&b.finish(root));
+
+        let tr = decode_test_run(&bytes).expect("decodes");
+        assert!(matches!(
+            tr.trials.first().map(|t| &t.expect),
+            Some(GExpect::OutputByteLen(m)) if *m == n as u64
+        ));
+        // The exact length passes.
+        let res = grade_run(&tr, 0, "", None, None, |_| {
+            Ok(Outcome::Value(v.into(), vec![]))
+        })
+        .unwrap();
+        assert_eq!(res.grade, Grade::Pass);
+        assert!(res.ran_a_trial);
+        // A different-length value → Fail (the size-class miscompile signal).
+        let res = grade_run(&tr, 0, "", None, None, |_| {
+            Ok(Outcome::Value("#list(1 2 3)".into(), vec![]))
+        })
+        .unwrap();
+        assert!(matches!(res.grade, Grade::Fail(_)));
     }
 
     #[test]
