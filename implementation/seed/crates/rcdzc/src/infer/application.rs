@@ -2329,6 +2329,16 @@ pub(crate) fn check_application(
     // parameter the body uses as a Bool/Int — goes unreported and the emitter later produces invalid
     // wasm. Check the call here, at the call site, in two parts:
     if crate::eval::lambda_body(db, head).is_some() {
+        // CALL-SITE SPLAT (`DESIGN-variable-arity-functions.md` A.7): expand any `(.. t)` argument into its
+        // positional occurrences BEFORE the param↔arg zip below, using the SAME shared helper `apply_lambda`
+        // uses to β-reduce — so the type checker and the lowering agree exactly on the expanded argument
+        // list. Without this, a `(.. t)` tuple-reference splat into a fixed-params lambda (the "param-relay"
+        // case `(def (relay (: t (Tuple …))) (a3 (.. t)))`) reached step (1) as ONE tuple argument and
+        // unified `(Tuple …)` against the first fixed parameter — a spurious CDZ0301/CDZ0203, while
+        // `apply_lambda` correctly expanded it to per-slot projections. A pure no-op when no `(.. )` arg is
+        // present, so every non-splat call is untouched.
+        let splat_expanded = crate::eval::expand_call_splat_args(db, args);
+        let args: &[StructId] = splat_expanded.as_deref().unwrap_or(args);
         // (1) Unify each argument against its PARAMETER's declared type. An annotated parameter
         //     (`(: x Bool)`) has a definite type the argument must agree with; a bare parameter types
         //     `Any` (its body-inferred type isn't a signature here) and unifies with anything, so this

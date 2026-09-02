@@ -13523,3 +13523,27 @@
       (def (main) (let ((a #list(1 2)) (b #list(3 4 5))) (count (.. a) (.. b))))
       (export main)))
   (output (: 5 Int64)))
+
+; --- Call-site splat of a function's OWN tuple PARAMETER (the "param-relay" case, A.7) --------
+; DESIGN-variable-arity-functions.md A.7: a `(.. t)` splat whose operand is a tuple-typed PARAMETER of the
+; enclosing function, into a FIXED-arity (non-varargs) callee — `(def (relay (: t (Tuple …))) (a3 (.. t)))`.
+; The splat expands to per-slot projections `(a3 (. t 0) (. t 1) (. t 2))` at BOTH the type-check and the
+; lowering (one shared expansion), so the tuple's elements bind `a3`'s three fixed parameters positionally.
+; Distinct from the splat-of-a-LOCAL cases above: here the tuple arrives as an abstract parameter, and the
+; relay is itself called with a concrete tuple — the reduced body's substituted (annotated) tuple operand
+; splices the same way.
+(case
+  "a tuple splat relays a function's own tuple parameter into a fixed-arity call"
+  (doc
+    "`relay` takes a `(Tuple Int64 Int64 Int64)` parameter `t` and forwards it into the three-parameter
+           `a3` by a call-site splat `(a3 (.. t))` — the elements bind `a3`'s `x`, `y`, `z` positionally, so
+           `a3` sums them. `relay(#tuple(10 20 30))` = 10 + 20 + 30 = 60. Pins that a `(.. t)` over a tuple
+           PARAMETER splats into fixed parameters (not only a local or a literal), the param-relay dual of
+           the caller-spreads/callee-gathers case above.")
+  (input
+    (do
+      (def (a3 x y z) (+ (+ x y) z))
+      (def (relay (: t (Tuple Int64 Int64 Int64))) (a3 (.. t)))
+      (def (main) (relay #tuple(10 20 30)))
+      (export main)))
+  (output (: 60 Int64)))
