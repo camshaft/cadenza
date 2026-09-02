@@ -14952,7 +14952,7 @@
   (output (: 7 Int64))
   (call run (: 5 Int64))
   (output (: -3 Int64))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a runtime Result carrying a String error is matched"
