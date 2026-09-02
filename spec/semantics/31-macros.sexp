@@ -200,8 +200,10 @@
            CDZ0900 on its self-call. (mrf1 nested-macro follow-up.)")
   (input
     (do
-      (def (mkrec (quote a))
-        (quasiquote (do (def (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib (unquote a)))))
+      (def
+        (mkrec (quote a))
+        (quasiquote
+          (do (def (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib (unquote a)))))
       (def (wrap (quote x)) (quasiquote (+ 0 (mkrec (unquote x)))))
       (def (main) (wrap 10))
       (export main)))
@@ -287,3 +289,23 @@
            non-terminating macro is a DIAGNOSABLE error, not a hang — a robustness guarantee for the tool.")
   (input (do (def (m (quote e)) (quasiquote (m (unquote e)))) (def (main) (m 5)) (export main)))
   (error CDZ0999 (message "macro expansion did not terminate")))
+
+(case
+  "a macro wrapping the spliced body in a HANDLE keeps the caller's names in scope"
+  (doc
+    "A macro may WRAP the caller's expression in a handler and still see the caller's bindings — the
+           with-default / with-handler macro class (metaprogramming.md §Expansion Precedes And Feeds The
+           Core Guarantees). `(def (wrap (quote body)) (quasiquote (handle E 0 ((bail () s 99)) (unquote
+           body))))` wraps the spliced body in a `handle`; `(wrap (+ n 5))` where the caller has `(def n 3)`
+           expands to `(handle E 0 ((bail () s 99)) (+ n 3+…))` and the spliced `(+ n 5)` still resolves the
+           caller's `n` → `8 : Int64`. Pins that (a) a macro-produced handle's nullary arm's EMPTY parameter
+           list `()` reconstructs as an empty list (not a `(trap \"malformed AST\")`, which mis-read the arm
+           CDZ0201), and (b) the spliced body inside the handle keeps caller scope (no spurious unbound).")
+  (input
+    (do
+      (effect E (op bail (-> Int64)))
+      (def (wrap (quote body)) (quasiquote (handle E 0 ((bail () s 99)) (unquote body))))
+      (def (main) (do (def n 3) (wrap (+ n 5))))
+      (export main)))
+  (call main)
+  (output (: 8 Int64)))

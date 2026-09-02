@@ -488,10 +488,19 @@ fn reconstruct_inner(
         let name = ast.as_str(payload)?.to_string();
         return Some(push_atom(ast, Leaf::Name(name.into())));
     }
-    // `(Ast.List (list e…))` -> the compound form `(<recon e>…)`. An empty list is malformed (no operator).
+    // `(Ast.List (list e…))` -> the compound form `(<recon e>…)`. An empty list: for EVAL it is malformed
+    // (an empty compound has no operator to evaluate — `eval` on malformed AST traps). For a MACRO
+    // expansion (`see_through_lift`) an empty `()` is a VALID template element — e.g. a nullary handler
+    // arm's empty parameter list `(op () state body)`, or an empty binding list — so reconstruct it as the
+    // empty list `()`, not a trap (the malformed-trap wrongly turned a macro's empty `()` into `(trap …)`,
+    // mangling the arm → CDZ0201; breaker gap#5). A genuinely empty-compound EXPRESSION a macro emits is
+    // still caught downstream by resolve, without breaking a valid empty list.
     if let Some(payload) = ast_ctor_arg(ast, node, "List") {
         let elems = list_elems(ast, payload)?;
         if elems.is_empty() {
+            if see_through_lift {
+                return Some(push_list(ast, Vec::new()));
+            }
             return Some(trap_form(ast, "malformed AST"));
         }
         let mut children = Vec::with_capacity(elems.len());
