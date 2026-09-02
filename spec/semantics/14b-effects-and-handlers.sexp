@@ -3478,11 +3478,11 @@
            the `(+ _ 999999)` — bail's arm value 500 becomes the handle's value, +7 outside → 507. It must
            NOT flow 500 INTO the pending `+ 999999` (the adv-52 miscompile: 500+999999+7 = 1000506, a silent
            wrong value that appeared on all backends). Abandoning past a pending continuation at the OUTER
-           call site needs the br-out-of-handle non-local-exit convention (a later vertical); until then the
-           compiler DECLINES this shape cleanly (a Todo) rather than emit the wrong value — so this case pins
-           the DECLINE as the safe floor. A value-recorded case that declines grades Todo, so recording the
-           correct 507 guards that the fold, if it ever serves this shape, MUST yield 507, never 1000506.
-           (breaker adv-52; the mutual-recursion and pending-inside-the-callee neighbors already decline.)")
+           call site is folded by the non-local-exit TAGGED-RETURN CC: `reduce_handle` forces `go` into
+           tagged mode (`go#eff` returns `#tuple(tag value)`) and short-circuits the pending op on the abort
+           tag — `(let ((r (go#eff 2 0))) (if (= (. r 0) 1) (. r 1) (+ (. r 1) 999999)))` — so the arm value
+           500 becomes the handle value and `+ 7` → 507, never 1000506. (breaker adv-52; the mutual-recursion
+           neighbor still declines — its cross-def SCC tagged threading is a later increment.)")
   (input
     (do
       (effect Mx (op bail (-> Int64 Int64)))

@@ -369,6 +369,19 @@ pub fn reduce_handle(
     // Runs to a fixpoint (bounded) so a nested non-tail abort is lifted level by level; a shape it can't
     // lift is left as-is and the guard below declines it.
     let body = hoist_conditional_abort(db, body, &ctx);
+    // PENDING-IN-HANDLE-BODY (adv-52, non-local-exit CC). An abortive (tail-)recursive callee called at a
+    // NON-TAIL operand of a pure strict op in the handle body — `(+ (go 2) 999999)` — must ABANDON the pending
+    // op on abort. The recursive-callee guard below (`body_has_unsound_abortive_perform` → the cross-fn arm)
+    // would DECLINE this; instead fold it via the tagged CC + a handle-body tag short-circuit. v1: a
+    // SHAREABLE-CONSTANT seed only (a heap seed's `#seed`-wrap for the tagged tuple is a follow-up). Declines
+    // (falls through to the guard) for any shape `try_pending_in_handle_body` does not model — no miscompile.
+    if !ctx.abortive.is_empty()
+        && seed_is_shareable_constant(db, init)
+        && let Some(folded) = try_pending_in_handle_body(db, body, &ctx, init)
+    {
+        reparent_under_handle_site(db, folded, body);
+        return Some(folded);
+    }
     // ABORTIVE (E4) SOUNDNESS GUARD. Two sound abort shapes are realized below: (1) an UNCONDITIONAL abort
     // collapses the whole handle to the arm value; (2) an abort in the TAIL of a tail-position `if` branch
     // folds per-branch (the branch-local abort restores the cell so the other branch survives — see
@@ -2028,6 +2041,116 @@ pub(crate) fn call_reaches_conditional_abortive(
     // structural walk descends past — `subtree_has_conditional_abortive` never re-enters this fn, so a
     // recursive body is not a non-termination risk).
     subtree_has_conditional_abortive(db, body, ctx, false)
+}
+
+/// Whether `node`'s subtree contains an application whose head is an abortive RECURSIVE callee (the
+/// `call_reaches_conditional_abortive` shape). Used to reject a sibling operand of a pending-in-handle-body op
+/// that ALSO reaches such a callee (v1 folds only the single-recursive-operand shape). Walks `Apply` heads +
+/// args structurally; a non-`Apply` leaf (literal/param) is never a match.
+fn reaches_abortive_recursive_call(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        if is_perform(db, head, ctx).is_none() && call_reaches_conditional_abortive(db, head, ctx) {
+            return true;
+        }
+        if reaches_abortive_recursive_call(db, head, ctx) {
+            return true;
+        }
+        return args
+            .iter()
+            .any(|&a| reaches_abortive_recursive_call(db, a, ctx));
+    }
+    false
+}
+
+/// PENDING-IN-HANDLE-BODY fold (adv-52, non-local-exit CC). The handle body is a PURE strict op with exactly
+/// ONE operand that is a direct call to an abortive (tail-)recursive callee — `(+ (go 2) 999999)` where `go`
+/// bails at its base. An ordinary specialized return would let the pending op consume the abort value
+/// (500 + 999999, a silent miscompile); the abort must instead ABANDON the pending op so the handle's value is
+/// the abort/arm value (500 → +7 outside → 507). Force the callee into the tagged-abort CC (it returns
+/// `#tuple(tag value)`) and short-circuit the pending op on the abort tag:
+///   `(+ (go 2) K)` → `(let ((r (go#eff 2 seed))) (if (= (. r 0) 1) (. r 1) (+ (. r 1) K)))`.
+/// Returns `None` (decline → the safe floor stands) for any shape v1 does not model: a performing/impure or
+/// abortive-reaching sibling, >1 recursive operand, a non-pure op head, recursive-call args that perform, or a
+/// callee the tagged path refuses to specialize (e.g. a state-reading abort arm).
+fn try_pending_in_handle_body(
+    db: &mut Db,
+    body: StructId,
+    ctx: &HandlerCtx,
+    seed: StructId,
+) -> Option<StructId> {
+    let Resolved::Apply { head, args } = resolved_of(db, body) else {
+        return None;
+    };
+    // The op head must be PURE — a primitive/operator, not a perform, not itself an abortive recursive call.
+    if is_perform(db, head, ctx).is_some() || call_reaches_conditional_abortive(db, head, ctx) {
+        return None;
+    }
+    // Exactly ONE operand is a DIRECT call to an abortive recursive callee; every other operand pure + free of
+    // any abortive-recursive call.
+    let mut rec_pos: Option<usize> = None;
+    for (i, &a) in args.iter().enumerate() {
+        let is_abortive_rec = matches!(resolved_of(db, a), Resolved::Apply { head: ah, .. }
+            if is_perform(db, ah, ctx).is_none() && call_reaches_conditional_abortive(db, ah, ctx));
+        if is_abortive_rec {
+            if rec_pos.is_some() {
+                return None; // >1 abortive-recursive operand — v1 declines.
+            }
+            rec_pos = Some(i);
+        } else if subtree_performs(db, a, ctx) || reaches_abortive_recursive_call(db, a, ctx) {
+            return None; // an impure / abortive-reaching sibling — v1 declines.
+        }
+    }
+    let rpos = rec_pos?;
+    let Resolved::Apply {
+        head: rec_head,
+        args: rec_args,
+    } = resolved_of(db, args[rpos])
+    else {
+        return None;
+    };
+    // The recursive call's args must be pure (v1 — no perform threads through them).
+    if rec_args.iter().any(|&a| subtree_performs(db, a, ctx)) {
+        return None;
+    }
+    let callee_def = callee_def_index_of(db, rec_head)?;
+    // FORCE the callee into the tagged CC — it is TAIL-recursive, so the ordinary non-tail trigger won't fire.
+    // `specialize_recursive`'s tagged gate ORs in `force_tagged_abort` (relaxing ONLY the all-tail requirement).
+    db.force_tagged_abort.insert(callee_def);
+    let (call, spec) = build_spec_call(db, rec_head, &rec_args, &[seed], ctx)?;
+    // If the tagged spec did NOT materialize (the gate still rejected the shape — a mutual / caller-observed /
+    // state-reading-arm callee), decline cleanly rather than emit a raw-tuple call the pending op would misread.
+    if !db.tagged_abort_specs.contains(&spec) {
+        return None;
+    }
+    // Build `(let ((r call)) (if (= (. r 0) 1) (. r 1) (OP a0… (. r 1) …)))`.
+    let k = ctx.temp_ctr.get();
+    ctx.temp_ctr.set(k + 1);
+    let tname = format!("{spec}$pc{k}");
+    // The pending context: the op with the recursive operand replaced by the NORMAL result value `(. r 1)`.
+    let rhead = copy_pure(db, head);
+    let mut op_children = vec![rhead];
+    for (i, &a) in args.iter().enumerate() {
+        if i == rpos {
+            op_children.push(tuple_proj(db, &tname, 1));
+        } else {
+            op_children.push(copy_pure(db, a));
+        }
+    }
+    let pending = db.push_list(op_children);
+    // `(if (= (. r 0) 1) (. r 1) <pending>)` — on the abort tag return the abort/arm value bare (abandon the
+    // pending op); else apply the pending op to the normal result.
+    let tag_proj = tuple_proj(db, &tname, 0);
+    let one = tagged_int_lit(db, 1);
+    let eq_head = db.push_name("=");
+    let cond = db.push_list(vec![eq_head, tag_proj, one]);
+    let abort_val = tuple_proj(db, &tname, 1);
+    let if_head = db.push_name("if");
+    let if_node = db.push_list(vec![if_head, cond, abort_val, pending]);
+    let let_head = db.push_name("let");
+    let tn_atom = db.push_name(&tname);
+    let pair = db.push_list(vec![tn_atom, call]);
+    let bindings = db.push_list(vec![pair]);
+    Some(db.push_list(vec![let_head, bindings, if_node]))
 }
 
 /// finding #11-B (oamin4/oa3): whether `init` is a call `(helper arg…)` whose callee ABORTS INSIDE A MATCH

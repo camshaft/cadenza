@@ -4505,7 +4505,6 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // the 4511 guard below). When eligible, DON'T decline here — route to `thread_returning_tagged` at the
     // threading fork. Otherwise the safe-floor decline stands (no miscompile ever ships).
     let tagged_abort = !ctx.abortive.is_empty()
-        && !recursive_self_calls_all_tail(db, orig_body, callee_def)
         && ctx.slots.len() == 1
         && !callee_calls_other_recursive_def(db, orig_body, callee_def)
         && !abortive_perform_off_tail(db, orig_body, ctx, true)
@@ -4513,7 +4512,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         // path (decided at ~4650, AFTER this point). Exclude it here so tagged mode — computed earlier —
         // does NOT preempt the multi-value tuple threading that case relies on. (Same `orig_body`/`ctx.key`
         // the multivalue decision reads.)
-        && !db.force_multivalue.contains(&(orig_body, ctx.key.clone()));
+        && !db.force_multivalue.contains(&(orig_body, ctx.key.clone()))
+        // The TRIGGER: either the callee has a NON-tail self-call (the walk `(+ 1 (walk …))` self-CC, #7613)
+        // OR it is FORCED by a pending-in-handle-body caller (`db.force_tagged_abort`, adv-52) — a TAIL-recursive
+        // abortive callee `go` whose abort must abandon a pending op at the OUTER call site. `thread_returning_tagged`
+        // handles BOTH a non-tail and a direct-tail self-call, so forcing a tail-recursive callee is sound; we
+        // gate the force to the pending-in-handle-body detector so a tail-recursive callee that ALREADY folds via
+        // the ordinary tail path (the annotated-walk-and-bail case) is NOT rerouted (no regression).
+        && (!recursive_self_calls_all_tail(db, orig_body, callee_def)
+            || db.force_tagged_abort.contains(&callee_def));
     if !ctx.abortive.is_empty()
         && !recursive_self_calls_all_tail(db, orig_body, callee_def)
         && !tagged_abort
