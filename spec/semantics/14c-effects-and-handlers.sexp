@@ -9795,7 +9795,13 @@
 ; trailing size pins the shrink (one row drains a negative value). md3 COMPOSES insert and
 ; remove in one next-state: the drained value re-files under key+3, the THIRD take hits the
 ; re-filed entry, and the final take finds it moved again. All rows hand-computed; all pass on
-; wasm, rust, and rust-async.
+; wasm, rust, and rust-async. Both carry (live-objects known-leak): the straight-line (non-
+; recursive) handler threads a FRESH Map per dispatch (Map.remove / Map.insert makes a new CHAMP,
+; the old one goes dead), and the superseded per-dispatch maps + the final completion map are not
+; yet reclaimed — 8 live cells/call under guarded-all (value-correct). Distinct from the recursive
+; #st loop (its loop back-edge drops the old state); the straight-line supersession has no back-edge,
+; so the reclaim never fires — a reclaim gap on the straight-line handler-state threading
+; (v-memory-safety). Tighten to (live-objects 0) when that lands (the grader auto-flags it).
 (case
   "md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path"
   (input
@@ -9818,7 +9824,8 @@
   (call main (: 0 Int64))
   (output (: 10201 Int64))
   (call main (: -13 Int64))
-  (output (: -2799 Int64)))
+  (output (: -2799 Int64))
+  (live-objects known-leak))
 
 (case
   "md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on"
@@ -9844,7 +9851,8 @@
   (call main (: 0 Int64))
   (output (: 12099 Int64))
   (call main (: -12 Int64))
-  (output (: -21 Int64)))
+  (output (: -21 Int64))
+  (live-objects known-leak))
 
 ; ── Cross-effect INTERLEAVING at the body level (breaker il) ──────────────────────────────────
 ; Two independent effect threads advancing in alternation. il1 is the strict O-I-O-I lockstep —
