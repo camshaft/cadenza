@@ -17,8 +17,12 @@ import Interpreter.Wasm.Decoder.Wat
 
 namespace Oracle.Wasm
 
-/-- A generous default fuel budget (matches talos's runner default). -/
-def talosDefaultFuel : Nat := 1000000
+/-- The small-step fuel budget. Raised 1M → 8M after `06-numeric-model-1398` (a bounded 300k-iteration
+countdown ≈ 2.7M small-steps) hit the old 1M cap and surfaced a FALSE divergence: the loop terminates and
+matches Core, it just needs > 1M steps. 8M covers ~880k-iteration bounded loops with headroom so they run to
+completion → AGREE; a genuinely huge/infinite loop still exhausts it and `toOutcome` SKIPs (sound — out-of-fuel
+is inconclusive, never asserted as `.diverges`). Tune upward if the skip histogram shows more fuel-bound cases. -/
+def talosDefaultFuel : Nat := 8000000
 
 /-- Map a talos scalar `Wasm.Value` to the oracle's `WasmVal`. Integers take the SIGNED interpretation of
 the wasm bits; floats keep raw IEEE bits. A non-scalar (ref/v128) result → `none` (surfaced as `.err`). -/
