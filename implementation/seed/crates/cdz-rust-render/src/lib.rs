@@ -1742,6 +1742,39 @@ mod tests {
     }
 
     #[test]
+    fn ord_key_unwrap_compound_unwraps_float_positions_in_a_compound_key() {
+        // A Set-element / Map-KEY that is a Tuple/Record with a Float threads the `__CdzF{N}` ord-wrapper
+        // through each float POSITION (`ord_key_type`); the render must `.get()`-unwrap it, else the descent
+        // emits `__CdzF64 as f64` — a non-primitive cast, rustc E0605 (the #7718 bug). Pin the rebind shape.
+        // A float in a tuple key → position 0 `.get()`-unwrapped, the non-float position left as its raw path.
+        assert_eq!(
+            ord_key_unwrap_compound("(Tuple Float64 Int64)", "k"),
+            Some("(((k).0).get(), (k).1)".to_string())
+        );
+        // A record key: fields are in sorted-field order == the emitted tuple `.i` (like the Record render
+        // arm), so the Float field `.get()`-unwraps at its position.
+        assert_eq!(
+            ord_key_unwrap_compound("(Record (: f Float64) (: n Int64))", "k"),
+            Some("(((k).0).get(), (k).1)".to_string())
+        );
+        // A 1-tuple keeps the trailing comma (matches `ord_key_type`'s `(T,)` rust rep).
+        assert_eq!(
+            ord_key_unwrap_compound("(Tuple Float64)", "k"),
+            Some("(((k).0).get(),)".to_string())
+        );
+        // NESTED: a tuple-with-float inside a tuple key recurses — the deep float still `.get()`-unwraps.
+        let nested =
+            ord_key_unwrap_compound("(Tuple (Tuple Float64 Int64) Int64)", "k").expect("some");
+        assert!(nested.contains(".get()"), "deep float unwrapped: {nested}");
+        // NO float → None: no rebind needed, the raw binding renders directly (a non-float compound key).
+        assert_eq!(ord_key_unwrap_compound("(Tuple Int64 Int64)", "k"), None);
+        assert_eq!(ord_key_unwrap_compound("(Record (: a Int64))", "k"), None);
+        // A SCALAR float is NOT a compound → None here (handled by `ord_unwrap_render_path` at the binding).
+        assert_eq!(ord_key_unwrap_compound("Float64", "k"), None);
+        assert_eq!(ord_key_unwrap_compound("Int64", "k"), None);
+    }
+
+    #[test]
     fn rust_call_arg_marshals_native_m2_compound_forms() {
         // M3-nativized compound ARGS (`#head(…)`, head fused to its parens) marshal to the SAME Rust as the
         // legacy `(head …)` form — the fix for the nightly rust-gate-full leak (`#tuple(…)` reaching rustc as
