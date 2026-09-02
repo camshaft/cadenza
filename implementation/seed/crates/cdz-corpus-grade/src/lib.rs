@@ -288,11 +288,11 @@ pub struct TestRun {
     /// coded-error-only `(no-other-errors)`. Repeatable (AND — every phrase must be absent). Empty = no clause.
     pub no_diagnostic: Vec<String>,
     /// `true` iff the case authored a bare `(diagnostic-quality)` marker — the C1 opt-in: assert EVERY
-    /// emitted CODED diagnostic meets the golden-standard rubric (`DESIGN-diagnostic-quality-rubric.md`):
-    /// no forbidden phrase (§1 — future-promise/deferral + internal-implementation leak) AND, for a coded
-    /// fault whose code is in the per-code map (§2), the message carries that code's required tokens
-    /// (`expected`/`found`, `unbound`, `not covered`, …). Graded by [`grade_diagnostic_quality`] against the
-    /// captured structured faults — so it composes with the per-trial `(fix …)`/`(count …)` facets and the
+    /// emitted CODED diagnostic's message contains no globally-forbidden phrase (`DESIGN-diagnostic-quality-
+    /// rubric.md` §1 — future-promise/deferral + internal-implementation leak). (The §2 per-code
+    /// required-token check was withdrawn as unsound for umbrella codes — see [`grade_diagnostic_quality`];
+    /// message SHAPE lives in per-case `(message …)` pins.) Graded by [`grade_diagnostic_quality`] against
+    /// the captured structured faults — composes with the per-trial `(fix …)`/`(count …)` facets and the
     /// per-case `(no-other-errors)`/`(no-diagnostic …)`, on the SAME nix diagnostics bar. Opt-in per scope
     /// first (no flag-day red); tightened to default once the corpus is clean. `false` = no marker.
     pub diagnostic_quality: bool,
@@ -652,8 +652,8 @@ where
         }
     }
 
-    // CASE-LEVEL `(diagnostic-quality)` — the C1 general rubric lint: every emitted CODED diagnostic must
-    // meet `DESIGN-diagnostic-quality-rubric.md` (§1 no forbidden phrase, §2 per-code required tokens).
+    // CASE-LEVEL `(diagnostic-quality)` — the C1 general rubric lint: every emitted CODED diagnostic's
+    // message must contain no forbidden phrase (`DESIGN-diagnostic-quality-rubric.md` §1; §2 withdrawn).
     // Only when the diagnostics wire was captured (`Some(faults)`) — like `(no-other-errors)` + the
     // `(fix …)`/`(count …)` facets, it grades on the nix diagnostics bar, not the sidecar-blind in-process gate.
     if test_run.diagnostic_quality
@@ -1239,41 +1239,19 @@ fn contains_word_ci(hay: &str, needle: &str) -> bool {
     false
 }
 
-/// §2 of the rubric — for a coded fault, the token(s) a golden message MUST contain (plain case-insensitive
-/// `contains`, since it is a presence check). `msg_lc` is the message pre-lowercased. Returns `Some(<what is
-/// required>)` when the message is MISSING the code's required tokens, else `None` (satisfied, or the code
-/// carries no §2 constraint). The advisory `did you mean` (CDZ0101) is intentionally NOT enforced here — it
-/// is conditional on a near-name existing, which the message alone cannot decide (the corpus keeps its
-/// per-case `(fix …)`/`(message "did you mean")` pins for those); the lint asserts only the unconditional token.
-fn c1_missing_required_tokens(code: &str, msg_lc: &str) -> Option<&'static str> {
-    let has = |t: &str| msg_lc.contains(t);
-    let expected_found = has("expected") && has("found");
-    match code {
-        "CDZ0203" => (!(expected_found || (has("should be") && has("but"))))
-            .then_some("`expected` AND `found` (or `should be` AND `but`)"),
-        "CDZ0301" => (!(expected_found || has("different")))
-            .then_some("`expected` AND `found` (or `different`)"),
-        "CDZ0101" => (!(has("unbound") || has("not found"))).then_some("`unbound` or `not found`"),
-        "CDZ0210" => {
-            (!(has("not covered") || has("exhaustive"))).then_some("`not covered` or `exhaustive`")
-        }
-        "CDZ0213" | "CDZ0308" => (!(has("unreachable") || has("never reached")))
-            .then_some("`unreachable` or `never reached`"),
-        "CDZ0306" => (!has("unused")).then_some("`unused`"),
-        "CDZ0307" => {
-            (!(has("never used") || has("discarded"))).then_some("`never used` or `discarded`")
-        }
-        "CDZ0302" => (!has("range")).then_some("`range`"),
-        _ => None, // code not in the §2 map — no required-token constraint (widened incrementally)
-    }
-}
-
 /// The C1 GENERAL diagnostic-quality lint (`(diagnostic-quality)` opt-in) — assert every emitted CODED
-/// diagnostic meets `DESIGN-diagnostic-quality-rubric.md`: (§1) its message contains no globally-forbidden
-/// phrase, AND (§2) if its code is in the required-token map, the message carries those tokens. Applies to
-/// CODED faults only (a codeless decline's ICE-flavored leak is caught separately by `is_ice_signature`);
-/// both severities (some §2 codes are warnings — unused/discarded/unreachable). Returns the FIRST violation
-/// as a Fail reason, else `None` (all clean). Order-stable: faults are scanned in wire order, §1 before §2.
+/// diagnostic's message contains NO globally-forbidden phrase (`DESIGN-diagnostic-quality-rubric.md` §1:
+/// future-promise/deferral + internal-implementation leak).
+///
+/// The §2 per-code required-token check was WITHDRAWN (#7856) as unsound: the `CDZ####` codes are umbrella
+/// BANDS, not uniform message templates — e.g. CDZ0203 spans arity ("Box takes 1 type argument"),
+/// value-vs-type, "not fully determined", guard-must-be-Bool — none of which say "expected"/"found", so a
+/// per-code token requirement mass-false-reds golden messages. Message SHAPE (expected/found, did-you-mean)
+/// belongs in per-case `(message …)`/`(fix …)` pins, scoped to the situation, which the corpus already
+/// supports. C1's general, universally-sound assertion is the forbidden-phrase check ALONE.
+///
+/// Applies to CODED faults only (a codeless decline's ICE-flavored leak is caught separately by
+/// `is_ice_signature`); both severities. Returns the FIRST violation as a Fail reason, else `None`.
 pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
     for f in faults {
         let Some(code) = f.code.as_deref() else {
@@ -1287,12 +1265,6 @@ pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
                     f.message
                 ));
             }
-        }
-        if let Some(need) = c1_missing_required_tokens(code, &f.message.to_lowercase()) {
-            return Some(format!(
-                "(diagnostic-quality): {code} message must contain {need} (rubric §2) — {:?}",
-                f.message
-            ));
         }
     }
     None
@@ -2291,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn c1_lint_flags_forbidden_phrase_and_missing_required_tokens() {
+    fn c1_lint_flags_forbidden_phrase_only_with_carve_outs() {
         // §1 forbidden phrase on a coded diagnostic → flagged.
         assert!(
             grade_diagnostic_quality(&[coded_fault(
@@ -2305,16 +2277,17 @@ mod tests {
             grade_diagnostic_quality(&[coded_fault("CDZ0201", "internal error: unwrap on None")])
                 .is_some()
         );
-        // §2 CDZ0203 missing expected/found → flagged; the golden form passes.
+        // §2 WITHDRAWN (#7856): a coded message with NO forbidden phrase passes regardless of shape — the
+        // per-code required-token check is gone (CDZ codes are umbrella bands, not templates). A CDZ0203
+        // message that names arity/value-vs-type/etc. WITHOUT "expected"/"found" must NOT be flagged now.
         assert!(
-            grade_diagnostic_quality(&[coded_fault("CDZ0203", "the types are incompatible")])
-                .is_some()
-        );
-        assert!(
-            grade_diagnostic_quality(&[coded_fault("CDZ0203", "expected Int64 but found Bool")])
+            grade_diagnostic_quality(&[coded_fault("CDZ0203", "`Box` takes 1 type argument")])
                 .is_none()
         );
-        // §2 CDZ0101 golden alt token; §2 unmapped code has no token constraint.
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0203", "the types are incompatible")])
+                .is_none()
+        );
         assert!(grade_diagnostic_quality(&[coded_fault("CDZ0101", "unbound name `x`")]).is_none());
         assert!(
             grade_diagnostic_quality(&[coded_fault("CDZ9999", "a clean message with no tokens")])
