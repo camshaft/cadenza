@@ -4920,6 +4920,12 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::ConstFloat(_)
         | Core::Unit
         | Core::Arith { .. }
+        // `BigInt.of` (Int64 → BigInt) intrinsically PRODUCES a fresh BigInt — it can never yield a
+        // pre-existing nominal — so a newtype over BigInt built from it (`(Mk (BigInt.of k))` :
+        // `(type W (Mk BigInt))`) is a CONSTRUCTION site here, exactly like a `ConstInt`/`Arith` inner
+        // producer. Without this the erased newtype value's Core (the `BigIntOfI64` node) fell to the
+        // ambiguous `_ => Decline` → CDZ0900 on a runtime-built BigInt sum-payload match scrutinee.
+        | Core::BigIntOfI64 { .. }
         | Core::Compare { .. }
         | Core::StrCmp { .. }
         | Core::FloatCompare { .. }
