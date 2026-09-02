@@ -234,5 +234,7 @@ pub fn grade(
             .with_context(|| format!("writing verdict to {}", path.display()))?;
         return Ok(ExitCode::SUCCESS);
     }
-    Ok(exec_exit(&result, &test_run.description, baseline))
+    // WASM: the `.gate-baseline` is the FULL-corpus harvest (no legitimately-absent cases), so #3984 stays
+    // strict — an absent-or-todo case that fails reds. Not membership-only.
+    Ok(exec_exit(&result, &test_run.description, baseline, false))
 }
