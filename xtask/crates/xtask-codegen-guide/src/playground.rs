@@ -218,7 +218,30 @@ pub fn read_playground_dir(dir: &std::path::Path) -> Result<Vec<PlaygroundExampl
             .map_err(|e| format!("parse {}: {e:?}", f.display()))?;
         let ex =
             locate_example(&a).ok_or_else(|| format!("{}: no (example …) form", f.display()))?;
-        out.push(read_one_example(&a, ex, Some((&text, &spans)))?);
+        let example = read_one_example(&a, ex, Some((&text, &spans)))?;
+        // GATE the verbatim-preserve invariant (#7634) on the REAL corpus, at the codegen PATH — a loud
+        // regression guard that `--playground-registry --check` alone cannot give: --check only proves
+        // committed==regenerated (both by CURRENT code), so a future "simplification" of expected_value back
+        // to a re-render (`print_from`/`print_pretty_from`) would flip a SUGARED pin (units `Qty.of` →
+        // structural `(. Qty of)`) and STILL pass --check (both sides re-rendered), silently reintroducing
+        // the mismatch-with-runtime bug the verbatim slice fixed. The authored value is emitted verbatim, so
+        // it MUST appear byte-for-byte in the source; if it doesn't, expected_value stopped slicing the span.
+        // (Structural-authored pins re-render to themselves, so this only fires on the harmful sugared-revert
+        // case — exactly the Qty bug class. Baked in the reader, not a deletable unit test.) Assumes the common
+        // SINGLE-value `(expected <form>)` (every current example): a multi-child expected joins children with
+        // one space, which need not be a contiguous source substring — if such an example is ever added and
+        // this false-fires, refine to check each child's slice rather than the joined string.
+        if let Some(exp) = &example.expected
+            && !text.contains(exp.as_str())
+        {
+            return Err(format!(
+                "{}: the (expected …) pin {exp:?} is NOT a verbatim slice of the authored source — \
+                 expected_value must preserve the authored surface (span-slice), not re-render it \
+                 (see verbatim-preserve #7634; a re-render silently reverts sugared pins like Qty.of → (. Qty of))",
+                f.display()
+            ));
+        }
+        out.push(example);
     }
     Ok(out)
 }
