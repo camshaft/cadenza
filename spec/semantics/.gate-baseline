@@ -5079,7 +5079,7 @@ pass	a runtime-match arm literal reaching a narrow parameter is rejected at chec
 todo	a runtime-operand try as a list element declines pending brick 3b
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
-fail	a runtime-produced -inf crosses inside a compound alongside nan and inf
+pass	a runtime-produced -inf crosses inside a compound alongside nan and inf
 pass	a runtime-produced String argument crosses to a peer as its handle
 pass	a runtime-reached shift with an out-of-range CONSTANT count and a TRAPPING lhs surfaces the lhs trap first (eval-order)
 pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)
@@ -8849,7 +8849,7 @@ pass	no over-conservatism: a trap-free masked operand still folds the tautology
 pass	no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)
 pass	no2 TWO outer performs in one inner-arm resume value fold with ordered state advance
 pass	no3 the inner state read both AROUND and INSIDE the outer perform folds
-fail	non-finite floats cross inside a compound as their own leaves, not collapsing the compound
+pass	non-finite floats cross inside a compound as their own leaves, not collapsing the compound
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	not over a narrow Int32 comparison folds to the complement
 pass	not over an unsigned comparison uses the unsigned op
