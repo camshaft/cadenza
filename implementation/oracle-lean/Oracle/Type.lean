@@ -1142,10 +1142,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
           (match Eval.qualHead? m children with
            | some (q, op) =>
              if q == "List".toUTF8 then
-               -- T1.30 — total List OPS `(List.<op> …)`: `len (xs:List α) → Int64`; `at (xs:List α)(i:Int) → α`
-               -- (out-of-range traps at RUNTIME — type is `α`); `push (xs:List α)(x:α) → List α`. Each unifies
-               -- the list arg with `List β` (fresh β) — a non-list arg is `IllTyped CDZ0203`; an index/element
-               -- clash is `CDZ0203`. Any other List op → `Unsupported` (declined, sound).
+               -- T1.30/31 — total List OPS `(List.<op> …)`: `len (xs:List α) → Int64`; `at (xs:List α)(i:Int) → α`
+               -- (out-of-range traps at RUNTIME — type is `α`); `push (xs:List α)(x:α) → List α`;
+               -- `prepend (xs:List α)(x:α) → List α` (receiver-first, front-growth twin of push);
+               -- `concat (xs:List α)(ys:List α) → List α`; `update (xs:List α)(i:Int)(x:α) → List α`.
+               -- Each unifies the list arg with `List β` (fresh β) — a non-list arg is `IllTyped CDZ0203`; an
+               -- index/element clash is `CDZ0203`. Any other List op → `Unsupported` (declined, sound).
                (match children[1]? with
                 | some xsId =>
                   (match inferE m env st xsId with
@@ -1172,6 +1174,43 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                                               | .error e => .error e)
                                           | .error e => .error e)
                            | none => .error (.unsupported "type oracle: malformed List.push"))
+                        else if op == "prepend".toUTF8 && children.size == 3 then
+                          -- `prepend` types exactly like `push` (list, elem) → List of the elem type.
+                          (match children[2]? with
+                           | some xId => (match inferE m env st3 xId with
+                                          | .ok (τx, st4) => (match unifyInfer τx β st4 with
+                                                              | .ok st5 => .ok (.listTy (applySubst st5.subst β), st5)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed List.prepend"))
+                        else if op == "concat".toUTF8 && children.size == 3 then
+                          -- `concat` (xs ys): both lists share the element type → unify ys with `List β`.
+                          (match children[2]? with
+                           | some ysId => (match inferE m env st3 ysId with
+                                           | .ok (τys, st4) => (match unifyInfer τys (.listTy β) st4 with
+                                                                | .ok st5 => .ok (.listTy (applySubst st5.subst β), st5)
+                                                                | .error e => .error e)
+                                           | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed List.concat"))
+                        else if op == "update".toUTF8 && children.size == 4 then
+                          -- `update` (xs i x): index numeric, replacement of the element type → List β.
+                          -- (A constant OOB index is a provable trap rcdzc REJECTS via CDZ0304 — a value-level
+                          -- reject, out of a TYPE oracle's scope; the conformance gate is the authority. If a
+                          -- corpus case surfaces the false-accept, guard on a constant index.)
+                          (match children[2]?, children[3]? with
+                           | some iId, some xId =>
+                             (match inferE m env st3 iId with
+                              | .ok (τi, st4) =>
+                                (match unifyInfer τi (.numVar st4.next) { st4 with next := st4.next + 1 } with
+                                 | .ok st5 =>
+                                   (match inferE m env st5 xId with
+                                    | .ok (τx, st6) => (match unifyInfer τx β st6 with
+                                                        | .ok st7 => .ok (.listTy (applySubst st7.subst β), st7)
+                                                        | .error e => .error e)
+                                    | .error e => .error e)
+                                 | .error e => .error e)
+                              | .error e => .error e)
+                           | _, _ => .error (.unsupported "type oracle: malformed List.update"))
                         else .error (.unsupported "type oracle: unmodeled List op"))
                    | .error e => .error e)
                 | none => .error (.unsupported "type oracle: malformed List op (no list arg)"))
@@ -1886,6 +1925,17 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12, 11, 9], .atom 10, .atom 2, .list #[14, 15], .atom 0,
                            .list #[17, 13, 16]],
                 root := 18 } == .wellTyped (.int 64 true))
+-- T1.31 (List op): `(do (def (main) (List.concat (list 1) (list 2))) (export main))` → WellTyped (List Int64).
+-- Both list args unify to `List β`; the numeric elements default to Int64 → `.listTy Int64`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "List".toUTF8, .name "concat".toUTF8, .name "list".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .list #[4, 5],
+                           .atom 6, .atom 8, .list #[7, 8], .list #[3, 6, 9], .atom 2, .list #[11],
+                           .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.listTy (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
