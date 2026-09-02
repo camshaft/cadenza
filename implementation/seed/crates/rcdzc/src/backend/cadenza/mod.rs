@@ -2095,13 +2095,24 @@ fn emit_expr_viewed(
                             ));
                         }
                     }
-                    _ => {
-                        return Err(Reject::unsupported(
-                            "the Cadenza backend does not support a payload projection over a \
-                             non-tuple/record value (e.g. a newtype ctor sub-pattern nested under a \
-                             list/tuple pattern over Map.to-list output)"
-                                .to_string(),
-                        ));
+                    // The projection walk landed on a value whose type is NOT positionally projectable — a
+                    // `Ty::List`, a MULTI-variant `Ty::Sum`, a non-emitted / non-single-variant nominal, or a
+                    // scalar. Reaching here means a nested match sub-pattern read into such a value (e.g. a
+                    // variant ctor sub-pattern on a list element, `#list((Ctor x) ..)`, whose element is a
+                    // multi-variant sum — the `Payload` step needs a real nested match with variant recovery, a
+                    // later slice). Name the offending type CLASS so a decline is attributable (breaker/corpus).
+                    other => {
+                        let class = match other {
+                            Ty::List(_) => "a list",
+                            Ty::Sum { .. } => "a multi-variant / non-emitted sum",
+                            Ty::Nominal { .. } => "a non-single-variant / non-emitted nominal",
+                            _ => "a scalar / non-projectable value",
+                        };
+                        return Err(Reject::unsupported(format!(
+                            "the Cadenza backend does not support a nested match sub-pattern that projects into \
+                             {class} (a positionally non-projectable type) — e.g. a variant ctor sub-pattern on \
+                             a list/sum element needs a nested match with variant recovery (a later slice)"
+                        )));
                     }
                 }
             }
