@@ -4279,6 +4279,10 @@ pub fn closure_bytes_resource_core_module_borrow(
         inner.push(op::CALL);
         uleb128(imp("bytes-len"), &mut inner);
         set(nlen, &mut inner);
+        // GROW to cover [OUT, OUT+n) before the copy — a >64-KiB Bytes closure result would otherwise
+        // write OOB past the single initial page (the #7793 page-boundary class, on the closure escape
+        // copy-out). No-op when memory already suffices.
+        emit_grow_to_cover_out(nlen, OUT, &mut inner);
         // copy loop: i=0; block{ loop{ if i>=n br 1; store8(OUT+i, bytes-get(bh,i)); i++; br 0 } }
         ci32(0, &mut inner);
         set(iv, &mut inner);
@@ -4989,6 +4993,10 @@ pub fn closure_value_encode_resource_core_module_borrow(
         inner.push(op::CALL);
         uleb128(imp("bytes-len"), &mut inner);
         set(nlen, &mut inner);
+        // GROW to cover [OUT, OUT+n) before the copy — a >64-KiB value-form document would otherwise write
+        // OOB past the single initial page (the #7793 page-boundary class, on the closure value-encode
+        // escape copy-out). No-op when memory already suffices.
+        emit_grow_to_cover_out(nlen, OUT, &mut inner);
         // copy loop: for i in 0..n { store8(OUT+i, bytes-get(doc, i)) }.
         ci32(0, &mut inner);
         set(iv, &mut inner);
@@ -5685,6 +5693,10 @@ pub fn multi_closure_value_encode_resource_core_module(
         inner.push(op::CALL);
         uleb128(imp("bytes-len"), &mut inner);
         set(nlen, &mut inner);
+        // GROW to cover [OUT, OUT+n) before the copy — a >64-KiB value-form document would otherwise write
+        // OOB past the single initial page (the #7793 page-boundary class, on the closure value-encode
+        // escape copy-out). No-op when memory already suffices.
+        emit_grow_to_cover_out(nlen, OUT, &mut inner);
         // copy loop: for i in 0..n { store8(OUT+i, bytes-get(doc, i)) }.
         ci32(0, &mut inner);
         set(iv, &mut inner);
@@ -8653,6 +8665,20 @@ fn encode_bytes_walk_body(
     get(rep, &mut body);
     call_op("bytes-len", &mut body);
     set(n, &mut body);
+    // GROW linear memory to cover the whole value-form write BEFORE writing: memory is `(memory 1)` = one
+    // 64-KiB page, but this walker writes `prefix + LEB128(n) + n payload bytes + suffix` starting at OUT,
+    // so a >64-KiB payload (e.g. a String result larger than a page) writes OOB past 65536 — the same
+    // page-boundary trap class as #7793 (rcw4), on the value-ESCAPE copy-out (breaker sibling repro: a
+    // >64-KiB String/Bytes result faults `@0x10000 in a size-0x10000 memory`). Grow to cover the final
+    // write cursor: an upper bound is OUT + prefix.len() + 5 (max LEB128 for a u32 length) + suffix.len()
+    // + n. `emit_grow_to_cover_out(n, out_offset)` grows ceil((out_offset + n) / 65536) pages iff short
+    // (memory.grow never traps, a no-op when memory already suffices); over-approximating the fixed
+    // overhead only ever grows one extra page, never too little.
+    emit_grow_to_cover_out(
+        n,
+        OUT + form.prefix.len() as i64 + 5 + form.suffix.len() as i64,
+        &mut body,
+    );
     // w = OUT.
     const_i32(OUT, &mut body);
     set(w, &mut body);
@@ -8823,6 +8849,10 @@ fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8>
     get(rep, &mut body);
     call_op("bytes-len", &mut body);
     set(n, &mut body);
+    // GROW to cover [OUT, OUT+n) before the copy — a >64-KiB Bytes returned via the `to-bytes` member
+    // would otherwise write OOB past the single initial page (the #7793 page-boundary class, on the
+    // to-bytes escape copy-out). No-op when memory already suffices.
+    emit_grow_to_cover_out(n, OUT, &mut body);
     // COPY LOOP: i = 0; block { loop { if i>=n br 1; store8(OUT+i, bytes-get(rep,i)); i++; br 0 } }.
     const_i32(0, &mut body);
     set(i, &mut body);
