@@ -103,4 +103,35 @@ All in `backend/cadenza/mod.rs`:
   element sub-patterns; M4a's whole-slot reconstruction is the adjacent precedent).
 - The #5472 fence in `emit_match_list` (~4659) — the round-trip-break guard the nested path must preserve.
 
-No code change — design only.
+## 7. Investigation notes (2026-09-02) — the list-fold decline is a KEYING MISMATCH, not a missing pattern
+
+Both frontier decline sites are now instrumented with `tracing::debug!` (target `rcdzc::backend::cadenza`):
+run `RUST_LOG=rcdzc::backend::cadenza=debug cdz compile … -t cadenza` to see the exact declining read
+path / probe. (The `CDZ_LOG` env var scopes it inside the `cargo xtask` pipeline.)
+
+**The list-fold case's exact decline** (from the trace): a `Core::SumPayload` read at
+`path=[Elem(0), Payload]`, `cur_ty=Sum{…}` — i.e. reading a LIST element's SUM PAYLOAD (`a` in
+`#list((Ast.Int a))`). The nested-read walk descends `Elem(0)` (into the list element, a sum) then hits
+`Payload` (the element's variant payload), which it can't project.
+
+**Root cause — NOT simply "emit_match_list lacks nested element patterns":** the element-variant test
+`(Ast.Int a)` is a nested `Core::MatchSum` on the element, but the arm body reads `a` keyed from the ROOT
+LIST scrutinee (`(list_node, [Elem(0), Payload])`), whereas the nested `MatchSum` registers its payload
+binder keyed ELEMENT-relative (`(element_read_node, [Payload])`). The two keys DIFFER, so the read misses
+`env.payloads`. The longest-registered-prefix resolution (~mod.rs:2310) DOES find the element binder at the
+`[Elem(0)]` prefix (registered by `emit_match_list`), but the remaining suffix `[Payload]` is a sum-payload
+step the projection walk cannot cross (site A). So the fix is to reconcile the keying — either register the
+element's nested-`MatchSum` payload binder under the ROOT-relative path (`[Elem(0), Payload]`), or teach the
+suffix walk to cross a `[Payload]` step by emitting the element's variant sub-pattern in the list pattern
+(`(list (Ast.Int a))`) so `a` binds there. The latter is the "nested element sub-pattern" the design's §2
+notes `emit_match_list` declines.
+
+**Boundary refinement:** a nested-variant element match over a list that FOLDS to a known-length constant
+(`#list((Some v))` on a literal list — probes m3/m4 in `/tmp/lf`) COMPILES today (the fold resolves it
+statically). Only a RUNTIME (non-folding) list — here `xs2`, a `fold-list` Call result threaded through
+mutual recursion — hits the keying mismatch. And the isolated defs (`fold-list` alone, `fold`-inner alone)
+compile — the shape survives only when neither def inlines (full mutual recursion), so a minimal witness is
+elusive; work from the full lowered decision tree.
+
+Code change here = the two `tracing::debug!` instrumentation points at the frontier decline sites (§3), so
+the exact declining path/probe is observable on demand. The re-emit fix itself remains a later slice.

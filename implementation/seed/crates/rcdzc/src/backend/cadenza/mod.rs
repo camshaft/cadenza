@@ -2324,6 +2324,14 @@ fn emit_expr_viewed(
             };
             for step in path.iter().skip(skip) {
                 let crate::core::PathStep::Elem(i) = *step else {
+                    tracing::debug!(
+                        target: "rcdzc::backend::cadenza",
+                        ?path,
+                        ?step,
+                        scrutinee = scrutinee.0,
+                        cur_ty = ?cur_ty,
+                        "cadenza: declining a nested SumPayload read at a non-Elem step"
+                    );
                     return Err(Reject::unsupported(
                         "the Cadenza backend does not support lowering a nested match sub-pattern with a \
                          non-tuple/record (sum / list-rest) step"
@@ -3827,6 +3835,12 @@ fn emit_switch_tree(
                 _ => {
                     // Reconstructing a Bytes / ListLen / MapHasKeys slot probe is a future slice; that
                     // not-yet intent stays in this comment, NOT the user-facing message (operator seq-280).
+                    tracing::debug!(
+                        target: "rcdzc::backend::cadenza",
+                        ?path,
+                        ?probe,
+                        "cadenza: declining a non-scalar (Bytes/ListLen/MapHasKeys) literal-at-slot probe"
+                    );
                     return Err(Reject::unsupported(
                         "the Cadenza backend reconstructs a literal-at-slot test only for an Int / Bool / \
                          Str / Char probe (a Bytes / ListLen / MapHasKeys slot probe is not supported)"
