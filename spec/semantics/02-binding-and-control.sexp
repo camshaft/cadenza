@@ -213,6 +213,31 @@
   (output (: 5 Int64)))
 
 (case
+  "a match-arm binder CAPTURED BY A LAMBDA survives inlining the helper that owns it"
+  (doc
+    "The lambda-capture extension of the case above (v-cdz-smith type-oracle FIRST false-reject, an
+           rcdzc scope bug — well-typed per the Lean oracle). A match-arm payload binder `i2` is read
+           from INSIDE a lambda `(fn (i4) i2)` in a HELPER def `f0`; `(f0 2)` = 2 (the lambda ignores its
+           arg and returns the captured `i2` = the Some-payload). The SAME capture in `main`, or for a
+           let-binder / a helper param, compiles — it is SPECIFICALLY a match-arm payload binder captured
+           by a lambda inside an INLINED helper that breaks: β-reduction copies f0's body into the call
+           site, and the copied lambda-body reference to the match-arm SumPayload binder resolves UNBOUND
+           (spurious CDZ0101) — the copy orphans it. Idealistically it compiles and computes 2; locked in
+           as the spec target (TODO->pass when the β-copy preserves the lambda-captured match-arm binder's
+           resolution, rcdzc scope/beta_reduce lane). Uncalled (`export f0`) it already compiles; only the
+           inlined call site declines.")
+  (input
+    (do
+      (def
+        (f0 (: i1 Int64))
+        (match (Some i1)
+          ((Some i2) ((fn ((: i4 Int64)) i2) i2))
+          ((None) 0)))
+      (def (main) (f0 2))
+      (export main)))
+  (output (: 2 Int64)))
+
+(case
   "sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component"
   (doc
     "The width-partition of the let-binder scratch claim (rcdzc wasm c443bd48d). Sibling match arms

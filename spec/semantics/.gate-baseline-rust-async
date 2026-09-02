@@ -2821,6 +2821,7 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match with a float arm and a later int-literal arm retypes the int-literal arm up
 pass	a match with an int-literal arm and a later float arm retypes the int-literal arm up
+todo	a match-arm binder CAPTURED BY A LAMBDA survives inlining the helper that owns it
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
