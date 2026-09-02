@@ -1341,6 +1341,53 @@ fn a_do_wrapped_bare_name_module_body_is_rejected_at_the_module_form() {
 }
 
 #[test]
+fn a_non_declaration_member_of_a_bare_name_module_is_rejected_at_the_member() {
+    // The GENERAL form of the `(do …)`-wrapper case: a `(module NAME …)` member position is STRICTLY a
+    // declaration (there is no expression-statement reading of a module member, unlike a top-level do-
+    // block), so ANY non-declaration member — an application, a `let`/`if` expression, a bare literal —
+    // makes the module fail to register and used to surface only as a misleading downstream CDZ0101
+    // unbound-name. Each now rejects CDZ0201 AT the member, naming the declaration set.
+    let wrap = |member: &str| {
+        format!(
+            "(do (def (main) (do (module m {member} (def (answer) 42)) (m.answer unit))) (export main))"
+        )
+    };
+    for member in ["(foo 1)", "(let x 1)", "42", "(if true 1 2)"] {
+        let d = reject_full(&wrap(member)).unwrap_or_else(|| {
+            panic!("a non-declaration member `{member}` is rejected, not silently misbound")
+        });
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0201"),
+            "member `{member}`: rejected at the member as malformed (the primary, before the downstream \
+             unbound-name): {:?} / {}",
+            d.code,
+            d.message
+        );
+        assert!(
+            d.message.contains("member must be a declaration"),
+            "member `{member}`: names the module-member declaration rule: {}",
+            d.message
+        );
+    }
+    // A near-miss of a declaration keyword carries a did-you-mean hint (closed-keyword pool).
+    let deff = reject_full(&wrap("(deff (a) 1)")).expect("a `deff` member is rejected");
+    assert!(
+        deff.message.contains("member must be a declaration")
+            && deff.message.contains("did you mean `def`?"),
+        "a near-miss declaration keyword suggests the intended one: {}",
+        deff.message
+    );
+    // CONTROL: a valid multi-declaration body (def + def) registers and compiles clean.
+    let ok = "(do (def (main) (do (module m (def (answer) 42) (def three 3)) (+ (m.answer unit) m.three))) (export main))";
+    assert_eq!(
+        reject_code(ok),
+        None,
+        "a body of only declarations is the correct form and is not flagged"
+    );
+}
+
+#[test]
 fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
     // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
     // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param

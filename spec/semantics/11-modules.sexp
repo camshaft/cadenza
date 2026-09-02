@@ -648,6 +648,31 @@
       (export main)))
   (error CDZ0201 (message "body is a sequence of definitions")))
 
+; The GENERAL form of the do-wrapper case above: a `(module NAME …)` member position is STRICTLY a
+; declaration (`def`/`type`/`effect`/`op`/`module`/`doc`/`export`, or a `pragma` directive) — unlike a
+; top-level `(do …)` block there is no expression-statement reading of a module member. So ANY
+; non-declaration member (an application `(foo …)`, a `let`/`if`/`match`/`fn` expression, a bare
+; literal) makes the module fail to register and used to surface only as a misleading bare CDZ0101
+; unbound-name at the use site. It is now rejected CDZ0201 AT the member, naming the declaration set.
+(case
+  "a non-declaration member of a bare-name module is rejected at the member"
+  (doc
+    "`(module m (foo 1) (def (answer) 42))` puts an APPLICATION `(foo 1)` where a declaration must be.
+           A `(module NAME …)` member is a declaration (def/type/effect/op/module/doc/export or a pragma),
+           never an expression — so a non-declaration member is a category error: the module registers no
+           exports and `m` binds nothing. It used to fail SILENTLY at the module form and surface only as
+           `unbound name m` at the `(m.answer unit)` use site; it now rejects CDZ0201 AT the `(foo 1)`
+           member, naming the declaration set (the general form of the do-wrapper case above). The
+           downstream `unbound name m` still reports as the symptom; the CDZ0201 root sorts first.")
+  (input
+    (do
+      (def (main)
+        (do
+          (module m (foo 1) (def (answer) 42))
+          (m.answer unit)))
+      (export main)))
+  (error CDZ0201 (message "member must be a declaration")))
+
 (case
   "two distinct-named modules in one scope coexist"
   (doc
