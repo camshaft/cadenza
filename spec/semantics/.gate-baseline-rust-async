@@ -8782,7 +8782,7 @@ todo	a String argument handle passed to a peer stays live for a later local read
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a compound built from two distinct peers escapes the entrypoint as a resource
 todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
-todo	a conditional abort hoisted alongside a second abortive sibling declines cleanly
+pass	a conditional abort hoisted alongside a second abortive sibling declines cleanly
 todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a consumer bound to two distinct peer interfaces combines their results
@@ -8804,7 +8804,7 @@ todo	a mixed String and scalar argument cross to a peer in one op, each in its o
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
-todo	a non-tail cross-function conditional abort declines cleanly
+pass	a non-tail cross-function conditional abort declines cleanly
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)
