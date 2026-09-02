@@ -690,3 +690,22 @@
       (export main)))
   (call main)
   (output (: 7 Int64)))
+
+(case
+  "a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)"
+  (doc
+    "The `Eval` effect's `in-caller` operation evaluates an AST in the CALLER's environment AT EXPANSION
+           and returns the evaluated value reified back to an `Ast` (DESIGN-macro-system.md §3) — a
+           COMPILE-TIME effect the macro expander discharges and ERASES before type-checking. `(m 4)`
+           reifies the caller argument to the AST `4`; `(Eval.in-caller x)` evaluates it in the caller env
+           → `4`, reified back to the literal `4`; the expansion `(+ 4 1)` computes 5. Pins that the op
+           RESOLVES and FOLDS at expansion — the perform is discharged and erased, so it never reaches the
+           no-home check (no CDZ0401) and no `{Eval}` row survives to inference. A literal-valued in-caller;
+           compound const-evaluation and caller-scope capture are later increments.")
+  (input
+    (do
+      (def (m (quote x)) (quasiquote (+ (unquote (Eval.in-caller x)) 1)))
+      (def (main) (m 4))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))

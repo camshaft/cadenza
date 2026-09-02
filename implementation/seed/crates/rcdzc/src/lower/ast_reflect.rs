@@ -646,7 +646,74 @@ fn try_macro_expand(
     }
     // β-reduce to the result `Ast`, then reconstruct it to source (see-through for a reflected arg).
     let reduced = crate::eval::apply_lambda(db, head, &new_args).ok()??;
-    crate::eval_ast::reconstruct_macro(&mut db.ast, reduced)
+    let result = crate::eval_ast::reconstruct_macro(&mut db.ast, reduced);
+    // inc-3 slice 1: discharge any `(Eval.in-caller ARG)` perform the expansion contains, AT EXPANSION,
+    // by folding it to the reified value of evaluating ARG in the caller env (a COMPILE-TIME `Eval`
+    // effect, erased before infer — DESIGN-macro-system.md §3). Slice 1 handles the DEGENERATE case
+    // (ARG already a literal = its own reified value); the general const-eval + caller-env capture are
+    // later slices. Folding away the perform is the auto-erasure: no residual `(in-caller …)` reaches
+    // infer, so its `{Eval}` row is never inferred and the no-home check (CDZ0401) never fires.
+    if let Some((root, _)) = &result {
+        fold_in_caller_literals(db, *root);
+    }
+    result
+}
+
+/// The declaration occurrence of the prelude-injected `Eval` effect (`effects::inject_prelude_eval_effect`),
+/// the nominal identity its `in-caller` op's `(meta effect-op)` carries. `None` if no `Eval` effect is
+/// declared (a program that never triggers the injection guard, or a shadow).
+fn eval_effect_occ(db: &Db) -> Option<StructId> {
+    db.effect_decls
+        .iter()
+        .find(|e| e.name == "Eval")
+        .map(|e| e.occ)
+}
+
+/// inc-3 slice 1 — fold a macro-spliced `(Eval.in-caller ARG)` perform whose ARG is ALREADY a LITERAL
+/// (an atom that is its own reified value) into that literal, discharging the compile-time `Eval` effect
+/// at expansion. `in-caller` (DESIGN-macro-system.md §3) evaluates the AST `ARG` denotes in the caller's
+/// environment and returns the evaluated value REIFIED to an `Ast` literal; for a literal ARG the value IS
+/// the literal, so the fold replaces the perform node in place with a copy of ARG. A non-literal ARG (a
+/// compound expr needing const-eval, or a caller-scope reference needing env capture) is LEFT for a later
+/// slice (it stays a live perform → CDZ0401, the honest pre-fold behavior). Walks `root`'s reconstructed
+/// subtree; identifies the op by its `(meta effect-op)` identity (`effect_op_of`), not by name.
+fn fold_in_caller_literals(db: &mut Db, root: StructId) {
+    let Some(eval_occ) = eval_effect_occ(db) else {
+        return;
+    };
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        // Push children first (a `List`'s elements) so the whole subtree is visited.
+        if let crate::ast::Struct::List(items) = db.ast.get(node) {
+            for &c in items.clone().iter() {
+                stack.push(c);
+            }
+        }
+        // Is `node` a `(Eval.in-caller ARG)` perform? Its head must resolve to the Eval effect's op 0.
+        let crate::resolved::Resolved::Apply { head, args } = crate::resolve::resolved_of(db, node)
+        else {
+            continue;
+        };
+        if args.len() != 1 {
+            continue;
+        }
+        let arg = args[0];
+        if crate::eval::effect_op_of(db, head) != Some((eval_occ, 0)) {
+            continue;
+        }
+        // ARG is the REIFIED Ast the caller passed (e.g. `(Ast.Int 4)`); `reconstruct` turns it back to
+        // the source it denotes (`4`). Slice 1: if that source is a LITERAL (an `Atom` that is not a name
+        // = its own reified value), it IS the in-caller result (evaluating a literal in any env yields
+        // itself), so replace the perform node in place (its StructId/span preserved). A compound source
+        // (needs const-eval) or a caller-scope reference (needs env capture) is LEFT for a later slice.
+        if let Some(src) = crate::eval_ast::reconstruct(&mut db.ast, arg)
+            && matches!(db.ast.get(src), crate::ast::Struct::Atom(_))
+            && db.ast.as_name(src).is_none()
+        {
+            let entry = db.ast.get(src).clone();
+            db.ast.structure[node.0 as usize] = entry;
+        }
+    }
 }
 
 /// The MACRO-EXPANSION pass — run POST-RESOLVE, PRE-INFER (DESIGN-macro-system.md §4). Macros are plain
