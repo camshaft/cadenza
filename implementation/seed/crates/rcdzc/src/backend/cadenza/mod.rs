@@ -2934,6 +2934,26 @@ fn emit_expr_viewed(
             // yield a `Bytes` value, breaking arm unification in an enclosing match (or any Symbol-typed
             // context) so the re-emit fails to type-check (13-strings/0057: a `Symbol.of(s)` arm sibling to a
             // `Symbol` constant arm emitted as Bytes → hop² CDZ0203 "match arms differ: Bytes vs Symbol").
+            // `Core::StrToBytes` backs THREE distinct surface ops (all a canonicalizing byte-retag; the node's
+            // OWN type + its OPERAND's type disambiguate):
+            //   - `Symbol.of(s)`     — String → Symbol  (node typed `Ty::Symbol`).
+            //   - `Symbol.to-string(sym)` — Symbol → String (node typed `Ty::String`, operand typed `Ty::Symbol`;
+            //     compute.rs lowers `Symbol.to-string` on a runtime symbol to `StrToBytes{string: sym}`, the SAME
+            //     canonicalizing retag). Emitting `String.to-bytes` here yields a `Bytes` value where a `String`
+            //     is required → hop² CDZ0203 (17-symbols "re-interning a symbol's recovered string").
+            //   - `String.to-bytes(s)` — String → Bytes (node typed `Ty::Bytes`).
+            // A `StrToBytes` typed `String` over a `String` operand is the compiler's runtime-string interning
+            // retag (no surface member — like `NfcNormalize`); emit the operand TRANSPARENTLY (value-eq, the
+            // recompile re-canonicalizes where the surrounding surface op requires it).
+            if matches!(eff_ty, Ty::String) {
+                let op_ty = crate::infer::type_of(db, string);
+                if matches!(op_ty, Ty::Symbol) {
+                    let head = member_access(b, "Symbol", "to-string");
+                    let s = emit_expr(db, b, string, None, env, emitted)?;
+                    return Ok(b.list(vec![head, s]));
+                }
+                return emit_expr(db, b, string, expected, env, emitted);
+            }
             let member = if matches!(eff_ty, Ty::Symbol) {
                 ("Symbol", "of")
             } else {
