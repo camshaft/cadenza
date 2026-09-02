@@ -956,7 +956,7 @@
       (def
         (main (: k Int64))
         (do
-          (def prices (Map.insert (Map.insert Map.empty 1 100) 2 50))
+          (def prices #map((= 1 100) (= 2 50)))
           (match
             (Some k)
             ((guard (Some id) (match (Map.lookup prices id) ((Some p) (> p 60)) ((None _u) false)))
@@ -986,7 +986,7 @@
       (def
         (main (: k Int64))
         (do
-          (def prices (Map.insert (Map.insert Map.empty 1 100) 2 50))
+          (def prices #map((= 1 100) (= 2 50)))
           (match
             (Some k)
             ((Some id)
