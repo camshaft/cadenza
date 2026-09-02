@@ -772,3 +772,22 @@
       (export main)))
   (call main)
   (output (: 60 Int64)))
+
+(case
+  "splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly"
+  (doc
+    "Guards that the statement-position splice-flatten RECURSES more than once (the doubly-nested case
+           above exercises a single recursion step; this is TWO). `(mk outer)` splices `(do (do (do (def
+           (deep) 5) 0) 0) (def outer (deep)) 0)` — `(def (deep) 5)` sits THREE nested statement-position
+           `(do …)` levels down; `flattened_do_tail` must recurse through both non-final inner dos to inline
+           `deep` up to the outer sequence so the sibling `outer`'s body `(deep)` resolves → `(outer)` = 5.
+           Pins that the flatten recursion is not capped at one level (a cap would leave `deep` do-local at
+           the innermost do → CDZ0101 from `outer`).")
+  (input
+    (do
+      (def (mk (quote nm)) (quasiquote (do (do (do (def (deep) 5) 0) 0) (def ((unquote nm)) (deep)) 0)))
+      (mk outer)
+      (def (main) (outer))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))
