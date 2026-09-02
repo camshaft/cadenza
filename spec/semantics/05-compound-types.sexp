@@ -35778,3 +35778,31 @@
   (output-byte-len 311199)
   (call main (: 16 Int64))
   (output-byte-len 638879))
+
+; dp1: THREE-level pattern descent — a record pattern whose field holds a variant whose payload is
+; destructured by a NESTED record pattern. Idealistically pattern depth composes (both depth-2 faces
+; compute today: payload-whole bind + project = 2105, and a direct sum-of-record destructure = 2100);
+; the three-level shape currently DECLINES (CDZ0900 "nested record field descent whose intermediate
+; value is not a record"). TODO — auto-flips when the descent supports a variant hop mid-path.
+; (breaker deep-pattern frontier probe 2026-09-02.)
+(case
+  "a record-variant-record three-level pattern destructures like its two-level faces (should-work; today the descent declines)"
+  (input
+    (do
+      (type St (Idle) (Active (Record (: score Int64) (: tag String))))
+      (def
+        (main (: n Int64))
+        (let
+          ((r
+              #record((= id n)
+                (= st (if (> n 3) (Active #record((= score (* n 2)) (= tag "hi"))) (Idle))))))
+          (match
+            r
+            (#record((= id i) (= st (Active #record((= score sc) (= tag t)))))
+              (+ i (+ (* 10 sc) (* 1000 (String.byte-len t)))))
+            (#record((= id i) (= st (Idle))) (- 0 i)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2105 Int64))
+  (call main (: 2 Int64))
+  (output (: -2 Int64)))
