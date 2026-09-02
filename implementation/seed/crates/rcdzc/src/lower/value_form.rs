@@ -551,7 +551,29 @@ pub(super) fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Opti
                 }
             }
         }
-        Ty::Nominal { decl, .. } => leaf(ncx.name_of(*decl)?.to_string()),
+        // A monomorphic nominal renders as its bare name; a GENERIC nominal as `(Name arg…)` — INCLUDING its
+        // type-args, exactly like the generic-sum arm above. `Ty::Nominal` carries `args` (the sibling of
+        // `Ty::Sum::args`) and type-equality distinguishes nominals on `decl` AND `args` (`(Box Int64)` ≠
+        // `(Box String)`), so dropping the args would render two distinct types identically (bare `Box`) —
+        // a value-doc faithfulness loss. Baked at compile time from the fully-solved type, so the arg is
+        // always concrete (the runtime just reproduces the baked TypeNode). Was `leaf(name)` (args dropped),
+        // which diverged from the rust `doc_type_node` generic branch (#7709 `(Box Int64)`) + every other
+        // parametric arm here — the v-rust-backend proactive-audit finding, v-runtime ruling.
+        Ty::Nominal { decl, args, .. } => {
+            let name = ncx.name_of(*decl)?.to_string();
+            if args.is_empty() {
+                leaf(name)
+            } else {
+                let mut children = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    children.push(type_node_of(a, ncx)?);
+                }
+                TypeNode {
+                    head: name,
+                    children,
+                }
+            }
+        }
         // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
         _ => return None,
     })
