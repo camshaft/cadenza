@@ -10831,3 +10831,6 @@ pass	a macro-introduced SIBLING def with a macro-internal name stays hygienic-lo
 pass	Type.ast of a non-type value (an effect name) is a CODED rejection, not a codeless decline
 pass	a macro-introduced SIBLING FN def with a caller-spliced name binds visibly (callable) at the enclosing scope
 pass	a macro-introduced SIBLING FN def with a macro-internal name stays hygienic-local, not enclosing-callable
+pass	a macro emitting a wrapping (do def…) at a statement position SPLICE-FLATTENS its sibling defs (multi-def idiom)
+pass	a macro-internal name in a splice-flattened wrapping (do def…) stays hygienic-local
+pass	a macro splicing a wrapping (do def def) introduces SEVERAL caller-named sibling defs, all visible

@@ -150,6 +150,63 @@
   (error CDZ0101 (message "unbound name")))
 
 (case
+  "a macro emitting a wrapping (do def…) at a statement position SPLICE-FLATTENS its sibling defs (multi-def idiom)"
+  (doc
+    "The multi-definition macro idiom (Scheme top-level begin-splice): a macro carries SEVERAL sibling
+           defs through its single-`Ast` result by WRAPPING them in a `(do …)`, which — spliced at a
+           STATEMENT position — flattens into the enclosing sequence rather than nesting as a scoped block.
+           `(def (mkmulti (quote na)) (quasiquote (do (def helper 7) (def (unquote na) helper) helper)))`
+           expands `(mkmulti answer)` to `(do (def helper 7) (def answer helper) helper)`; the caller-spliced
+           `answer` binds VISIBLY top-level (→ `main`=`answer`=`helper`=7), while the macro-internal `helper`
+           stays hygienic-local — usable by the expansion's OWN def (`answer`'s init `helper` resolves) but
+           not by the caller. The N-def generalization of the single-def sibling rule under the same per-name
+           provenance gate; an expression-position `do` stays a scoped block (unaffected). (The trailing
+           `helper` is a sequenced value tail — the flatten registers the DEFS regardless.)")
+  (input
+    (do
+      (def (mkmulti (quote na)) (quasiquote (do (def helper 7) (def (unquote na) helper) helper)))
+      (mkmulti answer)
+      (def (main) answer)
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))
+
+(case
+  "a macro-internal name in a splice-flattened wrapping (do def…) stays hygienic-local"
+  (doc
+    "The hygiene half of the multi-def splice: in `(do (def helper 7) (def NAME helper) helper)` the child
+           `helper` is a MACRO-TEMPLATE literal, so it does NOT leak to the caller's enclosing scope even
+           though the wrapping `do` splice-flattens — a caller reference `helper` is CDZ0101 unbound. Only the
+           caller-spliced child (`NAME`) binds visibly; each flattened child follows its OWN name's
+           provenance (per-name gate, exactly as the single-def rule).")
+  (input
+    (do
+      (def (mkmulti (quote na)) (quasiquote (do (def helper 7) (def (unquote na) helper) helper)))
+      (mkmulti answer)
+      (def (main) helper)
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
+  "a macro splicing a wrapping (do def def) introduces SEVERAL caller-named sibling defs, all visible"
+  (doc
+    "The N-def case: a two-quote-param macro emits a wrapping `(do (def A 10) (def B 20) 0)` whose BOTH
+           child def names are caller-spliced, so both bind visibly top-level — `(mktwo x y)` then
+           `(+ x y)` = 30. Confirms splice-flatten registers EACH caller-origin child of a statement-position
+           `do`, not just the first, completing the single-def sibling rule to the multi-def idiom. (The
+           trailing `0` is a sequenced value tail.)")
+  (input
+    (do
+      (def
+        (mktwo (quote a) (quote b))
+        (quasiquote (do (def (unquote a) 10) (def (unquote b) 20) 0)))
+      (mktwo x y)
+      (def (main) (+ x y))
+      (export main)))
+  (call main)
+  (output (: 30 Int64)))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
