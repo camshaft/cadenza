@@ -21,6 +21,8 @@
 ; (`Option`, `Result`, …) — prelude sums with no user source file reflect their `(type …)` definition from
 ; the synthesized decl, like a user type. REMAINING: only the `Fn` arrow surface (TODO-pinned above) — the
 ; core feature is complete.
+(diagnostic-quality)
+
 (case
   "Type.ast-generic reflects a nominal sum type's verbatim declaration AST"
   (doc

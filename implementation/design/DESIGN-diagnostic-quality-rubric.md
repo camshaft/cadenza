@@ -29,8 +29,24 @@ The check applies to the user-facing **message text of an emitted coded diagnost
 Rust source comments, doc-comments, or the `Reject::unsupported(` / `Code::…` constructor names. (This
 matters: "not yet" appears in ~18 source comments but in **zero** emitted messages — see Grounding.)
 
-Roll-out is **opt-in per corpus scope first** (a case-level or file-level `(diagnostic-quality)` marker),
-graded on the same nix diagnostics bar, then tightened to default once the corpus is clean — no flag-day red.
+Roll-out is **opt-in per corpus scope first**, graded on the same nix diagnostics bar, then tightened to
+default once the corpus is clean — no flag-day red. Two opt-in forms (landed #7851 + file-level #7872):
+
+- **Case-level:** a bare `(diagnostic-quality)` facet inside a `(case …)` — enrolls that one case.
+- **File-level:** a bare `(diagnostic-quality)` top-level form (a sibling of the `(case …)` forms, placed
+  at the top of the file after the header comment) — enrolls **every** case in the file. This is the
+  ergonomic form for a clean chapter (one line vs. a marker per case). The two OR (never override): a file
+  can be file-level-enrolled AND carry a per-case marker on an outlier; both fire.
+
+**Verification command:** `cargo xtask gate <chapter.sexp>` — it forwards to the nix per-case corpus
+pipeline, which captures the `KIND_DIAGNOSTICS` wire and therefore *exercises* C1. The in-process gate
+(and a bare `cargo test`) is **sidecar-blind** (`faults` is `None` → C1 inert), so it is NOT a valid C1
+check. Exit 0 = GREEN (the gate fails non-zero only on a real FAIL); a §1 violation FAILs that case.
+
+**Rollout method (per chapter):** add one top-of-file `(diagnostic-quality)`, `cargo xtask gate` it on
+the nix bar; if a case is flagged, that message contains a §1 phrase → rewrite it to golden standard
+(a real target), else land the enrollment. Enrolling non-diagnostic cases is harmless (no emitted fault
+→ C1 no-ops).
 
 ## §1 — Forbidden-phrase set
 
