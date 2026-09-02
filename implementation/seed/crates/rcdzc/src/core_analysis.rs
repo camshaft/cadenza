@@ -1999,4 +1999,106 @@ mod tests {
             "a rust-slot-safe tuple/Elem-path scrutinee share is ADMITTED for bind-once (cmb1 shape)"
         );
     }
+
+    // COMPOUND-CSE PART-1 (the cadenza-O1 re-materialization cluster): the alpha-equivalent structural
+    // fingerprint groups DISTINCT-but-structurally-equal compound nodes (what `shared_node_bind_plan` can't
+    // see — it counts one shared node's parent edges). A false MATCH here is a miscompile once v-cadenza's
+    // install fires, so these pin the CORRECTNESS contract: equal-structure ⇒ equal fp; different leaf ⇒
+    // different fp. (Alpha-equivalence over bound `let`-locals is exercised e2e by rsv1's opt-sweep on the
+    // v-cadenza install; here the const-leaf tuples pin the structural core with no binder plumbing.)
+    #[test]
+    fn compound_cse_fingerprint_matches_distinct_structurally_equal_tuples() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let tup_ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let c5 = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(5)),
+            Ty::int64(),
+        );
+        // Two DISTINCT tuple nodes of identical shape+leaves.
+        let t1 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c5, c5].into(),
+            },
+            tup_ty.clone(),
+        );
+        let t2 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c5, c5].into(),
+            },
+            tup_ty.clone(),
+        );
+        assert_ne!(t1, t2, "the two tuple nodes are distinct StructIds");
+        let (mut f1, mut f2) = (String::new(), String::new());
+        core_subtree_fingerprint(&mut db, t1, &mut f1);
+        core_subtree_fingerprint(&mut db, t2, &mut f2);
+        assert_eq!(
+            f1, f2,
+            "structurally-equal distinct tuples fingerprint EQUAL"
+        );
+
+        // A different constant leaf ⇒ a DIFFERENT fingerprint (no false match).
+        let c7 = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(7)),
+            Ty::int64(),
+        );
+        let t3 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c7, c7].into(),
+            },
+            tup_ty,
+        );
+        let mut f3 = String::new();
+        core_subtree_fingerprint(&mut db, t3, &mut f3);
+        assert_ne!(f1, f3, "a different const leaf fingerprints DIFFERENTLY");
+    }
+
+    #[test]
+    fn compound_cse_bind_plan_groups_the_two_equal_tuples() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let tup_ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let c5 = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(5)),
+            Ty::int64(),
+        );
+        let t1 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c5, c5].into(),
+            },
+            tup_ty.clone(),
+        );
+        let t2 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c5, c5].into(),
+            },
+            tup_ty.clone(),
+        );
+        // A straight-line body holding both distinct-but-equal tuples in value positions.
+        let outer_ty = Ty::Tuple(vec![tup_ty.clone(), tup_ty].into());
+        let body = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [t1, t2].into(),
+            },
+            outer_ty,
+        );
+        let plan = compound_cse_bind_plan(&mut db, body);
+        assert!(
+            plan.iter()
+                .any(|e| e.members.contains(&t1) && e.members.contains(&t2)),
+            "the two structurally-equal tuples are a compound-CSE group; got {:?}",
+            plan.iter().map(|e| e.members.len()).collect::<Vec<_>>()
+        );
+    }
 }
