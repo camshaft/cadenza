@@ -2252,12 +2252,23 @@ fn emit_expr_viewed(
                     let pexp = sum_payload_expected(db, decl, disc, &ty);
                     variant_children.push(emit_expr(db, b, payloads[0], pexp, env, emitted)?);
                 }
-                // MULTI-argument variant `(<Variant> p0 p1 …)` — each payload emitted left-to-right (their
-                // types are the variant's slot types, determined by the operands; no under-determined
-                // fallback needed for the common case).
+                // MULTI-argument variant `(<Variant> p0 p1 …)` — each payload emitted left-to-right with its
+                // INSTANTIATED slot type as `expected` (the variant's slot types at THIS sum type, a `Tuple`
+                // from `sum_payload_expected`). Threading the slot type resolves a payload whose OWN type is
+                // under-determined — the GENERIC × RECURSIVE case: `(type (Tree a) (Leaf) (Node (Tree a) a
+                // (Tree a)))` at `(Tree String)`, whose nested nullary `(Leaf)` slots have own type `(Tree ?)`
+                // (no payload fixes `a`); with `expected = (Tree String)` the `SumNew` `ty` fallback recovers
+                // the instantiation and its `(: (Leaf) (Tree String))` ascription pins it (else `type_ast`
+                // fails → the "under-determined sum type" decline). A slot whose type is itself unknown falls
+                // back to `None` (prior behavior).
                 _ => {
-                    for &p in payloads.iter() {
-                        variant_children.push(emit_expr(db, b, p, None, env, emitted)?);
+                    let payload_expected = sum_payload_expected(db, decl, disc, &ty);
+                    for (i, &p) in payloads.iter().enumerate() {
+                        let pexp = match &payload_expected {
+                            Some(Ty::Tuple(ts)) => ts.get(i).cloned(),
+                            _ => None,
+                        };
+                        variant_children.push(emit_expr(db, b, p, pexp, env, emitted)?);
                     }
                 }
             }
