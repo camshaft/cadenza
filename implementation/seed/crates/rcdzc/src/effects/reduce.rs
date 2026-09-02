@@ -2443,10 +2443,20 @@ pub(crate) fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
                     // allow (the scalar cases where inference hasn't ground both, matching prior behavior).
                     let op_result = crate::infer::type_of(db, node);
                     let abort_ty = abortive_perform_value_ty(db, a, ctx);
-                    let types_agree = match abort_ty {
-                        Some(at) => {
-                            undetermined_ty(&op_result) || undetermined_ty(&at) || op_result == at
-                        }
+                    // A DEFERRED-width/sign numeric (an `Int64`-literal arm value not yet ground in a
+                    // specialized arena — 13175's `(bail (u) s 99)` → `Int{Deferred,Deferred}`) is not
+                    // structurally distinct from a fixed numeric of the same kind: it unifies to the required
+                    // width on recompile, so distributing the enclosing op keeps the `if` branches consistent.
+                    // Treat it as undetermined FOR THIS CHECK (a genuinely-fixed cross-width mismatch — both
+                    // fully solved — still requires exact equality, so a real tuple-vs-int / Int8-vs-Int64
+                    // mismatch still blocks the hoist).
+                    let undet = |t: &crate::ty::Ty| {
+                        undetermined_ty(t)
+                            || (matches!(t, crate::ty::Ty::Int(_) | crate::ty::Ty::Float(_))
+                                && !t.is_fully_solved())
+                    };
+                    let types_agree = match &abort_ty {
+                        Some(at) => undet(&op_result) || undet(at) || op_result == *at,
                         None => true, // no single abort value type found — fall through, guard decides
                     };
                     if others_pure && cond_pure && types_agree {
