@@ -91,6 +91,8 @@
 ; nested-record element, the Nested rebuild) — each read + combined with the scalar element to prove recursion.
 ; SHAPE 51 — a bare result<ok,err>/Result PARAM member (sum_params, Result shape): the (disc,payload-JOIN)
 ; flattening with Ok=disc 0 is rebuilt via the Result-shaped SumArgRebuild; both Ok and Err arms exercised.
+(diagnostic-quality)
+
 (case
   "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc

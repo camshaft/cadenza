@@ -15,6 +15,8 @@
 ; The unforgeability pins in 25-verification.sexp establish that OUTSIDE code cannot forge or
 ; destructure a Thm without the kernel's cooperation. These pin the boundary's exact shape from the
 ; other side, promoted from passing breaker probes.
+(diagnostic-quality)
+
 (case
   "a kernel may deliberately export its rule as a first-class value"
   (doc

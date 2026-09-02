@@ -36,6 +36,8 @@
 ; user-declared `Exp` sum standing in for a program's syntax tree; the built-in `Ast` is the same
 ; shape (the ASPIRATIONAL section carries its companion), so a transformation authored over either is
 ; the same construct — an `Ast → Ast` (here `Exp → Exp`) function.
+(diagnostic-quality)
+
 (case
   "a program's syntax tree is an ordinary value walked recursively across calls"
   (doc

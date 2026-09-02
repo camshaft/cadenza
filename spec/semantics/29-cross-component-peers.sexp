@@ -18,6 +18,8 @@
 ;
 ; The rust / rust-async backends have no peer-compose path yet, so these grade PASS on wasm and
 ; TODO on rust/rust-async (a legitimate not-yet, not a regression).
+(diagnostic-quality)
+
 (case
   "a peer op arity mismatch is rejected at compose time, not a trap"
   (doc
