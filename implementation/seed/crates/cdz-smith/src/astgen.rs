@@ -459,7 +459,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 10 };
+    let arms = if depth == 0 { 2 } else { 11 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -549,6 +549,50 @@ fn gen_typefuzz_int<C: Choice>(
             let xs = gen_typefuzz_list(c, iscope, bscope, fresh, wb);
             format!("(List.len {xs})")
         }
+        // An Int64-producing Set op (T1.32), always CONSUMING a set to a scalar (a bare Set main result is
+        // a rcdzc capability-gap decline). `(Set.len <set>)`; `(List.len (Set.to-list <set>))`; or
+        // `(Set.len (<set-producing-op> …))` over of/insert/remove/union/intersection/difference — each
+        // returns `Set α`, funnelled through `Set.len → Int64`. Well-typed (matching elements) → both
+        // rcdzc + oracle infer Int64 → agreement.
+        9 => {
+            let wb = c.variant(2) == 0;
+            let s = gen_typefuzz_set(c, iscope, bscope, fresh, wb);
+            // depth 0 elements — avoid a nested `(set …)` literal in a Set-op arg (rcdzc capability-gap).
+            let elem = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
+                if wb {
+                    gen_typefuzz_bool(c, 0, is, bs, f)
+                } else {
+                    gen_typefuzz_int(c, 0, is, bs, f)
+                }
+            };
+            match c.variant(7) {
+                0 => format!("(Set.len {s})"),
+                1 => format!("(List.len (Set.to-list {s}))"),
+                2 => {
+                    let e = elem(c, iscope, bscope, fresh);
+                    format!("(Set.len (Set.insert {s} {e}))")
+                }
+                3 => {
+                    let e = elem(c, iscope, bscope, fresh);
+                    format!("(Set.len (Set.remove {s} {e}))")
+                }
+                4 => {
+                    let s2 = gen_typefuzz_set(c, iscope, bscope, fresh, wb);
+                    let op = ["union", "intersection", "difference"][c.variant(3)];
+                    format!("(Set.len (Set.{op} {s} {s2}))")
+                }
+                5 => {
+                    // `Set.of (List a) → Set a` — build the set from a list instead of a literal.
+                    let xs = gen_typefuzz_list(c, iscope, bscope, fresh, wb);
+                    format!("(Set.len (Set.of {xs}))")
+                }
+                _ => {
+                    // membership folded into an Int64 via `if` (contains → Bool).
+                    let e = elem(c, iscope, bscope, fresh);
+                    format!("(if (Set.contains {s} {e}) 1 0)")
+                }
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -564,7 +608,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 9 };
+    let arms = if depth == 0 { 2 } else { 10 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -647,6 +691,18 @@ fn gen_typefuzz_bool<C: Choice>(
             };
             format!("(let (({f} {bound})) ({f} {arg}))")
         }
+        // `(Set.contains <set> <elem>)` → Bool (T1.32): membership over a set, the element MATCHING the
+        // set's element type (well-typed). Both rcdzc + oracle infer Bool → agreement.
+        8 => {
+            let wb = c.variant(2) == 0;
+            let s = gen_typefuzz_set(c, iscope, bscope, fresh, wb);
+            let e = if wb {
+                gen_typefuzz_bool(c, 0, iscope, bscope, fresh)
+            } else {
+                gen_typefuzz_int(c, 0, iscope, bscope, fresh)
+            };
+            format!("(Set.contains {s} {e})")
+        }
         // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
         // Bool (Mat rule T1.16).
         _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, true),
@@ -691,6 +747,34 @@ fn gen_typefuzz_list<C: Choice>(
         })
         .collect();
     format!("(list {})", elems.join(" "))
+}
+
+/// A WELL-TYPED HOMOGENEOUS set literal `(set e...)` — 2..=4 elements, all Int64 (`want_bool=false`) or
+/// all Bool (T1.32). NEVER empty (an empty `(set)` skips). Only ever CONSUMED by a Set op (Set.len /
+/// Set.contains / Set.to-list / …), never returned bare: a bare `(set …)` main RESULT is a rcdzc
+/// capability-gap decline (Set-as-return not yet built). Element clashes are NOT generated on a set
+/// literal — a `(set …)`-built set does not bind its element type in rcdzc (a known soundness hole), so a
+/// clash there would be a false-accept, not an agreed reject; see the ill-typed arm (which uses `Set.of`).
+fn gen_typefuzz_set<C: Choice>(
+    c: &mut C,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+    want_bool: bool,
+) -> String {
+    let n = 2 + c.variant(3); // 2..=4 elements
+    // DEPTH 0 (leaf: literal / in-scope var) — a set element that itself contains a nested `(set …)` literal
+    // is a rcdzc capability-gap decline (nested set-literal not-yet-built), so keep set elements simple.
+    let elems: Vec<String> = (0..n)
+        .map(|_| {
+            if want_bool {
+                gen_typefuzz_bool(c, 0, iscope, bscope, fresh)
+            } else {
+                gen_typefuzz_int(c, 0, iscope, bscope, fresh)
+            }
+        })
+        .collect();
+    format!("(set {})", elems.join(" "))
 }
 
 /// An EXHAUSTIVE `match` over a built-in sum (Mat rule T1.16), arms producing Int64 (`want_bool=false`)
@@ -742,7 +826,20 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(13) {
+    match c.variant(14) {
+        // An ILL-TYPED Set op (T1.32 — false-accept hunt) over a `Set.of`-built set (whose element type
+        // IS bound — unlike a `(set …)` literal, a known soundness hole routed separately): an element
+        // clash in `Set.contains` / `Set.insert`, funnelled to a scalar. rcdzc rejects (CDZ0203) + the
+        // oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT here is a soundness false-accept.
+        12 => {
+            let xs = gen_typefuzz_list(c, iscope, bscope, fresh, false); // List Int64
+            let b = boolean(c, iscope, bscope, fresh); // Bool element — clashes with Int64
+            if c.variant(2) == 0 {
+                format!("(if (Set.contains (Set.of {xs}) {b}) 1 0)")
+            } else {
+                format!("(Set.len (Set.insert (Set.of {xs}) {b}))")
+            }
+        }
         // An ILL-TYPED total List op (T1.30 — false-accept hunt): a non-list arg to `List.len` or an
         // element-type clash in `List.push` — each fails unification → a coded type fault. rcdzc rejects +
         // the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT here is a soundness false-accept. (`List.at`
