@@ -246,6 +246,43 @@ The `talosDriver` seam change (W5.1) is the pivot: it must build a `HostEnv`/`Ho
 ops keyed by `m.imports` name, and only decline imports it does NOT model (so partial coverage still runs the
 scalar parts). Everything downstream (result decode, differential) is unchanged.
 
+### W5.1a landed (host core) + W5.1b op semantics CONFIRMED from the WIT spec
+
+**W5.1a (`Oracle/Wasm/HeapHost.lean`, PR #7960):** `HeapState` (handle-indexed pool of
+`{value, rc, live, immortal}`) + the unambiguous ops — refcount core `dup`/`drop`/`live-objects` + boxing
+`box-*`/`get-*` — modeled clean-room from the observable value form, with UAF/double-free traps + the leak
+census. `w51aHeapOps` keys each by its exact emitted name/sig. `talosDriver` unchanged (W5.1c wires the
+registry). Witnessed at the pure `HeapState` layer.
+
+**Deferred-op semantics, now spec-confirmed from `cdz-runtime/wit/runtime.wit` (so W5.1b needs no guessing):**
+- **`arr-*` (idx 6–9, the fixed-arity tuple/record product):** `arr-alloc(len) → u32` = array of `len` NULL
+  handle-slots (rc 1). `arr-set(arr, i, elem) → u32` sets slot `i`, **stores `elem` WITHOUT dup** (ownership
+  MOVE — the array now owns it), returns the *array* handle (threading). `arr-get(arr, i) → u32` returns the
+  slot handle; **out-of-bounds TRAPS** (fail-fast). `arr-len(arr) → u32`. ⇒ W5.1b needs a `HeapValue.array
+  (Array UInt32)` (0 = null slot) and **`drop` must recursively drop non-null child slots** (the child-drop
+  cascade deferred in W5.1a). OPEN (resolve at W5.1b write-time from the `arr-get` op impl / compiler emit):
+  does `arr-get` dup the returned handle, or borrow (compiler emits the caller-side dup)? Determines rc balance.
+- **`mark-immortal(h) → h` (95):** rc → sentinel `u32::MAX` ⇒ `dup`/`drop` become **NO-OPS** on it + it is
+  **excluded from the census** ("counted at alloc; marking decrements the census so an immortal nets to zero" —
+  our `liveCount` already excludes `immortal`, so this is: set `immortal := true`, return the handle). ⇒ W5.1b
+  must make `dup`/`drop` no-op when `immortal`. `mark-immortal-deep(h) → h` (96) = the transitive version over
+  child handles (idempotent + DAG-safe: skip already-immortal); needs the container child-set, so it rides the
+  `arr-*`/list/map ops.
+- **`reset(node) → u32` + `arr-alloc-reuse(len, token)` / `sum-new-reuse(disc, payload, token)` (26–28) — the
+  Perceus REUSE specialization:** `reset` on a UNIQUE (`rc==1`) node drops its children, retains the emptied
+  shell, returns it as a non-null reuse token (same handle, childless, rc 1); on a SHARED node decrements +
+  returns 0 (null token). `*-reuse(…, token)` refits `token`'s shell if non-null, else allocs fresh; **token 0
+  makes them behave exactly as the non-reuse forms**. This is the hard/high-value bit → **W5.4**; until then a
+  module importing `reset`/`*-reuse` is simply not covered → skips (sound). A first-cut correctness shortcut:
+  model `arr-alloc-reuse(len, 0)`/`sum-new-reuse(…, 0)` = the plain alloc, and `reset` as a plain `drop` that
+  returns null token — value-correct whenever the compiler passes token 0, only losing the in-place-reuse
+  *aliasing* check (the real W5.4 target).
+- **🔑 `live-objects` (54) is NEVER emitted by the compiler** (absent from its allow-list; it's a
+  VERIFICATION AID a harness reads *after* `run()`), and in the shipped build it returns **0 unless the
+  `debug-counters` feature**. So the leak oracle is NOT a `HostFn` call in any corpus module — it is a
+  **post-run inspection of our own `HeapState.liveCount == 0`** (W6). The `w51aHeapOps` `live-objects` entry is
+  harmless-but-dead (no emitted module imports it); the real leak assertion lives in the driver/differential.
+
 ## Gate coverage
 
 `Oracle.Wasm`'s invariants are pinned by compiled `example` witnesses in the module (no corpus case
