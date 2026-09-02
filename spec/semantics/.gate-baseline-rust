@@ -8979,3 +8979,4 @@ pass	a macro-introduced SIBLING type with a caller-spliced name binds visibly; i
 pass	a macro-introduced SIBLING type with a macro-internal name stays hygienic-local
 pass	a macro-introduced type's BARE variant ctor follows the ctor name's own provenance (macro-internal is qualified-only)
 pass	a macro-introduced type with a caller-spliced bare ctor name binds the bare constructor visibly
+pass	sqtv1 a runtime Symbol tuple element renders as the (Symbol.of …) constructor, not a bare string

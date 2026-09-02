@@ -19,7 +19,12 @@
 //! PARITY: [`render_ty`] renders byte-IDENTICALLY to `rcdzc` `Ty::render_name` (ty.rs) for a monomorphic
 //! type, and [`render_ty_scheme`] to `Scheme::render_scheme` (its `render_named_vars` + first-encounter
 //! `a`,`b`,`c`… var lettering) for a polymorphic one. Those functions are the source of truth for the
-//! exact spelling (`Int64` not `(Int 64)`, `(-> A B)` curried, `Option a`, …).
+//! exact spelling (`Int64` not `(Int 64)`, `(-> A B)` curried, `Option a`, …). ONE deliberate lead: a
+//! GENERIC `Nominal` renders its type args here (`(Box a)`, the host query/hover/exports surface —
+//! generic-nominal-args canonical, #7380), while `render_name`/`render_scheme` (the rcdzc-INTERNAL
+//! diagnostic-message surface) still collapse it to the bare `Box`. That diagnostic-surface follow is
+//! routed to its owner; the two surfaces have different audiences (author-facing type query vs compile
+//! error text), so they need not flip in lockstep.
 //!
 //! The payload grammar (head-name keyed; `encode_ty`) and its surface translation:
 //! - bare `Name` leaf: `Bool`/`Unit`/`String`/`Char`/`Symbol`/`BigInt`/`Rational`/`Bytes`/`Type`/`Any`
@@ -31,8 +36,9 @@
 //!   `(List E)` → `(List E')`, `(Set E)` → `(Set E')`, `(Map K V)` → `(Map K' V')`.
 //! - `(Sum NAME <decl> arg…)` — the `<decl>` child (index 2) is an INTERNAL arena occurrence id and is
 //!   HIDDEN → `NAME` (monomorphic) or `(NAME arg'…)` (generic).
-//! - `(Nominal NAME <decl> (args…) INNER)` — identity is the NAME; the `<decl>`, `(args…)`, and `INNER`
-//!   are hidden → the declared `NAME` only.
+//! - `(Nominal NAME <decl> (args…) INNER)` — identity is the NAME + instantiation; the `<decl>` and `INNER`
+//!   are hidden → `NAME` (monomorphic, empty `(args)`) or `(NAME arg'…)` (generic), mirroring `Sum` and the
+//!   generic-nominal-args canonical (#7380).
 //! - `(Var N)` — a type-variable number → `_` in [`render_ty`], a stable letter in [`render_ty_scheme`].
 //! - `(Qty INNER (unit (base NAME EXP)… [(scale N D)]))` → `(Qty <inner> <unit>)` with the unit in
 //!   `Unit::render`'s canonical written form (`Unit.one` / `(Unit.base #"n")` / `(Unit.^ … k)` / left-nested
@@ -202,11 +208,33 @@ fn transform(
                 b.list(items)
             }
         }
-        // A nominal renders as its declared NAME only (its identity is the name; `<decl>`/`(args…)`/`INNER`
-        // are hidden, matching `render_name`).
+        // A nominal renders as its declared NAME, applied to its type ARGS when generic — mirroring the
+        // `Sum` arm and the generic-nominal-args canonical (#7380 closed it for the `type_ast` emitter;
+        // this is the host QUERY/hover/exports surface, all of which render through here). The `<decl>`
+        // (index 2) and `INNER` (index 4) stay hidden — identity is the NAME + instantiation. The args
+        // live in the `(args …)` group at index 3 (`encode_ty` writes them there; `collect_vars` already
+        // reserves their scheme letters, so showing them is strictly more consistent than the old bare
+        // render, which dropped a visible `(Box a)` down to `Box`). A monomorphic nominal has an EMPTY
+        // `(args)` group → the bare NAME (unchanged). A missing/malformed args group falls back to bare.
         "Nominal" if kids.len() >= 2 => {
             let n = a.as_name(kids[1]).unwrap_or("<nominal>").to_string();
-            name(b, &n)
+            let args: Vec<StructId> = match kids.get(3).map(|&g| a.get(g)) {
+                Some(Struct::List(ag))
+                    if ag.first().and_then(|&h| a.as_name(h)) == Some("args") =>
+                {
+                    ag[1..].to_vec()
+                }
+                _ => Vec::new(),
+            };
+            if args.is_empty() {
+                name(b, &n)
+            } else {
+                let mut items = vec![name(b, &n)];
+                for arg in args {
+                    items.push(transform(a, arg, d, vars, b));
+                }
+                b.list(items)
+            }
         }
         // A type variable: its letter (scheme) or `_` (monomorphic).
         "Var" => match (vars, var_num(a, &kids)) {
@@ -551,8 +579,8 @@ mod tests {
     }
 
     #[test]
-    fn nominal_renders_name_only() {
-        // (Nominal UserId <5> (args) Int64) -> "UserId"
+    fn nominal_mono_bare_generic_shows_args() {
+        // MONOMORPHIC: (Nominal UserId <5> (args) Int64) -> "UserId" (empty args group -> bare name).
         let mut b = B::new();
         let ah = b.n("args");
         let args = b.l(vec![ah]);
@@ -562,6 +590,43 @@ mod tests {
         let d = b.i(5);
         let r = b.l(vec![h, nm, d, args, inner]);
         assert_eq!(b.name_of(r), "UserId");
+        // GENERIC (mono render): (Nominal Box <7> (args (Var 0)) Int64) -> "(Box _)" — the type arg is
+        // now rendered (generic-nominal-args canonical, #7380), the `<decl>`/`INNER` stay hidden.
+        let mut b = B::new();
+        let v = b.var(0);
+        let ah = b.n("args");
+        let args = b.l(vec![ah, v]);
+        let inner = b.width_ty("Int", 64);
+        let h = b.n("Nominal");
+        let nm = b.n("Box");
+        let d = b.i(7);
+        let r = b.l(vec![h, nm, d, args, inner]);
+        assert_eq!(b.name_of(r), "(Box _)");
+        // GENERIC (scheme render): same payload -> "(Box a)".
+        let mut b = B::new();
+        let v = b.var(0);
+        let ah = b.n("args");
+        let args = b.l(vec![ah, v]);
+        let inner = b.width_ty("Int", 64);
+        let h = b.n("Nominal");
+        let nm = b.n("Box");
+        let d = b.i(7);
+        let r = b.l(vec![h, nm, d, args, inner]);
+        assert_eq!(b.scheme_of(r), "(Box a)");
+        // A LIST of a generic nominal — breaker's rg1 shape: (List (Nominal Box <7> (args (Var 0)) Int64))
+        // scheme -> "(List (Box a))" (was the dropped-arg bug "(List Box)").
+        let mut b = B::new();
+        let v = b.var(0);
+        let ah = b.n("args");
+        let args = b.l(vec![ah, v]);
+        let inner = b.width_ty("Int", 64);
+        let nh = b.n("Nominal");
+        let nm = b.n("Box");
+        let d = b.i(7);
+        let nom = b.l(vec![nh, nm, d, args, inner]);
+        let lh = b.n("List");
+        let r = b.l(vec![lh, nom]);
+        assert_eq!(b.scheme_of(r), "(List (Box a))");
     }
 
     #[test]
@@ -586,10 +651,10 @@ mod tests {
     }
 
     #[test]
-    fn nominal_arg_var_consumes_a_letter_but_is_not_rendered() {
-        // Parity w/ render_scheme + collect_free_vars: a var ONLY in a Nominal's args is COLLECTED
-        // (consumes a letter) but the Nominal renders as just its name, so a sibling var shifts.
-        // (-> (Nominal N <5> (args (Var 0)) Unit) (Var 1)) -> "(-> N b)".
+    fn nominal_arg_var_is_collected_and_rendered_in_order() {
+        // A var in a Nominal's args is COLLECTED by collect_vars (first-encounter order) AND now RENDERED
+        // in the `(NAME arg…)` form, so the letters line up with position: the Nominal's arg is `a`, the
+        // sibling is `b`. (-> (Nominal N <5> (args (Var 0)) Unit) (Var 1)) -> "(-> (N a) b)".
         let mut b = B::new();
         let v0 = b.var(0);
         let ah = b.n("args");
@@ -602,7 +667,7 @@ mod tests {
         let v1 = b.var(1);
         let ao = b.n("->");
         let r = b.l(vec![ao, nom, v1]);
-        assert_eq!(b.scheme_of(r), "(-> N b)");
+        assert_eq!(b.scheme_of(r), "(-> (N a) b)");
     }
 
     #[test]
