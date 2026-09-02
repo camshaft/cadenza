@@ -789,13 +789,36 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // this (a nested do-local def resolves via `do_local_binds`); handles BOTH a VALUE def
         // `(def NAME V)` and a FN/nullary def `(def (NAME p…) BODY)` — the fn shape's `register_reduced_
         // callables` above wires only its recursive-self index, not the top-level NAME.
+        // Collect the DEF forms a spliced ROOT statement-position node introduces, each paired with the
+        // SPLICE-SITE node (a real-file node at the macro call's position) used for file-scope resolution:
+        //  • a spliced `(def …)` directly — the site is the def itself (gap#4 single-def);
+        //  • a spliced statement-position `(do stmt…)` — SPLICE-FLATTENS (v-spec-oracle: a macro-produced
+        //    statement-position `do` flattens its child bindings into the enclosing sequence — the
+        //    multi-def / Scheme begin-splice idiom, the N-def generalization of gap#4). Register each CHILD
+        //    def by its OWN provenance; a macro-internal child (e.g. `inner`) stays hygienic-local (it
+        //    remains do-local for the expansion's own refs via `do_local_binds`). A non-def child is
+        //    sequenced, not registered. Only a ROOT-`do` splice flattens: an EXPRESSION-position `do`
+        //    (a nested/value do, `parent_of != root`) stays a scoped block, untouched.
+        let mut def_forms: Vec<(StructId, StructId)> = Vec::new();
         for &sid in &spliced {
             if db.parent_of(sid) != Some(db.ast.root) {
                 continue;
             }
+            if db.ast.as_form(sid, "def").is_some() {
+                def_forms.push((sid, sid));
+            } else if let Some(items) = db.ast.as_form(sid, "do") {
+                let items: Vec<StructId> = items.to_vec();
+                for child in items {
+                    if db.ast.as_form(child, "def").is_some() {
+                        def_forms.push((child, sid));
+                    }
+                }
+            }
+        }
+        for (dnode, site) in def_forms {
             let shape = db
                 .ast
-                .as_form(sid, "def")
+                .as_form(dnode, "def")
                 .map(|tail| (tail.first().copied(), tail.get(1).copied()));
             let Some((Some(sig), body)) = shape else {
                 continue;
@@ -838,9 +861,11 @@ pub(crate) fn expand_macros(db: &mut Db) {
             // Also enter it into the FILE-SCOPE surface of the def's own file, so it resolves in a LINKED
             // multi-file package (where a bare name resolves via `file_scoped_def` against the file's
             // `visible` map, not the flat `def_name_index`). No-op in a single-file compile (`file_scope`
-            // is `None`). `sid` is the spliced def FORM — a real-file node at the macro call's own position
-            // — so its file is the file the sibling def lives in. (PR #7717 Copilot review, finding 1.)
-            db.register_file_scoped_def(sid, &name, idx);
+            // is `None`). `site` is the SPLICE-SITE node — a real-file node at the macro call's position
+            // (the def itself for a direct splice, or the wrapping `do` for a multi-def splice; a flattened
+            // child def is a reconstruction node with no file, so the site carries the file). (PR #7717
+            // Copilot review, finding 1.)
+            db.register_file_scoped_def(site, &name, idx);
         }
         // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
         // pre-splice `Apply`; clearing `db.types` drops any type memoized on the reduced/copied body.
