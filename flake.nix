@@ -4030,6 +4030,16 @@
           pkgs.runCommand "corpus-rust-build-${name}-${idx}"
             {
               nativeBuildInputs = [ cdzCompile ];
+              # VALUE-DOC FLIP (v-rust-backend op-seq-210 opt (a), concierge 2026-09-02): activate the rcdzc
+              # value-doc EMIT path (backend/rust/mod.rs — flag-gated CDZ_VALUE_DOC: emits each nullary
+              # `__cdz_doc_<export>()` + `// cdz-value-doc:` marker the exec's driver-gen reads, INSTEAD of the
+              # cdz_render_at string walk). REQUIRED on the BUILD (emit) too, not just the exec: emit is
+              # flag-gated (mod.rs), so without it rcdzc emits no __cdz_doc/marker → the driver falls back to
+              # cdz_render_at → value-doc is never exercised. Verified gate-NEUTRAL / byte-identical by
+              # v-rust-backend (cdz_render_at fallback keeps it safe). SCOPED to this gate derivation ONLY — a
+              # real `cdz compile -t rust` user must NOT get CDZ_VALUE_DOC (the __cdz_doc body links
+              # cadenza_ast, which only the gate exec stages via #5707).
+              CDZ_VALUE_DOC = "1";
               __contentAddressed = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
@@ -4065,6 +4075,12 @@
           pkgs.runCommand "corpus-rust-exec-${name}-${idx}"
             {
               nativeBuildInputs = [ cdzRustRun rustToolchain ];
+              # VALUE-DOC FLIP (see mkCorpusRustBuild): the exec half — under CDZ_VALUE_DOC the cdz-rust-run
+              # driver-gen reads the `// cdz-value-doc:` marker + calls the emitted __cdz_doc_<export>()
+              # (driver.rs) / value_doc_render_scalar INSTEAD of cdz_render_at. Needs the flag on BOTH sides;
+              # cadenza_ast is already staged in rustRlibs (#5707) so the emitted doc body links. Advisory +
+              # byte-identical (v-rust-backend). Gate derivation only — never a real `cdz -t rust` user.
+              CDZ_VALUE_DOC = "1";
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
