@@ -808,6 +808,12 @@ const PREAMBLE: &str = "\
 /// (backend-RESERVED — a user ident never begins with `__`, so it can never collide with a `(type CdzF64 …)`
 /// the way the bare `CdzF64` did → rustc E0428). Emitted ONLY when a Float64-keyed set/map is present
 /// (gated on the `__CdzF64::new(` marker); an unused struct would trip dead-code lints, so `#[allow(dead_code)]`.
+/// `get` is `pub` (both wrappers) because the render DRIVER unwraps a float Set-element/Map-key via `.get()`
+/// OUT-OF-MODULE (`cdz_render_at`) — do NOT hide it (that regressed float-collection render, E0624, #7718).
+/// The export scanner that once miscounted it anchors `pub fn` at line start (skips indented impl methods —
+/// `sole_export_name`/`emitted_pub_fn_names`), so `pub` here is safe. Keep this rationale OUT of the emitted
+/// string: a `//` comment inside `CDZ_F{32,64}_DECL` ships into every user module AND (mentioning the sibling
+/// name) broke the `!contains("__CdzF64")` width golden — hence it lives here, not in the wrapper text.
 const CDZ_F64_DECL: &str = "\
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -815,10 +821,6 @@ pub struct __CdzF64(u64);
 #[allow(dead_code)]
 impl __CdzF64 {
     fn new(v: f64) -> Self { __CdzF64(if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }) }
-    // `pub`: the render DRIVER (out-of-module `cdz_render_at`) unwraps a float Set-element/Map-key via
-    // `.get()`, so it must be visible cross-module. The export scanner that once miscounted this as a
-    // program export is fixed at its source (anchors `pub fn` at line start, skipping indented impl methods
-    // — `sole_export_name`/`emitted_pub_fn_names`), so `pub` here no longer trips it.
     pub fn get(self) -> f64 { f64::from_bits(self.0) }
 }
 impl PartialEq for __CdzF64 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
@@ -839,7 +841,6 @@ pub struct __CdzF32(u32);
 #[allow(dead_code)]
 impl __CdzF32 {
     fn new(v: f32) -> Self { __CdzF32(if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() }) }
-    // `pub` for the same reason as `__CdzF64::get` — the out-of-module render driver unwraps via `.get()`.
     pub fn get(self) -> f32 { f32::from_bits(self.0) }
 }
 impl PartialEq for __CdzF32 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
