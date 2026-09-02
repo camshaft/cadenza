@@ -4222,6 +4222,24 @@ impl Db {
         idx
     }
 
+    /// Make def `idx` (already in `self.defs`, e.g. via [`push_specialized_def`]) visible under `name` in
+    /// the FILE-SCOPE surface of `at`'s file, for a LINKED multi-file package. In a linked package a bare
+    /// name resolves through [`file_scoped_def`] against the reference's own file's `visible` map, NOT the
+    /// flat `def_name_index` — so a def added AFTER the load-time file-scope scan (a macro-spliced sibling
+    /// def, `expand_macros` runs post-load) must also be entered here, or it stays invisible within its
+    /// own file (`file_scoped_def` returns `Err` for a known-file/absent-name and the resolver does not
+    /// fall back to the global index — that would leak siblings). A NO-OP in a single-file compile
+    /// (`file_scope` is `None`) — that path uses the flat `def_by_name` and needs nothing here. If `at`'s
+    /// file is indeterminate (a synthesized node with no demux range) there is no file surface to update;
+    /// skip (the synthesized-node resolver branch handles those via the unambiguous flat count).
+    pub(crate) fn register_file_scoped_def(&mut self, at: StructId, name: &str, idx: usize) {
+        if let Some(fs) = self.file_scope.as_mut()
+            && let Some(file) = fs.file_of(at)
+        {
+            fs.visible[file].entry(name.to_string()).or_insert(idx);
+        }
+    }
+
     /// Fill a reserved specialized def's parameters + body (see [`push_specialized_def`]) — the two-step
     /// build a self-referential specialization needs: reserve the name, thread the body (which may call
     /// the name), then fill. Updates the body index so `def_index_by_body` finds it.

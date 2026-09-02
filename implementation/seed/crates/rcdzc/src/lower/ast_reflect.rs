@@ -608,10 +608,16 @@ pub(super) fn lower_gensym(db: &mut Db, id: StructId, base_val: StructId) -> Cor
 /// quote-marked argument to the `Ast` that `(quote arg)` denotes (`quote::reify_arg`), leave eager args as
 /// values, β-reduce the macro with those args (`eval::apply_lambda`) to a result `Ast`, and reconstruct
 /// that `Ast` back to source (`reconstruct_macro`, which SEES THROUGH a spliced reflected arg). Returns
-/// the reconstructed SOURCE node (the caller splices it at the call site), or `None` — deferring to the
-/// ordinary application — when `head` is not a quote-param def, on an arity mismatch (a partial
+/// `(reconstructed SOURCE node, caller-origin node set)` — the caller splices the node at the call site,
+/// and uses the caller-origin set (nodes reconstructed under an `ast-lift`, i.e. arrived from a caller
+/// arg) to decide whether a spliced sibling `(def NAME …)` binds top-level (gap#4). `None` — deferring to
+/// the ordinary application — when `head` is not a quote-param def, on an arity mismatch (a partial
 /// application), or when an argument is not reifiable / the result not reconstructable.
-fn try_macro_expand(db: &mut Db, head: StructId, args: &[StructId]) -> Option<StructId> {
+fn try_macro_expand(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+) -> Option<(StructId, std::collections::HashSet<u32>)> {
     let def_ix = super::callee_def_index(db, head)?;
     let params = db.defs[def_ix].params.clone();
     // Which params are `quote`-marked (name-occ ∈ quote_params)? Not a macro call if none are.
@@ -674,6 +680,11 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // rebuild below (a match ARM is a binding candidate detected via `parent_of`, so seeding it before
         // the spliced arm has a parent would miss it → the arm-body binder unbinds, gap#6).
         let mut spliced: Vec<StructId> = Vec::new();
+        // CALLER-ORIGIN node ids accumulated across this round's expansions — a spliced sibling `(def NAME
+        // …)` is registered top-level (gap#4) ONLY when its NAME node is caller-origin (arrived from a
+        // caller arg through the `ast-lift` boundary), per the v-spec-oracle ruling; a macro-template
+        // -internal name stays hygienic-local (never registered).
+        let mut caller_origin: crate::fxhash::FxHashSet<u32> = crate::fxhash::FxHashSet::default();
         // Scan only nodes present at the START of the round; freshly-spliced nodes are handled next round
         // (after the memo invalidation below re-resolves them).
         let n = db.ast.structure.len();
@@ -707,7 +718,8 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 continue;
             };
             let args = args.to_vec();
-            if let Some(src) = try_macro_expand(db, head, &args) {
+            if let Some((src, caller)) = try_macro_expand(db, head, &args) {
+                caller_origin.extend(caller);
                 // Splice: overwrite the CALL NODE with a copy of the reconstruction root's structure, so
                 // the call's own `StructId`/span becomes the spliced-in form. Blank the now-duplicate
                 // appended root (a fresh `push_*` node out-ranks the copy as the shared children's parent).
@@ -767,6 +779,54 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // AFTER the parent rebuild for exactly that reason.
         for &sid in &spliced {
             db.extend_scope_skip_into_subtree(sid);
+        }
+        // gap#4: a spliced sibling `(def NAME VALUE)` at the ROOT `do` is a TOP-LEVEL def — but
+        // `def_name_index` FROZE at load (`scan_top_level` ran pre-`expand_macros`), so a post-load splice
+        // is invisible → an enclosing reference to NAME is CDZ0101 unbound. Register it now IFF its NAME is
+        // CALLER-ORIGIN (arrived from a caller arg through the `ast-lift` boundary — use-site identity, like
+        // `(mkdef answer)` → `answer`); a MACRO-TEMPLATE-INTERNAL name stays HYGIENIC-LOCAL and is never
+        // registered (v-spec-oracle gap#4 ruling — lock BOTH halves in corpus). Only a ROOT-do def needs
+        // this: a nested do-local def resolves via `do_local_binds`, and a fn def `(def (f p…) …)` (a LIST
+        // signature) is already handled as a reduced callable above — so gate on a bare-NAME value def
+        // whose parent is the root `do`.
+        for &sid in &spliced {
+            if db.parent_of(sid) != Some(db.ast.root) {
+                continue;
+            }
+            let shape = db
+                .ast
+                .as_form(sid, "def")
+                .map(|tail| (tail.first().copied(), tail.get(1).copied()));
+            let Some((Some(sig), body)) = shape else {
+                continue;
+            };
+            // VALUE def only — a bare-NAME signature (a fn def's signature is a LIST).
+            if !matches!(db.ast.get(sig), crate::ast::Struct::Atom(_)) {
+                continue;
+            }
+            // CALLER-ORIGIN gate: only a name spliced from a caller arg binds top-level.
+            if !caller_origin.contains(&sig.0) {
+                continue;
+            }
+            let name = db.ast.as_name(sig).unwrap_or("").to_string();
+            // Never SHADOW an existing top-level def (the load-time scan wins; `or_insert` in
+            // `push_specialized_def` already no-ops, but skip early to keep intent explicit).
+            if name.is_empty() || db.def_by_name(&name).is_some() {
+                continue;
+            }
+            let idx = db.push_specialized_def(crate::db::Def {
+                name: name.clone(),
+                sig_occ: sig,
+                params: Vec::new(),
+                body,
+                internal: false,
+            });
+            // Also enter it into the FILE-SCOPE surface of the def's own file, so it resolves in a LINKED
+            // multi-file package (where a bare name resolves via `file_scoped_def` against the file's
+            // `visible` map, not the flat `def_name_index`). No-op in a single-file compile (`file_scope`
+            // is `None`). `sid` is the spliced def FORM — a real-file node at the macro call's own position
+            // — so its file is the file the sibling def lives in. (PR #7717 Copilot review, finding 1.)
+            db.register_file_scoped_def(sid, &name, idx);
         }
         // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
         // pre-splice `Apply`; clearing `db.types` drops any type memoized on the reduced/copied body.

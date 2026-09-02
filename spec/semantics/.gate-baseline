@@ -10826,3 +10826,5 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 pass	Type.ast reflects a DIRECT user-generic instantiation (Box Int64), coherent with the value-mediated form
 pass	Type.ast of a WRONG-ARITY direct user-generic application is rejected, not silently reflected
 pass	Type.ast does not suppress a fault inside a (Type.of e) argument
+pass	a macro-introduced SIBLING def with a caller-spliced name binds visibly at the enclosing scope
+pass	a macro-introduced SIBLING def with a macro-internal name stays hygienic-local, not enclosing-visible

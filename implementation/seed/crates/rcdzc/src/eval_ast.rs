@@ -383,7 +383,10 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
 /// bound to `(Ast.Int 5)` reconstructs to `5`, its denotation, not the constructor call). A macro's `,x`
 /// splices SYNTAX (code), so its expansion is real code; distinct from `eval`, where a spliced `Ast` value
 /// is data and must not be seen through (DESIGN-macro-system.md §4).
-pub(crate) fn reconstruct_macro(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+pub(crate) fn reconstruct_macro(
+    ast: &mut Arenas,
+    node: StructId,
+) -> Option<(StructId, std::collections::HashSet<u32>)> {
     // Track CALLER-ORIGIN nodes: a caller's quote-argument reaches the expansion through an active
     // unquote (the `ast-lift` boundary), so `reconstruct_inner` records every node it reconstructs UNDER
     // an `ast-lift` into `caller`. Everything else in `root` is MACRO-TEMPLATE syntax.
@@ -394,7 +397,11 @@ pub(crate) fn reconstruct_macro(ast: &mut Arenas, node: StructId) -> Option<Stru
     // name. Alpha-rename any template binder whose spelling collides with a caller-origin name; the
     // caller's occurrences (in `caller`) keep their spelling and resolve in the caller's scope.
     rename_captured_binders(ast, root, &|id| caller.contains(&id.0));
-    Some(root)
+    // Return the caller-origin node set alongside the root: `expand_macros` uses it to decide whether a
+    // spliced sibling `(def NAME …)` is CALLER-VISIBLE (its NAME arrived from a caller arg, so it binds in
+    // the enclosing scope — `(mkdef answer)` → `answer`) versus a MACRO-TEMPLATE-INTERNAL name (stays
+    // hygienic-local, never registered top-level) — the v-spec-oracle gap#4 ruling.
+    Some((root, caller))
 }
 
 fn reconstruct_inner(
