@@ -5492,12 +5492,31 @@ fn sum_shell_reclaim_ok(
     // OWNED scrutinee (a computed/materialized temporary). A reused PARAM/local slot fails the Owned gate
     // (heap_operand_ownership(Param)==Borrowed) — that case is the non-tail-spine param path, gated separately
     // via `sum_shell_reclaim_payload_ok` + the proven-owned-dead-after `nontail_match_reclaim_binders` set.
-    sum_shell_reclaim_payload_ok(db, scrutinee, scrut_ty, never_diverges, root)
-        && matches!(stashed_slot, Some((_, ValType::I32)))
+    matches!(stashed_slot, Some((_, ValType::I32)))
         && matches!(
             heap_operand_ownership(db, scrutinee),
             Ok(HandleOwnership::Owned)
         )
+        && (sum_shell_reclaim_payload_ok(db, scrutinee, scrut_ty, never_diverges, root)
+            // STASHED-OWNED-COMPUTED COMPOUND increment (v-core-opt + v-mem-safety co-design; fp
+            // `Result((value,cursor),String)` husk leak). The all-scalar floor in
+            // `sum_shell_reclaim_payload_ok` leaves a COMPOUND-payload owned COMPUTED scrutinee's shell
+            // un-dropped. But the dup-pass ALREADY dups this scrutinee's consumed children — the
+            // `owned_compound_boxed` arm of `collect_shell_reclaim_child_dups` fires for exactly this shape
+            // (computed + `Owned` + compound-boxed sum) — so the compensating deep-drop is the MISSING half
+            // of the lockstep (an orphaned dup = a leak). Complete it under the SAME safe-drop fences the
+            // compound PARAM path uses (`nontail_param_compound_extra_ok`): G4 no arm returns the shell whole
+            // + no payload-in-result, G5 no arm alias-outs a shell child via a fallible interior-view op (the
+            // 2026-07-19 sread-UAF fence). `dup ⊇ drop` (owned_compound_boxed dups a superset of what this
+            // gate drops), so the deep-drop cascade nets — never a double-free (residual over-dup = a leak).
+            // RESUME-ESCAPE GUARD (mirrors the FIND3 all-scalar-product disjunct above, rrb1): restrict to a
+            // fresh `Core::Call` result that is DEAD-AFTER-DESTRUCTURE — a Call result is inlined once as the
+            // scrutinee and CANNOT be resume-threaded (a handler THREADED-STATE via If/materialize/Param could
+            // `resume`-escape a payload INVISIBLY at Core level → a husk-drop there would free a live escapee).
+            // The sound, select.rs-decidable proxy for v-effects' "exclude any resuming arm".
+            || (matches!(core_of(db, scrutinee), Core::Call { .. })
+                && scrutinee_dead_after_destructure(db, scrutinee, root)
+                && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))
 }
 
 /// The owned-single-view-producer twin of [`sum_shell_reclaim_ok`] for `MatchSum` (the `SumExpect`

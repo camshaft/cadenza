@@ -3901,8 +3901,7 @@ fn nontail_param_payload_ok(
 /// `!sum_cont_arm_interior_view_on_scrutinee` (no arm aliases a shell child out via an interior-view op). The
 /// CALLER gates this on membership in `nontail_compound_reclaim_binders`, which the dup-pass
 /// (`is_nontail_spine_param`) populates in LOCKSTEP — so every consumed shell child is dup'd before the drop.
-#[allow(dead_code)] // INC1 increment-2: compound-disjunct re-enable (v-core-opt extract-share) reactivates this; dead until then
-fn nontail_param_compound_extra_ok(
+pub(super) fn nontail_param_compound_extra_ok(
     db: &mut Db,
     scrutinee: StructId,
     scrut_ty: &Ty,
