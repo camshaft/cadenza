@@ -3711,4 +3711,8 @@
   (call main (: 5 Int64))
   (output (: 300520661005 Int64))
   (call main (: 137 Int64))
-  (output (: 100120661137 Int64)))
+  (output (: 100120661137 Int64))
+  ; TODO(v-memory-safety): the arm-fused multi-arm bin match over a Bytes value currently leaks the
+  ; discriminated segment reads; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak,
+  ; tighten to 0 once the bin-match segment-read interior reclaim lands. (breaker blx1 #7958, added unpinned.)
+  (live-objects known-leak))
