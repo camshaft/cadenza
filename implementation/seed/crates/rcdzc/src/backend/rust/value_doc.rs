@@ -179,7 +179,32 @@ fn doc_value_node(
         let unit_node = doc_unit_node(&unit, out, ctr)?;
         let head = fresh(ctr);
         out.push_str(&format!("    let {head} = __b.name(\"Qty.of\");\n"));
-        let mag = doc_value_node(db, &inner, val_expr, out, ctr)?;
+        // DISPLAY-SCALE the magnitude to the dimension's REFERENCE unit before rendering: a stored quantity
+        // displays with its magnitude scaled to the reference (`5 kilometer` → `5000.0 meter`), a DISPLAY
+        // concern that does NOT alter the stored value (`Qty.value` still returns 5.0). The prefix/named-unit
+        // factor rides `unit.scale()` (num/den); the dimension rides `unit.entries()`, which `doc_unit_node`
+        // already renders as the reference (`(Unit.base #"meter")`). Mirror the wasm path
+        // (`lower::value_form::const_value_ast_scaled`): a Float rounds via an f64 multiply. A non-(1/1) scale
+        // on a NON-Float inner declines to the `cdz_render_at` fallback (which scales Int truncating /
+        // Rational exact) — value_doc covers the Float display-scale here. A reference/base unit (scale 1/1)
+        // is byte-neutral (render the magnitude as-is), so a base-unit Qty is unchanged.
+        let (num, den) = unit.scale();
+        let scaled_expr: String = if num == 1 && den == 1 {
+            val_expr.to_string()
+        } else if let Ty::Float(ft) = &inner {
+            let scaled =
+                format!("((({val_expr}) as f64) * ({num}i128 as f64) / ({den}i128 as f64))");
+            if ft.ground_width() == 32 {
+                format!("({scaled} as f32)")
+            } else {
+                scaled
+            }
+        } else {
+            return Err(Reject::decline(
+                "value-doc: non-Float prefixed Qty magnitude scaling — cdz_render_at fallback",
+            ));
+        };
+        let mag = doc_value_node(db, &inner, &scaled_expr, out, ctr)?;
         let v = fresh(ctr);
         out.push_str(&format!(
             "    let {v} = __b.list(vec![{head}, {mag}, {unit_node}]);\n"
