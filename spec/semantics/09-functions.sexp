@@ -492,7 +492,7 @@
         (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None u) -1))))
       (def
         (main (: a Int64))
-        (let ((g (make-getter (Map.insert (Map.insert Map.empty 1 10) 2 20)))) (+ (g a) (g 2))))
+        (let ((g (make-getter #map((= 1 10) (= 2 20))))) (+ (g a) (g 2))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 30 Int64))
