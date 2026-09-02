@@ -1966,9 +1966,35 @@ fn emit_expr_viewed(
             // `Core::Proj` arm, and its type-driven key). A `Payload` / `RestFrom` step (a refutable nested
             // sum/list — needs a real nested match) is not projectable and declines. An irrefutable
             // tuple/record destructure is value-eq to these projections (recompile re-lowers them identically).
-            let mut cur_ty = crate::infer::type_of(db, scrutinee);
-            let mut node = emit_expr(db, b, scrutinee, None, env, emitted)?;
-            for step in path.iter() {
+            // LONGEST-REGISTERED-PREFIX resolution. The exact `path` was not registered, but a PREFIX may be —
+            // an ELEMENT bound by an enclosing arm (`emit_match_list` / a deep destructure registers `[Elem(i)]`).
+            // A read nested UNDER that element (`[Elem(0), Elem(0)]` = tuple slot 0 of list element 0) must start
+            // at the ELEMENT binder and project the SUFFIX, NOT walk from the un-projectable list scrutinee (whose
+            // first `Elem` step over `Ty::List` declines at the `_` arm below). Find the longest registered prefix,
+            // emit its binder, and continue the projection walk from there; no prefix → walk the whole path from
+            // the scrutinee (prior behavior). The prefix binder's stored type (`payload_tys`, e.g. the list's
+            // element type) seeds `cur_ty` for the suffix walk; absent → `Ty::Any` (the walk then declines safely).
+            // Require the prefix binder's stored TYPE (`payload_tys`): the suffix walk is type-driven, and some
+            // registration sites store `payloads` WITHOUT a type (e.g. the Leaf-plan element binders). Diverting
+            // such a prefix with an unknown type would turn a previously-succeeding scrutinee-walk into a decline;
+            // requiring the type keeps the divert strictly additive (a prefix WITH a type — the list/deep-match
+            // element binders — else fall through to the whole-path scrutinee walk, prior behavior).
+            let (mut cur_ty, mut node, skip) = 'prefix: {
+                for plen in (1..path.len()).rev() {
+                    let prefix: Vec<crate::core::PathStep> = path[..plen].to_vec();
+                    if let Some(nm) = env.payloads.get(&(scrutinee, prefix.clone())).cloned()
+                        && let Some(pty) = env.payload_tys.get(&(scrutinee, prefix)).cloned()
+                    {
+                        break 'prefix (pty, b.name(nm), plen);
+                    }
+                }
+                (
+                    crate::infer::type_of(db, scrutinee),
+                    emit_expr(db, b, scrutinee, None, env, emitted)?,
+                    0usize,
+                )
+            };
+            for step in path.iter().skip(skip) {
                 let crate::core::PathStep::Elem(i) = *step else {
                     return Err(Reject::unsupported(
                         "the Cadenza backend does not support lowering a nested match sub-pattern with a \
@@ -2095,24 +2121,13 @@ fn emit_expr_viewed(
                             ));
                         }
                     }
-                    // The projection walk landed on a value whose type is NOT positionally projectable — a
-                    // `Ty::List`, a MULTI-variant `Ty::Sum`, a non-emitted / non-single-variant nominal, or a
-                    // scalar. Reaching here means a nested match sub-pattern read into such a value (e.g. a
-                    // variant ctor sub-pattern on a list element, `#list((Ctor x) ..)`, whose element is a
-                    // multi-variant sum — the `Payload` step needs a real nested match with variant recovery, a
-                    // later slice). Name the offending type CLASS so a decline is attributable (breaker/corpus).
-                    other => {
-                        let class = match other {
-                            Ty::List(_) => "a list",
-                            Ty::Sum { .. } => "a multi-variant / non-emitted sum",
-                            Ty::Nominal { .. } => "a non-single-variant / non-emitted nominal",
-                            _ => "a scalar / non-projectable value",
-                        };
-                        return Err(Reject::unsupported(format!(
-                            "the Cadenza backend does not support a nested match sub-pattern that projects into \
-                             {class} (a positionally non-projectable type) — e.g. a variant ctor sub-pattern on \
-                             a list/sum element needs a nested match with variant recovery (a later slice)"
-                        )));
+                    _ => {
+                        return Err(Reject::unsupported(
+                            "the Cadenza backend does not support a payload projection over a \
+                             non-tuple/record value (e.g. a newtype ctor sub-pattern nested under a \
+                             list/tuple pattern over Map.to-list output)"
+                                .to_string(),
+                        ));
                     }
                 }
             }
