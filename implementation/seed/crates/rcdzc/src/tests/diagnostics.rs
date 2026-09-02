@@ -1872,3 +1872,42 @@ fn a_discarded_effect_op_perform_does_not_warn_cdz0307_and_pure_still_does() {
         "a pure discarded non-final value must still warn CDZ0307 (no over-suppression)"
     );
 }
+
+#[test]
+fn a_tuple_pattern_destructure_reject_from_a_reconstructed_handler_state_is_located() {
+    // v-inference vA repro: a handler-state `(match s …)` whose next-state RECONSTRUCTS the destructured
+    // tuple (`(resume cnt (Some #tuple(cnt label)))`) routes back through re-entrant pattern-type
+    // compilation, which SYNTHESIZES a tuple-pattern copy (no span, no copy-provenance) that hits the
+    // "cannot destructure a value of type _" reject. That reject used to be POSITION-LESS (sanitize_origin
+    // nulled the synth anchor); the nearest-user-ANCESTOR fallback now anchors it at the enclosing user
+    // construct so a "cannot destructure" diagnostic is never un-pointable.
+    let src = "(module m \
+        (effect Q (op p (-> Int64 Int64))) \
+        (def (main (: n Int64)) \
+          (handle Q (None) \
+            ((p (v) s (match s \
+              ((Some #tuple(cnt label)) (resume cnt (Some #tuple(cnt label)))) \
+              ((None _u) (resume 0 s))))) \
+            (Q.p n))) \
+        (export main))";
+    let all = diags_of(src);
+    let d = all
+        .iter()
+        .find(|d| {
+            d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot destructure a value of type")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the tuple-pattern-destructure CDZ0201: {:?}",
+                all.iter()
+                    .map(|d| (d.code.clone(), d.message.clone()))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        d.node.is_some(),
+        "the tuple-pattern destructure reject must be LOCATED (carry a node), not position-less: {}",
+        d.message
+    );
+}
