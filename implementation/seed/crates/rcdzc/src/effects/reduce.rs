@@ -369,6 +369,11 @@ pub fn reduce_handle(
     // Runs to a fixpoint (bounded) so a nested non-tail abort is lifted level by level; a shape it can't
     // lift is left as-is and the guard below declines it.
     let body = hoist_conditional_abort(db, body, &ctx);
+    // DEF-BOUNDARY NON-LOCAL-EXIT (finding #11-B, 14:12783). A `(let ((a (helper (Foreign.op) …))) K)` whose
+    // helper aborts in a MATCH arm: inline the helper and distribute K into the NON-ABORTIVE arms only, so the
+    // abort homes to its boundary (the safe-floor guard below would otherwise DECLINE this — a naive fold
+    // threads the abort into K = miscompile). Leaves any other shape unchanged.
+    let body = hoist_match_abort_let(db, body, &ctx).unwrap_or(body);
     // PENDING-IN-HANDLE-BODY (adv-52, non-local-exit CC). An abortive (tail-)recursive callee called at a
     // NON-TAIL operand of a pure strict op in the handle body — `(+ (go 2) 999999)` — must ABANDON the pending
     // op on abort. The recursive-callee guard below (`body_has_unsound_abortive_perform` → the cross-fn arm)
@@ -2295,6 +2300,86 @@ pub(crate) fn abortive_perform_value_ty(
             .find_map(|&c| abortive_perform_value_ty(db, c, ctx)),
         Struct::Atom(_) => None,
     }
+}
+
+/// DEF-BOUNDARY NON-LOCAL-EXIT (finding #11-B, 14:12783). Fold the shape `(let ((a <helper-call>)) K)` where
+/// `<helper-call>` is a non-recursive helper that ABORTS in a MATCH arm and carries a FOREIGN-performing
+/// argument (`(let ((a (unwrap (E.fetch) 11))) (* a 2))`, `unwrap o tag = (match o ((Some v) v) ((None)
+/// (Bail.out tag)))`). INLINE the helper and DISTRIBUTE the continuation `K` into the match's NON-ABORTIVE
+/// arms only — `(Some v) → (let ((a v)) K)` — leaving the abortive arm's bare escape (`(None) → (Bail.out
+/// tag)`) UNTOUCHED, so the abort HOMES to its handler boundary instead of the naive per-branch fold
+/// threading the abort value into `K` (the 10223-vs-5113 miscompile the safe-floor guard prevents). The
+/// resulting distributed match is the shape the reducer already folds correctly (proven: 43/5113). Returns
+/// the rewritten match, or `None` if the shape does not match (the guard then declines, as before). Gated by
+/// `init_is_foreign_arg_match_abort_call` — the exact def-boundary shape the safe-floor otherwise rejects.
+pub(crate) fn hoist_match_abort_let(
+    db: &mut Db,
+    body: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    let form = db.ast.as_form(body, "let").map(|t| t.to_vec())?;
+    if form.len() != 2 {
+        return None;
+    }
+    let (bindings_occ, k) = (form[0], form[1]);
+    let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
+        return None;
+    };
+    // A SINGLE binding `(a INIT)` — the def-boundary let-init shape. (Multi-binding lets are left to the
+    // guard; the continuation-distribution below assumes one binder threading into K.)
+    if pairs.len() != 1 {
+        return None;
+    }
+    let Struct::List(kv) = db.ast.get(pairs[0]).clone() else {
+        return None;
+    };
+    if kv.len() != 2 {
+        return None;
+    }
+    let (a_binder, init) = (kv[0], kv[1]);
+    if !init_is_foreign_arg_match_abort_call(db, init, ctx) {
+        return None;
+    }
+    // INLINE the helper call (β-reduce its body with the call args substituted) → its `(match …)` body.
+    let Resolved::Apply { head, args } = resolved_of(db, init) else {
+        return None;
+    };
+    let inlined = crate::eval::apply_lambda(db, head, &args).ok().flatten()?;
+    let mform = db.ast.as_form(inlined, "match").map(|t| t.to_vec())?;
+    if mform.len() < 2 {
+        return None;
+    }
+    let scrut = mform[0];
+    // Rebuild `(match scrut <arm>…)`: an ABORTIVE arm keeps its bare escape; a NON-ABORTIVE arm gets the
+    // continuation spliced `(pat (let ((a <arm-body>)) K))`. K is shared across arms (its `a` refs re-resolve
+    // to the nearest enclosing `a` binder — the per-arm inner let — by scope). At least ONE arm must abort
+    // (else there is no non-local-exit to home; leave it to the ordinary fold).
+    let mut any_abort = false;
+    let match_head = db.push_name("match");
+    let let_head = db.push_name("let");
+    let mut children = vec![match_head, scrut];
+    for &arm in &mform[1..] {
+        let Struct::List(pb) = db.ast.get(arm).clone() else {
+            return None;
+        };
+        if pb.len() != 2 {
+            return None;
+        }
+        let (pat, arm_body) = (pb[0], pb[1]);
+        if subtree_has_abortive_perform(db, arm_body, ctx) {
+            any_abort = true;
+            children.push(db.push_list(vec![pat, arm_body]));
+        } else {
+            let pair = db.push_list(vec![a_binder, arm_body]);
+            let binds = db.push_list(vec![pair]);
+            let inner_let = db.push_list(vec![let_head, binds, k]);
+            children.push(db.push_list(vec![pat, inner_let]));
+        }
+    }
+    if !any_abort {
+        return None;
+    }
+    Some(db.push_list(children))
 }
 
 /// Rewrite a NON-TAIL conditional abort into a branch-tail one by distributing the enclosing strict op

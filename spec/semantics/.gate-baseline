@@ -2368,7 +2368,7 @@ pass	a def shadowing the prelude String type name is likewise a plain rebind
 pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
-todo	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
+pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-float pragma leaves a bare integer literal at its Int64 default
 pass	a default-float pragma naming a non-float integer type is rejected
