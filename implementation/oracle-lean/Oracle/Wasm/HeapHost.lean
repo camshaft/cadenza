@@ -8,7 +8,7 @@ heap/collection corpus cases become runnable instead of skipped.
 
 W5.1a subset — the ops with unambiguous, spec-clear semantics:
   * refcount / liveness core: `dup`, `drop`, `live-objects`
-  * boxing:                   `box-int/-float/-float32/-bool`, `get-int/-float/-float32/-bool`
+  * boxing:                   box-{int,float,float32,bool} + get-{int,float,float32,bool}
 (`mark-immortal*`, `reset`, and the `arr-*` family land in W5.1b once their exact return semantics are
 confirmed from the spec; adding them here without confirming would be guessing.)
 
