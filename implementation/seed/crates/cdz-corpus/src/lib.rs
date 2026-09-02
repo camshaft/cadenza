@@ -256,6 +256,13 @@ pub struct Call {
 pub enum Expect {
     /// `(output (: <value> <Type>))` — the value the run produces, as its canonical value-form text.
     Output(String),
+    /// `(output-byte-len <N>)` — a RUN outcome pinning ONLY the SIZE of the escaped value: its canonical
+    /// binary-AST ENCODING must be exactly `N` bytes. Lets a >64KiB value-escape (the #7793/#7800 OOB
+    /// class) be corpus-fenced at O(1) bytes — the case builds the big value at runtime (a tiny doubling
+    /// source) and lets it escape as the result, and this clause asserts its encoded length WITHOUT
+    /// spelling the 64KiB literal (which would blow the 512KB source mandate). Same outcome KIND as
+    /// `Output` (a RUN outcome, compile must succeed); graded by `cdz_corpus_grade::value_encoding_byte_len`.
+    OutputByteLen(u64),
     /// `(error <CODE>)` (or a `(compiler (error <CODE>))` for a provable-at-compile-time trap) — the
     /// diagnostic code the compiler must reject with.
     /// The second field is a list of load-bearing SUBSTRINGS of the diagnostic MESSAGE the corpus pins —
@@ -619,6 +626,12 @@ pub fn render(records: &[Record]) -> String {
                 Expect::Output(v) => {
                     out.push_str("output ");
                     out.push_str(v);
+                }
+                // `output-byte-len N` — the SIZE-only run outcome; xtask's grade_trial parses the "output-
+                // byte-len" kind and measures the run value's canonical binary-AST encoding against N.
+                Expect::OutputByteLen(n) => {
+                    out.push_str("output-byte-len ");
+                    out.push_str(&n.to_string());
                 }
                 // `error CODE`, plus ` (message "phrase")` VERBATIM when the case pins a message — the
                 // exact surface xtask's split_message_clause parses (operator seq353). Absent → byte-
@@ -1028,6 +1041,21 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     trials.push(Trial {
                         call: pending_call.take(),
                         expect: Expect::Output(v),
+                        diag: None,
+                    });
+                }
+            }
+            Some("output-byte-len") => {
+                // `(output-byte-len <N>)` — closes a trial with a SIZE-only run outcome (the escaped
+                // value's canonical binary-AST encoding must be exactly N bytes). N is a bare integer leaf.
+                if let Some(n) = a
+                    .as_form(clause, "output-byte-len")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| sexpr::print_from(a, id).trim().parse::<u64>().ok())
+                {
+                    trials.push(Trial {
+                        call: pending_call.take(),
+                        expect: Expect::OutputByteLen(n),
                         diag: None,
                     });
                 }
@@ -1768,6 +1796,24 @@ mod tests {
         assert_eq!(
             stream, concat,
             "per-record renders must concatenate to the whole-stream render"
+        );
+    }
+
+    /// An `(output-byte-len N)` clause parses to `Expect::OutputByteLen(N)` (a RUN outcome, `output` kind)
+    /// and renders back to the flat manifest as `output-byte-len N`.
+    #[test]
+    fn output_byte_len_parses_and_renders() {
+        let recs = read(r#"(case "big" (input (do (def (main) 1) (export main))) (call main) (output-byte-len 65552))"#).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].trials.len(), 1);
+        assert!(matches!(
+            &recs[0].trials[0].expect,
+            Expect::OutputByteLen(n) if *n == 65552
+        ));
+        let text = render(&recs);
+        assert!(
+            text.contains("expect\toutput-byte-len 65552\n"),
+            "flat manifest must carry the byte-len expect line, got: {text:?}"
         );
     }
 

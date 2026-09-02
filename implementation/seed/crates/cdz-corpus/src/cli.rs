@@ -1014,6 +1014,10 @@ fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
                 let av = parse_value_ast(&mut b, v);
                 form(&mut b, "expect-value", vec![av])
             }
+            Expect::OutputByteLen(n) => {
+                let leaf = str_leaf(&mut b, &n.to_string());
+                form(&mut b, "expect-output-byte-len", vec![leaf])
+            }
             Expect::Trap(reason) => {
                 let r = str_leaf(&mut b, reason);
                 form(&mut b, "expect-trap", vec![r])
@@ -1102,6 +1106,8 @@ fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 fn expect_kind(rec: &Record) -> &'static str {
     match rec.trials.first().map(|t| &t.expect) {
         Some(Expect::Output(_)) => "output",
+        // A byte-len pin is a RUN outcome (compile must succeed, value must escape) → the `output` router.
+        Some(Expect::OutputByteLen(_)) => "output",
         Some(Expect::Trap(_)) => "trap",
         Some(Expect::Error(..)) => "error",
         // A warning case COMPILES (must succeed → produce an artifact) AND emits a warning — a COMPILE
@@ -1244,6 +1250,11 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
         Expect::Output(v) => {
             let leaf = str_leaf(b, v);
             form(b, "expect-output", vec![leaf])
+        }
+        // `(expect-output-byte-len N)` — the size-only pin; N rides as its decimal-text leaf.
+        Expect::OutputByteLen(n) => {
+            let leaf = str_leaf(b, &n.to_string());
+            form(b, "expect-output-byte-len", vec![leaf])
         }
         Expect::Error(code, msg, not_msg) => {
             let cl = str_leaf(b, code);
