@@ -360,6 +360,62 @@ pub fn wit_type_to_ty(db: &crate::db::Db, t: &WitType) -> Option<Ty> {
     })
 }
 
+/// BEST-EFFORT [`wit_type_to_ty`] for the cadenza typed-WIT-export RESULT `expected` threading: it NEVER
+/// returns `None` for a compound — an unmappable field/element (a `variant`/`enum`/`flags`, pending the
+/// synthesized-nominal-decl increment) becomes `Ty::Any` rather than poisoning the WHOLE shape. This matters
+/// for a result RECORD that mixes a mappable field beside an unmappable one — e.g. `record { requests:
+/// list<record{ deadline-nanos: option<u64> }>, outcome: variant{…} }` (28-wit typed-reducer host-op-result
+/// shapes): the strict `wit_type_to_ty` bails on `outcome` and drops the ENTIRE result type, so the bare
+/// `Option.None` deep inside `requests` never recovers its `option<u64>` element type and DECLINES (CDZ0900).
+/// Sound as an `expected` FALLBACK ONLY: `expected` refines an UNDER-DETERMINED value's type args, and
+/// `Ty::Any` at a position is itself treated as under-determined ([`ty_has_free_arg`] is true for `Any`), so
+/// it is NO WORSE than an absent `expected` there — while the mappable SIBLING fields DO get their resolved
+/// args threaded down. The unmappable field's own VALUE (`Outcome.Continue`, a fully-determined user variant)
+/// needs no `expected` and emits on its own. Do NOT use where an EXACT type is required (param derivation,
+/// codec) — that stays on the strict `wit_type_to_ty` which honestly declines an unmapped shape.
+pub fn wit_type_to_ty_lossy(db: &crate::db::Db, t: &WitType) -> crate::ty::Ty {
+    use crate::ty::Ty;
+    match t {
+        WitType::List(elem) => {
+            if matches!(**elem, WitType::U8) {
+                Ty::Bytes
+            } else {
+                Ty::List(Box::new(wit_type_to_ty_lossy(db, elem)))
+            }
+        }
+        WitType::Tuple(elems) => {
+            Ty::Tuple(elems.iter().map(|e| wit_type_to_ty_lossy(db, e)).collect())
+        }
+        WitType::Record(fields) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (name, fty) in fields {
+                map.insert(
+                    crate::resolved::Symbol::plain(name.as_str()),
+                    wit_type_to_ty_lossy(db, fty),
+                );
+            }
+            Ty::Record(std::rc::Rc::new(map))
+        }
+        WitType::Option(inner) => {
+            prelude_sum(db, "Option", vec![wit_type_to_ty_lossy(db, inner)]).unwrap_or(Ty::Any)
+        }
+        WitType::Result { ok, err } => {
+            let ok_ty = ok
+                .as_ref()
+                .map(|t| wit_type_to_ty_lossy(db, t))
+                .unwrap_or(Ty::Unit);
+            let err_ty = err
+                .as_ref()
+                .map(|t| wit_type_to_ty_lossy(db, t))
+                .unwrap_or(Ty::Unit);
+            prelude_sum(db, "Result", vec![ok_ty, err_ty]).unwrap_or(Ty::Any)
+        }
+        // A scalar / unit maps exactly; an unmappable tagged type (variant/enum/flags) over-approximates to
+        // `Any` (harmless as an expected fallback — see the doc).
+        _ => wit_type_to_ty(db, t).unwrap_or(Ty::Any),
+    }
+}
+
 /// Instantiate a prelude sum type (`Option`/`Result`) at the given type args, or `None` if the declaration
 /// is absent (a prelude-less compile). Mirrors `infer::option_ty`, the shared way the world-effect request
 /// record spells its `Option Bytes` fields.
