@@ -557,3 +557,38 @@ This unifies both remaining cases under **one** designed pass and leaves the res
 of #7712 in place for the varargs/list-splat paths it correctly handles. It is deliberately NOT a
 monitor-tick patch: two prior CI regressions (#7612 round-trip, #7629 diagnostic) came from touching
 this seam reactively, so it is scoped here as increment 7's real shape.
+
+### A.7a — param-relay LANDED (#7802); the mechanism, corrected
+
+**Status: DONE.** Increment 7's param-relay half shipped in #7802. The implementation is SIMPLER than the
+speculation above and corrects two of its assumptions — recorded so the materialize-once half (A.7b) is
+built on the real mechanism:
+
+- **NO transparent-resolve change was needed or wanted.** Extending #7712's transparent resolve to the
+  tuple-Ref case is actively HARMFUL: β-reduction copies a `(.. t)` argument through its *resolved* form,
+  so a transparent `(.. t)` → `t` copy LOSES the spread marker, and the callee is then curried with one
+  tuple argument (`(+ Tuple Int64)` / a `(-> Any …)` residual). The resolve layer is left exactly as
+  #7712 shipped it.
+- **The fix is the shared expansion helper + an annotation peel — not a resolve rewrite.**
+  1. `apply_lambda_uncached`'s call-splat expansion was extracted into `eval::expand_call_splat_args`, and
+     `check_application` calls it **before the param↔arg zip** in its lambda arm. So the type checker and
+     the reducer run the *same* expansion and agree on the positional arg list; the zip binds the tuple's
+     elements to the fixed params instead of unifying the whole tuple against param 0. (No `Tuple.size`
+     pre-pass keyed on inferred type was needed — the existing branch (ii) already reads `Ty::Tuple` arity.)
+  2. The helper PEELS a leading `(: v T)` annotation: β-substitution wraps a splatted argument in its
+     parameter's annotation (`substituted_arg`), so the reduced `main → relay` body's operand arrives as
+     `(: #tuple(…) (Tuple …))`; peeling lets branch (i)/(ii) reach the underlying tuple.
+- **The helper is a strict no-op unless a `(.. )` call-argument is present**, so it cannot regress a
+  non-splat program — which is what made a direct-to-main self-merge safe (gated on `corpus-09-functions`
+  / `-15-rows` / `-07-type-system` + `corpus_roundtrip`).
+
+### A.7b — materialize-once (the sole remaining case)
+
+`(.. <expr>)` where the operand is a tuple-COMPUTING expression (not a syntactic tuple, not a bare
+Ref/Param) — `f(.. (mk))` — still declines cleanly (CDZ0201). `expand_call_splat_args` cannot handle it
+because expanding to `(. (mk) 0) … (. (mk) k-1)` would re-evaluate `(mk)` per slot (wrong if it performs
+an effect), and the helper returns a flat arg list so it cannot introduce the binding that would evaluate
+`(mk)` ONCE. The materialize-once needs a `(let ((tmp (mk))) (f (. tmp 0) …))` wrap around the
+application — reusing the `evalonce_wraps` / `materialize_row_op_operand` machinery — gated on the operand
+actually needing it (a pure operand could re-eval). This is a distinct, more invasive change than the
+arg-list expansion; it is the one open varargs follow-up.
