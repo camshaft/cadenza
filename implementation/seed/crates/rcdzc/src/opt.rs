@@ -521,6 +521,32 @@ pub(crate) fn run_sharing_aware_emit(
     // `false` (full plan) — the O2 body's pass pipeline makes the general bindings reclaim-safe, so those wins stay.
     scrutinee_shares_only: bool,
 ) {
+    // TEMP compound-CSE detection trace (CDZ_CSE_TRACE) — verify PART-1 fires on the re-materialized
+    // duplicates; REMOVE before land (detection-only, no emit change).
+    if std::env::var("CDZ_CSE_TRACE").is_ok() {
+        for &def in &layout.order {
+            if let Some(body) = db.defs[def].body {
+                let groups = crate::core_analysis::compound_cse_candidate_groups(db, body);
+                if !groups.is_empty() {
+                    let sizes: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+                    eprintln!(
+                        "[cse] def={def:?} body={body:?} compound-cse groups={} sizes={sizes:?}",
+                        groups.len()
+                    );
+                    for (gi, g) in groups.iter().enumerate() {
+                        let mut fp = String::new();
+                        crate::core_analysis::core_subtree_fingerprint(db, g[0], &mut fp);
+                        let ty = crate::infer::type_of(db, g[0]);
+                        let fp_short: String = fp.chars().take(160).collect();
+                        eprintln!(
+                            "[cse]   group{gi} members={g:?} ty={} fp={fp_short}",
+                            ty.render_name(&db.name_ctx())
+                        );
+                    }
+                }
+            }
+        }
+    }
     // Gated to O2+ (a whole-body sharing analysis), tier-consistent with `GlobalCsePass`.
     if opt_level < OptLevel::O2 {
         return;

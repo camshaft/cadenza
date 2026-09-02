@@ -461,6 +461,183 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
     kept
 }
 
+/// COMPOUND-CSE (v-cadenza-backend co-design, the cadenza-O1 reclaim-gap cluster: rsv1 + the 4 O1
+/// live-objects leaks): a CANONICAL STRUCTURAL FINGERPRINT of the Core subtree at `id` — EQUAL for two
+/// subtrees of identical Core shape+leaves+resolved-references regardless of their distinct `StructId`s. This
+/// is the DUPLICATED-node analog of `shared_node_bind_plan` (which finds ONE node reached by ≥2 parent edges);
+/// the cadenza re-materialization produces N structurally-EQUAL but DISTINCT nodes (each count=1 — so
+/// `shared_node_bind_plan` sees no share), which this fingerprint groups so a later CSE can hoist them to one
+/// shared `Core::Let`.
+///
+/// CORRECTNESS (a false MATCH = a miscompile): (1) a REFERENCE (`Param`/`LocalRef`) fingerprints by its
+/// RESOLVED BINDER id, so two subtrees reading DIFFERENT variables never collide (and same-variable reads DO,
+/// which is only value-equal in a NON-recursive/straight-line body — the caller MUST gate on `!is_recursive`,
+/// where a binder id denotes one value). (2) Only the EXPLICITLY-handled variants recurse into their OWN
+/// fields (so EVERY value child is captured); any UNHANDLED variant appends its unique `id` (`U<n>`) → its
+/// fingerprint can never equal another node's → it is NEVER CSE'd (conservative: forfeits a share, never a
+/// false match). So a subtree containing an unhandled node (a `Call`/`If`/`Closure`/effectful op) gets a
+/// unique fingerprint and is excluded — which also keeps effectful subtrees out (belt to the caller's
+/// `subtree_reaches_host_call` gate).
+pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut String) {
+    use std::fmt::Write;
+    match core_of(db, id) {
+        // Leaves — fingerprint by value.
+        Core::ConstInt(v) => {
+            let _ = write!(out, "i{};", v.to_decimal_string());
+        }
+        Core::ConstBool(b) => out.push(if b { 'T' } else { 'F' }),
+        Core::ConstFloat(d) => {
+            let _ = write!(out, "f{};", d.to_f64_bits());
+        }
+        Core::ConstFloatNan => out.push_str("fN;"),
+        Core::ConstFloatInf => out.push_str("fI;"),
+        Core::ConstStr(s) => {
+            let _ = write!(out, "s{}:{};", s.len(), s);
+        }
+        Core::Unit => out.push_str("u;"),
+        // References — RESOLVED BINDER identity (same binder id ⟹ same value in a straight-line body).
+        Core::Param { binder } => {
+            let _ = write!(out, "P{:?};", binder);
+        }
+        Core::LocalRef { binder } => {
+            let _ = write!(out, "L{:?};", binder);
+        }
+        // Pure ops — tag by op + recurse operands.
+        Core::Arith { op, lhs, rhs } => {
+            let _ = write!(out, "A{op:?}(");
+            core_subtree_fingerprint(db, lhs, out);
+            core_subtree_fingerprint(db, rhs, out);
+            out.push(')');
+        }
+        Core::Compare { op, lhs, rhs } => {
+            let _ = write!(out, "Cmp{op:?}(");
+            core_subtree_fingerprint(db, lhs, out);
+            core_subtree_fingerprint(db, rhs, out);
+            out.push(')');
+        }
+        Core::Convert { op, operand } => {
+            let _ = write!(out, "Cv{op:?}(");
+            core_subtree_fingerprint(db, operand, out);
+            out.push(')');
+        }
+        Core::Not { operand } => {
+            out.push_str("Not(");
+            core_subtree_fingerprint(db, operand, out);
+            out.push(')');
+        }
+        Core::Proj { operand, index } => {
+            let _ = write!(out, "Pr{index}(");
+            core_subtree_fingerprint(db, operand, out);
+            out.push(')');
+        }
+        // Compound value producers.
+        Core::SumNew { disc, payloads } => {
+            let _ = write!(out, "S{disc}(");
+            for &p in payloads.iter() {
+                core_subtree_fingerprint(db, p, out);
+            }
+            out.push(')');
+        }
+        Core::Tuple { elems } => {
+            out.push_str("Tup(");
+            for &e in elems.iter() {
+                core_subtree_fingerprint(db, e, out);
+            }
+            out.push(')');
+        }
+        Core::Record { fields } => {
+            out.push_str("Rec(");
+            // BTreeMap iterates in a stable key order, so the fingerprint is canonical.
+            for (name, &v) in fields.iter() {
+                let _ = write!(out, "{name:?}=");
+                core_subtree_fingerprint(db, v, out);
+            }
+            out.push(')');
+        }
+        Core::ListNew { elems } => {
+            out.push_str("LN(");
+            for &e in elems.iter() {
+                core_subtree_fingerprint(db, e, out);
+            }
+            out.push(')');
+        }
+        Core::ListPush { list, elem } => {
+            out.push_str("LP(");
+            core_subtree_fingerprint(db, list, out);
+            core_subtree_fingerprint(db, elem, out);
+            out.push(')');
+        }
+        Core::ListPrepend { elem, list } => {
+            out.push_str("LPre(");
+            core_subtree_fingerprint(db, elem, out);
+            core_subtree_fingerprint(db, list, out);
+            out.push(')');
+        }
+        Core::SumPayload { scrutinee, path } => {
+            let _ = write!(out, "SP{path:?}(");
+            core_subtree_fingerprint(db, scrutinee, out);
+            out.push(')');
+        }
+        // Any OTHER variant (Call/If/Let/Match/Closure/effectful ops/…) → UNIQUE id → never matches another
+        // node → never CSE'd. Conservative by construction: no false match, only a forfeited share.
+        _ => {
+            let _ = write!(out, "U{:?};", id);
+        }
+    }
+}
+
+/// COMPOUND-CSE candidate detection (PART-1, v-core-opt lane; v-cadenza-backend installs the hoist). Groups
+/// the COMPOUND-typed, side-effect-FREE subtrees of `body` that are STRUCTURALLY EQUAL but DISTINCT nodes
+/// (each `Vec` is one such group, ≥2 members, all sharing a `core_subtree_fingerprint`). A later slice turns
+/// each group into a plan {canonical → occurrences} that v-cadenza emits as a shared source `(let …)`.
+/// GATED for O1-reclaim-safety by the caller: only STRAIGHT-LINE bodies (`!eval::is_recursive`) — a
+/// loop-carried hoist leaks on the cadenza-O1 round-trip (the general-B2-at-O1 blocker). Detection-only for
+/// now (not wired into emit); safe no-op until the plan + v-cadenza install land.
+pub(crate) fn compound_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
+    // Straight-line only (O1-reclaim-safety, mirrors b2_bind_plan_scrutinee_only): a recursive body's hoisted
+    // let is not O1-recompile-reclaim-safe.
+    if crate::eval::is_recursive(db, body) {
+        return Vec::new();
+    }
+    // Collect every reachable subtree id (dedup by id).
+    let mut seen: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    let mut order: Vec<StructId> = Vec::new();
+    fn walk(
+        db: &mut Db,
+        id: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        order: &mut Vec<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        order.push(id);
+        for c in licm_children(db, id) {
+            walk(db, c, seen, order);
+        }
+    }
+    walk(db, body, &mut seen, &mut order);
+    // Group COMPOUND-typed, pure (no host-call) subtrees by fingerprint.
+    let mut by_fp: HashMap<String, Vec<StructId>> = HashMap::new();
+    for id in order {
+        let ty = crate::infer::type_of(db, id);
+        if !is_heap_type(&ty) {
+            continue;
+        }
+        if crate::lower::subtree_reaches_host_call(db, id) {
+            continue;
+        }
+        let mut fp = String::new();
+        core_subtree_fingerprint(db, id, &mut fp);
+        // A `U`-prefixed fingerprint is unique (unhandled root) — never a shareable candidate.
+        if fp.starts_with('U') {
+            continue;
+        }
+        by_fp.entry(fp).or_default().push(id);
+    }
+    by_fp.into_values().filter(|g| g.len() >= 2).collect()
+}
+
 /// Per-node ELIGIBILITY for a share KIND: returns `Some(ty)` when the node at `id` (reached by `count`
 /// parent edges, reachable from `body`) is an eligible SHARE for this kind, `None` to skip it. ONLY the
 /// KIND-SPECIFIC gates live here — B2's heap gate-2 + P1/P3 (`b2_heap_eligible`), or the O2 CSE's scalar
