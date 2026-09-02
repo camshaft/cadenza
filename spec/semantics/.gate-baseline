@@ -10828,3 +10828,4 @@ pass	Type.ast of a WRONG-ARITY direct user-generic application is rejected, not 
 pass	Type.ast does not suppress a fault inside a (Type.of e) argument
 pass	a macro-introduced SIBLING def with a caller-spliced name binds visibly at the enclosing scope
 pass	a macro-introduced SIBLING def with a macro-internal name stays hygienic-local, not enclosing-visible
+pass	Type.ast of a non-type value (an effect name) is a CODED rejection, not a codeless decline
