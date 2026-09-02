@@ -1767,6 +1767,15 @@ fn emit_expr_viewed(
         Core::Let { bindings, body } => {
             let let_head = b.name("let");
             let mut binding_nodes = Vec::with_capacity(bindings.len());
+            // Value NODES this `let` registered in `scrut_lets` (to un-register after the body — scoping the
+            // share to this `let`). A binding resolves BOTH a `Core::LocalRef` to the binder (via `env.lets`)
+            // AND a DIRECT reference to the bound VALUE node (via `env.scrut_lets`): the optimizer sometimes
+            // INLINES a value at its use sites rather than threading a `LocalRef` (a side-effecting host call in
+            // a checked-narrow `(Int64.of (host.op …))` inlines into the range-test + wrap, referenced 3×). Bare
+            // re-emission RE-RUNS the value at each site — for a host op that TRAPS (the host answers once,
+            // u64h1/h2/cq/cr host-effect typed exports), and for any effect it duplicates it. Resolving the
+            // value node to the binder emits it ONCE (in the binding) and references it thereafter.
+            let mut shared_values: Vec<StructId> = Vec::new();
             for &(binder, value) in bindings.iter() {
                 let name = synth_binding_name(env.next_payload);
                 env.next_payload += 1;
@@ -1774,13 +1783,23 @@ fn emit_expr_viewed(
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
                 let value_node = emit_expr(db, b, value, None, env, emitted)?;
-                env.lets.insert(binder, name);
+                env.lets.insert(binder, name.clone());
+                // Register the VALUE node → this binder for the rest of the sequence + the body, so a DIRECT
+                // reference to the inlined value resolves to the once-emitted binder. Skip if already owned by
+                // an enclosing binding/scrutinee (don't clobber, and let its owner un-register it).
+                if let std::collections::hash_map::Entry::Vacant(e) = env.scrut_lets.entry(value) {
+                    e.insert(name);
+                    shared_values.push(value);
+                }
                 binding_nodes.push(b.list(vec![name_atom, value_node]));
             }
             let bindings_list = b.list(binding_nodes);
             // The body is the `let`'s value/tail position — it has the whole `let`'s type, so it inherits
             // this `let`'s `expected`; the bindings' initializers are operands (no expected).
             let body_node = emit_expr(db, b, body, expected, env, emitted)?;
+            for v in shared_values {
+                env.scrut_lets.remove(&v);
+            }
             Ok(b.list(vec![let_head, bindings_list, body_node]))
         }
         // A runtime CALL to a top-level function — `(<callee-name> <arg>…)`. `Core::Call` is present only
