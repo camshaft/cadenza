@@ -8996,3 +8996,4 @@ pass	a macro-internal helper flattened from a nested do stays CALLER-hygienic-lo
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)
 pass	a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)
+pass	a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)
