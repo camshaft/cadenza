@@ -2025,13 +2025,10 @@ fn decode_value_doc(hex: &str) -> Result<String, String> {
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
         .collect::<Result<_, _>>()
         .map_err(|e| format!("non-hex digit in marker: {e}"))?;
-    cadenza_syntax::convert::render_binary(
-        &bytes,
-        cadenza_syntax::convert::Format::Sexpr,
-        cadenza_syntax::convert::FragmentKind::Expr,
-        cadenza_syntax::convert::Options::default(),
-    )
-    .map_err(|e| format!("{e}"))
+    // SINGLE-LINE canonical value render (seq-283, #7773) — byte-identical to cdz-run's `render_val`; the
+    // general `render_binary` PRETTY path hard-breaks a long `(: value type)` across lines, diverging from
+    // cdz-run's one-line render (breaker finding on a long record result).
+    cadenza_syntax::convert::render_binary_value_line(&bytes).map_err(|e| format!("{e}"))
 }
 
 /// Extract a DETERMINISTIC panic reason from a Rust panic's stderr — the trap message the differential
