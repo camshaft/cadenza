@@ -3485,6 +3485,23 @@
               corpusFileNames}
         '';
 
+        # quoteCorpusGate (inc-4) — the whole-pass REGRESSION gate. Harvest every quote-roundtrip verdict
+        # (`quoteCorpusVerdictsAll`, `<tag>\t<description>`) and FOLD it vs the committed `.quote-gate-baseline`
+        # through the SAME `xtask gate-syntax --compare` fold v-corpus-harness owns — that fold is format-generic
+        # (it knows only `<verdict>\t<title>` + the Verdict enum; ZERO syntax assumptions; their sign-off is the
+        # reply on #7026's thread). Semantics it carries: a baselined-`pass` that regresses to not-pass REDs; a
+        # `todo`→`pass` GAIN never reds (additive — safe across the runtime-hash rotations, which only make more
+        # inputs round-trip); a baseline-`fail` (the rcw4 64-KiB-string tracked-fail) is a NON-REDDING known-fail
+        # that flips to pass when its codec owner fixes it; a todo/absent case that now FAILs is a gate-hole RED.
+        # `--baseline` is explicit (xtaskBin runs outside a repo tree). This is inc-4's teeth: it protects the
+        # 7465 passing round-trips from silent regression. Advisory (checks.<sys>.quote-corpus-gate).
+        quoteCorpusGate = pkgs.runCommand "quote-corpus-gate"
+          { nativeBuildInputs = [ xtaskBin ]; } ''
+          set -euo pipefail
+          xtask gate-syntax --compare ${quoteCorpusVerdictsAll} --baseline ${./spec/semantics/.quote-gate-baseline}
+          echo "ok: quote-corpus-gate — whole-pass quote-roundtrip harvest folded vs .quote-gate-baseline" > "$out"
+        '';
+
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
         # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
         corpusCaseChecks = { name, file }:
@@ -6653,6 +6670,12 @@
             # below. ADVISORY for now (NOT in the required local-gate set) — a first slice reds only on a
             # compiled program whose round-trip breaks; a baseline/Todo-regression gate is a follow-up.
             quote-corpus = quoteCorpusAll;
+            # inc-4: the whole-pass REGRESSION gate — harvest every quote-roundtrip verdict + fold vs the
+            # committed `.quote-gate-baseline` through v-corpus-harness's format-generic `gate-syntax --compare`
+            # fold. Reds on a baselined-`pass`→not-pass regression (protects the 7465 passing round-trips);
+            # todo→pass gains never red; the rcw4 64-KiB-string baseline-`fail` is a non-redding tracked-fail.
+            # ADVISORY (not yet in the required local-gate set — parity-review with v-corpus-harness first).
+            quote-corpus-gate = quoteCorpusGate;
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
