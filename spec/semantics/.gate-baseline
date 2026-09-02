@@ -1666,6 +1666,7 @@ pass	a bare-binder guard over a STRING (heap) param scrutinee in a helper binds 
 pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
 pass	a bare-name match arm far from any variant is a genuine catch-all binder and runs
 pass	a bare-name match arm near a variant is a typo suggesting the variant, not a binder
+pass	a bare-name module body wrapped in a (do …) block is rejected at the module form
 pass	a bare-scalar if guarding a MIN/-1 overflow is not select-ified
 pass	a bare-scalar if guarding a div-by-zero is not select-ified — the divisor guard shields the trap
 pass	a base member not re-exported by the middle module is unreachable from the entry

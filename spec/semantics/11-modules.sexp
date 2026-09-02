@@ -618,6 +618,36 @@
       (export main)))
   (error CDZ0201 (message "module `a` is declared more than once") (fix (kind delete))))
 
+; A bare-name `(module NAME …)` body is a SEQUENCE OF DEFINITIONS listed directly as members — not a
+; `(do …)` block. A `(do …)` member is a category error: the module registers no exports and its name
+; binds nothing, which used to surface ONLY as a misleading bare CDZ0101 "unbound name `m`" at the USE
+; site (a silent misbind — no error at the module form). Now it is named AT THE WRAPPER, CDZ0201, so an
+; author who copied the STRING-name library/file form `(module "lib" (do …))` — where the `(do …)` IS
+; the file's whole program (linker path) — onto the bare-name declaration form gets a form-site fix
+; instead of hunting a phantom unbound name. Bare-def bodies (every other case in this file) are the
+; correct form and bind normally; only the `(do …)` WRAPPER on the bare-name form is rejected.
+(case
+  "a bare-name module body wrapped in a (do …) block is rejected at the module form"
+  (doc
+    "`(module m (do (def (answer) 42)))` wraps the module's members in a `(do …)` block. A bare-name
+           `(module NAME …)` body is a def-SEQUENCE (`(module m (def …) (def …))`), so a `(do …)` member is
+           not a definition — the module registers no exports and `m` binds nothing. This used to fail SILENTLY
+           at the module form and surface only as a misleading bare CDZ0101 `unbound name m` at the `(m.answer
+           unit)` use site (breaker finding). It now rejects CDZ0201 AT the `(do …)` wrapper, naming the rule
+           and the fix (remove the `(do …)`, list the defs as members). The confusion is real because the
+           STRING-name library form `(module \"lib\" (do …))` DOES take a `(do …)` body — there the `(do …)`
+           is the file's whole program, resolved by the linker — so this pins the bare-name declaration form's
+           distinct grammar. The downstream `unbound name m` still reports as the symptom; the CDZ0201 root
+           sorts first (anchored at the earlier `(do …)` member).")
+  (input
+    (do
+      (def (main)
+        (do
+          (module m (do (def (answer) 42)))
+          (m.answer unit)))
+      (export main)))
+  (error CDZ0201 (message "body is a sequence of definitions")))
+
 (case
   "two distinct-named modules in one scope coexist"
   (doc
