@@ -1020,12 +1020,34 @@ fn looped_owned_param_drops(
         let Some(&slot) = slot_of.get(binder) else {
             continue;
         };
-        if !invariant.contains(binder) {
-            continue; // varying across a back-edge — leave it (a single exit drop would be wrong).
-        }
-        if !param_only_borrowed_or_backedge(db, body, *binder, &loop_members, param_slots, slot_of)
-        {
-            continue; // not provably (borrow + tail-back-edge) only → conservatively leave it (default-deny).
+        if invariant.contains(binder) {
+            // INVARIANT path (UNCHANGED): the slot holds the SAME handle throughout → a single exit drop
+            // reclaims it iff it is provably (borrow + tail-back-edge) only.
+            if !param_only_borrowed_or_backedge(
+                db,
+                body,
+                *binder,
+                &loop_members,
+                param_slots,
+                slot_of,
+            ) {
+                continue; // not provably borrow/back-edge only → conservatively leave it (default-deny).
+            }
+        } else {
+            // VARYING-rebound path (INC2 (a) (B) slice-1): the slot is re-bound each iteration; the OLD
+            // values are reclaimed on the back-edge (drop_old_borrowed), so the epilogue reclaims the FINAL
+            // value's shell iff it is borrow/reclaimed-rebox-only (Q2/F1/F2) AND no terminal arm references
+            // binder (no escaping child to double-free — v-mem's no-escape trivial-coverage case, no dup).
+            if !varying_param_epilogue_droppable(
+                db,
+                body,
+                *binder,
+                &loop_members,
+                param_slots,
+                slot_of,
+            ) {
+                continue; // not provably safe → leave it (leak, never double-free).
+            }
         }
         drops.push(slot);
     }
@@ -2020,13 +2042,37 @@ fn param_only_borrowed_or_backedge(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
 ) -> bool {
-    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false)
+    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false, false)
+}
+
+/// VARYING-REBOUND variant (INC2 (a) (B) slice-1): like [`param_only_borrowed_or_backedge`] but a member
+/// back-edge ACCEPTS a NON-identity arg that only BORROWS or back-edge-RECLAIMED-CONSUMES `binder` — a rebox
+/// `(List.concat #list(head) (.. tail))` where `head` is a borrowing read and `tail` a RestFrom (the fresh-
+/// tail rule classifies it a borrow, and the per-iteration `drop_old_borrowed`/#7547 reclaims the OLD value
+/// on the edge). Decided by `!binding_escapes(arg, binder)`: `binder` only borrowed into the rebox ⟹ its old
+/// value is reclaimed on the edge (leak-clean); a WHOLE-consume `(List.concat binder …)` / a heap-child move
+/// ESCAPES ⟹ `binding_escapes` = true ⟹ DENY. Every NON-back-edge position still enforces borrow-only (F1:
+/// `binder`'s SHELL never escapes into the result / a ctor / a non-member call), so the FINAL loop-param value
+/// is dead-at-exit (F2). This is the Q2 half of the varying-param epilogue-drop admit; the no-escape
+/// COMPLETENESS half (terminal arms must not reference `binder`) is enforced separately by the caller.
+fn param_only_borrowed_or_reclaimed_backedge(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+) -> bool {
+    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false, true)
 }
 
 /// The worker, with a `borrowed` flag: `true` iff THIS occurrence is reached through a BORROW position (a
 /// projection / len / sum-payload read / match-dispatch scrutinee), where a direct `Param(binder)` is a
 /// pure read (OK); `false` in a CONSUME/result position, where a direct `Param(binder)` is an ownership
-/// transfer OUT (deny). Mirrors `binding_escapes`'s `tail_borrowed` threading.
+/// transfer OUT (deny). Mirrors `binding_escapes`'s `tail_borrowed` threading. `allow_reclaimed_rebox`
+/// relaxes ONLY the member back-edge arm (see `param_only_borrowed_or_reclaimed_backedge`); `false` = the
+/// original coarse `!occurs_in` back-edge rule (the invariant-param path, UNCHANGED).
+#[allow(clippy::too_many_arguments)]
 fn param_only_borrowed_or_backedge_rec(
     db: &mut Db,
     id: StructId,
@@ -2035,13 +2081,23 @@ fn param_only_borrowed_or_backedge_rec(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
     borrowed: bool,
+    allow_reclaimed_rebox: bool,
 ) -> bool {
     // Fast path: a subtree that does not reference `binder` at all is trivially fine (nothing to consume).
     if !occurs_in(db, id, binder) {
         return true;
     }
     let recur = |db: &mut Db, c: StructId, borrowed: bool| {
-        param_only_borrowed_or_backedge_rec(db, c, binder, members, param_slots, slots, borrowed)
+        param_only_borrowed_or_backedge_rec(
+            db,
+            c,
+            binder,
+            members,
+            param_slots,
+            slots,
+            borrowed,
+            allow_reclaimed_rebox,
+        )
     };
     match core_of(db, id) {
         // A direct reference to the param: OK iff this occurrence is in a BORROW position (read, not
@@ -2055,7 +2111,18 @@ fn param_only_borrowed_or_backedge_rec(
                 let is_identity = i < param_slots.len()
                     && matches!(core_of(db, arg), Core::Param { binder: b }
                         if b == binder && slots.get(&binder) == Some(&param_slots[i]));
-                is_identity || !occurs_in(db, arg, binder)
+                if is_identity {
+                    return true;
+                }
+                if allow_reclaimed_rebox {
+                    // VARYING-rebound (slice-1): accept a rebox that only BORROWS / reclaimed-consumes binder
+                    // (`!binding_escapes` — RestFrom tail = fresh-tail borrow, reclaimed on the edge; a whole
+                    // or heap-child-move consume ESCAPES → denied). The old value is drop_old_borrowed-reclaimed.
+                    !binding_escapes(db, arg, binder, false)
+                } else {
+                    // Invariant path (UNCHANGED): a non-identity arg must not reference binder at all.
+                    !occurs_in(db, arg, binder)
+                }
             })
         }
         // BORROW ops: their heap operand is read without consuming → recurse it with `borrowed = true` (a
@@ -2083,7 +2150,15 @@ fn param_only_borrowed_or_backedge_rec(
         }
         Core::MatchSum { scrutinee, root } => {
             recur(db, scrutinee, true)
-                && cont_only_borrowed_or_backedge(db, &root, binder, members, param_slots, slots)
+                && cont_only_borrowed_or_backedge(
+                    db,
+                    &root,
+                    binder,
+                    members,
+                    param_slots,
+                    slots,
+                    allow_reclaimed_rebox,
+                )
         }
         // Control flow / binding: recurse each sub-position in RESULT (unborrowed) position — the fast path
         // already cleared sub-positions that don't reference `binder`. (A `let` initializer that borrows the
@@ -2110,23 +2185,146 @@ fn cont_only_borrowed_or_backedge(
     members: &[usize],
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
+    allow_reclaimed_rebox: bool,
 ) -> bool {
+    let body_ok = |db: &mut Db, b: StructId| {
+        param_only_borrowed_or_backedge_rec(
+            db,
+            b,
+            binder,
+            members,
+            param_slots,
+            slots,
+            false,
+            allow_reclaimed_rebox,
+        )
+    };
     match cont {
-        crate::core::SumCont::Leaf(body) => {
-            param_only_borrowed_or_backedge(db, *body, binder, members, param_slots, slots)
-        }
+        crate::core::SumCont::Leaf(body) => body_ok(db, *body),
         crate::core::SumCont::Guarded { body, els, .. } => {
-            param_only_borrowed_or_backedge(db, *body, binder, members, param_slots, slots)
-                && cont_only_borrowed_or_backedge(db, els, binder, members, param_slots, slots)
+            body_ok(db, *body)
+                && cont_only_borrowed_or_backedge(
+                    db,
+                    els,
+                    binder,
+                    members,
+                    param_slots,
+                    slots,
+                    allow_reclaimed_rebox,
+                )
         }
         crate::core::SumCont::LitTest { then_, els, .. } => {
-            cont_only_borrowed_or_backedge(db, then_, binder, members, param_slots, slots)
-                && cont_only_borrowed_or_backedge(db, els, binder, members, param_slots, slots)
+            cont_only_borrowed_or_backedge(
+                db,
+                then_,
+                binder,
+                members,
+                param_slots,
+                slots,
+                allow_reclaimed_rebox,
+            ) && cont_only_borrowed_or_backedge(
+                db,
+                els,
+                binder,
+                members,
+                param_slots,
+                slots,
+                allow_reclaimed_rebox,
+            )
         }
         crate::core::SumCont::Switch { arms, .. } => arms.iter().all(|a| {
-            cont_only_borrowed_or_backedge(db, &a.cont, binder, members, param_slots, slots)
+            cont_only_borrowed_or_backedge(
+                db,
+                &a.cont,
+                binder,
+                members,
+                param_slots,
+                slots,
+                allow_reclaimed_rebox,
+            )
         }),
     }
+}
+
+/// INC2 (a) (B) slice-1 — whether a VARYING-rebound heap param `binder` (one a member back-edge re-binds to
+/// a FRESH value, so it is NOT in the `invariant` set) is safe to reclaim at the fn-exit epilogue: the FINAL
+/// loop value's shell, since the per-iteration OLD values are already reclaimed on the back-edge by
+/// `drop_old_borrowed`/#7547. TWO conjuncts (both conservative — any doubt DENIES, a leak not a UAF):
+///  • Q2/F1/F2 — `param_only_borrowed_or_reclaimed_backedge`: `binder` is only BORROWED or back-edge-
+///    reclaimed-consumed (its SHELL never escapes into the result / a ctor / a non-member call), so the final
+///    value is dead-at-exit and the per-iteration reboxes are reclaimed.
+///  • COMPLETENESS (no-escape, the P0 closer): every TERMINAL (non-back-edge) arm of a match ON `binder` must
+///    NOT reference `binder` (`terminal_arms_dont_ref_binder`). A terminal arm that references it could
+///    extract-and-escape a heap CHILD (which the rc-aware epilogue shell-drop would then double-free) or
+///    rest-mint the spine (double-consume). Not referencing `binder` ⟹ no child moved out ⟹ the deep-drop
+///    frees only the dead shell + inline scalars — NO dup needed (v-mem's trivial-coverage case). PASCAL's
+///    terminal arms (`#list()`/`#list(_last)` → return `acc`) satisfy this; PAIRWISE's `#list(solo)` → push
+///    references `binder` (via `solo`), so it is NOT admitted here (deferred to a slice-2 with the (ii) dup).
+fn varying_param_epilogue_droppable(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+) -> bool {
+    param_only_borrowed_or_reclaimed_backedge(db, body, binder, members, param_slots, slots)
+        && terminal_arms_dont_ref_binder(db, body, binder, members)
+}
+
+/// COMPLETENESS walk for [`varying_param_epilogue_droppable`]: every TERMINAL (does-not-reach-a-member-tail-
+/// call) arm of a `Match`/`MatchList` whose SCRUTINEE is `binder` must NOT reference `binder`. A `MatchSum`
+/// ON `binder` (a sum-variant decomposition, arms in a `SumCont`) is conservatively DENIED — slice-1 targets
+/// the `MatchList`/`Match` self-loop shape (PASCAL/PAIRWISE); a later slice can handle `MatchSum`-on-binder.
+/// Cycle-guarded `core_child_ids` walk; DENIES (false) on the first terminal arm that references `binder` or
+/// on any `MatchSum`-on-binder.
+fn terminal_arms_dont_ref_binder(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+    members: &[usize],
+) -> bool {
+    fn scrut_is(db: &mut Db, scrut: StructId, binder: StructId) -> bool {
+        matches!(core_of(db, scrut),
+            Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder)
+    }
+    fn walk(
+        db: &mut Db,
+        id: StructId,
+        binder: StructId,
+        members: &[usize],
+        seen: &mut HashSet<StructId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return true;
+        }
+        // Terminal arm bodies of a match ON binder that we must verify don't reference binder.
+        let to_check: Vec<StructId> = match core_of(db, id) {
+            Core::MatchSum { scrutinee, .. } if scrut_is(db, scrutinee, binder) => {
+                return false; // conservative: MatchSum-on-binder not handled in slice-1
+            }
+            Core::Match { scrutinee, arms } if scrut_is(db, scrutinee, binder) => {
+                arms.iter().map(|a| a.body).collect()
+            }
+            Core::MatchList { scrutinee, arms } if scrut_is(db, scrutinee, binder) => {
+                arms.iter().map(|a| a.body).collect()
+            }
+            _ => Vec::new(),
+        };
+        for b in to_check {
+            if !body_has_member_tail_call(db, b, members) && occurs_in(db, b, binder) {
+                return false; // a terminal arm references binder → potential child-escape/rest-mint → DENY
+            }
+        }
+        for c in core_child_ids(db, id) {
+            if !walk(db, c, binder, members, seen) {
+                return false;
+            }
+        }
+        true
+    }
+    let mut seen = HashSet::new();
+    walk(db, body, binder, members, &mut seen)
 }
 
 /// Whether `binder` occurs anywhere in the subtree at `id` (a fresh-cache wrapper over `binder_occurs`).
