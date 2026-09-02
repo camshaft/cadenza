@@ -17023,7 +17023,7 @@
   (output (: 3 Int64))
   (call main (: 3 Int64))
   (output (: 102033 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a PARTITION fold splits one spine into two lists by a runtime predicate"
@@ -17217,7 +17217,7 @@
   (output (: 5285853 Int64))
   (call main (: 9 Int64))
   (output (: 5275185300000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a PREFIX-SUM scan emits a running total whose each element feeds the next"
@@ -28147,7 +28147,7 @@
       (export main)))
   (call main (: -4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
 (case
