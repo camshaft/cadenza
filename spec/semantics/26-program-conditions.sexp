@@ -43,6 +43,8 @@
 ; constructor, rules the only way to mint one), so the unforgeability audit of 25-verification.sexp
 ; carries over — an obligation is discharged only by the trusted, side-condition-checked order-rules.
 ; ============================================================================================
+(diagnostic-quality)
+
 (case
   "a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a CHECKED numeral fact"
   (doc
