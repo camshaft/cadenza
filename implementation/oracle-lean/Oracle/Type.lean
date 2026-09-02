@@ -270,10 +270,10 @@ def orderingTy : Ty := .sum [("Equal".toUTF8, none), ("Greater".toUTF8, none), (
 
 /-- Parse a TYPE-annotation node to a `Ty` over the modeled subset: `Int64`/`(Int N)`/`UInt8`/… → `.int N
 signed` (a `.bits` width; `BigInt`/`(Int W)` unknown-width → `none`), `Bool`/`Unit`/`String`/`Char` → their
-scalar `Ty`, `Ordering` → the Ordering sum, and the built-in sum CONSTRUCTORS `(Option T)` / `(Result T E)`
-→ their `.sum` (payloads parsed recursively). `none` for any un-modeled annotation (records / user sums /
-fn / generics, or a sum with an unmodeled payload) — the ascription/param rule declines (`Unsupported`) on
-`none`, never guesses. -/
+scalar `Ty`, `Ordering` → the Ordering sum, the built-in sum CONSTRUCTORS `(Option T)` / `(Result T E)`
+→ their `.sum`, and a FUNCTION type `(-> t1 … tn)` → the curried arrow `t1→…→tn` (all parsed recursively).
+`none` for any un-modeled annotation (records / user sums / generics, or a compound with an unmodeled
+part) — the ascription/param rule declines (`Unsupported`) on `none`, never guesses. -/
 partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
   match m.nodes[nodeId]? with
   | some (.list cs) =>
@@ -295,6 +295,14 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
              | some okT, some errT => some (resultTy okT errT)
              | _, _ => none)
           | _, _ => none)
+       else if h == "->".toUTF8 && cs.size >= 3 then
+         -- function type `(-> t1 t2 … tn)` = `t1 → t2 → … → tn` (curried; last element = result). Each
+         -- element parsed recursively; an unmodeled element → `none` (decline).
+         (match (cs.extract 1 cs.size).toList.mapM (parseTy? m) with
+          | some ts => (match ts.reverse with
+                        | result :: revArgs => some (revArgs.foldl (fun acc t => Ty.fn t acc) result)
+                        | [] => none)
+          | none => none)
        else none
      | none => none)
   | some (.atom _) =>
@@ -1462,6 +1470,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12, 8, 11], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13],
                            .atom 8, .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
                 root := 22 } == .wellTyped (.int 64 true))
+-- T1.23 (function-type annotation): `(: (fn (x) x) (-> Int64 Int64))` → WellTyped Int64→Int64. parseTy?
+-- now parses `(-> A B)`; the ascription unifies the fn's param/result vars with the annotated arrow.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .name "fn".toUTF8, .name "x".toUTF8, .name "->".toUTF8, .name "Int64".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 5, .list #[0], .atom 5, .atom 4, .list #[3, 1, 2], .atom 6, .atom 7,
+                           .atom 7, .list #[5, 6, 7], .atom 3, .list #[9, 4, 8], .atom 2, .list #[11],
+                           .atom 1, .list #[13, 12, 10], .atom 8, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.fn (.int 64 true) (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
