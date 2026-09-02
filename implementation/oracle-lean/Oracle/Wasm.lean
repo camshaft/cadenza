@@ -147,12 +147,20 @@ def scalarTyOfName? : ByteArray → Option ScalarTy := fun b =>
 
 /-- Walk a decoded `cdz-result-type` module for `(result-type "<entry>" <Type>)` and map `<Type>`'s head
 name to a `ScalarTy`. VERIFIED real structure: `(result-types (result-type "main" (Int 64)))` — the entry is
-a `str` leaf, the type is a list `(Int 64)`. `none` if no such node / not a modeled scalar type. -/
+a `str` leaf, the type is a list `(Int 64)`. `none` if no such node / not a modeled scalar type.
+
+EXACTLY-ONE-TYPE-CHILD (`cs.size == 3`): a scalar `main` has one result type child, so `(result-type "main"
+<Ty>)` is 3 nodes. A TUPLE/multi-value `main` emits the flat form `(result-type "main" (Int 64) (Int 64) …)`
+— multiple type children — which the old `≥ 3` guard silently truncated to `cs[2]` (the FIRST element),
+leaking a compound result through as a scalar (the `06-numeric-model-1398` `(Tuple Int64 Int64 Int64 Int64)`
+false-DIVERGE: Core ref was a tuple, wasm was decoded as one Int). Requiring `== 3` makes any multi-value
+return `none` → a sound SKIP. (A `(Tuple …)`-wrapped single child is also rejected — `scalarTyOfName? "Tuple"`
+is `none`.) -/
 def resultScalarTyOfModule? (m : Module) (entry : ByteArray) : Option ScalarTy :=
   m.nodes.findSome? (fun node =>
     match node with
     | .list cs =>
-      if cs.size ≥ 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+      if cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
           && atomText? m cs[1]! == some entry then
         match headTypeName? m cs[2]! with
         | some ty => scalarTyOfName? ty
@@ -174,7 +182,7 @@ def unmodeledResultHead? (m : Module) (entry : ByteArray) : Option ByteArray :=
   m.nodes.findSome? (fun node =>
     match node with
     | .list cs =>
-      if cs.size ≥ 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+      if cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
           && atomText? m cs[1]! == some entry then
         match headTypeName? m cs[2]! with
         | some ty => if (scalarTyOfName? ty).isNone then some ty else none
@@ -278,6 +286,16 @@ example :
         nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .list #[0, 1, 4], .atom 0,
                    .list #[6, 5]], root := 7 }
       "main".toUTF8 = some .int := by native_decide
+-- a TUPLE/multi-value main emits the FLAT form `(result-type "main" (Int 64) (Int 64))` — MULTIPLE type
+-- children (`cs.size == 4`), which must be REJECTED (→ none → sound SKIP), never truncated to the first
+-- element. Pins the `06-numeric-model-1398` `(Tuple Int64 …)` false-DIVERGE fix (`cs.size == 3` guard).
+example :
+    resultScalarTyOfModule?
+      { leaves := #[.name "result-types".toUTF8, .name "result-type".toUTF8, .str "main".toUTF8,
+                    .name "Int".toUTF8, .intLit false .dec (ByteArray.mk #[64])],
+        nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .list #[2, 3], .list #[0, 1, 4, 5],
+                   .atom 0, .list #[7, 6]], root := 8 }
+      "main".toUTF8 = none := by native_decide
 
 /-- The `cdz-result-type` section bytes for `(result-type main <tyName>)` — a real encode via `Oracle.Ast`,
 so the end-to-end `runWasmWith` witnesses exercise the actual section round-trip (encode → decode → resolve). -/
