@@ -2169,8 +2169,30 @@ fn param_only_borrowed_or_backedge_rec(
         Core::Let { bindings, body } => {
             bindings.iter().all(|&(_, v)| recur(db, v, false)) && recur(db, body, false)
         }
-        // Every OTHER node kind that references `binder` (a non-member Call, a constructor, a mutating op, a
-        // Closure, a Seq, arith/compare that consumes, …) is not whitelisted → deny. NARROW by design.
+        // CONSUMING value-building ops a self-loop fold's TERMINAL arm builds its result with (INC2 (a) (B)
+        // slice-2): recurse EACH value operand in a CONSUME position (`borrowed = false`). SOUND by the
+        // existing leaf arms — a DIRECT `Param(binder)` operand is `binder` consumed WHOLE → the `Param` arm
+        // denies (its SHELL escapes into the result); a nested `SumPayload`/`Proj` extraction of `binder` →
+        // those arms recurse the scrutinee BORROWED (`binder` READ, its shell NOT moved). So `binder`'s SHELL
+        // escapes iff it is a direct operand (denied); a SCALAR-child copy built into the result (swap2's
+        // `#list(solo) → List.push acc solo` over `List Int64`) is a borrow (admitted). A heap-CHILD moved out
+        // is NOT this gate's concern — `terminal_arms_no_heapchild_escape` denies that separately. This is the
+        // documented widening of the NARROW whitelist for the self-loop-list-fold terminal-arm result shapes.
+        Core::ListPush { list, elem }
+        | Core::ListPrepend { list, elem }
+        | Core::ListUpdate { list, elem, .. } => recur(db, list, false) && recur(db, elem, false),
+        Core::ListConcat { lhs, rhs } => recur(db, lhs, false) && recur(db, rhs, false),
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            elems.iter().all(|&e| recur(db, e, false))
+        }
+        Core::Record { fields } => fields.values().all(|&v| recur(db, v, false)),
+        Core::SumNew { payloads, .. } => payloads.iter().all(|&p| recur(db, p, false)),
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+            recur(db, lhs, false) && recur(db, rhs, false)
+        }
+        Core::Not { operand } | Core::Convert { operand, .. } => recur(db, operand, false),
+        // Every OTHER node kind that references `binder` (a non-member Call, a Closure, a Seq, a mutating op,
+        // …) is not whitelisted → deny. NARROW by design (an unlisted shape = a leak, never a double-free).
         _ => false,
     }
 }
@@ -2246,20 +2268,22 @@ fn cont_only_borrowed_or_backedge(
     }
 }
 
-/// INC2 (a) (B) slice-1 — whether a VARYING-rebound heap param `binder` (one a member back-edge re-binds to
-/// a FRESH value, so it is NOT in the `invariant` set) is safe to reclaim at the fn-exit epilogue: the FINAL
-/// loop value's shell, since the per-iteration OLD values are already reclaimed on the back-edge by
-/// `drop_old_borrowed`/#7547. TWO conjuncts (both conservative — any doubt DENIES, a leak not a UAF):
+/// INC2 (a) (B) — whether a VARYING-rebound heap param `binder` (one a member back-edge re-binds to a FRESH
+/// value, so it is NOT in the `invariant` set) is safe to reclaim at the fn-exit epilogue: the FINAL loop
+/// value's shell, since the per-iteration OLD values are already reclaimed on the back-edge by
+/// `drop_old_borrowed`/#7547 / the RestFrom `vec-drop`. TWO conjuncts (both conservative — any doubt DENIES,
+/// a leak not a UAF):
 ///  • Q2/F1/F2 — `param_only_borrowed_or_reclaimed_backedge`: `binder` is only BORROWED or back-edge-
 ///    reclaimed-consumed (its SHELL never escapes into the result / a ctor / a non-member call), so the final
-///    value is dead-at-exit and the per-iteration reboxes are reclaimed.
-///  • COMPLETENESS (no-escape, the P0 closer): every TERMINAL (non-back-edge) arm of a match ON `binder` must
-///    NOT reference `binder` (`terminal_arms_dont_ref_binder`). A terminal arm that references it could
-///    extract-and-escape a heap CHILD (which the rc-aware epilogue shell-drop would then double-free) or
-///    rest-mint the spine (double-consume). Not referencing `binder` ⟹ no child moved out ⟹ the deep-drop
-///    frees only the dead shell + inline scalars — NO dup needed (v-mem's trivial-coverage case). PASCAL's
-///    terminal arms (`#list()`/`#list(_last)` → return `acc`) satisfy this; PAIRWISE's `#list(solo)` → push
-///    references `binder` (via `solo`), so it is NOT admitted here (deferred to a slice-2 with the (ii) dup).
+///    value is dead-at-exit and the per-iteration reboxes are reclaimed. (slice-2 widened its whitelist to the
+///    self-loop-fold terminal-arm result ops — ListPush/ctors — so a scalar-child copy in the result passes.)
+///  • COMPLETENESS (no-heap-child-escape, the P0 closer): every TERMINAL (non-back-edge) arm of a match ON
+///    `binder` must have NO heap-CHILD escape (`terminal_arms_no_heapchild_escape`). A heap child moved out
+///    (the rc-aware epilogue shell-drop would double-free it) or a spine rest-mint (double-consume) is DENIED;
+///    a SCALAR-child copy (no heap sub-value escapes) is ADMITTED — the deep-drop frees only the dead shell +
+///    inline scalars, NO dup needed. PASCAL (`#list()`/`#list(_last)` → `acc`) AND PAIRWISE (`#list(solo)` →
+///    `List.push acc solo` over `List Int64`, `solo` a scalar copy) both satisfy it. A genuine heap-child move
+///    is still denied (that would need the (ii) escaped-child dup — a later slice).
 fn varying_param_epilogue_droppable(
     db: &mut Db,
     body: StructId,
@@ -2269,16 +2293,23 @@ fn varying_param_epilogue_droppable(
     slots: &HashMap<StructId, u32>,
 ) -> bool {
     param_only_borrowed_or_reclaimed_backedge(db, body, binder, members, param_slots, slots)
-        && terminal_arms_dont_ref_binder(db, body, binder, members)
+        && terminal_arms_no_heapchild_escape(db, body, binder, members)
 }
 
 /// COMPLETENESS walk for [`varying_param_epilogue_droppable`]: every TERMINAL (does-not-reach-a-member-tail-
-/// call) arm of a `Match`/`MatchList` whose SCRUTINEE is `binder` must NOT reference `binder`. A `MatchSum`
-/// ON `binder` (a sum-variant decomposition, arms in a `SumCont`) is conservatively DENIED — slice-1 targets
-/// the `MatchList`/`Match` self-loop shape (PASCAL/PAIRWISE); a later slice can handle `MatchSum`-on-binder.
-/// Cycle-guarded `core_child_ids` walk; DENIES (false) on the first terminal arm that references `binder` or
-/// on any `MatchSum`-on-binder.
-fn terminal_arms_dont_ref_binder(
+/// call) arm of a `Match`/`MatchList` whose SCRUTINEE is `binder` must have NO heap-CHILD escape — the rc-
+/// aware epilogue shell-drop of the final value would cascade-free a moved-out heap child. A terminal arm may
+/// reference `binder` ONLY via NON-heap-escaping reads (a SCALAR child copy `vec-get` — swap2's `#list(solo)`
+/// over `List Int64`); DENIED on:
+///  • `arm_borrows_heap_subvalue`: a heap sub-value read OUT of a compound in a CONSUME/RESULT position
+///    (a heap child moved out — that would need the (ii) escaped-child dup, a later slice). SOUND-toward-
+///    escape (no false negative), so FALSE ⟹ no heap child moved out (a scalar copy does not).
+///  • `body_rest_mints_binder`: a `(.. t)` tail-mint of `binder` in a terminal arm `vec-drop`-CONSUMES the
+///    spine → the epilogue shell-drop would double-consume (arm_borrows_heap_subvalue's RestFrom blind spot).
+/// (slice-1 required NO REFERENCE = PASCAL; slice-2 relaxes to no-heap-child-escape = PAIRWISE's scalar
+/// `solo`, still NO dup, still not the P0.) A `MatchSum`-on-binder is conservatively DENIED (a later slice).
+/// Cycle-guarded; DENIES on the first heap-child-escaping/rest-minting terminal arm or any `MatchSum`-on-binder.
+fn terminal_arms_no_heapchild_escape(
     db: &mut Db,
     body: StructId,
     binder: StructId,
@@ -2298,10 +2329,10 @@ fn terminal_arms_dont_ref_binder(
         if !seen.insert(id) {
             return true;
         }
-        // Terminal arm bodies of a match ON binder that we must verify don't reference binder.
+        // Terminal arm bodies of a match ON binder that we must verify have no heap-child escape.
         let to_check: Vec<StructId> = match core_of(db, id) {
             Core::MatchSum { scrutinee, .. } if scrut_is(db, scrutinee, binder) => {
-                return false; // conservative: MatchSum-on-binder not handled in slice-1
+                return false; // conservative: MatchSum-on-binder not handled yet
             }
             Core::Match { scrutinee, arms } if scrut_is(db, scrutinee, binder) => {
                 arms.iter().map(|a| a.body).collect()
@@ -2312,8 +2343,14 @@ fn terminal_arms_dont_ref_binder(
             _ => Vec::new(),
         };
         for b in to_check {
-            if !body_has_member_tail_call(db, b, members) && occurs_in(db, b, binder) {
-                return false; // a terminal arm references binder → potential child-escape/rest-mint → DENY
+            // Only TERMINAL (non-back-edge) arms matter (a back-edge arm's binder-consume is reclaimed
+            // per-iteration). A heap-child escape or a spine rest-mint would make the epilogue deep-drop
+            // double-free / double-consume → DENY. A scalar-child borrow (no heap sub-value escapes) is fine.
+            if !body_has_member_tail_call(db, b, members)
+                && (arm_borrows_heap_subvalue(db, b)
+                    || body_rest_mints_binder(db, b, binder, &mut HashSet::new()))
+            {
+                return false;
             }
         }
         for c in core_child_ids(db, id) {

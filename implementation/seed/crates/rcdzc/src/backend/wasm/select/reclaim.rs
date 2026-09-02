@@ -940,7 +940,7 @@ fn matchlist_scrutinee_consumed(
 /// Whether subtree `id` REST-MINTS binder `sb` — contains a `SumPayload` whose path's last step is a
 /// `RestFrom` and whose scrutinee is a direct ref to `sb` (the `(.. r)` tail-extraction that `vec-drop`-
 /// CONSUMES `sb`'s spine). Recurses all children (cycle-guarded).
-fn body_rest_mints_binder(
+pub(super) fn body_rest_mints_binder(
     db: &mut Db,
     id: StructId,
     sb: StructId,
