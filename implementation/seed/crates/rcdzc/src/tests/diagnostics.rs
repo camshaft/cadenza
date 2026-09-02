@@ -682,6 +682,29 @@ fn a_fault_inside_an_argument_keeps_its_own_precise_anchor() {
 }
 
 #[test]
+fn a_macro_template_literal_unbound_name_anchors_to_the_call_site() {
+    // A macro whose TEMPLATE contains a literal name that does not resolve — `(quasiquote (def
+    // (unquote nm) undefined-helper))` where `undefined-helper` is unbound — expands (reify→β→
+    // reconstruct) into FRESH synth nodes with no source provenance, so the CDZ0101 once reported
+    // POSITION-LESS (an unanchored bare "unbound name `undefined-helper`" pointing nowhere). The
+    // expander now records each spliced synth node's `synth_name_origin` = the CALL node (its span is
+    // preserved by the in-place splice overwrite), so `source_of_synth` re-anchors the fault to the
+    // `(mkdef answer)` macro-invocation site — a real user node the front-end maps to file:line:col.
+    let src = "(module m (def (mkdef (quote nm)) (quasiquote (def (unquote nm) undefined-helper))) \
+               (mkdef answer) (def (main) answer) (export main))";
+    let d = first_error(src);
+    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{}", d.message);
+    let node = d
+        .node
+        .expect("the macro-template unbound name must carry a node, not be position-less");
+    let db = Db::load(parse(src));
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a user node (the macro-invocation site) so it maps to a source location"
+    );
+}
+
+#[test]
 fn a_provable_overflow_does_not_leak_a_synthesized_node() {
     // `(+ Int64.max 1)` proves an overflow (CDZ0304). The fold runs over evaluator-SYNTHESIZED
     // nodes (the built `Int64` module / reduced operands), but the reported origin must be either a

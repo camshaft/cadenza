@@ -820,6 +820,16 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 if db.parent_of(id) == Some(db.ast.root) {
                     flatten_spliced_do(&mut db.ast, id);
                 }
+                // Anchor the spliced synth subtree's diagnostics at the macro-invocation site: reconstruct_
+                // macro builds FRESH synth nodes with NO source provenance, so a macro TEMPLATE-LITERAL
+                // unbound name produced a POSITION-LESS CDZ0101 (sanitize_origin found no source_of_synth →
+                // nulled the anchor, a bare "unbound name" pointing nowhere). Record each spliced synth node's
+                // origin = the call node `id` (its StructId/span is preserved by the in-place overwrite) so
+                // source_of_synth relocates the diagnostic to the `(f …)` call site. Dedup-safe (feeds the
+                // source_of_synth path dedup_faults respects, not a nearest-ancestor emit-site hack). Runs
+                // AFTER the flatten so nested-do children inlined into `id` are covered. (v-diagnostics
+                // root-cause: reify→reduce→reconstruct loses template node identity.)
+                db.record_synth_origin_into_subtree(id, id);
                 // Defer scope-skip seeding to AFTER the round's parent-index rebuild (below): a match ARM
                 // is a binding candidate only via `parent_of` (it is a headless `(pattern body)` whose
                 // parent is a `match`), so seeding before the spliced arm has a parent would fail to mark
