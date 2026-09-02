@@ -1809,3 +1809,37 @@ fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
 //  corpus 07-type-system: `(< 1 "x")` cross-kind ordering compare -> CDZ0201 "different types" with (count 1)
 //  pinning the dedup (the ordering carve-out decline is dropped, ONE fault not a double) — via the
 //  cross-diagnostic (count N) lever that reclaims a former white-box dedup test.)
+
+#[test]
+fn an_undetermined_escape_result_names_the_unconstrained_part_not_a_canned_type() {
+    // An exported nullary def whose result type has an UNCONSTRAINED component (`(list)` → `(List Any)`,
+    // the empty-list element grounding to `Any`) is rejected CDZ0203 "not fully determined" so its
+    // serialized type header is defined. The message must be ACTIONABLE against the ACTUAL type: it names
+    // the unconstrained part (a `_` / `Any`) shown in the rendered result and the annotation SHAPE, NOT a
+    // canned `(Option Int64)` example that bears no relation to the reported type (the misleading form
+    // this replaced — a user seeing `(List Any)` told to annotate with `(Option Int64)` is confused).
+    let d = first_error("(module m (def (main) (list)) (export main))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "{}", d.message);
+    let m = &d.message;
+    assert!(m.contains("not fully determined"), "{m}");
+    // Names the actual rendered type + its unconstrained part (works for both the `Any` and `_` forms).
+    assert!(
+        m.contains("(List Any)"),
+        "names the actual result type: {m}"
+    );
+    assert!(
+        m.contains("unconstrained part") && m.contains("`_` or `Any`"),
+        "names the unconstrained part generically (not just `_`, which the Any form lacks): {m}"
+    );
+    // Actionable annotation SHAPE + a concrete fill suggestion, as a clear template — not a canned type.
+    assert!(
+        m.contains("(: <expr> <a concrete type>)"),
+        "shows the annotation template: {m}"
+    );
+    assert!(m.contains("Int64"), "suggests a concrete fill: {m}");
+    // The misleading canned example is GONE.
+    assert!(
+        !m.contains("(Option Int64)"),
+        "the canned `(Option Int64)` example (unrelated to the reported type) must be gone: {m}"
+    );
+}

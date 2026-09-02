@@ -4346,8 +4346,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 Reject::coded(
                     Code::TypeMismatch,
                     format!(
-                        "the result type `{}` is not fully determined — annotate it \
-                         (e.g. `(: <expr> (Option Int64))`) so its value has a defined form",
+                        "the result type `{}` is not fully determined — the unconstrained part shown \
+                         above (a `_` or `Any`) is a type no use pins down, and the boundary cannot \
+                         serialize a value whose type is not fully known. Annotate the export with a \
+                         fully-determined type — `(: <expr> <a concrete type>)`, filling that part with a \
+                         concrete type such as `Int64` — so its value has a defined form",
                         ty.render_name(&db.name_ctx())
                     ),
                 )
