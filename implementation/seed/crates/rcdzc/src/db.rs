@@ -2693,7 +2693,12 @@ impl Db {
         // to `defs` and the arena HERE, before the parent index / `def_by_name` are built, so the new def
         // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
         let mut defs = defs;
-        let accum_links = crate::accum::introduce(&mut ast, &mut defs);
+        // `effect_decls` (from `scan_top_level`, effect-synthesized above) is passed so accum can PRECISELY
+        // decline a linear recursion whose per-step term PERFORMS a discharged effect — reassociating an
+        // effectful term reorders its evaluation (observable), so the transform is unsound there. The
+        // declared-effect names let the syntactic `(. E op)` perform-detection avoid over-declining on a
+        // pure record/field access `(. r x)`. See `accum::term_performs_effect`.
+        let accum_links = crate::accum::introduce(&mut ast, &mut defs, &effect_decls);
         // SET.OF OVER A RUNTIME LIST: rewrite `(Set.of xs)` whose `xs` is not a `(list …)` literal into a
         // synthesized recursive fold (`__set_of_rt$ xs 0 (Set.of (list))`), so a set builds from a
         // runtime list (a `Set.to-list` result, a `List.concat`, a param/recursively-built list) instead
