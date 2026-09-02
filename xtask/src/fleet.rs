@@ -93,6 +93,26 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// watchdog sweeps every ~4 min, so this permits at most one restart per agent per ~10 min.
 const WEDGE_RESTART_GRACE: u64 = 600;
 
+/// How long the backgrounded-wait TOKEN COUNT must stay FROZEN (unchanged since its first-seen fingerprint
+/// stamp) before the watchdog treats a "Waiting for task" hang as a DEAD task (concierge gap #2). Long
+/// enough to span ≥1 prior watchdog sweep (sweeps run ~4min) so it reflects "frozen across sweeps" — a
+/// live turn's token count would have advanced — not a within-sweep pause. 5min.
+const WAIT_FROZEN_MIN_SECS: u64 = 300;
+
+/// Deep-stale heartbeat threshold (seconds) gating the BACKGROUNDED-WAIT WEDGE (concierge gap #2): only
+/// treat a "Waiting for task" hang as a dead-task wedge once the heartbeat is stale beyond this — well past
+/// any LEGIT long backgrounded task (an agent's own gate-local runs ~40min), so a real build clears before
+/// we ever Escape it. Default 60min; env-tunable via `CDZ_WAIT_WEDGE_SECS`. NOT safety-critical — the Escape
+/// is non-destructive (a still-running task keeps going + its completion still resumes the agent), so a
+/// false positive is harmless; lean is fine (concierge-endorsed 2026-09-02).
+fn backgrounded_wait_wedge_secs() -> u64 {
+    std::env::var("CDZ_WAIT_WEDGE_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(3600)
+}
+
 /// Thrash-guard (seconds) between watchdog-sent `/compact` keystrokes to the same agent. A `/compact`
 /// takes a turn to land + drop the context %, so re-sending faster than that would stack duplicate
 /// compacts. The watchdog sweeps every ~4 min, so this permits at most one compact-nudge per agent per
@@ -4591,6 +4611,22 @@ fn nudge_tick(session: &str, agent: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Send a single Escape keystroke to an agent's pane — the watchdog's NON-DESTRUCTIVE un-wedge for a
+/// dead-background-task hang (concierge gap #2). The pane's own affordance is "Waiting for task <id> (esc
+/// to give additional instructions)": Escape UNBLOCKS the agent (returns it to a prompt) WITHOUT killing
+/// the backgrounded task — a still-running task keeps going and its completion notification still resumes
+/// the agent later — so even a false-positive Escape is harmless (the agent just continues its loop). The
+/// caller nudges `continue` afterward (via the normal re-arm path) to resume the loop. No `-l` (Escape is a
+/// NAMED key, not a literal). Same send-keys mechanism as [`nudge_tick`].
+fn escape_wait(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Type `/compact` + Enter into an agent's pane — the watchdog's ACTUAL pre-wall compaction (v-cdz-tooling
 /// root-cause 2026-08-02: `/compact` is a BUILT-IN CLI slash command, NOT a tool/skill, so an unattended
 /// agent physically CANNOT self-invoke it — the "compact at tick-top" contract rule is unexecutable from
@@ -5904,6 +5940,60 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             continue;
         }
 
+        // BACKGROUNDED-WAIT WEDGE (concierge gap #2, 2026-09-02) — also runs BEFORE the pane_busy guard.
+        // A DEAD backgrounded task leaves the agent HUNG on "Waiting for task <id>" with the esc-to-interrupt
+        // footer + spinner + a FROZEN token count — pane_busy_means_working would leave it alone forever
+        // (v-lean-oracle sat 1h+ with mail piling). It is INDISTINGUISHABLE by pane alone from a LEGIT long
+        // backgrounded task (an agent's own ~40min gate-local shows exactly this), so we require BOTH: (a) a
+        // DEEP-stale heartbeat (> any legit task, default 60min) AND (b) the token count FROZEN across sweeps
+        // (a live turn advances it; the elapsed-timer TICKS but is NOT progress — the token count is the
+        // liveness signal). On both → send-keys Escape, which is NON-DESTRUCTIVE (unblocks the agent to a
+        // prompt; a still-running task keeps going and its completion notification still resumes it), so a
+        // false positive is harmless. Thrash-guarded by WEDGE_RESTART_GRACE (shared with the restart paths).
+        // Uses the sweep-top `pane`, compared to the PRIOR sweep's fingerprint stamp (cross-sweep, not a 2s
+        // recapture). Unifying rule with the #7825 update-banner class: pane-content CHANGE across sweeps is
+        // liveness, not the static footer.
+        if age >= backgrounded_wait_wedge_secs()
+            && let Some(p) = pane.as_deref()
+            && pane_shows_backgrounded_wait(p)
+            && let Some(cur) = parse_pane_token_count(p)
+        {
+            let prior = last_wait_fingerprint(fleet, &a.name, now);
+            let frozen_long = matches!(&prior, Some((prev, prev_age)) if *prev == cur && *prev_age >= WAIT_FROZEN_MIN_SECS);
+            let restarted_recently = wedge_restart_age_secs(fleet, &a.name, now)
+                .is_some_and(|s| s < WEDGE_RESTART_GRACE);
+            if frozen_long && !restarted_recently {
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would ESCAPE '{}' (backgrounded-wait wedge: heartbeat stale {age}s, token count {cur} FROZEN on a 'Waiting for task' hang)",
+                        a.name
+                    );
+                } else if escape_wait(&session, &a.name) {
+                    stamp_wedge_restart(fleet, &a.name); // share the anti-thrash guard with the restart paths
+                    clear_wait_fingerprint(fleet, &a.name); // fresh start after unblocking
+                    eprintln!(
+                        "  ⎋ ESCAPED '{}' backgrounded-wait wedge (heartbeat stale {age}s + token count {cur} FROZEN on a 'Waiting for task' hang — a DEAD background task the esc-to-interrupt footer masked as work-in-flight). Non-destructive: the agent unblocks to a prompt; any still-running task keeps going + its completion still resumes it. (self-heal, no operator needed)",
+                        a.name
+                    );
+                    println!("  ⎋ escaped '{}' backgrounded-wait wedge", a.name);
+                } else {
+                    eprintln!(
+                        "  ! '{}' backgrounded-wait wedge: send-keys Escape failed — will retry next sweep.",
+                        a.name
+                    );
+                }
+                continue;
+            }
+            // Not yet frozen long enough: record the fingerprint for the NEXT sweep to compare — but ONLY
+            // on a CHANGE (an unchanged value must NOT be re-stamped, else its mtime resets and the age can
+            // never cross WAIT_FROZEN_MIN_SECS). No stamp in dry-run (read-only). Then fall through to the
+            // pane_busy guard (it looks busy this sweep; a later sweep confirms the freeze).
+            let unchanged = matches!(&prior, Some((prev, _)) if *prev == cur);
+            if !unchanged && !dry_run {
+                stamp_wait_fingerprint(fleet, &a.name, &cur);
+            }
+        }
+
         // Don't interrupt a real tick: if the pane shows Claude working ("esc to interrupt"), the loop
         // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop.
         //
@@ -6673,6 +6763,39 @@ fn stamp_wedge_restart(fleet: &Fleet, name: &str) {
              guard is OFF, so this window may be auto-restarted every sweep until it clears."
         );
     }
+}
+
+/// The last-seen backgrounded-wait TOKEN-COUNT FINGERPRINT for this agent, as `(token_count, age_secs)`,
+/// or `None` if never stamped. The marker `.claude/fleet/wait-fingerprint/<name>` stores the token count
+/// seen while the agent was in a "Waiting for task" hang (mtime = when that value was FIRST seen). The
+/// watchdog compares it across sweeps: an UNCHANGED count whose mtime has aged past the frozen threshold =
+/// the token meter hasn't moved for that long = a DEAD/hung background task (not a live one, which would be
+/// generating). See gap #2 + [`parse_pane_token_count`]. Mirrors [`last_drain_nudge`].
+fn last_wait_fingerprint(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+    let path = fleet.root.join("wait-fingerprint").join(name);
+    let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
+    let tc = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((tc, age))
+}
+
+/// Record the backgrounded-wait token-count fingerprint for this agent (write it to
+/// `.claude/fleet/wait-fingerprint/<name>`; its mtime = when this value was first seen). Called ONLY when
+/// the value is NEW or CHANGED — an unchanged value is NOT re-stamped, so the mtime AGES = how long the
+/// token meter has been frozen (re-stamping every sweep would reset the age and the frozen-check could
+/// never fire). Best-effort; a write miss just delays detection to a later sweep. See gap #2.
+fn stamp_wait_fingerprint(fleet: &Fleet, name: &str, token_count: &str) {
+    let dir = fleet.root.join("wait-fingerprint");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), format!("{token_count}\n")).ok();
+}
+
+/// Clear the wait-fingerprint marker (the agent is no longer in a frozen backgrounded wait — pane changed,
+/// or we just Escaped it). Keeps a stale fingerprint from lingering into a future unrelated wait.
+fn clear_wait_fingerprint(fleet: &Fleet, name: &str) {
+    let _ = std::fs::remove_file(fleet.root.join("wait-fingerprint").join(name));
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
@@ -7848,6 +7971,43 @@ fn pane_shows_working(pane_text: &str) -> bool {
 fn pane_shows_update_banner(pane_text: &str) -> bool {
     let lower = pane_text.to_ascii_lowercase();
     lower.contains("restart to update") || lower.contains("update installed")
+}
+
+/// Does the pane show an agent BLOCKED on a backgrounded task — "Waiting for task <id> (esc to give
+/// additional instructions)"? Claude Code prints this when the agent has launched a background task and is
+/// waiting for it. If that task DIES/COMPLETES without the agent receiving the completion, the agent HANGS
+/// on the wait indefinitely (heartbeat stale, inbox mail piling) while the pane keeps its "esc to interrupt"
+/// footer + spinner — so [`pane_shows_working`] mislabels the dead wait as work-in-flight (concierge gap #2,
+/// caught v-lean-oracle 1h+). This is NOT itself proof of a wedge (a LEGIT long backgrounded task — e.g. an
+/// agent's own ~40min gate-local — shows exactly this); the caller pairs it with a DEEP-stale heartbeat AND
+/// a FROZEN token count across sweeps (see [`parse_pane_token_count`]) before acting, and the action is a
+/// NON-DESTRUCTIVE Escape (unblocks the agent; a still-running task keeps going + its completion still
+/// arrives). Pure + unit-tested.
+fn pane_shows_backgrounded_wait(pane_text: &str) -> bool {
+    pane_text.contains("Waiting for task")
+}
+
+/// Extract the streaming/cumulative TOKEN COUNT from a pane's generation meter — the number right before
+/// "tokens" (e.g. `↓ 95.0k tokens` → `"95.0k"`, `45.8k tokens` → `"45.8k"`). This is the reliable LIVENESS
+/// discriminator the concierge validated: on a genuinely-working turn the count CHANGES across captures; on
+/// a wedged/hung wait it is FROZEN (the elapsed-time meter still TICKS, so the timer is NOT a liveness signal
+/// — the token count is). `None` if no meter is visible (then the frozen-check can't fire — a safe miss, never
+/// a false Escape). Grabs the trailing `[0-9.kKmM]` run before the LAST "tokens"; requires ≥1 digit. Pure.
+fn parse_pane_token_count(pane_text: &str) -> Option<String> {
+    let idx = pane_text.rfind("tokens")?;
+    let before = pane_text[..idx].trim_end();
+    let mut count: Vec<char> = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | 'k' | 'K' | 'm' | 'M'))
+        .collect();
+    count.reverse();
+    let s: String = count.into_iter().collect();
+    if s.chars().any(|c| c.is_ascii_digit()) {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -18883,6 +19043,52 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!pane_shows_update_banner("esc to interrupt"));
         assert!(!pane_shows_update_banner("❯ "));
         assert!(!pane_shows_update_banner(""));
+    }
+
+    #[test]
+    fn pane_shows_backgrounded_wait_detects_the_wait_pattern() {
+        assert!(pane_shows_backgrounded_wait(
+            "✻ Waiting for task 7f3a (esc to give additional instructions)\n  esc to interrupt"
+        ));
+        assert!(!pane_shows_backgrounded_wait(
+            "✶ Thinking… (2m · ↓ 12k tokens)"
+        ));
+        assert!(!pane_shows_backgrounded_wait("❯ "));
+    }
+
+    #[test]
+    fn parse_pane_token_count_extracts_the_meter_and_ignores_the_ticking_timer() {
+        // The concierge's reliable liveness signal is the token COUNT (not the elapsed timer). Extract the
+        // number right before "tokens".
+        assert_eq!(
+            parse_pane_token_count("Percolating… (36m 27s · ↓ 95.0k tokens)"),
+            Some("95.0k".to_string())
+        );
+        assert_eq!(
+            parse_pane_token_count("Waiting for task abc\n✶ Shimmying… (1h 2m · ↓ 45.8k tokens)"),
+            Some("45.8k".to_string())
+        );
+        assert_eq!(
+            parse_pane_token_count("↑ 12 tokens"),
+            Some("12".to_string())
+        );
+        // KEY: two captures of a FROZEN wait differ only in the ticking elapsed timer → SAME token count →
+        // detected as frozen (the timer must NOT read as progress).
+        assert_eq!(
+            parse_pane_token_count("Shimmying… (1h 3m · ↓ 45.8k tokens)"),
+            parse_pane_token_count("Shimmying… (1h 8m · ↓ 45.8k tokens)")
+        );
+        // A PROGRESSING turn: the count advances → different → NOT frozen.
+        assert_ne!(
+            parse_pane_token_count("(1m · ↓ 10.0k tokens)"),
+            parse_pane_token_count("(2m · ↓ 22.0k tokens)")
+        );
+        // No meter (incl. a bare "Waiting for task" line) → None: the frozen-check can't fire, a SAFE miss.
+        assert_eq!(parse_pane_token_count("❯ "), None);
+        assert_eq!(
+            parse_pane_token_count("Waiting for task abc (esc to give additional instructions)"),
+            None
+        );
     }
 
     #[test]
