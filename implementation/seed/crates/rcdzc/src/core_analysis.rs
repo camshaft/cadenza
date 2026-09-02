@@ -479,6 +479,21 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
 /// unique fingerprint and is excluded — which also keeps effectful subtrees out (belt to the caller's
 /// `subtree_reaches_host_call` gate).
 pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut String) {
+    // ALPHA-EQUIVALENCE: a scope map of BOUND-local binder → de-Bruijn ordinal, so two subtrees identical up
+    // to their OWN let-binder names match (rsv1's re-materialized state-chains bind _cdz_let1 vs _cdz_let3 but
+    // are otherwise identical). A reference to a binder IN this map is BOUND → its ordinal; NOT in it is
+    // FREE → its resolved-binder id (different free vars never collide; same ones do — value-equal only in a
+    // straight-line body, the caller's `!is_recursive` gate). Fresh per top-level fingerprint.
+    let mut locals: HashMap<StructId, usize> = HashMap::new();
+    core_subtree_fingerprint_inner(db, id, out, &mut locals);
+}
+
+fn core_subtree_fingerprint_inner(
+    db: &mut Db,
+    id: StructId,
+    out: &mut String,
+    locals: &mut HashMap<StructId, usize>,
+) {
     use std::fmt::Write;
     match core_of(db, id) {
         // Leaves — fingerprint by value.
@@ -495,53 +510,79 @@ pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut Stri
             let _ = write!(out, "s{}:{};", s.len(), s);
         }
         Core::Unit => out.push_str("u;"),
-        // References — RESOLVED BINDER identity (same binder id ⟹ same value in a straight-line body).
-        Core::Param { binder } => {
-            let _ = write!(out, "P{:?};", binder);
-        }
-        Core::LocalRef { binder } => {
-            let _ = write!(out, "L{:?};", binder);
+        // References — BOUND local → de-Bruijn ordinal (alpha-insensitive); FREE var → resolved-binder id.
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            if let Some(&ord) = locals.get(&binder) {
+                let _ = write!(out, "b#{ord};");
+            } else {
+                let _ = write!(out, "F{:?};", binder);
+            }
         }
         // Pure ops — tag by op + recurse operands.
         Core::Arith { op, lhs, rhs } => {
             let _ = write!(out, "A{op:?}(");
-            core_subtree_fingerprint(db, lhs, out);
-            core_subtree_fingerprint(db, rhs, out);
+            core_subtree_fingerprint_inner(db, lhs, out, locals);
+            core_subtree_fingerprint_inner(db, rhs, out, locals);
             out.push(')');
         }
         Core::Compare { op, lhs, rhs } => {
             let _ = write!(out, "Cmp{op:?}(");
-            core_subtree_fingerprint(db, lhs, out);
-            core_subtree_fingerprint(db, rhs, out);
+            core_subtree_fingerprint_inner(db, lhs, out, locals);
+            core_subtree_fingerprint_inner(db, rhs, out, locals);
             out.push(')');
         }
         Core::Convert { op, operand } => {
             let _ = write!(out, "Cv{op:?}(");
-            core_subtree_fingerprint(db, operand, out);
+            core_subtree_fingerprint_inner(db, operand, out, locals);
             out.push(')');
         }
         Core::Not { operand } => {
             out.push_str("Not(");
-            core_subtree_fingerprint(db, operand, out);
+            core_subtree_fingerprint_inner(db, operand, out, locals);
             out.push(')');
         }
         Core::Proj { operand, index } => {
             let _ = write!(out, "Pr{index}(");
-            core_subtree_fingerprint(db, operand, out);
+            core_subtree_fingerprint_inner(db, operand, out, locals);
+            out.push(')');
+        }
+        Core::If { cond, then_, else_ } => {
+            out.push_str("If(");
+            core_subtree_fingerprint_inner(db, cond, out, locals);
+            core_subtree_fingerprint_inner(db, then_, out, locals);
+            core_subtree_fingerprint_inner(db, else_, out, locals);
+            out.push(')');
+        }
+        // A `let*` — each init sees EARLIER binders; assign each binder a de-Bruijn ordinal (`locals.len()`
+        // at insertion) AFTER its init, then the body; POP the binders on scope exit so a sibling subtree
+        // never sees them (scope-local + consistent across siblings).
+        Core::Let { bindings, body } => {
+            out.push_str("Let(");
+            let mut bound_here: Vec<StructId> = Vec::with_capacity(bindings.len());
+            for (binder, init) in bindings.iter() {
+                core_subtree_fingerprint_inner(db, *init, out, locals);
+                let ord = locals.len();
+                locals.insert(*binder, ord);
+                bound_here.push(*binder);
+            }
+            core_subtree_fingerprint_inner(db, body, out, locals);
+            for b in bound_here {
+                locals.remove(&b);
+            }
             out.push(')');
         }
         // Compound value producers.
         Core::SumNew { disc, payloads } => {
             let _ = write!(out, "S{disc}(");
             for &p in payloads.iter() {
-                core_subtree_fingerprint(db, p, out);
+                core_subtree_fingerprint_inner(db, p, out, locals);
             }
             out.push(')');
         }
         Core::Tuple { elems } => {
             out.push_str("Tup(");
             for &e in elems.iter() {
-                core_subtree_fingerprint(db, e, out);
+                core_subtree_fingerprint_inner(db, e, out, locals);
             }
             out.push(')');
         }
@@ -550,36 +591,37 @@ pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut Stri
             // BTreeMap iterates in a stable key order, so the fingerprint is canonical.
             for (name, &v) in fields.iter() {
                 let _ = write!(out, "{name:?}=");
-                core_subtree_fingerprint(db, v, out);
+                core_subtree_fingerprint_inner(db, v, out, locals);
             }
             out.push(')');
         }
         Core::ListNew { elems } => {
             out.push_str("LN(");
             for &e in elems.iter() {
-                core_subtree_fingerprint(db, e, out);
+                core_subtree_fingerprint_inner(db, e, out, locals);
             }
             out.push(')');
         }
         Core::ListPush { list, elem } => {
             out.push_str("LP(");
-            core_subtree_fingerprint(db, list, out);
-            core_subtree_fingerprint(db, elem, out);
+            core_subtree_fingerprint_inner(db, list, out, locals);
+            core_subtree_fingerprint_inner(db, elem, out, locals);
             out.push(')');
         }
         Core::ListPrepend { elem, list } => {
             out.push_str("LPre(");
-            core_subtree_fingerprint(db, elem, out);
-            core_subtree_fingerprint(db, list, out);
+            core_subtree_fingerprint_inner(db, elem, out, locals);
+            core_subtree_fingerprint_inner(db, list, out, locals);
             out.push(')');
         }
         Core::SumPayload { scrutinee, path } => {
             let _ = write!(out, "SP{path:?}(");
-            core_subtree_fingerprint(db, scrutinee, out);
+            core_subtree_fingerprint_inner(db, scrutinee, out, locals);
             out.push(')');
         }
-        // Any OTHER variant (Call/If/Let/Match/Closure/effectful ops/…) → UNIQUE id → never matches another
-        // node → never CSE'd. Conservative by construction: no false match, only a forfeited share.
+        // Any OTHER variant (Call/Match/MatchSum/Closure/effectful ops/…) → UNIQUE id → never matches
+        // another node → never CSE'd. Conservative by construction: no false match, only a forfeited share.
+        // (Match/MatchSum bind arm-pattern binders not yet alpha-normalized here → correctly left unique.)
         _ => {
             let _ = write!(out, "U{:?};", id);
         }
