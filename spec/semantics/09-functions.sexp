@@ -13547,3 +13547,23 @@
       (def (main) (relay #tuple(10 20 30)))
       (export main)))
   (output (: 60 Int64)))
+
+; --- Call-site splat of a COMPUTED tuple (an effect-free call operand), A.7b -------------------
+; DESIGN-variable-arity-functions.md A.7b: a `(.. (mk …))` splat whose operand is a CALL that computes a
+; tuple — not a bare reference — expands into per-slot projections too, PROVIDED the operand is effect-free
+; (a pure function returns the same tuple on each projection's re-evaluation). An operand that performs an
+; effect is NOT expanded (it would duplicate the effect) — that single-eval materialize is a further step.
+(case
+  "a call-site splat of a computed (effect-free) tuple spreads its elements"
+  (doc
+    "The splat operand is a CALL `(mk k)` that computes `#tuple(k, k+1, k+2)`, spread into the three
+           parameters of `a3`. `(a3 (.. (mk k)))` = k + (k+1) + (k+2) = 3k + 3; at k = 10 that is 33. Pins
+           that a computed-tuple operand (not only a literal, local, or parameter) splats when it is pure.")
+  (input
+    (do
+      (def (a3 x y z) (+ (+ x y) z))
+      (def (mk (: n Int64)) #tuple(n (+ n 1) (+ n 2)))
+      (def (main (: k Int64)) (a3 (.. (mk k))))
+      (export main)))
+  (call main 10)
+  (output (: 33 Int64)))

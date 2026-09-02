@@ -582,13 +582,21 @@ built on the real mechanism:
   non-splat program — which is what made a direct-to-main self-merge safe (gated on `corpus-09-functions`
   / `-15-rows` / `-07-type-system` + `corpus_roundtrip`).
 
-### A.7b — materialize-once (the sole remaining case)
+### A.7b — computed-tuple operand: pure-operand re-eval LANDED; effectful single-eval remains
 
 `(.. <expr>)` where the operand is a tuple-COMPUTING expression (not a syntactic tuple, not a bare
-Ref/Param) — `f(.. (mk))` — still declines cleanly (CDZ0201). `expand_call_splat_args` cannot handle it
-because expanding to `(. (mk) 0) … (. (mk) k-1)` would re-evaluate `(mk)` per slot (wrong if it performs
-an effect), and the helper returns a flat arg list so it cannot introduce the binding that would evaluate
-`(mk)` ONCE. The materialize-once needs a `(let ((tmp (mk))) (f (. tmp 0) …))` wrap around the
-application — reusing the `evalonce_wraps` / `materialize_row_op_operand` machinery — gated on the operand
-actually needing it (a pure operand could re-eval). This is a distinct, more invasive change than the
-arg-list expansion; it is the one open varargs follow-up.
+Ref/Param) — `f(.. (mk))`.
+
+**Shipped (pure operand):** when the operand is EFFECT-FREE (`!arg_reaches_perform_evalonce`),
+`expand_call_splat_args` now projects it per slot — `(. (mk) 0) … (. (mk) k-1)`, a fresh copy per slot.
+Re-evaluating a pure operand is sound (a deterministic function returns the same tuple each call), so this
+needs no `let` binding and keeps the shared helper's check/lower symmetry. Corpus: the computed-tuple case
+in 09-functions.
+
+**Remaining (effectful operand):** an operand that reaches a perform is left as the raw marker and declines
+cleanly — re-evaluating it per slot would DUPLICATE the effect. Making it work needs a genuine
+single-eval materialize: a `(let ((tmp (mk))) (f (. tmp 0) …))` wrap around the application (reusing the
+`evalonce_wraps` / `materialize_row_op_operand` machinery), so the effect runs ONCE. That is a distinct,
+more invasive change (the helper returns a flat arg list and cannot introduce the binding); it is the one
+open varargs follow-up. (A pure operand of large arity would also benefit from single-eval as a perf
+optimization, but is already correct via re-eval.)

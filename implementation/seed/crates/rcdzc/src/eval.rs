@@ -1460,11 +1460,14 @@ pub(crate) fn expand_call_splat_args(db: &mut Db, args: &[StructId]) -> Option<V
             }
             continue;
         }
-        // (ii) A tuple-typed REFERENCE `(.. t)` (a param / let-local) — expand into per-slot projections
-        // `(. t 0) … (. t k-1)` (k = the static tuple arity). t is a bound VALUE, so reading it k times
-        // does not re-evaluate it; a copy of the reference per projection keeps the one-parent invariant.
-        // A NON-reference operand (a call that computes a tuple) would re-evaluate per projection → left
-        // as-is for the materialize-once follow-up.
+        // (ii) A tuple-typed operand `(.. t)` — expand into per-slot projections `(. t 0) … (. t k-1)`
+        // (k = the static tuple arity), a fresh copy of the operand per slot (one-parent invariant).
+        // A bare Ref/Param (a param / let-local) is a bound VALUE, so reading it k times does not
+        // re-evaluate it — always expandable. A NON-reference operand (a call `(mk)` that COMPUTES a
+        // tuple) is projected per slot only when it is EFFECT-FREE: each copy re-evaluates the operand,
+        // which is sound iff it performs no effect (a pure function returns the same tuple each call). An
+        // operand that reaches a perform is left as the raw marker (declines) — duplicating its effect
+        // would change semantics; a single-eval materialize (a `let`-bound `#g`) is the follow-up (A.7b).
         crate::resolve::resolve_subtree(db, t);
         let arity = match crate::infer::type_of(db, t) {
             crate::ty::Ty::Tuple(elems) => Some(elems.len()),
@@ -1474,7 +1477,8 @@ pub(crate) fn expand_call_splat_args(db: &mut Db, args: &[StructId]) -> Option<V
             resolved_of(db, t),
             Resolved::Ref { .. } | Resolved::Param { .. }
         );
-        if let (Some(k), true) = (arity, simple_ref) {
+        let expandable = simple_ref || !arg_reaches_perform_evalonce(db, t);
+        if let (Some(k), true) = (arity, expandable) {
             for i in 0..k {
                 let t_copy = copy_structural_pub(db, t, &[], &HashMap::default());
                 let dot = db.push_name(".");
