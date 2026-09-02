@@ -14886,6 +14886,39 @@
   (input (do (def (main) (Set.len #set(Float64.Infinity Float64.Infinity 1.0))) (export main)))
   (output (: 2 Int64)))
 
+; NON-FINITE INSIDE A COMPOUND (the #7479 value-codec crossing). The top-level `nan`/`Infinity` cases
+; above pin a non-finite crossing the boundary as a BARE scalar. The un-covered semantic is a non-finite
+; float NESTED in a compound value: it must marshal via its dedicated non-finite leaf
+; (KIND_FLOAT_NAN / KIND_FLOAT_POS_INF / KIND_FLOAT_NEG_INF) INSTEAD of collapsing the enclosing
+; Some/list/tuple. Pinned on the faithful (wasm) gate; verified on current main (v-runtime witness).
+(case
+  "non-finite floats cross inside a compound as their own leaves, not collapsing the compound"
+  (doc
+    "A `nan` and a `+inf` nested in a `Some` and a `list` inside a tuple each render as their canonical
+        `nan`/`inf` leaf with the surrounding structure preserved — the compound analogue of the top-level
+        `nan`/`Infinity` boundary crossings above. This pins the #7479 value-codec semantic that a
+        non-finite float in a compound crosses via its dedicated non-finite leaf, never collapsing the
+        compound.")
+  (input (do (def (main) #tuple((Some Float64.nan) (list Float64.nan Float64.Infinity))) (export main)))
+  (output (: #tuple((Some nan) #list(nan inf)) (Tuple (Option Float64) (List Float64)))))
+
+(case
+  "a runtime-produced -inf crosses inside a compound alongside nan and inf"
+  (doc
+    "The RUNTIME leg of the #7479 crossing: `-inf` here is COMPUTED at run time (`-1.0 / 0.0`), not a
+        constant, so it crosses through the value-codec's runtime marshalling rather than a const-fold.
+        Nested in a `list` inside a tuple beside a `Some nan` and a finite `0.0`, each non-finite renders
+        as its canonical leaf (`nan`/`inf`/`-inf`) with the structure intact.")
+  (input
+    (do
+      (def
+        (main (: x Float64))
+        #tuple((Some Float64.nan) (list Float64.Infinity (/ (: -1.0 Float64) x)) x))
+      (export main)))
+  (call main (: 0.0 Float64))
+  (output
+    (: #tuple((Some nan) #list(inf -inf) 0.0) (Tuple (Option Float64) (List Float64) Float64))))
+
 (case
   "an Ast.Float node cannot carry Float64.Infinity (declines, like nan)"
   (doc
