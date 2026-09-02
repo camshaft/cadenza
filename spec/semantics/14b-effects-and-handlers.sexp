@@ -3044,6 +3044,54 @@
       (export main)))
   (output (: 3 Int64)))
 
+; A NON-recursive performing helper called TWICE in one continuation (breaker eg1). The single-
+; helper inline (the accum/simple-helper inline, #7797) discharges ONE cross-function performing-
+; helper call by inlining its body into the handled region; a SECOND such call in the continuation
+; is not reached, so the tail-resumptive fold declines CDZ0900 (an honest todo — reject-don't-
+; miscompile; effect-context monomorphization would emit the helper once and discharge both). The
+; trigger is the SECOND CALL, not genericity: a single monomorphic performing helper called twice
+; declines identically, while a single call (annotated, eg2) OR both calls manually inlined into the
+; body computes. Here `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` is generic (used at
+; (String,Bool) and (Int64,String)); it stamps each tuple with a fresh tick. The handler seeds n,
+; `tick` hands back the current state and threads s+1, so the first stamp's tick reads t1=n and the
+; second t2=n+1; the result is byte-len("hi")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n. The
+; recorded outputs (n=3 -> 40309, n=0 -> 10009, n=5 -> 60509) are VERIFIED via the both-inlined
+; control (performs in-body, which the fold discharges); they are the semantics a monomorphizing
+; generation realizes. Extends the single-return inline frontier past ONE performing-helper call.
+(case
+  "TWO sequential cross-function performing-helper calls in one continuation decline (the single inline reaches one, not the second) — generic stamp used at two tuple types"
+  (doc
+    "breaker eg1, the effects x cross-function-inline frontier. `stamp` is an unannotated GENERIC
+           helper `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` that stamps a tuple with a fresh
+           `(C.tick)`; `main` calls it TWICE under one `handle C` — at (String,Bool) then (Int64,String). The
+           simple-helper inline (#7797) discharges the FIRST cross-function performing-helper call by inlining
+           it into the handled region, but the SECOND call in the continuation is not reached, so the tail-
+           resumptive fold declines CDZ0900 (honest todo, never a hang or miscompile). The trigger is the
+           SECOND CALL, NOT the genericity: a single MONOMORPHIC performing helper called twice declines
+           identically, while a single call (eg2, annotated) or both stamps manually inlined into the body
+           computes. Handler seeds n, `tick` returns the current state and threads s+1 -> first stamp reads
+           t1=n, second reads t2=n+1; result = byte-len(\"hi\")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n.
+           The recorded outputs are VERIFIED via the both-performs-inlined control. Effect-context
+           monomorphization (emit the helper once, read the handler as evidence) discharges both calls.")
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (stamp p) (match p (#tuple(a b) #tuple(a b (C.tick)))))
+      (def (main (: n Int64))
+        (handle C n ((tick () s (resume s (+ s 1))))
+          (match (stamp #tuple("hi" true))
+            (#tuple(s _b t1)
+              (match (stamp #tuple(7 "yo"))
+                (#tuple(v _s2 t2)
+                  (+ (String.byte-len s) (+ v (+ (* 100 t1) (* 10000 t2))))))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 40309 Int64))
+  (call main (: 0 Int64))
+  (output (: 10009 Int64))
+  (call main (: 5 Int64))
+  (output (: 60509 Int64)))
+
 (case
   "a MUTUALLY-recursive effectful group is specialized under a state handler"
   (doc
