@@ -8359,7 +8359,6 @@ todo	a non-recursive helper that performs the discharged op UNDER a conditional,
 todo	a non-scalar char in a parameterized (unreached) body still surfaces
 todo	a non-tail cross-function conditional abort declines cleanly
 todo	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
-todo	a non-tail recursive abort declines rather than miscompiles
 todo	a non-type in a List element position names the element type
 todo	a non-type in a Map key position names the key type
 todo	a non-type in a Map value position names the value type
@@ -8467,7 +8466,6 @@ todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
 todo	a recursive abortive callee as the handle-body TAIL folds to the arm value
-todo	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
 todo	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 todo	a recursive callee drawing the SAME op twice per round threads the out-state to a trailing observer
 todo	a recursive callee performing TWO effects per round threads both slots' out-state to a trailing observer
@@ -8977,7 +8975,6 @@ todo	an abortive arm yields a heap LIST built in the arm as the handle's value
 todo	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 todo	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 todo	an abortive handler discards a suspended body holding live rope and map handles
-todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 todo	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 todo	an abortive perform MID-WALK carries the accumulated state out as its argument
 todo	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
@@ -10338,7 +10335,6 @@ todo	the unit-op response-cursor discriminator: a nonzero ping row is not misrea
 todo	the well-typed branch of the mutual check returns the Ok result
 todo	the wrap-in-variant fix's constructor is derived generically from the user sum, not hardcoded
 todo	the zero-leading list rest is IRREFUTABLE — it is accepted in a binding position and binds the whole list
-todo	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
 todo	three DISCARDED performs on a do-spine still advance the state
 todo	three dispatches of an outer-arg-match inner-state-match arm each read their own payload not dispatch one's
 todo	three events at the same Instant drain in FIFO insertion order (tie-break at N=3)
