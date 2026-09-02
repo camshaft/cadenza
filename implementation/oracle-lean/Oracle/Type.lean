@@ -24,6 +24,8 @@ inductive Ty where
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
   | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
+  | sum (variants : List (ByteArray × Option Ty))  -- CLOSED sum, variants sorted by name; `none` payload =
+                                        -- nullary variant (ts:192-204). Option/Result/Ordering + user sums.
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
@@ -65,6 +67,7 @@ partial def occurs (i : Nat) : Ty → Bool
   | .fn d c => occurs i d || occurs i c
   | .tuple es => es.any (occurs i)
   | .record fs => fs.any (fun f => occurs i f.2)
+  | .sum vs => vs.any (fun v => match v.2 with | some t => occurs i t | none => false)
   | _ => false
 
 /-- Does a type contain ANY (free) unification variable? Used by the App rule to decline applying a
@@ -76,6 +79,7 @@ partial def hasVar : Ty → Bool
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
   | .record fs => fs.any (fun f => hasVar f.2)
+  | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
   | _ => false
 
 /-- Does a type contain a GENERAL (non-numeric) unification var? The App rule declines a head with one of
@@ -87,6 +91,7 @@ partial def hasGenVar : Ty → Bool
   | .fn d c => hasGenVar d || hasGenVar c
   | .tuple es => es.any hasGenVar
   | .record fs => fs.any (fun f => hasGenVar f.2)
+  | .sum vs => vs.any (fun v => match v.2 with | some t => hasGenVar t | none => false)
   | _ => false
 
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
@@ -104,6 +109,7 @@ partial def applySubst (s : Subst) : Ty → Ty
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
   | .record fs => .record (fs.map (fun f => (f.1, applySubst s f.2)))
+  | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map (applySubst s))))
   | t => t
 
 /-- Unify two types under `s` → the extended substitution, or the CDZ code of the clash. `never` (the empty
@@ -138,6 +144,17 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
       if f1.length == f2.length
          && (f1.zip f2).all (fun (p : (ByteArray × Ty) × (ByteArray × Ty)) => p.1.1 == p.2.1) then
         (f1.zip f2).foldlM (fun s (p : (ByteArray × Ty) × (ByteArray × Ty)) => unify p.1.2 p.2.2 s) s
+      else .error "CDZ0203"
+  | .sum v1, .sum v2 =>
+      -- CLOSED sums unify iff same variant-name SET (stored sorted) AND each payload option matches (both
+      -- nullary, or both carry a payload whose types unify) — ts:192-204. Otherwise CDZ0203.
+      if v1.length == v2.length
+         && (v1.zip v2).all (fun (p : (ByteArray × Option Ty) × (ByteArray × Option Ty)) => p.1.1 == p.2.1) then
+        (v1.zip v2).foldlM (fun s (p : (ByteArray × Option Ty) × (ByteArray × Option Ty)) =>
+          match p.1.2, p.2.2 with
+          | none, none => .ok s
+          | some t1, some t2 => unify t1 t2 s
+          | _, _ => .error "CDZ0203") s
       else .error "CDZ0203"
   | _, _ => .error "CDZ0203"
 
@@ -278,6 +295,20 @@ where parseTyCore (m : Ast.Module) (nodeId : Nat) : Option Ty :=
       | _ => none
     | _ => none
 
+/-- The built-in sum types (variants sorted by name, per the `.sum` canonical form). -/
+def optionTy (τ : Ty) : Ty := .sum [("None".toUTF8, none), ("Some".toUTF8, some τ)]
+def resultTy (ok err : Ty) : Ty := .sum [("Err".toUTF8, some err), ("Ok".toUTF8, some ok)]
+def orderingTy : Ty := .sum [("Equal".toUTF8, none), ("Greater".toUTF8, none), ("Less".toUTF8, none)]
+
+/-- A nullary `Ordering` constructor (`Less`/`Equal`/`Greater`) → the Ordering sum (var-free, so no fresh
+var needed). `None` is handled inline (its Option payload needs a FRESH var). -/
+def orderingCtorTy? (nm : ByteArray) : Option Ty :=
+  match String.fromUTF8? nm with
+  | some "Less" => some orderingTy
+  | some "Equal" => some orderingTy
+  | some "Greater" => some orderingTy
+  | _ => none
+
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
 disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
 positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
@@ -322,6 +353,14 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   key; a duplicate field is `IllTyped CDZ0211`.
 * T1.14 — **record field access** (`. r f`, `ts:104-108`): `f`'s type from `r`'s record; an absent field
   is `CDZ0212`, a field access on a non-record `CDZ0203`.
+* T1.15 — **built-in sum construction** (`ts:192-204`): `(Some x)`→`Option τx`, `(None)`→`Option α`,
+  `(Ok x)`/`(Err x)`→`Result`, `(Less)/(Equal)/(Greater)`→`Ordering`. Constructors are uniformly
+  single-arity (spec core-semantics.md): a "nullary" variant (`None`/`Less`/…) is a Unit-payload
+  constructor, so `(None unit)` (canonical) and bare `(None)` (sugar) are both fine — one optional
+  payload arg. Over-applying — a payload-bearing ctor with a surplus arg (`(Some x y)`, size > 2), or a
+  Unit-payload ctor with two (`(None u v)`, size > 2) — is `IllTyped CDZ0203`: the surplus arg applies a
+  complete (non-function) Sum value, never a silent drop. An UNDETERMINED sum at the escape (`ts:34`,
+  e.g. bare `None` as the sole result) is declined by `inferBody`'s `hasUndeterminedSum` guard (Unsupported).
 * T1.8 — **let** (`ts:40-44`, monomorphic): `(let ((x e)…) body)` binds each `x:τ` sequentially (later
   sees earlier) then infers `body`; complete for the fn-free fragment (generalization lands with Fn).
 * T1.9 — **do block**: `(do stmt… last)` — a value def `(def x e)` binds `x:τ` sequentially, a non-def
@@ -347,8 +386,15 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
     | some nm =>
       match env.find? (fun e => e.1 == nm) with
       | some (_, τ) => .ok (τ, st)
-      | none => .error (.unsupported
-          "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)")
+      | none =>
+        -- a bare NULLARY built-in constructor as an atom: `Less`/`Equal`/`Greater` → Ordering; `None` →
+        -- `Option α` (fresh payload var). Only on an env-miss (a local binding shadows).
+        match orderingCtorTy? nm with
+        | some ot => .ok (ot, st)
+        | none =>
+          if nm == "None".toUTF8 then .ok (optionTy (.var st.next), { st with next := st.next + 1 })
+          else .error (.unsupported
+            "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)")
     | none =>
       match m.nodes[nodeId]? with
       | some (.list children) =>
@@ -605,6 +651,48 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                   | .error e => .error e)
                | _ => .error (.unsupported "type oracle: fn params not a list"))
             | _, _ => .error (.unsupported "type oracle: malformed fn")
+          else if h == "Some".toUTF8 then
+            -- T1.15 — built-in sum CONSTRUCTION (`ts:192-204`). `(Some x)` → `Option τx`.
+            -- 🪤 ARITY: `Some` is SINGLE-arity. `(Some x y…)` desugars to `((Some x) y)` — applying the
+            -- complete Option value `(Some x)` to a surplus arg is applying a non-function → `CDZ0203`
+            -- (corpus 09-functions/0208-0209; a naive `children[1]?` read would silently DROP the surplus
+            -- and false-accept). children = [head, arg…]; exactly one arg ⇒ size 2.
+            if children.size > 2 then .error (.illTyped "CDZ0203")
+            else (match children[1]? with
+             | some xId => (match inferE m env st xId with
+                            | .ok (τ, st') => .ok (optionTy τ, st')
+                            | .error e => .error e)
+             | none => .error (.unsupported "type oracle: malformed Some"))
+          else if h == "None".toUTF8 then
+            -- `None` is a single-arity constructor whose payload type is `Unit` (spec core-semantics.md:
+            -- "uniform single-arity constructors"). Canonical construction is `(None unit)`; bare `(None)`
+            -- is surface sugar for the SAME value. So one optional payload arg is fine (children ≤ 2);
+            -- only a genuine over-application `(None u v)` (size > 2) is `CDZ0203`. The `Unit` payload
+            -- carries no element type, so the Option element is a fresh var either way. (The arg is not
+            -- type-checked against `Unit` here — declining that refinement is sound; a wrong reject is
+            -- worse. Corpus 05-compound-types/0746-0747 `(= (None unit) (Some 1))` pins this.)
+            if children.size > 2 then .error (.illTyped "CDZ0203")
+            else .ok (optionTy (.var st.next), { st with next := st.next + 1 })   -- `Option α`, fresh payload var
+          else if h == "Ok".toUTF8 then
+            if children.size > 2 then .error (.illTyped "CDZ0203")               -- single-arity; over-apply → CDZ0203
+            else (match children[1]? with
+             | some xId => (match inferE m env st xId with
+                            | .ok (τ, st') => .ok (resultTy τ (.var st'.next), { st' with next := st'.next + 1 })
+                            | .error e => .error e)
+             | none => .error (.unsupported "type oracle: malformed Ok"))
+          else if h == "Err".toUTF8 then
+            if children.size > 2 then .error (.illTyped "CDZ0203")               -- single-arity; over-apply → CDZ0203
+            else (match children[1]? with
+             | some xId => (match inferE m env st xId with
+                            | .ok (τ, st') => .ok (resultTy (.var st'.next) τ, { st' with next := st'.next + 1 })
+                            | .error e => .error e)
+             | none => .error (.unsupported "type oracle: malformed Err"))
+          else if (orderingCtorTy? h).isSome then
+            -- `Less`/`Equal`/`Greater` are single-arity Unit-payload constructors (as None above):
+            -- `(Less)` sugar for `(Less unit)`, one optional payload arg OK (size ≤ 2); over-application
+            -- `(Less u v)` (size > 2) → CDZ0203.
+            if children.size > 2 then .error (.illTyped "CDZ0203")
+            else .ok (orderingTy, st)                        -- `(Less)`/`(Less unit)`/… → Ordering
           else
             -- T1.12 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env to a
             -- function; unify the (curried) fn type against each argument to a fresh result var, yielding the
@@ -643,14 +731,31 @@ partial def defaultNumVars : Ty → Ty
   | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
   | .tuple es => .tuple (es.map defaultNumVars)
   | .record fs => .record (fs.map (fun f => (f.1, defaultNumVars f.2)))
+  | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map defaultNumVars)))
   | t => t
+
+/-- Does the type contain a SUM with an UNDETERMINED (free-var) payload? Such a value at the program's
+escape (the `main` result) is the `ts:34` rejection — a bare `None` / `Ok x` whose other side never gets
+determined. The oracle DECLINES these (Unsupported) rather than positively judging: modeling the exact
+consumed-vs-escaping distinction is subtle, so decline is the sound response (a skip, never a false
+reject). Targeted at `.sum`-payload vars only — a polymorphic FN result (a `.fn` with vars) is NOT flagged. -/
+partial def hasUndeterminedSum : Ty → Bool
+  | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
+  | .fn d c => hasUndeterminedSum d || hasUndeterminedSum c
+  | .tuple es => es.any hasUndeterminedSum
+  | .record fs => fs.any (fun f => hasUndeterminedSum f.2)
+  | _ => false
 
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
 the verdict algebra. A resolved type (with the final substitution applied, unresolved numeric literals
 defaulted to `Int64`) is `WellTyped`; a modeled fault is `IllTyped`; a coverage gap is `Unsupported`. -/
 def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
   match inferE m env {} nodeId with
-  | .ok (τ, st) => .wellTyped (defaultNumVars (applySubst st.subst τ))
+  | .ok (τ, st) =>
+    let final := defaultNumVars (applySubst st.subst τ)
+    if hasUndeterminedSum final then
+      .unsupported "type oracle: undetermined sum result at escape (ts:34) — declined"
+    else .wellTyped final
   | .error (.illTyped c) => .illTyped c
   | .error (.unsupported r) => .unsupported r
 
@@ -1050,6 +1155,33 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[10], .atom 1, .list #[12, 11, 9],
                            .atom 8, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
                 root := 18 } == .illTyped "CDZ0211")
+-- T1.15 (sum): `(Some 5)` → WellTyped Option Int (determined payload).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "Some".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .list #[0, 1], .atom 2, .list #[3], .atom 1, .list #[5, 4, 2],
+                           .atom 5, .atom 2, .list #[7, 8], .atom 0, .list #[10, 6, 9]],
+                root := 11 } == .wellTyped (optionTy (.int 64 true)))
+-- T1.15 (sum ARITY): over-applying single-arity `Some` — `(Some 5 6)` — is a type error CDZ0203
+-- (corpus 09-functions/0208-0209), NOT a silent drop of the surplus arg to `(Some 5)`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "Some".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[6])],
+                nodes := #[.atom 3, .atom 4, .atom 6, .list #[0, 1, 2], .atom 2, .list #[4],
+                           .atom 1, .list #[6, 5, 3], .atom 5, .atom 2, .list #[8, 9], .atom 0,
+                           .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0203")
+-- T1.15 (sum): `(Less)` → WellTyped Ordering (nullary built-in ctor).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "Less".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .list #[0], .atom 2, .list #[2], .atom 1, .list #[4, 3, 1],
+                           .atom 4, .atom 2, .list #[6, 7], .atom 0, .list #[9, 5, 8]],
+                root := 10 } == .wellTyped orderingTy)
+-- T1.15 (Esc, ts:34): bare `(None)` at the escape → undetermined Option → Unsupported (NOT a false reject).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "None".toUTF8,
+                                  .name "export".toUTF8],
+                      nodes := #[.atom 3, .list #[0], .atom 2, .list #[2], .atom 1, .list #[4, 3, 1],
+                                 .atom 4, .atom 2, .list #[6, 7], .atom 0, .list #[9, 5, 8]],
+                      root := 10 } with | .unsupported _ => true | _ => false)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
