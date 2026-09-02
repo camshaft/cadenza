@@ -364,19 +364,20 @@ type fails), OR a NOMINAL AMBIGUITY — a variant name shared across user types 
 (Some/None/Ok/Err/Less/Equal/Greater). With globally-UNIQUE variant names, structural == nominal, so a
 `.sum` faithfully models the nominal type. Variants kept in declaration order (consistent → self-unifies;
 cross-type unify is impossible under the uniqueness gate). -/
-def userSumMap (m : Ast.Module) : Option (List (ByteArray × (Ty × Option Ty))) :=
+def userSumMap (m : Ast.Module) : Option (List (ByteArray × (ByteArray × Ty × Option Ty))) :=
   match m.nodes[m.root]? with
   | some (Ast.Node.list stmts) =>
     (do
       let entries ← (stmts.extract 1 stmts.size).toList.foldlM (m := Option)
-        (fun (acc : List (ByteArray × (Ty × Option Ty))) sid =>
+        (fun (acc : List (ByteArray × (ByteArray × Ty × Option Ty))) sid =>
           match m.nodes[sid]? with
           | some (Ast.Node.list tc) =>
             if m.headName? (Ast.Node.list tc) == some "type".toUTF8 then
               (do
+                let tn := ((tc[1]?).bind (Eval.nameOf? m)).getD ByteArray.empty     -- the type's name (for qualified `T.A`)
                 let vspecs ← ((tc.extract 2 tc.size).toList.filter (fun vid => !isDocNode m vid)).mapM (userVariantSpec? m)
                 let sumTy : Ty := .sum vspecs
-                pure (acc ++ vspecs.map (fun (cn, p) => (cn, (sumTy, p)))))
+                pure (acc ++ vspecs.map (fun (cn, p) => (cn, (tn, sumTy, p)))))
             else pure acc
           | _ => pure acc) []
       -- collect the user TYPE names too (a user type may SHADOW a prelude type — e.g. `(type Int64 (A))` —
@@ -604,7 +605,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             -- is a partial constructor (a function), declined. Env-miss only ⇒ scope-first respected
             -- (a def/param/let binding of the same name resolves via `env.find?` above).
             (match (userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == nm)) with
-             | some (_, (sumTy, none)) => .ok (sumTy, st)
+             | some (_, (_, sumTy, none)) => .ok (sumTy, st)
              | _ => .error (.unsupported
                  "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)"))
     | none =>
@@ -721,6 +722,16 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             | some baseId, some idxId =>
               match (m.nodes[idxId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
               | some (Ast.Leaf.name fld) =>
+                -- T1.27 — QUALIFIED nullary variant `(. Q M)` = `Q.M` (a `(type Q … M …)` variant used
+                -- unapplied): if `fld` is a NULLARY variant AND its declaring type name equals the base name
+                -- `Q`, construct that type's sum. (A payload-bearing `Q.M` unapplied is a partial ctor →
+                -- falls through to the field-access path → declines.) Checked BEFORE record field access.
+                match (Eval.nameOf? m baseId).bind (fun q =>
+                        (userSumMap m).bind (fun mp =>
+                          (mp.find? (fun e => e.1 == fld)).bind (fun ent =>
+                            if ent.2.1 == q then some ent else none))) with
+                | some (_, (_, sumTy, none)) => .ok (sumTy, st)
+                | _ =>
                 -- T1.14 — record FIELD ACCESS `(. r f)` (`ts:104-108`): infer `r` as a record, then `f`'s
                 -- type; an absent field is `IllTyped CDZ0212`, a field access on a non-record is `CDZ0203`.
                 -- A base that isn't a modeled record (e.g. a module member like `(. Float64 nan)` whose base
@@ -1019,7 +1030,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             -- structural sum + payload. `(h x)` unifies `x` with the declared payload τ → the sum; a nullary
             -- variant `(h)`/`(h unit)` → the sum. Over-application (children > 2) → `CDZ0203` (single-arity).
             (match (userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == h)) with
-             | some (_, (sumTy, some τp)) =>
+             | some (_, (_, sumTy, some τp)) =>
                if children.size > 2 then .error (.illTyped "CDZ0203")
                else (match children[1]? with
                      | some xId => (match inferE m env st xId with
@@ -1028,7 +1039,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                                        | .error e => .error e)
                                     | .error e => .error e)
                      | none => .error (.unsupported "type oracle: malformed user-sum constructor"))
-             | some (_, (sumTy, none)) =>
+             | some (_, (_, sumTy, none)) =>
                if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
              | none => .error (.unsupported "type oracle: user-sum ctor lookup vanished"))
           else
@@ -1073,7 +1084,26 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                  | .error e => .error e)
             | none => .error (.unsupported
                 "type oracle: unmodeled application head / construct (App/Match — prelude heads decline)")
-        | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
+        | none =>
+          -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
+          -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum (unify
+          -- the arg with M's payload; a nullary M takes an optional unit arg). Over-application → `CDZ0203`.
+          (match (Eval.qualHead? m children).bind (fun (q, mem) =>
+                    (userSumMap m).bind (fun mp =>
+                      (mp.find? (fun e => e.1 == mem)).bind (fun ent =>
+                        if ent.2.1 == q then some ent else none))) with
+           | some (_, (_, sumTy, some τp)) =>
+             if children.size > 2 then .error (.illTyped "CDZ0203")
+             else (match children[1]? with
+                   | some xId => (match inferE m env st xId with
+                                  | .ok (τ, st') => (match unifyInfer τ τp st' with
+                                                     | .ok st'' => .ok (sumTy, st'')
+                                                     | .error e => .error e)
+                                  | .error e => .error e)
+                   | none => .error (.unsupported "type oracle: malformed qualified user-sum constructor"))
+           | some (_, (_, sumTy, none)) =>
+             if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
+           | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
       | _ => .error (.unsupported "type oracle: node not modeled")
 
 /-- Default any still-unresolved numeric var (an int literal never constrained to a concrete width) to the
@@ -1714,6 +1744,20 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[18], .atom 6, .list #[20, 19, 17], .atom 12, .atom 7, .list #[22, 23],
                            .atom 0, .list #[25, 5, 21, 24]],
                 root := 26 } == .wellTyped (.int 64 true))
+-- T1.27 (user sum, QUALIFIED ctor): `(do (type C R G B) (def (main) (match C.R (R 1) (G 2) (B 3))) (export main))`
+-- → WellTyped Int64. The scrutinee `C.R` = `(. C R)` is a qualified nullary variant (its declaring type is
+-- `C`) → the C sum; bare `R`/`G`/`B` patterns cover it exhaustively → Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "type".toUTF8, .name "C".toUTF8, .name "R".toUTF8,
+                            .name "G".toUTF8, .name "B".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                            .name "match".toUTF8, .name ".".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .intLit false .dec (ByteArray.mk #[3]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[0, 1, 2, 3, 4], .atom 9,
+                           .atom 2, .atom 3, .list #[6, 7, 8], .atom 3, .atom 10, .list #[10, 11], .atom 4,
+                           .atom 11, .list #[13, 14], .atom 5, .atom 12, .list #[16, 17], .atom 8,
+                           .list #[19, 9, 12, 15, 18], .atom 7, .list #[21], .atom 6, .list #[23, 22, 20],
+                           .atom 13, .atom 7, .list #[25, 26], .atom 0, .list #[28, 5, 24, 27]],
+                root := 29 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
