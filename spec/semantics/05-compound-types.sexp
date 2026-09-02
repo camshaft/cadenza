@@ -35735,3 +35735,46 @@
   (output (: 9 Int64))
   (call main (: 6 Int64))
   (output (: 21 Int64)))
+
+; szf1-szf3: the >64-KiB VALUE-ESCAPE size-class family (sits with rcw4, the string MEASURE face).
+; Each builds its big value at RUNTIME via a tiny doubling source and lets it ESCAPE as the result;
+; (output-byte-len N) (#7816) pins the canonical binary-AST ENCODING length — exactly the bytes the
+; boundary copy-out writes, the class that OOB-faulted twice (#7793 list @0x10000, #7800
+; string/bytes/closure). Pins the exact-64-KiB payload boundary AND one doubling past it.
+(case
+  "szf1 a string built past the 64-KiB page escapes whole (copy-out grows linear memory)"
+  (input
+    (do
+      (def (dbl (: k Int64) (: acc String)) (if (> k 0) (dbl (- k 1) (String.concat acc acc)) acc))
+      (def (main (: n Int64)) (dbl n "ab"))
+      (export main)))
+  (call main (: 15 Int64))
+  (output-byte-len 65573)
+  (call main (: 16 Int64))
+  (output-byte-len 131109))
+
+(case
+  "szf2 a bytes value built past the 64-KiB page escapes whole"
+  (input
+    (do
+      (def (dblb (: k Int64) (: acc Bytes)) (if (> k 0) (dblb (- k 1) (Bytes.concat acc acc)) acc))
+      (def (main (: n Int64)) (dblb n (Bytes.of #list(1 2))))
+      (export main)))
+  (call main (: 15 Int64))
+  (output-byte-len 65572)
+  (call main (: 16 Int64))
+  (output-byte-len 131108))
+
+(case
+  "szf3 a list built past the 64-KiB page escapes whole (the #7793 face)"
+  (input
+    (do
+      (def
+        (dbll (: k Int64) (: acc (List Int64)))
+        (if (> k 0) (dbll (- k 1) (List.concat acc acc)) acc))
+      (def (main (: n Int64)) (dbll n #list(1 2)))
+      (export main)))
+  (call main (: 15 Int64))
+  (output-byte-len 622412)
+  (call main (: 16 Int64))
+  (output-byte-len 1277772))
