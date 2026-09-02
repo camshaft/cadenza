@@ -815,7 +815,7 @@ pub struct __CdzF64(u64);
 #[allow(dead_code)]
 impl __CdzF64 {
     fn new(v: f64) -> Self { __CdzF64(if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }) }
-    pub fn get(self) -> f64 { f64::from_bits(self.0) }
+    fn get(self) -> f64 { f64::from_bits(self.0) }
 }
 impl PartialEq for __CdzF64 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
 impl Eq for __CdzF64 {}
@@ -835,7 +835,7 @@ pub struct __CdzF32(u32);
 #[allow(dead_code)]
 impl __CdzF32 {
     fn new(v: f32) -> Self { __CdzF32(if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() }) }
-    pub fn get(self) -> f32 { f32::from_bits(self.0) }
+    fn get(self) -> f32 { f32::from_bits(self.0) }
 }
 impl PartialEq for __CdzF32 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
 impl Eq for __CdzF32 {}
