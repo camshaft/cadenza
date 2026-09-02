@@ -4,6 +4,8 @@
 ; Multi-parameter syntax (fn (x y) body) is sugar for currying: (fn x (fn y body)).
 ; Application (f a b) is sugar for ((f a) b). The seed realizes these, because a compiler authored
 ; in Cadenza is built from functions and closures. Results are (: <value> <Type>).
+(diagnostic-quality)
+
 (case
   "a function applied to an argument"
   (doc
