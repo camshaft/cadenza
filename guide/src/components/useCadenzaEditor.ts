@@ -106,6 +106,11 @@ export function useCadenzaEditor(
   // The surface the editor text currently reflects — so a toggle re-renders the CURRENT text
   // (preserving edits) rather than clobbering it with the original `source`.
   const shownSurface = useRef<Surface>(authoredIn);
+  // Latest buffer text, read by the surface-change effect WITHOUT making `text` a dependency — that effect
+  // must re-render only when the SURFACE flips, not on every keystroke (a text dep made it re-run per
+  // edit, and, worse, entangled the failure path — see the catch below).
+  const textRef = useRef(text);
+  textRef.current = text;
 
   // On mount, render the authored source into the active surface via the pretty-printer. We ALWAYS
   // round-trip (even when `authoredIn === surface`) so the displayed buffer is the printer's canonical
@@ -130,12 +135,14 @@ export function useCadenzaEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // React to a global surface change: re-render the current text into the new surface.
+  // React to a global surface change: re-render the current text into the new surface. Fires ONLY on a
+  // surface (or wrap) change — the latest text is read via `textRef`, not a dependency — so a stuck
+  // buffer never retries per keystroke.
   useEffect(() => {
     if (surface === shownSurface.current) return;
     const from = shownSurface.current;
     let cancelled = false;
-    renderSnippet(text, from, surface, wrap)
+    renderSnippet(textRef.current, from, surface, wrap)
       .then((r) => {
         if (!cancelled) {
           setText(r);
@@ -143,14 +150,20 @@ export function useCadenzaEditor(
         }
       })
       .catch(() => {
-        // A mid-edit unparseable buffer can't be re-rendered; keep the text but mark the surface so
-        // we don't retry every keystroke.
-        shownSurface.current = surface;
+        // The re-render to the new surface FAILED — a mid-edit unparseable buffer, or a transient
+        // renderSyntax/wasm error. Do NOT advance `shownSurface.current`: leave it at `from` so the state
+        // stays consistent (the buffer is still `from`-surface text) and a LATER toggle RE-ATTEMPTS the
+        // render instead of the example being permanently LOCKED in place. (The prior code advanced it
+        // here, so a single transient failure silently locked every subsequent toggle — an operator-
+        // reported "toggle switches once then does nothing" bug.)
       });
     return () => {
       cancelled = true;
     };
-  }, [surface, text]);
+    // `text` is intentionally read via `textRef` (latest value) rather than a dep, so this fires only on a
+    // surface flip — not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface, wrap]);
 
   const run = useCallback(async (override?: { text: string; surface: Surface }): Promise<EditorOutcome> => {
     // Run the OVERRIDE text/surface when given (so an apply-then-run in one tick runs the fresh buffer,
