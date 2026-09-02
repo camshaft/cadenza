@@ -683,10 +683,13 @@ mod tests {
         );
     }
 
-    /// END-TO-END: a `(typecheck P (reject "CDZ0203"))` against the real oracle judges `(skip …)` — T0.1's
-    /// `infer` is all-declining, so every typecheck item skips. ROBUST to version skew: a pre-typecheck
-    /// oracle rejects the unknown node with its OWN skip, so the `Skip` assertion holds either way. Verifies
-    /// the typecheck wire round-trips through the real oracle process (the fuzzer's real invocation).
+    /// END-TO-END: a CONSISTENT `(typecheck P (accept))` for a trivially well-typed `P` round-trips through
+    /// the real oracle process and judges cleanly. ROBUST to oracle-version skew: a modern (Int64-judging)
+    /// oracle infers `42 : Int64` and AGREES with the `accept` ⇒ `Holds`; a pre-typecheck / all-declining
+    /// oracle cannot model the node ⇒ `Skip`. Either is fine — the point is the wire round-trips (the
+    /// fuzzer's real invocation) WITHOUT a mismatch or crash. (The prior form fabricated a `reject` for a
+    /// well-typed program to lean on the T0.1 all-declining `infer`; once the oracle learned Int64 that
+    /// became a spurious false-reject mismatch — a stale premise, not a real disagreement.)
     #[test]
     fn typecheck_self_test_against_oracle_check() {
         let Some(oracle) = discover_oracle_check() else {
@@ -699,14 +702,15 @@ mod tests {
             &oracle,
             &[BatchItem::Typecheck(TypecheckItem {
                 program: ast("(do (def (main) 42) (export main))"),
-                rcdzc_verdict: RcdzcVerdict::Reject("CDZ0203".into()),
+                rcdzc_verdict: RcdzcVerdict::Accept,
             })],
         )
         .expect("oracle judges the typecheck batch");
         assert_eq!(v.len(), 1);
         assert!(
-            matches!(v[0], Verdict::Skip(_)),
-            "T0.1 declining infer ⇒ a typecheck item must skip, got {:?}",
+            matches!(v[0], Verdict::Holds | Verdict::Skip(_)),
+            "a consistent accept of a well-typed program must round-trip to Holds (modeled) or \
+             Skip (version skew), never a mismatch/crash, got {:?}",
             v[0]
         );
     }
