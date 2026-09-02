@@ -517,6 +517,28 @@ pub(super) fn ground_open_vars(ty: &Ty) -> Ty {
     }
 }
 
+/// Whether `ty` contains an UNRESOLVED position that [`ground_open_vars`] would default to `Int64` — a
+/// free `Ty::Var` OR a `Ty::Any`. Mirrors `ground_open_vars`'s recursion exactly (same compound arms), so
+/// it answers "would grounding change this type / is the node under-determined". `Ty::has_free_var` counts
+/// only `Ty::Var` (an `Any` is a no-free-var LEAF there), so it MISSES an empty `#set()` whose element
+/// inference left as `Set(Any)` — which `ground_open_vars` then mis-defaults to `BTreeSet<i64>` instead of
+/// deferring to a concrete expected type. Use this (not `has_free_var`) to decide whether to annotate an
+/// empty collection from its expected type rather than the `i64` ground.
+pub(super) fn has_open_or_any(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Any => true,
+        Ty::List(e) | Ty::Set(e) => has_open_or_any(e),
+        Ty::Map(k, v) => has_open_or_any(k) || has_open_or_any(v),
+        Ty::Tuple(elems) => elems.iter().any(has_open_or_any),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args.iter().any(has_open_or_any),
+        Ty::Record(fields) => fields.values().any(has_open_or_any),
+        Ty::Qty { inner, .. } => has_open_or_any(inner),
+        Ty::Fn(p, r) => has_open_or_any(p) || has_open_or_any(r),
+        Ty::Cont { resume, answer } => has_open_or_any(resume) || has_open_or_any(answer),
+        _ => false,
+    }
+}
+
 /// Whether `ty` maps to a Rust type that implements `Ord` — the bound `BTreeSet<T>`/`BTreeMap<K,_>`
 /// requires of its element/key. Every scalar/text/compound the backend represents IS `Ord` EXCEPT a
 /// FLOAT (and anything CONTAINING one): Rust's `f64`/`f32` are `PartialOrd` but NOT `Ord` (NaN breaks
