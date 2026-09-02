@@ -223,14 +223,20 @@ fn doc_value_node(
             ));
             Ok(v)
         }
-        // A symbol → a `Leaf::Sym` (renders `#\"…\"`) — the guest-result `Symbol` disambiguation cdz-run's
-        // typed render makes (`Leaf::Sym` vs `Leaf::Str`), here driven DIRECTLY off the `Ty`. Rust rep is a
-        // `String` (Symbol erases to String), same `.as_str().into()` copy.
+        // A symbol → `(Symbol.of "…")` — the CONSTRUCTOR form the wasm gate / corpus record for a Symbol
+        // RESULT (`(output (: (Symbol.of "hot") Symbol))`, spec/semantics/17-symbols.sexp), NOT the bare
+        // `#"…"` `Leaf::Sym` literal (that is cdz-run's `render_val_typed` form, a DIFFERENT non-gate path).
+        // `Symbol.of` is a bare `Name` head (sugared); the argument is the symbol text as a `Leaf::Str`
+        // (`"…"`, NOT `#"…"`). Rust rep is a `String` (Symbol erases to String).
         Ty::Symbol => {
-            let v = fresh(ctr);
+            let head = fresh(ctr);
+            out.push_str(&format!("    let {head} = __b.name(\"Symbol.of\");\n"));
+            let s = fresh(ctr);
             out.push_str(&format!(
-                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Sym(({val_expr}).as_str().into()));\n"
+                "    let {s} = __b.atom_leaf(cadenza_ast::ast::Leaf::Str(({val_expr}).as_str().into()));\n"
             ));
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.list(vec![{head}, {s}]);\n"));
             Ok(v)
         }
         // Bytes → a `Leaf::Bytes` (renders `b\"…\"`). Rust value is a `Vec<u8>`; `.into()` moves it into the
