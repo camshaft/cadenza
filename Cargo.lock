@@ -3518,6 +3518,7 @@ dependencies = [
 name = "xtask-merge-baseline"
 version = "0.0.0"
 dependencies = [
+ "corpus-case-titles",
  "xtask-support",
 ]
 

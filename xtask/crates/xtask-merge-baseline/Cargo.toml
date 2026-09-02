@@ -20,3 +20,8 @@ path = "src/main.rs"
 [dependencies]
 # The verdict-aware baseline union/dedup + the conflict/unparseable classification.
 xtask-support = { path = "../xtask-support" }
+# The corpus-case-title set (AST-based, fail-open) used to PRUNE a vanished-orphan baseline line the
+# union re-adds after a retitle. Deliberately the tiny `corpus-case-titles` leaf (deps only cadenza-
+# syntax-sexpr + -core; NO clap/cdz/compiler/nix), NOT cdz-corpus — this driver must stay a fast local
+# mid-merge bin (v-fleet-tooling ↔ v-corpus-harness boundary decision, #7646).
+corpus-case-titles = { path = "../../../implementation/seed/crates/corpus-case-titles" }
