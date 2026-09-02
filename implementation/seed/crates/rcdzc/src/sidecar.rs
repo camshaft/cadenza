@@ -1260,16 +1260,36 @@ fn nearest_known_name(db: &Db, name: &str) -> Option<String> {
     crate::diag::suggest::nearest(name, candidates)
 }
 
+/// Reconstruct the DOTTED name a member-access node `(. obj key)` denotes — `outer.inner.thrice` for
+/// `(. (. outer inner) thrice)` — by recursing the operand chain and joining identifier segments on `.`.
+/// `None` if any segment is not a plain identifier (a computed / string / tuple-index key is not a dotted
+/// NAME path — those resolve through value access, not the doc name ladder). The read dual of the dotted
+/// resolution [`doc_of_name`] performs on a `DocOf` name string, so a hovered member routes to the SAME
+/// ladder.
+fn member_access_dotted_name(db: &Db, id: StructId) -> Option<String> {
+    let (obj, key) = db.ast.member_parts(id)?;
+    let key_name = db.ast.as_name(key)?;
+    let obj_name = if db.ast.member_parts(obj).is_some() {
+        member_access_dotted_name(db, obj)?
+    } else {
+        db.ast.as_name(obj)?.to_string()
+    };
+    Some(format!("{obj_name}.{key_name}"))
+}
+
 /// The documentation of the definition the node at `id` belongs to or references — the `DocAt` read.
 /// Maps the node to a definition by two routes, then reads that def's captured `(doc "…")` text:
 ///  - the node is a REFERENCE resolving to a def (`resolve::resolved_of` → the def body → its def index),
 ///    so hovering a USE shows the definition's doc; OR
 ///  - the node is a def HEADER — its `(def …)` form, its signature list, or its NAME atom
 ///    (`def_index_by_ident`, the same header→def map `TypeAt`'s hover uses), so hovering the DEFINITION
-///    shows its own doc.
+///    shows its own doc; OR
+///  - the node is a MEMBER-ACCESS hover — the trailing `key` of a `(. obj key)` (hovering `thrice` in
+///    `outer.inner.thrice`) or the access node itself, whose DOTTED name resolves through the member doc
+///    ladder `DocOf` walks, so hovering a qualified member (`Map.insert`, `outer.inner.thrice`) shows it.
 ///
-/// Either route yields a `db.defs` index; its `sig_occ` keys the doc column. `None` if the node reaches
-/// no documented definition (the empty hover).
+/// The first two routes yield a `db.defs` index (`sig_occ` keys the doc column); the third delegates to
+/// [`doc_of_name`]. `None` if the node reaches no documented definition (the empty hover).
 fn doc_at_node(db: &mut Db, id: StructId) -> Option<String> {
     // A reference resolves to the defining occurrence — a nullary def's body (`Ref`) or a function def's
     // lambda body (`Lambda`). Either is a def body `def_index_by_body` maps to its def. This is the SAME
@@ -1284,9 +1304,24 @@ fn doc_at_node(db: &mut Db, id: StructId) -> Option<String> {
         // Not a reference into a body — the node may BE a def's header (its form/signature/name), the
         // "hover on the definition itself" case, resolved by the header→def map.
         .or_else(|| db.def_index_by_ident(id));
-    let di = def_idx?;
-    let sig = db.defs[di].sig_occ;
-    db.doc_of_def(sig).map(str::to_string)
+    if let Some(di) = def_idx {
+        let sig = db.defs[di].sig_occ;
+        return db.doc_of_def(sig).map(str::to_string);
+    }
+    // No def reached by reference/header — but the node may be a MEMBER-ACCESS hover: the cursor on the
+    // trailing `key` of a `(. obj key)` (hovering `thrice` in `outer.inner.thrice`), or on the access node
+    // itself. The key is unbound as a bare name and the access node is no def header, so the routes above
+    // miss it — but the DOTTED name it denotes resolves through the very member ladder `DocOf` walks.
+    // Reconstruct the path (up to and including the hovered key) and delegate to `doc_of_name`.
+    let member_node = if db.ast.member_parts(id).is_some() {
+        Some(id)
+    } else {
+        db.parent_of(id)
+            .filter(|&p| db.ast.member_parts(p).is_some_and(|(_obj, key)| key == id))
+    };
+    member_node
+        .and_then(|mn| member_access_dotted_name(db, mn))
+        .and_then(|name| doc_of_name(db, &name))
 }
 
 /// The documentation of a GRAMMAR KEYWORD — the final `DocOf` fallback. A keyword (`if`/`let`/`match`/…)
@@ -2685,6 +2720,48 @@ mod tests {
         assert!(
             matches!(bogus, DocAnswer::NoSuchDef { .. }),
             "`outer.inner.nope` is a bogus nested member → NoSuchDef: {bogus:?}"
+        );
+    }
+
+    #[test]
+    fn doc_at_a_hovered_nested_member_resolves_the_member_doc() {
+        // The doc-AT (hover-by-node) face of the dotted-member family (breaker residual on #7769): hovering
+        // the trailing `thrice` of `outer.inner.thrice` — or the member-access node itself — must surface
+        // the member's doc. `doc_at_node`'s ref/header routes miss it (the key is unbound as a bare name;
+        // the `.` node is no def header), so it reconstructs the dotted path and delegates to the SAME
+        // ladder `DocOf` walks. Regression witness for the hover face the NAME face (#7747/#7759/#7769) left
+        // open.
+        use cadenza_compile_abi::DocAnswer;
+        let src = "(do (module outer (module inner \
+                   (def (thrice (: k Int64)) (doc \"member doc: thrice\") (* k 3)) (export thrice)) \
+                   (export inner)) (def (main) (outer.inner.thrice 7)) (export main))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        // The member-access node `(. (. outer inner) thrice)` — the callee of `(outer.inner.thrice 7)`.
+        let access = (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .find(|&id| member_access_dotted_name(&db, id).as_deref() == Some("outer.inner.thrice"))
+            .expect("the source has an `outer.inner.thrice` member access");
+        // Hovering the access node itself resolves the member doc.
+        let at_node = cadenza_compile_abi::decode_doc(
+            &run_query(&mut db, &Query::DocAt { node: access.0 }).bytes,
+        );
+        assert_eq!(
+            at_node,
+            DocAnswer::Doc("member doc: thrice".into()),
+            "hovering the member-access node surfaces the nested member's doc: {at_node:?}"
+        );
+        // Hovering the trailing `thrice` KEY atom (the common editor cursor) resolves the same doc.
+        let (_obj, key) = db
+            .ast
+            .member_parts(access)
+            .expect("access node is `(. obj key)`");
+        let at_key = cadenza_compile_abi::decode_doc(
+            &run_query(&mut db, &Query::DocAt { node: key.0 }).bytes,
+        );
+        assert_eq!(
+            at_key,
+            DocAnswer::Doc("member doc: thrice".into()),
+            "hovering the trailing member atom `thrice` surfaces its doc: {at_key:?}"
         );
     }
 
