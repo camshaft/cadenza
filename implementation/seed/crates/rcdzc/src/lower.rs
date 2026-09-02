@@ -261,27 +261,32 @@ pub(crate) fn subtree_reaches_effect_perform(db: &mut Db, id: StructId) -> bool 
         if depth > 64 {
             return true; // too deep — assume it may perform (safe over-report; suppresses the warning)
         }
-        if let Resolved::Apply { head, .. } = resolved_of(db, node) {
-            // An application whose HEAD names an effect operation IS a perform (handled or host-delegated).
-            if crate::eval::effect_op_of(db, head).is_some() {
-                return true;
+        // Resolve ONCE (`resolved_of` is not free) and test both the Apply and Host shapes off it.
+        match resolved_of(db, node) {
+            Resolved::Apply { head, .. } => {
+                // An application whose HEAD names an effect operation IS a perform (handled or host-delegated).
+                if crate::eval::effect_op_of(db, head).is_some() {
+                    return true;
+                }
+                // Follow a (possibly recursive) callee's body ONCE so a cross-function perform still counts;
+                // `visited.insert` false on re-entry stops a cycle.
+                if let Some(callee) = crate::eval::lambda_body(db, head)
+                    .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                    && visited.insert(callee)
+                    && walk(db, callee, depth + 1, visited)
+                {
+                    return true;
+                }
             }
-            // Follow a (possibly recursive) callee's body ONCE so a cross-function perform still counts;
-            // `visited.insert` false on re-entry stops a cycle.
-            if let Some(callee) = crate::eval::lambda_body(db, head)
-                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-                && visited.insert(callee)
-                && walk(db, callee, depth + 1, visited)
-            {
-                return true;
-            }
+            // A `(host (E) body)` block delegates its body's effects to the host boundary — observable.
+            Resolved::Host { .. } => return true,
+            _ => {}
         }
-        // A `(host (E) body)` block delegates its body's effects to the host boundary — observable.
-        if let Resolved::Host { .. } = resolved_of(db, node) {
-            return true;
-        }
+        // Descend structural children — INCREMENTING `depth` so the guard above bounds structural nesting
+        // too (not only callee-hops); a pathologically deep AST hits the bound and over-reports (safe:
+        // a missed CDZ0307 beats a false one), rather than recursing to a stack overflow.
         if let crate::ast::Struct::List(children) = db.ast.get(node).clone() {
-            return children.iter().any(|&c| walk(db, c, depth, visited));
+            return children.iter().any(|&c| walk(db, c, depth + 1, visited));
         }
         false
     }
