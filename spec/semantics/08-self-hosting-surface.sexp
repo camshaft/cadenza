@@ -11,6 +11,8 @@
 ; analysis*, not AST *execution* — `eval` (meta-interpretation of a runtime-constructed AST) is an
 ; optional macro/REPL capability, not part of the self-hosting surface
 ; (spec/learnings/2026-07-03-ast-construction-vs-ast-evaluation.md).
+(diagnostic-quality)
+
 (case
   "reading the text a printer produced round-trips to an equal value"
   (doc

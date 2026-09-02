@@ -2,6 +2,8 @@
 ; in the canonical homoiconic representation (options/code-shape/); a result is (: <value> <Type>),
 ; a rejected program records its diagnostic code (options/diagnostics-schema/), a runtime halt
 ; records a trap. See README.md for the case vocabulary.
+(diagnostic-quality)
+
 (case
   "a let binding is in scope in its body"
   (doc
@@ -1198,14 +1200,12 @@
 (case
   "a wildcard used as a function argument names the binding-position misuse"
   (input (do (def (g a) a) (def x (g _)) (export x)))
-  (error CDZ0201 (message "`_` is a wildcard"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "`_` is a wildcard")))
 
 (case
   "a bare wildcard used as a def body names the binding-position misuse"
   (input (do (def (f) _) (export f)))
-  (error CDZ0201 (message "`_` is a wildcard"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "`_` is a wildcard")))
 
 (case
   "a legitimate wildcard match arm compiles and selects"
@@ -1816,8 +1816,7 @@
            binding is refused. This is a front-end rejection every generation makes — scope resolution
            needs no static typing — so (error CDZ0101) is the recorded outcome.")
   (input y)
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; A REACHABLE unbound name is found by BOTH the type-check walk AND the reached-poison walk, so it must be
 ; reported ONCE (deduped by code+node), not twice — `(def (main) nope)` yields exactly one CDZ0101. But TWO
@@ -1827,14 +1826,12 @@
 (case
   "a reachable unbound name found by two passes is reported exactly once"
   (input (do (def (main) nope) (export main)))
-  (error CDZ0101 (count 1))
-  (diagnostic-quality))
+  (error CDZ0101 (count 1)))
 
 (case
   "two distinct occurrences of the same unbound name are each reported, not merged to one"
   (input (do (def (main) (+ nope nope)) (export main)))
-  (error CDZ0101 (count 2))
-  (diagnostic-quality))
+  (error CDZ0101 (count 2)))
 
 ; The unbound-name check (and well-formedness generally) applies to EVERY definition in a module, not
 ; only the ones reachable from `main`. core-semantics.md #Binding Is Lexical: "A reference to a name with
@@ -1859,8 +1856,7 @@
            an ill-formed uncalled definition through, running to 42 instead of rejecting. Pins that every
            top-level definition's body is checked, exactly as an inner-module sibling's already is.")
   (input (do (def (bad) nonexistent) (def (main) 42) (export main)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; The unbound-name check also reaches into an UNSELECTED conditional branch, not only uncalled top-level
 ; definitions. core-semantics.md #Binding Is Lexical: "A reference to a name with no enclosing binding
@@ -1884,8 +1880,7 @@
            an unselected branch, exactly as the type check already does (`(if true 1 (+ 1 true))` is
            rejected). A generation that does not yet scope-check the dropped branch declines.")
   (input (if true 1 undefined-name))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; The same unbound-name check reaches a boolean connective's SHORT-CIRCUITED operand, exactly as it
 ; reaches an unselected conditional branch — the spec makes the two identical. core-semantics.md #Boolean
@@ -1917,8 +1912,7 @@
            `false` instead of rejecting. A generation that does not yet scope-check the short-circuited
            operand declines rather than answering `false`.")
   (input (and false undefined-name))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201, "takes
 ; exactly …"). TOO MANY operands carries a delete-the-surplus fix — the same surplus-arg delete an
@@ -1927,26 +1921,22 @@
 (case
   "an `if` with too many operands offers a delete-the-surplus fix"
   (input (do (def (main) (if true 1 2 3)) (export main)))
-  (error CDZ0201 (message "takes exactly") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly") (fix (kind delete))))
 
 (case
   "an `and` with too many operands offers a delete-the-surplus fix"
   (input (do (def (main) (and true false true)) (export main)))
-  (error CDZ0201 (message "takes exactly") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly") (fix (kind delete))))
 
 (case
   "an `or` with too many operands offers a delete-the-surplus fix"
   (input (do (def (main) (or true false true)) (export main)))
-  (error CDZ0201 (message "takes exactly") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly") (fix (kind delete))))
 
 (case
   "a `not` with too many operands offers a delete-the-surplus fix"
   (input (do (def (main) (not true false)) (export main)))
-  (error CDZ0201 (message "takes exactly") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly") (fix (kind delete))))
 
 (case
   "a binary arithmetic operator with too many operands offers a delete-the-surplus fix"
@@ -1958,14 +1948,12 @@
            not an arity error. (Migrated from rcdzc
            a_binary_operator_over_or_under_application_on_a_function_param_surfaces_in_the_query.)")
   (input (do (def (g (: n Int64)) (+ n 1 2)) (export g)))
-  (error CDZ0201 (message "takes exactly 2 operands") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly 2 operands") (fix (kind delete))))
 
 (case
   "a too-FEW-operand `and` carries no fix (nothing to delete)"
   (input (do (def (main) (and true)) (export main)))
-  (error CDZ0201 (message "takes exactly") (no-fix))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly") (no-fix)))
 
 ; A 2-operand `if` (`(if b then)` — the reflex of a statement-`if` language) is a wrong-arity `if`, but
 ; `if` is an EXPRESSION here (both branches must yield a value), so rather than the generic count nit it
@@ -1991,8 +1979,7 @@
 (case
   "a lone-condition `if` (no then either) keeps the generic arity message with no fix"
   (input (do (def (f (: b Bool)) (if b)) (export f)))
-  (error CDZ0201 (message "takes exactly 3 operands") (no-fix))
-  (diagnostic-quality))
+  (error CDZ0201 (message "takes exactly 3 operands") (no-fix)))
 
 ; A `(guard <pattern> <cond>)` match-arm head is a fixed-arity form (2 tail elements). A SURPLUS third
 ; element routes through the same fixed-arity reject — a delete-the-surplus fix (fix-parity with
@@ -2001,14 +1988,12 @@
 (case
   "a guarded pattern with a surplus element offers a delete-the-surplus fix"
   (input (do (def (f (: n Int64)) (match n ((guard x (> x 0) extra) 1) (_ 0))) (export f)))
-  (error CDZ0201 (message "a guarded pattern must be") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "a guarded pattern must be") (fix (kind delete))))
 
 (case
   "a too-few-element guarded pattern carries no fix (nothing to delete)"
   (input (do (def (f (: n Int64)) (match n ((guard x) 1) (_ 0))) (export f)))
-  (error CDZ0201 (message "a guarded pattern must be") (no-fix))
-  (diagnostic-quality))
+  (error CDZ0201 (message "a guarded pattern must be") (no-fix)))
 
 ; A `let`/`fn` whose bindings/params are present but whose trailing BODY is missing (`(let ((x 5)))`,
 ; `(fn (x))`) is CDZ0201 ("has no body"), and carries an INSERT fix appending a `(trap "TODO")` body —
@@ -2041,8 +2026,7 @@
 (case
   "a degenerate empty let (no bindings and no body) carries no fix"
   (input (do (def (f) (let)) (export f)))
-  (error CDZ0201 (message "no bindings and no body") (no-fix))
-  (diagnostic-quality))
+  (error CDZ0201 (message "no bindings and no body") (no-fix)))
 
 (case
   "a let-bound variable is in scope inside a boolean connective operand"
@@ -2848,14 +2832,12 @@
 (case
   "an empty do block in a parameterized def body is rejected as valueless"
   (input (do (def (g (: n Int64)) (do)) (export g)))
-  (error CDZ0201 (message "empty `do` block has no value"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "empty `do` block has no value")))
 
 (case
   "a do block whose last form is a declaration rather than a value form is rejected"
   (input (do (def (g) (do (def x 5))) (export g)))
-  (error CDZ0201 (message "must end in a value form, not a declaration"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "must end in a value form, not a declaration")))
 
 (case
   "a let body of unit yields unit"
@@ -3250,8 +3232,7 @@
            condition selecting the Int64 branch, the compiler MUST type-check BOTH branches and reject
            the mismatch (CDZ0203) rather than run the program.")
   (input (if true 1 false))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a conditional type error is caught even when the mismatched branch is the one taken"
@@ -3260,8 +3241,7 @@
            disagree in type (Int64 vs Bool), so the compiler MUST reject (CDZ0203). Pins that the
            check is on the pair of branch types, not on which branch would run.")
   (input (if false 1 false))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead"
@@ -3276,8 +3256,7 @@
            of the dead-branch check, which the scalar-vs-scalar cases above do not exercise (folding a compound
            branch away is where the check is easiest to skip).")
   (input (if false #record((= a 1)) 7))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; The branch-type-agreement check must fire when the conditional is INSIDE A FUNCTION BODY with a
 ; constant condition, not only at the top-level entry expression. The cases above pair mismatched
@@ -3313,8 +3292,7 @@
            the branch-type-agreement check is lost. A generation that type-checks the pair of branches
            before folding declines rather than running the ill-typed program or emitting invalid code.")
   (input (do (def (f) (if true 1 false)) (def (main) (f)) (export main)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a conditional with integer and floating-point branches is a type error"
@@ -3323,8 +3301,7 @@
            #Numeric Types Do Not Silently Promote). A conditional with an Int64 branch and a Float64
            branch is therefore ill-typed and the compiler MUST reject it (CDZ0201).")
   (input (if true 1 3.5))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 ; The branch-type-agreement check must compare branches STRUCTURALLY, not only by coarse kind: two
 ; branches that are both tuples but of DIFFERENT ARITY are different types (a tuple's arity is part of
@@ -3345,8 +3322,7 @@
            STRUCTURALLY, not only at coarse kind (both branches being 'a tuple' is not enough) — a compiler
            comparing only branch kinds accepts this and returns the two-tuple, an ill-typed program run.")
   (input (if true #tuple(1 2) #tuple(3 4 5)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a conditional with two tuple branches of different element type is a type error"
@@ -3357,8 +3333,7 @@
            branch-type comparison descends into a tuple's element types, not only its arity — the same
            depth the list-element homogeneity check already applies.")
   (input (if true #tuple(1 2) #tuple(1 true)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; The structural branch-type check must NOT treat a list's LENGTH as part of its type — unlike a tuple's
 ; arity. A list is a variable-length sequence typed by its element type (collections-and-text.md #A List
@@ -3426,8 +3401,7 @@
            Promote); there is no truthiness. A generation that does not yet wire the CDZ0203 code
            declines rather than running the program (reject-don't-miscompile).")
   (input (if 1 10 20))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a compound if condition is a type error, not an unbound name"
@@ -3439,8 +3413,7 @@
            Pins that a compound condition is rejected as a type error with the constructor intact,
            the same misleading-diagnostic class as an out-of-range literal reported as unbound.")
   (input (if #tuple(1 2) 10 20))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a pattern binds a name scoped to its branch"
@@ -3478,8 +3451,7 @@
            value — the arm is ill-typed and the compiler MUST reject the match (CDZ0201). Pins that a
            literal pattern's type is checked against the scrutinee's, not silently failed to match.")
   (input (match 5 (true 1) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "an integer literal pattern against a boolean scrutinee is a type error"
@@ -3488,8 +3460,7 @@
            ill-typed (CDZ0201). Pins the check in both directions — the scrutinee and every literal
            pattern must share a type.")
   (input (match true (5 1) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "matching on string literals"
@@ -3770,8 +3741,7 @@
            missing a case. Pins that guarded arms are excluded from the exhaustiveness check. A generation
            that does not yet check runtime exhaustiveness declines rather than emitting a component.")
   (input (match 5 ((guard x (< x 0)) 1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a match whose only arm is guarded by a literally-true condition is still non-exhaustive"
@@ -3785,8 +3755,7 @@
            conservative rule is simpler and sound: a guarded arm never counts toward coverage, whatever its
            condition. Pins that guard truth is not analyzed for exhaustiveness.")
   (input (match 5 ((guard x true) 1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; --- A guard CONDITION must be Bool, and faults inside it surface ---------------------------------
 ; A guarded arm `(guard <pattern> <cond>)` gates the arm on the boolean predicate `<cond>`, so
@@ -3803,8 +3772,7 @@
            offending type (Int64). A generation that used a non-boolean as a branch condition would wrongly
            accept it.")
   (input (do (def (g (: n Int64)) (match n ((guard x (+ x 1)) x) (_ 0))) (export g)))
-  (error CDZ0203 (message "guard condition must be Bool") (message "Int64"))
-  (diagnostic-quality))
+  (error CDZ0203 (message "guard condition must be Bool") (message "Int64")))
 
 (case
   "a String guard condition is likewise rejected — the Bool check is general"
@@ -3812,8 +3780,7 @@
     "A String guard `(guard x \"y\")` is rejected with the same CDZ0203 'guard condition must be Bool'
            — the check is general over the condition's type, not int-specific.")
   (input (do (def (g (: n Int64)) (match n ((guard x "y") x) (_ 0))) (export g)))
-  (error CDZ0203 (message "guard condition must be Bool"))
-  (diagnostic-quality))
+  (error CDZ0203 (message "guard condition must be Bool")))
 
 (case
   "a fault inside a guard condition surfaces — the condition is walked"
@@ -3821,8 +3788,7 @@
     "An unbound name inside a guard condition `(guard x (> x zzz))` surfaces as CDZ0101 rather than
            being silently accepted. The guard condition is walked, so faults within it are reported.")
   (input (do (def (g (: n Int64)) (match n ((guard x (> x zzz)) x) (_ 0))) (export g)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 (case
   "a well-typed Bool guard condition compiles and runs clean"
@@ -3934,8 +3900,7 @@
       (def (f (: o (Option Int64))) (match o ((guard (Some x) (> x 0)) x) ((None) 0)))
       (def (main (: n Int64)) (f (Some n)))
       (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; The rustc-gold non-exhaustive diagnostic: a plain missing-arm sum match is CDZ0210, NAMES the uncovered
 ; variant(s), and carries an add-arms INSERT fix that appends a covering arm per missing variant (a `trap`
@@ -4093,8 +4058,7 @@
            program does not run. Pins runtime-bool exhaustiveness against a match whose scrutinee is a
            function parameter, not a compile-time constant.")
   (input (do (def (f b) (match b (true 1))) (def (main) (f false)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a bool match missing the true arm is non-exhaustive"
@@ -4104,8 +4068,7 @@
            exhaustiveness is checked for BOTH bool values, not only the one the sole arm happens to
            name.")
   (input (do (def (f b) (match b (false 0))) (def (main) (f true)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm"
@@ -4121,8 +4084,7 @@
            constant hit a present arm. Exhaustiveness is a property of the arm set against the type, not
            of the scrutinee's value.")
   (input (match true (true 1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; A sum type's value set is its variant set, so exhaustiveness for a sum match is checked against
 ; ALL its variants — not just the scrutinee's runtime value. `Option` has variants Some and None;
@@ -4140,8 +4102,7 @@
            property of the arm set against the sum's variant set, not of which variant the scrutinee
            holds.")
   (input (match (Some 5) ((Some x) x)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a Sign match missing two of three variants is non-exhaustive"
@@ -4152,8 +4113,7 @@
            one the constant scrutinee names — a three-variant sum with a single arm is rejected just
            as a two-variant one is.")
   (input (match (Sign.Pos unit) ((Sign.Pos _) 1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; An Int64's value set is all 2^64 of its values, so no finite set of literal arms covers it — a match
 ; on an Int64 with only literal arms and no wildcard is non-exhaustive exactly as a Bool match missing an
@@ -4185,8 +4145,7 @@
            form is the one this pins. A generation that does not yet check int-literal exhaustiveness on a
            constant scrutinee declines rather than emitting a component (reject-don't-miscompile).")
   (input (match 5 (5 1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a non-exhaustive scalar match names the wildcard gap and offers an add-wildcard-arm fix"
@@ -4234,8 +4193,7 @@
            (`(Some (Some 5))` hits `(Some (Some x))`) rather than the type, accepts the ill-typed program.
            A generation that does not yet check nested exhaustiveness declines rather than emitting.")
   (input (match (Some (Some 5)) ((Some (Some x)) x) ((None _) -1)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "nested patterns deconstruct recursively"
@@ -4371,8 +4329,7 @@
            (CDZ0201). Pins that a tuple pattern's arity is checked against the scrutinee's, not
            silently failed.")
   (input (match #tuple(1 2) (#tuple(a b c) a) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "a one-element tuple pattern against a two-tuple is a type error"
@@ -4381,8 +4338,7 @@
            two-tuple `(tuple 1 2)` — a static shape mismatch, CDZ0201. Pins that BOTH too-many and
            too-few pattern elements are a type error, not a runtime non-match.")
   (input (match #tuple(1 2) (#tuple(a) a) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 ; The tuple-pattern-arity rule applies RECURSIVELY, at every nesting depth, not only to the outermost
 ; tuple pattern. core-semantics.md #Patterns Compose: a tuple pattern MUST admit any pattern in each of
@@ -4408,8 +4364,7 @@
            the OUTERMOST tuple pattern's arity does not let a nested wrong-arity pattern slip past as a
            runtime non-match.")
   (input (match #tuple(1 #tuple(2 3)) (#tuple(a #tuple(b c d)) 9) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 ; The CONSTRUCTOR twin of the tuple-pattern-shape rule: a user-sum constructor pattern must bind exactly the
 ; ctor's field arity — an over-arity `(Mk a b c)` on a 2-field `Mk`, or several binders on a single-value
@@ -4426,8 +4381,7 @@
       (type Pair (Mk Int64 Int64))
       (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b))))
       (export main)))
-  (error CDZ0201 (message "this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields")))
 
 (case
   "a multi-binder pattern on a single-value constructor points at the one-sub-pattern form"
@@ -4458,8 +4412,7 @@
            only the outermost. Pins that a compiler checking only the top-level literal pattern's type does
            not let a nested wrong-type literal slip past as a runtime non-match falling to the wildcard.")
   (input (match #tuple(1 2) (#tuple(true b) 9) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 ; The recursion must also enter a tuple pattern nested UNDER A CONSTRUCTOR pattern, not only one at the
 ; arm's root. A constructor pattern's binder MAY itself be a tuple pattern (core-semantics.md #Patterns
@@ -4480,8 +4433,7 @@
            shape check enters a tuple pattern nested under a constructor pattern, not only one at the arm's
            root, so the ill-typed arm is rejected rather than silently failing to the wildcard yielding 0.")
   (input (match (Some #tuple(1 2)) ((Some #tuple(a b c)) 9) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 ; A pattern's KIND must also match the scrutinee's kind, not only a tuple's arity: a tuple pattern
 ; against a SUM scrutinee (or a sum/constructor pattern against a tuple) is a static shape mismatch.
@@ -4498,8 +4450,7 @@
            incompatible with the scrutinee, a type error (CDZ0201). Pins the pattern-KIND check
            (tuple vs sum), the companion of the tuple-ARITY check above.")
   (input (match (Some 5) (#tuple(a b) a) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "a tuple pattern against a Sign scrutinee is a type error"
@@ -4508,8 +4459,7 @@
            pattern against it is a shape mismatch (CDZ0201). Pins that the tuple-pattern-vs-sum check
            holds for every sum, not only Option.")
   (input (match (Sign.Pos unit) (#tuple(a b) a) (_ 0)))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "deeply nested pattern matching"
@@ -4735,8 +4685,7 @@
            fix, so it is KEPT — the (warns ..) substring clause expresses neither the count nor the fix.")
   (input (do (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main)))
   (output (: 1 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "a catch-all after the specific arms already cover a finite type is unreachable and earns a CDZ0213 warning"
@@ -4753,8 +4702,7 @@
   (input
     (do (def (f (: b Bool)) (match b (true 1) (false 2) (_ 3))) (def (main) (f true)) (export main)))
   (output (: 1 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "a refining arm shadowed by an earlier full-variant cover is unreachable and earns a CDZ0213 warning"
@@ -4775,8 +4723,7 @@
       (export main)))
   (call main)
   (output (: -1 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "a structurally-duplicate tuple arm is unreachable and earns a CDZ0213 warning"
@@ -4800,8 +4747,7 @@
       (export main)))
   (call main)
   (output (: 1 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "an all-wildcard tuple arm is an irrefutable catch-all that shadows later arms and earns a CDZ0213 warning"
@@ -4822,8 +4768,7 @@
       (export main)))
   (call main)
   (output (: 0 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "a match arm whose list length an earlier arm already covers is unreachable and earns a CDZ0213 warning"
@@ -4844,8 +4789,7 @@
       (export main)))
   (call main)
   (output (: 1 Int64))
-  (warns CDZ0213 (message "this match arm is unreachable"))
-  (diagnostic-quality))
+  (warns CDZ0213 (message "this match arm is unreachable")))
 
 (case
   "a match on a computed runtime value dispatches on the result"
@@ -4932,8 +4876,7 @@
            component that could trap at run time. The rejection is the recorded outcome; the program
            does not run.")
   (input (do (def (f n) (match n (1 10) (2 20))) (def (main) (f 3)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a boolean literal pattern matches a runtime scrutinee"
@@ -5574,8 +5517,7 @@
            Bool literal is not enough. (An Int64 match without a wildcard likewise stays rejected — the
            relaxation is specific to a Bool scrutinee covered by both of its two values.)")
   (input (do (def (main (: b Bool)) (match b (true 1))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a match on a runtime integer scrutinee producing a boolean"
@@ -5635,8 +5577,7 @@
            path. A generation that does not yet check the unselected arms declines rather than emitting the
            folded arm.")
   (input (match 5 (5 1) (_ true)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; The unselected-arm check must type-check each arm's BODY for internal errors, not only compare the arms'
 ; RESULT types. The case above pins arm-type-AGREEMENT (an Int64 arm vs a Bool arm); this pins that an
@@ -5662,8 +5603,7 @@
            BODY, not only compares arm result types. A generation that does not yet check the unselected
            arm's body declines rather than emitting the folded arm.")
   (input (match 5 (5 1) (_ (+ 1 true))))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; The unselected-arm check must reach a SCOPE error, not only a type error. The two cases above pin that
 ; a const-folded match type-checks its unselected arms (agreement + internal type); this pins that it
@@ -5696,8 +5636,7 @@
            above (which the seed already enforces). A generation that scope-checks every arm before
            folding declines rather than emitting the folded arm.")
   (input (match 2 (1 undefined-z) (_ 99)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; The arm-type-agreement check must fire when a RUNTIME scrutinee's first arm body is a bare PAYLOAD
 ; BINDER — the const-folded cases above assume "a runtime-scrutinee match already rejects arms that
@@ -5733,8 +5672,7 @@
            reinterpreting the payload.")
   (input
     (do (def (f o) (match o ((Some x) x) ((None _) true))) (def (main) (f (Some 5))) (export main)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; --- Boolean connectives (short-circuit) -------------------------------------------------
 ; core-semantics.md #Boolean Connectives Short-Circuit: the language offers conjunction, disjunction,
@@ -5888,8 +5826,7 @@
            evaluated, so the compiler MUST reject the non-Bool operand (CDZ0201) rather than run — the
            same discipline as a conditional's branch type-check, applied to a connective's operand.")
   (input (and true 1))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "an or connective with a non-boolean operand is a type error"
@@ -5899,8 +5836,7 @@
            evaluated (core-semantics.md #Boolean Connectives Short-Circuit), so the non-Bool operand is
            rejected CDZ0201 — the rule holds for `or`, not only `and`.")
   (input (or 5 false))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "a not connective with a non-boolean operand is a type error"
@@ -5909,8 +5845,7 @@
            is rejected CDZ0201. Pins that the Bool-operand discipline covers the unary connective too, not
            only the binary `and`/`or`.")
   (input (not 7))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "a recursive function that threads a tuple accumulator returns it"
@@ -6248,8 +6183,7 @@
            4)))) a)` names `nope`, absent from `(Record (: x Int64) (: y Int64))`. Pins that a record binding
            pattern's fields must exist on the value — the record analogue of a tuple pattern's arity check.")
   (input (let ((#record((= nope a)) #record((= x 3) (= y 4)))) a))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "a destructuring record let over a runtime value binds its fields"
@@ -6338,8 +6272,7 @@
            Int64) B)` leaves `B` uncovered. Only a single-variant sum earns the binding-position exemption;
            a many-variant sum's destructure must be a `match`. Pins the refutability boundary.")
   (input (do (type C (A Int64) B) (def (main) (let (((C.A n) (C.A 5))) n)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a later let binding sees an earlier pattern's binders"
@@ -6402,8 +6335,7 @@
            system must reject up front. A leading-element destructure of a possibly-empty list belongs in a
            `match`. Pins that ONLY the zero-leading rest form is irrefutable in a binding position.")
   (input (do (def (head #list(x (.. rest))) x) (def (main) (head #list(7 8 9))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a leading-element list rest pattern in a let binder is refutable and rejected"
@@ -6414,8 +6346,7 @@
            idiom for a possibly-short list is a `match` with an empty/short arm, not a `let` destructure.
            Pins the leading-element rest boundary in the `let` position, mirroring the parameter case.")
   (input (do (def (main) (let ((#list(a b (.. rest)) #list(1 2 3 4))) a)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a fixed-arity list binding pattern is refutable and rejected"
@@ -6427,8 +6358,7 @@
            matches any length ≥ the leading count, earns the binding-position exemption; a length-fixed
            destructure must be a `match`. Pins the list refutability boundary.")
   (input (do (def (main) (let ((#list(a b) #list(1 2))) (+ a b))) (export main)))
-  (error CDZ0210 (message "ZERO-LEADING") (message "is itself refutable"))
-  (diagnostic-quality))
+  (error CDZ0210 (message "ZERO-LEADING") (message "is itself refutable")))
 
 ; Further ill-formed list bindings (migrated from rcdzc an_ill_formed_list_binding_pattern_is_rejected): an
 ; EMPTY `#list()` binder matches only the empty list (refutable, CDZ0210); a REST binding with a refutable
@@ -6438,20 +6368,17 @@
 (case
   "an empty list binding pattern is refutable and rejected"
   (input (do (def (main) (let ((#list() #list())) 0)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a rest binding with a refutable literal leading element is rejected"
   (input (do (def (main) (let ((#list(0 (.. rest)) #list(0 1))) 42)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a non-linear list binding pattern is rejected CDZ0102 before the refutability guard"
   (input (do (def (main) (let ((#list(a a (.. rest)) #list(1 2 3))) a)) (export main)))
-  (error CDZ0102)
-  (diagnostic-quality))
+  (error CDZ0102))
 
 (case
   "a non-linear tuple match pattern is rejected CDZ0102 with a rename fix"
@@ -6463,8 +6390,7 @@
            match-pattern companion of the non-linear list-binder and duplicate-parameter cases. (Migrated
            from rcdzc a_non_linear_pattern_binder_carries_a_rename_fix.)")
   (input (match #tuple(1 2) (#tuple(a a) a)))
-  (error CDZ0102 (fix (kind replace) (replacement "a2") (unverified)))
-  (diagnostic-quality))
+  (error CDZ0102 (fix (kind replace) (replacement "a2") (unverified))))
 
 ; A misspelled variant ctor as a LIST-ELEMENT pattern draws its did-you-mean from the element sum's
 ; variants: `#list((Ad) .. r)` on `(List Op)` where `(type Op (Add) (Sub))` — a near-miss `Ad` for `Add` is
@@ -6477,8 +6403,7 @@
       (type Op (Add) (Sub))
       (def (f (: xs (List Op))) (match xs (#list((Ad) (.. r)) 1) (_ 0)))
       (export f)))
-  (error CDZ0201 (message "did you mean `Add`?") (fix (kind replace) (replacement "Add")))
-  (diagnostic-quality))
+  (error CDZ0201 (message "did you mean `Add`?") (fix (kind replace) (replacement "Add"))))
 
 (case
   "a far-miss variant in a list-element pattern lists the closest matches with no fix"
@@ -6487,8 +6412,7 @@
       (type Op (Add) (Sub))
       (def (f (: xs (List Op))) (match xs (#list((Zzz) (.. r)) 1) (_ 0)))
       (export f)))
-  (error CDZ0201 (message "closest matches") (no-fix))
-  (diagnostic-quality))
+  (error CDZ0201 (message "closest matches") (no-fix)))
 
 (case
   "a constructor-pattern list element over a NON-SUM element type gets no spurious variant suggestion"
@@ -6500,8 +6424,7 @@
            Pinned by `(not \"did you mean\")`. (Migrated from rcdzc
            a_non_sum_list_element_pattern_gets_no_spurious_variant_suggestion.)")
   (input (do (def (f (: xs (List Int64))) (match xs (#list((Foo) (.. r)) 1) (_ 0))) (export f)))
-  (error CDZ0201 (message "constructor") (not "did you mean"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "constructor") (not "did you mean")))
 
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
@@ -6515,8 +6438,7 @@
            Binding Position Accepts An Irrefutable Pattern / #Matching Is Exhaustive Or Rejected). Pins that
            a multi-variant constructor cannot bind a value in a `let`.")
   (input (let (((Some x) (Some 5))) x))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a literal in a let binder is refutable and rejected"
@@ -6525,8 +6447,7 @@
            refutable and rejected in a binding position (CDZ0210, core-semantics.md #A Binding Position
            Accepts An Irrefutable Pattern). Pins that a literal cannot stand where a binder is expected.")
   (input (do (def (main) (let ((0 5)) 42)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; Refutability is checked RECURSIVELY, at every nesting depth — a refutable sub-pattern nested inside a
 ; tuple binding position is rejected exactly as the top-level one is (core-semantics.md #A Binding Position
@@ -6541,8 +6462,7 @@
            top-level `(let ((0 5)) 42)` does — the check recurses into tuple sub-patterns. A compiler that
            stopped at the top level ran it to 9, silently treating the literal element as a no-op.")
   (input (do (def (main) (let ((#tuple(0 b) #tuple(0 9))) b)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a literal nested in a tuple def-parameter is refutable and rejected"
@@ -6553,8 +6473,7 @@
            rejection, no runtime trap) — the parameter's binding position enforces irrefutability like a
            `let` binder.")
   (input (do (def (f #tuple(0 b)) b) (def (main) (f #tuple(9 5))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; The top-level constructor + non-linear faces of a def-parameter binding (migrated from rcdzc
 ; an_ill_formed_def_parameter_pattern_is_rejected): a refutable multi-variant CONSTRUCTOR parameter is
@@ -6563,14 +6482,12 @@
 (case
   "a refutable constructor def-parameter is rejected"
   (input (do (def (f (Some x)) x) (def (main) 0) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a non-linear tuple def-parameter is rejected CDZ0102"
   (input (do (def (f #tuple(x x)) x) (def (main) 0) (export main)))
-  (error CDZ0102)
-  (diagnostic-quality))
+  (error CDZ0102))
 
 ; The INLINE-LAMBDA face: a refutable binding inside an INLINE / let-bound lambda's body or parameter is the
 ; same CDZ0210 a def-body binding gets (a lambda parameter desugars to a body `let`). An earlier over-accept
@@ -6580,14 +6497,12 @@
 (case
   "a refutable let inside an inline lambda body is rejected"
   (input (do (def (main) (let ((f (fn (p) (let (((Some x) p)) x)))) (f (Some 3)))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a refutable constructor parameter on an inline lambda is rejected"
   (input (do (def (main) (let ((f (fn ((Some x)) x))) (f (Some 3)))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a refutable let nested two inline-lambda levels deep is rejected"
@@ -6595,8 +6510,7 @@
     (do
       (def (main) (let ((outer (fn (x) (let ((inner (fn (z) (let ((5 y)) y)))) 3)))) 9))
       (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "an irrefutable tuple parameter on an inline lambda is legal and applies (the control)"
@@ -6618,8 +6532,7 @@
            uncovered) — the top-level `(let (((Some x) (Some 5))) x)` rejects CDZ0210, so the nested form
            does too. The recursion classifies each element with the same rule the top-level binder uses.")
   (input (do (def (main) (let ((#tuple((Some x) b) #tuple((Some 5) 9))) x)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a deeply nested literal in a tuple let-binder is refutable and rejected"
@@ -6631,8 +6544,7 @@
            composes to any depth and RUNS).")
   (input
     (do (def (main) (let ((#tuple(a #tuple(0 b)) #tuple(1 #tuple(0 3)))) (+ a b))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a wrong-arity tuple binding pattern is a shape error"
@@ -6655,8 +6567,7 @@
            wrong-ARITY case above (a tuple value of the wrong length). (migrated from rcdzc
            an_ill_formed_let_binding_pattern_is_rejected_not_miscompiled.)")
   (input (do (def (main) (let ((#tuple(a b) 5)) a)) (export main)))
-  (error CDZ0201 (message "this tuple pattern cannot destructure a value of type Int64"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "this tuple pattern cannot destructure a value of type Int64")))
 
 ; A `let`/`fn` takes EXACTLY ONE body — `(let (binds) b1 b2)` / `(fn (params) b1 b2)` with a trailing form
 ; is malformed (the surplus form was silently DROPPED — a miscompile). Rejected CDZ0201 naming the form +
@@ -6665,14 +6576,12 @@
 (case
   "a let with more than one body is rejected with a delete-the-surplus fix"
   (input (do (def (main) (let ((x 1)) x 99)) (export main)))
-  (error CDZ0201 (message "more than one body") (fix (kind delete)))
-  (diagnostic-quality))
+  (error CDZ0201 (message "more than one body") (fix (kind delete))))
 
 (case
   "an inline lambda with more than one body is rejected"
   (input (do (def (main) ((fn (x) x 99) 5)) (export main)))
-  (error CDZ0201 (message "more than one body"))
-  (diagnostic-quality))
+  (error CDZ0201 (message "more than one body")))
 
 (case
   "a single-body let whose one body is a (do …) sequence is well-formed and runs"
@@ -6687,8 +6596,7 @@
            mismatch (CDZ0201, core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). Pins
            that a tuple binding pattern requires a tuple value.")
   (input (let ((#tuple(a b) 5)) a))
-  (error CDZ0201)
-  (diagnostic-quality))
+  (error CDZ0201))
 
 (case
   "a non-linear tuple binding pattern is rejected"
@@ -6698,8 +6606,7 @@
            Accepts An Irrefutable Pattern / #Bindings Introduced By A Pattern Are Scoped To Its Branch).
            Pins that linearity is enforced in binding position, not only in a match arm.")
   (input (let ((#tuple(x x) #tuple(1 2))) x))
-  (error CDZ0102)
-  (diagnostic-quality))
+  (error CDZ0102))
 
 ; A binding pattern MAY carry a type ANNOTATION `(: <pat> <Type>)` (type-system.md #Annotations Constrain,
 ; Never Contradict): the annotation constrains the bound value's type and the inner pattern is the real
@@ -6731,8 +6638,7 @@
            annotation participates in inference as a constraint, and a value that cannot satisfy it is a
            type error). Pins that a binder's annotation is CHECKED against the value, not merely recorded.")
   (input (do (def (main) (let (((: x Bool) 5)) x)) (export main)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "an annotated destructuring let binder that contradicts an element type is rejected"
@@ -6743,8 +6649,7 @@
            contradiction above (and the negative of the positive destructuring binder `(Tuple Int64 Int64)`): an
            annotation on a DESTRUCTURING binder is checked element-wise against the value, not only whole-shape.")
   (input (let (((: #tuple(a b) (Tuple Int64 Bool)) #tuple(3 4))) a))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 (case
   "an annotated let binder narrower than its literal value is rejected (int width)"
@@ -6755,8 +6660,7 @@
            on the value too, not only a type-shape constraint — without the check the binding would smuggle
            an out-of-range value under a narrow name.")
   (input (let (((: x Int8) 999)) x))
-  (error CDZ0302)
-  (diagnostic-quality))
+  (error CDZ0302))
 
 (case
   "an annotated let binder narrower than its literal value is rejected (float width)"
@@ -6770,8 +6674,7 @@
       (((: x Float32)
           1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0))
       x))
-  (error CDZ0302)
-  (diagnostic-quality))
+  (error CDZ0302))
 
 (case
   "an annotated let binder at a fitting narrow float computes"
@@ -6920,8 +6823,7 @@
            annotation to reach the tuple pattern keeps the annotation live on the fresh binder.")
   (input
     (do (def (f (: #tuple(a b) (Tuple Int64 Bool))) a) (def (main) (f #tuple(3 4))) (export main)))
-  (error CDZ0203)
-  (diagnostic-quality))
+  (error CDZ0203))
 
 ; --- Jump-table index integrity for HIGH-BIT scrutinees (adversarial guards) ----------------------
 ; A dense match lowers to a `br_table` whose index operand is i32. The i64 scrutinee must be
@@ -7878,8 +7780,7 @@
     (do (def (inc (: n Int64)) (+ n 1)) (def (main (: n Int64)) (do (inc 8) (* n 2))) (export main)))
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (warns CDZ0307 (message "computed but discarded"))
-  (diagnostic-quality))
+  (warns CDZ0307 (message "computed but discarded")))
 
 (case
   "an ill-typed non-final do-statement is still caught though its value is discarded"
@@ -7890,8 +7791,7 @@
            be Bool', not silently skipped because its value is unused. (migrated from rcdzc
            a_do_block_with_an_ill_typed_intermediate_is_still_caught.)")
   (input (do (def (main) (do (if 5 1 2) 42)) (export main)))
-  (error CDZ0203 (message "condition must be Bool"))
-  (diagnostic-quality))
+  (error CDZ0203 (message "condition must be Bool")))
 
 (case
   "an ill-typed condition inside a let body is still caught (the check descends through the let)"
@@ -7902,8 +7802,7 @@
            let. Pins that the type-fault walk descends through `let` bodies. (migrated from rcdzc
            a_type_fault_inside_a_let_body_is_still_caught.)")
   (input (do (def (main) (let ((x 5)) (if x 1 2))) (export main)))
-  (error CDZ0203 (message "condition must be Bool"))
-  (diagnostic-quality))
+  (error CDZ0203 (message "condition must be Bool")))
 
 ; A near-miss of an IN-SCOPE name gets a did-you-mean suggestion with a REPLACE fix (a heuristic
 ; nearest-name guess, edit-distance ≤ cutoff): a `let` binder `counter` referenced as `countr`, and a
@@ -7914,14 +7813,12 @@
 (case
   "an unbound name close to a let binding suggests the binding with a replace fix"
   (input (do (def (main) (let ((counter 5)) (+ countr 1))) (export main)))
-  (error CDZ0101 (fix (kind replace) (replacement "counter")))
-  (diagnostic-quality))
+  (error CDZ0101 (fix (kind replace) (replacement "counter"))))
 
 (case
   "an unbound name close to a top-level def suggests it with a replace fix"
   (input (do (def (compute x) x) (def (main) (computee 1)) (export main)))
-  (error CDZ0101 (message "did you mean `compute`?") (fix (kind replace) (replacement "compute")))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `compute`?") (fix (kind replace) (replacement "compute"))))
 
 ; A misspelled GRAMMAR keyword in HEAD position is an unbound name — but a correctly-spelled keyword is
 ; dispatched structurally, so the keywords only join the candidate pool in HEAD position. A head typo
@@ -7932,32 +7829,27 @@
 (case
   "a misspelled match keyword in head position suggests match"
   (input (do (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f)))
-  (error CDZ0101 (message "did you mean `match`?"))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `match`?")))
 
 (case
   "a misspelled if keyword in head position suggests if"
   (input (do (def (f (: b Bool)) (iff b 1 2)) (export f)))
-  (error CDZ0101 (message "did you mean `if`?"))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `if`?")))
 
 (case
   "a misspelled let keyword in head position suggests let"
   (input (do (def (f) (le ((x 5)) x)) (export f)))
-  (error CDZ0101 (message "did you mean `let`?"))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `let`?")))
 
 (case
   "a misspelled and keyword in head position suggests and"
   (input (do (def (f (: b Bool)) (annd b b)) (export f)))
-  (error CDZ0101 (message "did you mean `and`?"))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `and`?")))
 
 (case
   "a head typo nearer to a real def suggests the def over a grammar keyword"
   (input (do (def (matcher x) x) (def (f) (matchee 5)) (export f)))
-  (error CDZ0101 (message "did you mean `matcher`?"))
-  (diagnostic-quality))
+  (error CDZ0101 (message "did you mean `matcher`?")))
 
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
@@ -8004,8 +7896,7 @@
            failed). The portable companion of the rcdzc dead-trap unit test.")
   (input (do (def (main) (. #tuple(42 (/ 100 0)) 0)) (export main)))
   (output (: 42 Int64))
-  (warns CDZ0305 (message "always traps but its value is never used"))
-  (diagnostic-quality))
+  (warns CDZ0305 (message "always traps but its value is never used")))
 
 ; A CONSTANT operation that ALWAYS traps, sitting in a branch whose reachability depends on a RUNTIME value
 ; (`(if (> n 0) 7 <const-trap>)`), earns the non-error CDZ0309 "potentially reachable trap" WARNING that NAMES
@@ -8052,8 +7943,7 @@
            DENIED with the hard CDZ0999 error (not a warning). Caught by the reduction limit, so it errors
            cleanly rather than overflowing. (Migrated from rcdzc a_non_normalizing … USED-term facet.)")
   (input (do (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main)))
-  (error CDZ0999 (message "does not reduce to a value"))
-  (diagnostic-quality))
+  (error CDZ0999 (message "does not reduce to a value")))
 
 (case
   "a NORMAL unused let init is elided with NO dead-computation warning"
@@ -8083,8 +7973,7 @@
            check, not fail it).")
   (input (do (def (main) (. #tuple(42 (% 100 0)) 0)) (export main)))
   (output (: 42 Int64))
-  (warns CDZ0305 (message "always traps but its value is never used"))
-  (diagnostic-quality))
+  (warns CDZ0305 (message "always traps but its value is never used")))
 
 (case
   "an unprojected element whose constant overflow traps is elided but earns a CDZ0305 warning"
@@ -8097,8 +7986,7 @@
            run paths skip the (warns ..) check, not fail it).")
   (input (do (def (main) (. #tuple(42 (+ 9223372036854775807 1)) 0)) (export main)))
   (output (: 42 Int64))
-  (warns CDZ0305 (message "always traps but its value is never used"))
-  (diagnostic-quality))
+  (warns CDZ0305 (message "always traps but its value is never used")))
 
 (case
   "an unprojected element whose constant zero-denominator Rational.of traps is elided but earns a CDZ0305 warning"
@@ -8112,8 +8000,7 @@
            the trap kind. Wasm-graded (the run paths skip the (warns ..) check, not fail it).")
   (input (do (def (main) (. #tuple(42 (Rational.of 1 0)) 0)) (export main)))
   (output (: 42 Int64))
-  (warns CDZ0305 (message "always traps but its value is never used"))
-  (diagnostic-quality))
+  (warns CDZ0305 (message "always traps but its value is never used")))
 
 ; The POSITION axis of the dead-trap warning (the tuple cases above are the ELEMENT position): a provably-
 ; trapping constant in ANY unobserved slot — a dropped RECORD field, an unused LET init, or an unused
@@ -8178,8 +8065,7 @@
            exactly-one count and the used-term-is-an-error contrast.")
   (input (do (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main)))
   (output (: 0 Int64))
-  (warns CDZ0305 (message "does not reduce to a value"))
-  (diagnostic-quality))
+  (warns CDZ0305 (message "does not reduce to a value")))
 
 ; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
 ; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
@@ -9424,8 +9310,7 @@
            `(#list(a b) …)` destructures it — only a non-list scalar/bool/string literal pattern is the type
            error. (Surfaced by the v-cdz-smith reachability sweep; coded by #7351.)")
   (input (do (def (main) (match #list(1 2) (8 99))) (export main)))
-  (error CDZ0203 (message "scalar-literal pattern cannot match a `List` scrutinee"))
-  (diagnostic-quality))
+  (error CDZ0203 (message "scalar-literal pattern cannot match a `List` scrutinee")))
 
 (case
   "a runtime-length list dispatches a leading-rest arm by its actual length"
@@ -9592,8 +9477,7 @@
     "The ML-differential probe adjacent to KNOWN_ML_DIFFS #1 (unbound-in-uncalled-def): here the def's VALUE is a lambda that is never applied — a reachability walk that skips uncalled sibling defs may or may not descend into a bound-but-unapplied fn value. rcdzc rejects; the differential classifies ML.")
   (input
     (do (def unused-lambda (fn ((: x Int64)) (+ x undefined-name))) (def (main) 42) (export main)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 ; --- Non-linear binding, param-list face (annotated variant; adv-47) + uncalled-def match
 ; faces (arm body / arm guard — positions a scope walk may skip). ---
@@ -9602,8 +9486,7 @@
   (doc
     "The param-list face of the CDZ0102 non-linearity rule (let and match faces pinned elsewhere; 05-compound pins the UNTYPED (def (f x x)) shape) — here both params carry Int64 annotations, so the reject must fire on the repeated NAME, not the annotation path. The self-hosted front-end accepted this and silently last-wins-shadowed ((f 1 2) returned 2) — adv-47, fixed b80c1d374.")
   (input (do (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main)))
-  (error CDZ0102)
-  (diagnostic-quality))
+  (error CDZ0102))
 
 (case
   "an unbound name in an uncalled def's match-ARM BODY is rejected"
@@ -9611,8 +9494,7 @@
     "The match-arm-body face of the uncalled-def scope walk: the unbound name sits inside an arm of a match in a never-called def — a walk that descends def bodies but not into match arms runs to 42. rcdzc rejects CDZ0101.")
   (input
     (do (def (unused (: x Int64)) (match x ((1) no-such-name) (_ 0))) (def (main) 42) (export main)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 (case
   "an unbound name in an uncalled def's match-arm GUARD is rejected"
@@ -9623,8 +9505,7 @@
       (def (unused (: x Int64)) (match x ((y (> y no-such-guard)) 1) (_ 0)))
       (def (main) 42)
       (export main)))
-  (error CDZ0101)
-  (diagnostic-quality))
+  (error CDZ0101))
 
 (case
   "pure guards on fused-match arms read the payload binder and an enclosing capture"
@@ -9673,8 +9554,7 @@
            not failed).")
   (input (do (def (main) (let ((unused 99)) 42)) (export main)))
   (output (: 42 Int64))
-  (warns CDZ0306 (message "unused binding"))
-  (diagnostic-quality))
+  (warns CDZ0306 (message "unused binding")))
 
 (case
   "a reference buried under many non-binding forms resolves to its outer let binder"
@@ -10819,8 +10699,7 @@
            any other value, and has no same-variant binder fall-through -> non-exhaustive, CDZ0210.")
   (input
     (do (def (f n) (match (Some n) ((Some 0) 100) ((None _) -1))) (def (main) (f 5)) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 ; -- a guarded-wildcard arm falling through to a self-tail-call iterates as a loop (migrated from rcdzc
 ; a_guarded_wildcard_arm_falling_through_to_a_tail_call_iterates_the_loop): a match whose first arm is a
@@ -10894,26 +10773,22 @@
 (case
   "an if with an int-literal then-branch and a float else-branch retypes the int literal up"
   (input (do (def (f (: b Bool)) (if b 1 2.0)) (export f)))
-  (error CDZ0201 (fix (kind replace) (replacement "1.0")))
-  (diagnostic-quality))
+  (error CDZ0201 (fix (kind replace) (replacement "1.0"))))
 
 (case
   "an if with a float then-branch and an int-literal else-branch retypes the else int literal up"
   (input (do (def (f (: b Bool)) (if b 1.0 2)) (export f)))
-  (error CDZ0201 (fix (kind replace) (replacement "2.0")))
-  (diagnostic-quality))
+  (error CDZ0201 (fix (kind replace) (replacement "2.0"))))
 
 (case
   "a match with an int-literal arm and a later float arm retypes the int-literal arm up"
   (input (do (def (f (: x Int64)) (match x (0 1) (_ 2.0))) (export f)))
-  (error CDZ0203 (fix (kind replace) (replacement "1.0")))
-  (diagnostic-quality))
+  (error CDZ0203 (fix (kind replace) (replacement "1.0"))))
 
 (case
   "a match with a float arm and a later int-literal arm retypes the int-literal arm up"
   (input (do (def (f (: x Int64)) (match x (0 1.0) (_ 2))) (export f)))
-  (error CDZ0203 (fix (kind replace) (replacement "2.0")))
-  (diagnostic-quality))
+  (error CDZ0203 (fix (kind replace) (replacement "2.0"))))
 
 (case
   "an int-vs-bool if branch clash is not coercible, so no float-retype fix is offered"
@@ -10923,8 +10798,7 @@
            `1`→`1.0` that would unify a number with a boolean). Pins that the retype fix is offered only for a
            genuinely coercible int-literal-vs-float clash.")
   (input (do (def (f (: b Bool)) (if b 1 true)) (export f)))
-  (error CDZ0203 (no-fix))
-  (diagnostic-quality))
+  (error CDZ0203 (no-fix)))
 
 ; A literal-arm match with no wildcard is NON-EXHAUSTIVE over its scalar domain (CDZ0210), regardless of
 ; whether the runtime scrutinee would hit an arm. For Bool the relaxation is precise: a match is exhaustive
@@ -10935,26 +10809,22 @@
 (case
   "an integer literal match with no wildcard is non-exhaustive"
   (input (do (def (f (: n Int64)) (match n (0 1) (1 2))) (export f)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a Bool match with only the true arm is non-exhaustive"
   (input (do (def (main (: b Bool)) (match b (true 1))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a Bool match with only the false arm is non-exhaustive"
   (input (do (def (main (: b Bool)) (match b (false 2))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a Bool match with two of the same literal is non-exhaustive"
   (input (do (def (main (: b Bool)) (match b (true 1) (true 2))) (export main)))
-  (error CDZ0210)
-  (diagnostic-quality))
+  (error CDZ0210))
 
 (case
   "a Bool match with both true and false arms is exhaustive and runs"

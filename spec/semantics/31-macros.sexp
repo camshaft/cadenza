@@ -4,6 +4,8 @@
 ; returned syntax in the call's position and type-checks it as if written directly (§Expansion Precedes And
 ; Feeds The Core Guarantees). Expansion PRECEDES type checking (§Expansion Runs In Phases To A Fixpoint), so
 ; the call takes the EXPANSION's type, not the macro's declared `Ast` return. DESIGN-macro-system.md.
+(diagnostic-quality)
+
 (case
   "a quote-parameter macro receives its argument as unevaluated Ast and returns it (identity expansion)"
   (doc

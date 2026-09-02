@@ -12,6 +12,8 @@
 ; These exercise the effect surface, realized when the seed's reader learns the (effect …)
 ; declaration and the entrypoint (host …) delegation. Until then the seed declines them; it still enforces
 ; the capability floor itself once it lowers the new surface.
+(diagnostic-quality)
+
 (case
   "an entrypoint delegation lets a program reach its host function"
   (doc
