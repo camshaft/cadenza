@@ -709,7 +709,20 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(11) {
+    match c.variant(12) {
+        // A HETEROGENEOUS list `(list <int> <bool>)` — the elements fail to unify to one element type
+        // (T1.29: a List is homogeneous) → a coded type fault (rcdzc CDZ0201). rcdzc rejects + the oracle
+        // infers IllTyped ⇒ holds on the accept/reject agreement (the exact code is advisory, not matched);
+        // an rcdzc ACCEPT here is a soundness false-accept.
+        10 => {
+            let a = int(c, iscope, bscope, fresh);
+            let b = boolean(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(list {a} {b})")
+            } else {
+                format!("(list {b} {a})")
+            }
+        }
         // Arithmetic with a Bool operand.
         0 => {
             let a = int(c, iscope, bscope, fresh);
@@ -791,7 +804,26 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(6) {
+    match c.variant(7) {
+        // A HOMOGENEOUS list construction `(list e...)` (T1.29 — first collection type). 2..=4 elements,
+        // all Int64 OR all Bool (a List is homogeneous — the oracle UNIFIES the element types to one
+        // `.listTy tau`). Both rcdzc + oracle infer a List elem-type from the (non-empty) elements →
+        // WellTyped agreement. (An EMPTY `(list)` has an unconstrained element type the oracle skips, so
+        // it is deliberately NOT generated; the heterogeneous clash lives in the ill-typed arm.)
+        5 => {
+            let want_bool = c.variant(2) == 0;
+            let n = 2 + c.variant(3); // 2..=4 elements
+            let elems: Vec<String> = (0..n)
+                .map(|_| {
+                    if want_bool {
+                        gen_typefuzz_bool(c, 1, iscope, bscope, fresh)
+                    } else {
+                        gen_typefuzz_int(c, 1, iscope, bscope, fresh)
+                    }
+                })
+                .collect();
+            format!("(list {})", elems.join(" "))
+        }
         // A LET-POLYMORPHIC identity used at BOTH Int64 and Bool → tuple[Int64,Bool] (HM let-
         // generalization, T1.18): the let-bound `id` is GENERALIZED, so its two uses instantiate at
         // different types. Both rcdzc and the oracle generalize a let-bound fn → WellTyped agreement.
