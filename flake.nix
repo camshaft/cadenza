@@ -3878,6 +3878,21 @@
                 ''cat ${mkCorpusVerdictsFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
               corpusFileNames}
         '';
+        # WHOLE-CORPUS COARSE WASM GATE (the gateCheckNix swap target) — the fail-on-regression aggregate over
+        # all files via mkCorpusGateFileCoarse. Each per-file gate FAILS its build on a pass→not-pass regression
+        # vs .gate-baseline, so this aggregate cannot build if ANY file regresses (fail-on-any). Cats the per-file
+        # "ok" markers (forces each to build). This REPLACES the in-process `gateCheck` in localGate — same
+        # case-set + #7329 single-sourced canonical_output_value grader, PLUS the diagnostics wire (--diagnostics)
+        # that fixes gateCheck's warning-capture blind spot → strictly-better coverage. Committed .gate-baseline
+        # == the #7692 coarse harvest by construction, so this is green on a clean main.
+        corpusGateCoarse = pkgs.runCommand "corpus-gate-coarse" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline (no regression)" >> "$out"
+        '';
 
         # PARITY SPIKE — the coarse per-file harvest MUST be byte-identical to the per-case verdictsFileAgg for
         # the SAME file (the v-corpus-harness acceptance test, one file). Sorts both before diffing because the
@@ -6604,6 +6619,10 @@
             # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
             # aggregate; the per-file `corpus-rust-<file>` aggregates are spread in below.
             corpus-rust = corpusRustAll;
+            # corpus-gate-coarse (gateCheckNix swap): the whole-corpus coarse WASM fail-on-regression gate,
+            # the localGate replacement for the in-process `gateCheck`. Exposed as a check for the full verify;
+            # the gateCheck→corpus-gate-coarse localGate fold lands in a follow-up (coordinated w/ v-xtask delete).
+            corpus-gate-coarse = corpusGateCoarse;
             # The RUST-ASYNC target's whole-corpus aggregate (the async/gas-metered rust backend) — the last
             # corpus target to move off the native in-process `xtask gate --target rust-async` into a cached
             # nix check. Per-file `corpus-rust-async-<file>` aggregates spread in below.
