@@ -2586,13 +2586,6 @@ impl Db {
         // synthesized decl is byte-shaped like a hand-written one, so downstream sees an ordinary effect.
         // A module with no in-source world (or no mappable import) is untouched.
         crate::wit_world::inject_world_import_effects(&mut ast);
-        // PRELUDE `Eval` EFFECT (compile-time metaprogramming): inject `(effect Eval (op in-caller
-        // (-> Ast Ast)))` as a top-level member HERE, before `scan_top_level`, so `Eval`/`in-caller`
-        // resolve in every module (a macro's `{Eval}` row + `(in-caller …)` op). DECL-only — the macro
-        // expander discharges `in-caller` at expansion + erases `{Eval}` before infer, so it never reaches
-        // the unhandled-effect check. Skips a module that declares its own `Eval`. See
-        // `effects::inject_prelude_eval_effect`.
-        crate::effects::inject_prelude_eval_effect(&mut ast);
         // WORLD-EXPORT PARAM DERIVATION (no-annotation boundary): the export-side mirror — for an in-source
         // `(world …)`, DERIVE each guest-export def's boundary param types from the matching world
         // guest-export member and inject them as `(: <param> <type>)` annotations, HERE (before
@@ -2605,6 +2598,17 @@ impl Db {
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
         let user_node_count = ast.structure.len() as u32;
+        // PRELUDE `Eval` EFFECT (compile-time metaprogramming): inject `(effect Eval (op in-caller
+        // (-> Ast Ast)))` as a top-level member so `Eval`/`in-caller` resolve in every module (a macro's
+        // `{Eval}` row + `(in-caller …)` op). DECL-only — the macro expander discharges `in-caller` at
+        // expansion + erases `{Eval}` before infer, so it never reaches the unhandled-effect check. Skips a
+        // module that declares its own `Eval`. Injected AFTER `user_node_count` (so its occurrence is
+        // PAST-SOURCE, `is_user_node`=false, and the `symbols`/outline query filters it exactly like the
+        // prelude sums — NOT as an in-range member that would leak into every module's outline, #7823
+        // trunk-red) but BEFORE `scan_top_level` below (so it still registers into `effect_decls` and
+        // resolves like a hand-written decl — resolution is by `effect_decls`, not span). See
+        // `effects::inject_prelude_eval_effect`.
+        crate::effects::inject_prelude_eval_effect(&mut ast);
         // Install the prelude as ordinary AST nodes FIRST, so its records get `StructId`s (after the
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
