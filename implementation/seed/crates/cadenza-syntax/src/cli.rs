@@ -68,7 +68,10 @@ pub enum Cmd {
     Fmt(FmtArgs),
     /// Structurally search a program for a PATTERN, printing each match (with its span) or a count.
     Query(QueryArgs),
-    /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, validated.
+    /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, re-parsed to confirm
+    /// the result stays well-formed. That is a PARSE-level transaction only — a structural replace with no
+    /// α-renaming and no binding/type check (binding is the compiler's domain, not this syntax layer's), so
+    /// a rewrite CAN introduce unbound-name/type faults; run `cdz check` on the result for semantic validity.
     Rewrite(RewriteArgs),
     /// Structurally diff two programs: report which SUBTREES changed (not text lines).
     Diff(DiffArgs),
@@ -311,7 +314,8 @@ pub struct RewriteArgs {
     #[arg(long)]
     diff: bool,
 
-    /// Apply the rewrite in place, overwriting each input FILE (only when it changes and validates).
+    /// Apply the rewrite in place, overwriting each input FILE (only when it changes and re-parses cleanly
+    /// — a parse-level transaction, NOT a semantic check; run `cdz check` after to verify names/types).
     /// Requires FILE inputs (never stdin). Mutually exclusive with `--diff`/`--json`.
     #[arg(long)]
     write: bool,
@@ -1398,9 +1402,10 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
     Ok(any_error)
 }
 
-/// Rewrite the targets: apply the rule (or rule set) under the chosen strategy, validated, then
-/// project — printing the result, a unified diff (`--diff`), JSON (`--json`), or writing in place
-/// (`--write`). Runs over one-or-more files (or stdin).
+/// Rewrite the targets: apply the rule (or rule set) under the chosen strategy, re-parsing to confirm the
+/// result stays well-formed (a parse-level transaction — NOT a binding/type check), then project — printing
+/// the result, a unified diff (`--diff`), JSON (`--json`), or writing in place (`--write`). Runs over
+/// one-or-more files (or stdin).
 fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
     if args.write && (args.diff || args.json) {
         return Err("--write is mutually exclusive with --diff / --json".into());
@@ -1592,7 +1597,14 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
             } else {
                 let content = ensure_trailing_newline(&outcome.output);
                 std::fs::write(path, content).map_err(|e| format!("writing {path}: {e}"))?;
-                eprintln!("cdz: {path}: rewrote {} site(s)", outcome.count);
+                // The rewrite is a structural replace confirmed only by a RE-PARSE (parse-level); it can
+                // still introduce unbound-name/type faults (this syntax layer does not bind or typecheck).
+                // Point the user/agent at `cdz check` so a "rewrote N site(s)" success isn't mistaken for
+                // semantic validity — the over-promise the old "validated" wording implied.
+                eprintln!(
+                    "cdz: {path}: rewrote {} site(s) (structural + re-parse only — run `cdz check {path}` to verify names/types)",
+                    outcome.count
+                );
             }
             continue;
         }
