@@ -673,6 +673,29 @@
       (export main)))
   (error CDZ0201 (message "member must be a declaration")))
 
+; A NESTED module's `(export …)` clause naming a member the module does not declare is the nested-module
+; analogue of the top-level "export names no definition" (CDZ0101). The top-level export check reads the
+; PROGRAM's exports, never a nested `(module …)`'s clause, so a nested `(export b)` with no `(def b …)`
+; used to be SILENTLY accepted (the export set only FILTERS the module's record). It is now rejected
+; CDZ0101 at the offending export name, with a did-you-mean over the module's declared member names.
+(case
+  "a nested module exporting a name it does not declare is rejected"
+  (doc
+    "`(module m (def (a) 1) (export a b))` exports `b`, which the module never declares. A module's
+           exports must name its own definitions (core-semantics.md §A Module Evaluates To A Record Of Its
+           Exports), so this is ill-formed — the nested-module twin of the top-level `export names no
+           definition`. It used to compile silently (the export set is only a record filter, so an unknown
+           name filtered nothing); it now rejects CDZ0101 at `b`. The valid export `a` is unaffected; a
+           near-miss (e.g. `ax`) would carry a did-you-mean over the declared members.")
+  (input
+    (do
+      (def (main)
+        (do
+          (module m (def (a) 1) (export a b))
+          (m.a unit)))
+      (export main)))
+  (error CDZ0101 (message "names no definition in the module")))
+
 (case
   "two distinct-named modules in one scope coexist"
   (doc

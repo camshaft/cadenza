@@ -1388,6 +1388,55 @@ fn a_non_declaration_member_of_a_bare_name_module_is_rejected_at_the_member() {
 }
 
 #[test]
+fn a_nested_module_exporting_an_undeclared_name_is_rejected() {
+    // A NESTED `(module …)`'s `(export …)` clause naming a member the module does not declare is the
+    // nested-module analogue of the top-level "export names no definition" (CDZ0101). The top-level
+    // export check reads the PROGRAM's `db.exports`, NEVER a nested module's clause, so a nested
+    // `(export b)` with no `(def b …)` was silently accepted (`module_export_set` only FILTERS the
+    // record, so an unknown name filtered nothing). It now rejects CDZ0101 at the offending name, with
+    // a did-you-mean over the module's declared members.
+    let wrap = |members: &str| {
+        format!("(do (def (main) (do (module m {members}) (m.a unit))) (export main))")
+    };
+    // Undefined export `b`.
+    let d =
+        reject_full(&wrap("(def (a) 1) (export a b)")).expect("an undeclared export is rejected");
+    assert_eq!(
+        d.code.as_deref(),
+        Some("CDZ0101"),
+        "an export naming no module member is CDZ0101 (the export-position unbound analogue): {:?} / {}",
+        d.code,
+        d.message
+    );
+    assert!(
+        d.message.contains("names no definition in the module"),
+        "names the export as undeclared in the module: {}",
+        d.message
+    );
+    // A near-miss export name carries a did-you-mean over the declared members.
+    let typo = reject_full(&wrap("(def (a) 1) (export ax)")).expect("a typo'd export is rejected");
+    assert!(
+        typo.message.contains("names no definition in the module")
+            && typo.message.contains("did you mean `a`?"),
+        "a near-miss export suggests the declared member: {}",
+        typo.message
+    );
+    // CONTROL 1: valid exports (a value def + a bare value def) compile clean.
+    assert_eq!(
+        reject_code(&wrap("(def (a) 1) (def three 3) (export a three)")),
+        None,
+        "exports naming real members are not flagged"
+    );
+    // CONTROL 2: a bare parenthesized-head generic TYPE member `(type (Box a) …)` is a declared member,
+    // so `(export Box)` is NOT flagged (the type head resolves via `type_decl_head_name`).
+    assert_eq!(
+        reject_code(&wrap("(type (Box a) (Mk a)) (def (a) 1) (export a Box)")),
+        None,
+        "a parenthesized-head generic type is a declared member and exportable"
+    );
+}
+
+#[test]
 fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
     // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
     // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
