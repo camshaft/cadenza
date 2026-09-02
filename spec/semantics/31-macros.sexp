@@ -360,6 +360,45 @@
   (error CDZ0101 (message "unbound name")))
 
 (case
+  "a macro-internal helper introduced in a NESTED do is usable by an outer sibling (structural flatten, intra-expansion visibility)"
+  (doc
+    "Splice-flatten is STRUCTURAL, not registration-only (v-spec-oracle gf6b ruling): a non-final nested
+           `(do …)` inlines its bindings into the enclosing sequence, so a helper introduced ONE nesting
+           level down is a DIRECT sibling of the outer forms and usable by them — INTRA-EXPANSION mutual
+           visibility (orthogonal to CALLER visibility). `(def (mk (quote nm)) (quasiquote (do (do (def
+           (deep) 3) 0) (def ((unquote nm)) (deep)) 0)))` — `(mk outer)` splices a wrapping do whose FIRST
+           statement is a nested `(do (def (deep) 3) 0)`; structural flatten inlines it so `deep` and the
+           caller-named `outer` become siblings, and `outer`'s body `(deep)` resolves → `(outer)` = 3. Pins
+           that a nested-do helper is usable by a same-expansion sibling (matching the direct-sibling case);
+           without structural flatten `deep` was CDZ0101 from the outer sibling.")
+  (input
+    (do
+      (def (mk (quote nm)) (quasiquote (do (do (def (deep) 3) 0) (def ((unquote nm)) (deep)) 0)))
+      (mk outer)
+      (def (main) (outer))
+      (export main)))
+  (call main)
+  (output (: 3 Int64)))
+
+(case
+  "a macro-internal helper flattened from a nested do stays CALLER-hygienic-local (orthogonal to intra-expansion visibility)"
+  (doc
+    "The orthogonal CALLER-visibility half of gf6b: structural flatten makes a nested-do helper
+           intra-expansion visible (usable by the expansion's own siblings), but per-name provenance still
+           keeps a MACRO-INTERNAL name CALLER-hygienic-local — the caller cannot see `deep`. Same macro as
+           above, but `main` (the caller) references `deep` directly → CDZ0101 unbound. Pins that the two
+           levels are orthogonal: `deep` is usable WITHIN the expansion (prior case, `(outer)`=3) yet NOT
+           caller-visible (here) — structural flatten governs intra-expansion, the provenance gate governs
+           caller visibility.")
+  (input
+    (do
+      (def (mk (quote nm)) (quasiquote (do (do (def (deep) 3) 0) (def ((unquote nm)) (deep)) 0)))
+      (mk outer)
+      (def (main) (deep))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
