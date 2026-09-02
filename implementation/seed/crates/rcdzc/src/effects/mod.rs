@@ -4504,23 +4504,28 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // mutual) callee whose abort is at a TAIL position (an off-tail / accum-rewritten abort stays declined by
     // the 4511 guard below). When eligible, DON'T decline here — route to `thread_returning_tagged` at the
     // threading fork. Otherwise the safe-floor decline stands (no miscompile ever ships).
+    let calls_mutual = callee_calls_other_recursive_def(db, orig_body, callee_def);
     let tagged_abort = !ctx.abortive.is_empty()
         && ctx.slots.len() == 1
-        && !callee_calls_other_recursive_def(db, orig_body, callee_def)
         && !abortive_perform_off_tail(db, orig_body, ctx, true)
         // A CALLER-OBSERVED out-state (`force_multivalue`, the sr5 family) already folds via the MULTI-VALUE
         // path (decided at ~4650, AFTER this point). Exclude it here so tagged mode — computed earlier —
         // does NOT preempt the multi-value tuple threading that case relies on. (Same `orig_body`/`ctx.key`
         // the multivalue decision reads.)
         && !db.force_multivalue.contains(&(orig_body, ctx.key.clone()))
-        // The TRIGGER: either the callee has a NON-tail self-call (the walk `(+ 1 (walk …))` self-CC, #7613)
-        // OR it is FORCED by a pending-in-handle-body caller (`db.force_tagged_abort`, adv-52) — a TAIL-recursive
-        // abortive callee `go` whose abort must abandon a pending op at the OUTER call site. `thread_returning_tagged`
-        // handles BOTH a non-tail and a direct-tail self-call, so forcing a tail-recursive callee is sound; we
-        // gate the force to the pending-in-handle-body detector so a tail-recursive callee that ALREADY folds via
-        // the ordinary tail path (the annotated-walk-and-bail case) is NOT rerouted (no regression).
+        // The TRIGGER — one of:
+        //   * a NON-tail SELF-call — walk `(+ 1 (walk …))` (#7613);
+        //   * FORCED by a pending-in-handle-body caller (`db.force_tagged_abort`, adv-52 #7640) — a tail-recursive
+        //     abortive callee whose abort must abandon a pending op at the OUTER call site;
+        //   * a MUTUAL SCC — `ev`↔`od` where the cross-def call is non-tail (`(+ 1 (od …))`); the tagged threader
+        //     treats a call to ANY SCC member as a recursive tag-check-short-circuit, so a partner's abort
+        //     propagates its tag up the pending frames. `thread_returning_tagged` handles all three; it DECLINES
+        //     (→ safe floor) any sub-shape v1 does not model, so relaxing the gate never miscompiles.
+        // A tail-recursive callee that ALREADY folds via the ordinary tail path (annotated-walk-and-bail) is NOT
+        // rerouted: it is neither non-tail-self, forced, nor mutual, so no trigger fires.
         && (!recursive_self_calls_all_tail(db, orig_body, callee_def)
-            || db.force_tagged_abort.contains(&callee_def));
+            || db.force_tagged_abort.contains(&callee_def)
+            || calls_mutual);
     if !ctx.abortive.is_empty()
         && !recursive_self_calls_all_tail(db, orig_body, callee_def)
         && !tagged_abort
@@ -4536,7 +4541,10 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // value or a decline). Reuse the handle-body guard's non-tail-abort detector on the callee body: an
     // abortive perform the fold cannot lift to a capturable position DECLINES cleanly (CDZ0900, a safe floor)
     // — the sound lowering needs the non-local-exit calling convention (the tagged-return vertical).
-    if !ctx.abortive.is_empty() && abortive_perform_off_tail(db, orig_body, ctx, true) {
+    if !tagged_abort
+        && !ctx.abortive.is_empty()
+        && abortive_perform_off_tail(db, orig_body, ctx, true)
+    {
         return None;
     }
     // ABORTIVE + MUTUAL RECURSION: decline. `recursive_self_calls_all_tail` above checks only THIS def's
@@ -4545,8 +4553,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // miscompile (`(def (ev n) (if (= n 0) (Bail 99) (+ 1 (od …)))) (def (od n) (+ 1 (ev …)))` → 103, not
     // 99). Verifying cross-def tail-ness over the whole recursive group is the non-local-exit vertical;
     // until then, an abortive context over a MUTUALLY-recursive callee (one that calls ANOTHER recursive
-    // def) declines cleanly. (A self-recursive callee is handled by the tail check above.)
-    if !ctx.abortive.is_empty() && callee_calls_other_recursive_def(db, orig_body, callee_def) {
+    // def) declines cleanly — UNLESS `tagged_abort` fired for it (the non-local-exit tagged-return CC now
+    // threads the whole SCC: `thread_returning_tagged` treats a call to any `mutual_scc_of` member as a
+    // recursive tag-check-short-circuit, so a partner's abort propagates its tag up the pending frames). A
+    // mutual shape the tagged threader cannot model returns `None` there → this safe-floor decline still
+    // stands via the fold's overall `?`. (A self-recursive callee is handled by the tail check above.)
+    if !tagged_abort
+        && !ctx.abortive.is_empty()
+        && callee_calls_other_recursive_def(db, orig_body, callee_def)
+    {
         return None;
     }
     // STATE-THREADING + MUTUAL RECURSION with the perform SPLIT from the mutual call across branches now
@@ -4978,7 +4993,13 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
             // and each non-tail self-call short-circuits its pending frame on the abort tag. Declines (→ the
             // 4499 safe floor already bypassed above cannot re-fire; a None here propagates as the whole
             // fold's decline) for any sub-shape v1 does not model.
-            thread_returning_tagged(db, orig_body, state_refs, ctx, callee_def)?
+            {
+                // The recursive GROUP (self-recursive → `[callee_def]`; mutual SCC → all members). The tagged
+                // threader treats a call to ANY member as a recursive call (tag-check-short-circuit), so a
+                // mutual partner's abort propagates its tag up through the pending frames the same as a self-call.
+                let scc = mutual_scc_of(db, callee_def, ctx);
+                thread_returning_tagged(db, orig_body, state_refs, ctx, callee_def, &scc)?
+            }
         } else if multivalue {
             // SAVE/RESTORE the multi-value scratch (`temp_ctr` + `pending`) around threading THIS body. In the
             // GROUP fold, threading one member's body recurses (via the recursive-call arm → `specialize_recursive`)

@@ -3133,13 +3133,17 @@
   (output (: 17 Int64)))
 
 (case
-  "an abortive handler over a non-tail MUTUAL recursion declines cleanly"
+  "an abortive handler over a non-tail MUTUAL recursion folds to the abort value (99)"
   (doc
-    "GUARD (miscompile regression): an ABORTIVE handler over a MUTUALLY-recursive callee with a
-           non-tail cross-call must decline — `recursive_self_calls_all_tail` checks only one def's own
-           self-calls, so the partner's pending `+ 1` frames (which an abort must abandon) would otherwise
-           flow the abort value back through them (`(+ 1 (od …))` with `od = (+ 1 (ev …))` → 103, not 99).
-           `callee_calls_other_recursive_def` extends the abortive guard to the mutual case → clean decline.")
+    "An ABORTIVE handler over a MUTUALLY-recursive callee with a non-tail cross-call: the partner's
+           pending `+ 1` frames (which an abort must abandon) must NOT flow the abort value back through them
+           (`(+ 1 (od …))` with `od = (+ 1 (ev …))` → 103, not 99). The non-local-exit TAGGED-RETURN CC folds
+           it over the whole SCC: `ev#eff` and `od#eff` each return `#tuple(tag value)`, and the tagged
+           threader treats a call to ANY `mutual_scc_of` member as a recursive tag-check-short-circuit
+           (`(let ((r (od#eff …))) (if (= (. r 0) 1) r #tuple(0 (+ 1 (. r 1)))))`), so `ev`'s base abort
+           `#tuple(1 99)` propagates its tag up through BOTH partners' pending frames, abandoning them → 99.
+           (The gate relaxes the mutual guard for the tagged shape; a mutual case the threader cannot model —
+           e.g. a branch-perform sharing a strict expr with the mutual call, rw4 — still declines cleanly.)")
   (input
     (do
       (effect Bail (op bail (-> Int64 Int64)))

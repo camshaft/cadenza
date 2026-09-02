@@ -234,6 +234,7 @@ pub(crate) fn thread_returning_tagged(
     states: Vec<StructId>,
     ctx: &HandlerCtx,
     callee_def: usize,
+    scc: &[usize],
 ) -> Option<StructId> {
     match resolved_of(db, body) {
         // An `if`: PURE condition (no perform / no self-call in v1 — the abort and the recursion live in the
@@ -245,8 +246,8 @@ pub(crate) fn thread_returning_tagged(
             let rcond = copy_pure(db, cond);
             let then_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
             let else_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
-            let rthen = thread_returning_tagged(db, then_, then_states, ctx, callee_def)?;
-            let relse = thread_returning_tagged(db, else_, else_states, ctx, callee_def)?;
+            let rthen = thread_returning_tagged(db, then_, then_states, ctx, callee_def, scc)?;
+            let relse = thread_returning_tagged(db, else_, else_states, ctx, callee_def, scc)?;
             let if_head = db.push_name("if");
             Some(db.push_list(vec![if_head, rcond, rthen, relse]))
         }
@@ -263,7 +264,8 @@ pub(crate) fn thread_returning_tagged(
             for (pat, arm_body) in arms {
                 let rpat = copy_pure(db, pat);
                 let arm_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
-                let rbody = thread_returning_tagged(db, arm_body, arm_states, ctx, callee_def)?;
+                let rbody =
+                    thread_returning_tagged(db, arm_body, arm_states, ctx, callee_def, scc)?;
                 children.push(db.push_list(vec![rpat, rbody]));
             }
             Some(db.push_list(children))
@@ -295,9 +297,10 @@ pub(crate) fn thread_returning_tagged(
                 let abortval = copy_pure(db, abortval);
                 return Some(build_tag_tuple(db, 1, abortval));
             }
-            // A DIRECT tail self-call `(callee args)`: the spec already returns a tagged tuple — propagate it.
-            // Args must be pure in v1.
-            if callee_def_index_of(db, head) == Some(callee_def) {
+            // A DIRECT tail (self- or mutual-partner) call `((scc-member) args)`: the spec already returns a
+            // tagged tuple — propagate it. Args must be pure in v1. `scc` = the recursive group (size 1 for a
+            // self-recursive callee; >1 for a mutual SCC — a partner call is threaded identically).
+            if callee_def_index_of(db, head).is_some_and(|i| scc.contains(&i)) {
                 if args.iter().any(|&a| {
                     subtree_performs(db, a, ctx) || contains_recursive_call(db, a, callee_def)
                 }) {
@@ -315,7 +318,7 @@ pub(crate) fn thread_returning_tagged(
                 for (i, &a) in args.iter().enumerate() {
                     let is_direct_rec = matches!(
                         resolved_of(db, a),
-                        Resolved::Apply { head: ah, .. } if callee_def_index_of(db, ah) == Some(callee_def)
+                        Resolved::Apply { head: ah, .. } if callee_def_index_of(db, ah).is_some_and(|i| scc.contains(&i))
                     );
                     if is_direct_rec {
                         if rec_arg_pos.is_some() {
