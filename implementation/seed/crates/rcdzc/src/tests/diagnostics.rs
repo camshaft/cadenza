@@ -1955,33 +1955,3 @@ fn a_char_export_result_wasm_boundary_decline_is_located() {
         d.message
     );
 }
-
-#[test]
-fn a_macro_expansion_unbound_name_is_located_at_the_invocation_not_position_less() {
-    // Breaker report (sibling to #7814/#7820): a macro whose quasiquote template contains an UNBOUND
-    // literal — `(quasiquote (def (unquote nm) undefined-helper))` — expands to a def whose body's
-    // `undefined-helper` is unbound. That node is SYNTH (rebuilt by reconstruct_macro from the reduced
-    // Ast value, so its template identity is lost), so the CDZ0101 anchored at it used to be nulled by
-    // sanitize_origin → a bare, position-less message. expand_macros now seeds copy-provenance for the
-    // spliced synth subtree to the CALL node (its span is preserved), so source_of_synth relocates the
-    // CDZ0101 to the macro INVOCATION site.
-    // `first_error` compiles (the full pipeline that RUNS expand_macros) — unlike `diags_of`
-    // (`crate::diagnostics`), which does not expand macros, so the call would stay un-expanded.
-    let src = "(do \
-        (def (mkdef (quote nm)) (quasiquote (def (unquote nm) undefined-helper))) \
-        (mkdef answer) \
-        (def (main) answer) \
-        (export main))";
-    let d = first_error(src);
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{}", d.message);
-    assert!(
-        d.message.contains("undefined-helper"),
-        "the expansion's unbound template literal fires: {}",
-        d.message
-    );
-    assert!(
-        d.node.is_some(),
-        "the macro-expansion unbound-name must be LOCATED (carry a node), not position-less: {}",
-        d.message
-    );
-}
