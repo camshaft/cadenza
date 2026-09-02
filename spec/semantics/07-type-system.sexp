@@ -4,6 +4,8 @@
 ; no terminal value. For a type rule a generation does not yet cover it DECLINES rather than running the
 ; program (reject-don't-miscompile); the gate scores a decline as todo, not disagreement. Diagnostic
 ; codes are from options/diagnostics-schema/.
+(diagnostic-quality)
+
 (case
   "a type annotation consistent with the value is transparent"
   (doc
