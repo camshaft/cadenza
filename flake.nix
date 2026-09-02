@@ -1121,7 +1121,7 @@
               # xtask-save-baseline + xtask-merge-baseline dep xtask-support only (→ cdz-contract → cadenza-ast),
               # mirroring xtask-roundtrip.
               xtask-save-baseline = [ "cadenza-ast" "cdz-contract" "xtask-save-baseline" "xtask-support" ];
-              xtask-merge-baseline = [ "cadenza-ast" "cdz-contract" "xtask-merge-baseline" "xtask-support" ];
+              xtask-merge-baseline = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "cdz-contract" "corpus-case-titles" "xtask-merge-baseline" "xtask-support" ];
               # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
               # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
