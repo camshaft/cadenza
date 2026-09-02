@@ -88,6 +88,56 @@ mod reduce;
 pub use reduce::reduce_handle;
 pub(crate) use reduce::*;
 
+/// Inject the prelude `(effect Eval (op in-caller (-> Ast Ast)))` as a top-level module member BEFORE
+/// `scan_top_level`, so `Eval` / `in-caller` resolve in every module. `Eval` is the COMPILE-TIME
+/// metaprogramming effect (co-designed with v-metaprogramming, operator-confirmed): a macro carries
+/// `{Eval}` in its written effect row and `(in-caller ast)` evaluates an `Ast` in the DIRECT caller's
+/// lexical env, returning the resulting `Ast`. It is a DECL ONLY — no ambient handler — because the macro
+/// EXPANDER discharges every `in-caller` op at EXPANSION (pre-infer) against the captured call-site env and
+/// ERASES `{Eval}` from the row before infer's effect-row solve, so infer never sees an unhandled `Eval`
+/// (the decl merely makes `{Eval}` rows + `(in-caller …)` RESOLVE at parse/resolve time, pre-expansion).
+/// Mirrors `wit_world::inject_world_import_effects`'s inject-before-`scan_top_level` pattern; `Ast` is a
+/// built-in prelude sum, resolvable here. SKIPS if the module already declares its own `Eval` (a user decl,
+/// or a re-inject guard) so it never duplicates.
+pub(crate) fn inject_prelude_eval_effect(ast: &mut Arenas) {
+    let root = ast.root;
+    let items = match ast.get(root) {
+        Struct::List(items) => items.clone(),
+        Struct::Atom(_) => return,
+    };
+    // Skip if an `(effect Eval …)` is already declared at top level (user shadow / re-inject guard).
+    let already = items.iter().any(|&it| {
+        ast.as_form(it, "effect")
+            .and_then(|t| t.first().copied())
+            .and_then(|n| ast.as_name(n))
+            .is_some_and(|n| n == "Eval")
+    });
+    if already {
+        return;
+    }
+    // Build `(effect Eval (op in-caller (-> Ast Ast)))` (sequential lets — `push_*` each take `&mut ast`).
+    let arrow_head = push_atom(ast, Leaf::Name("->".into()));
+    let arrow_dom = push_atom(ast, Leaf::Name("Ast".into()));
+    let arrow_cod = push_atom(ast, Leaf::Name("Ast".into()));
+    let arrow = push_list(ast, vec![arrow_head, arrow_dom, arrow_cod]);
+    let op_head = push_atom(ast, Leaf::Name("op".into()));
+    let op_name = push_atom(ast, Leaf::Name("in-caller".into()));
+    let op = push_list(ast, vec![op_head, op_name, arrow]);
+    let effect_head = push_atom(ast, Leaf::Name("effect".into()));
+    let effect_name = push_atom(ast, Leaf::Name("Eval".into()));
+    let decl = push_list(ast, vec![effect_head, effect_name, op]);
+    // Append as a top-level member (mirror `append_module_member`: after a `(module name …)` header if
+    // present, else at the end).
+    let mut new_items = items;
+    let insert_at = if ast.as_form(root, "module").is_some() && new_items.len() >= 2 {
+        2
+    } else {
+        new_items.len()
+    };
+    new_items.insert(insert_at, decl);
+    ast.structure[root.0 as usize] = Struct::List(new_items);
+}
+
 /// Synthesize the record for every scanned `(effect …)` declaration, appending them to `ast` as
 /// ordinary nodes and RECORDING each on its `EffectDecl.synth`. Called at load AFTER the scan (which
 /// produced `decls`) and the sum synthesis, so the effect records take `StructId`s above the program's
@@ -7988,6 +8038,45 @@ fn deep_fresh_copy_keep_seed(db: &mut Db, node: StructId) -> StructId {
 mod desugar_tests {
     use super::*;
     use crate::testkit::parse;
+
+    /// The compile-time metaprogramming effect `(effect Eval (op in-caller (-> Ast Ast)))` is INJECTED
+    /// into every module before `scan_top_level`, so `Eval`/`in-caller` resolve everywhere (a macro's
+    /// `{Eval}` row + `(in-caller …)` op). Here a trivial module with NO effect decl still gets it
+    /// registered in `db.effect_decls`. DECL-only — no ambient handler — per the erasure model (the
+    /// expander discharges `in-caller` at expansion + erases `{Eval}` before infer). See
+    /// `inject_prelude_eval_effect`.
+    #[test]
+    fn prelude_eval_effect_is_injected_and_registered() {
+        let ast = parse("(do (def (main) 1) (export main))");
+        let db = crate::db::Db::load(ast);
+        let eval = db
+            .effect_decls
+            .iter()
+            .find(|e| e.name == "Eval")
+            .expect("prelude Eval effect is injected + registered in every module");
+        assert!(
+            eval.ops.iter().any(|o| o.name == "in-caller"),
+            "Eval carries the single in-caller op"
+        );
+    }
+
+    /// The injection SKIPS a module that declares its OWN `Eval` effect (no duplicate) — the user's decl
+    /// wins, so there is exactly one `Eval` in `effect_decls`.
+    #[test]
+    fn prelude_eval_injection_skips_a_user_declared_eval() {
+        let ast = parse("(do (effect Eval (op ask (-> Unit Int64))) (def (main) 1) (export main))");
+        let db = crate::db::Db::load(ast);
+        let evals: Vec<_> = db
+            .effect_decls
+            .iter()
+            .filter(|e| e.name == "Eval")
+            .collect();
+        assert_eq!(evals.len(), 1, "no duplicate Eval — the user decl wins");
+        assert!(
+            evals[0].ops.iter().any(|o| o.name == "ask"),
+            "the surviving Eval is the USER's (op ask), not the injected in-caller"
+        );
+    }
 
     /// The CANONICAL handle `(handle E seed (bare-arm…) body)` desugars to the INTERNAL
     /// `(handle-internal seed ((. E op)-arm…) body)` the resolver consumes: the head is RE-SPELLED, `E`

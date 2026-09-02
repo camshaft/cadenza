@@ -2586,6 +2586,13 @@ impl Db {
         // synthesized decl is byte-shaped like a hand-written one, so downstream sees an ordinary effect.
         // A module with no in-source world (or no mappable import) is untouched.
         crate::wit_world::inject_world_import_effects(&mut ast);
+        // PRELUDE `Eval` EFFECT (compile-time metaprogramming): inject `(effect Eval (op in-caller
+        // (-> Ast Ast)))` as a top-level member HERE, before `scan_top_level`, so `Eval`/`in-caller`
+        // resolve in every module (a macro's `{Eval}` row + `(in-caller …)` op). DECL-only — the macro
+        // expander discharges `in-caller` at expansion + erases `{Eval}` before infer, so it never reaches
+        // the unhandled-effect check. Skips a module that declares its own `Eval`. See
+        // `effects::inject_prelude_eval_effect`.
+        crate::effects::inject_prelude_eval_effect(&mut ast);
         // WORLD-EXPORT PARAM DERIVATION (no-annotation boundary): the export-side mirror — for an in-source
         // `(world …)`, DERIVE each guest-export def's boundary param types from the matching world
         // guest-export member and inject them as `(: <param> <type>)` annotations, HERE (before
