@@ -550,7 +550,7 @@
         (main (: d Int64))
         (let
           ((k 100))
-          (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Map.insert Map.empty 1 f1) (f1 d)))))
+          (let ((f1 (fn ((: v Int64)) (+ k v)))) (do #map((= 1 f1)) (f1 d)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
@@ -600,7 +600,7 @@
         (main (: d Int64))
         (let
           ((k 100))
-          (let ((f1 (fn ((: v Int64)) (+ k v)))) (+ (f1 d) (Map.len (Map.insert Map.empty 1 f1))))))
+          (let ((f1 (fn ((: v Int64)) (+ k v)))) (+ (f1 d) (Map.len #map((= 1 f1)))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 106 Int64))
@@ -638,7 +638,7 @@
     (do
       (def
         (main (: d Int64))
-        (let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do (Map.insert Map.empty 1 f1) (f1 d))))
+        (let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do #map((= 1 f1)) (f1 d))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 Int64)))
@@ -1277,7 +1277,7 @@
         (let
           ((m
               (Map.insert
-                (Map.insert Map.empty 1 (fn ((: v Int64)) (* v 10)))
+                #map((= 1 (fn ((: v Int64)) (* v 10))))
                 2
                 (fn ((: v Int64)) (+ v 100)))))
           (match (Map.lookup m k) ((Some f) (f x)) ((None u) -1))))
