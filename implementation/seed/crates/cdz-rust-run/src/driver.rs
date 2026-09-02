@@ -411,7 +411,22 @@ pub fn build_driver_source(
         t == "Any" || t == "!" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
     });
 
-    let body = if diverging {
+    // FLAG-GATED value-doc path (`CDZ_VALUE_DOC`, default-OFF): when rcdzc emitted a self-contained
+    // `pub fn __cdz_doc_<ident>() -> String` for this export (marked `// cdz-value-doc: <ident>`), the driver
+    // just prints that fn's `CDZDOC:<hex>` result — the Ty-direct render replacing the type-note-driven
+    // `cdz_render_expr`/`value_doc_render_scalar` string walk. `interpret_run_stdout` (the read side) decodes
+    // the marker. Marker absent (flag off) => the ordinary render path below (byte-identical). A factory/
+    // consumer export keeps its special render (no nullary __cdz_doc). NOTE keyed by `ident` (== rust_ident),
+    // matching the other `// cdz-*` notes.
+    let value_doc = !is_factory
+        && !is_consumer
+        && std::env::var("CDZ_VALUE_DOC").is_ok()
+        && module
+            .lines()
+            .any(|l| l.trim() == format!("// cdz-value-doc: {ident}"));
+    let body = if value_doc {
+        format!("fn main() {{ println!(\"{{}}\", prog::__cdz_doc_{ident}()); }}\n")
+    } else if diverging {
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref() {
@@ -435,19 +450,13 @@ pub fn build_driver_source(
                         &qualified_heads,
                     )
                 };
-                // FLAG-GATED value-doc path (`CDZ_VALUE_DOC`): a plain scalar result crosses as a
-                // self-describing `(: value type)` codec doc (marker `CDZDOC:<hex>`) rendered by the canonical
-                // `render_binary` (op-seq-283 convergence — the SAME printer cdz-run uses), replacing the
-                // bespoke `cdz_render_expr` string. Default OFF → the branch below runs (byte-identical).
-                // Scalar-only for now (Int64); a factory/consumer keeps its special render. The read side
-                // (`value_doc::interpret_run_stdout`) detects the marker regardless of the flag.
-                let render = if !is_factory
-                    && !is_consumer
-                    && std::env::var("CDZ_VALUE_DOC").is_ok()
-                    && cdz_rust_render::is_value_doc_scalar(ty)
-                {
-                    cdz_rust_render::value_doc_render_scalar("__r", ty)
-                } else if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
+                // NOTE: the interim scalar-only value-doc path (`value_doc_render_scalar`, built driver-side by
+                // cdz-rust-render from the type STRING) is SUPERSEDED by the marker-driven `__cdz_doc` body
+                // above — under CDZ_VALUE_DOC a covered export (a scalar IS covered) carries the
+                // `// cdz-value-doc:` marker, so `value_doc` is true and this render-select is not reached. The
+                // rcdzc-side `__cdz_doc` walk (Ty-DIRECT, no type-string re-parse) is the end-state that lets us
+                // delete cdz_render_at/parse_head_type; the driver-side scalar builder was the bootstrap.
+                let render = if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
                     // A host-closure String/Bytes RESULT crosses the wasm boundary as `list<u8>` → the corpus
                     // records the bare byte-int list `(104 105)`/`()`, NOT `"hi"`/`b"…"`. Render `__r` (a
                     // `String`/`Vec<u8>`) as the byte list (also avoids the E0277 `Vec<u8>: Display`). Mirrors xtask.
