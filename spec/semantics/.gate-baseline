@@ -5126,6 +5126,7 @@ pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-bas
 pass	a second same-signature closure export shares the one call method
 pass	a seconds quantity is rejected by a meter-typed import at the call site
 pass	a self-aliased map-merge dups the shared handle, merges idempotently, and reclaims with no leak
+pass	a value survives a self-aliased map-merge — lookup after (Map.merge m m) returns m's own value
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-call and a sibling perform as direct list-push operands thread out-state via multi-value return
 pass	a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return
