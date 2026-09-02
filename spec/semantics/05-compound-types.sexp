@@ -4827,7 +4827,7 @@
       (def
         (main (: mode Int64))
         (do
-          (def m1 (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30))
+          (def m1 #map((= 1 10) (= 2 20) (= 3 30)))
           (def m2 (Map.insert m1 4 400))
           (def m3 (if (= mode 1) (Map.insert m2 5 500) (Map.insert m2 2 999)))
           (+ (get m1 2) (+ (* (get m3 2) 100) (* (Map.len m3) 10000)))))
@@ -23677,7 +23677,7 @@
       (def
         (main (: n Int64))
         (do
-          (def fwd (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 n) 3 30))
+          (def fwd #map((= 1 10) (= 2 n) (= 3 30)))
           (def inv (invert (Map.to-list fwd) Map.empty))
           (+ (* (Map.len inv) 1000) (+ (* (get inv 10) 100) (+ (* (get inv n) 10) (get inv 30))))))
       (export main)))
