@@ -587,7 +587,7 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(5) {
+    match c.variant(6) {
         // A LET-POLYMORPHIC identity used at BOTH Int64 and Bool → tuple[Int64,Bool] (HM let-
         // generalization, T1.18): the let-bound `id` is GENERALIZED, so its two uses instantiate at
         // different types. Both rcdzc and the oracle generalize a let-bound fn → WellTyped agreement.
@@ -618,6 +618,21 @@ fn gen_typefuzz_value<C: Choice>(
         2 => {
             let a = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
             format!("(Some {a})")
+        }
+        // An ANNOTATED sum value (T1.19 — parseTy? now reads Option/Result/Ordering annotations). The
+        // ascription DETERMINES an otherwise-ambiguous payload: `(: None (Option Int64))` and Result
+        // construction `(: (Ok <int>)|(Err <bool>) (Result Int64 Bool))` are WellTyped only WITH the
+        // annotation (bare `(None)`/`(Ok x)` decline as undetermined). Both rcdzc + oracle type the
+        // ascription → agree. This is the Result-construction coverage the plain sum arm couldn't reach.
+        3 => {
+            let i = gen_typefuzz_int(c, 1, iscope, bscope, fresh);
+            let b = gen_typefuzz_bool(c, 1, iscope, bscope, fresh);
+            match c.variant(4) {
+                0 => format!("(: (Some {i}) (Option Int64))"),
+                1 => "(: None (Option Int64))".to_string(),
+                2 => format!("(: (Ok {i}) (Result Int64 Bool))"),
+                _ => format!("(: (Err {b}) (Result Int64 Bool))"),
+            }
         }
         // An Ordering nullary variant.
         _ => ["Less", "Equal", "Greater"][c.variant(3)].to_string(),
