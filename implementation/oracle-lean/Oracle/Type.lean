@@ -263,42 +263,58 @@ def programModeled? (m : Ast.Module) : Bool :=
         | none => false)
   | _ => false
 
-/-- Parse a TYPE-annotation node to a `Ty` over the modeled scalar subset: `Int64`/`(Int N)`/`UInt8`/… →
-`.int N signed` (a `.bits` width; `BigInt`/`(Int W)` unknown-width → `none`, not modeled), `Bool`/`Unit`/
-`String`/`Char` → their scalar `Ty`. `none` for any un-modeled annotation (records/sums/fn/generics) — the
-ascription rule declines (`Unsupported`) on `none`, never guesses. Reused by Fn param annotations later. -/
-def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
-  -- reject a MALFORMED width-indexed constructor `(Int w1 w2)` / `(UInt)` — `Int`/`UInt` take exactly ONE
-  -- width arg (the list must be `(Int <w>)`, size 2). `Eval.parseIntTy?` is lenient (ignores extras), so
-  -- guard the arity here → `none` (Unsupported) rather than silently taking the first width (rcdzc rejects
-  -- a wrong-arity width constructor CDZ0203; declining is the sound response).
-  match m.nodes[nodeId]? with
-  | some (.list cs) =>
-    (match m.headName? (.list cs) with
-     | some h => if (h == "Int".toUTF8 || h == "UInt".toUTF8) && cs.size != 2 then none else parseTyCore m nodeId
-     | none => parseTyCore m nodeId)
-  | _ => parseTyCore m nodeId
-where parseTyCore (m : Ast.Module) (nodeId : Nat) : Option Ty :=
-  match Eval.parseIntTy? m nodeId with
-  | some it => (match it.width with | .bits n => some (.int n it.signed) | _ => none)
-  | none =>
-    match m.nodes[nodeId]? with
-    | some (.atom lid) =>
-      match m.leaves[lid]? with
-      | some (.name b) =>
-        (match String.fromUTF8? b with
-         | some "Bool" => some .bool
-         | some "Unit" => some .unit
-         | some "String" => some .string
-         | some "Char" => some .char
-         | _ => none)
-      | _ => none
-    | _ => none
-
 /-- The built-in sum types (variants sorted by name, per the `.sum` canonical form). -/
 def optionTy (τ : Ty) : Ty := .sum [("None".toUTF8, none), ("Some".toUTF8, some τ)]
 def resultTy (ok err : Ty) : Ty := .sum [("Err".toUTF8, some err), ("Ok".toUTF8, some ok)]
 def orderingTy : Ty := .sum [("Equal".toUTF8, none), ("Greater".toUTF8, none), ("Less".toUTF8, none)]
+
+/-- Parse a TYPE-annotation node to a `Ty` over the modeled subset: `Int64`/`(Int N)`/`UInt8`/… → `.int N
+signed` (a `.bits` width; `BigInt`/`(Int W)` unknown-width → `none`), `Bool`/`Unit`/`String`/`Char` → their
+scalar `Ty`, `Ordering` → the Ordering sum, and the built-in sum CONSTRUCTORS `(Option T)` / `(Result T E)`
+→ their `.sum` (payloads parsed recursively). `none` for any un-modeled annotation (records / user sums /
+fn / generics, or a sum with an unmodeled payload) — the ascription/param rule declines (`Unsupported`) on
+`none`, never guesses. -/
+partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
+  match m.nodes[nodeId]? with
+  | some (.list cs) =>
+    (match m.headName? (.list cs) with
+     | some h =>
+       -- reject a MALFORMED width-indexed constructor `(Int w1 w2)` — `Int`/`UInt` take exactly ONE width
+       -- arg (`Eval.parseIntTy?` is lenient, so guard arity here → `none`, the sound decline).
+       if h == "Int".toUTF8 || h == "UInt".toUTF8 then
+         (if cs.size != 2 then none
+          else match Eval.parseIntTy? m nodeId with
+               | some it => (match it.width with | .bits n => some (.int n it.signed) | _ => none)
+               | none => none)
+       else if h == "Option".toUTF8 && cs.size == 2 then
+         (match cs[1]? with | some p => (parseTy? m p).map optionTy | none => none)
+       else if h == "Result".toUTF8 && cs.size == 3 then
+         (match cs[1]?, cs[2]? with
+          | some okId, some errId =>
+            (match parseTy? m okId, parseTy? m errId with
+             | some okT, some errT => some (resultTy okT errT)
+             | _, _ => none)
+          | _, _ => none)
+       else none
+     | none => none)
+  | some (.atom _) =>
+    (match Eval.parseIntTy? m nodeId with
+     | some it => (match it.width with | .bits n => some (.int n it.signed) | _ => none)
+     | none =>
+       (match m.nodes[nodeId]? with
+        | some (.atom lid) =>
+          (match m.leaves[lid]? with
+           | some (.name b) =>
+             (match String.fromUTF8? b with
+              | some "Bool" => some .bool
+              | some "Unit" => some .unit
+              | some "String" => some .string
+              | some "Char" => some .char
+              | some "Ordering" => some orderingTy
+              | _ => none)
+           | _ => none)
+        | _ => none))
+  | _ => none
 
 /-- A nullary `Ordering` constructor (`Less`/`Equal`/`Greater`) → the Ordering sum (var-free, so no fresh
 var needed). `None` is handled inline (its Option payload needs a FRESH var). -/
@@ -1364,6 +1380,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 8, .atom 2,
                            .list #[17, 18], .atom 0, .list #[20, 16, 19]],
                 root := 21 } == .wellTyped (.int 64 true))
+-- T1.19 (sum-type annotation): `(: (Some 5) (Option Int64))` → WellTyped (Option Int64). parseTy? now
+-- parses `(Option T)`; the ascription unifies the Some-payload numVar with Int64 → a determined Option.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .name "Some".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "Option".toUTF8,
+                            .name "Int64".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .list #[0, 1], .atom 6, .atom 7, .list #[3, 4], .atom 3,
+                           .list #[6, 2, 5], .atom 2, .list #[8], .atom 1, .list #[10, 9, 7], .atom 8,
+                           .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
+                root := 16 } == .wellTyped (optionTy (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
