@@ -27,6 +27,7 @@ inductive Ty where
   | sum (variants : List (ByteArray × Option Ty))  -- CLOSED sum, variants sorted by name; `none` payload =
                                         -- nullary variant (ts:192-204). Option/Result/Ordering + user sums.
   | listTy (elem : Ty)                  -- a homogeneous `List` of `elem` (T1.29 — collection type modeling)
+  | setTy (elem : Ty)                   -- a homogeneous `Set` of `elem` (T1.32 — set collection type, mirrors listTy)
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
@@ -67,6 +68,8 @@ partial def occurs (i : Nat) : Ty → Bool
   | .numVar j => i == j
   | .fn d c => occurs i d || occurs i c
   | .tuple es => es.any (occurs i)
+  | .listTy e => occurs i e
+  | .setTy e => occurs i e
   | .record fs => fs.any (fun f => occurs i f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => occurs i t | none => false)
   | _ => false
@@ -80,6 +83,7 @@ partial def hasVar : Ty → Bool
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
   | .listTy e => hasVar e
+  | .setTy e => hasVar e
   | .record fs => fs.any (fun f => hasVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
   | _ => false
@@ -93,6 +97,7 @@ partial def hasGenVar : Ty → Bool
   | .fn d c => hasGenVar d || hasGenVar c
   | .tuple es => es.any hasGenVar
   | .listTy e => hasGenVar e
+  | .setTy e => hasGenVar e
   | .record fs => fs.any (fun f => hasGenVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasGenVar t | none => false)
   | _ => false
@@ -112,6 +117,7 @@ partial def applySubst (s : Subst) : Ty → Ty
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
   | .listTy e => .listTy (applySubst s e)
+  | .setTy e => .setTy (applySubst s e)
   | .record fs => .record (fs.map (fun f => (f.1, applySubst s f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map (applySubst s))))
   | t => t
@@ -143,6 +149,7 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
         (e1.zip e2).foldlM (fun s (p : Ty × Ty) => unify p.1 p.2 s) s
       else .error "CDZ0203"
   | .listTy e1, .listTy e2 => unify e1 e2 s        -- Lists unify iff their element types unify
+  | .setTy e1, .setTy e2 => unify e1 e2 s          -- Sets unify iff their element types unify
   | .record f1, .record f2 =>
       -- CLOSED records unify iff same field-name SET (stored sorted+unique, so zip-compare keys) and each
       -- field's type unifies (ts:70-74, ts:184-190). A field-set or field-type mismatch is CDZ0203.
@@ -303,6 +310,10 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
              | some okT, some errT => some (resultTy okT errT)
              | _, _ => none)
           | _, _ => none)
+       else if h == "List".toUTF8 && cs.size == 2 then
+         (match cs[1]? with | some p => (parseTy? m p).map Ty.listTy | none => none)
+       else if h == "Set".toUTF8 && cs.size == 2 then
+         (match cs[1]? with | some p => (parseTy? m p).map Ty.setTy | none => none)
        else if h == "->".toUTF8 && cs.size >= 3 then
          -- function type `(-> t1 t2 … tn)` = `t1 → t2 → … → tn` (curried; last element = result). Each
          -- element parsed recursively; an unmodeled element → `none` (decline).
@@ -532,6 +543,7 @@ partial def freeGenVars : Ty → List Nat
   | .fn d c => freeGenVars d ++ freeGenVars c
   | .tuple es => es.flatMap freeGenVars
   | .listTy e => freeGenVars e
+  | .setTy e => freeGenVars e
   | .record fs => fs.flatMap (fun f => freeGenVars f.2)
   | .sum vs => vs.flatMap (fun v => match v.2 with | some t => freeGenVars t | none => [])
   | _ => []
@@ -741,6 +753,22 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                   | .error e => .error e)
                 (.var st.next, { st with next := st.next + 1 }) with
              | .ok (τelem, st') => .ok (.listTy (applySubst st'.subst τelem), st')
+             | .error e => .error e)
+          else if h == "set".toUTF8 then
+            -- T1.32 — SET construction `(set e…)`: like `(list e…)` — infer each element and UNIFY them to
+            -- one element type (a `Set` is homogeneous) → `.setTy τ`. A clash is `IllTyped CDZ0203`; an
+            -- EMPTY `(set)` has an unconstrained element type → declined (sound, like empty list).
+            let elemIds := children.extract 1 children.size
+            if elemIds.isEmpty then .error (.unsupported "type oracle: empty (set) — element type unconstrained, declined")
+            else (match elemIds.foldlM (m := Except InferFail)
+                (fun (acc : Ty × InferState) eid =>
+                  match inferE m env acc.2 eid with
+                  | .ok (τ, st') => (match unifyInfer acc.1 τ st' with
+                                     | .ok st'' => .ok (acc.1, st'')
+                                     | .error e => .error e)
+                  | .error e => .error e)
+                (.var st.next, { st with next := st.next + 1 }) with
+             | .ok (τelem, st') => .ok (.setTy (applySubst st'.subst τelem), st')
              | .error e => .error e)
           else if h == "record".toUTF8 then
             -- T1.13 — CLOSED RECORD construction (`ts:70-74`): `(record (= k v)…)` infers each field value,
@@ -1214,6 +1242,78 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         else .error (.unsupported "type oracle: unmodeled List op"))
                    | .error e => .error e)
                 | none => .error (.unsupported "type oracle: malformed List op (no list arg)"))
+             else if q == "Set".toUTF8 then
+               -- T1.32 — Set OPS `(Set.<op> …)`: `of (xs:List α) → Set α`; `to-list (s:Set α) → List α`;
+               -- `contains (s:Set α)(x:α) → Bool`; `len (s:Set α) → Int64`; `insert`/`remove (s:Set α)(x:α)
+               -- → Set α`; `union`/`intersection`/`difference (s:Set α)(t:Set α) → Set α`. Fresh β per call;
+               -- a non-set/list arg or an element clash is `IllTyped CDZ0203`. Any other Set op → declined.
+               let β : Ty := .var st.next
+               let st0 := { st with next := st.next + 1 }
+               if op == "of".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some xsId => (match inferE m env st0 xsId with
+                                  | .ok (τxs, st1) => (match unifyInfer τxs (.listTy β) st1 with
+                                                       | .ok st2 => .ok (.setTy (applySubst st2.subst β), st2)
+                                                       | .error e => .error e)
+                                  | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Set.of"))
+               else if op == "to-list".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some sId => (match inferE m env st0 sId with
+                                 | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
+                                                     | .ok st2 => .ok (.listTy (applySubst st2.subst β), st2)
+                                                     | .error e => .error e)
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Set.to-list"))
+               else if op == "len".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some sId => (match inferE m env st0 sId with
+                                 | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
+                                                     | .ok st2 => .ok (.int 64 true, st2)
+                                                     | .error e => .error e)
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Set.len"))
+               else if op == "contains".toUTF8 && children.size == 3 then
+                 (match children[1]?, children[2]? with
+                  | some sId, some xId =>
+                    (match inferE m env st0 sId with
+                     | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
+                                         | .ok st2 => (match inferE m env st2 xId with
+                                                       | .ok (τx, st3) => (match unifyInfer τx β st3 with
+                                                                           | .ok st4 => .ok (.bool, st4)
+                                                                           | .error e => .error e)
+                                                       | .error e => .error e)
+                                         | .error e => .error e)
+                     | .error e => .error e)
+                  | _, _ => .error (.unsupported "type oracle: malformed Set.contains"))
+               else if (op == "insert".toUTF8 || op == "remove".toUTF8) && children.size == 3 then
+                 (match children[1]?, children[2]? with
+                  | some sId, some xId =>
+                    (match inferE m env st0 sId with
+                     | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
+                                         | .ok st2 => (match inferE m env st2 xId with
+                                                       | .ok (τx, st3) => (match unifyInfer τx β st3 with
+                                                                           | .ok st4 => .ok (.setTy (applySubst st4.subst β), st4)
+                                                                           | .error e => .error e)
+                                                       | .error e => .error e)
+                                         | .error e => .error e)
+                     | .error e => .error e)
+                  | _, _ => .error (.unsupported "type oracle: malformed Set.insert/remove"))
+               else if (op == "union".toUTF8 || op == "intersection".toUTF8 || op == "difference".toUTF8)
+                       && children.size == 3 then
+                 (match children[1]?, children[2]? with
+                  | some sId, some tId =>
+                    (match inferE m env st0 sId with
+                     | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
+                                         | .ok st2 => (match inferE m env st2 tId with
+                                                       | .ok (τt, st3) => (match unifyInfer τt (.setTy β) st3 with
+                                                                           | .ok st4 => .ok (.setTy (applySubst st4.subst β), st4)
+                                                                           | .error e => .error e)
+                                                       | .error e => .error e)
+                                         | .error e => .error e)
+                     | .error e => .error e)
+                  | _, _ => .error (.unsupported "type oracle: malformed Set binary op"))
+               else .error (.unsupported "type oracle: unmodeled Set op")
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -1242,6 +1342,7 @@ partial def defaultNumVars : Ty → Ty
   | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
   | .tuple es => .tuple (es.map defaultNumVars)
   | .listTy e => .listTy (defaultNumVars e)
+  | .setTy e => .setTy (defaultNumVars e)
   | .record fs => .record (fs.map (fun f => (f.1, defaultNumVars f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map defaultNumVars)))
   | t => t
@@ -1256,6 +1357,7 @@ partial def hasUndeterminedSum : Ty → Bool
   | .fn d c => hasUndeterminedSum d || hasUndeterminedSum c
   | .tuple es => es.any hasUndeterminedSum
   | .listTy e => hasUndeterminedSum e
+  | .setTy e => hasUndeterminedSum e
   | .record fs => fs.any (fun f => hasUndeterminedSum f.2)
   | _ => false
 
@@ -1936,6 +2038,26 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.listTy (.int 64 true)))
+-- T1.32 (Set construction): `(do (def (main) (set 1 2 3)) (export main))` → WellTyped (Set Int64). Like a
+-- list — the three int elements unify to one element type, defaulting to Int64 → `.setTy Int64`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "set".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .list #[0, 1, 2, 3], .atom 2, .list #[5],
+                           .atom 1, .list #[7, 6, 4], .atom 7, .atom 2, .list #[9, 10], .atom 0,
+                           .list #[12, 8, 11]],
+                root := 13 } == .wellTyped (.setTy (.int 64 true)))
+-- T1.32 (Set op): `(do (def (main) (Set.len (set 1 2 3))) (export main))` → WellTyped Int64. `Set.len` =
+-- `((. Set len) …)`; the arg unifies with `Set β` → the op yields Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Set".toUTF8, .name "len".toUTF8, .name "set".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .atom 8, .atom 9,
+                           .list #[4, 5, 6, 7], .list #[3, 8], .atom 2, .list #[10], .atom 1,
+                           .list #[12, 11, 9], .atom 10, .atom 2, .list #[14, 15], .atom 0,
+                           .list #[17, 13, 16]],
+                root := 18 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
