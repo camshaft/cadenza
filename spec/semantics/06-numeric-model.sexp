@@ -14903,7 +14903,7 @@
         `nan`/`Infinity` boundary crossings above. This pins the #7479 value-codec semantic that a
         non-finite float in a compound crosses via its dedicated non-finite leaf, never collapsing the
         compound. The `(drop)` releases the borrowed result handle so it reclaims to 0.")
-  (input (do (def (main) #tuple((Some Float64.nan) (list Float64.nan Float64.Infinity))) (export main)))
+  (input (do (def (main) #tuple((Some Float64.nan) #list(Float64.nan Float64.Infinity))) (export main)))
   (call main)
   (drop)
   (output (: #tuple((Some nan) #list(nan inf)) (Tuple (Option Float64) (List Float64))))
@@ -14921,7 +14921,7 @@
     (do
       (def
         (main (: x Float64))
-        #tuple((Some Float64.nan) (list Float64.Infinity (/ (: -1.0 Float64) x)) x))
+        #tuple((Some Float64.nan) #list(Float64.Infinity (/ (: -1.0 Float64) x)) x))
       (export main)))
   (call main (: 0.0 Float64))
   (drop)
