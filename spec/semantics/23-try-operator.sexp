@@ -24,6 +24,8 @@
 ; CDZ0230 there); the ML postfix `?` surface; the `try { }` block boundary (v2); and the T3
 ; conversion-idiom prelude ops.
 ; ── T0a: rejections (these PASS today) ──────────────────────────────────────────────────────────────
+(diagnostic-quality)
+
 (case
   "a `?` on a non-fallible operand is a type error"
   (doc

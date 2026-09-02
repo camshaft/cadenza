@@ -3,6 +3,8 @@
 ; realizes closed records and closed sums (05-compound-types) but not row polymorphism or open sums.
 ; The primary clause is the recorded oracle: a well-typed program's value, or — for an ill-typed one —
 ; its (error <CODE>) rejection (a rule a generation does not yet cover is declined, not run).
+(diagnostic-quality)
+
 (case
   "a function open over a record's extra fields accepts any record with the used field"
   (doc

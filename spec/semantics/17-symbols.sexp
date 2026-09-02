@@ -42,6 +42,8 @@
 ; ============================================================================================
 ; Construction and identity — Symbol.of interns a String; equality is by content
 ; ============================================================================================
+(diagnostic-quality)
+
 (case
   "a symbol is constructed from a string"
   (doc

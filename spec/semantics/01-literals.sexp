@@ -3,6 +3,8 @@
 ;
 ; Cases are s-expressions in the canonical homoiconic representation. A result is
 ; written as (: <value> <Type>). See README.md for the case vocabulary.
+(diagnostic-quality)
+
 (case "a decimal integer literal" (input 42) (output (: 42 Int64)))
 
 (case "an integer literal with digit separators" (input 1000000) (output (: 1000000 Int64)))
