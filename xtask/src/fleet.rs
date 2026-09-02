@@ -2338,6 +2338,26 @@ if [ "${{FLEET_SKIP_EMOJI_WARN:-}}" != "1" ]; then
     printf '%s\n' "$_emoji" | sed 's/^/    /' >&2
   fi
 fi
+
+# (8) cdz-corpus-grade (SHARED grader) → downstream grade_run consumers WARN (fail-open; v-corpus-harness
+# ask 2026-09-02). cdz-corpus-grade's `grade_run` is called by cdz-run, cdz, AND cdz-rust-run — but
+# cdz-rust-run is a NIX-GATE-ONLY consumer NOT in the per-PR build closure, so `cargo xtask dev-gate`
+# (auto-scopes to the CHANGED crate) and a per-PR `cargo build -p cdz` both MISS it: a grade_run SIGNATURE
+# change compiles clean per-PR yet breaks cdz-rust-run with E0061, surfacing only on a COLD corpus-rust nix
+# rebuild (#7666 → fix-forward #7670). Same class as guard (4) (a shared crate whose change breaks a
+# consumer dev-gate does not rebuild). When a cdz-corpus-grade src .rs is staged, WARN to build ALL its
+# consumers with real cargo. Warn-only + narrow (only the grader's src). Silence: FLEET_SKIP_GRADER_CONSUMERS_WARN=1.
+if [ "${{FLEET_SKIP_GRADER_CONSUMERS_WARN:-}}" != "1" ]; then
+  if git diff --cached --name-only --diff-filter=ACM -- implementation/seed/crates/cdz-corpus-grade/src 2>/dev/null | grep -q .; then
+    echo "⚠ fleet pre-commit: cdz-corpus-grade (the SHARED grader) src is staged. Its \`grade_run\` is called by" >&2
+    echo "  cdz-run, cdz, AND cdz-rust-run — but cdz-rust-run is a NIX-GATE-ONLY consumer that dev-gate + a per-PR" >&2
+    echo "  \`cargo build -p cdz\` do NOT rebuild, so a signature change compiles clean per-PR yet breaks cdz-rust-run" >&2
+    echo "  (E0061) only on a COLD corpus-rust nix rebuild (slipped #7666 → fix-forward #7670). Before you land," >&2
+    echo "  build ALL its consumers (the -p form runs real cargo, not the nix shim; --all-targets catches test literals):" >&2
+    echo "    cargo build -p cdz-rust-run -p cdz-run -p cdz --all-targets" >&2
+    echo "  (Silence: FLEET_SKIP_GRADER_CONSUMERS_WARN=1.)" >&2
+  fi
+fi
 exit 0
 "##
     )
@@ -20626,6 +20646,11 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("FLEET_SKIP_EMOJI_WARN"));
         assert!(b.contains("cargo xtask lint-emoji")); // authoritative-check pointer
         assert!(b.contains(r"1F000")); // matches the emoji/pictograph unicode range on +lines
+        // Section (8): WARN (fail-open) when the SHARED grader (cdz-corpus-grade) src is staged, nudging to
+        // build ALL grade_run consumers incl. the nix-gate-only cdz-rust-run that dev-gate misses (#7666→#7670).
+        assert!(b.contains("FLEET_SKIP_GRADER_CONSUMERS_WARN"));
+        assert!(b.contains("implementation/seed/crates/cdz-corpus-grade/src"));
+        assert!(b.contains("cargo build -p cdz-rust-run -p cdz-run -p cdz --all-targets"));
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
