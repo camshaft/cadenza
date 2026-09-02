@@ -448,7 +448,7 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(6) {
+    match c.variant(10) {
         // Arithmetic with a Bool operand.
         0 => {
             let a = int(c, iscope, bscope, fresh);
@@ -478,6 +478,31 @@ fn gen_typefuzz_illtyped<C: Choice>(
             let a = int(c, iscope, bscope, fresh);
             let b = boolean(c, iscope, bscope, fresh);
             format!("(< {a} {b})")
+        }
+        // Fn ARGUMENT-type mismatch (concrete-head App): a named Int64→Int64 fn applied to a Bool.
+        5 => {
+            let f = format!("f{}", *fresh);
+            *fresh += 1;
+            let arg = boolean(c, iscope, bscope, fresh);
+            format!("(let (({f} (fn ((: x Int64)) x))) ({f} {arg}))")
+        }
+        // An Option in an arithmetic position (Int64 vs (Option Int64)).
+        6 => {
+            let a = int(c, iscope, bscope, fresh);
+            let b = int(c, iscope, bscope, fresh);
+            format!("(+ (Some {a}) {b})")
+        }
+        // An Option as an `if` condition (must be Bool).
+        7 => {
+            let a = int(c, iscope, bscope, fresh);
+            let t = int(c, iscope, bscope, fresh);
+            let e = int(c, iscope, bscope, fresh);
+            format!("(if (Some {a}) {t} {e})")
+        }
+        // Record field access of a NON-EXISTENT field (row mismatch).
+        8 => {
+            let a = int(c, iscope, bscope, fresh);
+            format!("(. (record (= a {a})) b)")
         }
         // An unbound name (resolution error).
         _ => "zz".to_string(),
