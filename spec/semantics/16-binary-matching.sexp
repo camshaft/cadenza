@@ -3659,3 +3659,26 @@
       (def (main) (match (Bytes.of #list(3 102 111 111)) ((bin (u8 n) (utf8 name n)) name)))
       (export main)))
   (error CDZ0210))
+
+; bpx1: a runtime bin-match over a locally-BUILT Bytes (arg-dependent first byte) — three fixed-width
+; u8 segments destructured and recombined positionally. Round-trips on the cadenza hop since #7934
+; (bin-match sub-slice 1); previously hop-1 declined the whole match. (breaker bp1 probe, promoted
+; at v-cadenza-backend's ask.)
+(case
+  "a runtime bin match over a built Bytes destructures three fixed-width segments"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((b (Bytes.of #list((UInt8.of n) 20 30))))
+          (match
+            b
+            ((bin (u8 x) (u8 y) (u8 z))
+              (+ (* 10000 (Int64.of x)) (+ (* 100 (Int64.of y)) (Int64.of z))))
+            (_ -1))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 72030 Int64))
+  (call main (: 9 Int64))
+  (output (: 92030 Int64)))
