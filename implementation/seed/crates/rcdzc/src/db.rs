@@ -3741,6 +3741,34 @@ impl Db {
         }
     }
 
+    /// Anchor a macro-spliced SYNTH subtree's diagnostics at the macro-invocation site. `reconstruct_macro`
+    /// builds FRESH synth nodes from the reduced `Ast` VALUE with NO source provenance (template node
+    /// identity is lost through reify→reduce→reconstruct), so a macro TEMPLATE-LITERAL unbound name — a
+    /// `(quasiquote (def (unquote nm) undefined-helper))` whose `undefined-helper` does not resolve —
+    /// produced a POSITION-LESS `CDZ0101`: `sanitize_origin` (compile.rs) found no `source_of_synth` for the
+    /// spliced synth node and NULLED the anchor (a bare "unbound name" pointing nowhere). Recording each
+    /// non-user (synth) node reachable from `root` → `origin` (the CALL node, whose `StructId`/span is
+    /// preserved by the in-place splice overwrite = a located user anchor at the `(f …)` invocation site)
+    /// lets `source_of_synth` RELOCATE the diagnostic there instead of leaving it unanchored. Dedup-SAFE: it
+    /// feeds `source_of_synth` — the SAME mechanism `dedup_faults` already respects — unlike a nearest-user-
+    /// ancestor hack at the emit site (which regressed the two-path unbound-name dedup). `or_insert` preserves
+    /// any existing chain (a caller-arg copy that already traces to real source keeps its own origin); a user
+    /// node is skipped (it has its own span; `sanitize_origin` never relocates a user node). Mirrors
+    /// `extend_scope_skip_into_subtree`'s spliced-subtree DFS at the same call site.
+    pub(crate) fn record_synth_origin_into_subtree(&mut self, root: StructId, origin: StructId) {
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if !self.is_user_node(node) {
+                self.synth_name_origin.entry(node).or_insert(origin);
+            }
+            if let Struct::List(children) = self.ast.get(node) {
+                for &c in children.clone().iter() {
+                    stack.push(c);
+                }
+            }
+        }
+    }
+
     /// The source NAME of a `let` binding whose value is the occurrence `init`. A `let` binding is a
     /// two-element pair `(name init)` in the bindings list, and a kept `Core::Let` binding is keyed by
     /// its `init` occurrence (see `lower_let`) — so the name is `init`'s FIRST sibling. Reached in O(1)
