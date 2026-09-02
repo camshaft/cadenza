@@ -1189,8 +1189,10 @@ pub fn grade_diag_quality(
 /// (matched case-insensitively at a WORD BOUNDARY — see [`contains_word_ci`]) fails the C1 lint. The set is
 /// grounded false-positive-free on the current corpus (the doc's Grounding section): the deferral phrases
 /// live only in Rust source comments, and `unsupported`/`not supported`/`trap` are DELIBERATELY carved out
-/// (honest CDZ0900 / CDZ0309 semantics). `None`/`Some` are the calibration pair — word-boundaried here
-/// (`\bNone\b` does not match the test id `Nonesuch`); v-diagnostics validates them against the full corpus.
+/// (honest CDZ0900 / CDZ0309 semantics). `None`/`Some` were the calibration pair and are now CARVED OUT too
+/// (v-diagnostics full-corpus validation, #7852): they are Cadenza's OWN `Option` constructors, named in
+/// golden messages ("wrap the value in `Some`", did-you-mean candidates), not Rust leaks — a genuine leak
+/// would be `Option::None` syntax, not the bare words, so they are not linted at all.
 const C1_FORBIDDEN_PHRASES: &[&str] = &[
     // §1a future-promise / deferral (a decline states a PERMANENT fact, never promises a future version)
     "not yet",
@@ -1210,9 +1212,6 @@ const C1_FORBIDDEN_PHRASES: &[&str] = &[
     "unwrap",
     "compiler bug",
     "unreachable!",
-    // §1b calibration pair (bare Rust `Option` leaks) — v-diagnostics validates against the full corpus
-    "None",
-    "Some",
 ];
 
 /// Case-insensitive, WORD-BOUNDARIED substring test — the `\b…\b` match §1 requires so a forbidden phrase
@@ -2326,6 +2325,19 @@ mod tests {
             grade_diagnostic_quality(&[coded_fault(
                 "CDZ0900",
                 "the cadenza backend does not support this construct"
+            )])
+            .is_none()
+        );
+        // The None/Some carve-out (#7852): they are Cadenza's OWN Option constructors, named in golden
+        // messages — must NOT be flagged (a real Rust leak would be `Option::None` syntax, not the bare word).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0201", "wrap the value in `Some`")])
+                .is_none()
+        );
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0101",
+                "unbound name `x`; closest matches: None, Some"
             )])
             .is_none()
         );
