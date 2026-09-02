@@ -2211,6 +2211,19 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         if mtail.first().and_then(|&n| db.ast.as_name(n)).is_none() {
             continue;
         }
+        // The ARENA-ROOT module is the whole program: its members ARE the program's TOP-LEVEL
+        // declarations, so a bad member (a mistyped keyword, an `(import …)`, an in-source `(world …)`)
+        // is handled by the EXISTING top-level machinery (`unknown_top_forms`'s keyword-suggestion +
+        // replace-fix; `world` recognized-and-excluded into `db.wit_world`) and its exports populate
+        // `db.exports` (validated by the top-level export check). This pass targets ONLY a NESTED module
+        // (declared inside a `(do …)`) — the gap the top-level machinery does not reach — so skip the root
+        // to avoid INTERCEPTING it: intercepting a root module's `(world …)` member broke the in-source-
+        // world emit feature, and intercepting a mistyped root-member keyword shadowed the top-level
+        // replace-fix. (The breaker's original `(do …)` bug + the export/non-declaration gaps are all in
+        // NESTED modules, which still flow through the checks below.)
+        if form == db.ast.root {
+            continue;
+        }
         for &member in mtail.get(1..).unwrap_or(&[]) {
             // The `(do …)` wrapper — the common cross-form footgun (a body copied from the string-name
             // file form onto the bare-name declaration form) — gets a tailored message + `continue`.
@@ -2243,26 +2256,22 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             // NOT caught here — its head IS a declaration keyword, so it registers and its own pass
             // diagnoses the shape; this fires ONLY for a head that is not a declaration keyword at all.
             let head = db.ast.head_name(member);
-            // `import` is a KNOWN module form (a library module imports a sibling), NOT a "not a
-            // declaration" category error — the single-module path names it a linker-boundary form with
-            // its OWN diagnostic (the `unknown_top_forms` `import` arm above). Exclude it here, exactly as
-            // `pragma` (a directive with its own key/arity validation) is excluded, so this check does not
-            // shadow the linker-boundary message with a competing "not a declaration" one.
-            let is_known_member_form = matches!(
-                head,
-                Some(
-                    "def"
-                        | "effect"
-                        | "op"
-                        | "type"
-                        | "module"
-                        | "doc"
-                        | "export"
-                        | "pragma"
-                        | "import"
-                )
-            );
-            if is_known_member_form {
+            // EXEMPT every RECOGNIZED module-level declaration form — a member is flagged ONLY when its
+            // head is not one the compiler recognizes at all. The authority is `db::TOP_LEVEL_KEYWORDS`
+            // (`def`/`export`/`type`/`effect`/`bind`/`module`/`pragma`/`world`) — the SAME closed set the
+            // top-level declaration scan recognizes — so a new declaration keyword added there is auto-
+            // exempted here and this check can never again over-reject a legitimate recognized form (the
+            // `(world …)` in-source-world regression: `world` is a recognized decl read into `db.wit_world`,
+            // NOT a category error). Plus the module-member EXTRAS the top-level set omits: `op` (an effect
+            // operation), `doc` (a doc form), `import` (a linker-boundary form with its OWN diagnostic — the
+            // `unknown_top_forms` `import` arm above — so this must not shadow it), and `module-doc` (a
+            // file/module doc header). A `(do …)` (handled above) and any genuine non-declaration
+            // (`let`/`if`/`match`/`fn`/a bare application/literal) stays flagged.
+            let is_recognized_member_form = head.is_some_and(|h| {
+                crate::db::TOP_LEVEL_KEYWORDS.contains(&h)
+                    || matches!(h, "op" | "doc" | "import" | "module-doc")
+            });
+            if is_recognized_member_form {
                 continue;
             }
             // A near-miss of a declaration keyword (`deff`→`def`, `exprot`→`export`) gets a did-you-mean
@@ -2305,13 +2314,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // Validate each exported name against the module's DECLARED member names (a `def`'s field name,
         // or a `type`/`effect`/`module` member's name), rejecting CDZ0101 anchored at the offending name
         // atom, with a did-you-mean over the member names — the same code + shape as the top-level check.
-        // The ROOT module's members ARE the program's top-level defs/exports, so its `(export …)` clauses
-        // populate `db.exports` and are ALREADY validated by the top-level export check (the abstract-type
-        // handle / type / effect nuances live there). Only a NESTED module (inside a `(do …)`) escapes that
-        // pass — the gap this block fills — so skip the arena-root module here to avoid a redundant fault.
-        if form == db.ast.root {
-            continue;
-        }
+        // (The arena-root module is already skipped above — its exports populate `db.exports` and are
+        // validated by the top-level export check; only a NESTED module escapes that pass.)
         let member_name = |m: StructId| -> Option<String> {
             if let Some(tail) = db.ast.as_form(m, "def") {
                 let sig = *tail.first()?;
