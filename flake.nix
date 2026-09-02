@@ -5326,6 +5326,10 @@
             # native_decide e2e witnesses silently never recompile). #7335 added the exe to the build/install
             # lines but omitted it here; that gap is closed now (its absence made #7343's e2e gate hollow).
             ./implementation/oracle-lean/OracleWasmDiffTest.lean
+            # the TYPE-oracle corpus-conformance exe root (T0.2). MUST be enumerated (same hollow-gate
+            # discipline as OracleWasmDiffTest above): omitting it fails `lake build oracle-typecheck` and
+            # an edit confined to it would leave the drv hash unchanged → a stale cached build.
+            ./implementation/oracle-lean/OracleTypeCheck.lean
             ./implementation/oracle-lean/Oracle
           ];
         };
@@ -5363,7 +5367,7 @@
               cp -r ${talosLakePackages}/$d .lake/packages/$d
             done
             chmod -R u+w .lake/packages
-            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check oracle-wasm-diff
+            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check oracle-wasm-diff oracle-typecheck
             runHook postBuild
           '';
           installPhase = ''
@@ -5374,6 +5378,7 @@
             install -m755 .lake/build/bin/oracle-ast-roundtrip "$out/bin/oracle-ast-roundtrip"
             install -m755 .lake/build/bin/oracle-check "$out/bin/oracle-check"
             install -m755 .lake/build/bin/oracle-wasm-diff "$out/bin/oracle-wasm-diff"
+            install -m755 .lake/build/bin/oracle-typecheck "$out/bin/oracle-typecheck"
             runHook postInstall
           '';
         };
@@ -5513,6 +5518,18 @@
           echo "oracle-lean check: $(wc -l < "$caseDirs") corpus cases (shared case-dir manifest)"
           oracle-check --manifest "$caseDirs" | tee result
           echo "ok: oracle-lean corpus conformance — $(cat result)" > "$out"
+        '';
+        # T0.2: the TYPE-oracle corpus-conformance run — `oracle-typecheck` runs `infer` over each corpus
+        # case's `program.ast` (all rcdzc-ACCEPTED cases, since they compiled + carry a trial) and judges
+        # it against `.accept`. A `mismatch` = a FALSE-ILLTYPED (the oracle rejects a program rcdzc
+        # accepted → a §3-rule bug or a real soundness hole), which FAILS the run; `skip` (Unsupported =
+        # outside the modeled fragment) never fails. Reuses the SAME shared case-dir manifest as the
+        # semantics conformance. Standalone/advisory (NOT in localGate), keyed on {shred, lean oracle}.
+        oracleLeanTypeCheck = pkgs.runCommand "oracle-lean-typecheck"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
+          echo "oracle-lean typecheck: $(wc -l < "$caseDirs") corpus cases (shared case-dir manifest)"
+          oracle-typecheck --manifest "$caseDirs" | tee result
+          echo "ok: oracle-lean type-oracle conformance — $(cat result)" > "$out"
         '';
         # Cross-shell PATH wrapper-scripts for the all-nix entrypoints (v-nix 2026-08-28). Hoisted here so
         # BOTH devShells.default (packages) AND packages.cdz-shell-wrappers use the SAME wrappers (no drift).
@@ -6469,6 +6486,9 @@
             oracle-lean-ast-roundtrip = oracleLeanAstRoundtrip;
             # L1.2 corpus conformance: the oracle asserts each corpus case; 0 mismatches required.
             oracle-lean-check = oracleLeanCheck;
+            # T0.2 type-oracle corpus conformance: `infer` over each corpus case judged vs accept; a
+            # false-IllTyped (0 required) fails. Standalone/advisory, same as the semantics conformance.
+            oracle-lean-typecheck = oracleLeanTypeCheck;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
