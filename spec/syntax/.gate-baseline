@@ -497,6 +497,7 @@ pass	ml/571-varargs-rest-param-list-annotated
 pass	ml/572-varargs-fixed-param-then-rest
 pass	ml/573-varargs-non-trailing-rest-param
 pass	ml/574-varargs-multiple-rest-params
+pass	ml/575-invariant-bool-on-newtype-with-ctor-binder-let
 pass	ml/58-neg-parenthesized-operand
 pass	ml/59-neg-signed-literal
 pass	ml/60-mul-of-signed-literals
