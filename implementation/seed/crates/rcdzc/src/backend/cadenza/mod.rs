@@ -3748,6 +3748,27 @@ fn emit_match_sum(
             let arm = b.list(vec![pat, body_node]);
             return Ok(b.list(vec![match_head, scrut_node, arm]));
         }
+        // A Leaf-root body that USES THE WHOLE scrutinee (`plan` was None — not a positional `[Elem]`
+        // destructure — but the body DOES reference it: a record-field `Core::Proj` `(. s f)`, or the whole
+        // value passed on). Bind the scrutinee to a fresh NAME in an irrefutable VAR-pattern arm
+        // `(match <scrut> (<name> <body>))`, and register `scrut_lets[scrutinee] = name` so every body
+        // reference (a Proj, a whole-value use, a nested match over it) resolves to `<name>` — the scrutinee is
+        // emitted ONCE (the matched value), bound, and reused, not re-materialized per read. Exhaustive (a var
+        // pattern covers every value) and value-preserving. Fixes a recursive record-fold whose body reads the
+        // folded-scrutinee record's fields via `Proj` — e.g. `(match (go …) (#record((= a x) (= b y))
+        // #record((= a y) (= b (+ x y)))))` (previously declined as a "nested / guarded root").
+        {
+            let name = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            let match_head = b.name("match");
+            let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            env.scrut_lets.insert(scrutinee, name.clone());
+            let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            env.scrut_lets.remove(&scrutinee);
+            let pat = b.name(name);
+            let arm = b.list(vec![pat, body_node]);
+            return Ok(b.list(vec![match_head, scrut_node, arm]));
+        }
     }
     let arms = match root {
         SumCont::Switch { path, arms } if path.is_empty() => arms,
