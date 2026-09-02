@@ -618,9 +618,18 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // (the flip); a real `cdz compile --target rust` never sets it (so a user's module stays free of the
     // `cadenza_ast` dep `__cdz_doc` references); and "0" is the explicit KILL-SWITCH (fall back to
     // cdz_render_at) — treated as OFF here so the value survives a child inheriting an outer "0".
-    if std::env::var("CDZ_VALUE_DOC")
-        .as_deref()
-        .is_ok_and(|v| v != "0")
+    // NOT in ASYNC mode: an async export is `pub async fn <name>(__cdz_env: &mut dyn DynCdzEnv, …)`, but the
+    // emitted `__cdz_doc_<name>` is a plain SYNC `fn` calling `<name>()` — it can neither supply the `__cdz_env`
+    // arg nor `.await` the returned future. So under CDZ_VALUE_DOC on the rust-ASYNC target it emitted a
+    // `__cdz_doc_main` whose `let __r = main();` was `main()` with 0 args against a 1-param async fn → rustc
+    // E0061 ("this function takes 1 argument but 0 arguments were supplied") — the whole artifact failed to
+    // build (v-effects' rust-async abort cases). Skip the value-doc emit for async: with no `__cdz_doc`/marker
+    // the driver falls back to the ordinary async render path (`block_on(prog::<name>(&mut env))` → render the
+    // bound `__r`), which handles the env + await correctly. (Value-doc for async is a later slice, if ever.)
+    if !mode.is_async()
+        && std::env::var("CDZ_VALUE_DOC")
+            .as_deref()
+            .is_ok_and(|v| v != "0")
     {
         for &def in &layout.order {
             let Some(e) = layout.export_plan(def) else {
