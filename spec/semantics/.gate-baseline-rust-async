@@ -8844,7 +8844,7 @@ todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm r
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
+pass	an abortive handler over a non-tail MUTUAL recursion folds to the abort value (99)
 todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
 pass	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an effect bound to a peer routes a two-argument op to the boundary
