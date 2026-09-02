@@ -243,6 +243,44 @@
   (error CDZ0101 (message "unbound name")))
 
 (case
+  "a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)"
+  (doc
+    "Intra-expansion mutual visibility applies UNIFORMLY to types, not just defs (v-spec-oracle type-gf6b
+           ruling): a macro-internal `(type W …)` MUST be usable by the expansion's OWN sibling bindings, exactly
+           as a macro-internal DEF is (gf6b). `(mk getit)` splices `(type W (Mk Int64))` and a caller-named def
+           `getit` whose body `(match (W.Mk 7) ((W.Mk x) x))` references W — both W and the reference are in the
+           SAME expansion → W.Mk resolves (qualified, rides on the intra-expansion-visible W) → `(getit)` = 7. The
+           type analog of gf6b's intra-expansion visibility; orthogonal to caller visibility (next case). NOTE:
+           currently CDZ0101 — type resolution has no structural do-local channel (unlike defs' do_local_binds), so
+           a macro-internal type is not yet intra-expansion visible; asserts the idealistic value so it flips to
+           PASS when the intra-expansion type registration lands (impl behind inc-3, coordinated w/ v-inference).")
+  (input
+    (do
+      (def (mk (quote nm)) (quasiquote (do (type W (Mk Int64)) (def ((unquote nm)) (match (W.Mk 7) ((W.Mk x) x))) 0)))
+      (mk getit)
+      (def (main) (getit))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))
+
+(case
+  "a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)"
+  (doc
+    "The orthogonal caller-visibility half of the type-gf6b ruling (the constraint the intra-expansion fix must
+           NOT violate): a macro-internal type W becomes intra-expansion visible (prior case) but stays
+           caller-hygienic-local — the CALLER's own def `main` referencing `W.Mk` is CDZ0101 unbound. Pins that the
+           two axes are orthogonal (intra-expansion visibility must not leak W to the caller), and specifically
+           guards against a single-file type-index registration accidentally making W caller-visible. Passes today
+           (W is not caller-visible) and MUST keep passing once the intra-expansion fix lands.")
+  (input
+    (do
+      (def (mk (quote nm)) (quasiquote (do (type W (Mk Int64)) (def ((unquote nm)) (match (W.Mk 7) ((W.Mk x) x))) 0)))
+      (mk getit)
+      (def (main) (match (W.Mk 9) ((W.Mk x) x)))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro-introduced type's BARE variant ctor follows the ctor name's own provenance (macro-internal is qualified-only)"
   (doc
     "Per-name provenance applies to the CONSTRUCTOR too: in `(type (unquote name) (Mk Int64))` the type

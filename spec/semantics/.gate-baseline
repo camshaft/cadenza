@@ -10852,3 +10852,5 @@ todo	two do-def-bound performs whose sum mixes handler-state width with a narrow
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
+todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
+pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)
