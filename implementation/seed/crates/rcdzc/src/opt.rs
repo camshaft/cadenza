@@ -521,30 +521,6 @@ pub(crate) fn run_sharing_aware_emit(
     // `false` (full plan) — the O2 body's pass pipeline makes the general bindings reclaim-safe, so those wins stay.
     scrutinee_shares_only: bool,
 ) {
-    // TEMP compound-CSE detection trace (CDZ_CSE_TRACE) — verify PART-1 fires on the re-materialized
-    // duplicates; REMOVE before land (detection-only, no emit change).
-    if std::env::var("CDZ_CSE_TRACE").is_ok() {
-        for &def in &layout.order {
-            if let Some(body) = db.defs[def].body {
-                let plan = crate::core_analysis::compound_cse_bind_plan(db, body);
-                if !plan.is_empty() {
-                    eprintln!(
-                        "[cse] def={def:?} body={body:?} compound-cse bind-plan entries={}",
-                        plan.len()
-                    );
-                    for (ei, e) in plan.iter().enumerate() {
-                        let sn = e.scope_node;
-                        let si = e.shared_id;
-                        let m = e.members.len();
-                        eprintln!(
-                            "[cse]   entry{ei} scope_node={sn:?} shared_id={si:?} members={m} ty={}",
-                            e.ty.render_name(&db.name_ctx())
-                        );
-                    }
-                }
-            }
-        }
-    }
     // Gated to O2+ (a whole-body sharing analysis), tier-consistent with `GlobalCsePass`.
     if opt_level < OptLevel::O2 {
         return;

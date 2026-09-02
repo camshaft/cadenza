@@ -478,6 +478,7 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
 /// false match). So a subtree containing an unhandled node (a `Call`/`If`/`Closure`/effectful op) gets a
 /// unique fingerprint and is excluded — which also keeps effectful subtrees out (belt to the caller's
 /// `subtree_reaches_host_call` gate).
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
 pub(crate) fn core_subtree_fingerprint(db: &mut Db, id: StructId, out: &mut String) {
     // ALPHA-EQUIVALENCE: a scope map of BOUND-local binder → de-Bruijn ordinal, so two subtrees identical up
     // to their OWN let-binder names match (rsv1's re-materialized state-chains bind _cdz_let1 vs _cdz_let3 but
@@ -635,6 +636,7 @@ fn core_subtree_fingerprint_inner(
 /// GATED for O1-reclaim-safety by the caller: only STRAIGHT-LINE bodies (`!eval::is_recursive`) — a
 /// loop-carried hoist leaks on the cadenza-O1 round-trip (the general-B2-at-O1 blocker). Detection-only for
 /// now (not wired into emit); safe no-op until the plan + v-cadenza install land.
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
 pub(crate) fn compound_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
     // Straight-line only (O1-reclaim-safety, mirrors b2_bind_plan_scrutinee_only): a recursive body's hoisted
     // let is not O1-recompile-reclaim-safe.
@@ -698,9 +700,11 @@ pub(crate) fn compound_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<
 ///   fingerprint already keyed free vars by RESOLVED BINDER, so a group only unifies same-free-var reads).
 ///   The `scope_node`=members'-LCA GUARANTEES scope validity: a binder free in EVERY member dominates all
 ///   members ⟹ is at-or-above their LCA ⟹ in scope at `scope_node`, so the hoisted let can read it.
+///
 /// Detection-only; consumed by v-cadenza's install (not wired here). NESTING NOTE: groups may nest (rsv1's
 /// outer size-3 group contains the inner size-12 chain); the install order + the opt-sweep O0..O3 equivalence
 /// gate is the correctness backstop for that (a nesting bug shows as a sweep divergence, never a silent ship).
+#[allow(dead_code)] // compound-CSE PART-1: consumed by v-cadenza-backend PART-3 (run_sharing_aware_emit cadenza-O1 concat); lands ahead of the install per the co-design split.
 pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
     let mut groups = compound_cse_candidate_groups(db, body);
     // Deterministic order: members sorted by id; groups largest-canonical-first (so a nested-outer group is
@@ -710,7 +714,6 @@ pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindP
     }
     groups.sort_by_key(|g| std::cmp::Reverse(subtree_size(db, g[0])));
     let mut plan: Vec<B2BindPlanEntry> = Vec::new();
-    let trace_cse = std::env::var("CDZ_CSE_TRACE").is_ok();
     for group in groups {
         let shared_id = group[0];
         let ty = crate::infer::type_of(db, shared_id);
@@ -723,12 +726,6 @@ pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindP
         // so `ty` is a real heap compound; only its scalar sub-axes may be deferred (recompile-solvable).
         // scope_node = the members' LCA (deepest node containing all occurrences).
         let Some(scope_node) = b2_members_lca(db, body, &group) else {
-            if trace_cse {
-                eprintln!(
-                    "[cse-rej] group shared_id={shared_id:?} members={} REJECT: no LCA",
-                    group.len()
-                );
-            }
             continue;
         };
         // gate-4: trap-free OR the scope_node unconditionally reaches ≥1 member (byte-neutral speculation).
@@ -736,13 +733,6 @@ pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindP
             let mut frontier = std::collections::HashSet::new();
             collect_dominating_frontier(db, scope_node, &mut frontier);
             if !group.iter().any(|m| frontier.contains(m)) {
-                if trace_cse {
-                    eprintln!(
-                        "[cse-rej] group shared_id={shared_id:?} members={} scope={scope_node:?} REJECT: gate-4 not-trap-free + no member in frontier(len {})",
-                        group.len(),
-                        frontier.len()
-                    );
-                }
                 continue;
             }
         }
