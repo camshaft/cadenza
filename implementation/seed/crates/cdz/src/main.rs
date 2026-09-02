@@ -6237,6 +6237,36 @@ fn check_one(
     (any_error || any_parse_error, closure_paths)
 }
 
+/// The terminal message `cdz fix` prints when it applied NOTHING. `considered_any` is whether any
+/// diagnostic carried a targeted fix at all; `heuristic_available` counts fixes that were held back
+/// SOLELY by the missing `--all` flag yet do verify. The rustc bar for a "nothing done" outcome is to
+/// stay actionable: when applyable heuristic fixes exist, say how many and how to apply them (`--all`)
+/// rather than dead-ending at a bare "no applicable fixes" the user cannot act on. When candidates were
+/// considered but none verifies, say so honestly (do NOT advertise `--all`, since it would not help).
+fn no_applicable_fixes_message(considered_any: bool, heuristic_available: usize) -> String {
+    if heuristic_available > 0 {
+        let plural = if heuristic_available == 1 {
+            "fix"
+        } else {
+            "fixes"
+        };
+        format!(
+            "no fixes applied — {heuristic_available} heuristic {plural} available; re-run with `--all` \
+             to apply {} (each clears its fault but the compiler cannot confirm it matches your intent)",
+            if heuristic_available == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        )
+    } else {
+        format!(
+            "no applicable fixes ({} candidate fix(es) considered)",
+            if considered_any { "some" } else { "0" },
+        )
+    }
+}
+
 /// `cdz fix FILE` — apply every VERIFIED fix and write the repaired program back. Runs the same
 /// `Diagnostics` query as `check`, and for each diagnostic that carries a fix, KEEPS the fix only if it
 /// verifies: applying it (structurally, via [`apply_fix_to_source`]) and re-checking clears that
@@ -6266,6 +6296,11 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     let mut current_arenas = arenas;
     let mut applied = 0usize;
     let mut considered_any = false;
+    // Heuristic fixes that were SKIPPED only because `--all` was not passed, yet DO verify (clearing
+    // their fault under `--all`). Counted so the terminal "no applicable fixes" line can point the user
+    // at `--all` — the rustc bar: never dead-end at "nothing to do" when an applyable fix is one flag
+    // away. Only read in the `applied == 0` branch (which implies a single non-applying pass).
+    let mut heuristic_available = 0usize;
     // Each applied fix's `(code, kind, message)` — for the `--json` report so an agent learns WHICH
     // faults were repaired (not just the count).
     let mut applied_fixes: Vec<(String, String, String)> = Vec::new();
@@ -6320,11 +6355,19 @@ fn run_fix(args: &FixArgs) -> ExitCode {
                 continue;
             };
             // Apply a compiler-verified fix always; a heuristic one only under `--all` AND only if it
-            // verifies (clears its fault, introduces no new error).
-            let apply = fix.verified
-                || (args.all
-                    && fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref()));
+            // verifies (clears its fault, introduces no new error). We compute `verifies` for a heuristic
+            // fix regardless of `--all` so that when `--all` is absent we can still tell whether the fix
+            // WOULD have applied — that drives the actionable `--all` hint below (only advertise the flag
+            // when it genuinely helps, never on a fix that fails to verify anyway).
+            let verifies = fix.verified
+                || fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref());
+            let apply = fix.verified || (args.all && verifies);
             if !apply {
+                // A heuristic fix held back solely by the missing `--all` flag — record it so the terminal
+                // message can point the user at the flag rather than dead-ending at "no applicable fixes".
+                if !args.all && verifies {
+                    heuristic_available += 1;
+                }
                 continue;
             }
             // Commit this edit, re-parse for the next pass.
@@ -6381,9 +6424,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
 
     if applied == 0 {
         eprintln!(
-            "{PROG}: {}: no applicable fixes ({} candidate fix(es) considered)",
+            "{PROG}: {}: {}",
             args.file,
-            if considered_any { "some" } else { "0" },
+            no_applicable_fixes_message(considered_any, heuristic_available),
         );
         return ExitCode::SUCCESS;
     }
@@ -7991,6 +8034,44 @@ mod tests {
     use super::*;
     // Fix-engine internals the perf-regression tests drive directly (now in the `fix` module).
     use crate::fix::{TRANSFORM_SIBLING_CLONES, localized_change, transform_target};
+
+    #[test]
+    fn no_applicable_fixes_message_points_at_all_when_heuristic_fixes_exist() {
+        // The breaker's cdz-fix "considered-and-dropped" report was really the correct heuristic gate:
+        // a `verified:false` fix (e.g. the CDZ0302 width-snap `(Float 16)`→`Float32`) is not auto-applied
+        // without `--all`. The dead-end message hid that — so when applyable heuristic fixes exist, the
+        // terminal line must NAME them and point at `--all` (rustc bar: never dead-end when a fix is one
+        // flag away).
+        let m = no_applicable_fixes_message(true, 1);
+        assert!(
+            m.contains("1 heuristic fix available"),
+            "names the count: {m}"
+        );
+        assert!(m.contains("re-run with `--all`"), "points at the flag: {m}");
+        assert!(
+            m.contains("apply it") && !m.contains("apply them"),
+            "singular pronoun for one fix: {m}"
+        );
+        // Plural agreement for >1.
+        let m2 = no_applicable_fixes_message(true, 3);
+        assert!(
+            m2.contains("3 heuristic fixes available") && m2.contains("apply them"),
+            "plural for many: {m2}"
+        );
+        // No applyable heuristic fix → the honest legacy message, and it must NOT advertise `--all`
+        // (advertising a flag that would not help is worse than saying nothing).
+        let none = no_applicable_fixes_message(true, 0);
+        assert_eq!(
+            none,
+            "no applicable fixes (some candidate fix(es) considered)"
+        );
+        assert!(
+            !none.contains("--all"),
+            "no false `--all` advice when it would not help"
+        );
+        let zero = no_applicable_fixes_message(false, 0);
+        assert_eq!(zero, "no applicable fixes (0 candidate fix(es) considered)");
+    }
 
     #[test]
     fn resolve_deps_dir_does_not_double_append_when_bin_is_in_deps() {
