@@ -3487,7 +3487,60 @@ fn build_arm_pat_inner(
     // itself (`7` in `#tuple(a 7)`); no binder, the value is fixed. A `None` entry (a freed `els` slot)
     // does NOT return here — it falls through to the leaf-bind below (a fresh binder). Checked before
     // `choices`: a LitTest path is a scalar leaf, never a discriminant switch, so the two never collide.
-    if let Some(Some((lit, _probe))) = lit_choices.get(path) {
+    if let Some(Some((lit, probe))) = lit_choices.get(path) {
+        // A LIST-LENGTH refinement (a `(list …)` sub-pattern nested in the sum tree): emit the surface
+        // `(list e0 … e{len-1} [.. rest])` pattern, recursing each element slot. Unlike a scalar literal (which
+        // returns the pre-built atom), the list pattern is composed here from the deeper choices/lit tree.
+        if let crate::core::Probe::ListLen { len, at_least } = probe {
+            let (len, at_least) = (*len, *at_least);
+            // The list slot's ELEMENT type (from `ty` = `Ty::List(elem)`). A non-List `ty` is a shape the
+            // decision tree should not produce at a ListLen slot — decline defensively (no mistyped pattern).
+            let elem_ty = match ty {
+                Ty::List(e) => (**e).clone(),
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend cannot reconstruct a list-length pattern at a non-list slot"
+                            .to_string(),
+                    ));
+                }
+            };
+            // Each leading element recurses at `[path, Elem(i)]` (switch) / `[read_path, Elem(i)]` (body read)
+            // — the SAME keys `emit_match_list` registers and a `Core::SumPayload` element read carries — so a
+            // nested variant/literal element sub-pattern reconstructs through the deeper tree, and the body's
+            // element read resolves to its binder. A rest form (`at_least`) binds the tail sublist at
+            // `[read_path, RestFrom(len)]`. An element shape the recursion cannot rebuild declines THERE (no
+            // wrong pattern emitted). Mirrors `emit_match_list`'s `LenEq`/`LenGe` binder registration.
+            let list_head = b.name("list");
+            let mut list_pat = vec![list_head];
+            for i in 0..len {
+                let mut ep = path.to_vec();
+                ep.push(PathStep::Elem(i));
+                let mut er = read_path.to_vec();
+                er.push(PathStep::Elem(i));
+                list_pat.push(build_arm_pat(
+                    db,
+                    b,
+                    root_scrut,
+                    &elem_ty,
+                    &ep,
+                    &er,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
+                )?);
+            }
+            if at_least {
+                list_pat.push(b.name(".."));
+                let rest = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                let mut rr = read_path.to_vec();
+                rr.push(PathStep::RestFrom(len));
+                env.payloads.insert((root_scrut, rr), rest.clone());
+                list_pat.push(b.name(rest));
+            }
+            return Ok(b.list(list_pat));
+        }
         return Ok(*lit);
     }
     if let Some(choice) = choices.get(path) {
@@ -3696,6 +3749,58 @@ fn build_arm_pat_inner(
                 }
                 return Ok(b.compound(crate::ast::CompoundCtor::Record, &children));
             }
+            // A LIST slot with a deeper path but NO length probe fixed HERE — a FALL-THROUGH / els arm. The
+            // decision tree can probe list ELEMENTS (their variant/value) BEFORE the length (Maranget order),
+            // so an els row (a sibling of the length-fixed `then_`) reaches a list slot with element refinements
+            // but no `LenEq`. Reconstruct a REST pattern `(list e0 … e{lead-1} .. rest)` (`LenGe lead`), where
+            // `lead` = 1 + the max leading-element index any deeper constraint references (so every probed
+            // element is bound). It matches length ≥ lead; emitted AFTER the length-fixed SPECIFIC arm (the
+            // then_/els order `emit_switch_tree` guarantees), it catches the residual — longer lists, or the
+            // right leading shape at a non-matching length — as the fall-through. Each leading element recurses
+            // (its own variant/lit refinement, or a fresh leaf bind); the rest binder takes the tail sublist at
+            // `[read_path, RestFrom(lead)]` (the `Core::SumPayload` key a rest read carries), mirroring
+            // `emit_match_list`'s `LenGe`. An element the recursion cannot rebuild declines THERE (no wrong
+            // pattern). A `lead` of 0 (no element keys — should not arise under `has_deeper`) is `(list .. rest)`.
+            Ty::List(elem_ty) => {
+                let elem_ty = (**elem_ty).clone();
+                let mut lead = 0usize;
+                for k in choices.keys().chain(lit_choices.keys()) {
+                    if k.len() > path.len()
+                        && k.starts_with(path)
+                        && let PathStep::Elem(i) = k[path.len()]
+                    {
+                        lead = lead.max(i + 1);
+                    }
+                }
+                let list_head = b.name("list");
+                let mut list_pat = vec![list_head];
+                for i in 0..lead {
+                    let mut ep = path.to_vec();
+                    ep.push(PathStep::Elem(i));
+                    let mut er = read_path.to_vec();
+                    er.push(PathStep::Elem(i));
+                    list_pat.push(build_arm_pat(
+                        db,
+                        b,
+                        root_scrut,
+                        &elem_ty,
+                        &ep,
+                        &er,
+                        choices,
+                        lit_choices,
+                        env,
+                        emitted,
+                    )?);
+                }
+                list_pat.push(b.name(".."));
+                let rest = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                let mut rr = read_path.to_vec();
+                rr.push(PathStep::RestFrom(lead));
+                env.payloads.insert((root_scrut, rr), rest.clone());
+                list_pat.push(b.name(rest));
+                return Ok(b.list(list_pat));
+            }
             _ => {
                 return Err(Reject::decline(
                     "the Cadenza backend cannot destructure this value to reach a deep-match constraint"
@@ -3832,18 +3937,27 @@ fn emit_switch_tree(
                 // reconstructs what actually arrives here. Keeps the round-trip idempotent (literal → LitTest).
                 crate::core::Probe::Str(s) => b.atom_leaf(Leaf::Str(s.as_str().into())),
                 crate::core::Probe::Char(c) => b.atom_leaf(Leaf::Char(*c)),
+                // A LIST-LENGTH probe (a `(list …)` sub-pattern's length test on a list slot nested in the sum
+                // decision tree). Unlike a scalar literal there is no single atom to emit — the surface
+                // `(list e0 … e{len-1} [.. rest])` pattern is BUILT by `build_arm_pat` (recursing each element
+                // slot through the deeper choices/lit tree, mirroring `emit_match_list`). So thread the ListLen
+                // probe into `lit_choices` exactly like a scalar (the then_/els split below is probe-agnostic);
+                // `build_arm_pat` dispatches on the probe kind and builds the list pattern, IGNORING this
+                // placeholder atom (a `list` head name, never emitted for a ListLen entry). A Bytes / MapHasKeys
+                // slot probe stays declined (later slices).
+                crate::core::Probe::ListLen { .. } => b.name("list"),
                 _ => {
-                    // Reconstructing a Bytes / ListLen / MapHasKeys slot probe is a future slice; that
-                    // not-yet intent stays in this comment, NOT the user-facing message (operator seq-280).
+                    // Reconstructing a Bytes / MapHasKeys slot probe is a future slice; that not-yet intent
+                    // stays in this comment, NOT the user-facing message (operator seq-280).
                     tracing::debug!(
                         target: "rcdzc::backend::cadenza",
                         ?path,
                         ?probe,
-                        "cadenza: declining a non-scalar (Bytes/ListLen/MapHasKeys) literal-at-slot probe"
+                        "cadenza: declining a non-scalar (Bytes/MapHasKeys) literal-at-slot probe"
                     );
                     return Err(Reject::unsupported(
                         "the Cadenza backend reconstructs a literal-at-slot test only for an Int / Bool / \
-                         Str / Char probe (a Bytes / ListLen / MapHasKeys slot probe is not supported)"
+                         Str / Char / ListLen probe (a Bytes / MapHasKeys slot probe is not supported)"
                             .to_string(),
                     ));
                 }
