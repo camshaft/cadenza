@@ -1248,3 +1248,22 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
+
+(case
+  "sqtv1 a runtime Symbol tuple element renders as the (Symbol.of …) constructor, not a bare string"
+  (doc
+    "The RENDER face of @sqte1: a runtime tuple carrying a Symbol echoes back with the Symbol element in
+           its `(Symbol.of \"…\")` CONSTRUCTOR form, structurally distinct from a bare `\"alpha\"` String leaf.
+           `main` returns `(tuple (Symbol.of \"alpha\") n)`; the value-form descriptor tags the Symbol element
+           (`ShapeNode::Symbol`, the render-only tag-20 `Char`-over-`Int` analog) so the heap value renders the
+           construction `((. Symbol of) \"alpha\")` — byte-matching const + rust — NOT the ambiguous bare leaf
+           `\"alpha\"` a real String prints (the pre-#7710 mis-render that read a runtime Symbol-in-compound as a
+           String). Corpus grading re-parses both sides to AST, so this pins the constructor SHAPE: a regression
+           back to the bare `Str` leaf is a structurally distinct value and fails. n=7.")
+  (input
+    (do
+      (def (main (: n Int64)) #tuple((Symbol.of "alpha") n))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: #tuple((Symbol.of "alpha") 7) (Tuple Symbol Int64)))
+  (live-objects known-leak))
