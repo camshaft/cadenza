@@ -10795,3 +10795,4 @@ pass	a non-terminating self-recursive macro is a hard CDZ0999 error, not a compi
 pass	a macro wrapping the spliced body in a HANDLE keeps the caller's names in scope
 pass	non-finite floats cross inside a compound as their own leaves, not collapsing the compound
 pass	a runtime-produced -inf crosses inside a compound alongside nan and inf
+pass	a macro-introduced MATCH resolves its arm-pattern binders in the arm body (accessor macros)
