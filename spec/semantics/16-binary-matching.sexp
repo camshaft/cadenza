@@ -3682,3 +3682,33 @@
   (output (: 72030 Int64))
   (call main (: 9 Int64))
   (output (: 92030 Int64)))
+
+; blx1: MULTI-ARM bin match with OVERLAPPING literal prefixes (magic-number discrimination) — the
+; arm-fused decision tree shares segment reads across arms. Round-trips on the cadenza hop since
+; #7958 (wildcard/unread segments across overlapping literal arms); previously the fused reads
+; escaped the bin-match recognizer and hop-1 declined. All three arms exercised across three calls,
+; including the runtime first byte colliding with the 137 magic. (breaker bl1 probe, promoted.)
+(case
+  "a multi-arm bin match discriminates overlapping literal prefixes"
+  (input
+    (do
+      (def
+        (classify (: b Bytes))
+        (match
+          b
+          ((bin (u8 137) (u8 80) (u8 x)) (+ 1000 (Int64.of x)))
+          ((bin (u8 137) (u8 y) (u8 _z)) (+ 2000 (Int64.of y)))
+          ((bin (u8 a) (u8 _b) (u8 _c)) (+ 3000 (Int64.of a)))
+          (_ -1)))
+      (def
+        (main (: n Int64))
+        (+
+          (classify (Bytes.of #list(137 80 (UInt8.of n))))
+          (+
+            (* 10000 (classify (Bytes.of #list(137 66 1))))
+            (* 100000000 (classify (Bytes.of #list((UInt8.of n) 80 1)))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 300520661005 Int64))
+  (call main (: 137 Int64))
+  (output (: 100120661137 Int64)))
