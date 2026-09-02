@@ -885,6 +885,28 @@ fn emit_def(
     // falls through to the normal emit, where each leaf SELF-constructs via `qty_disposition` (wrapping the
     // whole would DOUBLE-wrap). Restricting WRAP-WHOLE to the def tail keeps it from firing inconsistently
     // across nested match-arm / collection-element siblings (the `18-units-of-measure/0225` CDZ0203 hazard).
+    // TYPED-WIT-EXPORT RESULT (the declared-WIT-world boundary, v-rust-backend co-design): when this def is a
+    // guest EXPORT under a target WIT world, its RESULT type is DECLARED by the world (`member.func.result`),
+    // not (only) inferred from the body. The world-derivation front-end (`derive_world_export_param_annotations`)
+    // refines PARAMS but NOT the result, so an under-determined result value — a bare `Option.None` whose element
+    // type comes only from a world `d: option<s64>` field — has no payload to infer from and DECLINES at the
+    // SumNew `type_ast` (CDZ0900 "under-determined sum type", SHAPE 8). Recover the world-declared result `Ty`
+    // (parse `db.wit_world` → the export member matching this def's `kebab_extern_name` → `WitType` → `Ty`) and
+    // thread it as the body's `expected`, so the record/None resolves its element type from the world contract —
+    // the SAME `expected` mechanism the join case uses. `None` (no world / no matching member / an unmapped
+    // WitType like a nominal variant) leaves `expected` unset (prior behavior). Reads only immutable `db`.
+    let world_result_ty: Option<Ty> = db.wit_world.clone().and_then(|bytes| {
+        use crate::backend::common::export_name::kebab_extern_name;
+        let world_arena = crate::codec::decode(&bytes)?;
+        let world = crate::wit_world::parse_target_world(&world_arena, world_arena.root)?;
+        let kebab = kebab_extern_name(&name);
+        let member = world
+            .exports
+            .iter()
+            .flat_map(|iface| &iface.members)
+            .find(|m| kebab_extern_name(&m.name) == kebab)?;
+        crate::wit_world::wit_type_to_ty(db, &member.func.result)
+    });
     let body_node = match def_result_ty(db, def, params.len()) {
         Some(Ty::Qty { inner, unit }) if qty_leaf(db, body) == LeafKind::BareInner => {
             let head = member_access(b, "Qty", "of");
@@ -923,7 +945,9 @@ fn emit_def(
             let ty_node = b.name(rt.render_name(&db.name_ctx()).as_str());
             b.list(vec![colon, body_node, ty_node])
         }
-        _ => emit_expr(db, b, body, None, &mut env, emitted)?,
+        // Thread the world-declared export RESULT type (typed-WIT-export boundary) as the body's `expected`;
+        // `None` when there is no world / no matching export member (prior behavior).
+        _ => emit_expr(db, b, body, world_result_ty.clone(), &mut env, emitted)?,
     };
     // If the body PERFORMED any host-delegated effect (a `Core::HostCall`), wrap it in ONE
     // `(host (E1 E2 …) <body>)` delegation so each re-emitted perform `((. E o) …)` re-lowers to a
@@ -1886,10 +1910,25 @@ fn emit_expr_viewed(
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
                 // The field's `expected` is the record type's field type (an under-determined field value
-                // recovers it from there).
-                let ex = match &eff_ty {
+                // recovers it from there). When the node's OWN field type is MISSING or UNDER-DETERMINED (a
+                // free type arg — e.g. a bare `None` field whose own type is `Option<?>`), fall back to the
+                // PASSED `expected`'s field type: a world-declared export result (`d: option<s64>`) or a
+                // context join supplies the resolved type args the bare field value can't infer (typed-WIT-
+                // export, SHAPE 8). A DETERMINED own field type is used unchanged (no regression).
+                let own_ex = match &eff_ty {
                     Ty::Record(ftys) => ftys.get(name).cloned(),
                     _ => None,
+                };
+                let expected_field = || {
+                    expected.as_ref().and_then(|e| match e {
+                        Ty::Record(fx) => fx.get(name).cloned(),
+                        _ => None,
+                    })
+                };
+                let ex = match &own_ex {
+                    Some(t) if ty_has_free_arg(t) => expected_field().or_else(|| own_ex.clone()),
+                    None => expected_field(),
+                    _ => own_ex.clone(),
                 };
                 let fval = emit_expr(db, b, v, ex, env, emitted)?;
                 children.push(b.field_pair(fname, fval));
