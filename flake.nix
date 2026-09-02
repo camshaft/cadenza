@@ -3485,6 +3485,23 @@
               corpusFileNames}
         '';
 
+        # quoteCorpusGate (inc-4) — the whole-pass REGRESSION gate. Harvest every quote-roundtrip verdict
+        # (`quoteCorpusVerdictsAll`, `<tag>\t<description>`) and FOLD it vs the committed `.quote-gate-baseline`
+        # through the SAME `xtask gate-syntax --compare` fold v-corpus-harness owns — that fold is format-generic
+        # (it knows only `<verdict>\t<title>` + the Verdict enum; ZERO syntax assumptions; their sign-off is the
+        # reply on #7026's thread). Semantics it carries: a baselined-`pass` that regresses to not-pass REDs; a
+        # `todo`→`pass` GAIN never reds (additive — safe across the runtime-hash rotations, which only make more
+        # inputs round-trip); a baseline-`fail` (the rcw4 64-KiB-string tracked-fail) is a NON-REDDING known-fail
+        # that flips to pass when its codec owner fixes it; a todo/absent case that now FAILs is a gate-hole RED.
+        # `--baseline` is explicit (xtaskBin runs outside a repo tree). This is inc-4's teeth: it protects the
+        # 7465 passing round-trips from silent regression. Advisory (checks.<sys>.quote-corpus-gate).
+        quoteCorpusGate = pkgs.runCommand "quote-corpus-gate"
+          { nativeBuildInputs = [ xtaskBin ]; } ''
+          set -euo pipefail
+          xtask gate-syntax --compare ${quoteCorpusVerdictsAll} --baseline ${./spec/semantics/.quote-gate-baseline}
+          echo "ok: quote-corpus-gate — whole-pass quote-roundtrip harvest folded vs .quote-gate-baseline" > "$out"
+        '';
+
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
         # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
         corpusCaseChecks = { name, file }:
@@ -6653,6 +6670,12 @@
             # below. ADVISORY for now (NOT in the required local-gate set) — a first slice reds only on a
             # compiled program whose round-trip breaks; a baseline/Todo-regression gate is a follow-up.
             quote-corpus = quoteCorpusAll;
+            # inc-4: the whole-pass REGRESSION gate — harvest every quote-roundtrip verdict + fold vs the
+            # committed `.quote-gate-baseline` through v-corpus-harness's format-generic `gate-syntax --compare`
+            # fold. Reds on a baselined-`pass`→not-pass regression (protects the 7465 passing round-trips);
+            # todo→pass gains never red; the rcw4 64-KiB-string baseline-`fail` is a non-redding tracked-fail.
+            # ADVISORY (not yet in the required local-gate set — parity-review with v-corpus-harness first).
+            quote-corpus-gate = quoteCorpusGate;
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
@@ -7518,6 +7541,54 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-save-baseline";
+          };
+
+        # apps.save-quote-baseline — regenerate spec/semantics/.quote-gate-baseline from the
+        # `.#quote-corpus-verdicts` harvest (v-quote-corpus inc-4; mirrors apps.save-baseline). `nix run
+        # .#save-quote-baseline` builds the whole-pass <tag>\t<description> quote-roundtrip harvest (the cached
+        # per-case shred→build→verdict graph) then runs the SAME xtask-save-baseline leaf to write the baseline
+        # via serialize_baseline — byte-identical format to .gate-baseline, so v-corpus-harness's
+        # canonicalize/prune/check tooling applies uniformly.
+        #   --fallback: the fresh CA-derivation realisations are never in a cache, so a substituter 502/504 on
+        #     the realisation lookup must fall back to a LOCAL build, not abort.
+        #   --option eval-cache false: under heavy fleet contention a cache-ON client wedges on the shared
+        #     eval-cache SQLite lock (0 CPU, 0 output — looks like a stall); the fleet gate builds carry it too.
+        #   #6835 FAIL-SPIKE GUARD: a nix build-phase starvation run mis-emits `fail`, and a REAL pass→fail is a
+        #     regression to FIX (never bake). Refuse to (over)write when the harvest carries MORE fails than the
+        #     committed baseline — the regenerator is safe-by-default; a genuine fail must be resolved at source.
+        apps.save-quote-baseline =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-save-quote-baseline";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                baseline="$root/spec/semantics/.quote-gate-baseline"
+                # --option substitute false (the #7175 fix): the harvest is a huge CONTENT-ADDRESSED graph
+                # (tens of thousands of per-case CA outputs); with substitution ON, nix fires a realisation
+                # (.doi) query per CA output PER substituter (cachix + the determinate/cache.nixos defaults,
+                # which ALWAYS 404 for our CA realisations) → hundreds of thousands of tiny HTTP GETs that build
+                # nothing = a network-bound WEDGE that hangs even SOLO at low load. substitute=false skips that
+                # (a fresh re-baseline substitutes nothing anyway; per-case verdicts are byte-identical local).
+                # --option eval-cache false: also dodge the shared eval-cache SQLite lock under fleet contention.
+                harvest="$(nix build "$root#quote-corpus-verdicts" --option substitute false --option eval-cache false --no-link --print-out-paths)"
+                new_fails="$(grep -c '^fail' "$harvest" || true)"
+                old_fails="$(grep -c '^fail' "$baseline" 2>/dev/null || true)"
+                new_fails="''${new_fails:-0}"
+                old_fails="''${old_fails:-0}"
+                if [ "$new_fails" -gt "$old_fails" ]; then
+                  echo "save-quote-baseline: REFUSING — harvest has $new_fails fail(s) vs $old_fails in the committed baseline." >&2
+                  echo "  A fail-spike is either nix build-phase starvation (#6835 — re-run on a quiet window) or a REAL" >&2
+                  echo "  quote/codec/decode regression (fix the source; do NOT bake the fail into the baseline)." >&2
+                  exit 1
+                fi
+                exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$baseline"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-save-quote-baseline";
           };
 
         apps.bench =
