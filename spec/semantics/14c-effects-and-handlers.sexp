@@ -2646,6 +2646,66 @@
   (call main (: 0 Int64))
   (output (: 220 Int64)))
 
+; oc8/oc9 extend oc7's compound-payload grounding to NESTED and RECORD shapes — the (None) seed's
+; payload is determined recursively from the concrete resume next-states (no annotation): oc8 a
+; NESTED tuple (Option (Tuple Int64 (Tuple Int64 String))), oc9 a RECORD (Option (Record tot tag)).
+; Both carry a String leaf (the differentiator that used to leave the payload ungrounded `_` before
+; the init-node grounding memo, #7798), so they pin that grounding reaches through nested structure
+; and record fields, not just a flat tuple.
+(case
+  "oc8 a NESTED-tuple Option accumulator — (Option (Tuple Int64 (Tuple Int64 String))) grounds recursively from concrete next-states, no annotation"
+  (input
+    (do
+      (effect N (op step (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          N
+          (None)
+          ((step
+              (v)
+              s
+              (match
+                s
+                ((Some #tuple(a inner))
+                  (match
+                    inner
+                    (#tuple(b lbl)
+                      (resume (+ a (+ b (String.byte-len lbl))) (Some #tuple((+ a v) #tuple(b lbl)))))))
+                ((None _u) (resume 0 (Some #tuple(1 #tuple(2 "xy"))))))))
+          (+ (N.step n) (+ (* 10 (N.step n)) (* 100 (N.step n))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 1050 Int64))
+  (call main (: 0 Int64))
+  (output (: 550 Int64)))
+
+(case
+  "oc9 a RECORD-payload Option accumulator — (Option (Record tot tag)) grounds from concrete next-states, no annotation on the (None) seed"
+  (input
+    (do
+      (effect R (op step (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          R
+          (None)
+          ((step
+              (v)
+              s
+              (match
+                s
+                ((Some rec)
+                  (resume (+ (. rec tot) (String.byte-len (. rec tag)))
+                    (Some (record (= tot (+ (. rec tot) v)) (= tag (. rec tag))))))
+                ((None _u) (resume 0 (Some (record (= tot 1) (= tag "ab"))))))))
+          (+ (R.step n) (+ (* 10 (R.step n)) (* 100 (R.step n))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 830 Int64))
+  (call main (: 0 Int64))
+  (output (: 330 Int64)))
+
 ; ── Result-STYLE sums (Ok/Err) through the effect thread (breaker rt) ────────────────────────────
 ; rt1 Ok/Err resume values with a DEPENDENT second dispatch (the falling state's sign flips Ok to
 ; Err; Ok-Ok / Ok-Err / Err rows); rt2 an Err SHORT-CIRCUITING a recursive Result walk (Ok
