@@ -35829,3 +35829,38 @@
   (output (: 16 Int64))
   (call main (: 0 Int64))
   (output (: 6 Int64)))
+
+; lpn1: nested LIST-IN-LIST pattern projection — a match over (List (List Int64)) whose arms
+; discriminate by OUTER length and project into the INNER lists (empty / singleton-empty /
+; singleton-singleton / two-element-head-with-rest / catch-all). All five arms exercised in one
+; packed result. Round-trips on the cadenza hop since #7920 (the keying-reconciliation list twin);
+; previously hop-1 declined. (breaker lp1 probe, promoted at v-cadenza-backend's ask.)
+(case
+  "nested list-in-list patterns discriminate by outer and inner length in one match"
+  (input
+    (do
+      (def
+        (classify (: xs (List (List Int64))))
+        (match
+          xs
+          (#list() 0)
+          (#list(#list()) 1)
+          (#list(#list(a)) (+ 10 a))
+          (#list(#list(a b) (.. _rest)) (+ 100 (+ a b)))
+          (#list(_h (.. _rest)) 999)))
+      (def
+        (main (: n Int64))
+        (+
+          (classify #list())
+          (+
+            (* 10 (classify #list(#list())))
+            (+
+              (* 100 (classify #list(#list(n))))
+              (+
+                (* 100000 (classify #list(#list(n 2) #list())))
+                (* 100000000 (classify #list(#list(1 2 3)))))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 99910701510 Int64))
+  (call main (: 0 Int64))
+  (output (: 99910201010 Int64)))
