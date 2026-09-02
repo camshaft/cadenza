@@ -269,7 +269,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 7 };
+    let arms = if depth == 0 { 2 } else { 8 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -319,7 +319,7 @@ fn gen_typefuzz_int<C: Choice>(
         }
         // Project an Int64 out of a freshly-built tuple/record (exercises tuple-proj / record-field
         // access — modeled T1.13/14). Both branches yield Int64, keeping the arm well-typed.
-        _ => {
+        6 => {
             let a = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
             if c.variant(2) == 0 {
@@ -327,6 +327,20 @@ fn gen_typefuzz_int<C: Choice>(
             } else {
                 format!("(. (record (= a {a}) (= b {b})) a)")
             }
+        }
+        // A let-bound lambda applied by NAME: `(let ((fN (fn ((: iM Int64)) <int-body>))) (fN <int-arg>))`.
+        // Exercises Fn introduction (T1.11) + CONCRETE-HEAD App (T1.12 — the oracle models application of
+        // a NAME, not an inline lambda, so the head must be a bound name to be judged). Returns Int64.
+        _ => {
+            let f = format!("f{}", *fresh);
+            *fresh += 1;
+            let p = format!("i{}", *fresh);
+            *fresh += 1;
+            let arg = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            iscope.push(p.clone());
+            let body = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            iscope.pop();
+            format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
         }
     }
 }
@@ -339,7 +353,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 7 };
+    let arms = if depth == 0 { 2 } else { 8 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -393,7 +407,7 @@ fn gen_typefuzz_bool<C: Choice>(
             format!("(let (({name} {val})) {body})")
         }
         // Project a Bool out of a freshly-built tuple/record (Bool-typed element/field → Bool).
-        _ => {
+        6 => {
             let a = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
             if c.variant(2) == 0 {
@@ -401,6 +415,19 @@ fn gen_typefuzz_bool<C: Choice>(
             } else {
                 format!("(. (record (= a {a}) (= b {b})) a)")
             }
+        }
+        // A let-bound lambda applied by NAME returning Bool: `(let ((fN (fn ((: iM Int64)) <bool-body>)))
+        // (fN <int-arg>))` — Fn intro + CONCRETE-HEAD App (the head must be a bound name to be judged).
+        _ => {
+            let f = format!("f{}", *fresh);
+            *fresh += 1;
+            let p = format!("i{}", *fresh);
+            *fresh += 1;
+            let arg = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
+            iscope.push(p.clone());
+            let body = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
+            iscope.pop();
+            format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
         }
     }
 }
