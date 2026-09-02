@@ -207,6 +207,77 @@
   (output (: 30 Int64)))
 
 (case
+  "a macro-introduced SIBLING type with a caller-spliced name binds visibly; its qualified ctor T.V rides on it"
+  (doc
+    "A macro may introduce a TOP-LEVEL `(type …)` at a statement position, not only a def. `(def (mktype
+           (quote name)) (quasiquote (type (unquote name) (Mk Int64))))` expands `(mktype W)` to `(type W
+           (Mk Int64))` spliced beside `main`. Because the TYPE NAME `W` is CALLER-SPLICED, the type binds
+           VISIBLY: the QUALIFIED constructor `W.Mk` (member projection on the type) RIDES ON `W`'s
+           visibility — `(match (W.Mk 5) (((. W Mk) x) x))` → `5`. Pins the v-spec-oracle gap#7 ruling: a
+           caller-spliced type name is registered in the type/ctor index after expansion (the load-time
+           synthesis froze before macros ran), and the qualified member path follows structurally. Without
+           the post-expansion type registration, `W` / `W.Mk` spuriously unbind CDZ0101.")
+  (input
+    (do
+      (def (mktype (quote name)) (quasiquote (type (unquote name) (Mk Int64))))
+      (mktype W)
+      (def (main) (match (W.Mk 5) ((W.Mk x) x)))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))
+
+(case
+  "a macro-introduced SIBLING type with a macro-internal name stays hygienic-local"
+  (doc
+    "The hygiene half: a spliced `(type Hidden …)` whose type NAME is a MACRO-TEMPLATE LITERAL (not
+           spliced from a caller argument) does NOT bind visibly at the caller's enclosing scope — a caller
+           reference to `Hidden` / `Hidden.Mk` is CDZ0101 unbound. Pins that the post-expansion type
+           registration is GATED on caller-origin provenance (only a caller-spliced type name is registered);
+           a macro-internal type name is never made caller-visible. Contrast the caller-spliced `W` above.")
+  (input
+    (do
+      (def (mkt (quote _u)) (quasiquote (type Hidden (Mk Int64))))
+      (mkt z)
+      (def (main) (match (Hidden.Mk 5) ((Hidden.Mk x) x)))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
+  "a macro-introduced type's BARE variant ctor follows the ctor name's own provenance (macro-internal is qualified-only)"
+  (doc
+    "Per-name provenance applies to the CONSTRUCTOR too: in `(type (unquote name) (Mk Int64))` the type
+           name `W` is caller-spliced (so `W` + qualified `W.Mk` are visible) but the variant name `Mk` is a
+           MACRO-TEMPLATE literal, so the BARE constructor `Mk` stays HYGIENIC-LOCAL — a bare `(Mk 5)` is
+           CDZ0101 unbound (reachable only qualified, `W.Mk`). The v-spec-oracle ruling's mixed case: the
+           qualified member path rides on the type's visibility (structural), while a bare ctor is a
+           separately-gated binding that leaks only when the ctor NAME is itself caller-spliced.")
+  (input
+    (do
+      (def (mktype (quote name)) (quasiquote (type (unquote name) (Mk Int64))))
+      (mktype W)
+      (def (main) (match (Mk 5) ((W.Mk x) x)))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
+  "a macro-introduced type with a caller-spliced bare ctor name binds the bare constructor visibly"
+  (doc
+    "The visible half of the bare-ctor provenance: when BOTH the type name and the variant name are
+           caller-spliced — `(def (mk2 (quote t) (quote c)) (quasiquote (type (unquote t) ((unquote c)
+           Int64))))` then `(mk2 Box Wrap)` → `(type Box (Wrap Int64))` — the BARE constructor `Wrap` binds
+           visibly (its name is caller-origin), so `(Wrap 5)` constructs and `(match (Wrap 5) (((. Box Wrap)
+           x) x))` → `5`. Completes the per-name gate: a caller-spliced ctor name enters the bare index, a
+           macro-internal one does not.")
+  (input
+    (do
+      (def (mk2 (quote t) (quote c)) (quasiquote (type (unquote t) ((unquote c) Int64))))
+      (mk2 Box Wrap)
+      (def (main) (match (Wrap 5) ((Box.Wrap x) x)))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
