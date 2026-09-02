@@ -1233,6 +1233,11 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
     if rec.no_other_errors {
         kids.push(form(&mut b, "no-other-errors", vec![]));
     }
+    // `(diagnostic-quality)` — the bare C1 opt-in marker carried verbatim to the grade side (like
+    // `(no-other-errors)`); `decode_test_run` reads it into `TestRun::diagnostic_quality`.
+    if rec.diagnostic_quality {
+        kids.push(form(&mut b, "diagnostic-quality", vec![]));
+    }
     // `(no-diagnostic "phrase")` — each case-level program-scoped absence pin carried verbatim (the phrase
     // as one string leaf); `decode_test_run` collects them into `TestRun::no_diagnostic`. One form per pin.
     for phrase in &rec.no_diagnostic {
@@ -1734,6 +1739,27 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
                 && tr.contains(r#"(no-diagnostic "unused binding")"#),
             "both pins shred into the test-run as their own forms: {tr}"
         );
+    }
+
+    /// A bare `(diagnostic-quality)` marker (the C1 opt-in) parses onto the Record and shreds into the
+    /// test-run as its own form — exactly what `cdz_corpus_grade::decode_test_run` reads into
+    /// `TestRun::diagnostic_quality`. Its ABSENCE leaves the flag off (opt-in, no accidental enrollment).
+    #[test]
+    fn diagnostic_quality_marker_reaches_shredded_test_run() {
+        let recs =
+            crate::read(r#"(case "q" (input 1_) (error CDZ0201) (diagnostic-quality))"#).unwrap();
+        assert!(
+            recs[0].diagnostic_quality,
+            "the marker parses onto the Record"
+        );
+        let tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            tr.contains("(diagnostic-quality)"),
+            "the marker shreds into the test-run as its own form: {tr}"
+        );
+        // Absent → off (opt-in).
+        let plain = crate::read(r#"(case "p" (input 1_) (error CDZ0201))"#).unwrap();
+        assert!(!plain[0].diagnostic_quality);
     }
 
     /// The DIAGNOSTIC-QUALITY facets + the `(warning …)` result kind reach the shredded `test-run.ast` as
