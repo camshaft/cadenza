@@ -5054,22 +5054,23 @@ fn live_objects_for_trial(
     trial_expect: &str,
 ) -> LiveObjectsCheck {
     let check = LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak);
-    // Under --guarded-all the must-reclaim-to-0 checks (`Default` opt-out + explicit `Expect(0)`) apply
-    // ONLY to a SCALAR-returning trial — and this now includes TRIAL 0, not just later trials. A trial that
-    // RETURNS A HEAP VALUE (its rendering starts `#`/`(`/`"`/… , OR an `output-byte-len` on a large
-    // String/Bytes/List) escapes that value WHOLE to the host, so its reachable-return count is nonzero at
-    // exit BY DESIGN — a =0 check there false-reds a CORRECT escape (breaker's szf1-3 >64-KiB escape-whole
-    // fences: no `(live-objects)` clause → `Default` → trial 0 was mis-red 16/16/36). Trial 0 previously
-    // returned the recorded check UNCONDITIONALLY, so it lacked the heap-return exclusion later trials
-    // already had — this unifies them. Non-guarded gate is unchanged (this whole clause is guarded-only), so
-    // no baseline flip; under-admit is the safe direction (a missed scalar leak stays uncaught, a correct
-    // heap escape never reds). `known-leak` stays `Off`; a positive `Expect(n>0)` keeps its recorded count.
-    if guarded_all
-        && matches!(
-            check,
-            LiveObjectsCheck::Default | LiveObjectsCheck::Expect(0)
-        )
-        && !trial_expect_is_scalar_return(trial_expect)
+    // HEAP-ESCAPING-RETURN exclusion (applies in BOTH modes, ALL trials incl. trial 0): a trial that RETURNS
+    // A HEAP VALUE — its rendering starts `#`/`(`/`"`/`{`/`[`, OR an `output-byte-len` on a String/Bytes/List
+    // — escapes that value WHOLE to the host, so its reachable-return count is NONZERO at exit BY DESIGN (a
+    // 64-KiB rope shows its ~16 cells, a 64-byte rope 6, a small inlined string 0 — the count scales with the
+    // ESCAPED VALUE, it is not a leak). The must-reclaim-to-0 checks (`Default` opt-out + explicit `Expect(0)`)
+    // MUST NOT apply to it: a =0 there false-reds a correct escape. This is NOT guarded-only — breaker's szf1-3
+    // `output-byte-len` >64-KiB escape-whole fences (no `(live-objects)` clause → `Default`) were mis-red
+    // 16/16/36 on the NON-GUARDED required gate too (a real gate-local fleet-red), so the exclusion must cover
+    // the non-guarded path. `trial_expect_is_scalar_return` is the classifier (true = heap-free scalar → keep
+    // the =0 check; false = heap-escape / trap / non-`output` → skip). `known-leak` is already `Off`; a
+    // positive `Expect(n>0)` KEEPS its recorded count (it asserts a specific escaped/retained cell count).
+    // Safe: a heap-return's =0 was ALWAYS a false-positive (the escaped value), so nothing real is lost; to
+    // leak-test a heap-returning case, pin `(live-objects N)`/`known-leak`.
+    if matches!(
+        check,
+        LiveObjectsCheck::Default | LiveObjectsCheck::Expect(0)
+    ) && !trial_expect_is_scalar_return(trial_expect)
     {
         return LiveObjectsCheck::Off;
     }
@@ -7523,46 +7524,46 @@ mod trap_grading_tests {
         let default_heap = rec(None, false); // opt-out default = must reclaim to 0
         let expect_residual = rec(Some(3), false);
         let leaker = rec(None, true);
-        // NON-GUARDED: trial 0 always uses the recorded check, regardless of return shape (baseline path).
-        for expect in [scalar, heap, byte_len] {
+        // TRIAL 0, SCALAR return, BOTH modes: uses the recorded check (a scalar must reclaim to 0 — the
+        // required-gate behavior; guarded-all keeps the same on trial 0).
+        for guarded in [false, true] {
             assert!(matches!(
-                live_objects_for_trial(&expect_zero, 0, false, expect),
+                live_objects_for_trial(&expect_zero, 0, guarded, scalar),
                 LiveObjectsCheck::Expect(0)
             ));
             assert!(matches!(
-                live_objects_for_trial(&default_heap, 0, false, expect),
+                live_objects_for_trial(&default_heap, 0, guarded, scalar),
                 LiveObjectsCheck::Default
             ));
             assert!(matches!(
-                live_objects_for_trial(&leaker, 0, false, expect),
+                live_objects_for_trial(&leaker, 0, guarded, scalar),
                 LiveObjectsCheck::Off
             ));
         }
-        // GUARDED-ALL, SCALAR return: trial 0 keeps the recorded must-reclaim-to-0 check.
-        assert!(matches!(
-            live_objects_for_trial(&expect_zero, 0, true, scalar),
-            LiveObjectsCheck::Expect(0)
-        ));
-        assert!(matches!(
-            live_objects_for_trial(&default_heap, 0, true, scalar),
-            LiveObjectsCheck::Default
-        ));
-        // GUARDED-ALL, HEAP-ESCAPING return (incl. `output-byte-len` — szf1-3): the Default/Expect(0)
-        // must-reclaim-to-0 check is SKIPPED even on TRIAL 0, because the escaped value is live at exit by
-        // design (a =0 there false-reds a correct escape). `known-leak` is `Off` regardless.
-        for expect in [heap, byte_len] {
-            assert!(matches!(
-                live_objects_for_trial(&expect_zero, 0, true, expect),
-                LiveObjectsCheck::Off
-            ));
-            assert!(matches!(
-                live_objects_for_trial(&default_heap, 0, true, expect),
-                LiveObjectsCheck::Off
-            ));
-            assert!(matches!(
-                live_objects_for_trial(&leaker, 0, true, expect),
-                LiveObjectsCheck::Off
-            ));
+        // TRIAL 0, HEAP-ESCAPING return (heap value render OR `output-byte-len` — szf1-3), BOTH modes: the
+        // Default/Expect(0) must-reclaim-to-0 check is SKIPPED (the escaped value is live at exit by design;
+        // a =0 there false-reds a correct escape — this is the szf fleet-red fix, and it covers the
+        // NON-guarded required gate, not just guarded-all). `known-leak` is `Off` regardless. A positive
+        // Expect(n>0) keeps its recorded count (asserts a specific escaped count) — unchanged.
+        for guarded in [false, true] {
+            for expect in [heap, byte_len] {
+                assert!(matches!(
+                    live_objects_for_trial(&expect_zero, 0, guarded, expect),
+                    LiveObjectsCheck::Off
+                ));
+                assert!(matches!(
+                    live_objects_for_trial(&default_heap, 0, guarded, expect),
+                    LiveObjectsCheck::Off
+                ));
+                assert!(matches!(
+                    live_objects_for_trial(&leaker, 0, guarded, expect),
+                    LiveObjectsCheck::Off
+                ));
+                assert!(matches!(
+                    live_objects_for_trial(&expect_residual, 0, guarded, expect),
+                    LiveObjectsCheck::Expect(3)
+                ));
+            }
         }
         // DEFAULT gate: every LATER trial skips the balance (baseline unchanged, no fleet flip).
         assert!(matches!(
