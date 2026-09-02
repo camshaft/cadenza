@@ -380,7 +380,7 @@ pass	Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-b
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a set of RECORD elements canonically
-pass	Set.to-list orders float-carrying sums discriminant-first then by float payload
+pass	Set.to-list over a float-carrying SUM is a coded CDZ0203 — a float-containing compound offers no total order (§319; concierge uniform-decline)
 pass	Set.to-list orders numerically across the fixnum/boxed representation seam
 pass	Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128
 pass	Set.to-list over Float32 elements enumerates by canonical byte order at f32 width
