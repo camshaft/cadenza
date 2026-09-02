@@ -5608,3 +5608,22 @@ c")))
         and the presence of `Symbol` in the list (both front-end diagnostic, backend-independent).")
   (input (do (def (main) (Ast.Sym 5)) (export main)))
   (error CDZ0201 (message "closest matches:") (message "Symbol")))
+
+(case
+  "a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)"
+  (doc
+    "The macro-side of active unquote-splicing (the enclosing-binding case is supported above): a macro
+           whose quote-param is a list should splice its elements into the expansion. `(mklist #list(1 2 3))`
+           with body `(quasiquote (List.len #list((unquote-splicing xs))))` should splice xs's 3 elements into
+           the `#list` literal → `(List.len #list(1 2 3))` → 3. Asserts the idealistic value; TODAY this
+           DECLINES (a macro quote-param operand to active `,@` is a deferred reify increment — the bailed
+           splice surfaces as a clean decline, not a miscompile), so it grades TODO and auto-flips to PASS when
+           macro-side active `,@` lands. (Distinct from the enclosing-`#list`-binding active `,@` above, which
+           is supported; this is the macro/quote-param operand path.)")
+  (input
+    (do
+      (def (mklist (quote xs)) (quasiquote (List.len #list((unquote-splicing xs)))))
+      (def (main) (mklist #list(1 2 3)))
+      (export main)))
+  (call main)
+  (output (: 3 Int64)))
