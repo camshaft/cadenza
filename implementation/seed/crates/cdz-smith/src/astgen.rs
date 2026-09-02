@@ -475,7 +475,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(33) {
+    match c.variant(34) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -577,6 +577,10 @@ fn gen_main_body<C: Choice>(
         // performing BOTH — so the E1 perform resolves ACROSS the intervening E2 handler frame to the
         // outer E1 handler (multi-frame handler-stack resolution), distinct from a single handler.
         32 => gen_effect_nested_body(c, out),
+        // An EFFECT × COLLECTION body: the handled body BUILDS a heap collection (list/map) whose elements
+        // are PERFORM results, consumed to a scalar — the effect-value × collection-marshal interaction
+        // (a feature cross the single-shape effect + collection arms never combine), value-comparable.
+        33 => gen_effect_collection_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -747,6 +751,37 @@ fn gen_effect_nested_body<C: Choice>(c: &mut C, out: &mut String) {
          (handle E2 0 ((o2 (p) s (resume {rv2} s))) (+ (E1.o1 {a}) (E2.o2 {b})))))"
     )
     .ok();
+}
+
+/// An EFFECT × COLLECTION body: the handled body BUILDS a heap collection (a `(list …)`) whose elements
+/// are PERFORM results, consumed to an Int64 (`List.len`, or `List.at 0` matched). Exercises the
+/// effect-value × collection-marshal INTERACTION — a feature cross the single-shape effect + collection
+/// arms never combine (a heap collection built from resumed values, crossing the boundary). Single-op
+/// tail-resume handler (state unchanged); small `0..=9` perform args; deterministic Int64. Form + resume
+/// choices drawn BEFORE the operand literals (cursor-exhaustion trap).
+fn gen_effect_collection_body<C: Choice>(c: &mut C, out: &mut String) {
+    let form = c.variant(2);
+    let rv = ["(+ p 1)", "p", "(* p 2)"][c.variant(3)];
+    let a = c.int_bounded(0, 9);
+    let b = c.int_bounded(0, 9);
+    let k = c.int_bounded(0, 9);
+    match form {
+        // a LIST of three perform results, consumed by `List.len` → 3 (the state-threaded performs run,
+        // the list holds their resume values).
+        0 => write!(
+            out,
+            "(do (effect E (op o (-> Int64 Int64))) (handle E 0 ((o (p) s (resume {rv} s))) \
+             (List.len (list (E.o {a}) (E.o {b}) (E.o {k})))))"
+        )
+        .ok(),
+        // a LIST of perform results, read at index 0 (the first perform's resume value), matched out.
+        _ => write!(
+            out,
+            "(do (effect E (op o (-> Int64 Int64))) (handle E 0 ((o (p) s (resume {rv} s))) \
+             (match (List.at (list (E.o {a}) (E.o {b})) 0) ((Some v) v) (None {k}))))"
+        )
+        .ok(),
+    };
 }
 
 /// A MULTI-OP effect body: `(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64))) (handle E 0
@@ -3101,6 +3136,40 @@ mod tests {
         }
         assert!(saw_two_ops, "should declare two ops (o1 + o2)");
         assert!(saw_both_performs, "should perform both ops (E.o1 + E.o2)");
+    }
+
+    /// `gen_effect_collection_body` emits a well-formed EFFECT × COLLECTION program (the handled body
+    /// builds a `(list …)` of PERFORM results, consumed by `List.len`/`List.at`) and every body COMPILES —
+    /// the effect-value × collection-marshal interaction the single-shape arms never combine. Asserts both
+    /// forms (List.len / List.at) are reached.
+    #[test]
+    fn gen_effect_collection_body_is_well_formed_and_compiles() {
+        let (mut saw_len, mut saw_at) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1867);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_collection_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            // Every one builds a list of performs inside a handle.
+            assert!(
+                body.contains("(handle E") && body.contains("(list (E.o "),
+                "effect-collection body must build a list of performs: {body}"
+            );
+            saw_len |= body.contains("(List.len (list (E.o ");
+            saw_at |= body.contains("(List.at (list (E.o ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "effect-collection body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_len, "should reach the List.len form");
+        assert!(saw_at, "should reach the List.at form");
     }
 
     /// `gen_effect_nested_body` emits a well-formed NESTED-HANDLER effect program (two effects, the E2
