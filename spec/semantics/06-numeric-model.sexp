@@ -5,6 +5,8 @@
 ; decline as todo, not disagreement. A generation that has not yet realized the extended numerics
 ; declines those cases (the seed realizes only the checked Int64 core and Float64 literals/equality —
 ; options/realized-capability-set/). Diagnostic codes are from options/diagnostics-schema/.
+(diagnostic-quality)
+
 (case "arithmetic within one integer type" (input (+ 2 3)) (output (: 5 Int64)))
 
 (case
