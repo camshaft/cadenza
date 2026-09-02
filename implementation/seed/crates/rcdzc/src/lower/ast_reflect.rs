@@ -670,6 +670,10 @@ pub(crate) fn expand_macros(db: &mut Db) {
     loop {
         rounds += 1;
         let mut changed = false;
+        // The macro-call nodes spliced THIS round — scope-skip seeded for them AFTER the parent-index
+        // rebuild below (a match ARM is a binding candidate detected via `parent_of`, so seeding it before
+        // the spliced arm has a parent would miss it → the arm-body binder unbinds, gap#6).
+        let mut spliced: Vec<StructId> = Vec::new();
         // Scan only nodes present at the START of the round; freshly-spliced nodes are handled next round
         // (after the memo invalidation below re-resolves them).
         let n = db.ast.structure.len();
@@ -712,8 +716,12 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 if src.0 as usize >= n {
                     db.ast.structure[src.0 as usize] = crate::ast::Struct::List(Vec::new());
                 }
-                // Seed the spliced subtree's scope so its names resolve at the call site.
-                db.extend_scope_skip_into_subtree(id);
+                // Defer scope-skip seeding to AFTER the round's parent-index rebuild (below): a match ARM
+                // is a binding candidate only via `parent_of` (it is a headless `(pattern body)` whose
+                // parent is a `match`), so seeding before the spliced arm has a parent would fail to mark
+                // it a candidate → its body binder would resolve UNBOUND (gap#6). A do-local `def`/`let`/`fn`
+                // candidate is head-name-detected and would seed fine here, but match arms need parents.
+                spliced.push(id);
                 // FOUNDATION PATCH (mrf1 Layer 1): a macro-spliced `(def (f p…) …)` is a FRESH
                 // post-load body absent from the load-time `def_by_body` index — its recursive
                 // self-call would miss `callee_def_index` and decline CDZ0900. Register the spliced
@@ -754,6 +762,12 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // the def's scheme stayed undetermined and its recursive call declined. Rebuild before the next
         // round re-resolves (and before infer/lower run) so every occurrence in the splice has a parent.
         db.rebuild_parent_index();
+        // NOW seed scope-skip for this round's spliced subtrees — parents are current, so a match ARM is
+        // correctly recognized as a binding candidate and its arm-body binder resolves (gap#6). Ordered
+        // AFTER the parent rebuild for exactly that reason.
+        for &sid in &spliced {
+            db.extend_scope_skip_into_subtree(sid);
+        }
         // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
         // pre-splice `Apply`; clearing `db.types` drops any type memoized on the reduced/copied body.
         db.resolved = crate::arena::Column::new();

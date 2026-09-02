@@ -309,3 +309,21 @@
       (export main)))
   (call main)
   (output (: 8 Int64)))
+
+(case
+  "a macro-introduced MATCH resolves its arm-pattern binders in the arm body (accessor macros)"
+  (doc
+    "The bread-and-butter accessor-macro class: a macro whose expansion is a `match` whose arm PATTERN
+           binds names its body uses. `(def (fst (quote e)) (quasiquote (match (unquote e) (#tuple(a _b)
+           a))))` expands `(fst #tuple(7 9))` to `(match #tuple(7 9) (#tuple(a _b) a))` → `7 : Int64`. Pins
+           that a macro-introduced match arm's pattern binder (`a`) resolves in the arm body: the expander
+           seeds the spliced subtree's scope AFTER rebuilding the parent index, so the arm — a headless
+           `(pattern body)` recognized as a binding scope only via its `match` PARENT — is a candidate and
+           its body binder resolves (without the after-parent ordering, the arm-body `a` unbinds CDZ0101).")
+  (input
+    (do
+      (def (fst (quote e)) (quasiquote (match (unquote e) (#tuple(a _b) a))))
+      (def (main) (fst #tuple(7 9)))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))
