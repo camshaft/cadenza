@@ -31609,7 +31609,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 33 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "zc2 dual-spine zip exiting at the OUTER arm after walking both spines to equal length"
@@ -31666,7 +31666,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 33001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "zx5 an exit arm that RETURNS the enclosing binder's tail (escape-gate fence: that drop must stay suppressed)"
@@ -31686,7 +31686,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 31 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a qualified nullary variant pattern resolves in a nested match on the same scrutinee"
@@ -35130,7 +35130,7 @@
   (output (: 1 Int64))
   (call main (: -3 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "csg2 a binding shared TWICE into one node, both children recursed, re-read after — the double-share fold guard"
