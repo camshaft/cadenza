@@ -18,11 +18,12 @@ This doc is the rubric the C1 lint asserts. It is grounded against the current e
 ## Scope of the lint
 
 C1 asserts over each **emitted coded diagnostic** the grader already parses (the structured faults
-`grade_diag_quality` reads). Two independent checks per fault:
+`grade_diag_quality` reads):
 
 1. **No forbidden phrase** — the message text contains none of the globally-forbidden substrings (§1).
-2. **Required tokens present** — for a fault whose code is in the required-token map (§2), the message
-   contains that code's mandatory tokens.
+   This is the sound, universal check and the ONLY one C1 enforces.
+2. ~~Required tokens present (per-code map)~~ — **WITHDRAWN, see §2**: the codes are umbrellas, so a
+   per-code required token mass-false-reds golden messages. Message *shape* stays in per-case pins.
 
 The check applies to the user-facing **message text of an emitted coded diagnostic ONLY** — never to
 Rust source comments, doc-comments, or the `Reject::unsupported(` / `Code::…` constructor names. (This
@@ -94,28 +95,40 @@ bare constructor names — do not attempt to lint those two words.
   (did-you-mean candidates, `` "`Some` needs its payload argument" ``, `` "`None` is nullary" ``, `"wrap
   the value in `Some`"`). NOT a Rust leak. (See the resolved calibration note in §1b.)
 
-## §2 — Per-code required-token map
+## §2 — Per-code required tokens — WITHDRAWN (2026-09-02): unsound for umbrella codes; use per-case pins
 
-For a coded fault, the tokens a golden message MUST contain. Start with these load-bearing codes; widen later.
-Match case-insensitively; "one of" = at least one pair/token present.
+**Status: the per-code required-token map is WITHDRAWN. §1 is the sound general lint; §2 must NOT be
+enforced.** The original §2 assumed each `CDZ####` code carries a **uniform** message template
+(so "every CDZ0203 says expected/found"). Corpus-wide survey (2026-09-02) disproves this: the rcdzc codes
+are **BANDS / umbrellas**, and a single code legitimately covers many distinct situations with different
+golden messages. A blanket per-code required token therefore **mass-false-reds golden messages**:
 
-| Code | Name | Required (message must contain) | Rationale |
-|---|---|---|---|
-| CDZ0203 | TypeMismatch | one of: (`expected` AND `found`) · (`should be` AND `but`) | expected/found is the core Rust-golden shape; grounded on "field `x` should be Int64, but this one is Bool" and "expected a tuple with 2 elements, but this one has 3" |
-| CDZ0101 | Unbound | `unbound` OR `not found` | names the failure; SHOULD additionally carry `did you mean`/`closest matches` when a near name exists (advisory — conditional, see §2-note) |
-| CDZ0210 | NonExhaustive | `not covered` OR `exhaustive` | names the uncovered case |
-| CDZ0213 | RedundantArm | `unreachable` OR `never reached` | names why the arm is dead |
-| CDZ0308 | UnreachableBranch | `unreachable` OR `never reached` | same shape as CDZ0213 |
-| CDZ0306 | UnusedBinding | `unused` | names the unused binding |
-| CDZ0307 | DiscardedValue | `never used` OR `discarded` | names the discarded value |
-| CDZ0301 | NumericMismatch | one of: (`expected` AND `found`) · `different` | numeric-domain expected/found |
-| CDZ0302 | IntOutOfRange | `range` | names the valid range (grounded on "the valid range is") |
+- **CDZ0203 (TypeMismatch)** is a general type-error umbrella. Golden messages include `` "`Box` takes 1
+  type argument" ``, `` "`helper` is a value, not a type" ``, `"not fully determined"`, `"function of arity
+  1"`, `"guard condition must be Bool"`, `"an Int64 and a String are different types"` — **none** contain
+  `expected`/`found`/`should be`. Requiring them would red the majority of CDZ0203 cases. (Even the
+  tuple-arity golden form `"expected a tuple with 2 elements, but this one has 3"` has `expected` + `but`
+  but no `found` and no `should be` → fails the shipped predicate.)
+- **CDZ0101 (Unbound)**: golden messages include `"names no definition"`, `` "unknown type `Nonesuch`" ``,
+  `"COMPILE-TIME-VISIBLE AST"`, `"not a type variable"` — none contain `unbound`/`not found`.
+- **CDZ0210 (NonExhaustive)**: `"map binding pattern is refutable"`, `"a set match must end in a catch-all"`
+  — none contain `not covered`/`exhaustive`.
+- **CDZ0301 (NumericMismatch)**: golden `"floating-point or rational quantity"` — no `expected`/`found`/`different`.
 
-**§2-note (advisory did-you-mean):** whether a message *should* carry a did-you-mean is **conditional**
-on a near-name existing, which the lint cannot know from the message alone. Do NOT make `did you mean` a
-hard requirement for CDZ0101; instead the corpus keeps its existing per-case `(fix …)`/`(message "did you
-mean")` pins for the cases where a near-name exists. The general lint asserts only the unconditional
-`unbound`/`not found` token.
+**Message SHAPE belongs in per-case pins, not a per-code blanket.** The corpus already asserts shape
+precisely and per-situation via `(error CODE (message "expected") (message "found"))` etc. — that is the
+right layer for "this specific case's message must say expected/found", because it is scoped to a case
+whose situation IS the expected/found shape. A per-code rule cannot distinguish CDZ0203-the-arity-error
+from CDZ0203-the-field-mismatch, so it cannot demand a shared token soundly.
+
+**What C1 enforces, then: §1 only.** The forbidden-phrase set is sound *universally* — no golden message
+ever contains deferral/future-promise or internal-leak vocabulary, regardless of which situation the code
+covers. That is the defensible corpus-wide golden-standard guarantee. `c1_missing_required_tokens` should
+be removed (or made an unconditional `None`) from the grader; keep `C1_FORBIDDEN_PHRASES`.
+
+(If a genuinely uniform code is later identified — one whose EVERY emitted golden message provably shares a
+token — a §2 entry could be re-added for that single code, proven against its full emitted-message breadth,
+not a representative sample. None of the surveyed codes qualify.)
 
 ## Grounding (why this set is false-positive-free on today's corpus)
 
@@ -134,9 +147,13 @@ Measured on `origin/main` (rcdzc src, excluding tests):
 
 ## Hand-off
 
-- `v-corpus-harness`: encode §1 + §2 as the C1 general lint; opt-in per scope first. `(b)` calibration
-  targets: the surface is largely clean, so the calibration set is small — primarily the `\bNone\b`/`\bSome\b`
-  word-boundary validation and confirming the CDZ0900 carve-out holds.
-- `v-diagnostics`: validate `\bNone\b`/`\bSome\b` against the full corpus once the scaffold lands; as the
-  lint flags any real weak message, rewrite it to golden standard co-landing its now-passing assertion `(c)`.
-- Widen §2 to the remaining CDZ codes incrementally as the load-bearing ones settle.
+- **C1 status (2026-09-02):** §1 forbidden-phrase lint = shipped (#7851) and sound — KEEP. Two calibrations
+  landed since: (1) drop `None`/`Some` (Cadenza Option constructors, not leaks); (2) **withdraw §2 entirely**
+  (per-code required tokens are unsound for the umbrella codes — see §2). `v-corpus-harness`: please remove
+  `None`/`Some` from `C1_FORBIDDEN_PHRASES` AND make `c1_missing_required_tokens` a no-op (or delete it +
+  its call at grade_run), so C1 enforces §1 only.
+- `v-diagnostics` (c) rollout: with §1-only C1, opt cases/chapters into `(diagnostic-quality)` and rewrite
+  any message the forbidden-phrase check flags, co-landing the marker. NOTE: `(diagnostic-quality)` grades
+  only on the **nix diagnostics bar** (the in-process gate is sidecar-blind), so opt-ins verify there.
+- Message *shape* assertions (expected/found, "not covered", …) stay as **per-case** `(message …)` pins,
+  which the corpus already supports and which are scoped to the situation — not a per-code blanket.
