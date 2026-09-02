@@ -431,6 +431,16 @@ def matchPatClassify? (m : Ast.Module) (vs : List (ByteArray × Option Ty)) (scr
   | some (.list pc) =>
     (match m.headName? (.list pc) with
      | some hp =>
+       if hp == ".".toUTF8 then
+         -- T1.28 — QUALIFIED nullary pattern `(. Q M)` (= `Q.M`): `M` must be a NULLARY variant of the
+         -- scrutinee sum (`M ∈ vs`, payload none) AND `Q` its declaring type name (`userSumMap`). Covers {M}.
+         (match (pc[1]?).bind (Eval.nameOf? m), (pc[2]?).bind (Eval.nameOf? m) with
+          | some q, some mem =>
+            (match variantPayload? mem, (userSumMap m).bind (fun mp => (mp.find? (fun e => e.1 == mem)).map (·.2.1)) with
+             | some none, some tn => if tn == q then some ([mem], false, []) else none
+             | _, _ => none)
+          | _, _ => none)
+       else
        -- A modeled variant pattern. Its payload type is `.unit` for a NULLARY variant (None/Less/…), else
        -- the variant's payload `τp` (Some/Ok/Err). Patterns are UNIFORMLY `(Ctor binder)` (spec
        -- core-semantics.md): `(Some x)`, `(None _)`, `(Ok _)`. A nullary variant ALSO admits the bare
@@ -457,7 +467,29 @@ def matchPatClassify? (m : Ast.Module) (vs : List (ByteArray × Option Ty)) (scr
              | none => none)
           else none                                             -- over-applied pattern → decline
         | none => none)                                        -- a foreign / user constructor pattern → decline
-     | none => none)
+     | none =>
+       -- T1.28 — QUALIFIED payload pattern `((. Q M) binder)` (= `(Q.M binder)`): the head is `(. Q M)`
+       -- (a list, so `headName?` is none). `M` must be a variant of the scrutinee sum and `Q` its declaring
+       -- type; one flat binder/wildcard binds the payload. (Nullary `(. Q M)` with no binder is the case above.)
+       (match Eval.qualHead? m pc with
+        | some (q, mem) =>
+          (match variantPayload? mem, (userSumMap m).bind (fun mp => (mp.find? (fun e => e.1 == mem)).map (·.2.1)) with
+           | some payloadOpt, some tn =>
+             if tn != q || pc.size != 2 then none
+             else (match pc[1]? with
+                   | some subId =>
+                     (match (m.nodes[subId]? : Option Ast.Node) with
+                      | some (Ast.Node.atom sl) =>
+                        (match (m.leaves[sl]? : Option Ast.Leaf) with
+                         | some (Ast.Leaf.name sb) =>
+                           if sb == "_".toUTF8 then some ([mem], false, [])
+                           else if (variantPayload? sb).isSome then none
+                           else some ([mem], false, [(sb, match payloadOpt with | some τp => τp | none => .unit)])
+                         | _ => none)
+                      | _ => none)
+                   | none => none)
+           | _, _ => none)
+        | none => none))
   | none => none
 
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
@@ -1758,6 +1790,22 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[19, 9, 12, 15, 18], .atom 7, .list #[21], .atom 6, .list #[23, 22, 20],
                            .atom 13, .atom 7, .list #[25, 26], .atom 0, .list #[28, 5, 24, 27]],
                 root := 29 } == .wellTyped (.int 64 true))
+-- T1.28 (user sum, QUALIFIED patterns): `(do (type C R G B) (def (main) (match C.R (C.R 1) (C.G 2) (C.B 3)))
+-- (export main))` → WellTyped Int64. The common corpus form: both the scrutinee AND the arm patterns are
+-- qualified `C.R`/`C.G`/`C.B` = `(. C _)`; each covers its variant of C, exhaustive → Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "type".toUTF8, .name "C".toUTF8, .name "R".toUTF8,
+                            .name "G".toUTF8, .name "B".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                            .name "match".toUTF8, .name ".".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .intLit false .dec (ByteArray.mk #[3]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[0, 1, 2, 3, 4],
+                           .atom 9, .atom 2, .atom 3, .list #[6, 7, 8], .atom 9, .atom 2, .atom 3,
+                           .list #[10, 11, 12], .atom 10, .list #[13, 14], .atom 9, .atom 2, .atom 4,
+                           .list #[16, 17, 18], .atom 11, .list #[19, 20], .atom 9, .atom 2, .atom 5,
+                           .list #[22, 23, 24], .atom 12, .list #[25, 26], .atom 8,
+                           .list #[28, 9, 15, 21, 27], .atom 7, .list #[30], .atom 6, .list #[32, 31, 29],
+                           .atom 13, .atom 7, .list #[34, 35], .atom 0, .list #[37, 5, 33, 36]],
+                root := 38 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
