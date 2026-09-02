@@ -229,8 +229,21 @@ fn doc_value_node(
         // `Symbol.of` is a bare `Name` head (sugared); the argument is the symbol text as a `Leaf::Str`
         // (`"…"`, NOT `#"…"`). Rust rep is a `String` (Symbol erases to String).
         Ty::Symbol => {
+            // Head = the STRUCTURAL member node `(. Symbol of)` (`Leaf::Member`), NOT a flat `Name
+            // "Symbol.of"`. The wasm value_codec builds — and cdz-run RENDERS — a Symbol result UNSUGARED as
+            // `((. Symbol of) "…")` (verified: `cdz run` prints `((. Symbol of) "escaping-symbol")`, the
+            // const path uses `lower::member_access`, structural). A flat `Name "Symbol.of"` is a
+            // structurally-DIFFERENT binary-AST → cdz-smith rust-vs-wasm fuzz false-mismatch (Symbol is in the
+            // fuzz grammar since #7732; v-runtime/breaker co-diagnosed). `Builder::member` takes two nodes, so
+            // bind recv + key first (two `__b` borrows can't overlap in one call, E0499). (NOTE: Qty.of and
+            // the Unit.* heads render FLAT in the value_codec — `cdz run` prints `(Qty.of 5.0 (Unit.base …))`
+            // — so ONLY the Symbol head is structural; do NOT "generalize" this to Qty/Unit.)
+            let recv = fresh(ctr);
+            out.push_str(&format!("    let {recv} = __b.name(\"Symbol\");\n"));
+            let key = fresh(ctr);
+            out.push_str(&format!("    let {key} = __b.name(\"of\");\n"));
             let head = fresh(ctr);
-            out.push_str(&format!("    let {head} = __b.name(\"Symbol.of\");\n"));
+            out.push_str(&format!("    let {head} = __b.member({recv}, {key});\n"));
             let s = fresh(ctr);
             out.push_str(&format!(
                 "    let {s} = __b.atom_leaf(cadenza_ast::ast::Leaf::Str(({val_expr}).as_str().into()));\n"
