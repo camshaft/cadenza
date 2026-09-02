@@ -1,5 +1,7 @@
 ; Effects and handlers (part 3 of 3) — continuation of 14-effects-and-handlers.sexp, split 2026-08-11
 ; for parallel-append throughput (glob-enumerated spec/semantics/*.sexp; baselines key on description). Same genre.
+(diagnostic-quality)
+
 (case
   "op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row"
   (input
