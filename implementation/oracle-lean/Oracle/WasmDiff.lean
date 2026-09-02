@@ -34,15 +34,47 @@ inductive Verdict where
   | skip (reason : String)
   deriving BEq, Inhabited
 
-/-- Compare the Core reference (`reduce coreAst`) against the wasm run (`runWasmWith …`) for one trial.
-Trap-vs-trap / diverges-vs-diverges agree WITHOUT comparing messages (the two interpreters word them
-differently); value-vs-value uses `valueEqSpec` (float-aware: `NaN`/`-0.0` handled per spec). Any
+/-- The typed ZERO value for an ANNOTATED scalar param spec `(: name Ty)` (param-main zero-init, Option A —
+coordinated with v-wasm-oracle #7819, which passes the matching wasm-valtype zeros): `Int*`/`UInt*` → `.int 0`,
+`Bool` → `.bool false`, `Float32/64` → `.f64 0.0`. `none` for a bare/unannotated param or a non-scalar /
+unmodeled annotation → the caller SKIPs the whole param-main (sound; both sides otherwise compute `f(0⃗)`). -/
+def paramZero? (m : Ast.Module) (specId : Nat) : Option Value :=
+  match m.nodes[specId]? with
+  | some (Ast.Node.list pc) =>
+    if m.headName? (Ast.Node.list pc) == some ":".toUTF8 then
+      (match pc[2]? with
+       | some tid =>
+         (match Eval.parseIntTy? m tid with
+          | some _ => some (.int 0)
+          | none =>
+            (match Eval.nameOf? m tid with
+             | some nm => if nm == "Bool".toUTF8 then some (.bool false)
+                          else if nm == "Float64".toUTF8 || nm == "Float32".toUTF8 then some (.f64 0.0)
+                          else none
+             | none => none))
+       | none => none)
+    else none
+  | _ => none
+
+/-- Compare the Core reference (`reduce`/`execute` on `coreAst`) against the wasm run (`runWasmWith …`) for
+one trial. Trap-vs-trap / diverges-vs-diverges agree WITHOUT comparing messages (the two interpreters word
+them differently); value-vs-value uses `valueEqSpec` (float-aware: `NaN`/`-0.0` handled per spec). Any
 `unsupported` (either side) → `skip`; any other cross-shape (e.g. Core `.value` vs wasm `.trap`) → `diverge`
 (a genuine miscompile signal). `errReturn` never reaches a program's top-level outcome (the function boundary
 converts it) — treated as `skip` defensively. -/
 def differential (drive : Driver) (coreAst : Ast.Module) (coreWat : String)
     (rtBytes : ByteArray) (trial : Trial) : Verdict :=
-  let core := Oracle.reduce coreAst
+  -- A NULLARY main → `reduce`. A PARAM-taking main → apply Core `main` to typed ZEROS matching its
+  -- annotated scalar param types (v-wasm's driver passes the same wasm-valtype zeros), so both compute
+  -- `f(0⃗)`. A bare/non-scalar param → `.unsupported` (skip) — zero-init is undefined there.
+  let core : Outcome :=
+    match Eval.mainParamsBody? coreAst with
+    | some (specs, _) =>
+      if specs.isEmpty then Oracle.reduce coreAst
+      else (match specs.toList.mapM (paramZero? coreAst) with
+            | some zeros => Oracle.execute coreAst zeros.toArray
+            | none => .unsupported "wasm-diff: param-main with a bare / non-scalar param — zero-init skip")
+    | none => Oracle.reduce coreAst
   let wasm := runWasmWith drive coreWat rtBytes trial
   match core, wasm with
   | _, .unsupported r => .skip r
@@ -75,6 +107,15 @@ private def _progMain (n : UInt8) : Ast.Module :=
 -- wasm returns a DIFFERENT value (6 ≠ 5) → DIVERGE (the miscompile signal, both outcomes carried).
 #guard differential (fun _ _ => .ok #[.i64 6]) (_progMain 5) "(module)" (rt "Int") { entry := "main" }
        == .diverge (.value (.int 5)) (.value (.int 6))
+-- A PARAM-taking main `(do (def (main (: x Int64)) x) (export main))`: the Core side applies `main` to a
+-- typed ZERO (.int 0) → `main(0) = 0`; the stub wasm run returns i64 0 → AGREE (both compute f(0)).
+private def _progParamMain : Ast.Module :=
+  { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                .name "x".toUTF8, .name "Int64".toUTF8, .name "export".toUTF8],
+    nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 2, .list #[4, 3], .atom 4,
+               .atom 1, .list #[7, 5, 6], .atom 6, .atom 2, .list #[9, 10], .atom 0, .list #[12, 8, 11]],
+    root := 13 }
+#guard differential (fun _ _ => .ok #[.i64 0]) _progParamMain "(module)" (rt "Int") { entry := "main" } == .agree
 -- wasm TRAPs while Core produces a value → DIVERGE.
 #guard differential (fun _ _ => .trap "unreachable") (_progMain 5) "(module)" (rt "Int") { entry := "main" }
        == .diverge (.value (.int 5)) (.trap "unreachable")
