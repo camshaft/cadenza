@@ -4505,9 +4505,21 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // the 4511 guard below). When eligible, DON'T decline here — route to `thread_returning_tagged` at the
     // threading fork. Otherwise the safe-floor decline stands (no miscompile ever ships).
     let calls_mutual = callee_calls_other_recursive_def(db, orig_body, callee_def);
+    let all_tail = recursive_self_calls_all_tail(db, orig_body, callee_def);
+    let off_tail = abortive_perform_off_tail(db, orig_body, ctx, true);
+    // ACCUM-OFF-TAIL (13175): accumulator-introduction rewrote a NON-tail associative abortive recursion
+    // `(+ (loop (- k 1)) (if c (E.bail) k))` into a TAIL self-call whose ACCUMULATOR ARG carries the abort —
+    // so ALL self-calls are tail (`all_tail`) yet the abort is OFF-tail (`off_tail`). Route this shape to the
+    // tagged-return CC (`thread_returning_tagged` distributes the abort out of the arg and short-circuits the
+    // self-call on the abort tag); the threader DECLINES any sub-shape it cannot model, so routing never
+    // miscompiles. NARROW: gated on `!ctx.abortive.is_empty()` (below), so a RESUMPTIVE accumulator recursion
+    // (rw1/rw3/rwmatch — no abortive arm → empty `ctx.abortive`) is UNTOUCHED.
+    let accum_off_tail = all_tail && off_tail && !ctx.abortive.is_empty();
     let tagged_abort = !ctx.abortive.is_empty()
         && ctx.slots.len() == 1
-        && !abortive_perform_off_tail(db, orig_body, ctx, true)
+        // An OFF-tail abort normally vetoes tagged mode (the safe floor) — EXCEPT the accum-off-tail shape,
+        // which the tagged threader now models (distributes the abort out of the accumulator arg).
+        && (!off_tail || accum_off_tail)
         // A CALLER-OBSERVED out-state (`force_multivalue`, the sr5 family) already folds via the MULTI-VALUE
         // path (decided at ~4650, AFTER this point). Exclude it here so tagged mode — computed earlier —
         // does NOT preempt the multi-value tuple threading that case relies on. (Same `orig_body`/`ctx.key`
@@ -4519,13 +4531,16 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         //     abortive callee whose abort must abandon a pending op at the OUTER call site;
         //   * a MUTUAL SCC — `ev`↔`od` where the cross-def call is non-tail (`(+ 1 (od …))`); the tagged threader
         //     treats a call to ANY SCC member as a recursive tag-check-short-circuit, so a partner's abort
-        //     propagates its tag up the pending frames. `thread_returning_tagged` handles all three; it DECLINES
-        //     (→ safe floor) any sub-shape v1 does not model, so relaxing the gate never miscompiles.
+        //     propagates its tag up the pending frames.
+        //   * the ACCUM-OFF-TAIL shape (13175) — a tail self-call whose accumulator arg carries the abort.
+        // `thread_returning_tagged` handles all four; it DECLINES (→ safe floor) any sub-shape v1 does not
+        // model, so relaxing the gate never miscompiles.
         // A tail-recursive callee that ALREADY folds via the ordinary tail path (annotated-walk-and-bail) is NOT
-        // rerouted: it is neither non-tail-self, forced, nor mutual, so no trigger fires.
-        && (!recursive_self_calls_all_tail(db, orig_body, callee_def)
+        // rerouted: it is neither non-tail-self, forced, mutual, nor accum-off-tail, so no trigger fires.
+        && (!all_tail
             || db.force_tagged_abort.contains(&callee_def)
-            || calls_mutual);
+            || calls_mutual
+            || accum_off_tail);
     if !ctx.abortive.is_empty()
         && !recursive_self_calls_all_tail(db, orig_body, callee_def)
         && !tagged_abort
@@ -4998,6 +5013,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
                 // threader treats a call to ANY member as a recursive call (tag-check-short-circuit), so a
                 // mutual partner's abort propagates its tag up through the pending frames the same as a self-call.
                 let scc = mutual_scc_of(db, callee_def, ctx);
+                let _ = accum_off_tail; // the accum shape is handled inside thread_returning_tagged's self-call arm
                 thread_returning_tagged(db, orig_body, state_refs, ctx, callee_def, &scc)?
             }
         } else if multivalue {

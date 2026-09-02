@@ -228,6 +228,58 @@ pub(crate) fn build_spec_call(
 ///   * a pure leaf → `#tuple(0 value)`.
 ///
 /// Returns `None` (clean decline → the 4499 safe-floor fallback stays) for any shape v1 does not model.
+/// ACCUM-OFF-TAIL (13175): if `node` (a self-call ARGUMENT after the entry hoist) contains an UNCONDITIONAL
+/// abortive perform — `(+ acc (E.bail))` — return the abort tuple `#tuple(1 <arm-value>)` it collapses to (the
+/// abort fires in strict eval order before the enclosing self-call, abandoning it). `None` when the arg has no
+/// abort, OR when its abort is CONDITIONAL (under an `if`/`match` the hoist did not lift — collapsing then
+/// would be unsound, so it declines to the safe floor). Mirrors the perform-leaf arm's arm-value computation.
+fn abortive_arg_tuple(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+    // A CONDITIONAL abort in the arg means the hoist did not fully lift it — do NOT collapse (unsound).
+    if crate::effects::reduce::subtree_has_conditional_abortive(db, node, ctx, false) {
+        return None;
+    }
+    // Find the (unconditional) abortive perform anywhere in the arg.
+    fn find_abort(
+        db: &mut Db,
+        node: StructId,
+        ctx: &HandlerCtx,
+    ) -> Option<(StructId, Vec<StructId>)> {
+        if let Resolved::Apply { head, args } = resolved_of(db, node)
+            && let Some((decl, idx)) = is_perform(db, head, ctx)
+            && ctx.abortive.contains(&(decl, idx))
+        {
+            return Some((head, args.to_vec()));
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => {
+                children.iter().find_map(|&c| find_abort(db, c, ctx))
+            }
+            crate::ast::Struct::Atom(_) => None,
+        }
+    }
+    let (head, perform_args) = find_abort(db, node, ctx)?;
+    let (decl, idx) = is_perform(db, head, ctx)?;
+    let arm = ctx.arms.get(&(decl, idx))?.clone();
+    // A state-reading abort arm is not modeled here (mirror the perform-leaf arm's guard).
+    if count_param_refs(db, arm.body, arm.state) != 0 {
+        return None;
+    }
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    if arm.params.len() == perform_args.len() {
+        for (&p, &a) in arm.params.iter().zip(perform_args.iter()) {
+            subst.insert(p, a);
+        }
+    } else if arm.params.len() == 1 && perform_args.is_empty() {
+        let unit = db.push_name("unit");
+        subst.insert(arm.params[0], unit);
+    } else {
+        return None;
+    }
+    let abortval = crate::eval::beta_reduce(db, arm.body, &subst);
+    let abortval = copy_pure(db, abortval);
+    Some(build_tag_tuple(db, 1, abortval))
+}
+
 pub(crate) fn thread_returning_tagged(
     db: &mut Db,
     body: StructId,
@@ -301,6 +353,46 @@ pub(crate) fn thread_returning_tagged(
             // tagged tuple — propagate it. Args must be pure in v1. `scc` = the recursive group (size 1 for a
             // self-recursive callee; >1 for a mutual SCC — a partner call is threaded identically).
             if callee_def_index_of(db, head).is_some_and(|i| scc.contains(&i)) {
+                // ACCUM-OFF-TAIL (13175): a self-call ARG may carry a CONDITIONAL abort — `(loop$acc (- k 1)
+                // (+ acc (if (= k 2) (E.bail) k)))`. LIFT it: `hoist_conditional_abort` distributes the strict
+                // op in the arg → `(if c (+ acc (E.bail)) (+ acc k))`; then DISTRIBUTE the self-call into the
+                // branches → `(if c (loop$acc (- k 1) (+ acc (E.bail))) (loop$acc (- k 1) (+ acc k)))` and
+                // re-thread. The aborting branch collapses (below); the normal branch is the spec call. Only
+                // when the lifted `if`'s condition is pure (it duplicates into both branches).
+                for (i, &a) in args.iter().enumerate() {
+                    if crate::effects::reduce::subtree_has_conditional_abortive(db, a, ctx, false) {
+                        let hoisted = crate::effects::reduce::hoist_conditional_abort(db, a, ctx);
+                        if let Resolved::If { cond, then_, else_ } = resolved_of(db, hoisted)
+                            && !subtree_performs(db, cond, ctx)
+                        {
+                            let build_call = |db: &mut Db, branch: StructId| -> StructId {
+                                let children: Vec<StructId> = std::iter::once(head)
+                                    .chain(
+                                        args.iter()
+                                            .enumerate()
+                                            .map(|(j, &b)| if j == i { branch } else { b }),
+                                    )
+                                    .collect();
+                                db.push_list(children)
+                            };
+                            let then_call = build_call(db, then_);
+                            let else_call = build_call(db, else_);
+                            let if_head = db.push_name("if");
+                            let new_if = db.push_list(vec![if_head, cond, then_call, else_call]);
+                            return thread_returning_tagged(
+                                db, new_if, states, ctx, callee_def, scc,
+                            );
+                        }
+                    }
+                }
+                // A self-call ARG carrying a BARE (UNCONDITIONAL) abort — `(loop$acc (- k 1) (+ acc (E.bail)))`
+                // (the aborting branch after the distribution above). The abort fires in strict eval order
+                // BEFORE the call → it ABANDONS the self-call → the whole call is the abort tuple.
+                for &a in args.iter() {
+                    if let Some(t) = abortive_arg_tuple(db, a, ctx) {
+                        return Some(t);
+                    }
+                }
                 if args.iter().any(|&a| {
                     subtree_performs(db, a, ctx) || contains_recursive_call(db, a, callee_def)
                 }) {
