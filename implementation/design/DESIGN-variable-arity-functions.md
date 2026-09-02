@@ -511,3 +511,49 @@ compile-time error (A.4).
 v-ast-compound owns the value-position `(.. v)` marker + segment-and-fold; the call-arg site is a NEW
 consumer — split territory so the recognizer (`spread_operand`) stays one shared idiom. v-inference for
 the tuple-expansion typing + list-rest concat typing + the const-param-at-position rule.
+
+### A.7 Implementation note — expansion MUST run at type-check time (learned from #7712)
+
+> **Status:** DESIGN NOTE — DRAFT FOR OPERATOR REVIEW (do NOT auto-merge). Records the timing
+> constraint discovered while landing #7712 so the remaining two cases (A.5 increments 7–9) are built
+> with the correct expansion phase; the earlier addendum framed the expansion as a *lowering* step,
+> which is insufficient for the fixed-params callee.
+
+**What #7712 shipped (all the common paths):** a single-source **transparent resolve** in
+`resolve.rs` (`resolved_of`, before `compute`) resolves a call-arg `(.. operand)` node structurally
+*as the operand* (no `type_of` recursion) when the parent is a non-construction application AND either
+the operand is a syntactic tuple OR the callee `callee_is_varargs`. `apply_lambda_uncached` then
+expands the marker via the AST (literal-tuple splice; per-slot `(. t i)` for a tuple Ref/Param;
+list-rest gather). This fixes: literal-tuple splat into ANY callee, tuple-var splat into a **varargs**
+callee, and mixed/multi list-splat (`f(a, .. xs)`, `f(.. a, .. b)`).
+
+**The two cases still declining (both decline cleanly — CDZ0201/CDZ0203, never miscompile):**
+1. **param-relay** — a tuple **Ref/Param** splat into a **non-varargs, fixed-params** callee, e.g.
+   `def relay(t: Tuple(A B C)) = a3(.. t)`.
+2. **non-ref-operand materialize** — `(.. <expr>)` where the operand is not a bare Ref/Param and must
+   be evaluated once before its `n` projections.
+
+**Why resolve-time transparency is not enough for case 1.** Making `(.. t)` resolve *as* the tuple
+lets it type **as the tuple** — so `check_application` then unifies the whole `Tuple(A B C)` against the
+callee's **first fixed parameter** (e.g. `A = Int64`) and reports `CDZ0203 annotation type Int64 does
+not match value type (Tuple …)` — *before* any positional expansion runs. The expansion is invisible
+to the type checker because it lives in `apply_lambda_uncached` (a reduce/lower-adjacent phase) and in
+resolve (which only rewrites the node's *identity*, not the call's **arity**).
+
+**The fix is a type-time call-arg expansion pass.** `(.. t)` in a call-argument list must be expanded
+into its `n` positional projection args **before `check_application` types the call** — i.e. the arity
+rewrite `(f a (.. t) b)` → `(f a (. t 0) (. t 1) (. t 2) b)` must be observable to the type checker,
+not just the reducer. Concretely, the pass:
+- runs where call arguments are assembled for typing (`collect_node`'s `Resolved::Apply` arm →
+  `infer/application.rs` `check_application`), so each projected slot is typed as an ordinary
+  positional arg against the callee's corresponding fixed param;
+- reads the operand's tuple arity from its **type** (`Tuple.size` on the inferred `Ty::Tuple`), which
+  requires the operand already be typed — so the expansion is a *pre-pass over the arg list keyed on
+  the operand's inferred type*, distinct from the pure-structural resolve guard;
+- for case 2, binds the operand once (self-keyed `Core::Let` / `materialize_row_op_operand`) so the `n`
+  projections share one evaluation — the materialize half of the same pass.
+
+This unifies both remaining cases under **one** designed pass and leaves the resolve-time transparency
+of #7712 in place for the varargs/list-splat paths it correctly handles. It is deliberately NOT a
+monitor-tick patch: two prior CI regressions (#7612 round-trip, #7629 diagnostic) came from touching
+this seam reactively, so it is scoped here as increment 7's real shape.
