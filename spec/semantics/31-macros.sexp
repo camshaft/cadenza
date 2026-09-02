@@ -74,6 +74,45 @@
   (output (: 42 Int64)))
 
 (case
+  "a macro-introduced SIBLING def with a caller-spliced name binds visibly at the enclosing scope"
+  (doc
+    "An expansion may introduce a TOP-LEVEL sibling def, not only a do-local one. `(def (mkdef (quote nm))
+           (quasiquote (def (unquote nm) 43)))` expands `(mkdef answer)` to `(def answer 43)` spliced beside
+           `main` in the root `do`. Because the def's NAME is SPLICED FROM A CALLER ARGUMENT (`,nm` = the
+           caller's `answer`, use-site identity — the dir-1 unquoted-var rule), the introduced def BINDS
+           VISIBLY in the enclosing scope: `(def (main) answer)` resolves to it → `43`. Pins the v-spec-oracle
+           gap#4 ruling (visible half): a root-`do` sibling def whose name is caller-spliced is registered in
+           the top-level def index after expansion (the load-time scan froze before macros ran, so without
+           the post-expansion registration `answer` spuriously unbinds CDZ0101).")
+  (input
+    (do
+      (def (mkdef (quote nm)) (quasiquote (def (unquote nm) 43)))
+      (mkdef answer)
+      (def (main) answer)
+      (export main)))
+  (call main)
+  (output (: 43 Int64)))
+
+(case
+  "a macro-introduced SIBLING def with a macro-internal name stays hygienic-local, not enclosing-visible"
+  (doc
+    "The hygiene half of the gap#4 ruling: a sibling def whose NAME is a MACRO-TEMPLATE LITERAL (NOT
+           spliced from a caller argument) does NOT bind visibly at the caller's enclosing scope — it stays
+           hygienic-local, exactly as a template binder is preserve-by-default hygienic. `(def (mkfixed
+           (quote _u)) (quasiquote (def fixedName 7)))` splices `(def fixedName 7)` beside `main`, but
+           `fixedName` is a template literal, so a caller reference `(def (main) fixedName)` does NOT resolve
+           to it — CDZ0101 unbound. Pins that the post-expansion top-level registration is GATED on
+           caller-origin provenance (only a caller-spliced name is registered); a macro-internal name is
+           never made caller-visible. Contrast the caller-spliced case above (`answer` → 43).")
+  (input
+    (do
+      (def (mkfixed (quote _u)) (quasiquote (def fixedName 7)))
+      (mkfixed zzz)
+      (def (main) fixedName)
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
