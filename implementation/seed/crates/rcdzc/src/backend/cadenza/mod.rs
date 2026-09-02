@@ -952,9 +952,22 @@ fn emit_def(
             let ty_node = b.name(rt.render_name(&db.name_ctx()).as_str());
             b.list(vec![colon, body_node, ty_node])
         }
-        // Thread the world-declared export RESULT type (typed-WIT-export boundary) as the body's `expected`;
-        // `None` when there is no world / no matching export member (prior behavior).
-        _ => emit_expr(db, b, body, world_result_ty.clone(), &mut env, emitted)?,
+        // Thread the world-declared export RESULT type (typed-WIT-export boundary) as the body's `expected`,
+        // falling back to the def's own RESULT type when there is no world: the body MUST have the def's
+        // result type, so it is the correct `expected` for an under-determined / erased-peel body. This is
+        // what lets an erased-newtype-return fold — a body that folded down to a nominal-PRODUCING node (a
+        // recursive `Core::Call` returning `Nat`) sitting where the def returns the INNER (`Int64`) — recover
+        // the peel: the emit sees `expected = inner` at that node and re-emits it viewed as the inner so the
+        // `Core::Call` erased-return peel `(match (mk k) ((Nat.Mk v) v))` reconstructs the inner (rb4). Purely
+        // additive — a determined body whose type already equals the result type ignores the matching expected.
+        rt_opt => emit_expr(
+            db,
+            b,
+            body,
+            world_result_ty.clone().or(rt_opt),
+            &mut env,
+            emitted,
+        )?,
     };
     // If the body PERFORMED any host-delegated effect (a `Core::HostCall`), wrap it in ONE
     // `(host (E1 E2 …) <body>)` delegation so each re-emitted perform `((. E o) …)` re-lowers to a
@@ -1215,7 +1228,27 @@ fn emit_expr_viewed(
                         .to_string(),
                 ));
             }
-            match nominal_disposition(db, id, decl) {
+            // ERASED-PEEL CONTEXT (rb4): the node PRODUCES this newtype (`eff_ty` is the nominal) but the
+            // surrounding context wants its INNER (`expected == inner`) — an `unwrap`-fold peeled the outer
+            // destructure over a nominal-PRODUCING node (a recursive `Core::Call` whose result IS the newtype),
+            // leaving the producer typed as the nominal in a position typed as the inner (e.g. `(match (mk k)
+            // ((Nat.Mk v) v))` folds to just the `(mk k)` Call typed `Nat` where the def returns `Int64`). The
+            // node's own disposition would DECLINE here (a `Call` is an ambiguous inner-vs-nominal producer),
+            // but the context resolves the ambiguity: re-emit the node VIEWED AS the inner, which bypasses this
+            // nominal guard and reaches the producer's own arm, where the erased-newtype-return peel
+            // (`Core::Call`'s `(match <call> ((<Ctor> n) n))`) reconstructs the inner — value-equivalent
+            // (recompile re-erases). Gated on the would-be DECLINE so it only rescues the currently-declining
+            // case; a determined / pass-through / construct node keeps its existing handling below.
+            let disp = nominal_disposition(db, id, decl);
+            if matches!(disp, NominalDisp::Decline)
+                && let Some(exp) = &expected
+                && *exp == inner
+                && inner != eff_ty
+                && is_emitted_single_payload_newtype(db, decl, emitted)
+            {
+                return emit_expr_viewed(db, b, id, Some(inner.clone()), None, env, emitted);
+            }
+            match disp {
                 NominalDisp::Construct => {
                     let head = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
                         Reject::decline(
