@@ -566,6 +566,22 @@ try {
   process.exit(1);
 }
 
+// ---- guide-accuracy guard: an `expect="error"` example must demonstrate a real SEMANTIC error, NOT a
+// construct the compiler doesn't model. A decline of the "unbound name `X` at the top level … it is not one
+// this compiler models" class (rcdzc compile.rs, unknown_top_forms / unbound_bare_name_items) means the
+// example documents a NON-EXISTENT construct — the exact hole the operator hit (guide-editor 2026-09-02): a
+// documented `@invariant`-style feature that silently regresses to "unbound" declines that way and, masked by
+// `expect="error"`, PASSES the gate — so a documented-but-nonexistent feature ships unnoticed. Treat that
+// decline class as a FAILURE (the guide is documenting something the compiler doesn't model), while a genuine
+// semantic decline (a real CDZ code — type mismatch, out-of-range, non-exhaustive match) IS the intended
+// teaching decline and still passes. Returns the offending diagnostic, or undefined if no diagnostic matches.
+function unmodeledConstructDecline(diagnostics) {
+  return (diagnostics ?? []).find((d) => {
+    const m = String(d && d.message ? d.message : "");
+    return /\bunbound name\b[\s\S]*\bat the top level\b/i.test(m) || /not one this compiler models/i.test(m);
+  });
+}
+
 // ---- check one program (already wrapped) in one surface, returning null on success or a reason ----
 async function checkProgram(program, surface, ex, where) {
   const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
@@ -579,8 +595,15 @@ async function checkProgram(program, surface, ex, where) {
   }
   const declined = !r.component;
   if (ex.expect === "error") {
-    // "meant to fail" = a compile decline OR a runtime trap (e.g. `(UInt8.of 300)`); accept either.
-    if (declined) return null;
+    // "meant to fail" = a compile decline OR a runtime trap (e.g. `(UInt8.of 300)`); accept either — EXCEPT a
+    // decline because the CONSTRUCT IS UNMODELED (unbound at the top level), which means the guide documents a
+    // feature the compiler doesn't model, not the intended semantic error (see unmodeledConstructDecline).
+    if (declined) {
+      const unmodeled = unmodeledConstructDecline(r.diagnostics);
+      if (unmodeled)
+        return `${ex.file} [${ex.kind}] (${where}): expect="error" but the example DECLINES because the CONSTRUCT IS UNMODELED, not because of the intended semantic error — "${String(unmodeled.message).slice(0, 130)}". A documented construct the compiler declines as unbound/not-modeled is a corpus-is-paramount violation (the guide documents a non-existent feature): demonstrate a real semantic error, or route the compiler gap to its owner + block the example in example-blocklist.json.\n    ${brief}`;
+      return null;
+    }
     try { await runComponent(r.component); } catch { return null; }
     return `${ex.file} [${ex.kind}] (${where}): expect="error" but it compiled AND ran to a value\n    ${brief}`;
   }
@@ -658,7 +681,14 @@ async function checkMultiFile(ex) {
   }
   const declined = !r.component;
   if (ex.expect === "error") {
-    if (declined) return null;
+    if (declined) {
+      // Same guard as the single-file path: a decline because the construct is UNMODELED (unbound at the top
+      // level) is NOT an acceptable teaching decline — it documents a feature the compiler doesn't model.
+      const unmodeled = unmodeledConstructDecline(r.diagnostics);
+      if (unmodeled)
+        return `${ex.file} [Runnable multi-file] (${brief}): expect="error" but the file set DECLINES because the CONSTRUCT IS UNMODELED, not because of the intended semantic error — "${String(unmodeled.message).slice(0, 130)}". A documented construct declined as unbound/not-modeled is a corpus-is-paramount violation: demonstrate a real semantic error, or route the compiler gap + block the example.`;
+      return null;
+    }
     try { await runComponent(r.component, text, from); } catch { return null; }
     return `${ex.file} [Runnable multi-file] (${brief}): expect="error" but the file set compiled AND ran to a value`;
   }
@@ -1039,6 +1069,22 @@ for (const [src, ann] of [["@test\ndef attr_above_probe() = 1", "@test"], ['@tag
       failures.push(`[cookTemplate self-check] cookTemplate(${JSON.stringify(raw)}) = ${JSON.stringify(cookTemplate(raw))}, want ${JSON.stringify(want)}`);
     }
   }
+}
+
+// unmodeled-construct guard self-check: the guide-accuracy audit must FLAG an `expect="error"` example that
+// declines because a documented CONSTRUCT IS UNMODELED (unbound at the top level — the operator's @invariant
+// hole, guide-editor 2026-09-02), and must NOT over-fire on a genuine semantic decline (a real CDZ code). Pin
+// both directions here so a future edit can't quietly reopen the hole (a documented non-feature masked by
+// expect="error") nor start rejecting legitimate teaching declines. Uses the real compiler (loaded above).
+{
+  const unmodeledEx = { file: "<unmodeled-guard self-check>", kind: "Runnable", snippet: "(frobnicate 1)", expect: "error" };
+  const fired = await checkProgram("(do (frobnicate 1) (def (main) 1) (export main))", "sexpr", unmodeledEx, "self-check");
+  if (fired == null || !/UNMODELED/.test(fired))
+    failures.push(`[unmodeled-construct guard self-check] the guard must FLAG an unbound-at-top-level decline masked by expect="error", got ${JSON.stringify(fired)}`);
+  const semanticEx = { file: "<unmodeled-guard self-check>", kind: "Runnable", snippet: "(+ 1 true)", expect: "error" };
+  const notFired = await checkProgram("(do (def (main) (+ 1 true)) (export main))", "sexpr", semanticEx, "self-check");
+  if (notFired != null)
+    failures.push(`[unmodeled-construct guard self-check] a genuine semantic decline (CDZ0203 type mismatch) must PASS expect="error", but the guard flagged it: ${notFired}`);
 }
 
 if (failures.length) {
