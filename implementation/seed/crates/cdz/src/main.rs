@@ -191,7 +191,9 @@ enum Cmd {
     Fmt(syntax_cli::FmtArgs),
     /// Structurally search a program for a PATTERN (the codemod query).
     Query(syntax_cli::QueryArgs),
-    /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, validated.
+    /// Structurally rewrite a program: replace every PATTERN match with TEMPLATE, re-parsed to confirm the
+    /// result stays well-formed. PARSE-level only — a structural replace, no binding/type check — so a
+    /// rewrite CAN introduce unbound-name/type faults; run `cdz check` on the result for semantic validity.
     Rewrite(syntax_cli::RewriteArgs),
     /// Structurally diff two programs: report which SUBTREES changed.
     Diff(syntax_cli::DiffArgs),
