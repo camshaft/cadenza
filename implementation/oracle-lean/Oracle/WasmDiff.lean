@@ -81,8 +81,9 @@ private def _progMain (n : UInt8) : Ast.Module :=
 -- wasm side DECLINES (talos rejects imports on a heap case) → SKIP (sound coverage gap, not a divergence).
 #guard differential (fun _ _ => .err "imports") (_progMain 5) "(module)" (rt "Int") { entry := "main" } == .skip "imports"
 -- an unmodeled result-type spelling short-circuits inside runWasmWith → wasm `.unsupported` → SKIP.
+-- (reason now carries the unresolved head tag, #7708 — the head-tagged reason feeds the skip histogram.)
 #guard differential (fun _ _ => .ok #[.i64 5]) (_progMain 5) "(module)" (rt "Widget") { entry := "main" }
-       == .skip "cdz-result-type: entry has no modeled scalar result type"
+       == .skip "cdz-result-type: entry has no modeled scalar result type (head=Widget)"
 
 /-! ### The conformance RUNNER (v-lean-oracle owns this) — tally `differential` over a corpus of cases.
 DRIVER-ABSTRACT: `talosDriver` (from `Oracle.Wasm.Talos`, once the co-land lands) plugs in as `drive`. The

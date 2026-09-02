@@ -36,6 +36,52 @@ def loadCase (dir : String) : IO (Option (String × Ast.Module × String × Byte
     let rtBytes ← IO.FS.readBinFile (dir ++ "/result-type.ast")
     return some (dir, m, wat, rtBytes)
 
+/-- Render a `Value` for a divergence report: shape + scalar values (enough to distinguish e.g. a `tuple`
+Core result from a `int` wasm result — the compound-vs-scalar mismatch that triages a resolver leak).
+`Outcome`/`Value` have no `Repr`, so this is a purpose-built renderer (no string content for str/char to
+avoid noise; the shape is the triage datum). -/
+partial def valueStr : Value → String
+  | .int n => "int " ++ toString n
+  | .bool b => "bool " ++ toString b
+  | .str _ => "str"
+  | .char _ => "char"
+  | .bytes _ => "bytes"
+  | .float _ _ _ => "float"
+  | .floatNan => "NaN"
+  | .floatInf _ => "inf"
+  | .f64 f => "f64 " ++ toString f
+  | .rational n d => "rational " ++ toString n ++ "/" ++ toString d
+  | .unit => "unit"
+  | .some v => "Some(" ++ valueStr v ++ ")"
+  | .none => "None"
+  | .ok v => "Ok(" ++ valueStr v ++ ")"
+  | .err v => "Err(" ++ valueStr v ++ ")"
+  | .tuple es => "tuple[" ++ String.intercalate "," (es.toList.map valueStr) ++ "]"
+  | .list es => "list[" ++ String.intercalate "," (es.toList.map valueStr) ++ "]"
+  | .record fs => "record[" ++ String.intercalate "," (fs.toList.map (fun f => valueStr f.2)) ++ "]"
+  | .set es => "set[" ++ String.intercalate "," (es.toList.map valueStr) ++ "]"
+  | .map es => "map[" ++ String.intercalate "," (es.toList.map (fun kv => valueStr kv.1 ++ "->" ++ valueStr kv.2)) ++ "]"
+  | .variant _ _ => "variant"
+  | .closure _ _ _ => "closure"
+  | .poison _ => "poison"
+
+/-- Render an `Outcome` for a divergence report. -/
+def outcomeStr : Outcome → String
+  | .value v => "value " ++ valueStr v
+  | .trap k => "trap " ++ k
+  | .diverges => "diverges"
+  | .unsupported r => "unsupported " ++ r
+  | .errReturn v => "errReturn " ++ valueStr v
+
+/-- Tally skip REASONS by frequency (descending) — surfaces where the runnable fraction is lost, and (with
+v-wasm-oracle's head-tagged reason `… (head=<name>)`) which unmodeled result-type heads dominate. -/
+def tallyReasons (rs : List String) : List (String × Nat) :=
+  let counts := rs.foldl (fun (acc : List (String × Nat)) r =>
+    match acc.find? (fun p => p.1 == r) with
+    | some _ => acc.map (fun p => if p.1 == r then (p.1, p.2 + 1) else p)
+    | none => acc ++ [(r, 1)]) []
+  (counts.toArray.qsort (fun a b => a.2 > b.2)).toList
+
 def main (args : List String) : IO UInt32 := do
   let manifest? := match args with
     | ["--manifest", f] => some f
@@ -53,15 +99,26 @@ def main (args : List String) : IO UInt32 := do
     -- Per-case verdicts (with the skip REASON + divergence outcomes) — the triage view: a skip tells you
     -- WHICH side declined and why (wasm .err/.unsupported vs a Core reduce gap), a diverge shows both sides.
     let mut tally : Tally := {}
+    let mut skipReasons : List String := []
     for (id, coreAst, coreWat, rtBytes) in cases.reverse do
       match differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" } with
       | .agree => tally := { tally with agree := tally.agree + 1 }
                   IO.println s!"AGREE {id}"
-      | .diverge _ _ => tally := { tally with diverge := tally.diverge + 1 }
-                        IO.eprintln s!"DIVERGE {id}: Core reference and wasm run disagree (miscompile candidate)"
+      | .diverge core wasm => tally := { tally with diverge := tally.diverge + 1 }
+                              -- Print the actual disagreement to STDOUT (survives the CI log; stderr is
+                              -- truncated) so a single diverging sub-case is triageable from the log alone:
+                              -- the case-dir path (holds program.ast/core.wat/core.ast), the Core reference
+                              -- outcome (reduce core.ast), and the wasm outcome (runWasmWith talosDriver).
+                              IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm}"
       | .skip r => tally := { tally with skip := tally.skip + 1 }
+                   skipReasons := r :: skipReasons
                    IO.println s!"SKIP {id}: {r}"
     IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip (of {cases.length} cases)"
+    -- Skip-reason histogram (descending) — where the runnable fraction is lost; with v-wasm-oracle's
+    -- head-tagged reason `… (head=<name>)` it surfaces which unmodeled result-type heads dominate.
+    IO.println "oracle-wasm-diff skip-reason histogram:"
+    for (reason, n) in tallyReasons skipReasons do
+      IO.println s!"  {n}\t{reason}"
     -- talos DRIVES the wasm side now; scalar/arith import-free cases run, heap/runtime-import cases
     -- `.err`→`.unsupported`→`.skip` (sound gap). A DIVERGENCE (nonzero exit) is a real miscompile finding.
     return (if tally.diverge == 0 then 0 else 1)
