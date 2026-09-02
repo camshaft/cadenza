@@ -4143,6 +4143,9 @@
               printf '%s' "$?" > "$out/compile.status"
             fi
             cp "$case/test-run.ast" "$out/test-run.ast"
+            # Forward the imposed WIT-world (if any) so the exec can pass --wit-world → cdz-rust-run declines
+            # the imposed-world case to todo (#7726: rust has no external-world ingest). Presence-only.
+            if [ -e "$case/wit-world.ast" ]; then cp "$case/wit-world.ast" "$out/wit-world.ast"; fi
           '';
 
         # EXEC — grade one case's RUST emit. Closure = the COMPILER-FREE `cdzRustRun` + `rustRlibs` + the ambient
@@ -4169,6 +4172,7 @@
                   --baseline ${./spec/semantics/.gate-baseline-rust}
                   --workdir "$TMPDIR/w")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
             cdz-rust-run "''${args[@]}"
             echo "ok: corpus-rust ${name} case ${idx}" > "$out"
           '';
@@ -4263,6 +4267,7 @@
                   --baseline ${./spec/semantics/.gate-baseline-rust-async}
                   --workdir "$TMPDIR/w")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
             cdz-rust-run "''${args[@]}"
             echo "ok: corpus-rust-async ${name} case ${idx}" > "$out"
           '';
@@ -4324,6 +4329,7 @@
                   --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
                   --workdir "$TMPDIR/w" --emit-verdict "$out")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
             cdz-rust-run "''${args[@]}"
             # $out is written by cdz-rust-run (--emit-verdict). Guard an empty write (a real bug would leave it
             # absent → the aggregate `cat` fails loud, catching a broken emit-verdict rather than a silent gap).
@@ -4370,6 +4376,7 @@
                   --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
                   --workdir "$TMPDIR/w" --emit-verdict "$out")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            if [ -e ${build}/wit-world.ast ]; then args+=(--wit-world ${build}/wit-world.ast); fi
             cdz-rust-run "''${args[@]}"
             [ -s "$out" ] || { echo "corpus-rust-async-verdict ${name} ${idx}: cdz-rust-run --emit-verdict wrote no verdict" >&2; exit 1; }
           '';
@@ -4448,6 +4455,7 @@
                      --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
                      --workdir "$work/w" --emit-verdict "$work/verdict")
               if [ -e "$work/emit.rs" ]; then args+=(--module "$work/emit.rs"); fi
+              if [ -e "$case/wit-world.ast" ]; then args+=(--wit-world "$case/wit-world.ast"); fi
               cdz-rust-run "''${args[@]}"
               [ -s "$work/verdict" ] || { echo "corpus-verdicts-${tag}-coarse ${name}: $case wrote no verdict" >&2; exit 1; }
               cat "$work/verdict" >> "$out"
