@@ -654,7 +654,7 @@ fn try_macro_expand(
     // later slices. Folding away the perform is the auto-erasure: no residual `(in-caller …)` reaches
     // infer, so its `{Eval}` row is never inferred and the no-home check (CDZ0401) never fires.
     if let Some((root, _)) = &result {
-        fold_in_caller_literals(db, *root);
+        fold_in_caller_ops(db, *root);
     }
     result
 }
@@ -669,15 +669,20 @@ fn eval_effect_occ(db: &Db) -> Option<StructId> {
         .map(|e| e.occ)
 }
 
-/// inc-3 slice 1 — fold a macro-spliced `(Eval.in-caller ARG)` perform whose ARG is ALREADY a LITERAL
-/// (an atom that is its own reified value) into that literal, discharging the compile-time `Eval` effect
-/// at expansion. `in-caller` (DESIGN-macro-system.md §3) evaluates the AST `ARG` denotes in the caller's
-/// environment and returns the evaluated value REIFIED to an `Ast` literal; for a literal ARG the value IS
-/// the literal, so the fold replaces the perform node in place with a copy of ARG. A non-literal ARG (a
-/// compound expr needing const-eval, or a caller-scope reference needing env capture) is LEFT for a later
-/// slice (it stays a live perform → CDZ0401, the honest pre-fold behavior). Walks `root`'s reconstructed
-/// subtree; identifies the op by its `(meta effect-op)` identity (`effect_op_of`), not by name.
-fn fold_in_caller_literals(db: &mut Db, root: StructId) {
+/// inc-3 (slices 1 + 1b) — discharge a macro-spliced `(Eval.in-caller ARG)` perform AT EXPANSION by
+/// folding it to the reified value of evaluating ARG in the caller environment (a COMPILE-TIME `Eval`
+/// effect, erased before infer — DESIGN-macro-system.md §3). `in-caller` returns the evaluated value
+/// REIFIED to an `Ast` literal. Two cases: (slice 1) ARG reconstructs to a LITERAL — its own reified
+/// value, replaced directly; (slice 1b) ARG reconstructs to a CLOSED compound that CONST-FOLDS to a
+/// scalar (`core_of` yields a `Const*` — env-independent for a closed expr, and `core_of` works at this
+/// pre-infer point), reified to a literal leaf. A src that does NOT const-fold to a scalar (a runtime
+/// value, or a caller-scope reference needing env capture) is LEFT for a later slice — it stays a live
+/// perform → the honest pre-fold decline (CDZ0401 no-home). Folding the perform away IS the erasure: no
+/// residual `(in-caller …)` reaches infer, so its `{Eval}` row is never inferred and CDZ0401 never fires.
+/// Walks `root`'s reconstructed subtree; identifies the op by its `(meta effect-op)` identity
+/// (`effect_op_of`), not by name. (Float/Rational scalar results deferred — their reified value form needs
+/// the canonicalization `const_value_ast` applies.)
+fn fold_in_caller_ops(db: &mut Db, root: StructId) {
     let Some(eval_occ) = eval_effect_occ(db) else {
         return;
     };
@@ -706,11 +711,35 @@ fn fold_in_caller_literals(db: &mut Db, root: StructId) {
         // = its own reified value), it IS the in-caller result (evaluating a literal in any env yields
         // itself), so replace the perform node in place (its StructId/span preserved). A compound source
         // (needs const-eval) or a caller-scope reference (needs env capture) is LEFT for a later slice.
-        if let Some(src) = crate::eval_ast::reconstruct(&mut db.ast, arg)
-            && matches!(db.ast.get(src), crate::ast::Struct::Atom(_))
-            && db.ast.as_name(src).is_none()
-        {
+        let Some(src) = crate::eval_ast::reconstruct(&mut db.ast, arg) else {
+            continue;
+        };
+        // Slice 1: ARG reconstructs to a LITERAL (its own reified value) → that literal IS the in-caller
+        // result. Replace the perform in place (no eval needed, ordering-trivial).
+        if matches!(db.ast.get(src), crate::ast::Struct::Atom(_)) && db.ast.as_name(src).is_none() {
             let entry = db.ast.get(src).clone();
+            db.ast.structure[node.0 as usize] = entry;
+            continue;
+        }
+        // Slice 1b: ARG reconstructs to a COMPOUND expression that CONST-FOLDS to a scalar (e.g.
+        // `(+ 2 3)` → 5). in-caller evaluates it in the caller env + reifies the RESULT; a CLOSED expr's
+        // value is env-independent, so `core_of` (which const-folds and works at this point — verified)
+        // yields the constant, and we reify it back to a literal leaf. A src that does NOT const-fold to a
+        // scalar (a runtime value, or a caller-scope reference needing env capture) yields a non-`Const`
+        // core → LEFT for a later slice (stays a live perform → the honest pre-fold decline). Float/Rational
+        // are deferred (their value form needs the canonicalization `const_value_ast` applies).
+        let leaf = match crate::lower::core_of(db, src) {
+            crate::core::Core::ConstInt(v) => Some(crate::ast::Leaf::Int {
+                value: v,
+                radix: crate::ast::Radix::Dec,
+            }),
+            crate::core::Core::ConstBool(b) => Some(crate::ast::Leaf::Bool(b)),
+            crate::core::Core::ConstStr(s) => Some(crate::ast::Leaf::Str(s)),
+            _ => None,
+        };
+        if let Some(leaf) = leaf {
+            let lit = crate::prelude::push_atom(&mut db.ast, leaf);
+            let entry = db.ast.get(lit).clone();
             db.ast.structure[node.0 as usize] = entry;
         }
     }

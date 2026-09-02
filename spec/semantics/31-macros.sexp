@@ -711,3 +711,21 @@
       (export main)))
   (call main)
   (output (: 5 Int64)))
+
+(case
+  "a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)"
+  (doc
+    "Slice 1b of the `Eval` effect: `(Eval.in-caller x)` evaluates the caller argument's AST in the
+           caller environment AT EXPANSION and reifies the RESULT (DESIGN-macro-system.md §3), not just a
+           literal. `(m (+ 2 3))` reifies the caller argument to the AST `(+ 2 3)`; `in-caller` const-folds
+           it → `5`, reified back to the literal `5`; the expansion `(+ 5 1)` computes 6. Pins that a CLOSED
+           COMPOUND in-caller argument const-folds and the perform is discharged + erased at expansion (no
+           CDZ0401 — before slice 1b a compound argument stayed a live perform and declined). A caller-scope
+           reference needing environment capture is a later increment.")
+  (input
+    (do
+      (def (m (quote x)) (quasiquote (+ (unquote (Eval.in-caller x)) 1)))
+      (def (main) (m (+ 2 3)))
+      (export main)))
+  (call main)
+  (output (: 6 Int64)))
