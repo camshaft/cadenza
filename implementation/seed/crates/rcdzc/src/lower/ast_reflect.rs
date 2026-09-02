@@ -928,6 +928,11 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // AFTER the parent rebuild for exactly that reason.
         for &sid in &spliced {
             db.extend_scope_skip_into_subtree(sid);
+            // Anchor the spliced synth subtree at the CALL node `sid` (its span survives the in-place
+            // overwrite): fill copy-provenance for the reconstructed template nodes so a diagnostic raised
+            // on one — e.g. an unbound-name CDZ0101 on a template LITERAL like `undefined-helper` — is
+            // LOCATED at the macro invocation via `source_of_synth`, not printed position-less.
+            db.seed_synth_origin_for_subtree(sid);
         }
         // gap#4: a spliced sibling `(def NAME VALUE)` at the ROOT `do` is a TOP-LEVEL def — but
         // `def_name_index` FROZE at load (`scan_top_level` ran pre-`expand_macros`), so a post-load splice
