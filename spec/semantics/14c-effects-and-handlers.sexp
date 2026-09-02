@@ -9642,7 +9642,7 @@
         (main (: n Int64))
         (handle
           E
-          (Map.insert (Map.insert (Map.insert Map.empty 1 (+ 10 n)) 2 20) 3 30)
+          #map((= 1 (+ 10 n)) (= 2 20) (= 3 30))
           ((take
               (k)
               m
@@ -9666,7 +9666,7 @@
         (main (: n Int64))
         (handle
           E
-          (Map.insert (Map.insert Map.empty 1 (+ 10 n)) 2 20)
+          #map((= 1 (+ 10 n)) (= 2 20))
           ((take
               (k)
               m
@@ -11207,7 +11207,7 @@
         (main (: n Int64))
         (handle
           Tally
-          (Map.insert Map.empty 1 (Map.insert Map.empty 10 n))
+          #map((= 1 #map((= 10 n))))
           ((bump
               (k j)
               s
@@ -12038,7 +12038,7 @@
         (main (: n Int64))
         (handle
           S
-          (Map.insert Map.empty n (* n 3))
+          #map((= n (* n 3)))
           ((put
               (k v)
               m
@@ -14558,7 +14558,7 @@
         (main (: n Int64))
         (handle
           S
-          (Map.insert (Map.insert Map.empty 1 0) 2 0)
+          #map((= 1 0) (= 2 0))
           ((sub (k) m (let ((m2 (Map.insert m k 0))) (resume (Map.len m2) m2)))
             (publish
               (v)
@@ -14678,7 +14678,7 @@
         (main (: n Int64))
         (handle
           S
-          #tuple((Map.insert (Map.insert (Map.insert Map.empty 1 3) 2 n) 3 2) #tuple(#set(0) 0))
+          #tuple(#map((= 1 3) (= 2 n) (= 3 2)) #tuple(#set(0) 0))
           ((vote
               (k)
               st
