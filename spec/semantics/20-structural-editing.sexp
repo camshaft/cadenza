@@ -479,6 +479,44 @@
   (output (: 42 Int64))
   (live-objects known-leak))
 
+(case
+  "a rewrite whose fall-through arm reads a switched slot WHOLE round-trips through the cadenza backend"
+  (doc
+    "The Neg-elimination pass `drop-negs`: its first arm `(Add (Neg x) r)` DESTRUCTURES slot 0 to
+           its `Neg` payload, so the decision tree switches slot 0 on the discriminant; the SECOND arm
+           `(Add l r)` is the fall-through for a non-`Neg` slot 0 and its body reads `l` — the WHOLE first
+           slot. Meaning: `(Add (Neg (Lit a)) (Lit 2))` → strip one negation → `(Add (Lit a) (Lit 2))`,
+           eval a+2 = 42 at a=40. This pins the `--target cadenza` re-emit (M4a): the flat sum-match loop
+           REGISTERS a whole-slot binder for slot 0 but the flattened default arm would emit `_`, dropping
+           it — so a `Core::SumPayload` read of the whole slot dangled to a never-emitted binder → CDZ0101
+           `unbound name _cdz_m0` on recompile. The fall-through wildcard now binds the pre-registered
+           whole-slot binder (a binder matches anything, semantically identical to `_`), so the body's read
+           resolves and the emitted cadenza AST recompiles. Green on all backends; the cadenza round-trip is
+           the witness this case protects.")
+  (input
+    (do
+      (type Exp (Lit Int64) (Neg Exp) (Add Exp Exp))
+      (def
+        (eval-exp (: e Exp))
+        (match
+          e
+          ((Lit n) n)
+          ((Neg x) (- 0 (eval-exp x)))
+          ((Add l r) (+ (eval-exp l) (eval-exp r)))))
+      (def
+        (drop-negs (: e Exp))
+        (match
+          e
+          ((Add (Neg x) r) (drop-negs (Add x r)))
+          ((Add l r) (Add (drop-negs l) (drop-negs r)))
+          ((Neg x) (Neg (drop-negs x)))
+          ((Lit n) (Lit n))))
+      (def (main (: a Int64)) (eval-exp (drop-negs (Add (Neg (Lit a)) (Lit 2)))))
+      (export main)))
+  (call main (: 40 Int64))
+  (output (: 42 Int64))
+  (live-objects known-leak))
+
 ; --- The NONZERO recursive-BigInt-literal-probe row (breaker FINDING #22), now closed ---------------
 ; The peephole cases above use only literal-0 patterns; the doc at "OVERLAPPING quote patterns" notes the
 ; NONZERO row was a HELD wasm miscompile. Root (v-wasm-opt): a BigInt sum-payload literal-test's collect
