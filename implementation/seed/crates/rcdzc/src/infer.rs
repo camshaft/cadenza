@@ -7758,6 +7758,60 @@ fn first_non_reifiable_leaf(db: &Db, node: crate::ast::StructId) -> Option<&'sta
 /// in `resolve_name` (once per resolve, including the many pattern-binder / shape-test resolves whose
 /// unbound Poison is never surfaced) is what keeps a match over an N-variant sum LINEAR rather than O(N²).
 /// The resulting message + heuristic fix are byte-identical to the old eager form.
+/// Whether `name` is an effect declared as a MEMBER of some `(module …)` — NOT a root-level effect. A
+/// module-member effect is not registered in the root `effect_decls` (the effect scan is root-only), so a
+/// bare perform `(. E op)` of it resolves UNBOUND; `enrich_unbound` uses this to replace that misleading
+/// unbound-name fault with the delegation-required hint (module-member effects are reached via `(host (E)
+/// …)`). Walks `db.modules[*].occ` — each is a `(module <name> <member>…)` form; a member `(effect E …)`
+/// whose name matches is a hit. (v-module-system confirmed `db.modules` is the queryable source, 2026-09-02.)
+/// Whether the perform node `id` is LEXICALLY enclosed by a `(host (… name …) …)` delegation for `name`
+/// — i.e. the author DID delegate the effect. Used to NOT fire the "perform it via host delegation"
+/// hint when a bare `(E.op)` is unbound DESPITE already sitting under `(host (E) …)` (a distinct
+/// scoping situation, not a missing-delegation one — the hint would misdirect). Walks ancestors; a
+/// `(host <deleg> <body>)` whose `<deleg>` (a `(E …)` list or a bare `E`) names `name` is a match.
+fn perform_is_under_host_delegation(db: &Db, id: crate::ast::StructId, name: &str) -> bool {
+    let mut cur = id;
+    while let Some(p) = db.parent_of(cur) {
+        if let Some(&deleg) = db.ast.as_form(p, "host").and_then(|t| t.first()) {
+            let named = match db.ast.get(deleg) {
+                crate::ast::Struct::List(kids) => kids
+                    .clone()
+                    .iter()
+                    .any(|&k| db.ast.as_name(k) == Some(name)),
+                crate::ast::Struct::Atom(_) => db.ast.as_name(deleg) == Some(name),
+            };
+            if named {
+                return true;
+            }
+        }
+        cur = p;
+    }
+    false
+}
+
+/// Whether `name` is an effect declared as a MEMBER of some `(module …)` — NOT a root-level effect. A
+/// module-member effect is not registered in the root `effect_decls` (the effect scan is root-only), so a
+/// bare perform `(. E op)` of it resolves UNBOUND; `enrich_unbound` uses this to replace that misleading
+/// unbound-name fault with the delegation-required hint (module-member effects are reached via `(host (E)
+/// …)`). Walks `db.modules[*].occ` — each is a `(module <name> <member>…)` form; a member `(effect E …)`
+/// whose name matches is a hit. (v-module-system confirmed `db.modules` is the queryable source, 2026-09-02.)
+fn names_a_module_member_effect(db: &Db, name: &str) -> bool {
+    db.modules.iter().any(|md| {
+        db.ast
+            .as_form(md.occ, "module")
+            .map(<[_]>::to_vec)
+            .unwrap_or_default()
+            .iter()
+            .any(|&member| {
+                db.ast
+                    .as_form(member, "effect")
+                    .and_then(|et| et.first().copied())
+                    .and_then(|n| db.ast.as_name(n))
+                    == Some(name)
+            })
+    })
+}
+
 fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
     // Only a genuinely-unstamped bare unbound reject is enriched; read the name off the faulting node.
     let Some(name) = db.ast.as_name(id).map(str::to_string) else {
@@ -7809,6 +7863,41 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
              non-constant AST argument is not executed (the compiler builds and analyzes AST but does not \
              run a dynamically-built one), so this `eval` has nothing to reconstruct."
                 .to_string(),
+        )
+        .at(id);
+    }
+    // A bare qualified perform `(E.op …)` = `(. E op)` of a MODULE-MEMBER effect NOT wrapped in a
+    // `(host (E) …)` delegation. A module-member effect is NOT registered at the root (the effect scan is
+    // root-only), so its bare `E` base resolves UNBOUND here — a MISLEADING "unbound name `E`" that hides
+    // the real cause (the effect IS declared, just as a module member). A module-member effect is reached
+    // ONLY through HOST DELEGATION — `(host (E) (E.op …))` — which is how the module's capability manifest
+    // records the authority (`capabilities-and-effects.md` #Undeclared Capability Is A Compile-Time Error:
+    // a bare perform bypassing delegation would perform an effect the manifest never grants, so it must NOT
+    // silently resolve — a use-site delegation-required error is the correct behavior, not a bare unbound).
+    // Fires ONLY when `id` is the BASE of a `(. E op)` member access AND `E` names a module-member effect
+    // (a bare `E` reference elsewhere, or a genuinely-unknown name, keeps the ordinary unbound path).
+    // Reaching here IMPLIES not-host-delegated — under `(host (E) …)` the effect resolves and never faults.
+    if names_a_module_member_effect(db, &name)
+        && db
+            .parent_of(id)
+            .and_then(|p| db.ast.as_form(p, ".").map(|t| t.first().copied()))
+            .flatten()
+            == Some(id)
+        && !perform_is_under_host_delegation(db, id, &name)
+    {
+        trace!(target: "rcdzc::infer", node = id.0, %name, "bare module-member-effect perform — delegation-required (CDZ0401 EffectNoHome), not a bare unbound");
+        // CDZ0401 (EffectNoHome), NOT CDZ0101 (Unbound): this is semantically an effect reached with no
+        // home — CONSISTENT with the top-level bare module-member perform, which already gives CDZ0401
+        // ("neither an enclosing handler nor a host delegation"). The nested-module case only LOOKED like
+        // an unbound name because the effect is not root-registered; the real fault is the missing delegation.
+        return Reject::coded(
+            Code::EffectNoHome,
+            format!(
+                "`{name}` is a module-member effect reached with no host delegation — perform it via \
+                 `(host ({name}) (… {name}.op …))` at the entrypoint that grants the capability. A \
+                 module's effects are reached only through the `(host …)` delegation that records them in \
+                 its capability manifest, so a bare `{name}.op` (undelegated) has no home."
+            ),
         )
         .at(id);
     }
