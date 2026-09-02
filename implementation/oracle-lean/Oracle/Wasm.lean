@@ -166,6 +166,33 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
   | .ok m => resultScalarTyOfModule? m entry
   | .error _ => none
 
+/-- The result-type HEAD NAME of the entry when the node is PRESENT but its head is not a modeled scalar
+type (`scalarTyOfName? = none`) — i.e. the exact head we skipped on, for diagnostics. `none` if the entry's
+result-type node is absent entirely (a different skip cause) or its head IS modeled. Fuels v-lean-oracle's
+skip-reason histogram: tagging the head into the skip reason surfaces which `ScalarTy` variants to add next. -/
+def unmodeledResultHead? (m : Module) (entry : ByteArray) : Option ByteArray :=
+  m.nodes.findSome? (fun node =>
+    match node with
+    | .list cs =>
+      if cs.size ≥ 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+          && atomText? m cs[1]! == some entry then
+        match headTypeName? m cs[2]! with
+        | some ty => if (scalarTyOfName? ty).isNone then some ty else none
+        | none => none
+      else none
+    | _ => none)
+
+/-- The skip reason for an entry with no modeled scalar result type — tagged with the unresolved head name
+when one is present (`… (head=Char)`), so the histogram shows head frequencies; generic otherwise. -/
+def unmodeledResultReason (bytes : ByteArray) (entry : ByteArray) : String :=
+  let base := "cdz-result-type: entry has no modeled scalar result type"
+  match Ast.decode bytes with
+  | .ok m =>
+    match unmodeledResultHead? m entry with
+    | some head => s!"{base} (head={(String.fromUTF8? head).getD "?"})"
+    | none => base
+  | .error _ => base
+
 /-! ### The `run_wasm` composition spine + the interpreter seam
 
 `runWasmWith` ties the two pure pieces together — `resultScalarTy?` (decode the entry's scalar type) and
@@ -194,7 +221,7 @@ def runWasmWith (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray
     (trial : Trial) : Outcome :=
   match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
   | some ty => toOutcome (drive coreWat trial) ty
-  | none => .unsupported "cdz-result-type: entry has no modeled scalar result type"
+  | none => .unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8)
 
 /-! ### Gate witnesses — the mapping invariants (compiled = checked; no corpus case exercises this
 internal boundary, so per PRINCIPLES.md this is exactly the kind of check that belongs in Lean, not the
@@ -270,6 +297,6 @@ example : (runWasmWith (fun _ _ => .trap "unreachable") "(module)" (rtBytes "Int
     == .trap "unreachable") = true := by native_decide
 -- an unmodeled result-type spelling short-circuits to `.unsupported` (driver never consulted)
 example : (runWasmWith (fun _ _ => .ok #[.i64 5]) "(module)" (rtBytes "Widget") { entry := "main" }
-    == .unsupported "cdz-result-type: entry has no modeled scalar result type") = true := by native_decide
+    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Widget)") = true := by native_decide
 
 end Oracle.Wasm
