@@ -236,6 +236,27 @@ fn synth_binding_name(i: usize) -> std::rc::Rc<str> {
     format!("_cdz_let{i}").into()
 }
 
+/// True iff `target` appears anywhere in the CORE subtree rooted at `node` — i.e. `node` (transitively via
+/// `core_child_ids`) references `target`. A `Core::SumPayload{scrutinee}` read yields its scrutinee as a
+/// child, so a body reading the scrutinee's payload is caught. Used to check that a folded match's Leaf body
+/// is scrutinee-INDEPENDENT before emitting it under a bare `(_ …)` wildcard (which would drop any read).
+fn node_references(
+    db: &mut Db,
+    node: StructId,
+    target: StructId,
+    seen: &mut std::collections::HashSet<StructId>,
+) -> bool {
+    if node == target {
+        return true;
+    }
+    if !seen.insert(node) {
+        return false;
+    }
+    crate::backend::wasm::select::core_child_ids(db, node)
+        .into_iter()
+        .any(|c| node_references(db, c, target, seen))
+}
+
 /// The deterministic synthesized surface name for the `i`th sum-match PAYLOAD binder minted in an emit
 /// walk (monotone across the whole def, so binders of a nested match never collide with an outer match's).
 /// The `_cdz_m` prefix keeps it clear of source identifiers AND silences the unused-binding warning
@@ -3528,6 +3549,22 @@ fn emit_match_sum(
                 (None, _) => b.compound(crate::ast::CompoundCtor::Tuple, &binders),
             };
             let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            let arm = b.list(vec![pat, body_node]);
+            return Ok(b.list(vec![match_head, scrut_node, arm]));
+        }
+        // FOLDED disc + scrutinee-IGNORING body (no `plan`: the body reads no `[Elem]` of the scrutinee). The
+        // optimizer folded the match to a bare `Leaf(body)` whose selected arm is a wildcard / otherwise
+        // scrutinee-independent — e.g. `(match (T3.B n) ((T3.A xs) …) (_ -7))` (scrutinee folded to B, so the
+        // `A` arm is dead and the `_ -7` fires). Emit a single wildcard arm `(match <scrut> (_ <body>))`:
+        // exhaustive (a `_` covers every variant), binds nothing, evaluates the scrutinee ONCE (built then
+        // dropped — reclaim-faithful, matching the direct path) and returns the body. Gated to a body that does
+        // NOT reference the scrutinee (a whole-value or payload read would be lost under the bare `_`); a
+        // referencing body falls through to the decline below (a later slice).
+        if !node_references(db, *body, scrutinee, &mut std::collections::HashSet::new()) {
+            let match_head = b.name("match");
+            let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            let pat = b.name("_");
             let arm = b.list(vec![pat, body_node]);
             return Ok(b.list(vec![match_head, scrut_node, arm]));
         }
