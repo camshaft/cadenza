@@ -5751,6 +5751,27 @@
   (error CDZ0203 (message "not fully determined")))
 
 (case
+  "a FLOAT32-key Map.to-list with an undetermined value is rejected CDZ0203, not a codeless decline"
+  (doc
+    "The Float32-key face of the undetermined-key determinacy reject. `(Map.to-list (Map.insert
+           Map.empty (: 1.5 Float32) (Ok 9)))` builds a `(Map Float32 (Result Int64 ?))` whose value's
+           `Result` Err arm nothing constrains. `Map.to-list` orders by a baked key/value shape; a
+           Float32 key's descriptor requires the VALUE shape (unlike an Int64 key, which tolerates an
+           undetermined value), so the undetermined `?` leaves no bakeable descriptor. This is a
+           DETERMINACY fault and MUST reject with CDZ0203 'not fully determined — annotate it' (the same
+           code the Int-key path reaches at the outer `Set.of` key-canonicalization), NOT the former
+           reachable CODELESS 'Map.to-list key/value shape has no orderable descriptor' backstop that let
+           the Float32-key variant slip through where the Int-key variant coded (v-cdz-smith seed
+           902902902). A DETERMINED value (`… (: 1.5 Float32) 9)`, Int-value) bakes its descriptor and
+           compiles — the codeless decline stays only for a genuinely-unorderable DETERMINED shape.")
+  (input
+    (do
+      (def (main)
+        (Set.len (Set.of (list (Map.to-list (Map.insert Map.empty (: 1.5 Float32) (Ok 9)))))))
+      (export main)))
+  (error CDZ0203 (message "not fully determined")))
+
+(case
   "a DETERMINED nested-list Set key bakes its shape and compiles (the determinacy control)"
   (doc
     "The control the reject above must be distinguished from: a non-empty inner list `(list 1)` pins the

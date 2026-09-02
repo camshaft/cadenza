@@ -6799,6 +6799,7 @@ pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed match-arm binder is a usable binding, not a wildcard
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an undetermined Set-key element type is rejected CDZ0203 (annotate), not a codeless decline
+pass	a FLOAT32-key Map.to-list with an undetermined value is rejected CDZ0203, not a codeless decline
 pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
