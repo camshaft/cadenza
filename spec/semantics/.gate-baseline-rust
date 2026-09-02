@@ -8997,3 +8997,4 @@ todo	a macro-internal type is intra-expansion visible to a sibling def's body (t
 pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)
 pass	a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)
 pass	a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)
+todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
