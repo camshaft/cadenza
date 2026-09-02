@@ -724,8 +724,11 @@ pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindP
         // re-materialized `(Tuple Int64 Int64 Int64)` renders Int64 but the width/sign axes aren't `Fixed`
         // at this pass point) is fine. `is_heap_type` (in the candidate gate) already excludes `Var`/`Any`,
         // so `ty` is a real heap compound; only its scalar sub-axes may be deferred (recompile-solvable).
-        // scope_node = the members' LCA (deepest node containing all occurrences).
-        let Some(scope_node) = b2_members_lca(db, body, &group) else {
+        // scope_node = the TRUE SET-LCA (deepest node dominating ALL members) — NOT b2_members_lca, which
+        // tracks only members.first() (correct for B2's single shared node, but for compound-CSE's DISTINCT
+        // members it descends into member[0]'s branch and leaves the hoisted Let out of scope for the others
+        // → CDZ0101 unbound on the cadenza-O1 recompile). See `compound_members_lca`.
+        let Some(scope_node) = compound_members_lca(db, body, &group) else {
             continue;
         };
         // gate-4: trap-free OR the scope_node unconditionally reaches ≥1 member (byte-neutral speculation).
@@ -1131,6 +1134,55 @@ fn b2_members_lca(db: &mut Db, body: StructId, members: &[StructId]) -> Option<S
             // Either target IS a direct child (bind at cur, the enclosing scope) or multiple children
             // contain it (cur is the convergence LCA). Return cur — the deepest dominating scope node.
             return Some(cur);
+        }
+    }
+}
+
+/// The TRUE SET-LCA of `members` — the deepest node whose subtree contains EVERY member (and is not itself
+/// a member). Unlike [`b2_members_lca`] (which tracks ONLY `members.first()` — correct for B2, where the
+/// members are the SAME shared node reached by K parents, so the first-member LCA IS the convergence point),
+/// compound-CSE members are K DISTINCT structurally-equal nodes: their shared bind site must DOMINATE ALL of
+/// them, so a first-member-only LCA descends too deep (into the branch holding member[0]) and leaves a
+/// hoisted `Core::Let` OUT OF SCOPE for the others → an unbound-name reject on the cadenza-O1 recompile
+/// (v-cadenza CDZ0101 `_cdz_let1`). Descend into a child ONLY when it contains EVERY member and is not itself
+/// a member; stop where the members split (or a member would be the descent target) → that node dominates
+/// all members and is a proper ancestor of each (so the install's `Core::Let` at it has every member in its
+/// body scope).
+fn compound_members_lca(db: &mut Db, body: StructId, members: &[StructId]) -> Option<StructId> {
+    if members.is_empty() {
+        return None;
+    }
+    let contains_all = |db: &mut Db, node: StructId, members: &[StructId]| -> bool {
+        members.iter().all(|&m| {
+            let mut seen = std::collections::HashSet::new();
+            let mut found = false;
+            b2_reachable(db, node, m, &mut seen, &mut found);
+            found
+        })
+    };
+    // Precondition: the body must contain every member (they were collected by walking it).
+    if !contains_all(db, body, members) {
+        return None;
+    }
+    let mut cur = body;
+    loop {
+        let children = crate::backend::wasm::select::core_child_ids(db, cur);
+        // The unique child (if any) that contains ALL members AND is not itself a member → descend.
+        let mut next: Option<StructId> = None;
+        for &c in &children {
+            if members.contains(&c) {
+                continue; // never descend INTO a member — cur must dominate all members from above.
+            }
+            if contains_all(db, c, members) {
+                next = Some(c);
+                break;
+            }
+        }
+        match next {
+            Some(c) => cur = c,
+            // No single non-member child holds all members → they SPLIT here (or a member is a direct
+            // child) → `cur` is the deepest node dominating every member.
+            None => return Some(cur),
         }
     }
 }
@@ -2099,6 +2151,76 @@ mod tests {
                 .any(|e| e.members.contains(&t1) && e.members.contains(&t2)),
             "the two structurally-equal tuples are a compound-CSE group; got {:?}",
             plan.iter().map(|e| e.members.len()).collect::<Vec<_>>()
+        );
+    }
+
+    // REGRESSION (the v-cadenza CDZ0101 scope_node bug): members in DIFFERENT if-branches, each nested a
+    // level deep. The old `b2_members_lca` tracked members.first() only → descended into the THEN branch
+    // (missing the ELSE member) → the hoisted `Let` was out of scope for it → unbound-name on recompile.
+    // `compound_members_lca` must return a node DOMINATING BOTH members (here the `If`).
+    #[test]
+    fn compound_cse_scope_node_dominates_members_across_if_branches() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let tup_ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let c = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(5)),
+            Ty::int64(),
+        );
+        // Two DISTINCT structurally-equal inner tuples, each nested one level deep in a separate branch.
+        let t1 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c, c].into(),
+            },
+            tup_ty.clone(),
+        );
+        let t2 = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [c, c].into(),
+            },
+            tup_ty.clone(),
+        );
+        let outer_ty = Ty::Tuple(vec![tup_ty.clone(), Ty::int64()].into());
+        let then_ = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [t1, c].into(),
+            },
+            outer_ty.clone(),
+        );
+        let else_ = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [t2, c].into(),
+            },
+            outer_ty.clone(),
+        );
+        let cond = synth_core(&mut db, Core::ConstBool(true), Ty::Bool);
+        let body = synth_core(&mut db, Core::If { cond, then_, else_ }, outer_ty);
+        let plan = compound_cse_bind_plan(&mut db, body);
+        let entry = plan
+            .iter()
+            .find(|e| e.members.contains(&t1) && e.members.contains(&t2))
+            .expect("t1/t2 (equal tuples across if-branches) form a compound-CSE group");
+        // The scope_node must DOMINATE both members (reachable to each) — the property the bug violated.
+        for &m in &[t1, t2] {
+            let mut seen = std::collections::HashSet::new();
+            let mut found = false;
+            b2_reachable(&mut db, entry.scope_node, m, &mut seen, &mut found);
+            assert!(
+                found,
+                "scope_node {:?} must dominate member {m:?} (reachable); it did not — the CDZ0101 out-of-scope bug",
+                entry.scope_node
+            );
+        }
+        // Concretely: the set-LCA is the enclosing `If` (members split then/else), NOT one branch.
+        assert_eq!(
+            entry.scope_node, body,
+            "the set-LCA of two members in opposite if-branches is the If itself"
         );
     }
 }
