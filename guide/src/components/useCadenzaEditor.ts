@@ -93,10 +93,13 @@ export interface CadenzaEditor {
 
 /// `source` is authored once in `authoredIn`; the hook keeps the live text in the active surface.
 /// `wrap` (default true) supplies the `export`/`main` a bare snippet needs before compiling.
+/// `expectsTrap` — the example is SUPPOSED to trap (`expect="error"`), so a trap is the intended outcome:
+/// forwarded to the runner so a stale-runtime mismatch never rewrites the expected trap to hard-reload advice.
 export function useCadenzaEditor(
   source: string,
   authoredIn: Surface = "sexpr",
   wrap = true,
+  expectsTrap = false,
 ): CadenzaEditor {
   const { surface } = useSyntax();
   const [text, setText] = useState(source);
@@ -158,7 +161,7 @@ export function useCadenzaEditor(
     const wrapPrefixBytes = wrap ? wrapPrefixOf(src, program) : 0;
     const out = await compile(program, srcSurface);
     if (!out.component) return { kind: "declined", diags: out.diagnostics, wrapPrefixBytes };
-    const result: RunOutcome = await runComponent(out.component, srcSurface);
+    const result: RunOutcome = await runComponent(out.component, srcSurface, false, undefined, expectsTrap);
     switch (result.kind) {
       case "value": {
         // A scalar Float that jco lowered to a whole JS number lost its `.0` (String(5) === "5"); the
