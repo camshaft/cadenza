@@ -77,6 +77,17 @@ fn doc_value_node(
     out: &mut String,
     ctr: &mut usize,
 ) -> Result<String, Reject> {
+    // A QTY must be handled BEFORE `strip_nominal_and_qty` erases it — its canonical value form is
+    // `(Qty.of <magnitude> <unit>)` (the wasm `value_codec` shape), NOT the bare magnitude the strip would
+    // leave (which would silently render `(: 5.0 Float64)` instead of `(: (Qty.of 5.0 (Unit.base #"meter"))
+    // (Qty …))` — a miscompile, not a render). Building `(Qty.of …)` needs a unit-expression sub-AST
+    // reconstruction (`Unit::render_value_form`) — a follow-up increment; DECLINE for now so the driver falls
+    // back to cdz_render_at rather than value-doc silently mis-rendering the Qty as its erased inner.
+    if matches!(ty.strip_nominal(), Ty::Qty { .. }) {
+        return Err(Reject::decline(
+            "value-doc: Qty value not covered (Qty.of magnitude+unit form) — falls back to cdz_render_at",
+        ));
+    }
     match ty.strip_nominal_and_qty() {
         // An integer leaf → an `Int` atom (its runtime value is the i64-slot magnitude; `from_i64` is exact
         // for a signed Int64, the only width covered so far — an unsigned/narrow width is a later increment).
