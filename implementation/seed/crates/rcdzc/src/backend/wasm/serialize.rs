@@ -1652,6 +1652,54 @@ fn core_module_impl(
         body.push(op::I32_ADD);
         body.push(op::GLOBAL_SET);
         uleb128(realloc_cursor_global, &mut body);
+        // GROW linear memory to cover [p, p + new_size) BEFORE returning: memory is declared `(memory 1)` = one
+        // 64-KiB page, but the host writes `new_size` bytes at the returned `p` after cabi_realloc returns (the
+        // canonical-ABI lower of an incoming `list<u8>` param), and the guest itself copies a >1-page result
+        // buffer out to `p` (the `list<u8>`/Bytes RESULT copy-out) — either write past 65536-`p` faults OOB at
+        // the wasm-page boundary. This is the exact twin of the copy-out `emit_grow_to_cover_out` guard and of
+        // `emit_bump_realloc_body`'s grow: a ~64-KiB binary-AST document round-tripped through this two-export
+        // wrapper (`encode-quoted() -> list<u8>` and `decode-check(list<u8>)`) trapped `@0x10000 in a
+        // size-0x10000 memory` (corpus 05 rcw4). needed_pages = ceil((p + new_size) / 65536); grow the shortfall
+        // over memory.size (memory.grow never traps, a no-op when memory already suffices).
+        {
+            const MEMORY_SIZE: u8 = 0x3f;
+            const MEMORY_GROW: u8 = 0x40;
+            // needed_pages = (p + new_size + 65535) >> 16
+            let needed = |out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(4, out); // p
+                out.push(op::LOCAL_GET);
+                uleb128(3, out); // new_size
+                out.push(op::I32_ADD);
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(65535, out);
+                out.push(op::I32_ADD);
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(16, out);
+                out.push(op::I32_SHR_U);
+            };
+            // (needed_pages - memory.size) > 0 ?
+            needed(&mut body);
+            body.push(MEMORY_SIZE);
+            body.push(0x00); // mem index 0
+            body.push(op::I32_SUB);
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(0, &mut body);
+            body.push(op::I32_GT_S);
+            body.push(op::IF);
+            body.push(wasm_abi::BLOCK_EMPTY);
+            {
+                // memory.grow(needed_pages - memory.size); drop
+                needed(&mut body);
+                body.push(MEMORY_SIZE);
+                body.push(0x00);
+                body.push(op::I32_SUB);
+                body.push(MEMORY_GROW);
+                body.push(0x00); // mem index 0
+                body.push(op::DROP);
+            }
+            body.push(op::END);
+        }
         // return p
         body.push(op::LOCAL_GET);
         uleb128(4, &mut body);
@@ -9258,6 +9306,49 @@ pub(crate) fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
     emit(&mut body, op::I32_ADD);
     body.push(op::GLOBAL_SET);
     uleb128(bump_global as u64, &mut body);
+    // GROW linear memory to cover [aligned, aligned + new_size) BEFORE returning: the host writes `new_size`
+    // bytes at the returned `aligned` after cabi_realloc returns, and a list<u8> the host lowers here that is
+    // larger than the remaining space in the initial 1-page (65536B) memory would otherwise be written
+    // OUT-OF-BOUNDS at the wasm-page granule. This is the §3c bytes-roundtrip MEMBER module's own bump
+    // allocator — the defensive TWIN of the DEFINE-mode `cabi_realloc` grow in `core_module_impl` (that one
+    // is the allocator corpus 05 rcw4 witnesses; a >64-KiB inbound `list<u8>` to a member here would OOB
+    // identically). The copy-OUT path already guards this via `emit_grow_to_cover_out`; every guest-emitted
+    // bump `cabi_realloc` needs the same grow-to-cover. needed_pages = ceil((aligned + new_size) / 65536);
+    // grow the shortfall over memory.size (memory.grow never traps, a no-op when memory already suffices).
+    {
+        const MEMORY_SIZE: u8 = 0x3f;
+        const MEMORY_GROW: u8 = 0x40;
+        // needed_pages = (aligned + new_size + 65535) >> 16
+        let needed = |out: &mut Vec<u8>| {
+            get(out, 4); // aligned
+            get(out, 3); // new_size
+            out.push(op::I32_ADD);
+            const_i32(out, 65535);
+            out.push(op::I32_ADD);
+            const_i32(out, 16);
+            out.push(op::I32_SHR_U);
+        };
+        // (needed_pages - memory.size) > 0 ?
+        needed(&mut body);
+        body.push(MEMORY_SIZE);
+        body.push(0x00); // mem index 0
+        emit(&mut body, op::I32_SUB);
+        const_i32(&mut body, 0);
+        emit(&mut body, op::I32_GT_S);
+        body.push(op::IF);
+        body.push(wasm_abi::BLOCK_EMPTY);
+        {
+            // memory.grow(needed_pages - memory.size); drop
+            needed(&mut body);
+            body.push(MEMORY_SIZE);
+            body.push(0x00);
+            emit(&mut body, op::I32_SUB);
+            body.push(MEMORY_GROW);
+            body.push(0x00); // mem index 0
+            body.push(op::DROP);
+        }
+        body.push(op::END);
+    }
     // return aligned
     get(&mut body, 4);
     body.push(op::END);
