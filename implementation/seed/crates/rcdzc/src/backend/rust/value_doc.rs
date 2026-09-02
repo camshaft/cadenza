@@ -560,6 +560,38 @@ fn doc_type_node(
         ));
         return Ok(v);
     }
+    // A NOMINAL newtype TYPE → its DECLARED name, NOT the erased structural inner. The BOUNDARY renders a
+    // nominal value's TYPE as the nominal name (`(: 5 UserId)`, `(: #list(1 2) Names)`, `(: 5 (Box Int64))`
+    // for a generic nominal) — even though the VALUE crosses transparently as the erased inner (§156, which
+    // is why `doc_value_node` strips the nominal). wasm's value_codec renders the nominal name here, so
+    // value-doc must too or the `(: value type)` diverges from wasm for EVERY nominal-newtype return (and
+    // for a nominal nested inside a compound type — `(List UserId)` — which this recursion also covers).
+    // (A `Nominal(Qty …)` was already handled by the Qty branch above, so reaching here means the stripped
+    // inner is not a Qty.) Monomorphic → bare `Name`; generic → `(<Name> <T…>)` (mirrors the Sum arm).
+    if let Ty::Nominal { decl, args, .. } = ty {
+        let args = args.clone();
+        let name = {
+            let ncx = db.name_ctx();
+            ncx.name_of(*decl).unwrap_or("<nominal>").to_string()
+        };
+        if args.is_empty() {
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.name({name:?});\n"));
+            return Ok(v);
+        }
+        let head = fresh(ctr);
+        out.push_str(&format!("    let {head} = __b.name({name:?});\n"));
+        let mut kids = vec![head];
+        for a in args.iter() {
+            kids.push(doc_type_node(db, a, out, ctr)?);
+        }
+        let v = fresh(ctr);
+        out.push_str(&format!(
+            "    let {v} = __b.list(vec![{}]);\n",
+            kids.join(", ")
+        ));
+        return Ok(v);
+    }
     match ty.strip_nominal_and_qty() {
         Ty::Tuple(elems) => {
             let elems = elems.clone();
