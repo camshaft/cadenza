@@ -5602,6 +5602,19 @@
           oracle-typecheck --manifest "$caseDirs" | tee result
           echo "ok: oracle-lean type-oracle conformance — $(cat result)" > "$out"
         '';
+        # Operator's #1 direction (compilation-correct ALL THE WAY THROUGH): the Core↔wasm DIFFERENTIAL. For
+        # each corpus case, `oracle-wasm-diff` compares the Core reference `reduce(core.ast)` against the talos
+        # interpretation of the emitted wasm (`core.wat`), over v-wasm-oracle's `oracleWasmCaseDirs` manifest
+        # (each dir = {core.wat, result-type.ast, core.ast}). A DIVERGE = a real front-end→backend miscompile
+        # (fails); a SKIP (wasm declined a heap/import case, or a Core-unsupported node) is a sound gap. Pulls
+        # the warm extractions from cachix (both emit + extraction layers warmed) so it runs fast, not cold.
+        # Standalone/advisory (NOT in localGate), keyed on {shred/emit/extract, lean oracle+talos}.
+        oracleWasmDiff = pkgs.runCommand "oracle-wasm-diff"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleWasmCaseDirs; } ''
+          echo "oracle-wasm-diff: $(wc -l < "$caseDirs") runnable Core->wasm cases (v-wasm-oracle extraction manifest)"
+          oracle-wasm-diff --manifest "$caseDirs" | tee result
+          echo "ok: oracle-wasm Core->wasm differential — $(tail -1 result)" > "$out"
+        '';
         # Cross-shell PATH wrapper-scripts for the all-nix entrypoints (v-nix 2026-08-28). Hoisted here so
         # BOTH devShells.default (packages) AND packages.cdz-shell-wrappers use the SAME wrappers (no drift).
         # NOT shell functions: agents' claude Bash-tool subshells are ZSH + the shell snapshot HARD-RESETS
@@ -6565,6 +6578,9 @@
             # T0.2 type-oracle corpus conformance: `infer` over each corpus case judged vs accept; a
             # false-IllTyped (0 required) fails. Standalone/advisory, same as the semantics conformance.
             oracle-lean-typecheck = oracleLeanTypeCheck;
+            # Core↔wasm differential (operator #1): reduce(core.ast) vs talos-interpret(core.wat) per case;
+            # a DIVERGE (0 required) = a front-end→backend miscompile. Standalone/advisory. Pulls warm.
+            oracle-wasm-diff = oracleWasmDiff;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
