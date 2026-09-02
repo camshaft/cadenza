@@ -1133,6 +1133,30 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
     {
         return Some(text.to_string());
     }
+    // 2b. A DOTTED MEMBER `Prefix.member` (`Map.insert`) — the common editor case (hovering a member
+    // call). The plain-name steps above miss it: the prelude holds `Map` (the module record), not
+    // `Map.insert`. Resolve the PREFIX to its record (a built-in prelude module, or a user def bound to
+    // a record), then read the MEMBER's `(meta doc)` channel through the SAME generic member path a
+    // `(. Map insert)` access takes (`member_value` → `project_meta`), never a hardcoded key. Split on
+    // the LAST `.` so a nested prefix (were one to exist) still names its record.
+    if let Some(dot) = name.rfind('.') {
+        let (prefix, member) = (&name[..dot], &name[dot + 1..]);
+        if !prefix.is_empty() && !member.is_empty() {
+            let rec = db
+                .prelude
+                .get(prefix)
+                .copied()
+                .or_else(|| db.def_by_name(prefix).and_then(|i| db.defs[i].body));
+            if let Some(rec) = rec
+                && let crate::eval::Member::Field(v) =
+                    crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member))
+                && let Some(doc_node) = crate::eval::project_meta(db, v, "doc")
+                && let Some(text) = db.ast.as_str(doc_node)
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
     // 3. A grammar keyword's doc.
     grammar_keyword_doc(name).map(str::to_string)
 }
@@ -1142,10 +1166,33 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
 /// `doc_of_name` walks, minus the doc-text read, so `DocOf` can tell a real-but-undocumented name from a
 /// typo and give the two cases different "no answer" verdicts. No hardcoded key match (the built-in step
 /// tests the prelude record's existence — the generic path a name resolution takes).
-fn name_is_known(db: &Db, name: &str) -> bool {
-    db.def_by_name(name).is_some()
+fn name_is_known(db: &mut Db, name: &str) -> bool {
+    if db.def_by_name(name).is_some()
         || db.prelude.contains_key(name)
         || grammar_keyword_doc(name).is_some()
+    {
+        return true;
+    }
+    // A DOTTED MEMBER `Prefix.member` that RESOLVES (mirrors `doc_of_name`'s step 2b) — a real member
+    // with no `(meta doc)` is "undocumented", not "no such definition". Resolve the prefix record + test
+    // the member field exists (no doc-text read).
+    if let Some(dot) = name.rfind('.') {
+        let (prefix, member) = (&name[..dot], &name[dot + 1..]);
+        if !prefix.is_empty() && !member.is_empty() {
+            let rec = db
+                .prelude
+                .get(prefix)
+                .copied()
+                .or_else(|| db.def_by_name(prefix).and_then(|i| db.defs[i].body));
+            if let Some(rec) = rec {
+                return matches!(
+                    crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member)),
+                    crate::eval::Member::Field(_)
+                );
+            }
+        }
+    }
+    false
 }
 
 /// The closest DOCUMENTABLE name to `name` — a user def or a built-in prelude binding — for the
@@ -2460,6 +2507,45 @@ mod tests {
         assert!(
             !by_name.contains_key("helper"),
             "a non-`@test` def is not listed"
+        );
+    }
+
+    #[test]
+    fn doc_of_a_dotted_prelude_member_resolves_not_no_such_definition() {
+        // ITEM C (breaker /tmp/mr4.sexp): `cdz doc Map.insert` must RESOLVE the dotted member — read its
+        // per-member doc channel through the generic member path (`member_value` → `(meta doc)`) — not
+        // report "no such definition". A real member with no per-member doc is `Undocumented`; a BOGUS
+        // member (`Map.nope`) stays `NoSuchDef`. Regression witness for the dotted-member doc-resolution
+        // gap: before, `doc_of_name` only looked the WHOLE name up as a def / prelude record / keyword, so
+        // a dotted member fell through to `NoSuchDef` even though the module (`cdz doc Map`) resolves.
+        use cadenza_compile_abi::DocAnswer;
+        let src = "(do (def (main) (Map.insert Map.empty 1 2)) (export main))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let member = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "Map.insert".into(),
+                },
+            )
+            .bytes,
+        );
+        assert!(
+            !matches!(member, DocAnswer::NoSuchDef { .. }),
+            "`Map.insert` is a REAL prelude member (resolves to Undocumented or Doc), not a typo: {member:?}"
+        );
+        let bogus = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "Map.nope".into(),
+                },
+            )
+            .bytes,
+        );
+        assert!(
+            matches!(bogus, DocAnswer::NoSuchDef { .. }),
+            "`Map.nope` is a bogus member → NoSuchDef: {bogus:?}"
         );
     }
 
