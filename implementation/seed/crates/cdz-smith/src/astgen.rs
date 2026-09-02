@@ -363,8 +363,10 @@ fn gen_typefuzz_toplevel_helpers<C: Choice>(
 fn gen_typefuzz_usersum_program<C: Choice>(c: &mut C, fresh: &mut usize) -> String {
     let n = *fresh;
     *fresh += 1;
-    // ~1/2: QUALIFY the CONSTRUCTOR (T1.27 — `T.A` / `(Q.M arg)`); patterns stay unqualified (T1.26).
+    // ~1/2: QUALIFY the CONSTRUCTOR (T1.27 — `T.A` / `(Q.M arg)`); ~1/2 (independent): QUALIFY the match
+    // PATTERNS (T1.28 — `C.R` / `(Q.M binder)`). Unqualified forms are T1.26.
     let qual = c.variant(2) == 0;
+    let qpat = c.variant(2) == 0;
     if c.variant(2) == 0 {
         // Tagged: a payload variant `(Mn Int64)` + a nullary variant `(Zn)`.
         let a = c.int_bounded(0, 9);
@@ -374,8 +376,13 @@ fn gen_typefuzz_usersum_program<C: Choice>(c: &mut C, fresh: &mut usize) -> Stri
         } else {
             format!("(M{n} {a})")
         };
+        let tq = if qpat {
+            format!("T{n}.")
+        } else {
+            String::new()
+        };
         format!(
-            "(do (type T{n} (M{n} Int64) (Z{n})) (def (main) (match {ctor} ((M{n} v) v) ((Z{n}) {z}))) (export main))"
+            "(do (type T{n} (M{n} Int64) (Z{n})) (def (main) (match {ctor} (({tq}M{n} v) v) (({tq}Z{n}) {z}))) (export main))"
         )
     } else {
         // Bare-name nullary enum with 3 variants; match over one of them (qualified or bare scrutinee).
@@ -385,8 +392,13 @@ fn gen_typefuzz_usersum_program<C: Choice>(c: &mut C, fresh: &mut usize) -> Stri
         } else {
             format!("{pick}{n}")
         };
+        let eq = if qpat {
+            format!("E{n}.")
+        } else {
+            String::new()
+        };
         format!(
-            "(do (type E{n} R{n} G{n} B{n}) (def (main) (match {scrut} (R{n} 1) (G{n} 2) (B{n} 3))) (export main))"
+            "(do (type E{n} R{n} G{n} B{n}) (def (main) (match {scrut} ({eq}R{n} 1) ({eq}G{n} 2) ({eq}B{n} 3))) (export main))"
         )
     }
 }
