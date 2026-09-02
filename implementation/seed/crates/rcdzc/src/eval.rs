@@ -1124,66 +1124,11 @@ fn apply_lambda_uncached(
         Some(lam) => lam,
         None => return Ok(None),
     };
-    // CALL-SITE SPLAT (`DESIGN-variable-arity-functions.md` addendum A.2): a `(.. t)` ARGUMENT whose
-    // operand is a compile-time TUPLE is expanded into its element occurrences spliced positionally —
-    // `f(.. #tuple(a b c))` ≡ `f(a b c)` — BEFORE the gather/zip below, so the `..` never resolves as a
-    // head (it would otherwise CDZ0201). Each spliced element is `resolve_subtree`-pinned to its caller
-    // scope before it flows into β-reduction. (First slice: a syntactic tuple operand; a runtime tuple
-    // VARIABLE — per-slot projection + materialize-once — is a follow-up.)
-    let call_splatted: Option<Vec<StructId>> =
-        if args.iter().any(|&a| db.ast.spread_operand(a).is_some()) {
-            let mut out: Vec<StructId> = Vec::new();
-            for &a in args {
-                let Some(t) = db.ast.spread_operand(a) else {
-                    out.push(a);
-                    continue;
-                };
-                // (i) A SYNTACTIC tuple operand `(.. #tuple(a b c))` — splice its element occurrences.
-                if let Some(elems) = db
-                    .ast
-                    .compound_form_of(t, crate::ast::CompoundCtor::Tuple)
-                    .map(|e| e.to_vec())
-                {
-                    for e in elems {
-                        crate::resolve::resolve_subtree(db, e);
-                        out.push(e);
-                    }
-                    continue;
-                }
-                // (ii) A tuple-typed REFERENCE `(.. t)` (a param / let-local) — expand into per-slot
-                // projections `(. t 0) … (. t k-1)` (k = the static tuple arity). t is a bound VALUE, so
-                // reading it k times does not re-evaluate it; a copy of the reference per projection keeps
-                // the one-parent invariant. A NON-reference operand (a call that computes a tuple) would
-                // re-evaluate per projection → left as-is for the materialize-once follow-up.
-                crate::resolve::resolve_subtree(db, t);
-                let arity = match crate::infer::type_of(db, t) {
-                    crate::ty::Ty::Tuple(elems) => Some(elems.len()),
-                    _ => None,
-                };
-                let simple_ref = matches!(
-                    resolved_of(db, t),
-                    Resolved::Ref { .. } | Resolved::Param { .. }
-                );
-                if let (Some(k), true) = (arity, simple_ref) {
-                    for i in 0..k {
-                        let t_copy = copy_structural_pub(db, t, &[], &HashMap::default());
-                        let dot = db.push_name(".");
-                        let idx = db.push_atom(Leaf::Int {
-                            value: IntValue::from_i64(i as i64),
-                            radix: crate::ast::Radix::Dec,
-                        });
-                        let proj = db.push_list(vec![dot, t_copy, idx]);
-                        crate::resolve::resolve_subtree(db, proj);
-                        out.push(proj);
-                    }
-                } else {
-                    out.push(a);
-                }
-            }
-            Some(out)
-        } else {
-            None
-        };
+    // CALL-SITE SPLAT (`DESIGN-variable-arity-functions.md` addendum A.2 / A.7): a `(.. t)` ARGUMENT is
+    // expanded into positional occurrences BEFORE the gather/zip below, so the `..` never resolves as a
+    // head (it would otherwise CDZ0201). The SAME expansion runs at type-check time (`check_application`)
+    // via this shared helper, so lowering and the type checker see identical positional args (A.7).
+    let call_splatted: Option<Vec<StructId>> = expand_call_splat_args(db, args);
     let args: &[StructId] = call_splatted.as_deref().unwrap_or(args);
     // VARARGS (`DESIGN-variable-arity-functions.md` §3.1): a rest LAST-parameter `(.. binder)` absorbs
     // the TRAILING arguments as a single LIST value. Gather `args[fixed..]` (fixed = the count of leading
@@ -1473,6 +1418,79 @@ pub(crate) fn callee_is_varargs(db: &mut Db, head: StructId) -> bool {
     lambda_of(db, head)
         .and_then(|(ps, _)| ps.last().copied())
         .is_some_and(|p| is_rest_param(db, p))
+}
+
+/// Expand any call-site `(.. t)` SPLAT arguments into positional occurrences — the SINGLE source shared by
+/// `apply_lambda` (β-reduction / lowering) and `check_application` (type-check), so the two agree exactly
+/// on the expanded argument list (`DESIGN-variable-arity-functions.md` A.2 / A.7). Returns `None` (a pure
+/// no-op) when no argument is a `(.. …)` marker, so every non-splat call is untouched. Two operand shapes
+/// expand; anything else is left verbatim (a list operand feeding a varargs list-rest param stays a single
+/// `(.. xs)` arg for the gather; a non-reference tuple-computing operand is the materialize-once follow-up):
+///   (i)  a SYNTACTIC tuple `(.. #tuple(a b c))` — splice its element occurrences;
+///   (ii) a tuple-typed REFERENCE `(.. t)` (param / let-local, static arity `k`) — expand into per-slot
+///        projections `(. t 0) … (. t k-1)`, a fresh copy of the reference per slot (one-parent invariant).
+pub(crate) fn expand_call_splat_args(db: &mut Db, args: &[StructId]) -> Option<Vec<StructId>> {
+    if !args.iter().any(|&a| db.ast.spread_operand(a).is_some()) {
+        return None;
+    }
+    let mut out: Vec<StructId> = Vec::new();
+    for &a in args {
+        let Some(t_raw) = db.ast.spread_operand(a) else {
+            out.push(a);
+            continue;
+        };
+        // Peel a leading `(: v T)` annotation: β-substitution wraps a splatted argument in its parameter's
+        // annotation (`substituted_arg`), so the reduced `main → relay` body's splat operand arrives as
+        // `(: #tuple(1 2 3) (Tuple …))` rather than a bare `#tuple(1 2 3)`. Both the syntactic-tuple splice
+        // (i) and the tuple-reference projection (ii) read through the annotation to the underlying value.
+        let t = db
+            .ast
+            .as_form(t_raw, ":")
+            .and_then(|f| f.first().copied())
+            .unwrap_or(t_raw);
+        // (i) A SYNTACTIC tuple operand `(.. #tuple(a b c))` — splice its element occurrences.
+        if let Some(elems) = db
+            .ast
+            .compound_form_of(t, crate::ast::CompoundCtor::Tuple)
+            .map(|e| e.to_vec())
+        {
+            for e in elems {
+                crate::resolve::resolve_subtree(db, e);
+                out.push(e);
+            }
+            continue;
+        }
+        // (ii) A tuple-typed REFERENCE `(.. t)` (a param / let-local) — expand into per-slot projections
+        // `(. t 0) … (. t k-1)` (k = the static tuple arity). t is a bound VALUE, so reading it k times
+        // does not re-evaluate it; a copy of the reference per projection keeps the one-parent invariant.
+        // A NON-reference operand (a call that computes a tuple) would re-evaluate per projection → left
+        // as-is for the materialize-once follow-up.
+        crate::resolve::resolve_subtree(db, t);
+        let arity = match crate::infer::type_of(db, t) {
+            crate::ty::Ty::Tuple(elems) => Some(elems.len()),
+            _ => None,
+        };
+        let simple_ref = matches!(
+            resolved_of(db, t),
+            Resolved::Ref { .. } | Resolved::Param { .. }
+        );
+        if let (Some(k), true) = (arity, simple_ref) {
+            for i in 0..k {
+                let t_copy = copy_structural_pub(db, t, &[], &HashMap::default());
+                let dot = db.push_name(".");
+                let idx = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i64(i as i64),
+                    radix: crate::ast::Radix::Dec,
+                });
+                let proj = db.push_list(vec![dot, t_copy, idx]);
+                crate::resolve::resolve_subtree(db, proj);
+                out.push(proj);
+            }
+        } else {
+            out.push(a);
+        }
+    }
+    Some(out)
 }
 
 /// Whether a rest parameter `(.. binder)` gathers its trailing arguments into a homogeneous LIST
