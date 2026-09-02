@@ -130,6 +130,25 @@ pub struct Emit {
     /// for the divergent binder (the post-body drop is already off for it → no double-drop). Closes the
     /// map-select / tree / effects-tuple if-join leakers.
     ifjoin_arm_drops: HashMap<StructId, Vec<(u32, bool)>>,
+    /// IF-JOIN OWNERSHIP-EQUALIZE dup plan (v-memory-safety co-design; FIX A for the map-select-family
+    /// value-If leak). Keyed by a `Core::If` node that is a `let`-binding's VALUE (`let pick = (if C b …)`)
+    /// whose OWNERSHIP DIVERGES per arm → the `(slot, dup_is_then)` of each EARLIER heap binder `b` the
+    /// result MOVE-ALIASES on one arm (b escapes that arm → pick == b there, a borrow-view at rc1) while
+    /// being OWNED-FRESH on the other. The arm-blind post-body ownership gate then classifies `pick`
+    /// `!Owned` (from the alias arm) and SUPPRESSES its drop → the fresh arm's shell LEAKS. Equalize:
+    /// emit an rc-aware `dup(b)` (`LocalGet slot; OP_DUP`) on the ALIAS arm (never the fresh arm) so `pick`
+    /// is UNIFORMLY OWNED on both arms; then `pick`'s post-body drop is FORCED (see `ifjoin_forced_drops`)
+    /// and correct on both (alias: pick-drop + b's own drop net one free of the shared cell; fresh: pick's
+    /// shell freed, b's distinct shell freed, interior rc-aware). Populated in the `Core::Let` bindings loop
+    /// BEFORE the value emit; consumed at the `Core::If` handler AFTER each arm's `emit_branch` (stack-neutral).
+    ifjoin_arm_dups: HashMap<StructId, Vec<(u32, bool)>>,
+    /// IF-JOIN FORCED post-body drop (pairs with `ifjoin_arm_dups`, FIX A). The `let`-binder ids whose
+    /// value-If was ownership-equalized by an arm dup above: after the dup, the binder is genuinely OWNED,
+    /// so its post-body scope-drop MUST fire — this set makes the post-body drop loop BYPASS the arm-blind
+    /// borrowed-operand skip (`binder==value && !Owned`) for exactly these binders (never the genuine
+    /// self-keyed row-op materialize-borrow the gate protects, breaker #45). Populated + consumed within the
+    /// same `Core::Let` handler (a binder is here iff `ifjoin_arm_dups` got a plan for its value-If).
+    ifjoin_forced_drops: HashSet<StructId>,
     /// 05:18721 SURPLUS keep-alive sites: the SUBSET of `dup_sites` occurrences (`Core::LocalRef`/`Core::Param`)
     /// whose retain `dup` is PROVABLY REDUNDANT and may be skipped — the narrowed replacement for the too-broad
     /// `body_is_boundary_owned`-alone trial gate that caused 159 corpus UAFs. An occurrence of binder `b` is

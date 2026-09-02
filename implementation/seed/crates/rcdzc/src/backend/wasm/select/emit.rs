@@ -3577,6 +3577,11 @@ pub(super) fn emit(
             // READ the binder (a projection into its result, e.g. effects-tuple's `(. ab 1)`), so a top-of-arm
             // drop would free it BEFORE the read → UAF. The drop must FOLLOW the arm's reads (v-mem P0 fix).
             let ifjoin_plan = out.ifjoin_arm_drops.remove(&id).unwrap_or_default();
+            // IF-JOIN OWNERSHIP-EQUALIZE (FIX A): when THIS `if` is a divergent-ownership let-value, emit an
+            // rc-aware `dup(b)` on the ALIAS arm (the arm the result move-aliases the earlier binder `b`), so
+            // the let result is UNIFORMLY OWNED. Stack-neutral (`LocalGet slot; OP_DUP` reads a fresh copy and
+            // rc++s, leaving the arm's join value untouched). Placed AFTER `emit_branch`, mirroring the arm-drop.
+            let ifjoin_dups = out.ifjoin_arm_dups.remove(&id).unwrap_or_default();
             // FLOW-SENSITIVE RANGE REFINEMENT: while emitting a branch, push a refinement frame recording
             // any one-sided bound this branch's condition establishes on a variable (`(< n 2)` → `n ≤ 1`
             // in `then`, `n ≥ 2` in `else`). A guard-elision check inside the branch (`value_range` →
@@ -3613,6 +3618,14 @@ pub(super) fn emit(
                     out.push(Lir::CallImport(OP_DROP));
                 }
             }
+            // IF-JOIN OWNERSHIP-EQUALIZE (then-arm dup): if the then-arm is the ALIAS arm, dup `b` so the
+            // result owns an independent ref. Stack-neutral: a fresh `LocalGet` copy that OP_DUP rc++s + pops.
+            for &(slot, dup_is_then) in &ifjoin_dups {
+                if dup_is_then {
+                    out.push(Lir::LocalGet(slot));
+                    out.push(Lir::CallImport(OP_DUP));
+                }
+            }
             out.push(Lir::Else);
             // The else branch starts its scratch ABOVE the then branch's high-water (see the TAIL `Core::If`
             // arm for the full rationale): the two mutually-exclusive branches may want the same slot index
@@ -3634,6 +3647,13 @@ pub(super) fn emit(
                 if !d_is_then {
                     out.push(Lir::LocalGet(slot));
                     out.push(Lir::CallImport(OP_DROP));
+                }
+            }
+            // IF-JOIN OWNERSHIP-EQUALIZE (else-arm dup): mirror of the then-arm dup for an alias-on-else result.
+            for &(slot, dup_is_then) in &ifjoin_dups {
+                if !dup_is_then {
+                    out.push(Lir::LocalGet(slot));
+                    out.push(Lir::CallImport(OP_DUP));
                 }
             }
             out.push(Lir::End);
@@ -3986,6 +4006,47 @@ pub(super) fn emit(
                 // pre-advances `*high` for its own handle slot — this brings the general `let` in line.)
                 scratch_ty.insert(slot, vt);
                 *high = (*high).max(slot + 1);
+                // IF-JOIN OWNERSHIP-EQUALIZE detection (v-memory-safety co-design, FIX A). When THIS binding's
+                // VALUE is a `Core::If` (`let pick = (if C b …)`) and an EARLIER heap binder `b` MOVE-ALIASES
+                // the result on exactly one arm (b ESCAPES that arm → pick == b, a borrow-view) while being
+                // DEAD on the other (pick is OWNED-FRESH there), pick has DIVERGENT ownership. The arm-blind
+                // post-body gate classifies pick `!Owned` (from the alias arm) and suppresses its drop → the
+                // fresh arm's shell leaks (map-select 05:4862 +1). Equalize: `dup(b)` on the ALIAS arm so pick
+                // is uniformly OWNED, then FORCE pick's post-body drop. Detection runs BEFORE the value emit so
+                // the plan is in place when the `Core::If` handler emits pick's value. Uses the upfront
+                // `dup_sites` so the per-arm escape verdict matches the post-body loop's.
+                if is_heap_type(&ty)
+                    && let Core::If { then_, else_, .. } = core_of(db, *value)
+                {
+                    let mut dup_plan: Vec<(u32, bool)> = Vec::new();
+                    for &(pb, pslot, _pv) in &heap_bindings {
+                        let esc_then = binding_escapes_dup_aware(
+                            db,
+                            then_,
+                            EscapeTarget::Binder(pb),
+                            false,
+                            Some(&out.dup_sites),
+                        );
+                        let esc_else = binding_escapes_dup_aware(
+                            db,
+                            else_,
+                            EscapeTarget::Binder(pb),
+                            false,
+                            Some(&out.dup_sites),
+                        );
+                        // DIVERGENT ownership iff `b` escapes exactly one arm — that arm is the ALIAS arm
+                        // (pick == b there, a move-alias); dup `b` there so pick owns its own reference.
+                        // `dup_is_then = esc_then` (dup on the arm b escapes).
+                        if esc_then != esc_else {
+                            dup_plan.push((pslot, /* dup_is_then = */ esc_then));
+                        }
+                    }
+                    if !dup_plan.is_empty() {
+                        out.ifjoin_arm_dups.insert(*value, dup_plan);
+                        // pick is now uniformly OWNED after the dup → its post-body drop must fire.
+                        out.ifjoin_forced_drops.insert(*binder);
+                    }
+                }
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
                 // store it once. The value sees the earlier bindings via `extended`.
                 emit(
@@ -4163,7 +4224,14 @@ pub(super) fn emit(
                 // path, which STILL drops + relies on the field-dup) is reclaimed here; a borrowed operand is
                 // materialized-once for the eval-once benefit but left for its owner to reclaim. Non-self-keyed
                 // bindings are unaffected (a normal `let` binds a fresh value, always Owned or escaping).
+                // IF-JOIN OWNERSHIP-EQUALIZE (FIX A): a binder whose divergent-ownership value-If was
+                // equalized by an arm dup above is now genuinely OWNED on BOTH arms — BYPASS this arm-blind
+                // borrowed-operand skip for it so its post-body drop fires (its fresh-arm shell would else
+                // leak). The bypass is scoped to exactly these binders (never the genuine self-keyed row-op
+                // materialize-borrow the gate protects, breaker #45); and the earlier `escapes_body`/D1 gates
+                // still ran first, so a forced binder that genuinely escapes is already (correctly) not here.
                 if binder == value
+                    && !out.ifjoin_forced_drops.contains(&binder)
                     && !matches!(
                         heap_operand_ownership(db, value),
                         Ok(HandleOwnership::Owned)
