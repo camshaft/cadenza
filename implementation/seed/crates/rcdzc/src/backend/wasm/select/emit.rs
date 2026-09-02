@@ -3568,6 +3568,15 @@ pub(super) fn emit(
                 },
             };
             out.push(Lir::If(block_ty));
+            // IF-JOIN PER-ARM DROP (v-memory-safety co-design): reclaim a DIVERGENT heap let-binding (escapes
+            // one arm, dead on the other) on its DEAD arm ONLY — the post-body scope-drop suppressed it
+            // (whole-body escape), so this is its SOLE reclaim (no double-drop). Capture the plan for THIS
+            // `Core::If` node (`remove` consumes it so it fires once); the actual rc-aware DEEP `op_drop`
+            // (`LocalGet slot; CallImport OP_DROP` — cascades to dead extracted children like tree's l,r) is
+            // emitted AFTER each arm's `emit_branch` (below), NOT at the arm top: the D arm's body may still
+            // READ the binder (a projection into its result, e.g. effects-tuple's `(. ab 1)`), so a top-of-arm
+            // drop would free it BEFORE the read → UAF. The drop must FOLLOW the arm's reads (v-mem P0 fix).
+            let ifjoin_plan = out.ifjoin_arm_drops.remove(&id).unwrap_or_default();
             // FLOW-SENSITIVE RANGE REFINEMENT: while emitting a branch, push a refinement frame recording
             // any one-sided bound this branch's condition establishes on a variable (`(< n 2)` → `n ≤ 1`
             // in `then`, `n ≥ 2` in `else`). A guard-elision check inside the branch (`value_range` →
@@ -3595,6 +3604,15 @@ pub(super) fn emit(
             );
             db.pop_range_refinements();
             then_res?;
+            // IF-JOIN PER-ARM DROP (then-arm D-drop): AFTER the then body's reads, before the arm exits — a
+            // D-then arm that reads the binder does so BEFORE it is reclaimed. Stack-safe: emit_branch left
+            // the arm result in `&result`'s slot; a trailing `LocalGet(slot); OP_DROP` pops only the binder.
+            for &(slot, d_is_then) in &ifjoin_plan {
+                if d_is_then {
+                    out.push(Lir::LocalGet(slot));
+                    out.push(Lir::CallImport(OP_DROP));
+                }
+            }
             out.push(Lir::Else);
             // The else branch starts its scratch ABOVE the then branch's high-water (see the TAIL `Core::If`
             // arm for the full rationale): the two mutually-exclusive branches may want the same slot index
@@ -3610,6 +3628,14 @@ pub(super) fn emit(
             );
             db.pop_range_refinements();
             else_res?;
+            // IF-JOIN PER-ARM DROP (else-arm D-drop): AFTER the else body's reads, before End (mirror of the
+            // then-arm drop — the binder is reclaimed on the D path once its last read in the arm is done).
+            for &(slot, d_is_then) in &ifjoin_plan {
+                if !d_is_then {
+                    out.push(Lir::LocalGet(slot));
+                    out.push(Lir::CallImport(OP_DROP));
+                }
+            }
             out.push(Lir::End);
             // A both-diverge (`Never`) `if` yields nothing from its empty block; a trailing `unreachable`
             // supplies the stack-polymorphic value the enclosing value position expects (dead — both arms
@@ -4024,6 +4050,42 @@ pub(super) fn emit(
             // Perceus — `value-heap-runtime.md` §the ordering obligation). Dropping an escaped value
             // would be a use-after-free / double-free; `binding_escapes` is conservative (any non-borrow
             // use → escapes → keep), so we never drop a live value.
+            // IF-JOIN PER-ARM DROP detection (v-memory-safety co-design). When the let BODY is a `Core::If`,
+            // a heap binding that DIVERGES across its arms — ESCAPES on one arm (W: carried-whole / is the
+            // result) but is DEAD on the other (D) — leaks on the D arm: the post-body scope-drop below sees
+            // `binding_escapes_dup_aware(WHOLE body) == true` (it escapes on the W arm) and SUPPRESSES its
+            // drop, but nothing reclaims it on the D path. Record the divergent binder's slot + which arm is
+            // D so the `Core::If` handler drops it PER-ARM (on the D arm only — never the W arm, the UAF bar)
+            // before that arm's join value. Uses the UPFRONT `dup_sites` (populated at function entry), so
+            // the per-arm escape verdict matches the post-body loop's whole-body one. Fires ONLY on a
+            // genuine divergence (W xor D); uniform-D is handled by the post-body drop, uniform-W kept live.
+            if let Core::If { then_, else_, .. } = core_of(db, body) {
+                let mut plan: Vec<(u32, bool)> = Vec::new();
+                for &(binder, slot, _value) in &heap_bindings {
+                    let esc_then = binding_escapes_dup_aware(
+                        db,
+                        then_,
+                        EscapeTarget::Binder(binder),
+                        false,
+                        Some(&out.dup_sites),
+                    );
+                    let esc_else = binding_escapes_dup_aware(
+                        db,
+                        else_,
+                        EscapeTarget::Binder(binder),
+                        false,
+                        Some(&out.dup_sites),
+                    );
+                    // DIVERGENT iff it escapes exactly one arm; the D (dead) arm is the one it does NOT
+                    // escape → drop there.
+                    if esc_then != esc_else {
+                        plan.push((slot, /* d_is_then = */ !esc_then));
+                    }
+                }
+                if !plan.is_empty() {
+                    out.ifjoin_arm_drops.insert(body, plan);
+                }
+            }
             emit(db, body, &extended, floor, high, scratch_ty, layout, out)?;
             // DROP a dead heap binding. DUP-AWARE escape: a CONSUMING occurrence that is a Perceus retain
             // (`dup_sites`) does NOT count as an escape — the `dup` gave the consuming op its own reference,
