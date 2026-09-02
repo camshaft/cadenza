@@ -63,6 +63,13 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     }
     db.descent_depth += 1;
     let t = compute(db, id);
+    // If `id` is a handler SEED node with a still-free-var type, ground the state type NOW (first demand,
+    // at type-check) against the resume next-states — so the fully-ground state type is what gets memoized
+    // and every later read (incl. match lowering of `(match s …)`, where `s` resolves to a `Ref` to this
+    // seed) sees a grounded nested payload rather than an unsolved `_`. No-op for a non-seed node or an
+    // already-ground type; takes `t` so it never re-enters `type_of(id)` (grounding self-recursion is
+    // bounded by `GROUNDING_ARMS`).
+    let t = crate::effects::ground_seed_if_handle_init(db, id, t);
     db.descent_depth -= 1;
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "solved type");
     // Do NOT memoize a provisional `Any`, OR a type that still CONTAINS A FREE VARIABLE: a node typed
