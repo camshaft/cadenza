@@ -23,6 +23,7 @@ inductive Ty where
   | bool | unit | string | char
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
+  | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
@@ -63,6 +64,7 @@ partial def occurs (i : Nat) : Ty → Bool
   | .numVar j => i == j
   | .fn d c => occurs i d || occurs i c
   | .tuple es => es.any (occurs i)
+  | .record fs => fs.any (fun f => occurs i f.2)
   | _ => false
 
 /-- Does a type contain ANY (free) unification variable? Used by the App rule to decline applying a
@@ -73,6 +75,7 @@ partial def hasVar : Ty → Bool
   | .numVar _ => true
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
+  | .record fs => fs.any (fun f => hasVar f.2)
   | _ => false
 
 /-- Does a type contain a GENERAL (non-numeric) unification var? The App rule declines a head with one of
@@ -83,6 +86,7 @@ partial def hasGenVar : Ty → Bool
   | .var _ => true
   | .fn d c => hasGenVar d || hasGenVar c
   | .tuple es => es.any hasGenVar
+  | .record fs => fs.any (fun f => hasGenVar f.2)
   | _ => false
 
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
@@ -99,6 +103,7 @@ partial def applySubst (s : Subst) : Ty → Ty
                  | none => .numVar i
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
+  | .record fs => .record (fs.map (fun f => (f.1, applySubst s f.2)))
   | t => t
 
 /-- Unify two types under `s` → the extended substitution, or the CDZ code of the clash. `never` (the empty
@@ -126,6 +131,13 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .tuple e1, .tuple e2 =>
       if e1.length == e2.length then
         (e1.zip e2).foldlM (fun s (p : Ty × Ty) => unify p.1 p.2 s) s
+      else .error "CDZ0203"
+  | .record f1, .record f2 =>
+      -- CLOSED records unify iff same field-name SET (stored sorted+unique, so zip-compare keys) and each
+      -- field's type unifies (ts:70-74, ts:184-190). A field-set or field-type mismatch is CDZ0203.
+      if f1.length == f2.length
+         && (f1.zip f2).all (fun (p : (ByteArray × Ty) × (ByteArray × Ty)) => p.1.1 == p.2.1) then
+        (f1.zip f2).foldlM (fun s (p : (ByteArray × Ty) × (ByteArray × Ty)) => unify p.1.2 p.2.2 s) s
       else .error "CDZ0203"
   | _, _ => .error "CDZ0203"
 
@@ -305,8 +317,11 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.6 — **tuple construction** (`ts:130-146`): `(tuple e…)` infers each element → `.tuple [τ…]` (arity
   is part of the type); an `IllTyped`/`Unsupported` element propagates.
 * T1.7 — **positional projection** (`ts:146`): `(. base i)` with an int index `i` yields the `i`-th
-  element type of `base`'s tuple; out-of-arity or a non-tuple base is `IllTyped CDZ0203`. A name index
-  (record field / member) is `Unsupported`.
+  element type of `base`'s tuple; out-of-arity or a non-tuple base is `IllTyped CDZ0203`.
+* T1.13 — **closed record** construction (`ts:70-74`): `(record (= k v)…)` → `.record [(k,τ)…]` sorted by
+  key; a duplicate field is `IllTyped CDZ0211`.
+* T1.14 — **record field access** (`. r f`, `ts:104-108`): `f`'s type from `r`'s record; an absent field
+  is `CDZ0212`, a field access on a non-record `CDZ0203`.
 * T1.8 — **let** (`ts:40-44`, monomorphic): `(let ((x e)…) body)` binds each `x:τ` sequentially (later
   sees earlier) then infers `body`; complete for the fn-free fragment (generalization lands with Fn).
 * T1.9 — **do block**: `(do stmt… last)` — a value def `(def x e)` binds `x:τ` sequentially, a non-def
@@ -414,6 +429,30 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let (τ, st') ← inferE m env acc.2 eid
                 pure (acc.1 ++ [τ], st')) ([], st)
             .ok (.tuple τs, st)
+          else if h == "record".toUTF8 then
+            -- T1.13 — CLOSED RECORD construction (`ts:70-74`): `(record (= k v)…)` infers each field value,
+            -- sorts fields by key (canonical form, so `unify` compares field SETs), and yields `.record`.
+            -- A DUPLICATE field name is `IllTyped CDZ0211` PresentField. An ill-typed/unsupported field
+            -- value propagates.
+            (match (children.extract 1 children.size).foldlM (m := Except InferFail)
+                (fun (acc : List (ByteArray × Ty) × InferState) fid =>
+                  match Eval.recordField? m fid with
+                  | some (k, vId) =>
+                    -- a record SPREAD `(.. r)` mis-parses as a field literally named ".." (no valid field is
+                    -- named "..") — the oracle doesn't model spread (merge r's fields + overrides), so
+                    -- DECLINE the whole record → Unsupported (sound: never a false absent-field on a spread).
+                    if k == "..".toUTF8 then
+                      .error (.unsupported "type oracle: record spread (.. r) not modeled — declined")
+                    else (match inferE m env acc.2 vId with
+                          | .ok (τ, st') => .ok (acc.1 ++ [(k, τ)], st')
+                          | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed record field")) ([], st) with
+             | .ok (fields, st') =>
+               let sorted := (fields.toArray.qsort (fun a b => Eval.cmpBytes a.1 b.1 == .lt)).toList
+               if (sorted.zip (sorted.drop 1)).any (fun (p : (ByteArray × Ty) × (ByteArray × Ty)) => p.1.1 == p.2.1) then
+                 .error (.illTyped "CDZ0211")           -- duplicate field name
+               else .ok (.record sorted, st')
+             | .error e => .error e)
           else if h == ".".toUTF8 && children.size == 3 then
             -- T1.7 — positional TUPLE PROJECTION `(. base i)` where `i` is an INT literal (`ts:146`): infer
             -- `base` as a tuple, then the `i`-th element type if `i < arity`, else out-of-arity is
@@ -423,6 +462,20 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
             match children[1]?, children[2]? with
             | some baseId, some idxId =>
               match (m.nodes[idxId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
+              | some (Ast.Leaf.name fld) =>
+                -- T1.14 — record FIELD ACCESS `(. r f)` (`ts:104-108`): infer `r` as a record, then `f`'s
+                -- type; an absent field is `IllTyped CDZ0212`, a field access on a non-record is `CDZ0203`.
+                -- A base that isn't a modeled record (e.g. a module member like `(. Float64 nan)` whose base
+                -- name doesn't resolve) infers `Unsupported` and propagates — never a false field access.
+                (match inferE m env st baseId with
+                 | .ok (τb, st') =>
+                   (match applySubst st'.subst τb with
+                    | .record fields => (match fields.find? (fun f => f.1 == fld) with
+                                         | some (_, τ) => .ok (τ, st')
+                                         | none => .error (.illTyped "CDZ0212"))
+                    | .never => .ok (.never, st')
+                    | _ => .error (.illTyped "CDZ0203"))
+                 | .error e => .error e)
               | some l =>
                 (match Value.ofLeaf l with
                  | some (.int n) =>
@@ -435,8 +488,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                                      | none => .error (.illTyped "CDZ0203"))
                      | .never => .ok (.never, st)
                      | _ => .error (.illTyped "CDZ0203")
-                 | _ => .error (.unsupported
-                     "type oracle: record-field / member projection not yet modeled"))
+                 | _ => .error (.unsupported "type oracle: unmodeled projection index"))
               | none => .error (.unsupported "type oracle: malformed projection")
             | _, _ => .error (.unsupported "type oracle: malformed projection")
           else if h == "let".toUTF8 then
@@ -590,6 +642,7 @@ partial def defaultNumVars : Ty → Ty
   | .numVar _ => .int 64 true
   | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
   | .tuple es => .tuple (es.map defaultNumVars)
+  | .record fs => .record (fs.map (fun f => (f.1, defaultNumVars f.2)))
   | t => t
 
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
@@ -966,6 +1019,37 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                                  .atom 2, .list #[6], .atom 1, .list #[8, 7, 5],
                                  .atom 8, .atom 2, .list #[11, 12], .atom 0, .list #[14, 9, 13]],
                       root := 14 } with | .unsupported _ => true | _ => false)
+-- T1.13 (record): `(record (= a 1) (= b #t))` → WellTyped record {a:Int, b:Bool} (fields sorted by key).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "a".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "b".toUTF8, .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (= a 1)
+                           .atom 4, .atom 7, .atom 8, .list #[4, 5, 6],   -- (= b #t)
+                           .atom 3, .list #[8, 3, 7],                     -- (record (= a 1)(= b #t))
+                           .atom 2, .list #[10], .atom 1, .list #[12, 11, 9],   -- (def (main) …)
+                           .atom 9, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
+                root := 18 } == .wellTyped (.record [("a".toUTF8, .int 64 true), ("b".toUTF8, .bool)]))
+-- T1.14 (field access): `(. (record (= a 1)(= b #t)) b)` → the field-b type = Bool → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "a".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "b".toUTF8, .boolLit true, .name ".".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (= a 1)
+                           .atom 4, .atom 7, .atom 8, .list #[4, 5, 6],   -- (= b #t)
+                           .atom 3, .list #[8, 3, 7],                     -- (record …)
+                           .atom 9, .atom 7, .list #[10, 9, 11],          -- (. <record> b)
+                           .atom 2, .list #[13], .atom 1, .list #[15, 14, 12],  -- (def (main) …)
+                           .atom 10, .atom 2, .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                root := 21 } == .wellTyped .bool)
+-- T1.13 (record): `(record (= a 1) (= a 2))` — a DUPLICATE field name → IllTyped CDZ0211.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "a".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (= a 1)
+                           .atom 4, .atom 5, .atom 7, .list #[4, 5, 6],   -- (= a 2)
+                           .atom 3, .list #[8, 3, 7],                     -- (record (= a 1)(= a 2))
+                           .atom 2, .list #[10], .atom 1, .list #[12, 11, 9],
+                           .atom 8, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
+                root := 18 } == .illTyped "CDZ0211")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
