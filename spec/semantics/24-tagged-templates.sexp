@@ -18,6 +18,8 @@
 ; MUST splice its resulting abstract syntax tree in the tagged template's position." The `id` echo macro
 ; returns an `Ast.Str` of its single chunk; expanding `(tagged-template id (chunks "hi") (holes))` yields
 ; `(Ast.Str "hi")`, matched here for its length (2).
+(diagnostic-quality)
+
 (case
   "a tagged template expands via its binding-dispatched tag function"
   (doc

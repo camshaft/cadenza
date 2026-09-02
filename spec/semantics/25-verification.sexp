@@ -28,6 +28,8 @@
 ; per spec. v-patterns fixed it; a single-variant match now rejects CDZ0214 like everything else. Both
 ; halves are pinned here now: multi-variant match (cases 4 + 6) and single-variant match (Increment 13).
 ; ============================================================================================
+(diagnostic-quality)
+
 (case
   "an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel"
   (doc
