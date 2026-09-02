@@ -189,10 +189,20 @@ fn doc_value_node(
     match ty.strip_nominal_and_qty() {
         // An integer leaf → an `Int` atom (its runtime value is the i64-slot magnitude; `from_i64` is exact
         // for a signed Int64, the only width covered so far — an unsigned/narrow width is a later increment).
-        Ty::Int(_) => {
+        Ty::Int(it) => {
+            // SIGNEDNESS matters for the wire value: a SIGNED int widens via `as i64` (sign-extends — a
+            // negative narrow int stays negative); an UNSIGNED int widens via `as u128` (zero-extends → the
+            // correct unsigned decimal). `from_i64` on a `u64 as i64` would two's-complement a high-bit-set
+            // UInt64 to a NEGATIVE i64 (`2^63 → i64::MIN`, `u64::MAX → -1`) — the value-doc UInt64 bug
+            // v-cdz-smith found; `from_u128((v) as u128)` renders the unsigned decimal, matching wasm.
+            let value_ctor = if it.ground_signed() {
+                format!("cadenza_ast::ast::IntValue::from_i64(({val_expr}) as i64)")
+            } else {
+                format!("cadenza_ast::ast::IntValue::from_u128(({val_expr}) as u128)")
+            };
             let v = fresh(ctr);
             out.push_str(&format!(
-                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: cadenza_ast::ast::IntValue::from_i64(({val_expr}) as i64), radix: cadenza_ast::ast::Radix::Dec }});\n"
+                "    let {v} = __b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: {value_ctor}, radix: cadenza_ast::ast::Radix::Dec }});\n"
             ));
             Ok(v)
         }
