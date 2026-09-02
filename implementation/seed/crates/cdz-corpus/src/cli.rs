@@ -412,6 +412,25 @@ fn vanished_across(
 /// leaves `(output …)` expected values untouched, so this is orthogonal to any render re-pin. Exits
 /// NON-ZERO on any non-native file (fix: run the nativize codemod). The PR-time guard for operator M3's
 /// native-form corpus, replacing by-hand drift catching.
+/// A `; nativize-allow-classic[: reason]` directive comment — the explicit per-file exemption from the
+/// nativize idempotence check (see the call site). Returns the trimmed reason (or `""`) when a comment line
+/// carries the directive, else `None`. A COMMENT (not a form), so the corpus reader ignores it; only this
+/// text-level check reads it. Kept a plain substring on a `;`-comment line so it is trivially greppable and
+/// removable (the exemption is interim — drop the directive when the contested form is reconciled upstream).
+fn nativize_allow_directive(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let after_semi = line.trim_start().strip_prefix(';')?.trim_start();
+        let rest = after_semi.strip_prefix("nativize-allow-classic")?;
+        Some(
+            rest.trim_start()
+                .strip_prefix(':')
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string(),
+        )
+    })
+}
+
 fn check_nativize_idempotence(files: &[String], fix: bool) -> Result<(), String> {
     let mut non_native: Vec<String> = Vec::new();
     for path in files {
@@ -419,6 +438,24 @@ fn check_nativize_idempotence(files: &[String], fix: bool) -> Result<(), String>
         let nativized = sexpr::nativize_compound_source_skip_outputs(&text)
             .map_err(|e| format!("{path}: nativize failed: {e:?}"))?;
         if nativized != text {
+            // EXPLICIT per-file escape hatch: a `; nativize-allow-classic[: reason]` directive exempts the
+            // file from the idempotence assertion (reported ALLOWED/visible, never silent) — for a file that
+            // legitimately carries a classic-head form that is a CTOR APPLICATION (`Apply{SetNew}`/etc.), NOT
+            // a nativizable literal, which the codemod (head-name-based, no compile) can't discriminate and
+            // whose own tests treat as a literal. The contested `(set …)` v-syntax↔rcdzc semantic is
+            // reconciled elsewhere; this is the interim, least-committal, REVERSIBLE exemption (asserts
+            // nothing about the semantics). concierge-greenlit 2026-09-02 for 19-sets's #7969 soundness case.
+            if let Some(reason) = nativize_allow_directive(&text) {
+                println!(
+                    "nativize-check: ALLOWED (explicit `; nativize-allow-classic` directive) {path}{}",
+                    if reason.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {reason}")
+                    }
+                );
+                continue;
+            }
             non_native.push(path.clone());
             // `--fix`: APPLY the codemod in place (write the nativized text). The check side just records
             // the file; the write happens here so a dry check never mutates.
@@ -1389,6 +1426,35 @@ fn slug(desc: &str) -> String {
 mod tests {
     use super::*;
     use cadenza_syntax::sexpr;
+
+    /// The `; nativize-allow-classic[: reason]` per-file exemption directive: detected on a comment line
+    /// (with or without a reason), returns the trimmed reason (or ""); absent / non-directive → None. This
+    /// is the interim escape hatch exempting a file with an intentional classic-head CTOR-APPLICATION (e.g.
+    /// 19-sets's #7969 `(set …)`) from the nativize idempotence assertion.
+    #[test]
+    fn nativize_allow_directive_detects_the_per_file_exemption() {
+        assert_eq!(
+            nativize_allow_directive(
+                "; nativize-allow-classic: (set …) ctor #7969\n(case \"x\" …)"
+            ),
+            Some("(set …) ctor #7969".to_string())
+        );
+        // Bare directive (no reason) → empty string.
+        assert_eq!(
+            nativize_allow_directive(";   nativize-allow-classic\n; more"),
+            Some(String::new())
+        );
+        // Not present → None; a plain comment mentioning the word elsewhere on a non-directive line is fine.
+        assert_eq!(
+            nativize_allow_directive("; Sets — a collection\n(case …)"),
+            None
+        );
+        // Must be a `;`-comment-anchored directive, not a bare substring in prose.
+        assert_eq!(
+            nativize_allow_directive("; this file talks about nativize-allow-classic informally"),
+            None
+        );
+    }
 
     #[test]
     fn scan_live_objects_edits_flags_clause_changes_not_output_or_context() {

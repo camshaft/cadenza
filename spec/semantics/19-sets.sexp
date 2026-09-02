@@ -1,3 +1,9 @@
+; nativize-allow-classic: this file has an intentional `(set …)` CTOR-APPLICATION (Apply{SetNew}) case —
+;   "a set-literal argument binds its element type" (#7969 soundness guard). The nativize codemod would
+;   rewrite `(set 1 2)` → `#set(1 2)`, which reader-flips to Resolved::Set and tests a DIFFERENT typing path
+;   (losing the Apply{SetNew} guard #7969 exists for). INTERIM per-file exemption (v-corpus-harness,
+;   concierge-greenlit 2026-09-02); remove once the contested `(set …)` semantic is reconciled (v-syntax
+;   codemod-literal vs rcdzc Apply{SetNew}, escalated to operator).
 ; Sets — the third built-in collection beside List and Map, witnessing collections-and-text.md
 ; #Sets (set-collection decision, options/set-collection/). A Set is an UNORDERED collection of
 ; UNIQUE elements of one type: it contains each element at most once, two sets are equal exactly
