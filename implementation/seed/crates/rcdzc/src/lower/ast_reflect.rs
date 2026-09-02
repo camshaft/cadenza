@@ -786,9 +786,9 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // CALLER-ORIGIN (arrived from a caller arg through the `ast-lift` boundary — use-site identity, like
         // `(mkdef answer)` → `answer`); a MACRO-TEMPLATE-INTERNAL name stays HYGIENIC-LOCAL and is never
         // registered (v-spec-oracle gap#4 ruling — lock BOTH halves in corpus). Only a ROOT-do def needs
-        // this: a nested do-local def resolves via `do_local_binds`, and a fn def `(def (f p…) …)` (a LIST
-        // signature) is already handled as a reduced callable above — so gate on a bare-NAME value def
-        // whose parent is the root `do`.
+        // this (a nested do-local def resolves via `do_local_binds`); handles BOTH a VALUE def
+        // `(def NAME V)` and a FN/nullary def `(def (NAME p…) BODY)` — the fn shape's `register_reduced_
+        // callables` above wires only its recursive-self index, not the top-level NAME.
         for &sid in &spliced {
             if db.parent_of(sid) != Some(db.ast.root) {
                 continue;
@@ -800,15 +800,29 @@ pub(crate) fn expand_macros(db: &mut Db) {
             let Some((Some(sig), body)) = shape else {
                 continue;
             };
-            // VALUE def only — a bare-NAME signature (a fn def's signature is a LIST).
-            if !matches!(db.ast.get(sig), crate::ast::Struct::Atom(_)) {
+            // The def's NAME node + PARAMS, for BOTH def shapes (mirrors `scan_top_level`):
+            //  • a VALUE def `(def NAME VALUE)` — a bare-NAME (`Atom`) signature, no params;
+            //  • a FN / nullary def `(def (NAME p…) BODY)` — a LIST signature whose HEAD is the name and
+            //    whose tail are the params (a nullary `(def (answer) 42)` has an empty tail).
+            // Both are TOP-LEVEL siblings that must enter `def_name_index` when caller-spliced: a fn
+            // sibling's `register_reduced_callables` above wires only its recursive-self / callee-body
+            // index, NOT the top-level NAME, so a `(answer)` call stays CDZ0101 unbound without this
+            // (breaker gap#4 fn-def-sibling residual).
+            let (name_occ, params): (StructId, Vec<StructId>) = match db.ast.get(sig) {
+                crate::ast::Struct::Atom(_) => (sig, Vec::new()),
+                crate::ast::Struct::List(items) if !items.is_empty() => {
+                    let items = items.clone();
+                    (items[0], items[1..].to_vec())
+                }
+                _ => continue,
+            };
+            // CALLER-ORIGIN gate: only a name spliced from a caller arg binds top-level (the NAME node —
+            // for a fn def that is the signature-list HEAD, one deeper than the signature itself). A
+            // MACRO-TEMPLATE-INTERNAL name stays hygienic-local (never registered).
+            if !caller_origin.contains(&name_occ.0) {
                 continue;
             }
-            // CALLER-ORIGIN gate: only a name spliced from a caller arg binds top-level.
-            if !caller_origin.contains(&sig.0) {
-                continue;
-            }
-            let name = db.ast.as_name(sig).unwrap_or("").to_string();
+            let name = db.ast.as_name(name_occ).unwrap_or("").to_string();
             // Never SHADOW an existing top-level def (the load-time scan wins; `or_insert` in
             // `push_specialized_def` already no-ops, but skip early to keep intent explicit).
             if name.is_empty() || db.def_by_name(&name).is_some() {
@@ -817,7 +831,7 @@ pub(crate) fn expand_macros(db: &mut Db) {
             let idx = db.push_specialized_def(crate::db::Def {
                 name: name.clone(),
                 sig_occ: sig,
-                params: Vec::new(),
+                params,
                 body,
                 internal: false,
             });
