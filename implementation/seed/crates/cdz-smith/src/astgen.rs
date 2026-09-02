@@ -505,7 +505,7 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(10) {
+    match c.variant(11) {
         // Arithmetic with a Bool operand.
         0 => {
             let a = int(c, iscope, bscope, fresh);
@@ -560,6 +560,16 @@ fn gen_typefuzz_illtyped<C: Choice>(
         8 => {
             let a = int(c, iscope, bscope, fresh);
             format!("(. (record (= a {a})) b)")
+        }
+        // A NON-EXHAUSTIVE match over a built-in sum (omits a variant, no catch-all) → CDZ0210 (T1.17).
+        // rcdzc rejects + the oracle asserts CDZ0210 ⇒ holds; an rcdzc ACCEPT is a soundness false-accept.
+        9 => {
+            if c.variant(2) == 0 {
+                let a = int(c, iscope, bscope, fresh);
+                format!("(match (Some {a}) ((Some x) x))") // omits `None`
+            } else {
+                format!("(match Less ((Less) 1) ((Equal) 2))") // omits `Greater`
+            }
         }
         // An unbound name (resolution error).
         _ => "zz".to_string(),
