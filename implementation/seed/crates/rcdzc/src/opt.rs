@@ -526,21 +526,19 @@ pub(crate) fn run_sharing_aware_emit(
     if std::env::var("CDZ_CSE_TRACE").is_ok() {
         for &def in &layout.order {
             if let Some(body) = db.defs[def].body {
-                let groups = crate::core_analysis::compound_cse_candidate_groups(db, body);
-                if !groups.is_empty() {
-                    let sizes: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+                let plan = crate::core_analysis::compound_cse_bind_plan(db, body);
+                if !plan.is_empty() {
                     eprintln!(
-                        "[cse] def={def:?} body={body:?} compound-cse groups={} sizes={sizes:?}",
-                        groups.len()
+                        "[cse] def={def:?} body={body:?} compound-cse bind-plan entries={}",
+                        plan.len()
                     );
-                    for (gi, g) in groups.iter().enumerate() {
-                        let mut fp = String::new();
-                        crate::core_analysis::core_subtree_fingerprint(db, g[0], &mut fp);
-                        let ty = crate::infer::type_of(db, g[0]);
-                        let fp_short: String = fp.chars().take(160).collect();
+                    for (ei, e) in plan.iter().enumerate() {
+                        let sn = e.scope_node;
+                        let si = e.shared_id;
+                        let m = e.members.len();
                         eprintln!(
-                            "[cse]   group{gi} members={g:?} ty={} fp={fp_short}",
-                            ty.render_name(&db.name_ctx())
+                            "[cse]   entry{ei} scope_node={sn:?} shared_id={si:?} members={m} ty={}",
+                            e.ty.render_name(&db.name_ctx())
                         );
                     }
                 }

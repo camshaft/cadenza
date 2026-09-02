@@ -680,6 +680,82 @@ pub(crate) fn compound_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<
     by_fp.into_values().filter(|g| g.len() >= 2).collect()
 }
 
+/// COMPOUND-CSE BIND PLAN (PART-1 output, v-core-opt lane): turn each structurally-equal duplicate GROUP
+/// (`compound_cse_candidate_groups`) into a [`B2BindPlanEntry`] so v-cadenza-backend's cadenza-O1 install
+/// (`run_sharing_aware_emit`, concat onto `b2_bind_plan_scrutinee_only`) hoists it to ONE shared source
+/// `(let …)` + repoints the occurrences — the b2 Option-ii division, entry shape mirrored EXACTLY.
+///
+/// Per group: `members` = all occurrences (distinct structurally-equal nodes), `shared_id` = the canonical
+/// (copy source — its core IS the shared subtree), `scope_node` = the members' LCA (`b2_members_lca`).
+///
+/// SOUNDNESS (reuses b2's gates + one relaxation, all safe because `compound_cse_candidate_groups` already
+/// gates `!is_recursive` (straight-line) + `!subtree_reaches_host_call` (pure) + `is_heap_type`):
+/// - P1 FULLY-SOLVED type (slot valtype) — same as b2.
+/// - gate-4 BIND-SAFE: `is_trap_free(canonical)` OR the scope_node's dominating frontier contains ≥1 member
+///   (byte-neutral — bound on paths already evaluated) — same as b2; needed since a state-chain has `%`/`*`.
+/// - gate-3a (free binders all Params) DELIBERATELY SKIPPED: a compound-CSE candidate reads STRAIGHT-LINE
+///   let-locals (rsv1's `_cdz_let0`), bound ONCE in a non-recursive body ⟹ stable ⟹ value-equal (and the
+///   fingerprint already keyed free vars by RESOLVED BINDER, so a group only unifies same-free-var reads).
+///   The `scope_node`=members'-LCA GUARANTEES scope validity: a binder free in EVERY member dominates all
+///   members ⟹ is at-or-above their LCA ⟹ in scope at `scope_node`, so the hoisted let can read it.
+/// Detection-only; consumed by v-cadenza's install (not wired here). NESTING NOTE: groups may nest (rsv1's
+/// outer size-3 group contains the inner size-12 chain); the install order + the opt-sweep O0..O3 equivalence
+/// gate is the correctness backstop for that (a nesting bug shows as a sweep divergence, never a silent ship).
+pub(crate) fn compound_cse_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    let mut groups = compound_cse_candidate_groups(db, body);
+    // Deterministic order: members sorted by id; groups largest-canonical-first (so a nested-outer group is
+    // offered before the inner it contains — the install can prefer the outer, or apply inner-first).
+    for g in &mut groups {
+        g.sort();
+    }
+    groups.sort_by_key(|g| std::cmp::Reverse(subtree_size(db, g[0])));
+    let mut plan: Vec<B2BindPlanEntry> = Vec::new();
+    let trace_cse = std::env::var("CDZ_CSE_TRACE").is_ok();
+    for group in groups {
+        let shared_id = group[0];
+        let ty = crate::infer::type_of(db, shared_id);
+        // NOTE: NO `is_fully_solved` gate here (unlike b2). b2's fully-solved gate is a WASM-SLOT requirement
+        // (its Let-bind lands in a wasm local needing a concrete valtype). Compound-CSE entries flow ONLY
+        // through v-cadenza's cadenza-O1 install, which emits a SOURCE `(let …)` whose binder type the
+        // RE-COMPILE re-infers — so a deferred INT-AXIS inside an otherwise-solved heap shape (rsv1's
+        // re-materialized `(Tuple Int64 Int64 Int64)` renders Int64 but the width/sign axes aren't `Fixed`
+        // at this pass point) is fine. `is_heap_type` (in the candidate gate) already excludes `Var`/`Any`,
+        // so `ty` is a real heap compound; only its scalar sub-axes may be deferred (recompile-solvable).
+        // scope_node = the members' LCA (deepest node containing all occurrences).
+        let Some(scope_node) = b2_members_lca(db, body, &group) else {
+            if trace_cse {
+                eprintln!(
+                    "[cse-rej] group shared_id={shared_id:?} members={} REJECT: no LCA",
+                    group.len()
+                );
+            }
+            continue;
+        };
+        // gate-4: trap-free OR the scope_node unconditionally reaches ≥1 member (byte-neutral speculation).
+        if !crate::lower::is_trap_free(db, shared_id) {
+            let mut frontier = std::collections::HashSet::new();
+            collect_dominating_frontier(db, scope_node, &mut frontier);
+            if !group.iter().any(|m| frontier.contains(m)) {
+                if trace_cse {
+                    eprintln!(
+                        "[cse-rej] group shared_id={shared_id:?} members={} scope={scope_node:?} REJECT: gate-4 not-trap-free + no member in frontier(len {})",
+                        group.len(),
+                        frontier.len()
+                    );
+                }
+                continue;
+            }
+        }
+        plan.push(B2BindPlanEntry {
+            scope_node,
+            shared_id,
+            ty,
+            members: group,
+        });
+    }
+    plan
+}
+
 /// Per-node ELIGIBILITY for a share KIND: returns `Some(ty)` when the node at `id` (reached by `count`
 /// parent edges, reachable from `body`) is an eligible SHARE for this kind, `None` to skip it. ONLY the
 /// KIND-SPECIFIC gates live here — B2's heap gate-2 + P1/P3 (`b2_heap_eligible`), or the O2 CSE's scalar
