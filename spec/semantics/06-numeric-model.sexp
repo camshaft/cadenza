@@ -1481,7 +1481,6 @@
     what
     SELECTS
     Rational ; the
-
     literal
     keeps
     its
@@ -2042,8 +2041,15 @@
 ; (an out-of-range Float32 LITERAL is a width-range check at inference); this is the conversion-fold path.
 (case
   "a Float32-conversion whose constant result overflows to infinity is rejected (no value form)"
-  (input (do (def (main) (Float32.of 1.0e300)) (export main)))
+  (input
+    (do
+      (def
+        (main)
+        (Float32.of
+          1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0))
+      (export main)))
   (error CDZ0201))
+
 (case
   "a Float32-overflowing branch literal in a runtime if is rejected at check"
   (input
@@ -2805,6 +2811,37 @@
   (call f (: 0.1 Float32))
   (output (: (Ok 0.1) (Result Float32 Int64)))
   (live-objects 2))
+
+; ── breaker: the EXTREME-EXPONENT face of the shortest-f32 ruling. f32 MAX is where a
+; print-via-f64 implementation leaks: promoting to f64 then printing shortest-f64 needs the full
+; 39-digit expansion (…46638528859811704183484516925440.0), while shortest-f32 is …50000000000….0 —
+; same bits, different canonical byte form. The Rust backend did exactly that until #7591 (the
+; whole-value branch's {:.0} printed the exact f32 integer); subnormal-min and normal-min never
+; diverged, so this pins the one width extreme that did, alongside them as controls.
+(case
+  "f32x1 the Float32 extremes (subnormal min, normal min, MAX) render shortest-f32 on every backend"
+  (doc
+    "A const tuple of the three Float32 extremes escapes rendering each in the shortest-f32 canonical
+           form (deterministic-value-form; the operator-ruled seq-283 render): the smallest subnormal
+           (1e-45), the smallest normal (1.1754944e-38), and f32 MAX (3.4028235e38) — the last is THE
+           print-via-f64 leak site (an exact-expansion or f64-shortest print shows ~39 significant digits
+           instead of the 8-digit shortest-f32). Fixed on the Rust backend in #7591; wasm/hop were always
+           shortest. MUST render byte-identically on every backend.")
+  (input
+    (do
+      (def
+        (main)
+        #tuple((: 0.000000000000000000000000000000000000000000001 Float32)
+          (: 0.000000000000000000000000000000000000011754944 Float32)
+          (: 340282350000000000000000000000000000000.0 Float32)))
+      (export main)))
+  (call main)
+  (output
+    (:
+      #tuple(0.000000000000000000000000000000000000000000001
+        0.000000000000000000000000000000000000011754944
+        340282350000000000000000000000000000000.0)
+      (Tuple Float32 Float32 Float32))))
 
 ; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
 ; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
@@ -7241,6 +7278,7 @@
   (input (do (def (main) (Int64.neg 5)) (export main)))
   (call main)
   (output (: -5 Int64)))
+
 (case
   "Int64.neg of a runtime expression negates at runtime, both signs"
   (doc
@@ -7252,20 +7290,25 @@
   (output (: -5 Int64))
   (call f (: -43 Int64))
   (output (: 42 Int64)))
+
 (case
   "Int64.neg of the minimum integer traps as a compile-provable overflow"
-  (doc "The named form inherits the checked negate's overflow: `0 - Int64.min` has no Int64 result.")
+  (doc
+    "The named form inherits the checked negate's overflow: `0 - Int64.min` has no Int64 result.")
   (input (do (def (main) (Int64.neg -9223372036854775808)) (export main)))
   (error CDZ0304))
+
 (case
   "Int8.neg negates at a narrower signed width"
   (doc "`neg` is offered on every SIGNED width, not only Int64; it negates at the narrow width.")
   (input (do (def (main) (Int8.neg (: 5 Int8))) (export main)))
   (call main)
   (output (: -5 Int8)))
+
 (case
   "an unsigned integer module offers no neg member"
-  (doc "Negation is signed-only: an unsigned negate would underflow-trap on every nonzero input, so the
+  (doc
+    "Negation is signed-only: an unsigned negate would underflow-trap on every nonzero input, so the
            unsigned modules do not offer `neg`; naming it is an unknown-member error.")
   (input (do (def (main) (UInt8.neg 5)) (export main)))
   (error CDZ0201))
@@ -7279,27 +7322,34 @@
   (input (do (def (main) (Float64.neg 1.5)) (export main)))
   (call main)
   (output (: -1.5 Float64)))
+
 (case
   "Float64.neg negates a runtime float"
   (input (do (def (f (: x Float64)) (Float64.neg x)) (export f)))
   (call f (: 2.5 Float64))
   (output (: -2.5 Float64)))
+
 (case
   "Float64.neg of negative zero is positive zero (sign-correct, total)"
-  (doc "Float negation is `-1.0 * e`, sign-correct across the IEEE special values: `neg(-0.0) = +0.0`.")
+  (doc
+    "Float negation is `-1.0 * e`, sign-correct across the IEEE special values: `neg(-0.0) = +0.0`.")
   (input (do (def (main) (Float64.neg -0.0)) (export main)))
   (call main)
   (output (: 0.0 Float64)))
+
 (case
   "BigInt.neg negates an arbitrary-precision integer, total"
-  (doc "BigInt negation is exact `0 - e` and never overflows (arbitrary precision). Asserted via equality
+  (doc
+    "BigInt negation is exact `0 - e` and never overflows (arbitrary precision). Asserted via equality
            to the negated literal so the result is a scalar Bool.")
   (input (do (def (main) (= (BigInt.neg (BigInt.of 5)) (BigInt.of -5))) (export main)))
   (call main)
   (output (: true Bool)))
+
 (case
   "Rational.neg negates an exact rational, total"
-  (doc "Rational negation is exact `0 - e` (negates the numerator) and never traps. Asserted via equality
+  (doc
+    "Rational negation is exact `0 - e` (negates the numerator) and never traps. Asserted via equality
            to the negated rational so the result is a scalar Bool.")
   (input (do (def (main) (= (Rational.neg (Rational.of 3 4)) (Rational.of -3 4))) (export main)))
   (call main)
@@ -7316,26 +7366,31 @@
   (input (do (def (main) (Num.neg (: 5 Int64))) (export main)))
   (call main)
   (output (: -5 Int64)))
+
 (case
   "Num.neg negates a runtime signed integer generically"
   (input (do (def (f (: n Int64)) (Num.neg n)) (export f)))
   (call f (: 7 Int64))
   (output (: -7 Int64)))
+
 (case
   "Num.neg negates a float generically"
   (input (do (def (main) (Num.neg 1.5)) (export main)))
   (call main)
   (output (: -1.5 Float64)))
+
 (case
   "Num.neg negates a BigInt generically"
   (input (do (def (main) (= (Num.neg (BigInt.of 5)) (BigInt.of -5))) (export main)))
   (call main)
   (output (: true Bool)))
+
 (case
   "Num.neg negates a Rational generically"
   (input (do (def (main) (= (Num.neg (Rational.of 3 4)) (Rational.of -3 4))) (export main)))
   (call main)
   (output (: true Bool)))
+
 (case
   "Num.neg on an UNSIGNED integer is a compile-time type error — unsigned has no negate (CDZ0310)"
   (doc
@@ -7347,6 +7402,7 @@
            admits no negation at all. The signed/float/BigInt/Rational cases above still negate.")
   (input (do (def (main) (Num.neg (: 5 UInt8))) (export main)))
   (error CDZ0310 (message "unsigned integer has no sign")))
+
 (case
   "Num.neg on a NON-number operand is a compile-time type error (CDZ0201)"
   (doc
@@ -7374,6 +7430,7 @@
   ; The message NAMES the deprecated-prefix slip ("not negation") AND redirects to the real negate
   ; ("Num.neg") — both AND-required so a wording degrade that drops either flips this case.
   (error CDZ0203 (message "not negation") (message "Num.neg")))
+
 (case
   "prefix `(- x)` as an OPERAND of another operator is a partial subtraction, suggest-`Num.neg` at the operand-mismatch site too"
   (doc
@@ -7385,6 +7442,7 @@
            value (v-inference #7205).")
   (input (do (def (f (: x Int64)) (+ (- x) 1)) (export f)))
   (error CDZ0203 (message "not negation") (message "Num.neg")))
+
 (case
   "a non-`-` partial in value position keeps the GENERIC not-fully-applied message (no suggest-`Num.neg`)"
   (doc
@@ -13995,30 +14053,41 @@
 ; freezing the generic deferred-Int scheme (which conflicted with the BigInt binder arm → a spurious
 ; CDZ0203 arms-differ). (Migrated from rcdzc a_recursive_bigint_result_from_a_match_binder_propagates_to_a_two_self_call_arith_arm;
 ; the BigInt/fixed-int no-promotion mix stays the CDZ0301 case above.)
-(case "a recursive sum summing two self-call BigInt results types the arm as BigInt and folds"
-  (input  (do (type T (L BigInt) (B T T))
-              (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N)))
-              (def (main) (s (T.B (T.L 3N) (T.L 4N))))
-              (export main)))
-  (call   main)
+(case
+  "a recursive sum summing two self-call BigInt results types the arm as BigInt and folds"
+  (input
+    (do
+      (type T (L BigInt) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N)))
+      (def (main) (s (T.B (T.L 3N) (T.L 4N))))
+      (export main)))
+  (call main)
   (output (: 7 BigInt))
   (live-objects known-leak))
 
-(case "the list-recursion shape of the two-self-call BigInt fold also types and folds"
-  (input  (do (type Tree (Leaf BigInt) (Branch (List Tree)))
-              (def (st (: t Tree)) (match t ((Tree.Leaf n) n) ((Tree.Branch #list(a b)) (+ (st a) (st b))) (_ 0N)))
-              (def (main) (st (Tree.Branch #list((Tree.Leaf 3N) (Tree.Leaf 4N)))))
-              (export main)))
-  (call   main)
+(case
+  "the list-recursion shape of the two-self-call BigInt fold also types and folds"
+  (input
+    (do
+      (type Tree (Leaf BigInt) (Branch (List Tree)))
+      (def
+        (st (: t Tree))
+        (match t ((Tree.Leaf n) n) ((Tree.Branch #list(a b)) (+ (st a) (st b))) (_ 0N)))
+      (def (main) (st (Tree.Branch #list((Tree.Leaf 3N) (Tree.Leaf 4N)))))
+      (export main)))
+  (call main)
   (output (: 7 BigInt))
   (live-objects known-leak))
 
-(case "the same two-self-call recursive fold at Int64 still types as Int64 (the defer re-grounds to the operands' type)"
-  (input  (do (type T (L Int64) (B T T))
-              (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0)))
-              (def (main) (s (T.B (T.L 3) (T.L 4))))
-              (export main)))
-  (call   main)
+(case
+  "the same two-self-call recursive fold at Int64 still types as Int64 (the defer re-grounds to the operands' type)"
+  (input
+    (do
+      (type T (L Int64) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0)))
+      (def (main) (s (T.B (T.L 3) (T.L 4))))
+      (export main)))
+  (call main)
   (output (: 7 Int64)))
 
 (case
@@ -17042,6 +17111,7 @@
   "fi0 a const float operation whose result is non-finite is a coded CDZ0201, not a codeless decline"
   (input (do (def (main) (/ (: 159.24 Float32) (: 0.0 Float32))) (export main)))
   (error CDZ0201))
+
 (case
   "fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)"
   (doc
