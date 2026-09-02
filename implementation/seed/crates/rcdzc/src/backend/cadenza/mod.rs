@@ -1961,17 +1961,11 @@ fn emit_expr_viewed(
                     Ty::Tuple(ts) => ts.get(i).cloned(),
                     _ => None,
                 };
-                let exp_slot = || {
-                    expected.as_ref().and_then(|e| match e {
-                        Ty::Tuple(ts) => ts.get(i).cloned(),
-                        _ => None,
-                    })
-                };
-                let ex = match &own_slot {
-                    Some(t) if ty_has_free_arg(t) => exp_slot().or_else(|| own_slot.clone()),
-                    None => exp_slot(),
-                    _ => own_slot.clone(),
-                };
+                let exp_slot = expected.as_ref().and_then(|e| match e {
+                    Ty::Tuple(ts) => ts.get(i).cloned(),
+                    _ => None,
+                });
+                let ex = resolve_pos_ty(own_slot, exp_slot);
                 children.push(emit_expr(db, b, e, ex, env, emitted)?);
             }
             Ok(b.compound(crate::ast::CompoundCtor::Tuple, &children))
@@ -1993,18 +1987,11 @@ fn emit_expr_viewed(
                     Ty::Record(ftys) => ftys.get(name).cloned(),
                     _ => None,
                 };
-                let expected_field = || {
-                    expected.as_ref().and_then(|e| match e {
-                        Ty::Record(fx) => fx.get(name).cloned(),
-                        _ => None,
-                    })
-                };
-                let ex = match &own_ex {
-                    Some(t) if ty_has_free_arg(t) => expected_field().or_else(|| own_ex.clone()),
-                    None => expected_field(),
-                    _ => own_ex.clone(),
-                };
-                let fval = emit_expr(db, b, v, ex, env, emitted)?;
+                let exp_ex = expected.as_ref().and_then(|e| match e {
+                    Ty::Record(fx) => fx.get(name).cloned(),
+                    _ => None,
+                });
+                let fval = emit_expr(db, b, v, resolve_pos_ty(own_ex, exp_ex), env, emitted)?;
                 children.push(b.field_pair(fname, fval));
             }
             Ok(b.compound(crate::ast::CompoundCtor::Record, &children))
@@ -2028,17 +2015,11 @@ fn emit_expr_viewed(
                 Ty::List(e) => Some((**e).clone()),
                 _ => None,
             };
-            let exp_elem = || {
-                expected.as_ref().and_then(|e| match e {
-                    Ty::List(e) => Some((**e).clone()),
-                    _ => None,
-                })
-            };
-            let elem_ty = match &own_elem {
-                Some(t) if ty_has_free_arg(t) => exp_elem().or_else(|| own_elem.clone()),
-                None => exp_elem(),
-                _ => own_elem.clone(),
-            };
+            let exp_elem = expected.as_ref().and_then(|e| match e {
+                Ty::List(e) => Some((**e).clone()),
+                _ => None,
+            });
+            let elem_ty = resolve_pos_ty(own_elem, exp_elem);
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
@@ -2065,18 +2046,12 @@ fn emit_expr_viewed(
                 Ty::Map(k, v) => (Some((**k).clone()), Some((**v).clone())),
                 _ => (None, None),
             };
-            let exp_kv = |pick_val: bool| {
-                expected.as_ref().and_then(|e| match e {
-                    Ty::Map(k, v) => Some((if pick_val { &**v } else { &**k }).clone()),
-                    _ => None,
-                })
+            let (exp_key, exp_val) = match expected.as_ref() {
+                Some(Ty::Map(k, v)) => (Some((**k).clone()), Some((**v).clone())),
+                _ => (None, None),
             };
-            let resolve = |own: &Option<Ty>, pick_val: bool| match own {
-                Some(t) if ty_has_free_arg(t) => exp_kv(pick_val).or_else(|| own.clone()),
-                None => exp_kv(pick_val),
-                _ => own.clone(),
-            };
-            let (key_ty, val_ty) = (resolve(&own_key, false), resolve(&own_val, true));
+            let key_ty = resolve_pos_ty(own_key, exp_key);
+            let val_ty = resolve_pos_ty(own_val, exp_val);
             // LAST-WINS dedup of FOLDED-CONSTANT keys. The optimizer folds a bound key NAME to a literal (a
             // `(let ((a 5)) #map((= a 1) (= 5 2)))` folds to `#map((= 5 1) (= 5 2))`), so two entries can
             // collapse to the SAME literal key — and the front-end REJECTS a `#map` with duplicate literal keys
@@ -2115,10 +2090,15 @@ fn emit_expr_viewed(
             // M2: a native SET ctor-leaf head (`#set(…)`), REPLACING the old `((. Set of) (list …))`
             // member-path. Stored order (a set is unordered → value-eq is order-independent).
             let mut children = Vec::with_capacity(elems.len());
-            let elem_ty = match &eff_ty {
+            let own_elem = match &eff_ty {
                 Ty::Set(e) => Some((**e).clone()),
                 _ => None,
             };
+            let exp_elem = expected.as_ref().and_then(|e| match e {
+                Ty::Set(e) => Some((**e).clone()),
+                _ => None,
+            });
+            let elem_ty = resolve_pos_ty(own_elem, exp_elem);
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
@@ -5036,6 +5016,21 @@ fn map_key_const_sig(db: &mut Db, k: StructId) -> Option<String> {
 fn callee_return_ty(db: &mut Db, callee: usize) -> Option<Ty> {
     let body = db.defs[callee].body?;
     Some(crate::infer::type_of(db, body))
+}
+
+/// Pick the `expected` type for one COMPOUND-value POSITION (a tuple slot, record field, list/set element, or
+/// map key/value): prefer the node's OWN type at that position (`own`), but when the own type is MISSING or
+/// carries a FREE type arg — an under-determined element like a bare `(None)` whose own type is `Option<?>` —
+/// fall back to the same position in the type the surrounding context PASSED down (`exp`): a world-declared
+/// export result (`d: option<u64>`) or a control-flow join supplies the resolved type args the bare value can't
+/// infer. A fully-determined own type is used unchanged (no regression). Shared by every compound-value emit arm
+/// so a passed `expected` threads through NESTED containers (a nested list/tuple/map/set layer must not DROP it).
+fn resolve_pos_ty(own: Option<Ty>, exp: Option<Ty>) -> Option<Ty> {
+    match own {
+        Some(t) if ty_has_free_arg(&t) => exp.or(Some(t)),
+        Some(t) => Some(t),
+        None => exp,
+    }
 }
 
 fn ty_has_free_arg(ty: &Ty) -> bool {
