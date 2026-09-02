@@ -344,3 +344,55 @@
       (export main)))
   (call main)
   (output (: 1 Int64)))
+
+(case
+  "Type.ast reflects a DIRECT user-generic instantiation (Box Int64), coherent with the value-mediated form"
+  (doc
+    "The DIRECT spelling of an instantiated user generic in a type context. `Type.ast` reflects a TYPE,
+           so its argument is a TYPE EXPRESSION: `(Box Int64)` for a user `(type Box a (Mk a))` is the
+           generic `Box` instantiated at `Int64` — a type, exactly as the builtin `(List Int64)` is `List`
+           instantiated at `Int64`. So `(Type.ast (Box Int64))` MUST reflect the instantiated declaration
+           `(type Box (Mk Int64))` — the SAME Ast the value-mediated form `(Type.ast (Type.of (Mk 1)))`
+           already produces (increment 3), and the direct analogue of the builtin-direct `(Type.ast
+           (List Int64))`. The three forms — builtin-direct, value-mediated, user-direct — cohere. Checks:
+           the direct form equals the substituted-decl quote (weight 1) AND equals the value-mediated form
+           (weight 2) — self-witness 1+2 = 3. Previously `(Box Int64)` in argument position was mis-grounded
+           as a VALUE application (its type-constructor head has no arrow scheme, unlike a builtin), which
+           rejected CDZ0203 with a self-contradictory 'a value appears here' — that gap is now closed:
+           user and builtin generics are uniform in a type context.")
+  (input
+    (do
+      (type Box a (Mk a))
+      (def
+        (main)
+        (+
+          (* 1 (if (= (Type.ast (Box Int64)) (quote (type Box (Mk Int64)))) 1 0))
+          (* 2 (if (= (Type.ast (Box Int64)) (Type.ast (Type.of (Mk 1)))) 1 0))))
+      (export main)))
+  (call main)
+  (output (: 3 Int64)))
+
+(case
+  "Type.ast of a WRONG-ARITY direct user-generic application is rejected, not silently reflected"
+  (doc
+    "The ill-formed control bounding the direct-instantiation support: `(Box Int64 Int64)` over-applies the
+           one-parameter generic `(type Box a (Mk a))`. Accepting the DIRECT form `(Type.ast (Box Int64))`
+           must NOT accept a WRONG-ARITY spelling — a two-argument application of a one-parameter constructor
+           has no coherent instantiation, so `Type.ast` REJECTS it (CDZ0203) rather than tolerantly dropping
+           the surplus argument and silently reflecting `(type Box (Mk Int64))`. Pins that the type-context
+           exemption grounds the argument as a TYPE without disabling arity validity — the same arity
+           discipline a builtin `(List Int64 Int64)` obeys.")
+  (input (do (type Box a (Mk a)) (def (main) (Type.ast (Box Int64 Int64))) (export main)))
+  (error CDZ0203 (message "type constructor")))
+
+(case
+  "Type.ast does not suppress a fault inside a (Type.of e) argument"
+  (doc
+    "The type-context exemption is NARROW: it skips the value-check ONLY for a direct WRITTEN type-ctor
+           application `(Box Int64)`, never for a `(Type.of e)` reflection — whose argument `e` is a VALUE
+           expression whose OWN faults must still surface through `Type.ast`. Here `e` = `(g 1 2 3)`
+           over-applies the arity-1 `g`, a genuine CDZ0203 that must NOT be swallowed by reflecting the
+           result type. Pins that reflecting a value's type does not create a fault-suppression hole (a
+           broad `typeval_of`-grounds-so-skip exemption did — regression guard).")
+  (input (do (def (g x) x) (def (main) (Type.ast (Type.of (g 1 2 3)))) (export main)))
+  (error CDZ0203 (message "function of arity 1")))

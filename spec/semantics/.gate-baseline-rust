@@ -8960,3 +8960,6 @@ todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	a non-terminating self-recursive macro is a hard CDZ0999 error, not a compiler hang
 pass	a macro wrapping the spliced body in a HANDLE keeps the caller's names in scope
 pass	a macro-introduced MATCH resolves its arm-pattern binders in the arm body (accessor macros)
+pass	Type.ast reflects a DIRECT user-generic instantiation (Box Int64), coherent with the value-mediated form
+pass	Type.ast of a WRONG-ARITY direct user-generic application is rejected, not silently reflected
+pass	Type.ast does not suppress a fault inside a (Type.of e) argument
