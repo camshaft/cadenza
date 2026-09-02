@@ -1112,18 +1112,13 @@ fn instantiations_value(
     }
 }
 
-/// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that
-/// documents it, or `None` if none does (the query then reports a defined "no documentation" line).
-///  1. a USER definition's `(doc "…")` text, keyed by the def's signature occurrence (`db.doc_of_def`);
-///  2. else a BUILT-IN binding's `(meta doc)` channel — resolve the name to its prelude record, then read
-///     the channel generically (`eval::project_meta`), never matching the name against a key;
-///  3. else a GRAMMAR KEYWORD's doc (a small table, the doc analogue of `resolve::GRAMMAR`).
 /// Resolve a NAME to its RECORD occurrence for doc/member lookup — the union of every "record-shaped"
 /// binding a name can denote, so the doc ladder handles built-in AND user namespaces uniformly:
 ///  - a built-in prelude MODULE (`Map`, `List`) — `db.prelude`;
 ///  - a user def bound to a record value;
 ///  - a user `(module NAME …)` — its synthesized record (`ModuleDecl::synth`), the same record the module
 ///    NAME resolves to at a call site, so `lib.twice` docs resolve like `Map.insert`.
+///
 /// `None` if the name is not a record. No hardcoded key match (each step is the generic binding lookup).
 fn record_by_name(db: &mut Db, name: &str) -> Option<StructId> {
     db.prelude
@@ -1138,6 +1133,33 @@ fn record_by_name(db: &mut Db, name: &str) -> Option<StructId> {
         })
 }
 
+/// Resolve a possibly-DOTTED name to its record — the recursive form of [`record_by_name`] for a NESTED
+/// namespace path (`outer.inner` → the `inner` submodule record inside `outer`). A bare name (no `.`)
+/// bottoms out at `record_by_name`; a dotted path splits on the LAST `.`, resolves the PREFIX recursively
+/// to a record, then projects the trailing segment as a member — so `outer.inner.thrice` resolves its
+/// `outer.inner` prefix by walking `outer` → its `inner` field before the trailing `thrice` member lookup.
+/// `None` if any segment is not a record / not a member.
+fn record_by_dotted_name(db: &mut Db, name: &str) -> Option<StructId> {
+    let Some(dot) = name.rfind('.') else {
+        return record_by_name(db, name);
+    };
+    let (prefix, seg) = (&name[..dot], &name[dot + 1..]);
+    if prefix.is_empty() || seg.is_empty() {
+        return None;
+    }
+    let rec = record_by_dotted_name(db, prefix)?;
+    match crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(seg)) {
+        crate::eval::Member::Field(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that
+/// documents it, or `None` if none does (the query then reports a defined "no documentation" line).
+///  1. a USER definition's `(doc "…")` text, keyed by the def's signature occurrence (`db.doc_of_def`);
+///  2. else a BUILT-IN binding's `(meta doc)` channel — resolve the name to its prelude record, then read
+///     the channel generically (`eval::project_meta`), never matching the name against a key;
+///  3. else a GRAMMAR KEYWORD's doc (a small table, the doc analogue of `resolve::GRAMMAR`).
 fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
     // 1. A user definition's captured doc.
     if let Some(idx) = db.def_by_name(name) {
@@ -1163,7 +1185,7 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
         let (prefix, member) = (&name[..dot], &name[dot + 1..]);
         if !prefix.is_empty()
             && !member.is_empty()
-            && let Some(rec) = record_by_name(db, prefix)
+            && let Some(rec) = record_by_dotted_name(db, prefix)
             && let crate::eval::Member::Field(v) =
                 crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member))
         {
@@ -1213,7 +1235,7 @@ fn name_is_known(db: &mut Db, name: &str) -> bool {
         let (prefix, member) = (&name[..dot], &name[dot + 1..]);
         if !prefix.is_empty()
             && !member.is_empty()
-            && let Some(rec) = record_by_name(db, prefix)
+            && let Some(rec) = record_by_dotted_name(db, prefix)
         {
             return matches!(
                 crate::eval::member_value(db, rec, &crate::resolved::Symbol::plain(member)),
@@ -2623,6 +2645,46 @@ mod tests {
         assert!(
             !matches!(module, DocAnswer::NoSuchDef { .. }),
             "the module `lib` itself resolves (Undocumented, not a typo): {module:?}"
+        );
+    }
+
+    #[test]
+    fn doc_of_a_nested_module_member_resolves_the_dotted_path() {
+        // The DEPTH edge (breaker, /tmp/nest3.sexp): a NESTED module member `outer.inner.thrice` must
+        // resolve — the dotted step splits on the LAST `.` (prefix `outer.inner`, member `thrice`), so the
+        // PREFIX itself is a dotted path that `record_by_dotted_name` walks (`outer` → its `inner` field)
+        // before the trailing member lookup. Regression witness for arbitrary-depth module nesting.
+        use cadenza_compile_abi::DocAnswer;
+        let src = "(do (module outer (module inner \
+                   (def (thrice (: k Int64)) (doc \"member doc: thrice\") (* k 3)) (export thrice)) \
+                   (export inner)) (def (main) (outer.inner.thrice 7)) (export main))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let m = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "outer.inner.thrice".into(),
+                },
+            )
+            .bytes,
+        );
+        assert_eq!(
+            m,
+            DocAnswer::Doc("member doc: thrice".into()),
+            "`outer.inner.thrice` surfaces the nested member's doc: {m:?}"
+        );
+        let bogus = cadenza_compile_abi::decode_doc(
+            &run_query(
+                &mut db,
+                &Query::DocOf {
+                    name: "outer.inner.nope".into(),
+                },
+            )
+            .bytes,
+        );
+        assert!(
+            matches!(bogus, DocAnswer::NoSuchDef { .. }),
+            "`outer.inner.nope` is a bogus nested member → NoSuchDef: {bogus:?}"
         );
     }
 
