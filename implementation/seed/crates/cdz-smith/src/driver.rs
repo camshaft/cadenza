@@ -45,6 +45,11 @@ pub enum GenMode {
     /// well-typed / ~20% ill-typed. Nearly every program is JUDGED (vs ~3% for text/astgen), giving the
     /// `type-differential` false-reject/false-accept hunt real density (the operator #1-for-types lever).
     TypeFuzz,
+    /// The LARGE-VALUE grammar (`astgen::generate_large_value`) — a tail-recursive builder that grows a
+    /// heap List PAST 64 KiB then returns/consumes it. A dedicated, SLOW regime (N runtime appends) that
+    /// stresses the allocator / linear-memory-grow + value-escape copy-out paths (where the #7793/#7800
+    /// `>64 KiB` OOBs lived) — reached by the wasm-vs-rust `differential --large`, not per-campaign.
+    LargeValue,
 }
 
 /// Configuration for a fuzzing run.
@@ -1011,6 +1016,9 @@ pub fn program_for_seed_with(seed: u64, mode: GenMode) -> String {
         GenMode::Text => generate(&seed_entropy(seed)).source,
         GenMode::Astgen => crate::astgen::generate_coerced(&astgen_seed_entropy(seed)).source,
         GenMode::TypeFuzz => crate::astgen::generate_typecheck(&astgen_seed_entropy(seed)).source,
+        GenMode::LargeValue => {
+            crate::astgen::generate_large_value(&astgen_seed_entropy(seed)).source
+        }
     }
 }
 

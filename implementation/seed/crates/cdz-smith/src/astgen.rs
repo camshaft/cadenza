@@ -126,6 +126,34 @@ pub fn generate_coerced(entropy: &[u8]) -> Program {
     build_program(&mut ByteCursorChoice::new(entropy))
 }
 
+/// Generate a LARGE-VALUE program — a tail-recursive builder that grows a heap collection PAST 64 KiB,
+/// then either RETURNS it (the value-escape copy-out path — where the #7793/#7800 `>64 KiB` OOBs lived)
+/// or consumes it with `List.len` (the build/grow path). A List of `Int64` is ≥8 B/element, so 8500+
+/// elements exceed the 64 KiB linear-memory page; the builder is TAIL-recursive (`(build (- n 1) …)` in
+/// tail position) so the N-deep loop doesn't grow the native stack. Small element values → no overflow.
+/// Deliberately a bounded/dedicated regime (slow: N runtime appends) — a standing allocator / memory-grow
+/// tripwire the bounded `--typegen`/astgen grammars never reach. Runs via the wasm-vs-rust `differential`.
+pub fn generate_large_value(entropy: &[u8]) -> Program {
+    let mut c = ByteCursorChoice::new(entropy);
+    // ≥8500 Int64 elements comfortably exceeds one 64 KiB page (8 B × 8192 = 64 KiB); cap so a run stays
+    // bounded. `int_bounded` coerces exhausted entropy to the low end, so it is always a valid size.
+    let n = c.int_bounded(8500, 16000);
+    let elem = c.int_bounded(0, 255);
+    let builder = format!(
+        "(def (build (: n Int64) (: acc (List Int64))) (if (<= n 0) acc (build (- n 1) (List.push acc {elem}))))"
+    );
+    let main_body = if c.variant(2) == 0 {
+        // RETURN the >64 KiB list value — the value-escape copy-out path (#7793/#7800).
+        format!("(build {n} (list))")
+    } else {
+        // Consume it to a count — the build/grow path.
+        format!("(List.len (build {n} (list)))")
+    };
+    Program {
+        source: format!("(do {builder} (def (main) {main_body}) (export main))"),
+    }
+}
+
 /// Which optional helpers are in scope for an expression, so the call arms (`gen_expr`) know what they
 /// may emit. A `Copy` struct threaded by value — cheaper to extend with a new helper than a positional
 /// `bool` per generator function.
@@ -2910,6 +2938,29 @@ mod tests {
             hit,
             "the symbol-in-compound special program (variant slot 4) must be reachable"
         );
+    }
+
+    /// The LARGE-VALUE grammar builds a tail-recursive `>64 KiB` heap-List program the compiler cleanly
+    /// handles (it compiles; the OOB it targets is a RUN-time value-escape, exercised by the differential,
+    /// not a compile fault). Pins the shape: a `build` recursive def + a `main` that returns/consumes it,
+    /// with a size ≥8500 (≥64 KiB at 8 B/Int64).
+    #[test]
+    fn large_value_grammar_builds_a_big_list_program() {
+        for s in 0u64..24 {
+            let bytes: Vec<u8> = (0..24)
+                .map(|i| ((s.wrapping_mul(0x9E37_79B9).wrapping_add(i)) & 0xff) as u8)
+                .collect();
+            let src = generate_large_value(&bytes).source;
+            assert!(
+                src.contains("(build ") && src.contains("List.push"),
+                "recursive builder: {src}"
+            );
+            assert!(src.contains("(export main)"), "exports main: {src}");
+            match compile_catching(&src) {
+                Verdict::Compiled { .. } | Verdict::Declined { .. } => {}
+                other => panic!("large-value program not cleanly handled: {src}\n{other:?}"),
+            }
+        }
     }
 
     /// The NARROW type-fuzzing grammar (S194): every generated program parses + is cleanly handled by
