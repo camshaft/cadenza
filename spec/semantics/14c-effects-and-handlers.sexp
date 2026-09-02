@@ -259,6 +259,44 @@
   (call main (: 2 Int64))
   (output (: 16 Int64)))
 
+; CDZ0307 (computed-but-discarded) MUST NOT false-positive on a discarded EFFECT-OP PERFORM in statement
+; position — the perform RUNS via the handler (a side effect), so its discarded result is NOT dead (#7761;
+; the false-positive carried a semantics-breaking delete-fix). Portable conformance replacement for the
+; rust-#[test]-only guard (rcdzc tests/diagnostics.rs), so it guards BOTH compilers (operator e2e→conformance).
+(case
+  "d307a a discarded effect-op perform in statement position RUNS (advances handler state) and does NOT warn CDZ0307"
+  (doc
+    "Three `(L.emit)` performs sit in statement position in a `(do …)`; each RUNS — the handler `resume`s,
+        advancing state `s`→`s+1` — so their discarded results are NOT dead: removing them changes the value.
+        The compiler must NOT flag CDZ0307 `computed but discarded` (a discarded EFFECT perform has a side
+        effect via the handler; the false-positive #7761 fixed carried a semantics-breaking delete-fix). The
+        `(no-diagnostic …)` pins the false-positive's ABSENCE; the `(output …)` pins that the performs run
+        (each `emit` returns the current state, so `main a` = the third perform's value = a+2).")
+  (input
+    (do
+      (effect L (op emit (-> Unit Int64)))
+      (def
+        (main (: a Int64))
+        (handle L a ((emit () s (resume s (+ s 1)))) (do (L.emit) (L.emit) (L.emit))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2 Int64))
+  (call main (: 5 Int64))
+  (output (: 7 Int64))
+  (no-diagnostic "computed but discarded"))
+
+(case
+  "d307b a PURE discarded expression still warns CDZ0307 — the #7761 fix does not over-suppress"
+  (doc
+    "The contrast to d307a: `(+ 1 2)` in statement position is a PURE value with no side effect, so
+        discarding it IS dead code — CDZ0307 `computed but discarded` MUST still warn. This pins that the
+        #7761 false-positive fix did not OVER-suppress: only a discarded EFFECT perform is exempt (it runs
+        via the handler); a pure discard still warns and still compiles+runs (the warning is not an error).")
+  (input (do (def (main) (do (+ 1 2) 5)) (export main)))
+  (call main)
+  (output (: 5 Int64))
+  (warns CDZ0307 (message "computed but discarded")))
+
 (case
   "cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args"
   (input

@@ -10834,3 +10834,5 @@ pass	a macro-introduced SIBLING FN def with a macro-internal name stays hygienic
 pass	a macro emitting a wrapping (do def…) at a statement position SPLICE-FLATTENS its sibling defs (multi-def idiom)
 pass	a macro-internal name in a splice-flattened wrapping (do def…) stays hygienic-local
 pass	a macro splicing a wrapping (do def def) introduces SEVERAL caller-named sibling defs, all visible
+pass	d307a a discarded effect-op perform in statement position RUNS (advances handler state) and does NOT warn CDZ0307
+pass	d307b a PURE discarded expression still warns CDZ0307 — the #7761 fix does not over-suppress
