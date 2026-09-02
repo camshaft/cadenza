@@ -94,6 +94,18 @@ struct Cli {
     /// build-error FAIL. The nix corpus-rust-exec derivation passes `$case/wit-world.ast` when present.
     #[arg(long = "wit-world", value_name = "PATH")]
     wit_world: Option<PathBuf>,
+
+    /// The case's PEER provider artifact (`peer-0.ast` from the shred), present ONLY for a `(peer …)`-clause
+    /// case (a cross-component-peer program). PRESENCE-ONLY (the path is a signal, not read): when set, the
+    /// RUST target DECLINES the case (verdict `todo`) — skipping emit/compile/run — because the rust backend
+    /// emits a STANDALONE `.rs` binary with no component model / peer boundary (a `host (A B) …` bound to a
+    /// peer interface has no provider to compose against). Without it the rust pipeline compiles the bare
+    /// program and the unbound peer op emits a panic-stub that TRAPS at runtime = a dishonest FAIL; declining
+    /// keeps declined≠error (the fuzzer differential) + honestly characterizes the rust column (cross-peer =
+    /// rust todo-by-design), the exact twin of `--wit-world`. The nix corpus-rust-exec derivation passes the
+    /// case's `peer-*.ast` when present. (Only the FIRST peer path need be passed — presence is the signal.)
+    #[arg(long = "peer", value_name = "PATH")]
+    peer: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -155,5 +167,6 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         baseline.as_deref(),
         cli.emit_verdict.as_deref(),
         cli.wit_world.as_deref(),
+        cli.peer.as_deref(),
     )
 }
