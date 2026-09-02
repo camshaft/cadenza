@@ -10,6 +10,42 @@ use crate::fxhash::FxHashMap as HashMap;
 use crate::resolve::resolved_of;
 use crate::resolved::{HandleArm, Resolved};
 
+/// Whether the subtree at `node` contains a CALL-SITE SPLAT `(.. t)` in argument position — a `(.. op)`
+/// spread marker that is a non-head child of a non-construction application (`DESIGN-variable-arity-functions.md`
+/// A.2/A.7). A structural, resolution-free walk over the AST, bounded by a node budget (a native-stack
+/// backstop). Used by `reduce_handle` to DECLINE a handler body that call-splats, rather than miscompile it
+/// (the fold does not yet expand splats). Does NOT flag a `..` in a collection PATTERN / construction (its
+/// parent is a compound-ctor leaf) — only a call argument.
+fn body_has_call_site_splat(db: &Db, node: StructId) -> bool {
+    fn walk(db: &Db, node: StructId, budget: &mut u32) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        if let Struct::List(children) = db.ast.get(node) {
+            // This node is an application `(head arg…)`. A non-head child that is a `(.. op)` marker, when the
+            // head is not a compound constructor (`#tuple`/`#list`/… — those consume `..` as construction
+            // spread, handled by v-ast-compound), is a call-site splat.
+            let is_construction = db.ast.compound_ctor_leaf(node).is_some();
+            if !is_construction {
+                for (i, &ch) in children.iter().enumerate() {
+                    if i > 0 && db.ast.spread_operand(ch).is_some() {
+                        return true;
+                    }
+                }
+            }
+            for &ch in children.iter() {
+                if walk(db, ch, budget) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let mut budget = 65_536u32;
+    walk(db, node, &mut budget)
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -31,6 +67,16 @@ pub fn reduce_handle(
     // is bounded separately by `THREAD_INLINE_LIMIT` in `thread_bounded`.)
     let mut guard = db.enter_reduction()?;
     let db = guard.db();
+    // DECLINE-DON'T-MISCOMPILE (breaker): a call-site splat `(.. t)` lexically inside this handler BODY is
+    // not yet supported — the tail-resumptive fold below types + lowers the body through its own path that
+    // bypasses the shared `expand_call_splat_args` expansion, so the raw splat reached a backend as the WHOLE
+    // tuple where a scalar element belongs, shipping an INVALID artifact on both targets
+    // (accept-to-invalid-artifact, worse than a decline). Decline the whole handle fold if the body contains
+    // such a splat (`cdz compile` then reports the clean "handler not reducible" decline) rather than
+    // emitting a broken component. Follow-up: thread `expand_call_splat_args` through this fold, then lift.
+    if body_has_call_site_splat(db, body) {
+        return None;
+    }
     // [cp4] Bind-once a multi-use nullary performing-factory let-local to the VERBATIM factory body (the
     // preserved capture-let = ca1m shape #3894 folds to 150), before the fold's per-use inline collapses
     // the creation-time capture into a per-application perform (silent 170). No-op unless the exact narrow
