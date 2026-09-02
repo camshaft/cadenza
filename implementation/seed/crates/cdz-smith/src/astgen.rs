@@ -407,6 +407,7 @@ fn gen_typefuzz_int<C: Choice>(
         // A let-bound lambda applied by NAME: `(let ((fN (fn ((: iM Int64)) <int-body>))) (fN <int-arg>))`.
         // Exercises Fn introduction (T1.11) + CONCRETE-HEAD App (T1.12 — the oracle models application of
         // a NAME, not an inline lambda, so the head must be a bound name to be judged). Returns Int64.
+        // ~1/2 the time the lambda carries an explicit `(-> Int64 Int64)` FUNCTION-TYPE ascription (T1.23).
         7 => {
             let f = format!("f{}", *fresh);
             *fresh += 1;
@@ -416,7 +417,13 @@ fn gen_typefuzz_int<C: Choice>(
             iscope.push(p.clone());
             let body = gen_typefuzz_int(c, depth - 1, iscope, bscope, fresh);
             iscope.pop();
-            format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
+            let lam = format!("(fn ((: {p} Int64)) {body})");
+            let bound = if c.variant(2) == 0 {
+                format!("(: {lam} (-> Int64 Int64))")
+            } else {
+                lam
+            };
+            format!("(let (({f} {bound})) ({f} {arg}))")
         }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
@@ -498,6 +505,7 @@ fn gen_typefuzz_bool<C: Choice>(
         }
         // A let-bound lambda applied by NAME returning Bool: `(let ((fN (fn ((: iM Int64)) <bool-body>)))
         // (fN <int-arg>))` — Fn intro + CONCRETE-HEAD App (the head must be a bound name to be judged).
+        // ~1/2 the time the lambda carries an explicit `(-> Int64 Bool)` FUNCTION-TYPE ascription (T1.23).
         7 => {
             let f = format!("f{}", *fresh);
             *fresh += 1;
@@ -507,7 +515,13 @@ fn gen_typefuzz_bool<C: Choice>(
             iscope.push(p.clone());
             let body = gen_typefuzz_bool(c, depth - 1, iscope, bscope, fresh);
             iscope.pop();
-            format!("(let (({f} (fn ((: {p} Int64)) {body}))) ({f} {arg}))")
+            let lam = format!("(fn ((: {p} Int64)) {body})");
+            let bound = if c.variant(2) == 0 {
+                format!("(: {lam} (-> Int64 Bool))")
+            } else {
+                lam
+            };
+            format!("(let (({f} {bound})) ({f} {arg}))")
         }
         // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
         // Bool (Mat rule T1.16).
