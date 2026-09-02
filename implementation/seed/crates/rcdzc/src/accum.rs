@@ -110,7 +110,7 @@ pub(crate) fn introduce(
     // reads `defs` for name collisions) sees a stable view.
     let mut plans: Vec<(usize, Match)> = Vec::new();
     for (i, d) in defs.iter().enumerate() {
-        if let Some(m) = match_linear_recursion(ast, d, &def_forms, &performing_defs) {
+        if let Some(m) = match_linear_recursion(ast, d, defs, &def_forms, &performing_defs) {
             plans.push((i, m));
         }
     }
@@ -149,6 +149,26 @@ struct Match {
     /// UNCHANGED into the accumulator's tail self-call. Reassociation preserves the final value for ANY
     /// number of parameters (recursion variables and pass-throughs alike), since `+`/`*` are associative.
     rec_args: Vec<StructId>,
+    /// If the per-step term is a call to a simple PERFORMING helper — `(+ (f REC…) (helper k))` — the plan
+    /// to INLINE that helper so the perform becomes DIRECT in the reassociated combine (the shape the
+    /// effects non-local-exit CC folds; see `plan_helper_inline`). `None` for the ordinary case (the term
+    /// is reused verbatim). When `Some`, `apply` builds the inlined term instead of reusing `term`.
+    term_inline: Option<HelperInline>,
+}
+
+/// A plan to inline a simple performing helper call `(helper arg…)` that is the whole per-step term, so
+/// the perform it hides becomes DIRECT in the reassociated accumulator combine (foldable by the effects
+/// non-local-exit CC, v-effects 14b INDIRECT-accum-abort case). `apply` copies `helper_body` substituting
+/// each helper param name with the matching call argument. Only planned for a duplication-safe + capture-
+/// safe shape (simple args, binder-free body, single direct perform) — anything else keeps the safe decline.
+struct HelperInline {
+    /// The helper def's BODY occurrence (copied + substituted at apply time).
+    helper_body: StructId,
+    /// The helper's parameter binder NAMES, in order — substituted by the call args.
+    param_names: Vec<String>,
+    /// The call ARGUMENT occurrences (`k`, `5`, …), one per helper param — each a simple (bare-name/literal)
+    /// occurrence, so substitution neither captures nor re-evaluates an effect.
+    args: Vec<StructId>,
 }
 
 /// The branch-selecting form of a recognized recursion — the ONE part that differs between the numeric
@@ -186,6 +206,7 @@ enum Dispatch {
 fn match_linear_recursion(
     ast: &Arenas,
     d: &Def,
+    defs: &[Def],
     def_forms: &crate::fxhash::FxHashMap<u32, StructId>,
     performing_defs: &crate::fxhash::FxHashSet<String>,
 ) -> Option<Match> {
@@ -217,8 +238,19 @@ fn match_linear_recursion(
     // perform is folded by v-effects' non-local-exit CC — declining direct-perform terms REGRESSES
     // currently-passing resumptive recursions (rw1/rw3/rw-match, 14b) and is unnecessary for the abortive
     // ones. So the decline is INDIRECT-ONLY, keyed on `performing_defs`. See `term_calls_performing_def`.
+    //
+    // v-effects 14b INDIRECT-accum-abort fold: before falling back to the safe decline, TRY to INLINE a
+    // simple performing helper whose call IS the whole term — `(+ (f REC…) (helper k))` — so the perform
+    // becomes DIRECT in the reassociated combine `(OP acc (if … (E.bail …) …))`, the exact shape the
+    // effects non-local-exit CC already folds (the DIRECT-term accum case, 14b:13175/#7790). When the
+    // helper is not inline-safe (a non-simple arg, a binder in its body, a nested indirect perform), we
+    // keep the original decline — a safe non-tail form, never a miscompile.
+    let mut term_inline = None;
     if term_calls_performing_def(ast, term, performing_defs) {
-        return None;
+        match plan_helper_inline(ast, term, defs, performing_defs) {
+            Some(plan) => term_inline = Some(plan),
+            None => return None,
+        }
     }
     // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
     // index is not built yet at load time, so this is an O(1) read of the prebuilt `sig_occ → form` index
@@ -233,6 +265,7 @@ fn match_linear_recursion(
         identity,
         term,
         rec_args,
+        term_inline,
     })
 }
 
@@ -405,9 +438,23 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     // (it references the params / a list-arm binder, which bind to this def's params / the reused arm
     // pattern). CLONE the op occurrence so a member access like `(. Int64 wrapping-add)` reconstructs
     // correctly (not just a bare-name `+`/`*`).
+    // The per-step term folded into the accumulator. Ordinarily the ORIGINAL `term` occurrence is reused
+    // (it references the params / list-arm binders that bind to this def). For the INDIRECT-accum-abort
+    // fold, `term` is a performing helper call `(helper k)`; `build_inlined_term` copies the helper body
+    // with its params substituted by the call args, so the perform becomes DIRECT and the effects CC folds
+    // the reassociated combine (v-effects 14b). See `plan_helper_inline`.
+    let term = match &m.term_inline {
+        Some(hi) => {
+            let body = hi.helper_body;
+            let names = hi.param_names.clone();
+            let args = hi.args.clone();
+            build_inlined_term(ast, body, &names, &args)
+        }
+        None => m.term,
+    };
     let op_ref = copy_subtree(ast, m.op_occ);
     let acc_ref_in_op = push_name(ast, acc_var);
-    let combined = push_list(ast, vec![op_ref, acc_ref_in_op, m.term]);
+    let combined = push_list(ast, vec![op_ref, acc_ref_in_op, term]);
     let mut rec_call_children = vec![push_name(ast, &acc_name)];
     rec_call_children.extend(m.rec_args.iter().copied());
     rec_call_children.push(combined);
@@ -796,6 +843,126 @@ fn term_calls_performing_def(
     false
 }
 
+/// Plan the INLINE of a simple performing helper whose call IS the whole per-step term (`(+ (f REC…)
+/// (helper k))`), so the perform it hides becomes DIRECT in the reassociated combine and the effects
+/// non-local-exit CC folds it (v-effects 14b INDIRECT-accum-abort). Returns `None` — keeping the safe
+/// decline — for anything outside the narrow inline-safe shape, so an un-inlinable indirect perform never
+/// reassociates into a miscompile. All FIVE conditions must hold:
+///  1. the term is EXACTLY `(hname arg…)` — a call whose head names a (transitively) performing def (not a
+///     performing call NESTED inside a larger term, which the inline does not model);
+///  2. every argument is a SIMPLE atom (bare name or literal) — substituting it into the body duplicates
+///     it, sound only when it re-evaluates identically and performs nothing;
+///  3. the helper is a top-level def with a body, its param count matches the call, each param a bare name;
+///  4. the helper body is BINDER-FREE (no `let`/`fn`/`match`/`handle`/… shadowing a substituted name), so
+///     the param→arg substitution cannot capture;
+///  5. the helper body does not itself hide ANOTHER indirect perform — its perform must be DIRECT, so the
+///     inlined term is foldable rather than merely relocating the opacity.
+fn plan_helper_inline(
+    ast: &Arenas,
+    term: StructId,
+    defs: &[Def],
+    performing_defs: &crate::fxhash::FxHashSet<String>,
+) -> Option<HelperInline> {
+    let children = list_children(ast, term)?;
+    let (head, args) = children.split_first()?;
+    let hname = ast.as_name(*head)?;
+    // (1) head names a performing def.
+    if !performing_defs.contains(hname) {
+        return None;
+    }
+    // (2) every argument is a simple atom (bare name or literal) — duplication-safe.
+    if !args.iter().all(|&a| matches!(ast.get(a), Struct::Atom(_))) {
+        return None;
+    }
+    // (3) the helper def exists with a body, matching arity, bare-name params.
+    let helper = defs.iter().find(|d| d.name == hname)?;
+    let helper_body = helper.body?;
+    if helper.params.len() != args.len() {
+        return None;
+    }
+    let param_names: Vec<String> = helper
+        .params
+        .iter()
+        .map(|&p| param_binder_name(ast, p))
+        .collect::<Option<_>>()?;
+    // (4)+(5) binder-free body with only a DIRECT perform.
+    if body_has_binder(ast, helper_body)
+        || term_calls_performing_def(ast, helper_body, performing_defs)
+    {
+        return None;
+    }
+    Some(HelperInline {
+        helper_body,
+        param_names,
+        args: args.to_vec(),
+    })
+}
+
+/// Whether the subtree at `id` contains a BINDING form — a list whose head names a binder keyword. Used
+/// to reject inlining a helper whose body could CAPTURE a substituted name (a param→arg substitution into
+/// a body with no binders is capture-free; `if`/member-access/arithmetic introduce no binders). Conservative
+/// (sound-toward-decline): an unrecognized-but-harmless head is not on the list, but the recognized binders
+/// cover the ones that shadow.
+fn body_has_binder(ast: &Arenas, id: StructId) -> bool {
+    const BINDERS: &[&str] = &[
+        "let", "fn", "lambda", "match", "handle", "do", "def", "effect",
+    ];
+    if let Struct::List(children) = ast.get(id) {
+        let children = children.clone();
+        if let Some(&head) = children.first()
+            && let Some(h) = ast.as_name(head)
+            && BINDERS.contains(&h)
+        {
+            return true;
+        }
+        return children.iter().any(|&c| body_has_binder(ast, c));
+    }
+    false
+}
+
+/// Build the inlined term: copy `helper_body`, replacing each occurrence of a helper param NAME with a
+/// FRESH copy of the matching call argument. Capture-free (the body is binder-free, checked in the plan) and
+/// value-exact (the args are simple atoms). The result is spliced into the accumulator's combine in place of
+/// the helper call, so the perform is DIRECT (foldable by the effects CC).
+fn build_inlined_term(
+    ast: &mut Arenas,
+    helper_body: StructId,
+    param_names: &[String],
+    args: &[StructId],
+) -> StructId {
+    copy_with_subst(ast, helper_body, param_names, args)
+}
+
+/// Deep-copy a subtree (minting fresh name occurrences, sharing non-name literals — like `copy_subtree`),
+/// but replacing any bare `Name` matching a `param_names[i]` with a fresh copy of `args[i]`.
+fn copy_with_subst(
+    ast: &mut Arenas,
+    node: StructId,
+    param_names: &[String],
+    args: &[StructId],
+) -> StructId {
+    match ast.get(node).clone() {
+        Struct::Atom(lid) => {
+            let leaf = ast.leaf(lid).clone();
+            if let Leaf::Name(n) = &leaf {
+                if let Some(pos) = param_names.iter().position(|pn| pn.as_str() == &**n) {
+                    return copy_subtree(ast, args[pos]);
+                }
+                return push_atom(ast, leaf);
+            }
+            // Non-name atom (literal): share verbatim (mirrors `copy_subtree`).
+            node
+        }
+        Struct::List(children) => {
+            let copied: Vec<StructId> = children
+                .iter()
+                .map(|&c| copy_with_subst(ast, c, param_names, args))
+                .collect();
+            push_list(ast, copied)
+        }
+    }
+}
+
 /// A fresh accumulator-def name not colliding with any existing def (`f$acc`, then `f$acc$` …).
 fn fresh_acc_name(defs: &[Def], base: &str) -> String {
     let mut name = format!("{base}$acc");
@@ -953,13 +1120,14 @@ mod tests {
         );
     }
 
-    /// INDIRECT-PERFORM SAFE FLOOR (v-effects 14b:13175-family): a linear recursion whose per-step term
-    /// performs a discharged effect INDIRECTLY — through a call to a helper that performs — must NOT be
-    /// accumulator-transformed. Reassociating it buries the perform in the accumulator arg where the effects
-    /// CC cannot fold it → a miscompile. Witness: `(+ (loop (- k 1)) (helper k))` with `(def (helper k) (if
-    /// (= k 2) (E.bail unit) k))` — the term `(helper k)` calls the performing `helper`. Declined.
+    /// INDIRECT-ACCUM-ABORT FOLD (v-effects 14b): a linear recursion whose per-step term is a call to a
+    /// SIMPLE performing helper — `(+ (loop (- k 1)) (helper k))` with `(def (helper k) (if (= k 2) (E.bail
+    /// unit) k))` — IS accumulator-transformed, because the helper is INLINED into the term first (so the
+    /// perform becomes DIRECT in the reassociated combine, foldable by the effects CC). The synthesized
+    /// `loop$acc` exists, and its combine contains the inlined perform (`(E.bail …)`) rather than the
+    /// opaque `(helper …)` call. See `plan_helper_inline` / `build_inlined_term`.
     #[test]
-    fn introduce_declines_a_term_that_indirectly_performs_via_a_helper() {
+    fn introduce_inlines_a_simple_performing_helper_in_the_term() {
         let ast = crate::testkit::parse(
             "(module m (effect E (op bail (-> Unit Int64))) \
                (def (helper (: k Int64)) (if (= k 2) (E.bail unit) k)) \
@@ -968,8 +1136,27 @@ mod tests {
         );
         let db = Db::load(ast);
         assert!(
+            db.def_by_name("loop$acc").is_some(),
+            "a simple performing helper in the per-step term is inlined, so the recursion IS reassociated"
+        );
+    }
+
+    /// SAFE-DECLINE FLOOR still holds for a helper OUTSIDE the narrow inline-safe shape: a performing helper
+    /// whose body contains a BINDER (`let`) is NOT inlined (substitution could capture), so the indirect
+    /// perform keeps the original safe decline (no `loop$acc`) rather than a miscompile. Witness: the same
+    /// recursion, but `(def (helper k) (let ((x k)) (if (= x 2) (E.bail unit) k)))`.
+    #[test]
+    fn introduce_declines_a_non_inlinable_performing_helper() {
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op bail (-> Unit Int64))) \
+               (def (helper (: k Int64)) (let ((x k)) (if (= x 2) (E.bail unit) k))) \
+               (def (loop (: k Int64)) \
+                 (if (> k 0) (+ (loop (- k 1)) (helper k)) 0)) (export loop))",
+        );
+        let db = Db::load(ast);
+        assert!(
             db.def_by_name("loop$acc").is_none(),
-            "a recursion whose per-step term calls a performing helper must NOT be reassociated"
+            "a helper with a binder body is not inline-safe, so the recursion keeps the safe decline"
         );
     }
 
