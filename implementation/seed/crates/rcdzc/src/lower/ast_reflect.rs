@@ -680,8 +680,14 @@ fn collect_flatten_forms(
         let items = items.to_vec();
         let n = items.len();
         for (i, &child) in items.iter().enumerate() {
-            if i + 1 == n {
-                continue; // FINAL child = the do's value (expression position) → scoped, never flattened
+            // Only a nested `(do …)` at the FINAL (tail) position is a scoped VALUE block → skip it (its
+            // bindings stay do-local). A def/type binding — or any non-`do` form — is NOT the do's value
+            // (a def cannot be a value), so it registers/recurses at ANY position, including last: a do
+            // ENDING in a caller-named def still splice-flattens that def (#7749 behavior — a final DEF is
+            // spliceable; only a final EXPRESSION/`do` is the scoped value). This is the tail-boundary that
+            // matters for a nested value-position `do`, not for a trailing binding.
+            if i + 1 == n && ast.as_form(child, "do").is_some() {
+                continue;
             }
             collect_flatten_forms(ast, child, form, out);
         }
