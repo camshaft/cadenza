@@ -4116,6 +4116,36 @@ impl Db {
         None
     }
 
+    /// Anchor a macro-spliced synth subtree at its located ROOT — the macro-call node the expander
+    /// OVERWRITES IN PLACE (its `StructId`/span is preserved, so it is a user occurrence with a real
+    /// span). For each DESCENDANT that is a synth node carrying NO `synth_name_origin` copy-provenance,
+    /// record `origin[desc] = root`, so [`source_of_synth`] relocates a diagnostic raised on a
+    /// RECONSTRUCTED template node — an unbound-name CDZ0101 on a macro template LITERAL (`undefined-helper`
+    /// in `` `(def (unquote nm) undefined-helper) ``), whose node identity is lost through
+    /// reify→reduce→`reconstruct_macro` — to the macro INVOCATION site instead of leaving it position-less.
+    /// Fills only the GAP: a descendant that already carries provenance (a caller-spliced node with
+    /// use-site identity) keeps its more precise origin; a user node is skipped. Uses `source_of_synth`'s
+    /// own mechanism, which `dedup_faults` already respects, so it does NOT perturb the unanchored-copy
+    /// dedup (unlike a nearest-ancestor relocation at the diagnostic emit site).
+    pub fn seed_synth_origin_for_subtree(&mut self, root: crate::ast::StructId) {
+        let mut visited = crate::fxhash::FxHashSet::default();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if !visited.insert(node) {
+                continue;
+            }
+            let crate::ast::Struct::List(children) = self.ast.get(node) else {
+                continue;
+            };
+            for c in children.clone() {
+                if !self.is_user_node(c) && !self.synth_name_origin.contains_key(&c) {
+                    self.synth_name_origin.insert(c, root);
+                }
+                stack.push(c);
+            }
+        }
+    }
+
     // ── Append-during-query — the evaluator builds new nodes on demand ─────────────────────────────
     //
     // The one compile-time evaluator constructs new AST nodes as it reduces — e.g. `(Int 64)` builds a
