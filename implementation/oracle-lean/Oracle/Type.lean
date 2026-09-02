@@ -259,6 +259,8 @@ def programModeled? (m : Ast.Module) : Bool :=
                                 | some nm => definedNames.any (· == nm)
                                 | none => false)
                 | _ => false)
+             else if h == "type".toUTF8 then true    -- T1.25: a `(type …)` decl is a modeled KIND; its
+                                                      -- sound modelability is gated by `userSumMap` in `infer`
              else h == "pragma".toUTF8
            | none => false)
         | none => false)
@@ -332,6 +334,74 @@ def orderingCtorTy? (nm : ByteArray) : Option Ty :=
   | some "Less" => some orderingTy
   | some "Equal" => some orderingTy
   | some "Greater" => some orderingTy
+  | _ => none
+
+/-- Is `vid` a `(doc …)` node (a variant-list doc annotation, not a variant)? -/
+def isDocNode (m : Ast.Module) (vid : Nat) : Bool :=
+  match m.nodes[vid]? with
+  | some (Ast.Node.list vc) => m.headName? (Ast.Node.list vc) == some "doc".toUTF8
+  | _ => false
+
+/-- Parse ONE variant spec of a `(type …)` decl → `(ctorName, payload Ty option)`: a bare `A` or `(A)` is
+NULLARY (`none`); `(A τ)` carries payload `parseTy? τ`. `none` (⇒ the whole type is UNMODELED) for a
+payload that isn't modeled, or a variant arity > 1 (a variant is uniformly single-payload). -/
+def userVariantSpec? (m : Ast.Module) (vid : Nat) : Option (ByteArray × Option Ty) :=
+  match m.nodes[vid]? with
+  | some (Ast.Node.atom lid) =>
+    (match m.leaves[lid]? with | some (Ast.Leaf.name b) => some (b, none) | _ => none)
+  | some (Ast.Node.list vc) =>
+    (match m.headName? (Ast.Node.list vc) with
+     | some cn => if vc.size == 1 then some (cn, none)
+                  else if vc.size == 2 then (parseTy? m (vc[1]!)).map (fun τ => (cn, some τ))
+                  else none
+     | none => none)
+  | none => none
+
+/-- T1.25 — parse all top-level `(type T (A τ) (B) …)` decls into a VARIANT MAP: each variant name → (its
+type's structural `.sum` Ty, its payload Ty option). `none` ⇒ the program is DECLINED (sound skip) because
+the user sums aren't soundly modelable structurally: an unmodeled/compound payload or arity > 1 (a whole
+type fails), OR a NOMINAL AMBIGUITY — a variant name shared across user types or colliding with a built-in
+(Some/None/Ok/Err/Less/Equal/Greater). With globally-UNIQUE variant names, structural == nominal, so a
+`.sum` faithfully models the nominal type. Variants kept in declaration order (consistent → self-unifies;
+cross-type unify is impossible under the uniqueness gate). -/
+def userSumMap (m : Ast.Module) : Option (List (ByteArray × (Ty × Option Ty))) :=
+  match m.nodes[m.root]? with
+  | some (Ast.Node.list stmts) =>
+    (do
+      let entries ← (stmts.extract 1 stmts.size).toList.foldlM (m := Option)
+        (fun (acc : List (ByteArray × (Ty × Option Ty))) sid =>
+          match m.nodes[sid]? with
+          | some (Ast.Node.list tc) =>
+            if m.headName? (Ast.Node.list tc) == some "type".toUTF8 then
+              (do
+                let vspecs ← ((tc.extract 2 tc.size).toList.filter (fun vid => !isDocNode m vid)).mapM (userVariantSpec? m)
+                let sumTy : Ty := .sum vspecs
+                pure (acc ++ vspecs.map (fun (cn, p) => (cn, (sumTy, p)))))
+            else pure acc
+          | _ => pure acc) []
+      -- collect the user TYPE names too (a user type may SHADOW a prelude type — e.g. `(type Int64 (A))` —
+      -- which changes what `Int64` means in later annotations; our `parseTy?` uses the prelude meaning, so
+      -- we must DECLINE such a shadow rather than false-accept).
+      let typeNames := (stmts.extract 1 stmts.size).toList.filterMap (fun sid =>
+        match m.nodes[sid]? with
+        | some (Ast.Node.list tc) =>
+          if m.headName? (Ast.Node.list tc) == some "type".toUTF8 then (tc[1]?).bind (Eval.nameOf? m) else none
+        | _ => none)
+      let names := entries.map (·.1)
+      -- RESERVED names (built-in variants + built-in sum types + modeled scalar type names): a user variant
+      -- OR type name colliding with any of these is a nominal shadow our structural model can't track soundly.
+      let reserved : List ByteArray :=
+        ["Some", "None", "Ok", "Err", "Less", "Equal", "Greater", "Option", "Result", "Ordering",
+         "Int", "UInt", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "BigInt",
+         "Bool", "Unit", "String", "Char", "Float32", "Float64"].map (·.toUTF8)
+      if names.eraseDups.length == names.length             -- no duplicate variant name (nominal ambiguity)
+         && typeNames.eraseDups.length == typeNames.length  -- no duplicate type name (two same-named types)
+         && names.all (fun n => !reserved.contains n)       -- no variant shadows a built-in/type name
+         && typeNames.all (fun n => !reserved.contains n)   -- no type name shadows a prelude/built-in type
+         && (Eval.defNames m).all (fun dn => !reserved.contains dn)  -- no top-level def shadows a prelude
+                                                                     -- TYPE name (else `parseTy?` on a payload
+                                                                     -- annotation uses the wrong prelude meaning)
+      then some entries else none)
   | _ => none
 
 /-- Classify a MATCH pattern `patId` against the scrutinee sum's variant list `vs` (Mat rule, T1.16).
@@ -937,6 +1007,23 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                           if exhaustive then .ok (τr, stF)
                           else .error (.illTyped "CDZ0210")))    -- T1.17: a modeled match missing a variant (no catch-all) is NonExhaustive
                   | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
+          else if ((userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == h))).isSome then
+            -- T1.25 — USER SUM CONSTRUCTION: `h` is a declared variant `(type T … (h τ) …)` → its type's
+            -- structural sum + payload. `(h x)` unifies `x` with the declared payload τ → the sum; a nullary
+            -- variant `(h)`/`(h unit)` → the sum. Over-application (children > 2) → `CDZ0203` (single-arity).
+            (match (userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == h)) with
+             | some (_, (sumTy, some τp)) =>
+               if children.size > 2 then .error (.illTyped "CDZ0203")
+               else (match children[1]? with
+                     | some xId => (match inferE m env st xId with
+                                    | .ok (τ, st') => (match unifyInfer τ τp st' with
+                                                       | .ok st'' => .ok (sumTy, st'')
+                                                       | .error e => .error e)
+                                    | .error e => .error e)
+                     | none => .error (.unsupported "type oracle: malformed user-sum constructor"))
+             | some (_, (sumTy, none)) =>
+               if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
+             | none => .error (.unsupported "type oracle: user-sum ctor lookup vanished"))
           else
             -- T1.12/T1.18 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env
             -- to a scheme; INSTANTIATE it (fresh vars per use — this is where `let`-polymorphism pays off),
@@ -1107,7 +1194,11 @@ def infer (m : Ast.Module) : TypeVerdict :=
   -- (value def / fn-def / export-of-defined / pragma); a `(type …)`/`(effect …)`/import or unbound export
   -- declines. The def TYPING gate is `topLevelEnv` (an ill-typed/unmodeled sibling → IllTyped/Unsupported).
   if !programModeled? m then
-    .unsupported "type oracle: program has unmodeled top-level structure (type-or-effect decl / import / unbound export) — declined for soundness"
+    .unsupported "type oracle: program has unmodeled top-level structure (effect decl / import / unbound export) — declined for soundness"
+  else if (userSumMap m).isNone then
+    -- T1.25: the program has `(type …)` decls that aren't soundly modelable STRUCTURALLY (unmodeled payload,
+    -- variant arity > 1, or a nominal-ambiguity variant-name collision) → decline (sound skip).
+    .unsupported "type oracle: user sum types not soundly modelable (unmodeled payload / arity>1 / variant-name collision) — declined"
   else match Eval.namedParamsBody? m "main".toUTF8 with
   | none => .unsupported "type oracle: program has no (def (main) …) export"
   | some (specs, bodyId) =>
@@ -1588,6 +1679,20 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[14, 10, 13], .atom 8, .atom 6, .list #[16, 17], .atom 0,
                            .list #[19, 8, 15, 18]],
                 root := 20 } == .wellTyped (.int 64 true))
+-- T1.25 (user sum): `(do (type P (Mk Int64) (Z)) (def (main) (match (Mk 5) ((Mk n) n) ((Z) 0))) (export main))`
+-- → WellTyped Int64. `(Mk 5)` constructs the P sum (Mk payload Int64); the match binds n:Int64, both arms
+-- numeric, exhaustive over {Mk,Z} → Int64. Exercises userSumMap (structural sum + no-collision gate) + Con.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "type".toUTF8, .name "P".toUTF8, .name "Mk".toUTF8,
+                            .name "Int64".toUTF8, .name "Z".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                            .name "match".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "n".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[0]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .list #[0, 1], .atom 5, .list #[3], .atom 1, .atom 2,
+                           .list #[5, 6, 2, 4], .atom 3, .atom 9, .list #[8, 9], .atom 3, .atom 10,
+                           .list #[11, 12], .atom 10, .list #[13, 14], .atom 5, .list #[16], .atom 11,
+                           .list #[17, 18], .atom 8, .list #[20, 10, 15, 19], .atom 7, .list #[22],
+                           .atom 6, .list #[24, 23, 21], .atom 12, .atom 7, .list #[26, 27], .atom 0,
+                           .list #[29, 7, 25, 28]],
+                root := 30 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
