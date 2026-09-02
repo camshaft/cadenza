@@ -2676,6 +2676,35 @@ fn build_rust_host_shims(
 }
 
 #[allow(clippy::too_many_arguments)] // host protocol = responses + calls, threaded alongside the pipeline args
+/// The name of the emitted module's sole TOP-LEVEL export fn — the nullary fn the driver calls when a case
+/// has no explicit `(call …)`. Sync emits `pub fn <name>(`, async `pub async fn <name><E: CdzEnv>(`; the
+/// name stops at `(` OR `<` (the async generic list).
+///
+/// The marker is matched only at the START OF A LINE (a top-level fn), NOT anywhere in the text: a value-
+/// wrapper `impl` block emits INDENTED helper methods that also read `pub fn …` (e.g. the Float64 wrapper's
+/// `    pub fn get(self) -> f64`), and a substring scan (`split("pub fn ")`) matched that impl method FIRST
+/// — deriving `get` and driving `prog::get()` (E0425: no such fn in `prog`) on any case whose emit pulls in
+/// a wrapper. That was a pre-existing driver bug on a baselined-PASS case (v-rust-backend catch, 19-sets
+/// empty-`(Set Float64)`). The export is the sole top-level `pub fn` (helper defs emit as private `fn`,
+/// wrapper methods emit INDENTED), so a line-start match skips both and selects it. `lines()` drops the
+/// `\n`, so `strip_prefix(marker)` anchors to column 0. `None` if no top-level export line is present.
+fn top_level_export_name(module: &str, async_mode: bool) -> Option<String> {
+    let marker = if async_mode {
+        "pub async fn "
+    } else {
+        "pub fn "
+    };
+    module
+        .lines()
+        .find_map(|line| line.strip_prefix(marker))
+        .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+// 8 driver params (tools/program/modules/call/async/opt/host-responses/host-calls) — each an independent
+// input to the rust-exec pipeline; bundling them into a struct would not reduce the surface, only indirect it.
+#[allow(clippy::too_many_arguments)]
 fn run_program_rust(
     tools: &Tools,
     program: &str,
@@ -2787,22 +2816,11 @@ fn run_program_rust(
             }
         }
         None => {
-            // The sole export's name is the fn to call with no args — recover it from the emitted
-            // signature. Sync mode emits `pub fn <name>(`; async mode emits `pub async fn <name><E:
-            // CdzEnv>(`, so split on whichever marker is present and stop the name at `(` OR `<` (the
-            // async generic-parameter list). (A nullary export; the common no-`call` case.)
-            let marker = if async_mode {
-                "pub async fn "
-            } else {
-                "pub fn "
-            };
-            match module
-                .split(marker)
-                .nth(1)
-                .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
-            {
-                Some(name) if !name.is_empty() => (name.to_string(), format!("{name}()")),
-                _ => return Ran::BadArtifact("no exported fn in emitted Rust".to_string()),
+            // No explicit `(call …)`: invoke the sole nullary top-level export (see `top_level_export_name`
+            // for why the marker must be line-anchored — skipping indented `impl`-block wrapper methods).
+            match top_level_export_name(&module, async_mode) {
+                Some(name) => (name.clone(), format!("{name}()")),
+                None => return Ran::BadArtifact("no exported fn in emitted Rust".to_string()),
             }
         }
     };
@@ -8147,6 +8165,49 @@ mod trap_grading_tests {
         assert_eq!(
             sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 3".into())),
             sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 7".into()))
+        );
+    }
+
+    #[test]
+    fn top_level_export_name_skips_indented_impl_methods() {
+        // The 19-sets regression shape: a Float64 value-wrapper emits an INDENTED `pub fn get(self)` impl
+        // method BEFORE the top-level `pub fn main` export. A substring scan picked `get` (→ prog::get(),
+        // E0425); the line-anchored match must skip the indented method and select the top-level `main`.
+        let module = "\
+#[derive(Clone, Copy)]
+pub struct __CdzF64(u64);
+impl __CdzF64 {
+    fn new(v: f64) -> Self { __CdzF64(v.to_bits()) }
+    pub fn get(self) -> f64 { f64::from_bits(self.0) }
+}
+// cdz-return[main]: Int64
+pub fn main() -> i64 {
+    r#loop(3, Default::default())
+}
+fn r#loop(n: i64, s: std::collections::BTreeSet<__CdzF64>) -> i64 { 0 }
+";
+        assert_eq!(
+            top_level_export_name(module, false).as_deref(),
+            Some("main")
+        );
+        // The plain common case (no wrapper): the top-level export is still found.
+        assert_eq!(
+            top_level_export_name("pub fn answer() -> i64 { 42 }\n", false).as_deref(),
+            Some("answer")
+        );
+        // Async: the name stops at the `<` generic-parameter list, and the marker is the async one.
+        assert_eq!(
+            top_level_export_name(
+                "    pub fn get(self) -> f64 { 0.0 }\npub async fn run<E: CdzEnv>(env: &mut E) -> i64 { 0 }\n",
+                true
+            )
+            .as_deref(),
+            Some("run")
+        );
+        // A module with only indented `pub fn` (no top-level export) resolves to None (→ BadArtifact).
+        assert_eq!(
+            top_level_export_name("impl T {\n    pub fn only(self) {}\n}\n", false),
+            None
         );
     }
 
