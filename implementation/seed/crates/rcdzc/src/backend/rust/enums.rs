@@ -1207,6 +1207,18 @@ fn mentions_decl(ty: &crate::ty::Ty, decl: crate::ast::StructId) -> bool {
         }
         Ty::Tuple(elems) => elems.iter().any(|e| mentions_decl(e, decl)),
         Ty::Record(fields) => fields.values().any(|t| mentions_decl(t, decl)),
+        // A `List`/`Set`/`Map`/`Qty` element/key/value position ALSO carries the μ back-edge: unlike the
+        // by-value Box walk (`reaches_decl`, which SKIPS these because a `Vec`/`BTreeSet`/`BTreeMap` heap
+        // pointer breaks the SIZE cycle), `types::rust_type` still ERASES a newtype THROUGH the container
+        // element and emits the bare undeclared decl name at the self-reference — e.g. `(type Rose (Node
+        // Int64 (List Rose)))` erases to `(i64, Vec<Rose>)` with a dangling `Rose`. So the newtype-erasure
+        // termination check must follow these positions too, or a List/Map/Set-recursive newtype slips
+        // through `sum_representable` and emits an uncompilable `cannot find type Rose` (breaker rose-tree
+        // rt9). (This function feeds ONLY the newtype-representability decline + its diagnostic — NOT the
+        // Box decision — so following containers here does not over-box a finite recursive sum field.)
+        Ty::List(e) | Ty::Set(e) => mentions_decl(e, decl),
+        Ty::Map(k, v) => mentions_decl(k, decl) || mentions_decl(v, decl),
+        Ty::Qty { inner, .. } => mentions_decl(inner, decl),
         _ => false,
     }
 }
