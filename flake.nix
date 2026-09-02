@@ -5656,6 +5656,12 @@
           (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
             wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
           wasmOracleFiles);
+        # Step B: the same over the WHOLE corpus — shared by oracle-wasm-case-dirs-full,
+        # corpus-wasm-extract-warm-full, and the oracle-wasm-diff-full check.
+        wasmOracleExtractDirsFull = pkgs.lib.concatLists (map
+          (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
+          corpusFileNames);
         # The manifest v-lean-oracle's oracle-wasm-diff check reads: one line per per-case dir that HAS a
         # core.wat (a runnable extraction), sorted. Mirrors oracleLeanCaseDirs. The dir list is passed via
         # `passAsFile` (NOT an env attr): at ~1478 dirs (Step A) it's ~90KB and at full-corpus Step B ~640KB —
@@ -5679,10 +5685,7 @@
         # at full scale. Same passAsFile discipline (~640KB dir list would overflow an env attr, #7546).
         oracleWasmCaseDirsFull = pkgs.runCommand "oracle-wasm-case-dirs-full"
           {
-            dirs = pkgs.lib.concatLists (map
-              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
-                wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
-              corpusFileNames);
+            dirs = wasmOracleExtractDirsFull;
             passAsFile = [ "dirs" ];
           } ''
           : > "$out"
@@ -5700,6 +5703,14 @@
           cp ${pkgs.writeText "corpus-wasm-extract-dirs"
             (pkgs.lib.concatStringsSep "\n" wasmOracleExtractDirs)} "$out"
           echo "corpus-wasm-extract-warm: realized $(wc -l < "$out") per-case wasm extractions" >&2
+        '';
+        # Step B full-corpus extraction warm (over corpusFileNames, ~10.7k). For v-gha-green's separate weekly
+        # cache-warm-extract-wasm-full.yml (the daily's oracle-wasm-diff-full check realizes the same set + the
+        # cachix post-step pushes them, so this is a warm-only convenience; same writeText-manifest pattern).
+        corpusWasmExtractWarmFull = pkgs.runCommand "corpus-wasm-extract-warm-full" { } ''
+          cp ${pkgs.writeText "corpus-wasm-extract-dirs-full"
+            (pkgs.lib.concatStringsSep "\n" wasmOracleExtractDirsFull)} "$out"
+          echo "corpus-wasm-extract-warm-full: realized $(wc -l < "$out") per-case wasm extractions (full corpus)" >&2
         '';
         oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
           { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
@@ -5745,6 +5756,17 @@
           echo "oracle-wasm-diff: $(wc -l < "$caseDirs") runnable Core->wasm cases (v-wasm-oracle extraction manifest)"
           oracle-wasm-diff --manifest "$caseDirs" | tee result
           echo "ok: oracle-wasm Core->wasm differential — $(tail -1 result)" > "$out"
+        '';
+        # Step B: the SAME check over the FULL corpus (oracle-wasm-case-dirs-full, ~10.7k). Bundled sibling so
+        # v-gha-green's weekly cache-warm-extract-wasm-full.yml is a symmetric one-liner
+        # (`nix build .#checks.<sys>.oracle-wasm-diff-full`) that realizes + (via the cachix post-step) PUSHES
+        # the full extractions, so the next weekly pulls warm. Report-only like the daily. Mirrors the daily
+        # derivation exactly, swapping the manifest — v-lean-oracle owns the oracle-wasm-diff exe (oracleLean).
+        oracleWasmDiffFull = pkgs.runCommand "oracle-wasm-diff-full"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleWasmCaseDirsFull; } ''
+          echo "oracle-wasm-diff-full: $(wc -l < "$caseDirs") runnable Core->wasm cases (FULL corpus)"
+          oracle-wasm-diff --manifest "$caseDirs" | tee result
+          echo "ok: oracle-wasm Core->wasm differential (full corpus) — $(tail -1 result)" > "$out"
         '';
         # Cross-shell PATH wrapper-scripts for the all-nix entrypoints (v-nix 2026-08-28). Hoisted here so
         # BOTH devShells.default (packages) AND packages.cdz-shell-wrappers use the SAME wrappers (no drift).
@@ -6038,6 +6060,7 @@
         # Extraction-layer cache-warm target (v-gha-green wires into a daily/dispatch workflow, like
         # cache-warm-emit-wasm.yml): realizes every per-case wasm extraction so they land on cachix.
         packages.corpus-wasm-extract-warm = corpusWasmExtractWarm;
+        packages.corpus-wasm-extract-warm-full = corpusWasmExtractWarmFull;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
@@ -6738,6 +6761,7 @@
             # Core↔wasm differential (operator #1): reduce(core.ast) vs talos-interpret(core.wat) per case;
             # a DIVERGE (0 required) = a front-end→backend miscompile. Standalone/advisory. Pulls warm.
             oracle-wasm-diff = oracleWasmDiff;
+            oracle-wasm-diff-full = oracleWasmDiffFull;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
