@@ -29,3 +29,13 @@ test("explainIfStaleRuntime never cries wolf when runtime is verified-good (true
   assert.equal(explainIfStaleRuntime(trap, true), trap);
   assert.equal(explainIfStaleRuntime(trap, null), trap);
 });
+
+test("explainIfStaleRuntime shows the REAL trap for an expected-trap example, even under a mismatch", () => {
+  // An `expect="error"` example is SUPPOSED to trap (surfaces as `unreachable`, same as a corruption
+  // trap). Even when the runtime hash mismatches (matches === false), its trap is the intended outcome —
+  // never rewrite it to the stale-build/hard-reload advice (the operator-reported false positive).
+  const trap = "unreachable";
+  assert.equal(explainIfStaleRuntime(trap, false, true), trap);
+  // Sanity: an UNEXPECTED trap under the same mismatch still gets the stale-build advice.
+  assert.match(explainIfStaleRuntime(trap, false, false), /stale build/);
+});

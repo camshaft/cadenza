@@ -17,7 +17,15 @@ export function hexDigest(digest: ArrayBuffer): string {
 /// — a real mismatch). When the runtime is verified-good (`true`) or the check was inconclusive (`null`,
 /// e.g. no SubtleCrypto), return the original message unchanged — never cry wolf on a genuine user-code
 /// trap. The mismatch text keeps the underlying error for debugging and tells the reader to hard-reload.
-export function explainIfStaleRuntime(message: string, matches: boolean | null): string {
+///
+/// `expectsTrap` — the running example is SUPPOSED to trap (an `expect="error"` Runnable): its trap is the
+/// intended outcome, so show the REAL trap and NEVER the stale-build advice, even under a hash mismatch. A
+/// genuine intentional trap and a memory-corruption trap BOTH surface as `unreachable`, so message text
+/// can't tell them apart — the example's own expectation is the only reliable signal, and if the build is
+/// truly stale the advice still surfaces on the VALUE examples. Without this, an intentional-trap example
+/// under a mismatch showed the misleading "stale build / hard-reload" text instead of its expected trap.
+export function explainIfStaleRuntime(message: string, matches: boolean | null, expectsTrap = false): string {
+  if (expectsTrap) return message;
   if (matches === false) {
     return (
       "This looks like a stale build: the bundled Cadenza runtime doesn't match the compiler, so " +

@@ -108,7 +108,10 @@ export function Runnable({ id, files, source, authoredIn = "sexpr", wrap = true,
 }
 
 function RunRunnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props & { source: string }) {
-  const editor = useCadenzaEditor(source, authoredIn, wrap);
+  // `expect="error"` ⇒ the example is SUPPOSED to trap; tell the runner so a stale-runtime mismatch shows
+  // the REAL trap, not the misleading hard-reload advice (an intentional trap and a corruption trap both
+  // surface as `unreachable`, so the expectation is the only reliable discriminator).
+  const editor = useCadenzaEditor(source, authoredIn, wrap, expect === "error");
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The minimal IDE (squiggles + hover) turns on once the reader focuses the editor, so a page full
   // of examples doesn't fire a compile per editor on load.

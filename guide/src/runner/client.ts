@@ -81,6 +81,10 @@ export async function run(
    *  its current `{ num, den }` (the slider value as an exact fraction). Supplied to the run worker's
    *  `param` import so the model reads live slider values. Omit for a non-parametric run. */
   params?: Record<string, { num: number; den: number }>,
+  /** The example is SUPPOSED to trap (an `expect="error"` Runnable): its trap is the intended outcome, so
+   *  show the REAL trap and never the stale-build/hard-reload advice (a corruption trap and an intentional
+   *  trap both surface as `unreachable`, so only the caller's expectation can tell them apart). */
+  expectsTrap = false,
 ): Promise<RunOutcome> {
   if (busy) return { kind: "error", message: "a run is already in progress" };
   busy = true;
@@ -126,9 +130,9 @@ export async function run(
           text: await renderValueInSurface(await renderValue(raw.bytes), surface, display),
         };
       case "trap":
-        return { kind: "trap", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
+        return { kind: "trap", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler, expectsTrap) };
       case "error":
-        return { kind: "error", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
+        return { kind: "error", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler, expectsTrap) };
       default:
         // A normal `run` never posts a test job, so a "tests" result shouldn't reach here — but keep the
         // switch exhaustive rather than reading `.message` off a variant that lacks it.

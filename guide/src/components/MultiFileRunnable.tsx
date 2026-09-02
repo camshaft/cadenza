@@ -102,7 +102,9 @@ export function MultiFileRunnable({
         setStatus({ phase: "error", message: d ? `${d.code} ${d.message}`.trim() : "compile declined" });
         return;
       }
-      const result = await runComponent(out.component, "sexpr");
+      // `expect="error"` ⇒ this example is SUPPOSED to trap; tell the runner so a stale-runtime mismatch
+      // shows the REAL trap rather than the misleading stale-build/hard-reload advice.
+      const result = await runComponent(out.component, "sexpr", false, undefined, expect === "error");
       if (result.kind !== "value") {
         const msg =
           result.kind === "trap" ? `trap: ${result.message}`
