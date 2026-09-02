@@ -13189,9 +13189,7 @@
   (input
     (do
       (effect E (op bail (-> Unit Int64)))
-      (def
-        (loop (: k Int64))
-        (if (> k 0) (+ (loop (- k 1)) (if (= k 2) (E.bail unit) k)) 0))
+      (def (loop (: k Int64)) (if (> k 0) (+ (loop (- k 1)) (if (= k 2) (E.bail unit) k)) 0))
       (def (main (: n Int64)) (handle E 0 ((bail (u) s 99)) (loop n)))
       (export main)))
   (call main (: 1 Int64))
@@ -13226,3 +13224,24 @@
   (output (: 1 Int64))
   (call main (: 3 Int64))
   (output (: 99 Int64)))
+
+; dcx1: the GREEN complement of "an escaping closure whose body performs is rejected" — the SAME
+; escaping-performer closure is FINE when its call site sits under a live handler, and dispatch is
+; DYNAMIC: the closure created under handle-111 but applied under handle-222 draws 222 (the call-time
+; handler), not 111 (the creation-time one). Pins call-time (dynamic-extent) dispatch through an
+; escaped closure; the unhandled twin above stays CDZ0401. n+222.
+(case
+  "an escaped performing closure dispatches to the CALL-site handler, not its creation-site one"
+  (input
+    (do
+      (effect E (op get (-> Int64)))
+      (def
+        (main (: n Int64))
+        (let
+          ((f (handle E 111 ((get () s (resume s s))) (fn ((: k Int64)) (+ k (E.get))))))
+          (handle E 222 ((get () s (resume s s))) (f n))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 222 Int64))
+  (call main (: 5 Int64))
+  (output (: 227 Int64)))
