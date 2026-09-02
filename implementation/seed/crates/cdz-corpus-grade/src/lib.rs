@@ -130,7 +130,20 @@ pub fn check_regression(actual: Verdict, description: &str, baseline: &str) -> O
 /// A `fail`-baseline + `fail` verdict is the EXCEPTION — a TRACKED, git-committed known-fail (#4547): the
 /// EXPECTED state, NOT a gate failure (noted so it stays visible; a later PASS surfaces as a regression to
 /// re-baseline). The whole-run "vanished" case (a baseline title with no run) is a separate global aggregate.
-pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>) -> ExitCode {
+///
+/// `membership_only` = the baseline is a CURATED SUBSET of the corpus (the RUST backend: `.gate-baseline-rust`
+/// covers ~8962 of ~10819 cases — rust stays INCREMENTAL, no-value-heap; the ABSENT cases are intentionally
+/// not-covered-on-rust, not gate-holes). Under it, a case ABSENT from the baseline (verdict `None`) is
+/// NOT ENFORCED — a FAIL there is out-of-scope (the case is not in the curated set), NOT a #3984 red. This is
+/// exactly "grade IFF title ∈ baseline" (a baseline-absent case is unenforced, matching `check_regression`).
+/// A baselined `todo` case that now fails STILL reds (it IS covered). `false` = the WASM bar: the wasm
+/// `.gate-baseline` == the full-corpus harvest (no legitimately-absent cases), so #3984 stays strict there.
+pub fn exec_exit(
+    result: &GradeResult,
+    description: &str,
+    baseline: Option<&str>,
+    membership_only: bool,
+) -> ExitCode {
     let printed = print_verdict(result, description);
     match baseline {
         None => printed,
@@ -145,6 +158,17 @@ pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>
                 // (2) #3984: a `todo`/absent (NOT pass, NOT fail) case that now FAILs reds — a miscompile
                 //     the pass→not-pass rule misses. Matches `check_baseline`'s `failing` set.
                 if !matches!(bv, Some(Verdict::Pass) | Some(Verdict::Fail)) {
+                    // MEMBERSHIP-ONLY (curated-subset baseline, e.g. rust): an ABSENT case (`bv` None) is
+                    // NOT in the curated set → a FAIL there is out-of-scope, NOT enforced (the rust backend
+                    // is incremental; absent = not-covered-on-rust, not a gate-hole). A baselined `todo`
+                    // (bv Some(Todo)) that fails STILL reds — it IS covered. Only the ABSENT case is exempt.
+                    if membership_only && bv.is_none() {
+                        eprintln!(
+                            "grade: {description}: FAIL but ABSENT from the curated baseline — NOT enforced \
+                             (membership-only: grade IFF title ∈ baseline; the rust backend is incremental)"
+                        );
+                        return ExitCode::SUCCESS;
+                    }
                     eprintln!(
                         "grade: {description}: FAIL and baseline verdict is {bv:?} (todo/absent) — gate \
                          hole (xtask #3984): a non-pass, non-fail baseline that now fails reds `--check`"
@@ -2520,7 +2544,8 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "a passing case",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             failure
         );
@@ -2529,7 +2554,8 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "an incomplete case",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             failure
         );
@@ -2538,7 +2564,8 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "absent",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             failure
         );
@@ -2547,7 +2574,8 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Todo("x".into())),
                 "an incomplete case",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             success
         );
@@ -2556,13 +2584,14 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "a known-fail case",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             success
         );
         // WITHOUT baseline: any outright Fail → FAILURE (the miscompile check).
         assert_eq!(
-            fmt(exec_exit(&res(Grade::Fail("x".into())), "x", None)),
+            fmt(exec_exit(&res(Grade::Fail("x".into())), "x", None, false)),
             failure
         );
         // A Pass always succeeds.
@@ -2570,9 +2599,52 @@ mod tests {
             fmt(exec_exit(
                 &res(Grade::Pass),
                 "a passing case",
-                Some(baseline)
+                Some(baseline),
+                false
             )),
             success
+        );
+    }
+
+    /// MEMBERSHIP-ONLY (the rust curated-subset gate): an ABSENT case that FAILs is NOT enforced — exempt
+    /// from the #3984 red (grade IFF title ∈ baseline; rust is incremental). It does NOT weaken the enforced
+    /// set: a baselined `todo` that now fails STILL reds (covered), and a baselined `pass` regression STILL
+    /// reds. Contrast the strict (wasm) mode (`false`) where an absent-fail reds.
+    #[test]
+    fn exec_exit_membership_only_exempts_absent_case_fail() {
+        let fmt = |c: ExitCode| format!("{c:?}");
+        let success = fmt(ExitCode::SUCCESS);
+        let failure = fmt(ExitCode::FAILURE);
+        let baseline = "pass\ta passing case\ntodo\tan incomplete case\n";
+        let res = |g: Grade| GradeResult {
+            grade: g,
+            ran_a_trial: true,
+        };
+        let fail = || res(Grade::Fail("x".into()));
+        // ABSENT + FAIL: strict (wasm) reds (#3984); membership-only (rust) EXEMPTS it.
+        assert_eq!(
+            fmt(exec_exit(&fail(), "absent case", Some(baseline), false)),
+            failure
+        );
+        assert_eq!(
+            fmt(exec_exit(&fail(), "absent case", Some(baseline), true)),
+            success
+        );
+        // membership-only does NOT weaken the enforced set:
+        //  - a baselined-TODO now-FAIL still reds (it IS covered) ...
+        assert_eq!(
+            fmt(exec_exit(
+                &fail(),
+                "an incomplete case",
+                Some(baseline),
+                true
+            )),
+            failure
+        );
+        //  - and a baselined-PASS regression still reds.
+        assert_eq!(
+            fmt(exec_exit(&fail(), "a passing case", Some(baseline), true)),
+            failure
         );
     }
 

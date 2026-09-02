@@ -71,7 +71,13 @@ pub fn grade(
             .with_context(|| format!("writing verdict to {}", path.display()))?;
         return Ok(ExitCode::SUCCESS);
     }
-    Ok(exec_exit(&result, &test_run.description, baseline))
+    // RUST is MEMBERSHIP-ONLY: `.gate-baseline-rust` is a CURATED SUBSET (~8962 of ~10819 — rust stays
+    // incremental, no-value-heap), so a case ABSENT from it is intentionally not-covered-on-rust, NOT a
+    // gate-hole. `membership_only=true` exempts an absent-and-now-failing case from the #3984 red (grade
+    // IFF title ∈ baseline); a baselined `todo` that now fails STILL reds (it IS covered). This is what
+    // makes the coarse-rust gate viable — the unfiltered #3984 red on an absent miscompile (v-nix's C
+    // re-measure: the "oversize constant if-branch" case) is exactly the false-red this closes.
+    Ok(exec_exit(&result, &test_run.description, baseline, true))
 }
 
 /// Grade a decoded `test_run` against `module`, returning the [`GradeResult`] (no printing) — the testable
