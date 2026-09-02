@@ -1188,7 +1188,7 @@ pub(super) fn variant_is_recursive(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -
 
 /// Whether the solved type `ty` mentions the sum declaration `decl` anywhere (directly or nested) — a
 /// self-referential payload, which a Rust enum can't hold by value. Walks the compound structure.
-fn mentions_decl(ty: &crate::ty::Ty, decl: crate::ast::StructId) -> bool {
+pub(super) fn mentions_decl(ty: &crate::ty::Ty, decl: crate::ast::StructId) -> bool {
     use crate::ty::Ty;
     match ty {
         Ty::Sum { decl: d, args, .. } => *d == decl || args.iter().any(|a| mentions_decl(a, decl)),
