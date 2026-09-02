@@ -4542,6 +4542,11 @@
               # bare program ignoring the world and E0425s on the world-declared export = a dishonest FAIL vs the
               # todo baseline. Matches the coarse harvest's wiring; presence-only.
               if [ -e "$case/wit-world.ast" ]; then args+=(--wit-world "$case/wit-world.ast"); fi
+              # Cross-component PEER (#7835): a (peer …)-clause case shreds peer-*.ast → the rust backend DECLINES
+              # it → todo (standalone .rs, no component/peer boundary). Without this the gate compiles the bare
+              # program without the peer and TRAPS on the unwired peer host op = a dishonest FAIL vs the todo
+              # baseline. Matches the coarse harvest's --peer wiring; presence-only (first peer, path is a signal).
+              for p in "$case"/peer-*.ast; do if [ -e "$p" ]; then args+=(--peer "$p"); break; fi; done
               if [ -e "$work/emit.rs" ]; then args+=(--module "$work/emit.rs"); fi
               cdz-rust-run "''${args[@]}"
               n=$((n + 1))
@@ -6026,6 +6031,7 @@
         # the per-file cost + #3984 behavior are confirmed. NOT yet wired into localGate.
         packages.corpus-rust-gate-coarse-01-literals = mkCorpusRustGateFileCoarse { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; };
         packages.corpus-rust-gate-coarse-06-numeric-model = mkCorpusRustGateFileCoarse { name = "06-numeric-model"; file = ./spec/semantics/06-numeric-model.sexp; };
+        packages.corpus-rust-gate-coarse-29-cross-component-peers = mkCorpusRustGateFileCoarse { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; };
         # DIVERSE-SAMPLE per-file parity packages (v-corpus-harness acceptance step 2): distinct case shapes —
         # 05-compound-types (value-heavy #record/#tuple), 11-modules (multi-module → --entry main),
         # 25-verification (big, cross-module type-import), 26-program-conditions (traps/@invariant/diagnostics),
