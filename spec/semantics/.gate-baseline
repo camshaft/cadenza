@@ -3581,6 +3581,7 @@ pass	a mutual AST walker re-extracts a node's payload in a sibling operand while
 pass	a mutual group performing in an IF base-case branch and recursing in the other threads and runs
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine
+pass	a mutual-recursion cycle crossing a module boundary declines (not a compiler panic)
 pass	a mutual-recursion group with two concrete-different return widths is rejected (no silent unify)
 pass	a mutual-recursion group's bare-literal return adopts a sibling's concrete width (seq-40 piece 4, #6049)
 pass	a mutual-recursion pair where each side performs against its OWN handler (two nested frames)
