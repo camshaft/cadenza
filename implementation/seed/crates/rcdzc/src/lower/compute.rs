@@ -1594,7 +1594,24 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                 }
                                 core_of(g, reduced)
                             }
-                            Ok(None) => unreachable!("lambda_body implies a lambda head"),
+                            // `lambda_body(head)` was Some at the guard above, yet `apply_lambda`'s own
+                            // `lambda_of(head)` came back None — the two DISAGREE. The one shape that
+                            // triggers it (breaker's ICE, controls confirm): a MUTUAL-RECURSION cycle
+                            // CROSSING a module boundary (`lib.f` → root `g` → `lib.f`), where re-entering
+                            // the cycle through the module projection transiently loses the lambda head.
+                            // This is a recursion, so route it EXACTLY like the `Err(recursive)` arm below —
+                            // `lower_recursive_call_or_decline` emits a real `Core::Call` when the head names
+                            // a top-level def (a genuine mutual-recursive call, like a root-level cycle), else
+                            // a coded decline. NEVER panic — a compiler ICE here also crashed `cdz check`
+                            // (the editor/LSP loop) on one such edit; a real lowering or a coded reject both
+                            // beat the crash (decline-don't-crash). We synthesize the recursion-decline msg
+                            // the `is_recursive` path raises so the handler takes its recursion branch.
+                            Ok(None) => lower_recursive_call_or_decline(
+                                g,
+                                head,
+                                &args,
+                                "recursive function needs runtime specialization".to_string(),
+                            ),
                             // The reduction declined. If it declined because the callee is RECURSIVE
                             // (can't inline to a normal form), emit a real `Core::Call` to it instead —
                             // provided the callee is a top-level def whose signature is DETERMINED

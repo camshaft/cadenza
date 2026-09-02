@@ -3522,3 +3522,25 @@
   "a constructor-export whose head is an undeclared name names the not-a-declared-type category"
   (input (do (export Undeclared.A) (def (main) 1) (export main)))
   (error CDZ0201 (message "to be a sum type") (message "not a declared type")))
+
+; --- A mutual-recursion cycle CROSSING a module boundary must DECLINE, not ICE. ---
+(case
+  "a mutual-recursion cycle crossing a module boundary declines (not a compiler panic)"
+  (doc
+    "A module fn `lib.f` and a ROOT fn `g` form a mutual-recursion CYCLE through the module projection
+           (`lib.f` → `g` → `lib.f`). Re-entering the cycle via the module member transiently loses the lambda
+           head, which used to PANIC the compiler ('lambda_body implies a lambda head', an ICE that also
+           crashed `cdz check` / the editor loop; breaker). It now DECLINES with a coded reject
+           (decline-don't-crash): the cycle is a recursion the inliner can't reduce and the module member
+           can't (yet) emit a stable `Core::Call` for. IDEALISTIC (should-work, routed to v-module-system): a
+           cross-module mutual cycle SHOULD compile like a ROOT-level mutual cycle does (a real recursive
+           `Core::Call` once the module member resolves to its top-level def index) — this decline is the
+           coded-reject-for-now, flipping to a value when that resolution-side lowering lands. One-way
+           module→root refs and root-level mutual cycles already compile (breaker's green controls).")
+  (input
+    (do
+      (module lib (def (f (: k Int64)) (if (= k 0) 0 (g (- k 1)))) (export f))
+      (def (g (: k Int64)) (if (= k 0) 1 (lib.f (- k 1))))
+      (def (main (: n Int64)) (lib.f n))
+      (export main)))
+  (error CDZ0900 (message "recursive function needs runtime specialization")))
