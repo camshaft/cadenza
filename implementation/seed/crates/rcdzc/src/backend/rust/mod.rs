@@ -627,7 +627,11 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
             let ident = fn_ident(db, layout, def);
             let call = format!("{ident}()");
             if let Ok(body) = value_doc::emit_result_doc(db, &e.result, &call) {
-                out.push_str(&format!("// cdz-value-doc: {}\n", e.name));
+                // KEY the marker by the sanitized `ident` (== `rust_ident`), NOT the boundary `e.name` — the
+                // driver-gen reads its `// cdz-*` notes by `rust_ident` (a hyphenated `mk-b` export emits
+                // `__cdz_doc_mk_b`, and the driver calls `prog::__cdz_doc_mk_b()`), so the marker must carry
+                // the same key it will construct the fn name from.
+                out.push_str(&format!("// cdz-value-doc: {ident}\n"));
                 out.push_str(&format!(
                     "#[allow(dead_code)]\npub fn __cdz_doc_{ident}() -> String {{\n{body}}}\n"
                 ));
