@@ -3041,6 +3041,21 @@ fn build_arm_pat(
         .chain(lit_choices.keys())
         .any(|k| k.len() > path.len() && k.starts_with(path));
     if has_deeper {
+        // FOLDED-OUTER-VARIANT recovery: a `(match (Ctor …) …)` whose scrutinee is a KNOWN construction (the
+        // common construct-then-match idiom, inlined) has its outer-variant Switch FOLDED away by the
+        // optimizer, so `choices` has no entry at `[]` yet the scrutinee is a multi-variant sum with a deeper
+        // (payload) constraint. Recover the statically-known variant from the scrutinee's own
+        // `Core::SumNew { disc }` (only at the ROOT path — a deeper folded variant isn't a root construction).
+        // ctor_pat then crosses irrefutably into `disc`; exhaustiveness of the emitted match is handled by the
+        // synthesized covering arm in `emit_match_sum` (the folded siblings are unreachable → a value-safe `_`).
+        let folded_disc = if path.is_empty() {
+            match core_of(db, root_scrut) {
+                Core::SumNew { disc, .. } => Some(disc),
+                _ => None,
+            }
+        } else {
+            None
+        };
         match ty {
             // A SINGLE-VARIANT sum / newtype is irrefutable — its ctor crosses to the payload (no branch).
             Ty::Nominal { decl, .. } => {
@@ -3093,6 +3108,27 @@ fn build_arm_pat(
             Ty::Sum { decl, .. } if choices.get(path).and_then(|c| *c).is_some() => {
                 let decl = *decl;
                 let disc = choices.get(path).and_then(|c| *c).unwrap();
+                return ctor_pat(
+                    db,
+                    b,
+                    root_scrut,
+                    ty,
+                    decl,
+                    disc,
+                    path,
+                    read_path,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
+                );
+            }
+            // FOLDED outer variant (no `choices` entry, but the root scrutinee is a `Core::SumNew{disc}` —
+            // its variant is statically known): cross into `disc`. Exhaustiveness is completed by the covering
+            // arm synthesized in `emit_match_sum`.
+            Ty::Sum { decl, .. } if folded_disc.is_some() => {
+                let decl = *decl;
+                let disc = folded_disc.unwrap();
                 return ctor_pat(
                     db,
                     b,
@@ -3530,6 +3566,50 @@ fn emit_match_sum(
                 emitted,
                 &mut children,
             )?;
+            // FOLDED-OUTER-VARIANT exhaustiveness. This arm reaches a MULTI-variant `Ty::Sum` scrutinee only
+            // when the root switch is on a DEEPER slot (a root switch on the scrutinee's OWN discriminant took
+            // the `path.is_empty()` arm above) — i.e. the outer variant was statically known and FOLDED away,
+            // so `emit_switch_tree` reconstructed leaves for just that ONE variant (via the `build_arm_pat`
+            // folded-recovery). The emitted match then covers only the known variant → NON-exhaustive over the
+            // sum type (CDZ0210). Append a value-safe covering `(_ <zero>)`: the scrutinee IS the known variant,
+            // so the wildcard (catching the folded-away siblings) is UNREACHABLE → never executes → value-eq
+            // preserved, and the match is now exhaustive. Gated to a SCALAR result (`expected`): a heap-result
+            // dummy is a later slice, so a non-scalar / unknown result DECLINES (safe — the case stays a `todo`,
+            // no regression, rather than emit an ill-typed arm). (A Tuple/Record `root_ty` — the non-folded
+            // variant-at-slot cases — is exhaustive by leaf-enumeration and skips this.)
+            if let Ty::Sum { decl, .. } = &root_ty
+                && db
+                    .type_decl_by_occ(*decl)
+                    .is_some_and(|t| t.variants.len() > 1)
+            {
+                let dummy = match &expected {
+                    Some(Ty::Int(it)) => {
+                        let it = *it;
+                        let zero = b.atom_leaf(Leaf::Int {
+                            value: crate::ast::IntValue::from_i64(0),
+                            radix: Radix::Dec,
+                        });
+                        // Ascribe to the exact int type (`(: 0 <IntType>)`) so a non-default width does not
+                        // re-ground to Int64 on recompile (mirrors the Core::ConstInt narrow-int emit).
+                        let colon = b.name(":");
+                        let ty_node = int_module_ast(b, it);
+                        b.list(vec![colon, zero, ty_node])
+                    }
+                    Some(Ty::Bool) => b.atom_leaf(Leaf::Bool(false)),
+                    _ => {
+                        // A Float / heap / unknown result dummy is a later slice (Float needs a representable
+                        // Decimal; a heap result needs a valid handle). Decline safely — the case stays a
+                        // `todo`, no regression.
+                        return Err(Reject::decline(
+                            "the Cadenza backend cannot synthesize a covering arm for a folded multi-variant \
+                             match with a non-Int/Bool result type"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let pat = b.name("_");
+                children.push(b.list(vec![pat, dummy]));
+            }
             return Ok(b.list(children));
         }
         _ => {
