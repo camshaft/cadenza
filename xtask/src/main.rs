@@ -2863,7 +2863,21 @@ fn run_program_rust(
     let diverging = ret_ty.as_deref().is_some_and(|t| {
         t == "Any" || t == "!" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
     });
-    let body = if diverging {
+    // FLAG-GATED value-doc path (`CDZ_VALUE_DOC`, default-OFF): when rcdzc emitted a self-contained
+    // `pub fn __cdz_doc_<export>() -> String` for this nullary export (marked `// cdz-value-doc: <export>`),
+    // the driver just prints that fn's `CDZDOC:<hex>` result — the Ty-direct render replacing the type-note
+    // `cdz_render_expr` string walk. The grader's stdout read decodes the marker. Marker absent (flag off, or
+    // an arg-taking/factory/consumer export the marker is never emitted for) => the ordinary render below
+    // (byte-identical). Keyed by `export` (== rust_ident), matching the module's `// cdz-*` note keys.
+    let value_doc = !is_factory
+        && !is_consumer
+        && std::env::var("CDZ_VALUE_DOC").is_ok()
+        && module
+            .lines()
+            .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
+    let body = if value_doc {
+        format!("fn main() {{ println!(\"{{}}\", prog::__cdz_doc_{export}()); }}\n")
+    } else if diverging {
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref().map(|ty| {
@@ -3082,14 +3096,45 @@ fn run_program_rust(
         // The rust-backend path does not capture rcdzc compile warnings today (its emit path differs);
         // `(warns …)` cases are graded on the wasm path. Empty warnings here (a later increment can wire
         // the rust emit's compile stderr if warning-parity across backends is wanted).
-        Ran::Value(
-            String::from_utf8_lossy(&run.stdout).trim().to_string(),
-            observed,
-            Vec::new(),
-        )
+        let raw = String::from_utf8_lossy(&run.stdout).trim().to_string();
+        // VALUE-DOC decode: a value-doc driver (CDZ_VALUE_DOC) prints a `CDZDOC:<hex>` marker (the
+        // self-describing `(: value type)` binary-AST codec doc). Render it through the canonical printer
+        // (`render_binary`, Sexpr/Expr) — the SAME path cdz-run + the corpus grader use — so the graded value
+        // is the canonical surface, not the raw hex. A non-marker stdout (the ordinary render, or flag off)
+        // passes through unchanged; a corrupt marker → a `BadArtifact` (never a silent mis-render).
+        let value = match raw.strip_prefix("CDZDOC:") {
+            Some(hex) => match decode_value_doc(hex) {
+                Ok(rendered) => rendered,
+                Err(e) => return Ran::BadArtifact(format!("value-doc decode: {e}")),
+            },
+            None => raw,
+        };
+        Ran::Value(value, observed, Vec::new())
     } else {
         Ran::Trap(rust_panic_message(&run.stderr))
     }
+}
+
+/// Decode a `CDZDOC:` marker payload (lowercase hex of the binary-AST `(: value type)` doc) to its canonical
+/// s-expr surface via `render_binary` — the shared printer cdz-run/the corpus grader use, so the rendered
+/// value is byte-identical across the wasm + rust gates. Errors on malformed hex/AST (→ a `BadArtifact`).
+fn decode_value_doc(hex: &str) -> Result<String, String> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("marker hex has odd length {}", hex.len()));
+    }
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("non-hex digit in marker: {e}"))?;
+    cadenza_syntax::convert::render_binary(
+        &bytes,
+        cadenza_syntax::convert::Format::Sexpr,
+        cadenza_syntax::convert::FragmentKind::Expr,
+        cadenza_syntax::convert::Options::default(),
+    )
+    .map_err(|e| format!("{e}"))
 }
 
 /// The trap REASON from a Rust process's panic stderr. Rust formats a panic as

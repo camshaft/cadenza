@@ -30,6 +30,11 @@ cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
 # `libcadenza_ast.rlib` to rustc via `--extern cadenza_ast=…` when an emitted program uses the native R2
 # value codec, so xtask must dep it to guarantee the rlib is built alongside.
 cadenza-ast = { path = "../implementation/seed/crates/cadenza-ast" }
+# The canonical binary-AST → surface printer (`convert::render_binary`) — used by the value-doc gate path to
+# decode a `CDZDOC:<hex>` driver stdout to its `(: value type)` s-expr, the SAME printer cdz-run + the corpus
+# grader use (so the rust + wasm gates render byte-identically). ALREADY in xtask's closure (via
+# `cdz-corpus-grade` → `cadenza-syntax`), so this direct dep adds nothing to the nix crate-closure.
+cadenza-syntax = { path = "../implementation/seed/crates/cadenza-syntax" }
 # The shared xtask foundation lib (v-xtask-decompose): content_address + hash_tree (build-cache
 # fingerprint) live here now; it owns sha2 + cdz-contract (xtask reaches them through this, so xtask no
 # longer deps cdz-contract directly). Per-command crates share it too.
