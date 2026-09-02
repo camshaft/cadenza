@@ -432,7 +432,8 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.16 — **Mat** (`match`): `(match scrut (pat body)…)` over a built-in sum — infer the scrutinee to a
   concrete sum, classify each arm's pattern (variant + payload binder, or catch-all) via
   `matchPatClassify?`, bind payloads, and unify all arm bodies to one result type. Non-sum scrutinee /
-  unmodeled pattern / non-exhaustive arms → `Unsupported`; arm-body type clash → `CDZ0203`.
+  unmodeled pattern → `Unsupported`; arm-body type clash → `CDZ0203`; a modeled match omitting a variant
+  with no catch-all → `CDZ0210` NonExhaustive (T1.17).
 Any other construct → `Unsupported` until its rule lands. -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -757,9 +758,11 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
             -- CONCRETE sum type; each arm's pattern selects a variant (binding its payload via
             -- `matchPatClassify?`) or is a catch-all; all arm bodies unify to one result type. NARROW +
             -- SOUND: a non-sum scrutinee, any unmodeled pattern, or a non-exhaustive arm set → `Unsupported`
-            -- (declined), never a false reject. The only asserted rejects are a propagated scrutinee fault
-            -- and an arm-body TYPE CLASH (`CDZ0203` via `unifyInfer`). Exhaustive-reject `CDZ0210` is a
-            -- deliberate later increment: here a non-exhaustive match DECLINES rather than asserting it.
+            -- (declined), never a false reject. Asserted rejects: a propagated scrutinee fault, an arm-body
+            -- TYPE CLASH (`CDZ0203` via `unifyInfer`), and — T1.17 — a MODELED match that omits a variant
+            -- with no catch-all → `CDZ0210` NonExhaustive (rcdzc rejects a non-exhaustive sum match, spec
+            -- "#A Match Is Exhaustive Against The Sum Type's Variant Set"; a genuinely non-exhaustive sum
+            -- match is never accepted, so this can only agree/holds — never a false accept).
             match children[1]? with
             | none => .error (.unsupported "type oracle: malformed match (no scrutinee)")
             | some scrutId =>
@@ -798,7 +801,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                         | some τr =>
                           let exhaustive := catchAll || (vs.map (·.1)).all (fun vn => covered.any (· == vn))
                           if exhaustive then .ok (τr, stF)
-                          else .error (.unsupported "type oracle: non-exhaustive match — declined (CDZ0210 reject is a later increment)")))
+                          else .error (.illTyped "CDZ0210")))    -- T1.17: a modeled match missing a variant (no catch-all) is NonExhaustive
                   | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
           else
             -- T1.12 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env to a
@@ -1300,15 +1303,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 3, .list #[13, 2, 7, 12], .atom 2, .list #[15], .atom 1, .list #[17, 16, 14],
                            .atom 10, .atom 2, .list #[19, 20], .atom 0, .list #[22, 18, 21]],
                 root := 23 } == .wellTyped (.int 64 true))
--- T1.16 (Mat): NON-exhaustive `(match (Some 5) ((Some x) x))` (None uncovered, no catch-all) → Unsupported
--- (declined; asserting the CDZ0210 reject is a deliberate later increment, never a false claim here).
-#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "match".toUTF8,
-                                  .name "Some".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "x".toUTF8,
-                                  .name "export".toUTF8],
-                      nodes := #[.atom 4, .atom 5, .list #[0, 1], .atom 4, .atom 6, .list #[3, 4], .atom 6,
-                                 .list #[5, 6], .atom 3, .list #[8, 2, 7], .atom 2, .list #[10], .atom 1,
-                                 .list #[12, 11, 9], .atom 7, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
-                      root := 18 } with | .unsupported _ => true | _ => false)
+-- T1.17 (Mat exhaustiveness): NON-exhaustive `(match (Some 5) ((Some x) x))` (None uncovered, no
+-- catch-all) → IllTyped CDZ0210 (rcdzc rejects a non-exhaustive sum match; a genuinely non-exhaustive
+-- match is never accepted, so this only ever agrees — never a false accept).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "match".toUTF8,
+                            .name "Some".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "x".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .list #[0, 1], .atom 4, .atom 6, .list #[3, 4], .atom 6,
+                           .list #[5, 6], .atom 3, .list #[8, 2, 7], .atom 2, .list #[10], .atom 1,
+                           .list #[12, 11, 9], .atom 7, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
+                root := 18 } == .illTyped "CDZ0210")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
