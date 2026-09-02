@@ -861,18 +861,40 @@ fn gen_typefuzz_value<C: Choice>(
             let want_bool = c.variant(2) == 0;
             gen_typefuzz_list(c, iscope, bscope, fresh, want_bool)
         }
-        // `(List.push <list> <elem>)` — total List op returning `List α` (T1.30). The pushed element's
-        // type unifies with the list's element type, so a homogeneous list + a same-typed element → a
-        // well-typed `List α` value. Both rcdzc + oracle judge → agreement.
+        // A `List α`-producing total List op (T1.30 push / T1.31 prepend·concat·update). Each returns
+        // `List α`: `push`/`prepend` append/prepend a same-typed element; `concat` joins two same-element
+        // lists; `update` replaces an IN-RANGE index (a list is always ≥2 elems here so index 0/1 is in
+        // range — an out-of-range constant is a value-level CDZ0304 the oracle SKIPs, avoided). Both rcdzc
+        // + oracle infer `List α` → agreement.
         6 => {
             let want_bool = c.variant(2) == 0;
             let xs = gen_typefuzz_list(c, iscope, bscope, fresh, want_bool);
-            let x = if want_bool {
-                gen_typefuzz_bool(c, 1, iscope, bscope, fresh)
-            } else {
-                gen_typefuzz_int(c, 1, iscope, bscope, fresh)
+            let elem = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
+                if want_bool {
+                    gen_typefuzz_bool(c, 1, is, bs, f)
+                } else {
+                    gen_typefuzz_int(c, 1, is, bs, f)
+                }
             };
-            format!("(List.push {xs} {x})")
+            match c.variant(4) {
+                0 => {
+                    let x = elem(c, iscope, bscope, fresh);
+                    format!("(List.push {xs} {x})")
+                }
+                1 => {
+                    let x = elem(c, iscope, bscope, fresh);
+                    format!("(List.prepend {xs} {x})")
+                }
+                2 => {
+                    let ys = gen_typefuzz_list(c, iscope, bscope, fresh, want_bool);
+                    format!("(List.concat {xs} {ys})")
+                }
+                _ => {
+                    let idx = c.int_bounded(0, 1); // always in range (list is ≥2 elements)
+                    let x = elem(c, iscope, bscope, fresh);
+                    format!("(List.update {xs} {idx} {x})")
+                }
+            }
         }
         // A LET-POLYMORPHIC identity used at BOTH Int64 and Bool → tuple[Int64,Bool] (HM let-
         // generalization, T1.18): the let-bound `id` is GENERALIZED, so its two uses instantiate at
