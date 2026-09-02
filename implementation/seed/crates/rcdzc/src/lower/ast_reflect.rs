@@ -759,22 +759,49 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 // QUALIFIED `W.Mk` then rides on `W`'s visibility (member projection); a bare `Mk` follows
                 // that ctor name's own provenance via `variant_ctor_index` (registered above per variant).
                 if db.parent_of(id) == Some(db.ast.root) {
-                    let name_node = db
-                        .ast
-                        .as_form(id, "type")
-                        .and_then(|tail| tail.first().copied())
-                        .map(|head| match db.ast.get(head) {
-                            // `(type (NAME p…) …)` — the parenthesized head's first child is the name;
-                            // `(type NAME …)` — the bare atom IS the name.
-                            crate::ast::Struct::List(items) => {
-                                items.first().copied().unwrap_or(head)
-                            }
-                            _ => head,
-                        });
-                    if let Some(nn) = name_node
-                        && caller_origin.contains(&nn.0)
-                    {
-                        db.register_spliced_type_decl(id, id, &caller_origin);
+                    // The `(type …)` forms this splice introduces at ROOT statement position: `id` itself if
+                    // it is a type decl, OR each `(type …)` CHILD of a spliced wrapping `(do …)` — the
+                    // multi-def splice-flatten (#7749) generalized from defs to TYPES (breaker's #7749∩#7757
+                    // compositional edge: `(quasiquote (do (type …) (def …)))` flattened the def but not the
+                    // type). Register each here, before the round's `rebuild_parent_index` (synth appends
+                    // nodes). A def inside the wrapping do is registered END-of-round by the `def_forms`
+                    // descend below; a type must register HERE for the parent/scope ordering. `id` (the
+                    // splice site) carries the file for the file-scope registration.
+                    let type_forms: Vec<StructId> = if db.ast.as_form(id, "type").is_some() {
+                        vec![id]
+                    } else if let Some(items) = db.ast.as_form(id, "do") {
+                        items
+                            .iter()
+                            .copied()
+                            .filter(|&c| db.ast.as_form(c, "type").is_some())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    for tnode in type_forms {
+                        let name_node = db
+                            .ast
+                            .as_form(tnode, "type")
+                            .and_then(|tail| tail.first().copied())
+                            .map(|head| match db.ast.get(head) {
+                                // `(type (NAME p…) …)` — the parenthesized head's first child is the name;
+                                // `(type NAME …)` — the bare atom IS the name.
+                                crate::ast::Struct::List(items) => {
+                                    items.first().copied().unwrap_or(head)
+                                }
+                                _ => head,
+                            });
+                        // CALLER-ORIGIN gate on the TYPE NAME (a caller-spliced type binds visibly; a
+                        // macro-template-internal one stays hygienic-local). Qualified `T.V` then rides on
+                        // the type; a bare ctor follows its own name's provenance (in `register_spliced_type_decl`).
+                        if let Some(nn) = name_node
+                            && caller_origin.contains(&nn.0)
+                        {
+                            // `at` = the splice-site `id` (real-file, carries the file for file-scope);
+                            // `item` = the `(type …)` form to scan (`tnode`, which == `id` for a direct
+                            // splice, or the child for a wrapping-do splice).
+                            db.register_spliced_type_decl(id, tnode, &caller_origin);
+                        }
                     }
                 }
                 last_expanded = Some(id);

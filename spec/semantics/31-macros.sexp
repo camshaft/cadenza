@@ -278,6 +278,51 @@
   (output (: 5 Int64)))
 
 (case
+  "one macro splices a TYPE and a fn over it via a wrapping (do …) — the type splice-flattens alongside the def"
+  (doc
+    "The intersection of the multi-def splice-flatten (a statement-position wrapping `(do …)` flattens its
+           child bindings) and macro-spliced type registration: a SINGLE macro emitting BOTH a `(type …)` and
+           a `(def …)` over it through one wrapping `do` must register the TYPE too, not only the def. `(def
+           (mktf (quote tn) (quote fn)) (quasiquote (do (type (unquote tn) (Mk Int64)) (def ((unquote fn) (:
+           v Int64)) ((. (unquote tn) Mk) v)) 0)))` — `(mktf T mk)` splices `(type T (Mk Int64))` + `(def (mk
+           v) (T.Mk v))`; both the caller-spliced type `T` (so the def body's `T.Mk` resolves) and the fn
+           `mk` bind, so `(match (mk 5) ((T.Mk x) x))` → `5`. Pins that a spliced statement-position `do`
+           flattens TYPE children as well as def children (each per its own caller-origin provenance) — the
+           def alone flattened before this, leaving `T` CDZ0101 unbound.")
+  (input
+    (do
+      (def
+        (mktf (quote tn) (quote fn))
+        (quasiquote
+          (do
+            (type (unquote tn) (Mk Int64))
+            (def ((unquote fn) (: v Int64)) ((. (unquote tn) Mk) v))
+            0)))
+      (mktf T mk)
+      (def (main) (match (mk 5) ((T.Mk x) x)))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))
+
+(case
+  "a macro-internal type in a wrapping (do …) splice stays hygienic-local"
+  (doc
+    "The hygiene half of the compositional case: when the wrapping-do's `(type Hid …)` has a
+           MACRO-TEMPLATE-literal name (not caller-spliced), the type stays hygienic-local — a caller
+           reference `Hid` / `Hid.Mk` is CDZ0101 unbound, even though a caller-spliced def in the same
+           wrapping do would flatten visibly. Confirms the type-child flatten is GATED on the type name's
+           own caller-origin provenance, exactly like the def-child and the direct-type cases.")
+  (input
+    (do
+      (def
+        (mktf (quote fn))
+        (quasiquote (do (type Hid (Mk Int64)) (def ((unquote fn) (: v Int64)) (Hid.Mk v)) 0)))
+      (mktf mk)
+      (def (main) (match (Hid.Mk 5) ((Hid.Mk x) x)))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
