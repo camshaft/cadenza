@@ -1738,9 +1738,20 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     // `heap_operand_ownership` because `StrAt` is deliberately NOT globally-Owned (to avoid perturbing the
     // MatchSum Stage-B path — see the heap_operand_ownership note); being a StrAt/BytesSlice node is itself
     // the owned-single-view proof, and the SumExpect `reclaim_shell` treats it as owned LOCALLY via the set.
+    // `List.at` (Core::ListAt) also returns a fresh `Some(one element)` — single-heap-payload by
+    // construction (the Some wraps exactly one payload), Owned like the other views. Admitting it lets the
+    // proven view_reclaim path (fires even under arms_tail_call, threads the shell drop into
+    // emit_loop_iteration's back-edge) reclaim a per-iteration `(List.at xs i)` Option shell in a self-loop
+    // scan — the it4 loop-frame temp-scrutinee leak (v-memory-safety co-design). SOUND by the SAME fence the
+    // String.at path relies on: `matchsum_view_shell_reclaim_ok` admits it ONLY when
+    // `collect_consuming_payload_sites_cont(root, scrutinee).is_empty()` (the element is purely borrowed —
+    // it4 get-int-copies the scalar, never consumes/escapes it) AND `sum_shell_reclaim_payload_ok` (whose
+    // inc2b clause already names the List.at/Map.lookup/Bytes.slice extraction family). A consumed/escaped
+    // element → non-empty sites → declined (leak-safe). (BytesAt/StrSlice/MapLookup widen here later under a
+    // corpus-wide guarded-all; ListAt is the it4 case.)
     matches!(
         core_of(db, scrutinee),
-        Core::StrAt { .. } | Core::BytesSlice { .. }
+        Core::StrAt { .. } | Core::BytesSlice { .. } | Core::ListAt { .. }
     )
 }
 
