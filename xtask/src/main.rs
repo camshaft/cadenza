@@ -3000,11 +3000,12 @@ fn run_program_rust(
     } else {
         match ret_ty.as_deref().map(|ty| {
             // HOST-CLOSURE FACTORY String/Bytes RESULT: a String/Bytes crossing the host boundary AS A
-            // CLOSURE RESULT is serialized as `list<u8>` — the corpus renders it as the bare byte-int list
-            // `(104 105)` (`()` when empty), NOT the quoted `"hi"` / `b"…"` form a PLAIN String/Bytes export
-            // uses. (The wasm `call` method copies the String/Bytes handle into linear memory + returns it as
-            // list<u8>; the rust target mirrors the observable form.) So for a FACTORY result of String/Bytes,
-            // render the byte list directly; every other type (and a plain export) keeps `cdz_render_expr`.
+            // CLOSURE RESULT is serialized as `list<u8>` — the corpus renders it as the canonical byte-int
+            // list `#list(104 105)` (`#list()` when empty), NOT the quoted `"hi"` / `b"…"` form a PLAIN
+            // String/Bytes export uses. (The wasm `call` method copies the String/Bytes handle into linear
+            // memory + returns it as list<u8>; the rust target mirrors the observable form.) So for a FACTORY
+            // result of String/Bytes, render the byte list directly; every other type (and a plain export)
+            // keeps `cdz_render_expr`.
             if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
                 cdz_render_bytes_list(ty)
             } else if is_factory && factory_result_is_value_form_sum(ty, &sums) {
@@ -3343,10 +3344,12 @@ fn peel_arrow_result(ty: &str) -> String {
 }
 
 /// The render EXPRESSION for a host-closure factory's String/Bytes RESULT — the `list<u8>` byte form the
-/// corpus expects (`(104 105)` for "hi", `()` empty), NOT the quoted `"hi"`/`b"…"` a plain export uses. The
-/// String path iterates its UTF-8 bytes (`.bytes()`); the Bytes path iterates the `Vec<u8>` (`.iter()`).
-/// Emits `(b0 b1 …)` — space-separated byte ints in one paren group, no trailing space (a leading space per
-/// byte, so the empty value yields `()`).
+/// corpus expects (`#list(104 105)` for "hi", `#list()` empty), NOT the quoted `"hi"`/`b"…"` a plain export
+/// uses. The String path iterates its UTF-8 bytes (`.bytes()`); the Bytes path iterates the `Vec<u8>`
+/// (`.iter()`). Emits the CANONICAL `#list(b0 b1 …)` compound — space-separated byte ints, no trailing space
+/// (a leading space per byte, so the empty value yields `#list()`), matching cdz-run's `render_val` + the
+/// wasm boundary (the `#ctor`-everywhere corpus rollout; the bare `(b0 b1 …)` form this once emitted regressed
+/// every `list<u8>` closure-result case).
 fn cdz_render_bytes_list(ty: &str) -> String {
     // `__r` is the closure's applied result: a `String` (String result) or `Vec<u8>` (Bytes result).
     let iter = if ty == "String" {
@@ -3355,7 +3358,7 @@ fn cdz_render_bytes_list(ty: &str) -> String {
         "(__r).iter().copied()"
     };
     format!(
-        "{{ let mut __s = String::from(\"(\"); let mut __first = true; for __b in {iter} {{ \
+        "{{ let mut __s = String::from(\"#list(\"); let mut __first = true; for __b in {iter} {{ \
          if !__first {{ __s.push(' '); }} __first = false; __s.push_str(&__b.to_string()); }} \
          __s.push(')'); __s }}"
     )
@@ -8582,13 +8585,14 @@ mod trap_grading_tests {
     #[test]
     fn cdz_render_bytes_list_emits_a_byte_int_list_render() {
         // A factory String result iterates its UTF-8 bytes; a Bytes result iterates the Vec<u8>. Both build
-        // the `(b0 b1 …)` list<u8> form (a leading space per byte after the first → `()` when empty).
+        // the CANONICAL `#list(b0 b1 …)` list<u8> form (a leading space per byte after the first → `#list()`
+        // when empty), matching the `#ctor`-everywhere corpus + the wasm boundary render.
         let s = cdz_render_bytes_list("String");
         assert!(
             s.contains("(__r).bytes()")
-                && s.contains("String::from(\"(\"")
+                && s.contains("String::from(\"#list(\"")
                 && s.contains("push(')')"),
-            "String render iterates .bytes() into a paren byte list: {s}"
+            "String render iterates .bytes() into a #list byte list: {s}"
         );
         let b = cdz_render_bytes_list("Bytes");
         assert!(
