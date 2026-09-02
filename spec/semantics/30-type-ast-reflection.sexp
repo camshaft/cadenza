@@ -396,3 +396,16 @@
            broad `typeval_of`-grounds-so-skip exemption did — regression guard).")
   (input (do (def (g x) x) (def (main) (Type.ast (Type.of (g 1 2 3)))) (export main)))
   (error CDZ0203 (message "function of arity 1")))
+
+(case
+  "Type.ast of a non-type value (an effect name) is a CODED rejection, not a codeless decline"
+  (doc
+    "`Type.ast` reflects a TYPE, so an argument that does not denote a type-value — an EFFECT name, a
+           plain value, any non-type expression — is a genuine SEMANTIC reject, not a not-yet-compiled
+           decline (a well-formed type reduces to a type-value; a not-yet-supported arrow/cont SURFACE is a
+           separate decline over a type that DOES reduce). Per seq-286 (every reject coded), the guard emits
+           a CODED CDZ0203 — `(Type.ast E)` for an effect `E` rejects with a machine-readable code, not the
+           earlier codeless `error:` text — matching the sibling unresolved-type-variable reject and making
+           it fenceable.")
+  (input (do (effect E (op bail (-> Int64))) (def (main) (Type.ast E)) (export main)))
+  (error CDZ0203 (message "requires a concrete type-value")))

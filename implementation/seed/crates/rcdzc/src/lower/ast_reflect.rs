@@ -1561,9 +1561,20 @@ pub(super) fn reflect_module_value(db: &mut Db, file_index: usize) -> Core {
 /// is not a concrete nominal/sum, the built-in `Ast` sum is unavailable, or no snapshot / decl node is found.
 pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> Core {
     let Some(ty) = crate::eval::typeval_of(db, arg) else {
-        return Core::Poison(Reject::decline(
-            "Type.ast requires a concrete type-value (a Type.of result or a written type)",
-        ));
+        // The argument does not reduce to a TYPE-VALUE at all — an effect name, a plain value, or any
+        // non-type expression in `Type.ast`'s (type-)argument position. That is a genuine SEMANTIC reject,
+        // not a not-yet-compiled decline (a well-formed type reduces to `Some`; a not-yet-supported
+        // arrow/cont surface reaches the `_` arm below with `Some(ty)`), so it is CODED (CDZ0203, the
+        // type-mismatch family — same as the unresolved-type-variable reject below), per seq-286 (every
+        // reject coded) — which also makes it fenceable and removes the codeless cascade a future
+        // `reduce_sum_ctor` arity fix would otherwise trip (breaker seq-286; v-inference follow-up).
+        return Core::Poison(
+            Reject::coded(
+                Code::TypeMismatch,
+                "Type.ast requires a concrete type-value (a Type.of result or a written type)",
+            )
+            .at(arg),
+        );
     };
     let (decl, ty_args) = match &ty {
         crate::ty::Ty::Sum { decl, args } | crate::ty::Ty::Nominal { decl, args, .. } => {
