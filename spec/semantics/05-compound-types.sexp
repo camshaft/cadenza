@@ -4956,8 +4956,7 @@
     (do
       (def
         (main (: n Int64))
-        (let ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20)))
-          (Map.len (Map.merge m m))))
+        (let ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20))) (Map.len (Map.merge m m))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
@@ -4977,7 +4976,8 @@
     (do
       (def
         (main (: n Int64))
-        (let ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20)))
+        (let
+          ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20)))
           (match (Map.lookup (Map.merge m m) n) ((Some v) v) ((None u) -1))))
       (export main)))
   (call main (: 5 Int64))
@@ -14073,6 +14073,54 @@
   ; const-map escapes above that live in static data) — its own cells are alive at the boundary:
   ; 8 = the 5-entry CHAMP map + entry shells, the gate's authoritative measurement.
   (live-objects 8))
+
+; ── breaker bank: the SET face of the float-special-value pins (fzk1-fzk5 above pin the map-KEY
+; face). Set elements compare/order by the same canonical-form machinery as map keys; these pin the
+; three faces at the element position.
+(case
+  "szk1 the float SPECIAL-ELEMENT set escapes in the canonical raw-bits element order on every backend"
+  (doc
+    "Set.of over the five float special classes — NaN, -0.0, 0.0, 1.5, -inf (non-finites computed at
+           run time; no literal form, seq-32) — escapes as the canonical `#set(0.0 1.5 nan -0.0 -inf)`:
+           ONE element order, the raw-bits total order (sign bit last), matching the fzk5 map-key face and
+           verified identical on wasm, the cadenza hop, and rust. Insertion order deliberately scrambled.")
+  (input
+    (do
+      (def (z (: k Int64)) (if (> k 0) (z (- k 1)) 0))
+      (def (zf (: n Int64)) (Float64.of-int (z n)))
+      (def
+        (main (: n Int64))
+        (Set.of #list((/ (zf n) (zf n)) (Float64.neg (zf n)) (zf n) 1.5 (/ -1.0 (zf n)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: #set(0.0 1.5 nan -0.0 -inf) (Set Float64)))
+  ; the escaping value is RUNTIME-BUILT (opaque operands) — its own cells are alive at the boundary:
+  ; 8 = the 5-element set + shells, the gate's-instrument measurement.
+  (live-objects 8))
+
+(case
+  "szk2 three runtime NaN elements collapse to a ONE-element set (canonical NaN self-equality)"
+  (doc
+    "Set membership uses the canonical-byte-form equality, under which every NaN is ONE value (06
+           pins `= _ nan` true only for NaN) — so `Set.of` over three runtime-computed NaNs yields a
+           single-element set. An IEEE-==-membership set would keep all three (NaN never equal). MUST
+           be 1.")
+  (input
+    (do
+      (def (z (: k Int64)) (if (> k 0) (z (- k 1)) 0))
+      (def (nan (: n Int64)) (/ (Float64.of-int (z n)) (Float64.of-int (z n))))
+      (def (main (: n Int64)) (Set.len (Set.of #list((nan n) (nan n) (nan n)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case
+  "szk3 negative zero and positive zero are DISTINCT set elements (canonical-form membership)"
+  (doc
+    "The set-element face of the zero-sign distinctness (fzk1 pins the map-KEY face): canonical-form
+           equality distinguishes -0.0 from 0.0, so the two-element literal keeps BOTH. MUST be 2.")
+  (input (Set.len #set((Float64.neg 0.0) 0.0)))
+  (output (: 2 Int64)))
 
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
 ; "a map's keys are values of one key type; a record's field names are fixed compile-time labels." So in
