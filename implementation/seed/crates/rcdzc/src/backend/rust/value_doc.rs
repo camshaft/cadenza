@@ -21,12 +21,13 @@
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
-//! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap) and
-//! a bare-head SUM (Option / Result / a user sum) — nullary, single-payload, AND multi-field (flattened by
-//! declared arity). Qty, a COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes
-//! (qualified-head, recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An
-//! uncovered shape DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so
-//! partial coverage is safe.
+//! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap), a
+//! QTY over a POSITIVE-exponent unit (`(Qty.of <mag> <unit>)`), and a bare-head SUM (Option / Result / a user
+//! sum) — nullary, single-payload, AND multi-field (flattened by declared arity). A DERIVED (negative-exponent)
+//! unit Qty, a COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes (qualified-head,
+//! recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
+//! DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage
+//! is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -67,6 +68,71 @@ fn fresh(ctr: &mut usize) -> String {
     format!("__n{n}")
 }
 
+/// Emit `let`-bindings building the UNIT sub-AST for a `Qty`'s unit — the SAME shape `lower::unit_value_ast`
+/// bakes and `Unit::render`/`render_value_form` print, so the rendered `(Qty.of …)` / `(Qty …)` matches the
+/// wasm gate. Forms: `Unit.one` (dimensionless); `(Unit.base #"name")` (a base at power 1); `(Unit.^ base k)`
+/// (a base at power k); a left-nested `(Unit.* a b)` PRODUCT of several factors. Heads are bare `Name`s
+/// (printed verbatim → sugared). A DERIVED unit (any NEGATIVE exponent) renders as a `(Unit./ num den)`
+/// quotient in the VALUE form but `(Unit.^ base -k)` in the TYPE form — the two diverge, so a negative
+/// exponent DECLINES here (a follow-up). Positive-only units render identically in both positions, so one
+/// builder serves the `(Qty.of …)` value and the `(Qty …)` type.
+fn doc_unit_node(
+    unit: &crate::ty::Unit,
+    out: &mut String,
+    ctr: &mut usize,
+) -> Result<String, Reject> {
+    let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
+    if entries.iter().any(|(_, e)| *e < 0) {
+        return Err(Reject::decline(
+            "value-doc: Qty with a derived (negative-exponent) unit not covered — falls back to cdz_render_at",
+        ));
+    }
+    if entries.is_empty() {
+        let v = fresh(ctr);
+        out.push_str(&format!("    let {v} = __b.name(\"Unit.one\");\n"));
+        return Ok(v);
+    }
+    // One base factor at a positive exponent: `(Unit.base #"name")`, or `(Unit.^ (Unit.base #"name") k)`.
+    let factor = |name: &str, exp: i64, out: &mut String, ctr: &mut usize| -> String {
+        let bh = fresh(ctr);
+        out.push_str(&format!("    let {bh} = __b.name(\"Unit.base\");\n"));
+        let sy = fresh(ctr);
+        out.push_str(&format!(
+            "    let {sy} = __b.atom_leaf(cadenza_ast::ast::Leaf::Sym({name:?}.into()));\n"
+        ));
+        let base = fresh(ctr);
+        out.push_str(&format!("    let {base} = __b.list(vec![{bh}, {sy}]);\n"));
+        if exp == 1 {
+            base
+        } else {
+            let ph = fresh(ctr);
+            out.push_str(&format!("    let {ph} = __b.name(\"Unit.^\");\n"));
+            let n = fresh(ctr);
+            out.push_str(&format!(
+                "    let {n} = __b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: cadenza_ast::ast::IntValue::from_i64({exp}), radix: cadenza_ast::ast::Radix::Dec }});\n"
+            ));
+            let f = fresh(ctr);
+            out.push_str(&format!(
+                "    let {f} = __b.list(vec![{ph}, {base}, {n}]);\n"
+            ));
+            f
+        }
+    };
+    // Left-nested product `(Unit.* (Unit.* f0 f1) f2)…` (a single factor is itself).
+    let mut acc = factor(&entries[0].0, entries[0].1, out, ctr);
+    for (name, exp) in &entries[1..] {
+        let f = factor(name, *exp, out, ctr);
+        let mh = fresh(ctr);
+        out.push_str(&format!("    let {mh} = __b.name(\"Unit.*\");\n"));
+        let m = fresh(ctr);
+        out.push_str(&format!(
+            "    let {m} = __b.list(vec![{mh}, {acc}, {f}]);\n"
+        ));
+        acc = m;
+    }
+    Ok(acc)
+}
+
 /// Emit `let`-bindings (into `out`) building the VALUE node for `val_expr` (of Cadenza type `ty`); return
 /// the final node's Rust variable. Field access is by-value (`(expr).i`) — disjoint tuple/record fields are
 /// partial moves, fine for a single linear walk. A NOMINAL/QTY is transparent (walk the erased inner).
@@ -80,13 +146,21 @@ fn doc_value_node(
     // A QTY must be handled BEFORE `strip_nominal_and_qty` erases it — its canonical value form is
     // `(Qty.of <magnitude> <unit>)` (the wasm `value_codec` shape), NOT the bare magnitude the strip would
     // leave (which would silently render `(: 5.0 Float64)` instead of `(: (Qty.of 5.0 (Unit.base #"meter"))
-    // (Qty …))` — a miscompile, not a render). Building `(Qty.of …)` needs a unit-expression sub-AST
-    // reconstruction (`Unit::render_value_form`) — a follow-up increment; DECLINE for now so the driver falls
-    // back to cdz_render_at rather than value-doc silently mis-rendering the Qty as its erased inner.
-    if matches!(ty.strip_nominal(), Ty::Qty { .. }) {
-        return Err(Reject::decline(
-            "value-doc: Qty value not covered (Qty.of magnitude+unit form) — falls back to cdz_render_at",
+    // (Qty …))`). The `Qty.of` head is a bare `Name` (printed verbatim → sugared, matching `unit_value_ast`);
+    // the magnitude walks the erased inner (the Rust value IS the bare f64/i64/…, since a Qty adds nothing at
+    // run time — §156); the unit is a `doc_unit_node` sub-AST.
+    if let Ty::Qty { inner, unit } = ty.strip_nominal() {
+        let inner = (**inner).clone();
+        let unit = unit.clone();
+        let unit_node = doc_unit_node(&unit, out, ctr)?;
+        let head = fresh(ctr);
+        out.push_str(&format!("    let {head} = __b.name(\"Qty.of\");\n"));
+        let mag = doc_value_node(db, &inner, val_expr, out, ctr)?;
+        let v = fresh(ctr);
+        out.push_str(&format!(
+            "    let {v} = __b.list(vec![{head}, {mag}, {unit_node}]);\n"
         ));
+        return Ok(v);
     }
     match ty.strip_nominal_and_qty() {
         // An integer leaf → an `Int` atom (its runtime value is the i64-slot magnitude; `from_i64` is exact
@@ -413,6 +487,23 @@ fn doc_type_node(
     out: &mut String,
     ctr: &mut usize,
 ) -> Result<String, Reject> {
+    // A QTY TYPE → `(Qty <inner-type> <unit>)` (the `render_name` shape) — handled BEFORE the strip erases
+    // the Qty. Same `doc_unit_node` as the value side (positive-exponent units render identically in the
+    // value `(Qty.of …)` and the type `(Qty …)`; a derived unit declines there, so this is reached only for
+    // a coverable unit).
+    if let Ty::Qty { inner, unit } = ty.strip_nominal() {
+        let inner = (**inner).clone();
+        let unit = unit.clone();
+        let head = fresh(ctr);
+        out.push_str(&format!("    let {head} = __b.name(\"Qty\");\n"));
+        let it = doc_type_node(db, &inner, out, ctr)?;
+        let unit_node = doc_unit_node(&unit, out, ctr)?;
+        let v = fresh(ctr);
+        out.push_str(&format!(
+            "    let {v} = __b.list(vec![{head}, {it}, {unit_node}]);\n"
+        ));
+        return Ok(v);
+    }
     match ty.strip_nominal_and_qty() {
         Ty::Tuple(elems) => {
             let elems = elems.clone();
