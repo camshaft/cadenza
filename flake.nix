@@ -5671,6 +5671,25 @@
           sort -o "$out" "$out"
           echo "oracle-wasm-case-dirs: $(wc -l < "$out") runnable extractions" >&2
         '';
+        # STEP B (full-corpus): the SAME manifest over the WHOLE corpus (corpusFileNames, ~10.7k cases) instead
+        # of the 2 scalar Step-A files. ADDITIVE + INERT — realized only when explicitly built, so the DAILY
+        # cache-warm-extract-wasm.yml stays on the cheap Step-A `oracle-wasm-case-dirs`. Built on demand (or a
+        # separate weekly workflow, v-gha-green's cadence call) for a broad miscompile-hunt across
+        # strings/collections/effects; most extra cases skip (heap/compound), the value is 0-diverge coverage
+        # at full scale. Same passAsFile discipline (~640KB dir list would overflow an env attr, #7546).
+        oracleWasmCaseDirsFull = pkgs.runCommand "oracle-wasm-case-dirs-full"
+          {
+            dirs = pkgs.lib.concatLists (map
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
+              corpusFileNames);
+            passAsFile = [ "dirs" ];
+          } ''
+          : > "$out"
+          for d in $(tr ' ' '\n' < "$dirsPath"); do [ -e "$d/core.wat" ] && echo "$d" >> "$out" || true; done
+          sort -o "$out" "$out"
+          echo "oracle-wasm-case-dirs-full: $(wc -l < "$out") runnable extractions (full corpus)" >&2
+        '';
         # Extraction-layer cache-warm: realize every per-case wasm extraction (mkWasmExtract: unbundle/print +
         # `cdz compile -t cadenza` + objdump/dd) so v-gha-green can push them to cachix and v-lean-oracle's
         # oracle-wasm-diff check pulls them instead of cold-building (~12h cold under a vertical lease). The
@@ -6014,6 +6033,8 @@
         # each dir = {core.wat, result-type.ast, core.ast}. v-lean-oracle's oracle-wasm-diff check reads this
         # to run the Core↔wasm differential over the corpus. `nix build .#oracle-wasm-case-dirs`.
         packages.oracle-wasm-case-dirs = oracleWasmCaseDirs;
+        # Step B full-corpus manifest (additive; built on demand for a broad full-corpus differential).
+        packages.oracle-wasm-case-dirs-full = oracleWasmCaseDirsFull;
         # Extraction-layer cache-warm target (v-gha-green wires into a daily/dispatch workflow, like
         # cache-warm-emit-wasm.yml): realizes every per-case wasm extraction so they land on cachix.
         packages.corpus-wasm-extract-warm = corpusWasmExtractWarm;
