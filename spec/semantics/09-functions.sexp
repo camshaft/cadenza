@@ -13567,3 +13567,25 @@
       (export main)))
   (call main 10)
   (output (: 33 Int64)))
+
+; A tuple relayed through a CHAIN of plain parameter hops before the splatting callee — the tuple's type
+; is concrete at every hop, so the splat at the end expands the same way. `hop1` forwards its tuple param
+; to `hop2` (a plain call, no splat), and `hop2` splats it into `add3`. This is the depth-2 companion of
+; the param-relay case (breaker probe): the pass-through hop must not defeat the call-site expansion.
+(case
+  "a tuple relayed through an intermediate parameter hop still splats at the callee"
+  (doc
+    "`hop1(t)` forwards its `(Tuple Int64 Int64 Int64)` parameter to `hop2(t)` unchanged, and `hop2` splats
+           it into the three-parameter `add3` via `(add3 (.. t))`. `add3(a b c) = a + 10b + 100c`, so
+           `hop1(#tuple(5 n 1))` = 5 + 10n + 100; at n = 2 that is 125. Pins that an intermediate plain
+           parameter hop before the splatting callee does not defeat the expansion (the tuple type stays
+           concrete through the chain).")
+  (input
+    (do
+      (def (add3 (: a Int64) (: b Int64) (: c Int64)) (+ a (+ (* 10 b) (* 100 c))))
+      (def (hop2 (: t (Tuple Int64 Int64 Int64))) (add3 (.. t)))
+      (def (hop1 (: t (Tuple Int64 Int64 Int64))) (hop2 t))
+      (def (main (: n Int64)) (hop1 #tuple(5 n 1)))
+      (export main)))
+  (call main 2)
+  (output (: 125 Int64)))
