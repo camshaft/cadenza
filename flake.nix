@@ -673,6 +673,15 @@
           cdz-platform = "implementation/seed/crates/cdz-platform";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-corpus-grade = "implementation/seed/crates/cdz-corpus-grade";
+          # corpus-case-titles (#7646): the pure, cdz-FREE corpus-case-title parse helper (reads the sexpr
+          # surface via cadenza-syntax-sexpr → cadenza-syntax-core → cadenza-ast). A ROOT workspace member
+          # (implementation/seed/crates/* glob, no own [workspace]), so — like the others — it MUST be
+          # registered here or the crane deps-layer src omits its Cargo.toml. It landed (#7646) WITHOUT this
+          # reg, so it was simply absent from every crane fileset (harmless while nothing dep'd it); it
+          # becomes a path-dep of xtask-merge-baseline in #7650 (merge-driver orphan-prune) + is used by
+          # cdz-corpus vanished-check, so registering it stages its manifest/stub + brings it into the
+          # per-crate clippy/test coverage.
+          corpus-case-titles = "implementation/seed/crates/corpus-case-titles";
           cdz-num = "implementation/seed/crates/cdz-num";
           cdz-rt = "implementation/seed/crates/cdz-rt";
           cdz-run = "implementation/seed/crates/cdz-run";
@@ -1076,6 +1085,9 @@
               # Request/Query encode/decode codec builds on cadenza_ast::Builder + cadenza_ast::codec).
               # cadenza-ast is a foundational leaf (no workspace path-deps), so the closure is the two.
               cadenza-compile-abi = [ "cadenza-ast" "cadenza-compile-abi" ];
+              # corpus-case-titles (#7646) deps cadenza-syntax-sexpr + cadenza-syntax-core (the lean sexpr
+              # reader surface); cadenza-syntax-sexpr pulls cadenza-ast + cadenza-syntax-core. NO cdz.
+              corpus-case-titles = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "corpus-case-titles" ];
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
               # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
               cdz-world-artifact = [ "cadenza-ast" "cdz-world-artifact" ];
@@ -5935,6 +5947,9 @@
               clippy-cdz-contract = mkCrateClippyCrane { crate = "cdz-contract"; };
               clippy-cdz-corpus = mkCrateClippyCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               clippy-cdz-corpus-grade = mkCrateClippyCrane { crate = "cdz-corpus-grade"; };
+              # corpus-case-titles (#7646): pure sexpr-reader lib, tests use inline strings (no spec/semantics
+              # fixture) → no extraSrc. REQUIRED by testCrateCoverageAssert now that it is a rootWorkspaceCrates member.
+              clippy-corpus-case-titles = mkCrateClippyCrane { crate = "corpus-case-titles"; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
@@ -5996,6 +6011,8 @@
               test-cdz-contract = mkCrateTestCrane { crate = "cdz-contract"; };
               test-cdz-corpus = mkCrateTestCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               test-cdz-corpus-grade = mkCrateTestCrane { crate = "cdz-corpus-grade"; };
+              # corpus-case-titles (#7646): 9 unit tests over inline sexpr strings (no fixture) → no extraSrc.
+              test-corpus-case-titles = mkCrateTestCrane { crate = "corpus-case-titles"; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
