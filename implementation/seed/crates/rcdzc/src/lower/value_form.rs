@@ -1992,8 +1992,16 @@ pub(super) fn const_value_ast(
     // so the core is a `ConstStr`; recover the SYMBOL surface from the SOLVED TYPE `Ty::Symbol` and
     // re-materialize the `Symbol.of` construction as source, exactly as `Ty::Qty` recovers `Qty.of`.
     // Checked FIRST (before the core match) since the erased core would otherwise render as a bare String.
-    if matches!(crate::infer::type_of(db, id), crate::ty::Ty::Symbol)
-        && let Core::ConstStr(s) = core_of(db, id)
+    // STRIP nominals: a NOMINAL-over-Symbol constant (e.g. `(type Tag (Mk Symbol))`, `(Mk (Symbol.of "z"))`)
+    // is ERASED to its inner Symbol (a `ConstStr`), and its VALUE form is still the Symbol construction
+    // `(Symbol.of "z")` (the caller wraps it in the nominal `(: … Tag)` frame from the FULL type). Without
+    // stripping, a nominal-over-Symbol const rendered a BARE STRING (`(: "z" Tag)`) — divergent from rust +
+    // the RUNTIME path (which #7710's shape_of Nominal→inner→ShapeNode::Symbol recursion already handles).
+    // Matching on the STRIPPED type recovers the Symbol form through any nominal depth (the runtime twin).
+    if matches!(
+        crate::infer::type_of(db, id).strip_nominal(),
+        crate::ty::Ty::Symbol
+    ) && let Core::ConstStr(s) = core_of(db, id)
     {
         let symbol_of = member_access(b, "Symbol", "of");
         let text = b.atom_leaf(Leaf::Str(s));
