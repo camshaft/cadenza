@@ -574,16 +574,46 @@ pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
             first_line(&String::from_utf8_lossy(&out.stderr))
         )));
     }
-    // The verdict is the last non-empty stdout line (contract: one line; be robust to a trailing
-    // newline / an incidental leading line).
+    // Reassemble the verdict from stdout. The contract is "one verdict line", but the value-doc
+    // PRETTY-PRINTS a long `value (: <v> <T>)` over MULTIPLE lines — so a naive "last non-empty line"
+    // captures only the value's TAIL fragment (e.g. the `<Type>` line), which parse_rust_verdict then
+    // reports as an "unrecognized verdict" → a spurious Declined that MASKS the case. Join from the
+    // verdict-start line instead.
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let verdict = stdout
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    Ok(parse_rust_verdict(verdict))
+    Ok(parse_rust_verdict(&join_rust_verdict(&stdout)))
+}
+
+/// Reassemble a `cdz run-rust` verdict from `stdout`. The verdict is the LAST line that STARTS with a
+/// known prefix (`value `/`trap `/`error `/`declined`), joined with its continuation lines (whitespace
+/// collapsed to single spaces) — so a value-doc value pretty-printed across multiple lines is recovered
+/// as one `value (: … …)` string rather than truncated to its tail. Falls back to the last non-empty
+/// line when no verdict-prefix line is present, so a genuinely unrecognized output still classifies
+/// conservatively (never a false mismatch). A pretty-printed value's continuation lines begin with `(`,
+/// whitespace, or field names — never a verdict prefix — so the start-line search is unambiguous.
+fn join_rust_verdict(stdout: &str) -> String {
+    let is_verdict_start = |l: &str| {
+        let t = l.trim_start();
+        t == "declined"
+            || t.starts_with("value ")
+            || t.starts_with("trap ")
+            || t.starts_with("error ")
+    };
+    let lines: Vec<&str> = stdout.lines().collect();
+    match lines.iter().rposition(|l| is_verdict_start(l)) {
+        Some(start) => lines[start..]
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => stdout
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    }
 }
 
 /// True if a `cdz run-rust` `error …` verdict is the known staging-extern LINK failure: rustc `E0433`
@@ -1376,6 +1406,53 @@ mod tests {
             "(: #list(1 2) (List Int64))",
             "(: #list(1 3) (List Int64))"
         ));
+    }
+
+    #[test]
+    fn join_rust_verdict_reassembles_a_multiline_value_doc() {
+        // The value-doc pretty-prints a long `value (: <v> <T>)` over multiple lines; the verdict must
+        // be rejoined from the `value ` start line, not truncated to the tail (which parse_rust_verdict
+        // would call "unrecognized" → a spurious Declined that masks the case). v-rust-backend 2026-09.
+        let multiline = "value (: #record((= k 4)\n         (= s #list(\"a\" \"b\")))\n   (Record (k Int64) (s (List String))))";
+        let joined = join_rust_verdict(multiline);
+        assert!(
+            joined.starts_with("value (: #record("),
+            "rejoined from the value line: {joined}"
+        );
+        assert!(
+            joined.contains("(Record (k Int64)"),
+            "includes the trailing type: {joined}"
+        );
+        assert!(!joined.contains('\n'), "newlines collapsed: {joined}");
+        // It now parses as a Value (not the old unrecognized-verdict Declined).
+        assert!(matches!(parse_rust_verdict(&joined), Side::Value(_)));
+        // One-line verdicts + declined are unaffected; a genuinely unrecognized output falls back.
+        assert_eq!(join_rust_verdict("value 42"), "value 42");
+        assert_eq!(join_rust_verdict("declined"), "declined");
+        assert_eq!(
+            join_rust_verdict("garbage tail\nmore garbage"),
+            "more garbage"
+        );
+    }
+
+    #[test]
+    fn renders_agree_is_line_shape_insensitive() {
+        // v-rust-backend 2026-09: `cdz run-rust`'s value-doc PRETTY-PRINTS a long `(: v T)` over MULTIPLE
+        // lines, while `cdz run` (wasm) renders the same tokens on ONE line. Same value + type, different
+        // line shape — must AGREE (the re-parse is whitespace-insensitive), so the record/compound fuzz
+        // cases don't false-mismatch on layout alone.
+        let wasm = "#record((= k 4) (= s #list(\"a\" \"b\")) (= t #tuple(4 false)))";
+        let rust_multiline = "(: #record((= k 4)\n         (= s #list(\"a\" \"b\"))\n         (= t #tuple(4 false)))\n   (Record (k Int64) (s (List String)) (t (Tuple Int64 Bool))))";
+        assert!(
+            renders_agree(wasm, rust_multiline),
+            "multi-line ascribed record vs one-line bare record are the same value → must agree"
+        );
+        // A GENUINE value difference is still caught despite the multi-line layout (no over-masking).
+        let rust_multiline_diff = "(: #record((= k 5)\n         (= s #list(\"a\" \"b\"))\n         (= t #tuple(4 false)))\n   (Record (k Int64) (s (List String)) (t (Tuple Int64 Bool))))";
+        assert!(
+            !renders_agree(wasm, rust_multiline_diff),
+            "k=4 vs k=5 differ in value — must NOT be masked by the line-shape normalization"
+        );
     }
 
     #[test]
