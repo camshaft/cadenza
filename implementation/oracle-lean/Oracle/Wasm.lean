@@ -43,7 +43,8 @@ binary-AST section. It tells `toOutcome` how to INTERPRET the raw wasm result (a
 `bool`, a `char` codepoint, …). Only the SCALAR subset is modeled here (milestone 1); a compound/heap result
 type routes to `.unsupported` (those cases import the runtime and talos declines them anyway). -/
 inductive ScalarTy where
-  | int          -- any Cadenza integer type (Int/Int64/BigInt/…): the value is the signed wasm int
+  | int          -- any SIGNED Cadenza integer type (Int/Int64/…): the value is the signed wasm int
+  | uint         -- any UNSIGNED Cadenza integer type (UInt/UInt8/…/UInt64): the UNSIGNED reading of the bits
   | bool         -- i32 0/1
   | float32
   | float64
@@ -70,6 +71,12 @@ def decodeScalar (ty : ScalarTy) (v : WasmVal) : Option Value :=
   -- EMIT; the runtime result is that signed integer). Both wasm widths carry an int.
   | .int, .i32 n => some (.int n)
   | .int, .i64 n => some (.int n)
+  -- Unsigned: talos hands us the SIGNED reading (`talosToWasmVal` did `.toInt32.toInt`), so a large unsigned
+  -- value arrives negative; recover the unsigned value by adding 2^width when negative. The `WasmVal` tag
+  -- gives the width (i32 → +2^32, i64 → +2^64). A small unsigned (e.g. a UInt8 200) is already non-negative
+  -- and passes through unchanged.
+  | .uint, .i32 n => some (.int (if n < 0 then n + 4294967296 else n))            -- 2^32
+  | .uint, .i64 n => some (.int (if n < 0 then n + 18446744073709551616 else n))  -- 2^64
   -- Bool: a wasm i32, 0 = false / non-zero = true.
   | .bool, .i32 n => some (.bool (n != 0))
   -- Floats compare by f64 value in the oracle (`valueEqSpec`), so a decoded `.f64` is the canonical form;
@@ -145,6 +152,7 @@ coverage gap, never a wrong value). The width child (`(Int 64)`) doesn't change 
 maps any wasm int width → `.int`. Widen as more scalar heads are verified from real emits. -/
 def scalarTyOfName? : ByteArray → Option ScalarTy := fun b =>
   if b == "Int".toUTF8 then some .int
+  else if b == "UInt".toUTF8 then some .uint       -- all unsigned widths (UInt/UInt8/…/UInt64): unsigned read
   else if b == "Bool".toUTF8 then some .bool
   else if b == "Float".toUTF8 then some .float64   -- Cadenza `Float` is the f64 type
   else if b == "Unit".toUTF8 then some .unit
@@ -253,6 +261,11 @@ example : toOutcome (.ok #[.i32 0]) .bool = .value (.bool false) := rfl
 example : toOutcome (.ok #[.i32 1]) .bool = .value (.bool true) := rfl
 example : toOutcome (.ok #[.i32 7]) .bool = .value (.bool true) := rfl
 example : toOutcome (.ok #[]) .unit = .value .unit := rfl
+-- unsigned decode: small unsigned passes through; a large unsigned arrives signed-negative and is recovered
+-- by +2^width (i32→+2^32, i64→+2^64). (`Outcome` has BEq not DecidableEq, so assert via `==`.)
+example : (toOutcome (.ok #[.i32 200]) .uint == .value (.int 200)) = true := by native_decide
+example : (toOutcome (.ok #[.i32 (-1)]) .uint == .value (.int 4294967295)) = true := by native_decide
+example : (toOutcome (.ok #[.i64 (-1)]) .uint == .value (.int 18446744073709551615)) = true := by native_decide
 
 -- shape gaps → sound `.unsupported` (never a wrong value / false differential)
 example : toOutcome (.ok #[.i64 5]) .float64 = .unsupported "wasm result valtype does not match the declared Cadenza scalar type" := rfl
@@ -260,6 +273,7 @@ example : toOutcome (.ok #[.i64 1, .i64 2]) .int = .unsupported "wasm result ari
 
 -- result-type name → ScalarTy (the verified scalar spellings; others decline to none)
 example : scalarTyOfName? "Int".toUTF8 = some .int := by native_decide
+example : scalarTyOfName? "UInt".toUTF8 = some .uint := by native_decide
 example : scalarTyOfName? "Bool".toUTF8 = some .bool := by native_decide
 example : scalarTyOfName? "Float".toUTF8 = some .float64 := by native_decide
 example : scalarTyOfName? "String".toUTF8 = none := by native_decide
