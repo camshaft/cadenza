@@ -152,7 +152,7 @@ fn usage() {
          \n\
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
-         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen]\n\
+         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -864,7 +864,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
     let mut findings: Option<PathBuf> = None;
     let mut store: Option<PathBuf> = None;
     let mut cdz: Option<PathBuf> = None;
-    let mut astgen = false;
+    let mut gen_mode = driver::GenMode::default();
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -877,7 +877,10 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             // Draw programs from the COERCING astgen grammar (type-correct, value-comparable, terminating,
             // and — post-#7716 — Symbol-emitting) instead of the broad text grammar (~73% declines → mostly
             // one-side-declines = Agree). Denser wasm-vs-rust value comparison over the richer shapes.
-            "--astgen" => astgen = true,
+            "--astgen" => gen_mode = driver::GenMode::Astgen,
+            // Draw LARGE-VALUE builder programs (>64 KiB heap List) — a dedicated SLOW regime stressing the
+            // allocator / memory-grow + value-escape copy-out paths (#7793/#7800). Use small --count.
+            "--large" => gen_mode = driver::GenMode::LargeValue,
             other => {
                 eprintln!("cdz-smith differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -919,11 +922,12 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 100,
-        gen_mode: if astgen {
-            driver::GenMode::Astgen
-        } else {
-            driver::GenMode::default()
-        },
+        gen_mode,
+    };
+    let grammar = match gen_mode {
+        driver::GenMode::Astgen => "astgen",
+        driver::GenMode::LargeValue => "large-value",
+        _ => "text",
     };
 
     eprintln!(
@@ -931,7 +935,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         cfg.commit,
         cfg.run_seed,
         count,
-        if astgen { "astgen" } else { "text" },
+        grammar,
         store.display(),
         cdz.display(),
         findings_dir.display()
