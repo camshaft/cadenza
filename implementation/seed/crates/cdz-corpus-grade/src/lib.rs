@@ -1209,10 +1209,20 @@ const C1_FORBIDDEN_PHRASES: &[&str] = &[
     "ICE",
     "panicked",
     "panic!",
-    "unwrap",
     "compiler bug",
     "unreachable!",
+    // NOTE: `unwrap` is NOT here — it is a Cadenza SURFACE operation (`(unwrap …)`, 81× in the corpus), so
+    // the bare word (e.g. CDZ0202's golden "unwrap the nominal to compare") is exempt. Only the Rust CALL
+    // form is a leak — see `C1_FORBIDDEN_CALL_SYNTAX` (#7921).
 ];
+
+/// §1b CALL-SYNTAX leaks — matched as a PLAIN case-insensitive substring (NOT word-boundaried), because
+/// these are call fragments that legitimately abut a receiver/`::` (a real leak `x.unwrap()` /
+/// `Option::unwrap()` must match). Currently just the Rust `unwrap` call: `unwrap(` or `.unwrap` — the
+/// panic-y `Option::unwrap()` an internal-error message might leak. The BARE word `unwrap` is a Cadenza
+/// operation (see `C1_FORBIDDEN_PHRASES`'s note), so `(unwrap x)` / "unwrap the nominal" prose do NOT match
+/// (no `(`/`.` immediately after `unwrap`). Scoping resolved in `DESIGN-diagnostic-quality-rubric.md` §1b (#7921).
+const C1_FORBIDDEN_CALL_SYNTAX: &[&str] = &["unwrap(", ".unwrap"];
 
 /// Case-insensitive, WORD-BOUNDARIED substring test — the `\b…\b` match §1 requires so a forbidden phrase
 /// does not false-trip inside a larger word (the doc's `None` ⊂ `Nonesuch` case: `contains_word_ci("Nonesuch",
@@ -1268,6 +1278,18 @@ pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
                 return Some(format!(
                     "(diagnostic-quality): {code} message contains the forbidden phrase {phrase:?} \
                      (rubric §1) — {:?}",
+                    f.message
+                ));
+            }
+        }
+        // CALL-SYNTAX leaks — PLAIN case-insensitive substring (not word-boundaried): the Rust `unwrap`
+        // call (`unwrap(` / `.unwrap`), never the bare Cadenza `unwrap` operation.
+        let prose_lc = prose.to_lowercase();
+        for pat in C1_FORBIDDEN_CALL_SYNTAX {
+            if prose_lc.contains(pat) {
+                return Some(format!(
+                    "(diagnostic-quality): {code} message contains the forbidden Rust call-syntax {pat:?} \
+                     (rubric §1b — the bare word is a Cadenza op, only the call leaks) — {:?}",
                     f.message
                 ));
             }
@@ -2317,6 +2339,44 @@ mod tests {
         // Not a false-trip inside a larger word.
         assert!(!contains_word_ci("unimplementedness", "unimplemented"));
         assert!(contains_word_ci("marked unimplemented.", "unimplemented"));
+    }
+
+    #[test]
+    fn c1_lint_unwrap_is_scoped_to_rust_call_syntax_not_the_cadenza_op() {
+        // CDZ0202's golden message guides the user to the Cadenza `unwrap` operation — the BARE word must
+        // NOT flag (unwrap is a surface op, 81× in the corpus), only the Rust call form leaks (#7921).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0202",
+                "Age and Int64 are not comparable across the nominal boundary (unwrap the nominal to \
+                 compare the underlying value)"
+            )])
+            .is_none(),
+            "bare `unwrap` guidance is golden, not a Rust leak"
+        );
+        // The Cadenza `(unwrap …)` op form is exempt (space after unwrap, not `(`/`.`).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0202",
+                "unwrap the nominal with (unwrap x)"
+            )])
+            .is_none()
+        );
+        // The Rust CALL form DOES flag: `.unwrap()` (method) and `Option::unwrap(` (path).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0201",
+                "the value was x.unwrap() at runtime"
+            )])
+            .is_some()
+        );
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0201",
+                "called Option::unwrap() on a None"
+            )])
+            .is_some()
+        );
     }
 
     #[test]
