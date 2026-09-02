@@ -4165,12 +4165,27 @@ fn emit_tail(
             // arm. A tail-call CONSUMING the payload (a live handle into the shell) fails the fence → no drop
             // (leak-safe, never a UAF). The looping/member-tail-call path is handled by
             // scrut_shell_reclaim/selfloop_scrut_slot, not this (member_which loop-iterates before the drop).
-            let returncall_shell_drop =
-                if reclaim_shell && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee) {
-                    reclaim_slot
-                } else {
-                    None
-                };
+            // ONLY when the match ACTUALLY has a tail-position Call arm (a `return_call`). Without this, a
+            // VALUE-ONLY reclaim_shell match (no tail call) would still set the carrier → for a non-looped fn
+            // it constructs the minimal empty-members TailLoop below, flipping arm_tp Tail(None)→Tail(Some(..))
+            // and perturbing every self-loop gate keyed on a bare `Tail(Some(_))` (v-wasm-opt #7963 hardened
+            // the 5 dispatch code-size gates to is_self_loop_tail; gating at the SOURCE here also spares the
+            // reclaim-safety `list_shell_reclaim_slot` gate v-wasm-opt flagged — no pointless carrier reaches
+            // it). `sum_cont_tail_callees` non-empty = the match has a tail Call arm (member → loop-iterate,
+            // handled by scrut_shell_reclaim/selfloop; non-member → the cross-fn return_call this drop targets).
+            let has_tail_call = {
+                let mut callees = Vec::new();
+                sum_cont_tail_callees(db, &root, &mut callees);
+                !callees.is_empty()
+            };
+            let returncall_shell_drop = if reclaim_shell
+                && has_tail_call
+                && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee)
+            {
+                reclaim_slot
+            } else {
+                None
+            };
             let base_tl: Option<TailLoop> = if view_reclaim && arms_tail_call {
                 let shell_slot = stashed_slot
                     .expect("matchsum_view_shell_reclaim_ok implies a stashed I32 slot")
