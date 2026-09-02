@@ -135,16 +135,31 @@ pub(crate) fn inject_prelude_eval_effect(ast: &mut Arenas) {
     let effect_head = push_atom(ast, Leaf::Name("effect".into()));
     let effect_name = push_atom(ast, Leaf::Name("Eval".into()));
     let decl = push_list(ast, vec![effect_head, effect_name, op]);
-    // Append as a top-level member (mirror `append_module_member`: after a `(module name …)` header if
-    // present, else at the end).
-    let mut new_items = items;
-    let insert_at = if ast.as_form(root, "module").is_some() && new_items.len() >= 2 {
-        2
+    // Add the Eval decl as a top-level SIBLING member. The top-level item set is what `top_items` reads:
+    // a `(module …)` / `(do …)` root is an item CONTAINER (its members are the tail), so we append into it
+    // (mirror `append_module_member`: after a `(module name …)` header if present, else at the end). But a
+    // program whose root is a SINGLE bare top-level form — `(def …)`, `(type …)`, a bare expression — is
+    // NOT a container: `top_items` returns `vec![root]`, the lone item. Appending the decl to *that* form's
+    // own children would grow the form itself (e.g. `(def answer 42 (effect Eval …))` → a false CDZ0201
+    // "this definition has more than one body"), which broke every single-top-form program (LSP
+    // diagnostics-as-you-type, snippets). So wrap the lone form and the Eval decl in a synthetic top-level
+    // `(do …)`, which `top_items` expands to the two sibling items.
+    let root_is_item_container =
+        ast.as_form(root, "module").is_some() || ast.as_form(root, "do").is_some();
+    if root_is_item_container {
+        let mut new_items = items;
+        let insert_at = if ast.as_form(root, "module").is_some() && new_items.len() >= 2 {
+            2
+        } else {
+            new_items.len()
+        };
+        new_items.insert(insert_at, decl);
+        ast.structure[root.0 as usize] = Struct::List(new_items);
     } else {
-        new_items.len()
-    };
-    new_items.insert(insert_at, decl);
-    ast.structure[root.0 as usize] = Struct::List(new_items);
+        let do_head = push_atom(ast, Leaf::Name("do".into()));
+        let wrapped = push_list(ast, vec![do_head, root, decl]);
+        ast.root = wrapped;
+    }
 }
 
 /// Synthesize the record for every scanned `(effect …)` declaration, appending them to `ast` as
