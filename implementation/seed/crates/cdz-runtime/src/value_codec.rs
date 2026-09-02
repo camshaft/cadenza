@@ -107,6 +107,13 @@ pub(crate) enum Shape {
     /// render tag only (descriptor tag 19, mirroring `Bool`'s tag 1). A char value is stored as an immediate
     /// int (the code-point), so it is read with `op_get_int` and boxed with `op_box_int`.
     Char,
+    /// A Symbol leaf — shares the String runtime rep (a Symbol's identity IS its UTF-8 text, see
+    /// `Symbol.of`), so compare / eq / hash / ORDER treat a Symbol IDENTICALLY to `Str` (a `(Set Symbol)`/
+    /// `(Map Symbol _)` key orders by its text via `value_cmp_shaped`). Only the RENDER differs: it emits the
+    /// CONSTRUCTION form `((. Symbol of) "text")` — the `#7694` Member-access member-compound, byte-matching
+    /// `const_value_ast` + the rust backend — NOT the bare `Str` leaf `"text"` (which is ambiguous with a real
+    /// String). Symbol = the Str-analog of how `Char` is the Int-analog: same rep, render tag only (tag 20).
+    Symbol,
     Float,
     Str,
     Bytes,
@@ -304,6 +311,7 @@ pub(crate) fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         17 => Shape::BigInt, // arbitrary-precision integer leaf (a runtime BigInt), rendered as KIND_INT
         18 => Shape::Rational, // exact-rational leaf (a 2-BigInt-handle node), rendered as a num/den name
         19 => Shape::Char, // Unicode-scalar Char leaf — int at runtime, rendered as a KIND_CHAR char literal
+        20 => Shape::Symbol, // Symbol leaf — str at runtime (order/eq/hash as Str), rendered `((. Symbol of) "…")`
         _ => return None,
     })
 }
@@ -1213,6 +1221,27 @@ pub(crate) fn encode_value(
                             .unwrap_or_else(|| b.str_leaf(&[]));
                         out.push(b.atom(l));
                     }
+                    Shape::Symbol => {
+                        // A Symbol shares the String rep (materialize a rope first, exactly as `Shape::Str`)
+                        // but renders its CONSTRUCTION form `((. Symbol of) "text")` — the #7694 Member-access
+                        // member-compound, byte-matching `const_value_ast`:1979 (`list([member(Symbol,of),
+                        // Str(text)])`) + the rust backend — NOT the bare `Str` leaf `"text"` (ambiguous with a
+                        // real String, divergent from rust). All parts are known → build the fixed doc DIRECTLY
+                        // (no work-queue recursion), like `Shape::Rational`. Inner `(. Symbol of)` =
+                        // `list([KIND_MEMBER head, name "Symbol", name "of"])`; outer = `list([member, str])`.
+                        bytes_flatten(h);
+                        let str_leaf = with_node(h, None, |n| Some(b.str_leaf(n.raw.as_slice())))
+                            .unwrap_or_else(|| b.str_leaf(&[]));
+                        let str_atom = b.atom(str_leaf);
+                        let member_kind = b.ctor_leaf(doc::KIND_MEMBER);
+                        let member_atom = b.atom(member_kind);
+                        let sym_leaf = b.name_leaf("Symbol");
+                        let sym_atom = b.atom(sym_leaf);
+                        let of_leaf = b.name_leaf("of");
+                        let of_atom = b.atom(of_leaf);
+                        let member = b.list(&[member_atom, sym_atom, of_atom]);
+                        out.push(b.list(&[member, str_atom]));
+                    }
                     Shape::Bytes => {
                         // A Bytes value may be a ROPE (concat/slice nodes) — materialize it to a leaf
                         // (iterative `bytes_flatten`, so no deep-rope stack overflow; content-preserving so
@@ -2032,6 +2061,21 @@ pub(crate) fn decode_value_opt(
         },
         Shape::Str => {
             let ParsedLeaf::Str(bytes) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            let s = String::from_utf8(bytes.clone()).ok()?;
+            Some(op_str_new(s))
+        }
+        Shape::Symbol => {
+            // Inverse of the encode member-compound `((. Symbol of) "text")` = list([member-access, str]).
+            // A Symbol shares the String runtime rep, so decode to the same string handle (`op_str_new`) —
+            // the shape tag already says it is a Symbol; the doc structure is trusted (our own encode).
+            // kids[0] = the `(. Symbol of)` member-access; kids[1] = the Str leaf carrying the text.
+            let kids = doc_list_kids(doc, struct_ix)?;
+            if kids.len() != 2 {
+                return None;
+            }
+            let ParsedLeaf::Str(bytes) = doc_atom_leaf(doc, kids[1])? else {
                 return None;
             };
             let s = String::from_utf8(bytes.clone()).ok()?;

@@ -1223,6 +1223,9 @@ fn value_decode_round_trips_scalar_leaves() {
         (op_str_new(String::from("hello")), &[0x01, 0x03, 0x00]), // Str (tag 3)
         (op_str_new(String::new()), &[0x01, 0x03, 0x00]),
         (op_box_float32(0.1f32), &[0x01, 0x0e, 0x00]), // Float32 (tag 14)
+        // Symbol (tag 20) — shares the String rep; encodes the member-compound `((. Symbol of) "alpha")`
+        // (NOT a bare Str leaf) and decodes back to the same string handle. Round-trip pins both directions.
+        (op_str_new(String::from("alpha")), &[0x01, 20, 0x00]),
     ];
     for &(v, desc) in cases {
         assert_value_roundtrips(v, desc);

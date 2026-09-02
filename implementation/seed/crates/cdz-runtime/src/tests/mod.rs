@@ -602,6 +602,22 @@ pub(crate) fn encode_value_recursive(
             let l = b.str_leaf(&bytes);
             b.atom(l)
         }
+        S::Symbol => {
+            // Mirror encode_value's Symbol member-compound `((. Symbol of) "text")` (byte-identity oracle):
+            // list([ list([KIND_MEMBER, name "Symbol", name "of"]), str ]). Read the raw like S::Str.
+            bytes_flatten(h);
+            let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
+            let str_leaf = b.str_leaf(&bytes);
+            let str_atom = b.atom(str_leaf);
+            let member_kind = b.ctor_leaf(doc::KIND_MEMBER);
+            let member_atom = b.atom(member_kind);
+            let sym_leaf = b.name_leaf("Symbol");
+            let sym_atom = b.atom(sym_leaf);
+            let of_leaf = b.name_leaf("of");
+            let of_atom = b.atom(of_leaf);
+            let member = b.list(&[member_atom, sym_atom, of_atom]);
+            b.list(&[member, str_atom])
+        }
         S::Bytes => {
             bytes_flatten(h);
             let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
