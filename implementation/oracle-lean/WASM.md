@@ -12,7 +12,7 @@ the Core layer, via static/symbolic program-equivalence.
 See also: `PRINCIPLES.md` (clean-room, corpus-conformance, the two stages) and `FRAME.md` (the
 `cdz-oracle` wire frame). Design: `implementation/design/DESIGN-lean-differential-oracle.md`.
 
-## The interpreter: talos (pinned, being integrated)
+## The interpreter: talos (pinned + integrated, driving the daily full-corpus differential)
 
 Per an operator-cleared decision (2026-08-31), the wasm interpreter is **`cajal-technologies/talos`** — a
 Lean 4 wasm interpreter (AGPL; fine — the oracle is an internal, non-distributed verification tool, not
@@ -98,13 +98,28 @@ match (Wasm.SmallStep.runSteps fuel cfg).result with
   `WasmOutcome` + the total exit-code/scalar → `Oracle.Outcome` map + witnesses. Builds on 4.30, no talos dep.
 - **W1.1 — result-type resolver** ✅ (`resultScalarTy?`, PR #7182): decode the `cdz-result-type` section
   (via `Oracle.Ast`) → `ScalarTy`; verified scalar spellings mapped, unknown → `.unsupported`. No talos dep.
-- **W0 — toolchain + talos pin** (co-owned w/ v-nix; `lean4_432` landed #7162; atomic co-land pending the
-  Mathlib-in-nix spike): bump `lean-toolchain` → v4.32.2, add the talos flake input + lakefile `require`,
-  flip oracleLean to `lean4_432` — all atomically.
-- **W2/W3 — talos drive** (blocked on W0): wire `runWasm` to drive talos's lib (`Wasm.Decoder.Wat` +
-  `Wasm.SmallStep`) on the extracted core module, producing a `WasmOutcome` for `toOutcome`.
-- **W4 — self-contained scalar/arith subset**: end-to-end differential over zero-import core modules
-  (align with compiler-ml's `run-emitted` set); widen verified `ScalarTy` spellings from real emits.
+- **W0 — toolchain + talos pin** ✅ (co-owned w/ v-nix, PR #7294): `lean-toolchain` → v4.32.2, talos flake
+  input + lakefile `require` + all-`path` lake-manifest (offline, Mathlib-free execution closure), oracleLean
+  on `lean4_432` + autoPatchelf — landed atomically.
+- **W2/W3 — talos drive** ✅ (`talosDriver`, PR #7294): `runWasmWith` drives talos (`Wasm.Decoder.Wat.decode`
+  + `Wasm.SmallStep.runSteps`) on the extracted core module → `WasmOutcome` → `toOutcome`. native_decide
+  witnesses prove talos runs (`main()=5` → `.ok #[.i64 5]`).
+- **W4 — self-contained scalar/arith subset** ✅ (FIRST FULL-CORPUS RUN, daily): emit-extraction harness
+  (`oracle-wasm-case-dirs`, uncapped Step A over 01-literals + 06-numeric-model, PR #7630) + both cachix warm
+  layers (emit #7427/#7546, extraction #7633/#7636) + the daily `oracle-wasm-diff` check wired into
+  `cache-warm-extract-wasm.yml` (#7698). First run: **216 AGREE / 1 diverge / 927 skip** of 1144 — the 1
+  diverge (`06-numeric-model-1398`) was triaged to a RESOLVER FALSE-POSITIVE (see the lesson below), fixed by
+  #7715, so **0 real miscompiles at Step-A scale**. Active follow-ups: widen `scalarTyOfName?` from the
+  skip-reason head histogram (head-tag #7708 + histogram #7725), model non-nullary entries (the
+  `local.get index 0 invalid` / arity-mismatch skip cluster), then **Step B** = widen `wasmOracleFiles` to the
+  whole corpus.
+
+> **Lesson — a multi-value/tuple result-type must resolve to `none` (SKIP), never truncate to a scalar.** A
+> tuple `main` emits the FLAT `cdz-result-type` `(result-type "main" (Int 64) (Int 64) (Int 64) (Int 64))` —
+> multiple type children. The original `cs.size ≥ 3` guard accepted it and read only `cs[2]` (the first
+> element), leaking a compound result through `resultScalarTy?` as `.int` → a false DIVERGE (Core ref = a
+> tuple, wasm = one Int). Fix (#7715): require EXACTLY one type child (`cs.size == 3`) in
+> `resultScalarTyOfModule?` + `unmodeledResultHead?`. Compound returns skip soundly until W5 models them.
 - **W5+ — runtime-importing cases**: heap/collection cases import the cdz-runtime (`"heap" …`); satisfy those
   imports with clean-room Lean host functions (see "Running imported runtime functions" below), with the host
   state refcount-and-liveness-aware from the start. The deep end; scalars first — but FEASIBLE, not a ceiling.
