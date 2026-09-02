@@ -7544,9 +7544,7 @@
       (def
         (main (: y Int64))
         (do
-          (def
-            m
-            #map((= 1 (fn ((: v Int64)) (* v 2))) (= 2 (fn ((: v Int64)) (+ v 100)))))
+          (def m #map((= 1 (fn ((: v Int64)) (* v 2))) (= 2 (fn ((: v Int64)) (+ v 100)))))
           (def (app (: k Int64)) (match (Map.lookup m k) ((Some f) (f y)) ((None _u) -1)))
           (+ (* 1000 (app 1)) (app 2))))
       (export main)))
@@ -8217,3 +8215,19 @@
       (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 105 Int64)))
+
+; szf4: the CLOSURE face of the >64-KiB value-escape size-class (szf1-szf3 in 05 pin the direct
+; string/bytes/list escapes). A closure's big String RESULT crosses as UTF-8 bytes through the
+; closure copy-out (the third #7800 fix site); (output-byte-len N) (#7816) pins the canonical
+; encoding of the crossed byte-list at the exact 64-KiB payload boundary. Doubling builder, tiny
+; source.
+(case
+  "szf4 a closure returning a string built past the 64-KiB page crosses whole"
+  (input
+    (do
+      (def (dbl (: k Int64) (: acc String)) (if (> k 0) (dbl (- k 1) (String.concat acc acc)) acc))
+      (def (mk) (fn ((: n Int64)) (dbl n "ab")))
+      (export mk)))
+  (call mk (: 15 Int64))
+  (output-byte-len 622412)
+  (live-objects known-leak))
