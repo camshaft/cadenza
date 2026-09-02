@@ -2542,7 +2542,11 @@
 ; an op ARG); oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all
 ; distinguished by nested body matches. (oc3's nested body matches x two dispatches FOLD — the
 ; lf5/tt2 decline specifically needs the performing RECURSIVE callee, sharpening that boundary
-; once more.)
+; once more.) oc7 the oc1 accumulator with a MIXED-scalar tuple payload — the state
+; (Option (Tuple Int64 String)) grounds from the CONCRETE resume next-states with NO annotation on
+; the (None) seed (breaker hs2: oc1's all-Int64 tuple grounded, but a String leaf in the tuple
+; used to leave the payload ungrounded `_` → a position-less CDZ0201 on the (Some #tuple …) pattern;
+; the init-node grounding memo now types the materialized state so the mixed tuple destructures).
 (case
   "oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both"
   (input
@@ -2616,6 +2620,31 @@
   (output (: -99995 Int64))
   (call main (: 15 Int64))
   (output (: -100001 Int64)))
+
+(case
+  "oc7 an Option-of-(Int,String) tuple accumulator — the mixed-scalar payload grounds from concrete resume next-states, no annotation on the (None) seed"
+  (input
+    (do
+      (effect Tag (op stamp (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          Tag
+          (None)
+          ((stamp
+              (v)
+              s
+              (match
+                s
+                ((Some #tuple(cnt label))
+                  (resume (+ (* v cnt) (String.byte-len label)) (Some #tuple((+ cnt 1) label))))
+                ((None _u) (resume v (Some #tuple(1 "xy")))))))
+          (+ (Tag.stamp n) (+ (* 10 (Tag.stamp n)) (* 100 (Tag.stamp n))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 1275 Int64))
+  (call main (: 0 Int64))
+  (output (: 220 Int64)))
 
 ; ── Result-STYLE sums (Ok/Err) through the effect thread (breaker rt) ────────────────────────────
 ; rt1 Ok/Err resume values with a DEPENDENT second dispatch (the falling state's sign flips Ok to

@@ -2456,6 +2456,16 @@ pub fn handle_arm_state_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::T
     // Otherwise the state binder keeps the ungrounded `(Option _)` and a live `SumPayload` read of the
     // unsolved payload emits at the wrong width (func-12: an i32 heap handle read as i64).
     let seed_ty = crate::infer::ground_handler_state_ty(db, seed_ty, arms_list);
+    // Memoize the grounded state type onto the INIT node. The handler fold MATERIALIZES the threaded
+    // state as a `LocalRef` to this init `(Option.None)` node, and at the `SumPayload` width emit the
+    // backend reads `type_of(that LocalRef)` = `type_of(init)` — the RAW ungrounded `(Option _)` — so the
+    // payload read picks `get-int` (i64) for what is an i32 heap handle → invalid wasm (func-12). The init
+    // IS the handler's initial state, so typing it as the (fully-ground) state type is correct, and the
+    // memo makes every materialized occurrence read the grounded type at emit. `type_of` never memoizes a
+    // free-var type, so only stamp a fully-ground result.
+    if !crate::infer::ty_has_free_var(db, &seed_ty) {
+        db.types.fill(init, seed_ty.clone());
+    }
     if matches!(seed_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
         return None;
     }
