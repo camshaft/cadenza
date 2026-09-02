@@ -2706,6 +2706,40 @@
   (call main (: 0 Int64))
   (output (: 330 Int64)))
 
+; oc10 the DEPTH residual of the state-grounding family (breaker hs4): a NESTED-Option state
+; (Option (Option Int64)) from an unannotated (None) seed. IDEALISTICALLY the concrete resume
+; next-states ((Some (Some v)) / (Some (None)) / (None)) determine the full nested type just as the
+; flat tuple/record cases (oc7/oc9) do, so this SHOULD compute 10450 / 9950 (the annotated-seed control
+; does, both backends). It currently DECLINES ("sum match dispatches on a non-sum sub-value"): the
+; #7798 init-node grounding solves the OUTER Option, but the inner Some dispatch reads the payload as an
+; ungrounded `_` because the grounded state type does not reach the type match-lowering reads for the
+; seed scrutinee before the state binder is first typed. Locked in as the spec target (TODO) — flips to
+; PASS when grounding reaches the nested-sum payload at the match-lowering scrutinee type (v-inference).
+(case
+  "oc10 a NESTED-Option state (Option (Option Int64)) grounds its inner payload from concrete next-states (no seed annotation)"
+  (input
+    (do
+      (effect O (op flip (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          O
+          (None)
+          ((flip
+              (v)
+              s
+              (match
+                s
+                ((Some (Some inner)) (resume (+ inner 100) (None)))
+                ((Some (None _u)) (resume -5 (Some (Some v))))
+                ((None _u) (resume 0 (Some (None)))))))
+          (+ (O.flip n) (+ (* 10 (O.flip n)) (* 100 (O.flip n))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 10450 Int64))
+  (call main (: 0 Int64))
+  (output (: 9950 Int64)))
+
 ; ── Result-STYLE sums (Ok/Err) through the effect thread (breaker rt) ────────────────────────────
 ; rt1 Ok/Err resume values with a DEPENDENT second dispatch (the falling state's sign flips Ok to
 ; Err; Ok-Ok / Ok-Err / Err rows); rt2 an Err SHORT-CIRCUITING a recursive Result walk (Ok
