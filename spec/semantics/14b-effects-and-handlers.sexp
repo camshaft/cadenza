@@ -13198,3 +13198,31 @@
   (output (: 1 Int64))
   (call main (: 3 Int64))
   (output (: 99 Int64)))
+
+(case
+  "an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)"
+  (doc
+    "The INTERPROC sibling of the abortive accum case above: the perform is hidden in a HELPER the
+           per-step term calls — `(+ (loop (- k 1)) (helper k))` with `(def (helper k) (if (= k 2) (E.bail 99)
+           k))`. Accumulator introduction would reassociate `(helper k)` onto the accumulator arg, where the
+           abort rides buried in a callee and the non-local-exit CC cannot see it to short-circuit — a SILENT
+           MISCOMPILE (main(3) ran 103; the pending `+` frames were summed instead of abandoned). FIXED by
+           declining accum when the per-step term calls a (transitively) performing def (accum's
+           `compute_performing_defs` / `term_calls_performing_def`): the recursion stays a plain non-tail form
+           the effects safe-floor rejects (CDZ0900) — a safe decline, never a wrong value. Idealistically
+           main(1)=1 (k never hits the bail) and main(3)=99 (the k==2 bail abandons everything); flips to those
+           when the non-local-exit calling convention folds the INDIRECT case (the abortive-accumulator fold
+           handles the DIRECT term of the case above; the indirect-through-a-helper fold is the remaining gap).
+           Contrast the case above, whose DIRECT-term abort accum still reassociates — direct-perform
+           reassociation is sound, so only the indirect (helper-hidden) perform declines.")
+  (input
+    (do
+      (effect E (op bail (-> Int64 Int64)))
+      (def (helper (: k Int64)) (if (= k 2) (E.bail 99) k))
+      (def (loop (: k Int64)) (if (> k 0) (+ (loop (- k 1)) (helper k)) 0))
+      (def (main (: n Int64)) (handle E 0 ((bail (v) s v)) (loop n)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (call main (: 3 Int64))
+  (output (: 99 Int64)))
