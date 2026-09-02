@@ -490,9 +490,7 @@
       (def
         (make-getter (: m (Map Int64 Int64)))
         (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None u) -1))))
-      (def
-        (main (: a Int64))
-        (let ((g (make-getter #map((= 1 10) (= 2 20))))) (+ (g a) (g 2))))
+      (def (main (: a Int64)) (let ((g (make-getter #map((= 1 10) (= 2 20))))) (+ (g a) (g 2))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 30 Int64))
@@ -548,9 +546,7 @@
     (do
       (def
         (main (: d Int64))
-        (let
-          ((k 100))
-          (let ((f1 (fn ((: v Int64)) (+ k v)))) (do #map((= 1 f1)) (f1 d)))))
+        (let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do #map((= 1 f1)) (f1 d)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
@@ -598,9 +594,7 @@
     (do
       (def
         (main (: d Int64))
-        (let
-          ((k 100))
-          (let ((f1 (fn ((: v Int64)) (+ k v)))) (+ (f1 d) (Map.len #map((= 1 f1)))))))
+        (let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (+ (f1 d) (Map.len #map((= 1 f1)))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 106 Int64))
@@ -636,9 +630,7 @@
            the force-keep is scoped to CAPTURING closures. `main 5` → discarded insert, then `f1 5 = 6`.")
   (input
     (do
-      (def
-        (main (: d Int64))
-        (let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do #map((= 1 f1)) (f1 d))))
+      (def (main (: d Int64)) (let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do #map((= 1 f1)) (f1 d))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 Int64)))
@@ -1275,11 +1267,7 @@
       (def
         (main (: k Int64) (: x Int64))
         (let
-          ((m
-              (Map.insert
-                #map((= 1 (fn ((: v Int64)) (* v 10))))
-                2
-                (fn ((: v Int64)) (+ v 100)))))
+          ((m (Map.insert #map((= 1 (fn ((: v Int64)) (* v 10)))) 2 (fn ((: v Int64)) (+ v 100)))))
           (match (Map.lookup m k) ((Some f) (f x)) ((None u) -1))))
       (export main)))
   (call main (: 1 Int64) (: 5 Int64))
@@ -13313,10 +13301,7 @@
            EMPTY list `[]` and its length is 0. Pins that a varargs call with no arguments is well-formed —
            the rest gathers nothing rather than being a missing argument.")
   (input
-    (do
-      (def (count (.. (: xs (List Int64)))) (List.len xs))
-      (def (main) (count))
-      (export main)))
+    (do (def (count (.. (: xs (List Int64)))) (List.len xs)) (def (main) (count)) (export main)))
   (output (: 0 Int64)))
 
 (case
@@ -13364,10 +13349,7 @@
            `Tuple.size` is 3. Pins that an unannotated rest is heterogeneous (each argument keeps its type,
            unlike the homogeneous list-rest) and its arity is observable.")
   (input
-    (do
-      (def (describe (.. xs)) (Tuple.size xs))
-      (def (main) (describe 1 "two" true))
-      (export main)))
+    (do (def (describe (.. xs)) (Tuple.size xs)) (def (main) (describe 1 "two" true)) (export main)))
   (output (: 3 Int64)))
 
 (case
@@ -13380,11 +13362,12 @@
            emitted. Pins tuple-rest + `Type.try-as` composing into compile-time type-dispatch.")
   (input
     (do
-      (def (kind (.. xs))
-        (match (: (Type.try-as (. xs 0)) (Option Int64))
+      (def
+        (kind (.. xs))
+        (match
+          (: (Type.try-as (. xs 0)) (Option Int64))
           ((Some n) 1)
-          ((None u)
-            (match (: (Type.try-as (. xs 0)) (Option String)) ((Some s) 2) ((None u) 0)))))
+          ((None u) (match (: (Type.try-as (. xs 0)) (Option String)) ((Some s) 2) ((None u) 0)))))
       (def (main (: sel Int64)) (kind "hello" sel))
       (export main)))
   (call main (: 5 Int64))
@@ -13614,9 +13597,27 @@
     (do
       (effect T (op tick (-> Int64)))
       (def (one (: a Int64)) (* a 3))
-      (def (main (: n Int64))
-        (handle T n ((tick () s (resume s (+ s 1))))
-          (one (.. #tuple(7)))))
+      (def (main (: n Int64)) (handle T n ((tick () s (resume s (+ s 1)))) (one (.. #tuple(7)))))
       (export main)))
   (call main 0)
   (output (: 21 Int64)))
+
+; The EFFECTFUL-operand companion of the splat-in-handle TODO above (#7861 pins the literal face):
+; when the expansion reaches handler bodies, an operand that PERFORMS must be evaluated exactly ONCE
+; — the single tick draws the state (n), so the result is 3n, pinning no-double-eval from day one.
+; Today the specializer declines the handle (CDZ0900, #7826 — the coded floor that replaced an
+; accept-to-invalid-artifact; breaker adv 2026-09-02).
+(case
+  "an effectful-operand splat inside a handle body performs exactly once (should-work; today the specializer declines)"
+  (input
+    (do
+      (effect T (op tick (-> Int64)))
+      (def (one (: a Int64)) (* a 3))
+      (def
+        (main (: n Int64))
+        (handle T n ((tick () s (resume s (+ s 1)))) (one (.. #tuple((T.tick))))))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 12 Int64))
+  (call main (: 10 Int64))
+  (output (: 30 Int64)))
