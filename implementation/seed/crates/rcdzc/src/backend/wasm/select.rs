@@ -4167,6 +4167,57 @@ fn emit_tail(
                 };
                 out.push(Lir::LocalGet(slot)); // [result, shell]
                 out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned sum shell)
+            } else if let Some(slot) = selfloop_scrut_slot
+                && !never_diverges
+            {
+                // SELF-LOOP-TAIL EXIT-ARM reclaim, dup_sites-GATED (v-memory-safety, tree 05:HEIGHT-BALANCE
+                // mode2 +10). `selfloop_scrut_slot` reclaims the dead loop-param scrutinee shell PER ITERATION
+                // at the back-edge (`emit_loop_iteration`'s save+deep-`op_drop`), covering only the LOOPING
+                // arms. A NON-LOOPING exit arm (a base/`false` return that does NOT `br` the loop —
+                // `balanced`'s `(> diff 1) → false`) falls through HERE with the dead loop-param STILL in its
+                // slot and NEVER dropped (`reclaim_shell` is FALSE because `arms_tail_call`), so the whole
+                // owned scrutinee subtree LEAKS on that exit (mode2 hits the root's false arm immediately →
+                // the entire tree leaks = +10; a balanced tree never takes it → 0). Deep-`op_drop` the
+                // loop-param on this fall-through — the looping arms `br` PAST it (no double-free with the
+                // back-edge drop), so it fires only on the value-returning exit arms.
+                //
+                // GATE (the P0 double-free fence — a bare exit-drop double-frees `run`'s mutual-recursion Seq
+                // arm, which MOVE-consumes its scrutinee children `a`/`b`): the deep-drop cascades into every
+                // scrutinee child, so it is sound ONLY if every scrutinee-child CONSUMED on an exit path is
+                // dup-BACKED (the shell kept its own ref → the cascade nets). A child MOVED out (its sole ref
+                // handed to a consumer) is freed by that consumer → the cascade would double-free it.
+                // `collect_consuming_payload_sites_cont` enumerates exactly the consuming compound scrutinee-
+                // child extraction sites (borrows excluded, nested MatchList/MatchSum descended); a site is
+                // dup-backed IFF it is in the FINAL `dup_sites` (which reflects WHICH shell-reclaim dup branch
+                // ran: tree's nontail branch dup-backs `l`/`r` — re-extracted from the still-live parent,
+                // multi-consumed by inlined `height`+`balanced` → present → FIRE; `run`'s selfloop_scrut branch
+                // dups only the back-edge carried child, NOT the non-looping-exit Seq consumes → `a`/`b` ABSENT
+                // → SKIP). ANY candidate absent ⟹ a move ⟹ SKIP (leak-safe: residual leak, never a UAF). The
+                // whole-`root` candidate set is the conservative cut (a per-exit-cont set would forfeit less).
+                let mut exit_move_candidates: HashSet<StructId> = HashSet::new();
+                collect_consuming_payload_sites_cont(
+                    db,
+                    &root,
+                    scrutinee,
+                    &mut exit_move_candidates,
+                );
+                // NON-EMPTY guard (the whole-carry double-free fence): the scrutinee must be genuinely
+                // DESTRUCTURED — at least one consuming child-projection (`balanced`'s l/r) — so its shell is a
+                // dead husk this drop reclaims. An EMPTY set means the scrutinee is carried WHOLE/identity on
+                // the back-edge (a `(walk (- n 1) w)` threading `w` unchanged — 20:BigInt-probe) or only
+                // borrowed: a whole-carried loop-param is NOT a dead husk (it is threaded live + reclaimed by
+                // the existing identity path on exit), so an exit-drop here DOUBLE-FREES it (guarded-all
+                // `unreachable`). `all()` over an empty set is vacuously true, so WITHOUT this guard the gate
+                // fires on exactly that case. Requiring non-empty forfeits a borrow-only-scrutinee leak (safe,
+                // conservative) but blocks the whole-carry double-free.
+                let all_dup_backed = !exit_move_candidates.is_empty()
+                    && exit_move_candidates
+                        .iter()
+                        .all(|site| out.dup_sites.contains(site));
+                if all_dup_backed {
+                    out.push(Lir::LocalGet(slot)); // [result, shell]
+                    out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the dead loop-param on the exit arm)
+                }
             }
             if never_diverges {
                 out.push(Lir::Unreachable);
