@@ -135,3 +135,61 @@ elusive; work from the full lowered decision tree.
 
 Code change here = the two `tracing::debug!` instrumentation points at the frontier decline sites (§3), so
 the exact declining path/probe is observable on demand. The re-emit fix itself remains a later slice.
+
+## 8. Site A LANDED (#7880, 2026-09-02) — keying reconciliation, NOT the guard-hoist
+
+Site A (the list-fold case) shipped as a **keying reconciliation** in `emit_match_sum`, not the fragile
+guard-hoist (approach 2). Dumping the ACTUAL Core reaching `emit_match_list` showed the desugar
+(`desugar_refutable_ctor_list_elements`) ALREADY emits a round-trippable shape: `(guard (list b0) (match b0
+((Ast.Int _) true)(_ false)))` + a BODY re-match `(match b0 ((Ast.Int a) realbody)(_ trap))`. Both guard and
+body are plain `MatchSum` on the element binder — the ONLY blocker was that the body re-match's scrutinee
+resolves to `SumPayload{root,[Elem(i)]}`, so `emit_match_sum` registered `a` at `(body_scrut,[Payload])` while
+the optimizer-composed body read used the ROOT-relative `(root,[Elem(i),Payload])`. **Fix** (mod.rs ~4254,
+`emit_match_sum` explicit-variant arm): when the match scrutinee is itself a nested `SumPayload{root,prefix}`,
+register each payload binder under BOTH the direct `(scrutinee,path)` AND the composed `(root,prefix++path)`
+key. Additive (composed key names exactly this payload), cadenza-only. This is design §7 "approach 1 (align
+keys)", which turned out to be the clean+safe fix — approach 2 unneeded. Flips the 20-struct list-fold
+todo→pass (value 102).
+
+## 9. Site B (quasiquote `ListLen` probe) — a DEEPER frontier than the ListLen probe alone (2026-09-02)
+
+The remaining 20-struct cadenza todo ("a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp
+matches its own constructor"): `(def (simp node) (match node ((quasiquote (* (unquote x) 1)) (simp x)) (other
+other)))`. Traced (repro `/tmp/qqb/qq.sexp`), the FULL decision tree reaching `emit_switch_tree` is:
+
+```
+LitTest{path:[Payload], probe:ListLen{len:3, at_least:false},
+  then_: LitTest{path:[Payload,Elem(0),Payload], probe:Str("*"),
+           then_: LitTest{path:[Payload,Elem(2),Payload], probe:Int(1),
+                    then_: Leaf(body reads x at [Payload,Elem(1)]), els: Leaf(other)},
+           els: Leaf(other)},
+  els: Leaf(other)}
+```
+
+**Key finding — the ListLen probe is the EASY part; the hard part is that there are NO disc `Switch` nodes
+anywhere in the tree.** The element variants (element0 = `Ast.Name`/symbol with a Str payload, element2 =
+`Ast.Int` with a BigInt payload) are ASSUMED — encoded ONLY as payload `LitTest` probes at
+`[Payload,Elem(i),Payload]`, with the enclosing discriminant constraints FOLDED away (the `Probe` doc: a
+ListLen/Str/Int probe is "gated once the enclosing discriminant constraints are satisfied" — here those
+constraints were statically discharged by the partial evaluation of `(simp (quote (* y 1)))`, so no `Switch`
+survives). So `build_arm_pat` has NO variant info at `[Payload,Elem(0)]`/`[Payload,Elem(2)]` (no `choices`
+entry, and `folded_disc` recovery only fires at the ROOT path via `Core::SumNew`). Even after wiring the
+ListLen→`(list …)` reconstruction, each element is a MULTI-variant `Ast` with only a payload lit-probe → it
+hits `build_arm_pat_inner`'s `_ => decline` ("cannot destructure this value to reach a deep-match
+constraint"). So a pure ListLen slice would NOT flip this case and has no other witness (→ not a meaningful MR).
+
+**What Site B actually needs (the deep piece):** VARIANT RECOVERY FROM THE PROBE PAYLOAD TYPE — at a
+multi-variant sum path with no `choices` entry but a deeper payload lit_choices key, recover the variant whose
+payload TYPE matches the probe kind (a `Str` probe → the variant with a Str payload; `Int`/BigInt → the BigInt
+payload variant), and cross into it (emit `(Ast.Name "*")` / `(Ast.Int 1)`). SOUNDNESS is the risk: it is
+correct only if the variant is UNAMBIGUOUS (exactly one variant of the sum has a payload of that kind); an
+ambiguous sum (two Str-payload variants) must DECLINE. Because the cadenza gate is VALUE-only (not
+byte-idempotent), emitting `(Ast.Name "*")` (whose re-lowering ADDS a redundant disc check the original tree
+folded) is fine IF value-equivalent — and a wrong variant guess shows as a VALUE MISMATCH in the local A/B
+(not a silent miscompile that escapes the gate). So the safe impl path: (1) ListLen→list-pattern in
+`emit_switch_tree` + `build_arm_pat` (thread a `list_choices`/`(len,at_least)` map, emit `(list e0 …
+e{len-1} [.. rest])`, recurse elements at `[path,Elem(i)]`); (2) unambiguous variant-recovery-from-probe-type
+in `build_arm_pat_inner`; (3) gate strictly on unambiguity, then A/B the whole 20-struct corpus for value +
+zero regression before landing. This is a dedicated fresh-context effort (3 interlocking pieces + a soundness
+gate), NOT a bounded tick — deferred. Repro `/tmp/qqb/qq.sexp` (`cdz compile qq.sexp -t cadenza`; trace with
+`RUST_LOG=rcdzc::backend::cadenza=debug`).
