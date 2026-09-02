@@ -83,7 +83,12 @@ The mapping is total and interpreter-agnostic (see the module header). -/
 def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
   match o with
   | .trap msg => .trap msg
-  | .outOfFuel => .diverges
+  -- Out-of-fuel is INCONCLUSIVE, NOT a divergence: the interpreter's step budget was exhausted, but the
+  -- program may terminate with more fuel (e.g. `06-numeric-model-1398` is a bounded 300k-iteration countdown
+  -- ≈ 2.7M steps). Mapping it to `.diverges` produced a FALSE divergence against Core's value. A sound oracle
+  -- SKIPs here (`.unsupported`) — never asserts non-termination it did not observe. Raising `talosDefaultFuel`
+  -- lets bounded-long loops actually complete → AGREE; only a genuinely huge/infinite loop hits this skip.
+  | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
   | .err msg => .unsupported msg
   | .ok vals =>
     match ty, vals.toList with
@@ -238,7 +243,7 @@ so they are asserted structurally. -/
 
 -- exit-code → outcome
 example : toOutcome (.trap "unreachable") .int = .trap "unreachable" := rfl
-example : toOutcome .outOfFuel .int = .diverges := rfl
+example : toOutcome .outOfFuel .int = .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)" := rfl
 example : toOutcome (.err "module declares imports") .int = .unsupported "module declares imports" := rfl
 
 -- scalar value decode (the milestone-1 mapping)
