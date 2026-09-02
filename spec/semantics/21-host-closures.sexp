@@ -4873,7 +4873,7 @@
       (export mk)))
   (call mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a NESTED Record ARG (a record containing a record) crosses the direct-call boundary"
@@ -4895,7 +4895,7 @@
       #record((= n 100) (= inner #record((= x 10) (= y 3))))
       (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary"
@@ -4913,7 +4913,7 @@
       (export mk)))
   (call mk (: #tuple(100 #record((= x 10) (= y 3))) (Tuple Int64 (Record (: x Int64) (: y Int64)))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary"
@@ -4933,7 +4933,7 @@
     mk
     (: #tuple(1000 #tuple(100 #tuple(10 3))) (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
   (output (: 1113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary"
@@ -4951,7 +4951,7 @@
       (export mk)))
   (call mk (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a RECORD with a nested TUPLE field crosses the direct-call boundary"
@@ -4971,7 +4971,7 @@
     mk
     (: #record((= n 100) (= pair #tuple(10 3))) (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a TRIPLY-nested Record ARG crosses the direct-call boundary"
@@ -4995,7 +4995,7 @@
       #record((= a 1000) (= b #record((= c 100) (= d #record((= e 10) (= f 3))))))
       (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
   (output (: 1113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A NESTED compound ARG can also sit AMONG scalar args (single-export): the recursive rebuild interleaves the
 ; prefix scalars, the reassembled nested cell, and the suffix scalars (the `base_param` shifts past the prefix,
@@ -5016,7 +5016,7 @@
       (export mk)))
   (call mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a NESTED Tuple ARG between two scalar args (prefix + suffix)"
@@ -5038,7 +5038,7 @@
     (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64)))
     (: 1000 Int64))
   (output (: 1114 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a NESTED Tuple ARG among scalars with a LIST result"
@@ -5160,7 +5160,7 @@
       (export mk-b)))
   (call mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)"
@@ -5180,7 +5180,7 @@
       (export mk-b)))
   (call mk-b (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 87 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result"
@@ -5222,7 +5222,7 @@
       (export two)))
   (call mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure"
@@ -5285,7 +5285,7 @@
       (export mk-b)))
   (call mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)"
@@ -5308,7 +5308,7 @@
       (export mk-b)))
   (call mk-b (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 887 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export"
