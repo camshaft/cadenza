@@ -14954,7 +14954,7 @@
   (output (: 7 Int64))
   (call run (: 5 Int64))
   (output (: -3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Result carrying a String error is matched"
@@ -35828,7 +35828,11 @@
   (call main (: 10 Int64))
   (output (: 16 Int64))
   (call main (: 0 Int64))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  ; TODO(v-memory-safety): the mutual total/sum-kids recursion over a Rose tree currently leaks the
+  ; traversed spine; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak, tighten to 0
+  ; once the recursive-list-of-sum spine reclaim lands. (breaker rose1 #7918, added unpinned.)
+  (live-objects known-leak))
 
 ; lpn1: nested LIST-IN-LIST pattern projection — a match over (List (List Int64)) whose arms
 ; discriminate by OUTER length and project into the INNER lists (empty / singleton-empty /
@@ -35863,7 +35867,11 @@
   (call main (: 5 Int64))
   (output (: 99910701510 Int64))
   (call main (: 0 Int64))
-  (output (: 99910201010 Int64)))
+  (output (: 99910201010 Int64))
+  ; TODO(v-memory-safety): the nested list-in-list match projecting into inner lists currently leaks
+  ; the discriminated sub-lists; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak,
+  ; tighten to 0 once the nested-list-pattern interior reclaim lands. (breaker lpn1 #7923, added unpinned.)
+  (live-objects known-leak))
 
 ; gtx1: a GENERIC recursive multi-variant sum — (Tree a) instantiated at String — built literally
 ; and folded by a recursive traversal. Round-trips on the cadenza hop since #7940 (the instantiated
