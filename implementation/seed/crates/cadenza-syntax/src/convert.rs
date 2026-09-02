@@ -403,6 +403,22 @@ pub fn render_binary(
         .map_err(|e| ConvertError(format!("surface render is not valid UTF-8: {e}")))
 }
 
+/// Render a self-describing binary VALUE doc (`codec::encode` of a `(: value type)` AST) to its
+/// SINGLE-LINE canonical sexpr surface — the runtime-VALUE render shape (op-seq-283: ONE canonical
+/// value render). Unlike [`render_binary`] (which pretty-prints across lines via `print_pretty_width`
+/// — right for a guide `(cdz …)` fragment or a `cdz convert`, where a long form SHOULD wrap for
+/// readability), a runtime value render must be ONE LINE: it is what `cdz run` (wasm, `cdz-run`'s
+/// `render_val`) prints, so `cdz run-rust` — which renders its result value-doc through this canonical
+/// printer — must match it byte-for-byte (run-rust's "byte-identical to what cdz-run prints" promise;
+/// the pretty printer's width-wrapping of a long record/compound result was the sole divergence). Uses
+/// [`crate::sexpr::print_from`] (the single-line printer `render_ty` also uses — GUARANTEED one line,
+/// vs `print_pretty` whose match/let/comment hard-breaks could still split a value), so a long
+/// `(: value type)` stays on one line, idiomatic surface falling out of the AST shape.
+pub fn render_binary_value_line(bytes: &[u8]) -> Result<String, ConvertError> {
+    let arenas = read(bytes, Format::Binary)?;
+    Ok(sexpr::print_from(&arenas, arenas.root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +583,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn render_binary_value_line_stays_one_line_where_render_binary_wraps() {
+        // op-seq-283 ONE-canonical-value-render: a runtime VALUE doc must render on ONE LINE (what
+        // `cdz run` / cdz-run's `render_val` prints), so `cdz run-rust` — which renders its result
+        // value-doc through the canonical printer — matches it byte-for-byte (its "byte-identical to
+        // cdz-run" promise). render_binary PRETTY-prints (right for a guide fragment / cdz convert), which
+        // WRAPS a long compound across lines; render_binary_value_line uses the single-line printer so it
+        // stays one line. A value long enough to overflow a small width proves the divergence + the fix.
+        let sexp =
+            "(: (tuple 1 2 3 4 5 6 7 8) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64))";
+        let arenas = crate::sexpr::read(sexp).expect("value doc parses");
+        let bytes = crate::codec::encode(&arenas);
+        // The single-line value render: no newline, byte-identical to the canonical one-line surface.
+        let line = render_binary_value_line(&bytes).unwrap();
+        assert!(
+            !line.contains('\n'),
+            "a value-doc render must be ONE line, got:\n{line}"
+        );
+        assert_eq!(
+            line, sexp,
+            "single-line value render is the canonical one-line surface"
+        );
+        // Contrast: render_binary (pretty) at a narrow width WRAPS the same doc across lines — the exact
+        // divergence run-rust hit vs cdz-run's one-line render_val.
+        let pretty = render_binary(
+            &bytes,
+            Format::Sexpr,
+            FragmentKind::Expr,
+            Options {
+                width: 10,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            pretty.contains('\n'),
+            "render_binary pretty-prints a long value multi-line at a narrow width (the divergence), got:\n{pretty}"
+        );
+        // Both surfaces re-parse to the SAME AST (whitespace-only difference) — the value + spelling agree,
+        // only the line-shape differed.
+        assert_eq!(
+            crate::codec::encode(&crate::sexpr::read(&line).unwrap()),
+            crate::codec::encode(&crate::sexpr::read(pretty.trim_end()).unwrap()),
+            "one-line and pretty renders are the same value, differing only in whitespace"
+        );
     }
 
     #[test]
