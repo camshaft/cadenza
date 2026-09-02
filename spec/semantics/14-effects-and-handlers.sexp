@@ -40,6 +40,8 @@
 ; capability floor but not the effect surface or the algebraic-handler layer (so it declines these). A
 ; response-returning delegated call fixes
 ; its response with (host-responses …) so the run is a deterministic function of input and that response.
+(diagnostic-quality)
+
 (case
   "a run's result is a deterministic function of a host call's recorded response"
   (doc
