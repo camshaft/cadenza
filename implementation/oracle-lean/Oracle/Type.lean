@@ -598,8 +598,15 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
         | some ot => .ok (ot, st)
         | none =>
           if nm == "None".toUTF8 then .ok (optionTy (.var st.next), { st with next := st.next + 1 })
-          else .error (.unsupported
-            "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)")
+          else
+            -- T1.26 — a bare NULLARY user variant `(type C R G B)` used in value position (`R`) constructs
+            -- its type's sum. Only NULLARY variants (payload `none`) — a bare payload-bearing variant name
+            -- is a partial constructor (a function), declined. Env-miss only ⇒ scope-first respected
+            -- (a def/param/let binding of the same name resolves via `env.find?` above).
+            (match (userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == nm)) with
+             | some (_, (sumTy, none)) => .ok (sumTy, st)
+             | _ => .error (.unsupported
+                 "type oracle: unresolved name (may be a prelude/builtin or local binder — CDZ0101 unbound needs the prelude scope model)"))
     | none =>
       match m.nodes[nodeId]? with
       | some (.list children) =>
@@ -1693,6 +1700,20 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 6, .list #[24, 23, 21], .atom 12, .atom 7, .list #[26, 27], .atom 0,
                            .list #[29, 7, 25, 28]],
                 root := 30 } == .wellTyped (.int 64 true))
+-- T1.26 (user sum, bare-name nullary ctor): `(do (type C R G B) (def (main) (match R (R 1) (G 2) (B 3)))
+-- (export main))` → WellTyped Int64. A bare enum variant `R` in value position constructs its type's sum;
+-- the match's bare `R`/`G`/`B` patterns cover {R,G,B} exhaustively; numeric arms → Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "type".toUTF8, .name "C".toUTF8, .name "R".toUTF8,
+                            .name "G".toUTF8, .name "B".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                            .name "match".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .intLit false .dec (ByteArray.mk #[3]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[0, 1, 2, 3, 4], .atom 3,
+                           .atom 3, .atom 9, .list #[7, 8], .atom 4, .atom 10, .list #[10, 11], .atom 5,
+                           .atom 11, .list #[13, 14], .atom 8, .list #[16, 6, 9, 12, 15], .atom 7,
+                           .list #[18], .atom 6, .list #[20, 19, 17], .atom 12, .atom 7, .list #[22, 23],
+                           .atom 0, .list #[25, 5, 21, 24]],
+                root := 26 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
