@@ -141,6 +141,19 @@ A name a macro introduces MUST NOT be captured by a name at the macro's use site
 
 Hygiene MUST be realized by tracking, for each identifier, binding-relevant provenance beyond its spelling — at minimum whether the identifier was introduced by a macro or spliced from the macro's use site — so that a name's binding is resolved by that provenance rather than by its spelling alone. The set of scopes an identifier carries is one such provenance; recording, per macro splice, each name's introduce-site or use-site origin — renaming introduced binders and marking introduced references accordingly — is another.
 
+### A Macro May Introduce Bindings At Its Splice Position
+
+A macro expansion spliced at a statement position MAY introduce bindings — definitions and types — into the enclosing scope, so that a macro is not limited to producing an expression.
+
+The visibility of a binding a macro introduces MUST be governed on two independent axes:
+
+- Within the expansion, every binding the expansion introduces MUST be visible to the expansion's other bindings, so that an introduced helper is usable by the expansion's own code.
+- At the call site, a name the expansion introduces MUST be visible only when it is a name spliced from a macro argument — a use-site identifier; a name that is a macro-template literal MUST remain hygienic-local and MUST NOT be visible at the call site, realizing *Macros Are Hygienic* per name.
+
+To introduce several bindings, a macro's expansion at a statement position MAY be a `(do …)` block; such a statement-position `(do …)` MUST splice its statements into the enclosing sequence rather than nest as a scoped block, and this MUST apply recursively to a `(do …)` that is itself at a non-final position within a spliced sequence. A `(do …)` in a value position — the tail of a `do`, or any other expression position — MUST remain a scoped block whose bindings are local to it.
+
+A qualified member access of a binding a macro introduces — for example a constructor projected from an introduced type — MUST follow the introduced type's visibility rather than a separate rule, because member access resolves a structural member of the type rather than a name in scope.
+
 ### Expansion Runs In Phases To A Fixpoint
 
 Macro expansion MUST run as a distinct phase that precedes type checking, expanding to a fixpoint so that a macro whose output is itself a macro use is fully expanded before the program is type-checked.
