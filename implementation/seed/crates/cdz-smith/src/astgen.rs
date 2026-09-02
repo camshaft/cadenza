@@ -1441,7 +1441,7 @@ fn gen_map_lookup_body<C: Choice>(c: &mut C, out: &mut String) {
 /// invalid-wasm). Same-unit ops keep the result well-typed; the magnitudes are `0..=9` so nothing
 /// overflows.
 fn gen_qty_body<C: Choice>(c: &mut C, out: &mut String) {
-    let form = c.variant(2);
+    let form = c.variant(3);
     let op = ["+", "-", "*"][c.variant(3)];
     let unit = ["meter", "second", "gram", "mole"][c.variant(4)];
     let grp = c.variant(2) == 0;
@@ -1455,9 +1455,18 @@ fn gen_qty_body<C: Choice>(c: &mut C, out: &mut String) {
         // `Qty.value` of a bare `Qty.of` literal → the magnitude.
         0 => write!(out, "(Qty.value (Qty.of {mag_a} (Unit.base #\"{unit}\")))").ok(),
         // `Qty.value` of a same-unit `+`/`-`/`*` combination → the arithmetic result.
-        _ => write!(
+        1 => write!(
             out,
             "(Qty.value ({op} (Qty.of {mag_a} (Unit.base #\"{unit}\")) (Qty.of {b} (Unit.base #\"{unit}\"))))"
+        )
+        .ok(),
+        // RETURN a display-scaled Qty VALUE — a `kilo`-prefixed unit + FLOAT magnitude, rendered (not
+        // consumed) so the value_doc must apply the display-scale to the float magnitude (`{a}.0 kilo·unit`
+        // → `{a}000.0 unit`). This is the #7824 class (rust value_doc float display-scale) the consume-only
+        // forms above never reached — `gen_qty_body` only did `Qty.value` (magnitude), never a Qty value.
+        _ => write!(
+            out,
+            "(Qty.of {a}.0 (Unit.prefix kilo (Unit.base #\"{unit}\")))"
         )
         .ok(),
     };
