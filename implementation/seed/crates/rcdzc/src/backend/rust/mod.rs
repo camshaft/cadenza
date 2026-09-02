@@ -612,8 +612,16 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // driver only links (and only calls `__cdz_doc`) when the flag is set — so with the flag UNSET this emits
     // nothing and the module is byte-identical (zero gate impact). A `// cdz-value-doc: <name>` marker note
     // (inert to rustc) tells the driver-gen which exports have a `__cdz_doc` to call. An export whose result
-    // shape is not yet covered emits no `__cdz_doc` (and no marker) → the driver falls back to `cdz_render_at`.
-    if std::env::var("CDZ_VALUE_DOC").is_ok() {
+    // shape is not covered emits no `__cdz_doc` (and no marker) → the driver falls back to `cdz_render_at`.
+    //
+    // ENABLED when `CDZ_VALUE_DOC` is set to anything OTHER than "0" — a gate/oracle harness sets it to "1"
+    // (the flip); a real `cdz compile --target rust` never sets it (so a user's module stays free of the
+    // `cadenza_ast` dep `__cdz_doc` references); and "0" is the explicit KILL-SWITCH (fall back to
+    // cdz_render_at) — treated as OFF here so the value survives a child inheriting an outer "0".
+    if std::env::var("CDZ_VALUE_DOC")
+        .as_deref()
+        .is_ok_and(|v| v != "0")
+    {
         for &def in &layout.order {
             let Some(e) = layout.export_plan(def) else {
                 continue;
@@ -627,7 +635,11 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
             let ident = fn_ident(db, layout, def);
             let call = format!("{ident}()");
             if let Ok(body) = value_doc::emit_result_doc(db, &e.result, &call) {
-                out.push_str(&format!("// cdz-value-doc: {}\n", e.name));
+                // KEY the marker by the sanitized `ident` (== `rust_ident`), NOT the boundary `e.name` — the
+                // driver-gen reads its `// cdz-*` notes by `rust_ident` (a hyphenated `mk-b` export emits
+                // `__cdz_doc_mk_b`, and the driver calls `prog::__cdz_doc_mk_b()`), so the marker must carry
+                // the same key it will construct the fn name from.
+                out.push_str(&format!("// cdz-value-doc: {ident}\n"));
                 out.push_str(&format!(
                     "#[allow(dead_code)]\npub fn __cdz_doc_{ident}() -> String {{\n{body}}}\n"
                 ));

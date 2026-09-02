@@ -1638,7 +1638,24 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // (`#[allow(unreachable_code)]`) then failed because `!`/`()` doesn't `Display` — a `!`-typed result
     // can't be rendered at all. So diverging programs are handled by NOT rendering (breaker + corpus-bugfix,
     // whose fuzzer rust-vs-wasm differential this false-`error` would otherwise poison for every trap case).
-    let driver = if ret_ty.as_deref() == Some("!") {
+    // FLAG-GATED value-doc path (`CDZ_VALUE_DOC`, default-OFF): when the module carries a
+    // `// cdz-value-doc: <export>` marker (rcdzc emitted a self-contained `pub fn __cdz_doc_<export>() ->
+    // String` for this nullary export — see `backend/rust/mod.rs`), the driver just PRINTS that fn's result
+    // (the `CDZDOC:<hex>` marker string, decoded by `cdz_rust_run::value_doc::interpret_run_stdout` on the
+    // read side). This replaces the type-note-driven `cdz_render_expr` string render with the rcdzc Ty-direct
+    // walk. The marker is absent unless the flag was set for the `cdz compile` child (env-inherited), so with
+    // the flag off this is byte-identical to the render path below.
+    // Gate on the MARKER's PRESENCE — rcdzc emits `// cdz-value-doc: <export>` iff the compile child had
+    // CDZ_VALUE_DOC set (which `emit_rust_module` does by default now), so the marker IS the authoritative
+    // signal. (No env re-check here: the emit decision already happened in the child; the marker records it.)
+    let value_doc = module
+        .lines()
+        .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
+    let driver = if value_doc {
+        format!(
+            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    println!(\"{{}}\", prog::__cdz_doc_{export}());\n}}\n"
+        )
+    } else if ret_ty.as_deref() == Some("!") {
         format!(
             "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    prog::{export}();\n}}\n"
         )
@@ -1694,7 +1711,10 @@ fn emitted_pub_fn_names(module: &str) -> Vec<String> {
     for line in module.lines() {
         if let Some(rest) = line.strip_prefix("pub fn ") {
             let name = rest.split(['(', '<']).next().unwrap_or("").trim();
-            if !name.is_empty() {
+            // Skip the value-doc HELPER fns (`__cdz_doc_<export>`, emitted under CDZ_VALUE_DOC): they are
+            // internal render helpers, not program exports — counting them would break the sole-export
+            // pick (a nullary `main` + its `__cdz_doc_main` would spuriously read as "2 exports").
+            if !name.is_empty() && !name.starts_with("__cdz_doc_") {
                 names.push(name.to_string());
             }
         }
@@ -1782,12 +1802,21 @@ fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
     if let Err(e) = std::fs::write(&src, source) {
         return EmitOutcome::Harness(format!("write source: {e}"));
     }
-    let out = match Command::new(exe)
-        .arg("compile")
+    let mut cmd = Command::new(exe);
+    cmd.arg("compile")
         .arg(&src)
-        .args(["-o", "-", "--target", "rust"])
-        .output()
-    {
+        .args(["-o", "-", "--target", "rust"]);
+    // VALUE-DOC flip (op-seq-210): the run-rust ORACLE renders the boundary value via the rcdzc-emitted
+    // Ty-direct `__cdz_doc` (the `(: value type)` codec doc — byte-identical to `cdz run`'s wasm render) rather
+    // than cdz-rust-render's type-note string walk. That is enabled by setting `CDZ_VALUE_DOC` for THIS child
+    // `cdz compile` (so rcdzc emits the `__cdz_doc` fn + marker); the driver then calls it (gated on the marker
+    // below). ON by DEFAULT here (the gate/oracle harness) — a real `cdz compile --target rust` never sets it,
+    // so a user's module stays free of the `cadenza_ast` dep. KILL-SWITCH: set `CDZ_VALUE_DOC=0` to fall back
+    // to cdz_render_at (A/B / rollback without a revert).
+    if std::env::var("CDZ_VALUE_DOC").as_deref() != Ok("0") {
+        cmd.env("CDZ_VALUE_DOC", "1");
+    }
+    let out = match cmd.output() {
         Ok(o) => o,
         Err(e) => return EmitOutcome::Harness(format!("spawn compile: {e}")),
     };
@@ -1968,7 +1997,41 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
         return Ok(format!("trap {}", panic_reason(&stderr)));
     }
     let value = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    // VALUE-DOC decode: a value-doc driver prints a `CDZDOC:<hex>` marker (the self-describing
+    // `(: value type)` binary-AST codec doc rcdzc's `__cdz_doc_<export>` builds). Render it through the
+    // CANONICAL printer (`render_binary`, Sexpr/Expr — the SAME path cdz-run + the corpus grader use), so the
+    // run-rust verdict is the canonical value surface, not the raw hex. A NON-marker stdout (the ordinary
+    // render path, or with the flag off) passes through unchanged. A corrupt marker → an `error` verdict
+    // (a bad artifact), never a silent mis-render.
+    if let Some(hex) = value.strip_prefix("CDZDOC:") {
+        return Ok(match decode_value_doc(hex) {
+            Ok(rendered) => format!("value {rendered}"),
+            Err(e) => format!("error value-doc decode: {e}"),
+        });
+    }
     Ok(format!("value {value}"))
+}
+
+/// Decode a `CDZDOC:` marker payload (lowercase hex of the binary-AST `(: value type)` doc) to its canonical
+/// s-expr surface via `render_binary` — the shared printer cdz-run/the corpus grader use, so the rendered
+/// value is byte-identical across the wasm + rust gates. Errors on a malformed hex/AST (→ an `error` verdict).
+fn decode_value_doc(hex: &str) -> Result<String, String> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("marker hex has odd length {}", hex.len()));
+    }
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("non-hex digit in marker: {e}"))?;
+    cadenza_syntax::convert::render_binary(
+        &bytes,
+        cadenza_syntax::convert::Format::Sexpr,
+        cadenza_syntax::convert::FragmentKind::Expr,
+        cadenza_syntax::convert::Options::default(),
+    )
+    .map_err(|e| format!("{e}"))
 }
 
 /// Extract a DETERMINISTIC panic reason from a Rust panic's stderr — the trap message the differential
