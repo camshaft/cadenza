@@ -417,8 +417,26 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
         } else {
             // Playground: a per-example `(example …)` .cdzb (seq-279 file-per-example) or a legacy
             // `(playground …)` doc. Each example is a whole-program module rendered in both surfaces.
-            let examples = crate::playground::read_playground_any(&a)
-                .unwrap_or_else(|e| die(&format!("{path}: {e}")));
+            //
+            // For a per-example `.cdzb`, RE-READ the sibling authored `.sexp` (spanned) so the `(expected …)`
+            // pin is span-sliced VERBATIM — the decoded binary AST is SPANLESS, so a spanless read would
+            // re-render a Qty pin STRUCTURAL `(. Qty of)` while the runtime `got` renders it FLAT `Qty.of`
+            // (#7616), RED-ing localGate (guide-editor 2026-09-02). The `.sexp` sits at the shred's cwd: the
+            // guideShred derivation runs from the guide src root and each playground `.cdzb` stem is exactly
+            // its `src/playground/examples/<stem>.sexp` basename. Fall back to the spanless binary read for a
+            // legacy `(playground …)` doc or when the sibling is absent (a native/test invocation) — that path
+            // only re-renders structural, which is still correct for a structural-authored (e.g. Ast) pin.
+            let sibling =
+                std::path::Path::new("src/playground/examples").join(format!("{stem}.sexp"));
+            let examples = if sibling.is_file() {
+                vec![
+                    crate::playground::read_one_example_file(&sibling)
+                        .unwrap_or_else(|e| die(&format!("shred {}: {e}", sibling.display()))),
+                ]
+            } else {
+                crate::playground::read_playground_any(&a)
+                    .unwrap_or_else(|e| die(&format!("{path}: {e}")))
+            };
             for pe in &examples {
                 idx += 1;
                 let case = derive_playground_case(pe, idx, cdz)

@@ -212,38 +212,52 @@ pub fn read_playground_dir(dir: &std::path::Path) -> Result<Vec<PlaygroundExampl
     }
     let mut out = Vec::new();
     for f in &files {
-        let text = std::fs::read_to_string(f).map_err(|e| format!("read {}: {e}", f.display()))?;
-        // Spanned read so the (expected …) pin is preserved verbatim from the authored source.
-        let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(&text)
-            .map_err(|e| format!("parse {}: {e:?}", f.display()))?;
-        let ex =
-            locate_example(&a).ok_or_else(|| format!("{}: no (example …) form", f.display()))?;
-        let example = read_one_example(&a, ex, Some((&text, &spans)))?;
-        // GATE the verbatim-preserve invariant (#7634) on the REAL corpus, at the codegen PATH — a loud
-        // regression guard that `--playground-registry --check` alone cannot give: --check only proves
-        // committed==regenerated (both by CURRENT code), so a future "simplification" of expected_value back
-        // to a re-render (`print_from`/`print_pretty_from`) would flip a SUGARED pin (units `Qty.of` →
-        // structural `(. Qty of)`) and STILL pass --check (both sides re-rendered), silently reintroducing
-        // the mismatch-with-runtime bug the verbatim slice fixed. The authored value is emitted verbatim, so
-        // it MUST appear byte-for-byte in the source; if it doesn't, expected_value stopped slicing the span.
-        // (Structural-authored pins re-render to themselves, so this only fires on the harmful sugared-revert
-        // case — exactly the Qty bug class. Baked in the reader, not a deletable unit test.) Assumes the common
-        // SINGLE-value `(expected <form>)` (every current example): a multi-child expected joins children with
-        // one space, which need not be a contiguous source substring — if such an example is ever added and
-        // this false-fires, refine to check each child's slice rather than the joined string.
-        if let Some(exp) = &example.expected
-            && !text.contains(exp.as_str())
-        {
-            return Err(format!(
-                "{}: the (expected …) pin {exp:?} is NOT a verbatim slice of the authored source — \
-                 expected_value must preserve the authored surface (span-slice), not re-render it \
-                 (see verbatim-preserve #7634; a re-render silently reverts sugared pins like Qty.of → (. Qty of))",
-                f.display()
-            ));
-        }
-        out.push(example);
+        out.push(read_one_example_file(f)?);
     }
     Ok(out)
+}
+
+/// Read + validate ONE per-example `.sexp` FILE, span-slicing the `(expected …)` pin VERBATIM from its
+/// authored source. Shared by [`read_playground_dir`] (the codegen source-of-truth) AND the SHRED
+/// (`run_shred`), so the shred's pin matches the codegen's authored surface — NOT the spanless structural
+/// re-render the shred would otherwise get from the decoded binary AST (the Qty-pin mismatch class:
+/// `Qty.of` renders FLAT at runtime post-#7616 but `print_from` renders the same `Leaf::Member` structural
+/// `(. Qty of)`, so the spanless shred pin diverged from the runtime `got` and RED'd localGate; guide-editor
+/// 2026-09-02). Reading the authored `.sexp` restores the spans so the per-type surface (units sugared, Ast
+/// unsugared) is preserved by the author's own text — the only faithful source, since both surfaces parse to
+/// the same `Leaf::Member` and no re-render printer can reproduce the distinction.
+pub fn read_one_example_file(path: &std::path::Path) -> Result<PlaygroundExample, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    // Spanned read so the (expected …) pin is preserved verbatim from the authored source.
+    let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(&text)
+        .map_err(|e| format!("parse {}: {e:?}", path.display()))?;
+    let ex =
+        locate_example(&a).ok_or_else(|| format!("{}: no (example …) form", path.display()))?;
+    let example = read_one_example(&a, ex, Some((&text, &spans)))?;
+    // GATE the verbatim-preserve invariant (#7634) on the REAL corpus, at the read PATH — a loud regression
+    // guard that `--playground-registry --check` alone cannot give: --check only proves committed==regenerated
+    // (both by CURRENT code), so a future "simplification" of expected_value back to a re-render
+    // (`print_from`/`print_pretty_from`) would flip a SUGARED pin (units `Qty.of` → structural `(. Qty of)`)
+    // and STILL pass --check (both sides re-rendered), silently reintroducing the mismatch-with-runtime bug the
+    // verbatim slice fixed. The authored value is emitted verbatim, so it MUST appear byte-for-byte in the
+    // source; if it doesn't, expected_value stopped slicing the span. (Structural-authored pins re-render to
+    // themselves, so this only fires on the harmful sugared-revert case — exactly the Qty bug class. Baked in
+    // the reader, not a deletable unit test.) Assumes the common SINGLE-value `(expected <form>)` (every
+    // current example): a multi-child expected joins children with one space, which need not be a contiguous
+    // source substring — if such an example is ever added and this false-fires, refine to check each child's
+    // slice rather than the joined string.
+    if let Some(exp) = &example.expected
+        && !text.contains(exp.as_str())
+    {
+        return Err(format!(
+            "{}: the (expected …) pin {exp:?} is NOT a verbatim slice of the authored source — \
+             expected_value must preserve the authored surface (span-slice), not re-render it \
+             (see verbatim-preserve #7634; a re-render silently reverts sugared pins like Qty.of → (. Qty of))",
+            path.display()
+        ));
+    }
+    Ok(example)
 }
 
 /// Read playground examples from a decoded doc — either a legacy `(playground …)` multi-example doc OR a
