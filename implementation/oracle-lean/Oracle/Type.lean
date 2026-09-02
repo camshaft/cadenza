@@ -26,6 +26,7 @@ inductive Ty where
   | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
   | sum (variants : List (ByteArray × Option Ty))  -- CLOSED sum, variants sorted by name; `none` payload =
                                         -- nullary variant (ts:192-204). Option/Result/Ordering + user sums.
+  | listTy (elem : Ty)                  -- a homogeneous `List` of `elem` (T1.29 — collection type modeling)
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
@@ -78,6 +79,7 @@ partial def hasVar : Ty → Bool
   | .numVar _ => true
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
+  | .listTy e => hasVar e
   | .record fs => fs.any (fun f => hasVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
   | _ => false
@@ -90,6 +92,7 @@ partial def hasGenVar : Ty → Bool
   | .var _ => true
   | .fn d c => hasGenVar d || hasGenVar c
   | .tuple es => es.any hasGenVar
+  | .listTy e => hasGenVar e
   | .record fs => fs.any (fun f => hasGenVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasGenVar t | none => false)
   | _ => false
@@ -108,6 +111,7 @@ partial def applySubst (s : Subst) : Ty → Ty
                  | none => .numVar i
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
+  | .listTy e => .listTy (applySubst s e)
   | .record fs => .record (fs.map (fun f => (f.1, applySubst s f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map (applySubst s))))
   | t => t
@@ -138,6 +142,7 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
       if e1.length == e2.length then
         (e1.zip e2).foldlM (fun s (p : Ty × Ty) => unify p.1 p.2 s) s
       else .error "CDZ0203"
+  | .listTy e1, .listTy e2 => unify e1 e2 s        -- Lists unify iff their element types unify
   | .record f1, .record f2 =>
       -- CLOSED records unify iff same field-name SET (stored sorted+unique, so zip-compare keys) and each
       -- field's type unifies (ts:70-74, ts:184-190). A field-set or field-type mismatch is CDZ0203.
@@ -526,6 +531,7 @@ partial def freeGenVars : Ty → List Nat
   | .var i => [i]
   | .fn d c => freeGenVars d ++ freeGenVars c
   | .tuple es => es.flatMap freeGenVars
+  | .listTy e => freeGenVars e
   | .record fs => fs.flatMap (fun f => freeGenVars f.2)
   | .sum vs => vs.flatMap (fun v => match v.2 with | some t => freeGenVars t | none => [])
   | _ => []
@@ -720,6 +726,22 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 let (τ, st') ← inferE m env acc.2 eid
                 pure (acc.1 ++ [τ], st')) ([], st)
             .ok (.tuple τs, st)
+          else if h == "list".toUTF8 then
+            -- T1.29 — LIST construction `(list e…)`: infer each element and UNIFY them to one element type
+            -- (a `List` is homogeneous) → `.listTy τ`. A non-homogeneous element clash is `IllTyped CDZ0203`.
+            -- An EMPTY `(list)` has an unconstrained element type (needs context we don't model) → declined.
+            let elemIds := children.extract 1 children.size
+            if elemIds.isEmpty then .error (.unsupported "type oracle: empty (list) — element type unconstrained, declined")
+            else (match elemIds.foldlM (m := Except InferFail)
+                (fun (acc : Ty × InferState) eid =>
+                  match inferE m env acc.2 eid with
+                  | .ok (τ, st') => (match unifyInfer acc.1 τ st' with
+                                     | .ok st'' => .ok (acc.1, st'')
+                                     | .error e => .error e)
+                  | .error e => .error e)
+                (.var st.next, { st with next := st.next + 1 }) with
+             | .ok (τelem, st') => .ok (.listTy (applySubst st'.subst τelem), st')
+             | .error e => .error e)
           else if h == "record".toUTF8 then
             -- T1.13 — CLOSED RECORD construction (`ts:70-74`): `(record (= k v)…)` infers each field value,
             -- sorts fields by key (canonical form, so `unify` compares field SETs), and yields `.record`.
@@ -1144,6 +1166,7 @@ partial def defaultNumVars : Ty → Ty
   | .numVar _ => .int 64 true
   | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
   | .tuple es => .tuple (es.map defaultNumVars)
+  | .listTy e => .listTy (defaultNumVars e)
   | .record fs => .record (fs.map (fun f => (f.1, defaultNumVars f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map defaultNumVars)))
   | t => t
@@ -1157,6 +1180,7 @@ partial def hasUndeterminedSum : Ty → Bool
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
   | .fn d c => hasUndeterminedSum d || hasUndeterminedSum c
   | .tuple es => es.any hasUndeterminedSum
+  | .listTy e => hasUndeterminedSum e
   | .record fs => fs.any (fun f => hasUndeterminedSum f.2)
   | _ => false
 
@@ -1806,6 +1830,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[28, 9, 15, 21, 27], .atom 7, .list #[30], .atom 6, .list #[32, 31, 29],
                            .atom 13, .atom 7, .list #[34, 35], .atom 0, .list #[37, 5, 33, 36]],
                 root := 38 } == .wellTyped (.int 64 true))
+-- T1.29 (List construction): `(do (def (main) (list 1 2 3)) (export main))` → WellTyped (List Int64).
+-- The three int elements unify to one numeric element type, defaulting to Int64 → `.listTy Int64`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "list".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .intLit false .dec (ByteArray.mk #[3]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .list #[0, 1, 2, 3], .atom 2, .list #[5],
+                           .atom 1, .list #[7, 6, 4], .atom 7, .atom 2, .list #[9, 10], .atom 0,
+                           .list #[12, 8, 11]],
+                root := 13 } == .wellTyped (.listTy (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
