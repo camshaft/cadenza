@@ -14890,7 +14890,11 @@
 ; above pin a non-finite crossing the boundary as a BARE scalar. The un-covered semantic is a non-finite
 ; float NESTED in a compound value: it must marshal via its dedicated non-finite leaf
 ; (KIND_FLOAT_NAN / KIND_FLOAT_POS_INF / KIND_FLOAT_NEG_INF) INSTEAD of collapsing the enclosing
-; Some/list/tuple. Pinned on the faithful (wasm) gate; verified on current main (v-runtime witness).
+; Some/list/tuple. Pinned on the faithful (wasm) gate. The compound RESULT crosses as a BORROWED
+; value-resource handle (`call` borrows it to render), so a `(drop)` clause releases the handle after the
+; render — its t-dtor reclaims the cells to `(live-objects 0)`. Without the drop the borrowed handle stays
+; live until store teardown and the strict 0-check counts it as a residual (v-runtime rc-trace: this is
+; TRUE for ANY runtime-constructed compound result, finite or non-finite — not a codec/reclaim bug).
 (case
   "non-finite floats cross inside a compound as their own leaves, not collapsing the compound"
   (doc
@@ -14898,9 +14902,12 @@
         `nan`/`inf` leaf with the surrounding structure preserved — the compound analogue of the top-level
         `nan`/`Infinity` boundary crossings above. This pins the #7479 value-codec semantic that a
         non-finite float in a compound crosses via its dedicated non-finite leaf, never collapsing the
-        compound.")
+        compound. The `(drop)` releases the borrowed result handle so it reclaims to 0.")
   (input (do (def (main) #tuple((Some Float64.nan) (list Float64.nan Float64.Infinity))) (export main)))
-  (output (: #tuple((Some nan) #list(nan inf)) (Tuple (Option Float64) (List Float64)))))
+  (call main)
+  (drop)
+  (output (: #tuple((Some nan) #list(nan inf)) (Tuple (Option Float64) (List Float64))))
+  (live-objects 0))
 
 (case
   "a runtime-produced -inf crosses inside a compound alongside nan and inf"
@@ -14908,7 +14915,8 @@
     "The RUNTIME leg of the #7479 crossing: `-inf` here is COMPUTED at run time (`-1.0 / 0.0`), not a
         constant, so it crosses through the value-codec's runtime marshalling rather than a const-fold.
         Nested in a `list` inside a tuple beside a `Some nan` and a finite `0.0`, each non-finite renders
-        as its canonical leaf (`nan`/`inf`/`-inf`) with the structure intact.")
+        as its canonical leaf (`nan`/`inf`/`-inf`) with the structure intact. The `(drop)` releases the
+        borrowed result handle so the runtime-constructed compound reclaims to 0.")
   (input
     (do
       (def
@@ -14916,8 +14924,10 @@
         #tuple((Some Float64.nan) (list Float64.Infinity (/ (: -1.0 Float64) x)) x))
       (export main)))
   (call main (: 0.0 Float64))
+  (drop)
   (output
-    (: #tuple((Some nan) #list(inf -inf) 0.0) (Tuple (Option Float64) (List Float64) Float64))))
+    (: #tuple((Some nan) #list(inf -inf) 0.0) (Tuple (Option Float64) (List Float64) Float64)))
+  (live-objects 0))
 
 (case
   "an Ast.Float node cannot carry Float64.Infinity (declines, like nan)"
