@@ -2,6 +2,8 @@
 ; #Equality And Ordering, #Floating-Point Equality Follows The Canonical Byte Form, #Observable
 ; Behavior, and #A Program That Terminates Ends In One Of Two Terminal Conditions. Results are
 ; (: <value> <Type>); observation of ordered host calls uses (host-calls ...).
+(diagnostic-quality)
+
 (case
   "structural equality holds component-wise"
   (doc "Witnesses core-semantics.md #Equality Is Structural.")
