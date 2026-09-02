@@ -2212,6 +2212,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             continue;
         }
         for &member in mtail.get(1..).unwrap_or(&[]) {
+            // The `(do …)` wrapper — the common cross-form footgun (a body copied from the string-name
+            // file form onto the bare-name declaration form) — gets a tailored message + `continue`.
             if db.ast.as_form(member, "do").is_some() {
                 faults.push(
                     Reject::coded(
@@ -2224,7 +2226,60 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     )
                     .at(member),
                 );
+                continue;
             }
+            // ANY OTHER member whose head is not a module-DECLARATION keyword is malformed — the general
+            // form of the `(do …)` bug above. A `(module NAME …)` member position is STRICTLY a
+            // declaration (unlike a top-level `(do …)` block, there is no expression-statement reading of
+            // a module member), so a non-declaration member — an application `(foo 1)`, a `let`/`if`/
+            // `match`/`fn` expression, or a bare literal/atom — is a category error: it makes
+            // `db::collect_module_decl`'s `all_modeled` false, the module SILENTLY fails to register, and
+            // its name surfaces only as a misleading bare CDZ0101 unbound-name at the USE site (the exact
+            // class the `(do …)` case is one instance of). Name it AT the member, CDZ0201, anchored so it
+            // sorts before the downstream unbound-name symptom. `pragma` IS a declaration form — its own
+            // key/arity validation (incl. an UNKNOWN key → CDZ0601) is the pragma pass's job below, so it
+            // is NOT flagged here even when its key is unmodeled (flagging it would wrongly call a
+            // directive "not a declaration"). A malformed `def`/`type`/… (right head, bad shape) also is
+            // NOT caught here — its head IS a declaration keyword, so it registers and its own pass
+            // diagnoses the shape; this fires ONLY for a head that is not a declaration keyword at all.
+            let head = db.ast.head_name(member);
+            let is_decl = matches!(
+                head,
+                Some("def" | "effect" | "op" | "type" | "module" | "doc" | "export" | "pragma")
+            );
+            if is_decl {
+                continue;
+            }
+            // A near-miss of a declaration keyword (`deff`→`def`, `exprot`→`export`) gets a did-you-mean
+            // hint — the same closed-keyword-pool suggestion the top-level declaration scan gives (the pool
+            // is the grammar's own keyword set, so a suggestion can never name a keyword the grammar rejects).
+            let hint = head
+                .and_then(|h| {
+                    crate::diag::suggest::nearest(
+                        h,
+                        [
+                            "def", "type", "effect", "op", "module", "doc", "export", "pragma",
+                        ],
+                    )
+                })
+                .map(|kw| format!(" — did you mean `{kw}`?"))
+                .unwrap_or_default();
+            let what = match head {
+                Some(h) => format!("`({h} …)` is a `{h}` form, not a declaration"),
+                None => "a bare expression or literal is not a declaration".to_string(),
+            };
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a `(module NAME …)` member must be a declaration — `def`, `type`, `effect`, \
+                         `op`, `module`, `doc`, or `export` (or a `pragma` directive) — but {what}{hint}; \
+                         a module body is a sequence of declarations, so the module registers no exports \
+                         and its name binds nothing"
+                    ),
+                )
+                .at(member),
+            );
         }
     }
     // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry

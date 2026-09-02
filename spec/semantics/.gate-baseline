@@ -3880,6 +3880,7 @@ pass	a non-capturing closure stored and also called directly emits a valid artif
 pass	a non-capturing recursive local function compiles and runs (only capture+recursion declines)
 pass	a non-coercible mistyped resume value carries no coercion fix
 pass	a non-constructor type applied to arguments in type position is rejected
+pass	a non-declaration member of a bare-name module is rejected at the member
 pass	a non-dividing conversion ratio truncates on an Int magnitude
 pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive Bool match names the missing literal and inserts exactly that arm
