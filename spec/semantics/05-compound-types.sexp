@@ -13377,7 +13377,7 @@
         (main (: n Int64))
         (do
           (def inner (fill n Map.empty))
-          (def outer (Map.insert (Map.insert Map.empty 1 inner) 2 inner))
+          (def outer #map((= 1 inner) (= 2 inner)))
           (def
             bumped
             (match
@@ -13410,7 +13410,7 @@
         (main (: n Int64))
         (do
           (def xs (build n #list()))
-          (def m (Map.insert (Map.insert Map.empty 1 xs) 2 xs))
+          (def m #map((= 1 xs) (= 2 xs)))
           (def
             m2
             (match
@@ -13451,7 +13451,7 @@
         (main (: n Int64))
         (do
           (def inner (fill n Map.empty))
-          (def outer (Map.insert (Map.insert Map.empty 1 inner) 2 inner))
+          (def outer #map((= 1 inner) (= 2 inner)))
           (def k1 (match (Map.lookup outer 1) ((Some m1) m1) ((None _u) Map.empty)))
           (def k2 (match (Map.lookup outer 2) ((Some m2) m2) ((None _u) Map.empty)))
           (match (Map.lookup (Map.insert Map.empty k1 42) k2) ((Some v) v) ((None _u) -1))))
@@ -23641,7 +23641,7 @@
         (main (: n Int64))
         (do
           (def a (Map.insert (Map.insert Map.empty 1 10) n 20))
-          (def b (Map.insert (Map.insert Map.empty 1 5) 7 40))
+          (def b #map((= 1 5) (= 7 40)))
           (def m (merge-into (Map.to-list b) a))
           (+ (* (Map.len m) 100000) (+ (* (get m 1) 1000) (+ (* (get m n) 10) (get m 7))))))
       (export main)))
