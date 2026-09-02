@@ -294,9 +294,15 @@ pub fn sole_export_name(module: &str, async_mode: bool) -> Option<String> {
     } else {
         "pub fn "
     };
+    // Match a MODULE-LEVEL `pub fn` only — anchor the marker at the START of a line. A plain `.split(marker)`
+    // also matches an INDENTED impl METHOD (`    pub fn get(self) -> f64` on the `__CdzF{N}` ord-key wrapper,
+    // emitted for a float-keyed Set/Map), which precedes `pub fn main` in the module — so `.nth(1)` grabbed
+    // `get` and the driver called `prog::get(..)` → E0425 (a method is not a free fn). The exported entry
+    // points are always top-level (col 0); impl methods are indented, so a per-line `strip_prefix` skips them.
+    // (Mirrors `cdz`'s own `emitted_pub_fn_names`, which anchors the same way.)
     module
-        .split(marker)
-        .nth(1)
+        .lines()
+        .find_map(|line| line.strip_prefix(marker))
         .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
         .filter(|name| !name.is_empty())
         .map(str::to_string)
@@ -339,6 +345,16 @@ mod tests {
         let m = "pub fn both2(a: i64) -> i64 { a }\npub fn both(x: i64) -> i64 { x }";
         let s = parse_emitted_sig(m, "both", false).expect("found the exact header");
         assert_eq!(s.params, vec!["x: i64"]);
+    }
+
+    #[test]
+    fn sole_export_skips_an_indented_impl_method() {
+        // A float-keyed Set/Map emits the `__CdzF{N}` ord-wrapper whose `pub fn get` PRECEDES `pub fn main`.
+        // `sole_export_name` must return the MODULE-LEVEL export `main`, NOT the indented impl method `get`
+        // (a `.split("pub fn ")` grabbed `get` → the driver called `prog::get(..)` → E0425). The anchor is
+        // that a module-level export is at col 0 while an impl method is indented.
+        let m = "#[derive(Clone, Copy)]\npub struct __CdzF64(u64);\nimpl __CdzF64 {\n    fn new(v: f64) -> Self { __CdzF64(v.to_bits()) }\n    pub fn get(self) -> f64 { f64::from_bits(self.0) }\n}\npub fn main() -> i64 { 2 }";
+        assert_eq!(sole_export_name(m, false).as_deref(), Some("main"));
     }
 
     #[test]

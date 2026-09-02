@@ -624,6 +624,83 @@ fn ord_unwrap_render_path(ty: &str, bind: &str) -> String {
     }
 }
 
+/// The COMPOUND twin of [`ord_unwrap_render_path`]: a Set element / Map KEY that is a `(Tuple …)` / `(Record
+/// …)` containing a FLOAT threads the `__CdzF{N}` ord-wrapper through EACH float POSITION (`ord_key_type` —
+/// `(Tuple Float64 Int64)` keys as `(__CdzF64, i64)`). The ordinary Tuple/Record render descent reads each
+/// `.i` as the logical `Float` type and emits `(path).clone() as f64`, but `path` is a `__CdzF{N}` there — a
+/// non-primitive cast (rustc E0605). So, when a compound key/element wraps a float, return an EXPRESSION
+/// reconstructing the value at `base` with every wrapped float `.get()`-unwrapped to its raw `f{N}` (a
+/// non-float position stays its raw path); the caller binds it (`let __ek = <expr>;`) and renders the bound
+/// name, so the descent sees a raw float. `None` when there is no wrapped float to unwrap — a SCALAR float
+/// key/element is handled by [`ord_unwrap_render_path`], and a float-free compound needs no rebind. Only
+/// Tuple/Record thread the wrapper here (matching `ord_key_type`); a Qty-in-key magnitude keeps the wrapper
+/// and is a separate (rarer) unwrap gap.
+fn ord_key_unwrap_compound(ty: &str, base: &str) -> Option<String> {
+    // One position of a compound key: a Float → `.get()`; a nested Tuple/Record recurses; else the raw path.
+    // The `bool` is whether this position TOUCHED a wrapped float (so the parent knows a rebind is needed).
+    fn position(pty: &str, ppath: &str) -> (String, bool) {
+        let pty = pty.trim();
+        if pty == "Float64" || pty == "Float32" {
+            (format!("({ppath}).get()"), true)
+        } else if let Some(sub) = ord_key_unwrap_compound(pty, ppath) {
+            (sub, true)
+        } else {
+            (ppath.to_string(), false)
+        }
+    }
+    let wrap = |parts: Vec<String>| {
+        // A 1-element tuple/record keeps the trailing comma (`(T,)`), matching `ord_key_type`'s rust rep.
+        if parts.len() == 1 {
+            format!("({},)", parts[0])
+        } else {
+            format!("({})", parts.join(", "))
+        }
+    };
+    let ty = ty.trim();
+    if let Some(elems) = parse_head_type(ty, "Tuple") {
+        if elems.is_empty() {
+            return None;
+        }
+        let mut any = false;
+        let parts: Vec<String> = elems
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let (p, touched) = position(e, &format!("({base}).{i}"));
+                any |= touched;
+                p
+            })
+            .collect();
+        return if any { Some(wrap(parts)) } else { None };
+    }
+    if let Some(fields) = parse_head_type(ty, "Record") {
+        // Each field is a `(: name Type)` ascription in sorted-field order == the emitted tuple `.i` (mirrors
+        // the Record render arm's field parse); a record erases to that positional tuple.
+        let mut any = false;
+        let parts: Vec<String> = fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let f = field.trim();
+                let inner = f
+                    .strip_prefix('(')
+                    .and_then(|s| s.strip_suffix(')'))
+                    .unwrap_or(f)
+                    .trim();
+                let after_colon = inner.strip_prefix(':').map(str::trim).unwrap_or(inner);
+                let (_fname, fty) = after_colon
+                    .split_once(char::is_whitespace)
+                    .unwrap_or((after_colon, ""));
+                let (p, touched) = position(fty.trim(), &format!("({base}).{i}"));
+                any |= touched;
+                p
+            })
+            .collect();
+        return if any { Some(wrap(parts)) } else { None };
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cdz_render_at(
     ty: &str,
@@ -833,7 +910,16 @@ pub fn cdz_render_at(
             format!("{logical_path}.*")
         };
         // A Float Set element is the `__CdzF{N}` Ord wrapper — unwrap it for the float render (E0605 else).
-        let elem_path = ord_unwrap_render_path(elem_ty, &ebind);
+        // A COMPOUND element (a tuple/record with a float) threads the wrapper per-position: rebind it with
+        // each float `.get()`-unwrapped (`elem_prelude`) so the descent renders raw floats; a scalar float
+        // uses `ord_unwrap_render_path`, a float-free element renders its raw binding directly.
+        let (elem_prelude, elem_path) = match ord_key_unwrap_compound(elem_ty, &ebind) {
+            Some(rebuilt) => {
+                let rb = format!("__ek{}", path.len());
+                (format!("let {rb} = {rebuilt}; "), rb)
+            }
+            None => (String::new(), ord_unwrap_render_path(elem_ty, &ebind)),
+        };
         let inner = cdz_render_at(
             elem_ty,
             &elem_path,
@@ -849,7 +935,7 @@ pub fn cdz_render_at(
             on_path,
         );
         return format!(
-            "{{ let mut __s = String::from(\"#set(\"); for (__i, {ebind}) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} __s.push_str(&({inner})); }} __s.push(')'); __s }}"
+            "{{ let mut __s = String::from(\"#set(\"); for (__i, {ebind}) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} {elem_prelude}__s.push_str(&({inner})); }} __s.push(')'); __s }}"
         );
     }
     // A `(Map K V)` value is the Rust `BTreeMap<K, V>` the backend emits — render it as cdz-run's canonical
@@ -873,8 +959,16 @@ pub fn cdz_render_at(
         } else {
             format!("{logical_path}!v")
         };
-        // A Float Map KEY is the `__CdzF{N}` Ord wrapper — unwrap it for the float render (E0605 else).
-        let key_path = ord_unwrap_render_path(key_ty, &kbind);
+        // A Float Map KEY is the `__CdzF{N}` Ord wrapper — unwrap it for the float render (E0605 else). A
+        // COMPOUND key (a tuple/record with a float) threads the wrapper per-position: rebind it with each
+        // float `.get()`-unwrapped (`key_prelude`) so the descent renders raw floats (Set-element twin).
+        let (key_prelude, key_path) = match ord_key_unwrap_compound(key_ty, &kbind) {
+            Some(rebuilt) => {
+                let rb = format!("__mkk{}", path.len());
+                (format!("let {rb} = {rebuilt}; "), rb)
+            }
+            None => (String::new(), ord_unwrap_render_path(key_ty, &kbind)),
+        };
         let kr = cdz_render_at(
             key_ty,
             &key_path,
@@ -904,7 +998,7 @@ pub fn cdz_render_at(
             on_path,
         );
         return format!(
-            "{{ let mut __s = String::from(\"#map(\"); for (__i, ({kbind}, {vbind})) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} __s.push_str(&format!(\"(= {{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
+            "{{ let mut __s = String::from(\"#map(\"); for (__i, ({kbind}, {vbind})) in ({path}).iter().enumerate() {{ if __i > 0 {{ __s.push(' '); }} {key_prelude}__s.push_str(&format!(\"(= {{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
     }
     // A QUANTITY result `(Qty <inner> <unit>)` — the rust backend maps a `Ty::Qty { inner }` at a scale-1
