@@ -113,6 +113,43 @@
   (error CDZ0101 (message "unbound name")))
 
 (case
+  "a macro-introduced SIBLING FN def with a caller-spliced name binds visibly (callable) at the enclosing scope"
+  (doc
+    "The fn-def counterpart of the caller-spliced sibling-def case: the spliced def's NAME sits in the
+           SIGNATURE list `((unquote nm))`, one level deeper than a value def's bare-name signature. `(def
+           (mkfn (quote nm)) (quasiquote (def ((unquote nm)) 42)))` expands `(mkfn answer)` to a nullary fn
+           def `(def (answer) 42)` spliced beside `main`. Because the name `answer` is CALLER-SPLICED (from
+           the signature-list head), the fn def binds visibly in the enclosing scope: the call `(answer)`
+           resolves to it → `42`. Pins that the post-expansion top-level registration reaches the fn/nullary
+           shape too (its `register_reduced_callables` wiring only indexes the recursive-self/callee body,
+           not the top-level NAME — so without registering the signature-list-head name `(answer)` unbinds).")
+  (input
+    (do
+      (def (mkfn (quote nm)) (quasiquote (def ((unquote nm)) 42)))
+      (mkfn answer)
+      (def (main) (answer))
+      (export main)))
+  (call main)
+  (output (: 42 Int64)))
+
+(case
+  "a macro-introduced SIBLING FN def with a macro-internal name stays hygienic-local, not enclosing-callable"
+  (doc
+    "The hygiene half for the fn-def shape: a spliced fn/nullary def whose NAME is a MACRO-TEMPLATE
+           LITERAL (not spliced from a caller arg) does NOT bind callably at the caller's enclosing scope.
+           `(def (mkfnI (quote _u)) (quasiquote (def (fixedFn) 7)))` splices `(def (fixedFn) 7)` beside
+           `main`, but `fixedFn` is a template literal, so a caller call `(fixedFn)` does NOT resolve —
+           CDZ0101 unbound. Pins that the caller-origin provenance gate applies to the signature-list-head
+           name too (only a caller-spliced fn name is registered; a macro-internal one stays hygienic-local).")
+  (input
+    (do
+      (def (mkfnI (quote _u)) (quasiquote (def (fixedFn) 7)))
+      (mkfnI z)
+      (def (main) (fixedFn))
+      (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
   "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
   (doc
     "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
