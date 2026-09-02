@@ -382,6 +382,29 @@
   (output (: 7 Int64)))
 
 (case
+  "an inline-module member TYPE is visible to a sibling (module-scoped type, no import)"
+  (doc
+    "The TYPE face of sibling visibility (v-inference RULING 2026, MAKE-IT-WORK): module-scoped types are a
+           designed feature — the FILE-module form scopes a type and cross-links its ctors via import (see the
+           import (type …) cases below), and there is no spec carve-out making an INLINE module differ. A member
+           `(type Sh …)` is a module member like any def, so a sibling must resolve `Sh` and its ctors (bare
+           `Box`/`Dot` within the module scope, `Sh.Box` self-qualified) exactly as sibling defs are mutually
+           visible (§A Module Function Calls A Sibling Export By Name). get(5): match (Sh.Box 5) binds n=5 → 5.
+           Declines TODAY (CDZ0101 unbound `Sh`): the type-scan is root-only (collect_nested_decls handles
+           do-block-nested types, not module-MEMBER types), an IMPLEMENTATION limitation — NOT a decl-reject.
+           todo→pass when module-member type registration + sibling/qualified resolution land (v-module-system
+           scan/resolution + v-inference module-scoped type-decl identity == the file-module scheme).")
+  (input
+    (do
+      (module m
+        (type Sh (Dot) (Box Int64))
+        (def (get (: k Int64)) (match (Sh.Box k) ((Sh.Box n) n) ((Sh.Dot) -1)))
+        (export get))
+      (def (main) (m.get 5))
+      (export main)))
+  (output (: 5 Int64)))
+
+(case
   "a private sibling defined after its exported caller still resolves"
   (doc
     "The DEFINITION-ORDER companion of the private-sibling case above: there `helper` precedes its
