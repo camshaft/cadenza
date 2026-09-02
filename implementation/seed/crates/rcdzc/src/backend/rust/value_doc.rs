@@ -22,10 +22,10 @@
 //!
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
 //! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap), a
-//! QTY over a POSITIVE-exponent unit (`(Qty.of <mag> <unit>)`), and a bare-head SUM (Option / Result / a user
-//! sum) — nullary, single-payload, AND multi-field (flattened by declared arity). A DERIVED (negative-exponent)
-//! unit Qty, a COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes (qualified-head,
-//! recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
+//! QTY (any unit — base / power / product / `Unit./` quotient, `(Qty.of <mag> <unit>)`), and a bare-head SUM
+//! (Option / Result / a user sum) — nullary, single-payload, AND multi-field (flattened by declared arity). A
+//! COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes (qualified-head, recursive) are
+//! follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
 //! DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage
 //! is safe.
 
@@ -69,31 +69,20 @@ fn fresh(ctr: &mut usize) -> String {
 }
 
 /// Emit `let`-bindings building the UNIT sub-AST for a `Qty`'s unit — the SAME shape `lower::unit_value_ast`
-/// bakes and `Unit::render`/`render_value_form` print, so the rendered `(Qty.of …)` / `(Qty …)` matches the
-/// wasm gate. Forms: `Unit.one` (dimensionless); `(Unit.base #"name")` (a base at power 1); `(Unit.^ base k)`
-/// (a base at power k); a left-nested `(Unit.* a b)` PRODUCT of several factors. Heads are bare `Name`s
-/// (printed verbatim → sugared). A DERIVED unit (any NEGATIVE exponent) renders as a `(Unit./ num den)`
-/// quotient in the VALUE form but `(Unit.^ base -k)` in the TYPE form — the two diverge, so a negative
-/// exponent DECLINES here (a follow-up). Positive-only units render identically in both positions, so one
-/// builder serves the `(Qty.of …)` value and the `(Qty …)` type.
+/// bakes (which is what the wasm boundary encodes for BOTH the `(Qty.of …)` value and the `(Qty …)` type, so
+/// one builder serves both). Forms: `Unit.one` (dimensionless / an empty factor list); `(Unit.base #"name")`
+/// (a base at power 1); `(Unit.^ base k)` (a base at power k, k the POSITIVE exponent); a left-nested
+/// `(Unit.* a b)` PRODUCT of several factors; and a `(Unit./ num den)` QUOTIENT when there are negative
+/// exponents (the denominator's exponents made positive). Heads are bare `Name`s (printed verbatim →
+/// sugared); a base name rides a raw `Leaf::Sym` (the printer escapes for `#"…"`). Mirrors `unit_value_ast`
+/// exactly (base-name order = the `BTreeMap`'s sorted `entries()`), so the render byte-matches the wasm gate.
 fn doc_unit_node(
     unit: &crate::ty::Unit,
     out: &mut String,
     ctr: &mut usize,
 ) -> Result<String, Reject> {
-    let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
-    if entries.iter().any(|(_, e)| *e < 0) {
-        return Err(Reject::decline(
-            "value-doc: Qty with a derived (negative-exponent) unit not covered — falls back to cdz_render_at",
-        ));
-    }
-    if entries.is_empty() {
-        let v = fresh(ctr);
-        out.push_str(&format!("    let {v} = __b.name(\"Unit.one\");\n"));
-        return Ok(v);
-    }
     // One base factor at a positive exponent: `(Unit.base #"name")`, or `(Unit.^ (Unit.base #"name") k)`.
-    let factor = |name: &str, exp: i64, out: &mut String, ctr: &mut usize| -> String {
+    fn factor(name: &str, exp: i64, out: &mut String, ctr: &mut usize) -> String {
         let bh = fresh(ctr);
         out.push_str(&format!("    let {bh} = __b.name(\"Unit.base\");\n"));
         let sy = fresh(ctr);
@@ -117,20 +106,54 @@ fn doc_unit_node(
             ));
             f
         }
-    };
-    // Left-nested product `(Unit.* (Unit.* f0 f1) f2)…` (a single factor is itself).
-    let mut acc = factor(&entries[0].0, entries[0].1, out, ctr);
-    for (name, exp) in &entries[1..] {
-        let f = factor(name, *exp, out, ctr);
-        let mh = fresh(ctr);
-        out.push_str(&format!("    let {mh} = __b.name(\"Unit.*\");\n"));
-        let m = fresh(ctr);
-        out.push_str(&format!(
-            "    let {m} = __b.list(vec![{mh}, {acc}, {f}]);\n"
-        ));
-        acc = m;
     }
-    Ok(acc)
+    // Left-nested product `(Unit.* (Unit.* f0 f1) f2)…`; an empty factor list is the dimensionless `Unit.one`.
+    fn product(factors: &[(String, i64)], out: &mut String, ctr: &mut usize) -> String {
+        let Some(((n0, e0), rest)) = factors.split_first() else {
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.name(\"Unit.one\");\n"));
+            return v;
+        };
+        let mut acc = factor(n0, *e0, out, ctr);
+        for (name, exp) in rest {
+            let f = factor(name, *exp, out, ctr);
+            let mh = fresh(ctr);
+            out.push_str(&format!("    let {mh} = __b.name(\"Unit.*\");\n"));
+            let m = fresh(ctr);
+            out.push_str(&format!(
+                "    let {m} = __b.list(vec![{mh}, {acc}, {f}]);\n"
+            ));
+            acc = m;
+        }
+        acc
+    }
+    let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
+    // Split into positive (numerator) and negative (denominator, exponents made positive) factors, in the
+    // `BTreeMap`'s sorted base-name order (matching `unit_value_ast`).
+    let num: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e > 0)
+        .map(|(n, e)| (n.clone(), *e))
+        .collect();
+    let den: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e < 0)
+        .map(|(n, e)| (n.clone(), -*e))
+        .collect();
+    if den.is_empty() {
+        // All positive (or empty → `Unit.one`) — a plain product / single factor / the identity.
+        return Ok(product(&num, out, ctr));
+    }
+    // A quotient `(Unit./ numerator denominator)` — the derived-unit surface.
+    let numerator = product(&num, out, ctr);
+    let denominator = product(&den, out, ctr);
+    let dh = fresh(ctr);
+    out.push_str(&format!("    let {dh} = __b.name(\"Unit./\");\n"));
+    let v = fresh(ctr);
+    out.push_str(&format!(
+        "    let {v} = __b.list(vec![{dh}, {numerator}, {denominator}]);\n"
+    ));
+    Ok(v)
 }
 
 /// Emit `let`-bindings (into `out`) building the VALUE node for `val_expr` (of Cadenza type `ty`); return
