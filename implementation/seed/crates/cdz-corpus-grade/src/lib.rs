@@ -1543,7 +1543,20 @@ fn not_leaf(a: &Arenas, id: StructId) -> Option<String> {
 /// Output arm instead of a divergent local copy — the divergence that produced the #7273 fleet red. Keep
 /// it the one canonical value-canon both graders share.
 pub fn canonical_output_value(text: &str) -> Result<String, String> {
-    let a = cadenza_syntax::sexpr::read(text.trim()).map_err(|e| e.0)?;
+    // Normalize classic name-head compounds ((tuple …)/(list …)/(record …)/(map …)/(set …)) to native
+    // `#ctor` form BEFORE comparing, so value identity is SPELLING-INVARIANT: `(tuple 1 2)` ≡ `#tuple(1 2)`
+    // — the SAME binary AST, just two surface renderings (concierge ruling 2026-09-02; binary-AST is THE
+    // value, the surface spelling is a rendering choice). This makes the value compare robust to a backend
+    // rendering a tuple as `#tuple(…)` (rust, post value-doc flip) vs `(tuple …)` (the wasm corpus-grade
+    // render + legacy corpus outputs) — the grade compares the VALUE, not its spelling. Applied to BOTH the
+    // expected and the run value (below), so the compare stays symmetric; it can only make two SPELLINGS of
+    // one value equal (a genuine content diff — different elements/arity — still differs), never mask a real
+    // mismatch. FAIL-SAFE: if the nativize can't parse the text, fall back to it verbatim so the `read`
+    // below surfaces the real parse error exactly as before (no NEW error path introduced).
+    let text = text.trim();
+    let normalized =
+        cadenza_syntax::sexpr::nativize_compound_source(text).unwrap_or_else(|_| text.to_string());
+    let a = cadenza_syntax::sexpr::read(&normalized).map_err(|e| e.0)?;
     // Strip ALL leading top-level `(: value type)` ascriptions to the bare value. Annotation is type
     // METADATA, not value identity, so a value annotated once, twice (a redundant `(: (: v T) T)`), or not
     // at all all denote the SAME value — looping makes the value compare ANNOTATION-INVARIANT. (Fixes the
@@ -1744,9 +1757,11 @@ mod tests {
         // The canonical reader/printer replaces the old hand-rolled `expected_value` scan: a `(: v T)`
         // ascription is stripped type-blind to `v`'s canonical print; a bare value prints itself.
         assert_eq!(canonical_output_value("(: 42 Int64)").unwrap(), "42");
+        // A classic name-head `(tuple …)` is NORMALIZED to native `#tuple(…)` (spelling-invariant value
+        // identity — same binary AST; see the ctor-head normalization in canonical_output_value).
         assert_eq!(
             canonical_output_value("(: (tuple 0 7) (Tuple Int64 Int64))").unwrap(),
-            "(tuple 0 7)"
+            "#tuple(0 7)"
         );
         assert_eq!(
             canonical_output_value("(: \"parse error\" String)").unwrap(),
@@ -1788,6 +1803,34 @@ mod tests {
         assert_eq!(
             canonical_output_value("(: #tuple(127 -128) (Tuple Int64 Int64))").unwrap(),
             "#tuple(127 -128)"
+        );
+    }
+
+    /// CTOR-HEAD SPELLING-INVARIANCE (concierge 2026-09-02): a classic name-head compound and its native
+    /// `#ctor` twin are the SAME value → they canonicalize IDENTICALLY, so the grade passes regardless of
+    /// whether a backend renders `(tuple …)` (wasm corpus-grade) or `#tuple(…)` (rust post value-doc flip).
+    /// A genuine CONTENT difference still differs (not masked).
+    #[test]
+    fn canonical_output_value_normalizes_classic_compound_head_to_native() {
+        for (classic, native) in [
+            ("(tuple -3 -4 -3 -4)", "#tuple(-3 -4 -3 -4)"),
+            ("(list 1 2 3)", "#list(1 2 3)"),
+            (
+                "(record (= first 7) (= second 9))",
+                "#record((= first 7) (= second 9))",
+            ),
+        ] {
+            let c = canonical_output_value(classic).unwrap();
+            let n = canonical_output_value(native).unwrap();
+            assert_eq!(
+                c, n,
+                "classic {classic:?} must canonicalize to native {native:?} form"
+            );
+        }
+        // A real content diff is NOT masked by the normalization.
+        assert_ne!(
+            canonical_output_value("(tuple 1 2)").unwrap(),
+            canonical_output_value("#tuple(1 3)").unwrap()
         );
     }
 
