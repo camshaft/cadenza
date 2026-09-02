@@ -2187,6 +2187,46 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // A bare-name `(module NAME …)` declaration's body is a SEQUENCE OF DEFINITIONS — its members are the
+    // `def`/`type`/`effect`/`export`/… declarations listed DIRECTLY, not wrapped in a `(do …)` block. A
+    // `(do …)` member is a category error: `db::collect_module_decl` registers a module only when EVERY
+    // member is a modeled declaration (`all_modeled`), and a `(do …)` member's head is not a declaration
+    // keyword, so the module SILENTLY fails to register — the name `NAME` then surfaces as a bare CDZ0101
+    // "unbound name `NAME`" at the USE site, a misleading downstream symptom that never names the real
+    // cause (the misplaced `(do …)`). The confusion is genuine and cross-form: the STRING-name library/
+    // file form `(module "lib" (do …))` DOES take a `(do …)` body — but there the `(do …)` is the FILE's
+    // whole program, resolved by the module linker, a different grammar — so an author porting a body
+    // between the two forms writes a `(do …)` wrapper on the bare-name declaration and hits the silent
+    // unbind. Name it AT THE WRAPPER: a `(module NAME …)` body is a def-sequence; remove the `(do …)`.
+    // Coded CDZ0201 (a KNOWN construct — `do` — MISPLACED as a module member; the module-declaration twin
+    // of the top-level `(doc …)`-wrapper rejection above), anchored at the `(do …)` member so it sorts
+    // BEFORE the downstream unbound-name symptom and names the ROOT. ONLY the bare-name form is flagged
+    // (its first child is a NAME atom); the string-name file form (first child a STRING literal) is the
+    // linker's, whose `(do …)` body is correct and must not be touched here.
+    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+        let Some(mtail) = db.ast.as_form(form, "module").map(<[_]>::to_vec) else {
+            continue;
+        };
+        // Bare-name form only: the first child must be a NAME atom (a STRING name is the linker's file form).
+        if mtail.first().and_then(|&n| db.ast.as_name(n)).is_none() {
+            continue;
+        }
+        for &member in mtail.get(1..).unwrap_or(&[]) {
+            if db.ast.as_form(member, "do").is_some() {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a `(module NAME …)` body is a sequence of definitions listed directly as its \
+                         members — `(module m (def …) (def …))` — not a `(do …)` block; remove the \
+                         `(do …)` wrapper and list its definitions as the module's members (a `(do …)` \
+                         member is not a definition, so the module registers no exports and its name \
+                         binds nothing)",
+                    )
+                    .at(member),
+                );
+            }
+        }
+    }
     // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry
     // the specification defines (`modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed
     // Set), and its arguments must match the shape that key defines — so an unknown key is CDZ0601 and a

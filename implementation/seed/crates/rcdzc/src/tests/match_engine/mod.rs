@@ -1306,6 +1306,41 @@ fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
 }
 
 #[test]
+fn a_do_wrapped_bare_name_module_body_is_rejected_at_the_module_form() {
+    // A bare-name `(module NAME …)` body is a def-SEQUENCE listed directly as members, NOT a `(do …)`
+    // block. A `(do …)` member is a category error: the module registers no exports and `m` binds
+    // nothing — which used to fail SILENTLY at the module form and surface only as a misleading bare
+    // CDZ0101 `unbound name m` at the use site (breaker finding). It now rejects CDZ0201 AT the `(do …)`
+    // wrapper (the earlier-anchored root), so the primary error names the rule + fix rather than the
+    // downstream symptom. Contrast the STRING-name library/file form `(module "lib" (do …))`, whose
+    // `(do …)` body IS the file's whole program (resolved by the linker) — NOT flagged (see the control).
+    let src =
+        "(do (def (main) (do (module m (do (def (answer) 42))) (m.answer unit))) (export main))";
+    let d =
+        reject_full(src).expect("the do-wrapped module body is rejected, not silently misbound");
+    assert_eq!(
+        d.code.as_deref(),
+        Some("CDZ0201"),
+        "rejected at the module form as a well-formedness error (the primary, sorted before the \
+         downstream unbound-name symptom): {:?} / {}",
+        d.code,
+        d.message
+    );
+    assert!(
+        d.message.contains("body is a sequence of definitions") && d.message.contains("(do"),
+        "names the def-sequence rule and the misplaced `(do …)` to remove: {}",
+        d.message
+    );
+    // CONTROL: the same module with a bare-def body (no `(do …)` wrapper) binds normally and compiles.
+    let ok = "(do (def (main) (do (module m (def (answer) 42)) (m.answer unit))) (export main))";
+    assert_eq!(
+        reject_code(ok),
+        None,
+        "a bare-def module body is the correct form and is not flagged"
+    );
+}
+
+#[test]
 fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
     // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
     // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
