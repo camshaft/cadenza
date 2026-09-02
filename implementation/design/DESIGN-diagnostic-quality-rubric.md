@@ -72,11 +72,16 @@ is to make the site unreachable / not a user diagnostic, not to reword.
 | `compiler bug` | should-never-fire invariant text; if a corpus case hits it, the guard is misplaced |
 | `unreachable!` | Rust macro leak |
 
-**Calibration-needed (word-boundary these, then validate against the corpus before enabling):**
-`\bNone\b`, `\bSome\b` — bare Rust `Option` leaks, BUT `None` is a substring of the test identifier
-`Nonesuch` (11 corpus hits) so a naive substring match false-trips; require `\bNone\b` and confirm no
-legitimate message uses the bare word. `v-diagnostics` will validate these two against the full corpus
-once the lint scaffold exists.
+**Calibration RESOLVED (2026-09-02): `None` / `Some` are NOT forbidden — dropped.** The original
+concern was that these leak Rust's `Option` API. Corpus-wide validation (against the C1 scaffold in
+#7851) found the opposite: **`None` and `Some` are Cadenza's OWN `Option` constructors**, and they
+appear in many *golden-standard* emitted diagnostics — `` "`Some` needs its payload argument" `` (CDZ0201),
+`` "wrap the value in `Some`" `` (actionable fix), `` "`None` is nullary" ``, `` "construct it as `None`" ``,
+`"Some carries one payload"`, and as did-you-mean candidates (`closest matches: `t`, `None`, `Some``).
+Forbidding them — even word-boundaried — would wrongly red these. They are not code-class-scopable either
+(valid in did-you-mean/closest-matches across many codes). See the NOT-forbidden carve-out below. A genuine
+Rust-`Option` leak would be Rust *syntax* (`Option::None`, a `Some(` with Rust call semantics), not the
+bare constructor names — do not attempt to lint those two words.
 
 ### NOT forbidden (explicit carve-outs — do NOT add these)
 
@@ -85,6 +90,9 @@ once the lint scaffold exists.
   operator directive), not a quality defect. Forbidding it would red every CDZ0900 case.
 - `trap` — `potentially reachable trap` (CDZ0309), `always traps but its value is never used` are precise
   golden messages, not leaks.
+- `None` / `Some` — **Cadenza's own `Option` constructors**, named legitimately in golden diagnostics
+  (did-you-mean candidates, `` "`Some` needs its payload argument" ``, `` "`None` is nullary" ``, `"wrap
+  the value in `Some`"`). NOT a Rust leak. (See the resolved calibration note in §1b.)
 
 ## §2 — Per-code required-token map
 
