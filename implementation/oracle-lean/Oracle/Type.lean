@@ -714,7 +714,44 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                           (match inferE m acc.1 acc.2 valId with
                            | .ok (τ, st') => .ok (((nm, generalizeScheme acc.1 st'.subst τ) :: acc.1), st')
                            | .error e => .error e)
-                        | none => .error (.unsupported "type oracle: local function def in a do not yet modeled"))
+                        | none =>
+                          -- T1.21 — LOCAL FN-DEF `(def (f p…) body)`: target is a list `(f p…)`. Type like the
+                          -- Fn rule (each param → fresh var / annotated type, infer body, curried arrow), then
+                          -- GENERALIZE + bind `f` (like `let`). 🪤 RECURSION: `f` is bound only AFTER the body,
+                          -- so a body referencing `f` → unbound → `Unsupported` (declines; sound skip — recursive
+                          -- local fns are a later increment). An unmodeled param annotation → Unsupported.
+                          (match m.nodes[targetId]? with
+                           | some (Ast.Node.list tc) =>
+                             (match (tc[0]?).bind (Eval.nameOf? m) with
+                              | some fnm =>
+                                (match (tc.extract 1 tc.size).foldlM (m := Except InferFail)
+                                    (fun (pacc : List (ByteArray × Scheme) × List Ty × InferState) pid =>
+                                      match m.nodes[pid]? with
+                                      | some (Ast.Node.atom plid) =>
+                                        (match m.leaves[plid]? with
+                                         | some (.name pnm) =>
+                                           let α : Ty := .var pacc.2.2.next
+                                           .ok ((pnm, ([], α)) :: pacc.1, α :: pacc.2.1, { pacc.2.2 with next := pacc.2.2.next + 1 })
+                                         | _ => .error (.unsupported "type oracle: malformed local-fn param"))
+                                      | some (Ast.Node.list ppc) =>            -- (: name T)
+                                        (match ppc[1]?, ppc[2]? with
+                                         | some pnId, some ptId =>
+                                           (match Eval.nameOf? m pnId, parseTy? m ptId with
+                                            | some pnm, some pτ => .ok ((pnm, ([], pτ)) :: pacc.1, pτ :: pacc.2.1, pacc.2.2)
+                                            | some _, none => .error (.unsupported "type oracle: local-fn param unmodeled annotation")
+                                            | none, _ => .error (.unsupported "type oracle: local-fn param missing name"))
+                                         | _, _ => .error (.unsupported "type oracle: malformed local-fn param spec"))
+                                      | none => .error (.unsupported "type oracle: malformed local-fn param"))
+                                    (acc.1, [], acc.2) with
+                                 | .ok (bodyEnv, ptysRev, stP) =>
+                                   (match inferE m bodyEnv stP valId with
+                                    | .ok (bodyτ, stB) =>
+                                      let arrow := ptysRev.foldl (fun a pτ => Ty.fn pτ a) bodyτ
+                                      .ok (((fnm, generalizeScheme acc.1 stB.subst arrow) :: acc.1), stB)
+                                    | .error e => .error e)
+                                 | .error e => .error e)
+                              | none => .error (.unsupported "type oracle: local fn-def head not a name"))
+                           | _ => .error (.unsupported "type oracle: malformed local fn-def target")))
                      | _, _ => .error (.unsupported "type oracle: malformed do def"))
                   | none =>                                -- non-def statement → must be well-typed, type discarded
                     (match inferE m acc.1 acc.2 sid with
@@ -1405,6 +1442,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[6, 2, 5], .atom 2, .list #[8], .atom 1, .list #[10, 9, 7], .atom 8,
                            .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
                 root := 16 } == .wellTyped (optionTy (.int 64 true)))
+-- T1.21 (local fn-def): `(def (main) (do (def (inc x) (+ x 1)) (inc 5)))` → WellTyped Int64. The do-local
+-- fn-def `(def (inc x) …)` types via the Fn logic (inc : numVar→numVar), binds it, then `(inc 5)` applies.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "inc".toUTF8,
+                            .name "x".toUTF8, .name "+".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .list #[0, 1], .atom 5, .atom 4, .atom 6, .list #[3, 4, 5],
+                           .atom 1, .list #[7, 2, 6], .atom 3, .atom 7, .list #[9, 10], .atom 0,
+                           .list #[12, 8, 11], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13],
+                           .atom 8, .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
+                root := 22 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
