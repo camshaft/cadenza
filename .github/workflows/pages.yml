@@ -20,15 +20,30 @@
 name: Deploy guide to Pages
 
 on:
-  # SCHEDULED deploy, NOT per-push. A push trigger was cancelling every deploy: the guide build runs on the
-  # scarce ARM pool (runtime-hash reproducibility), so each push-triggered run sat PENDING waiting for a
-  # runner, and the next guide-affecting push queued behind it — GitHub's `pages` concurrency group cancels
-  # the older PENDING run when a newer one queues (even with cancel-in-progress:false, which only protects a
-  # RUNNING job). On a busy main, deploys were superseded before ever starting, so the published site went
-  # stale (7 consecutive cancelled runs). A scheduled run has no superseding push, so it reaches a runner and
-  # COMPLETES; each cron rebuild uses current trunk + fresh wasm, so there's no staged-wasm lag. The site
-  # lags trunk by at most the interval (30 min) — fine for a guide. `workflow_dispatch` stays so a human can
-  # force an immediate deploy when something urgent lands (rather than waiting for the next tick).
+  # The 30-min SCHEDULE is the BACKSTOP that catches every closure change (a compiler/runtime/spec edit
+  # restages the bundled wasm, so the site is stale after ANY of those — only the cron catches them all).
+  # HISTORY: a blanket per-push trigger USED to cancel every deploy — but that cancellation came from the
+  # workflow-level `concurrency: group: pages` (removed below): on the scarce ARM pool a push run sat PENDING
+  # past the 30-min interval, and the group cancelled the older PENDING run when the next push queued, so
+  # deploys were superseded before starting (7 consecutive cancelled runs) and the site went stale.
+  #
+  # PATH-FILTERED PUSH (v-guide-infra 2026-09-02, concierge-assigned): a merge that touches the guide's OWN
+  # sources (guide/**) or this workflow also fires an IMMEDIATE deploy, so a guide-content/render fix reaches
+  # the live site in ~minutes instead of lagging up to 30 min — the recurring stale-deploy false-positive bug
+  # source (operator hit already-fixed guide bugs on a 30-min-stale site: trap #7672, toggle #7678,
+  # @invariant &gt;= display). This is SAFE here specifically because there is NO `concurrency: group` (see
+  # below), so a push run is NOT cancelled by a newer one — push runs and cron runs simply coexist, all reach
+  # a runner, and the `github-pages` environment serializes the publish (latest-to-finish wins). So the push
+  # trigger is purely ADDITIVE: worst case it is redundant with the cron, and it can never regress BELOW the
+  # cron-only baseline (the cron backstop always remains). The path filter keeps ARM-pool load bounded to
+  # actual guide-source merges — a compiler/spec closure change (which also restages the guide) still relies
+  # on the cron, not this trigger, so most main pushes do NOT fire it. `workflow_dispatch` stays for a manual
+  # force-deploy after a guide-fix batch.
+  push:
+    branches: [main]
+    paths:
+      - "guide/**"
+      - ".github/workflows/pages.yml"
   schedule:
     # Every 30 min on an off-round minute (7,37) so it doesn't collide with other crons landing on :00/:30.
     - cron: "7,37 * * * *"
