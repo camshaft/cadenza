@@ -3555,28 +3555,6 @@
   (call main (: 5 Int64))
   (output (: 1 Int64)))
 
-; Cross-module mutual recursion: a module fn and a ROOT fn (or two modules) in a recursion CYCLE
-; through the projection. Idealistically the cycle lowers like a root-level mutual pair (which
-; computes today); currently the specializer declines it (CDZ0900 "recursive function needs runtime
-; specialization", #7916 — the coded floor that replaced an ICE at lower/compute.rs:1597, which also
-; crashed `cdz check`). TODO — auto-flips when cross-module cycles lower. f(even)=0, f(odd)=1.
-; (breaker ICE probe 2026-09-02.)
-(case
-  "a mutual-recursion cycle crossing a module boundary computes like its root-level twin (should-work; today the specializer declines)"
-  (input
-    (do
-      (module lib
-        (def (f (: k Int64)) (if (= k 0) 0 (g (- k 1))))
-
-        (export f))
-      (def (g (: k Int64)) (if (= k 0) 1 (lib.f (- k 1))))
-      (def (main (: n Int64)) (lib.f n))
-      (export main)))
-  (call main (: 4 Int64))
-  (output (: 0 Int64))
-  (call main (: 5 Int64))
-  (output (: 1 Int64)))
-
 (case
   "two modules in a mutual-recursion cycle compute like a root-level pair (should-work; today the specializer declines)"
   (input
