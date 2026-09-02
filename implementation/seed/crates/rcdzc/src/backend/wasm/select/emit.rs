@@ -1527,6 +1527,23 @@ pub(super) fn emit(
                          relational operators `<`, `<=`, `>`, `>=` instead",
                     ));
                 }
+                // An UNDETERMINED element type (a free `Var`) is a DETERMINACY fault, not an unorderable-
+                // feature gap — code it CDZ0203 ("annotate the type") like the Map.to-list / key-
+                // canonicalize twins, rather than the codeless backstop (the Set face of the same
+                // reachable-codeless class, v-cdz-smith seed 902902902). A determined-but-unorderable
+                // shape (no free var) keeps the codeless decline.
+                if elem_ty.has_free_var() {
+                    return Err(Reject::coded(
+                        crate::diag::Code::TypeMismatch,
+                        format!(
+                            "a Set element's type `{}` is not fully determined — annotate it \
+                             (e.g. `(: (list) (List Int64))`) so its elements have a canonical form for \
+                             comparison",
+                            crate::ty::Ty::Set(Box::new(elem_ty.clone()))
+                                .render_name(&db.name_ctx())
+                        ),
+                    ));
+                }
                 return Err(Reject::decline(
                     "Set.to-list element shape has no orderable descriptor",
                 ));
@@ -1578,6 +1595,27 @@ pub(super) fn emit(
             val_ty,
         } => {
             let Some(desc) = crate::lower::map_shape_descriptor(db, &key_ty, &val_ty) else {
+                // An UNDETERMINED key/value type (a free `Var` — an unconstrained `Result` Err arm, an
+                // empty-collection element, …) has no shape, so `map_shape_descriptor` returns `None`.
+                // That is a DETERMINACY fault, not an unorderable-feature gap: code it CDZ0203
+                // ("annotate the type"), the twin of the `emit_key_canonicalize` key-determinacy reject
+                // and the Int-key path's CDZ0203 — so a Float32-key map (whose descriptor requires the
+                // value shape, unlike an Int-key map, which tolerates an undetermined value) no longer
+                // slips to the CODELESS backstop for the SAME undetermined-`Result`-Err cause the Int
+                // path already codes (v-cdz-smith seed 902902902). A genuinely-unorderable DETERMINED
+                // shape (no free var) keeps the codeless decline — the not-yet / carve-out class.
+                if key_ty.has_free_var() || val_ty.has_free_var() {
+                    return Err(Reject::coded(
+                        crate::diag::Code::TypeMismatch,
+                        format!(
+                            "a Set/Map key's type `{}` is not fully determined — annotate it \
+                             (e.g. `(: (list) (List Int64))`) so its keys have a canonical form for \
+                             comparison",
+                            crate::ty::Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone()))
+                                .render_name(&db.name_ctx())
+                        ),
+                    ));
+                }
                 return Err(Reject::decline(
                     "Map.to-list key/value shape has no orderable descriptor",
                 ));
