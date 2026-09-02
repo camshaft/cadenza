@@ -9,13 +9,16 @@
 //! parser-elimination; render-ty owns the pinned `render_binary` contract, #7424).
 
 use anyhow::Result;
-use cadenza_syntax::convert::{self, Format, FragmentKind, Options};
+use cadenza_syntax::convert;
 
 /// Render a binary-AST value doc (`codec::encode` of a `(: value type)` AST) to its canonical sexpr surface.
-/// The kind is `Expr` (a value fragment); the canonical printer renders the idiomatic surface from the AST
-/// shape (so `(: value type)` prints as-is and a value tuple prints `(tuple …)`).
+/// Uses `render_binary_value_line` (seq-283, #7773) — the SINGLE-LINE canonical runtime value render (via
+/// `print_from`), byte-identical to cdz-run's `render_val`. The general `render_binary` PRETTY renderer
+/// hard-breaks a long `(: value type)` across lines (a guide fragment / `cdz convert` wants that), which
+/// diverged from cdz-run's one-line render and false-mismatched the cdz-smith rust-vs-wasm oracle on a long
+/// record/compound result (breaker finding). The value-line render keeps `cdz run-rust` byte-identical.
 pub fn render_value_doc(bytes: &[u8]) -> Result<String> {
-    convert::render_binary(bytes, Format::Sexpr, FragmentKind::Expr, Options::default())
+    convert::render_binary_value_line(bytes)
         .map(|s| s.trim_end().to_string())
         .map_err(|e| anyhow::anyhow!("render_binary of a rust value doc failed: {e:?}"))
 }
@@ -127,5 +130,29 @@ mod tests {
         let arenas = b.finish(root);
         let bytes = codec::encode(&arenas);
         assert_eq!(render_value_doc(&bytes).unwrap(), "(: -7 Int64)");
+    }
+
+    // WRAP-GUARD (seq-283, #7773): a doc long enough that the general `render_binary` PRETTY printer would
+    // hard-break it across lines MUST still render ONE LINE — `render_value_doc` uses `render_binary_value_line`
+    // (via `print_from`), byte-identical to cdz-run's one-line `render_val`. A multi-line value verdict
+    // false-mismatched the cdz-smith rust-vs-wasm oracle + broke the run-rust "last stdout line" verdict parse
+    // (#7763) on a long record/compound result (breaker finding). Pins that this consumer keeps the value-line
+    // render — a revert to the wrapping `render_binary` would reintroduce the newline.
+    #[test]
+    fn render_value_doc_long_doc_stays_one_line() {
+        let mut b = Builder::new();
+        // A wide `(a0 a1 … a19)` list — well past the pretty printer's wrap width.
+        let mut kids = Vec::new();
+        for i in 0..20 {
+            kids.push(b.name(&format!("aaaaaaaa{i}")));
+        }
+        let root = b.list(kids);
+        let arenas = b.finish(root);
+        let bytes = codec::encode(&arenas);
+        let out = render_value_doc(&bytes).unwrap();
+        assert!(
+            !out.contains('\n'),
+            "value render must be one line, got:\n{out}"
+        );
     }
 }
