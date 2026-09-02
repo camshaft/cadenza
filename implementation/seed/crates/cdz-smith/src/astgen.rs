@@ -235,11 +235,59 @@ fn gen_nominal_symbol_program<C: Choice>(c: &mut C) -> (String, String) {
 /// IllTyped ⇒ holds; an rcdzc ACCEPT of an ill-typed program is a FALSE-ACCEPT / soundness hole). Both
 /// directions are the operator's "oracles in both directions". Int64/Bool only in this first slice;
 /// tuple/record/fn/sum + match arms are additive follow-ups (v-lean-oracle's fragment widens under them).
+/// A LOCAL FN-DEF program (T1.21) — a helper `(def (hN (: iM Int64)) …)` defined INSIDE `main`'s body
+/// do-block (a local def in a do-block, the shape the oracle models — a top-level sibling-of-`main` def
+/// SKIPs), which `main`'s body then calls. Optionally MONOMORPHICALLY RECURSIVE (T1.22): the sole
+/// recursive call is `(hN (- iM 1))`, base-guarded by `(<= iM 0)`, and the call passes a SMALL literal
+/// fuel, so it is structurally-decreasing + terminating (values small, no overflow). Result Int64 or Bool.
+/// Fixed body shapes (the recursion structure is the point). Returns the whole program.
+fn gen_typefuzz_localdef_program<C: Choice>(c: &mut C, fresh: &mut usize) -> String {
+    let h = format!("h{}", *fresh);
+    *fresh += 1;
+    let p = format!("i{}", *fresh);
+    *fresh += 1;
+    let body = match c.variant(3) {
+        // A NON-recursive Int64 helper: `(h p) = (op p k)`.
+        0 => {
+            let op = ["+", "-", "*"][c.variant(3)];
+            let k = c.int_bounded(0, 9);
+            let arg = c.int_bounded(0, 9);
+            format!("(do (def ({h} (: {p} Int64)) ({op} {p} {k})) ({h} {arg}))")
+        }
+        // A RECURSIVE Int64 fold: `(h p) = (if (<= p 0) base (op p (h (- p 1))))` — terminating.
+        1 => {
+            let op = ["+", "-", "*"][c.variant(3)];
+            let base = c.int_bounded(0, 9);
+            let fuel = c.int_bounded(0, 6);
+            format!(
+                "(do (def ({h} (: {p} Int64)) (if (<= {p} 0) {base} ({op} {p} ({h} (- {p} 1))))) ({h} {fuel}))"
+            )
+        }
+        // A RECURSIVE Bool helper (parity-ish): `(h p) = (if (<= p 0) <base> (not (h (- p 1))))`.
+        _ => {
+            let base = ["true", "false"][c.variant(2)];
+            let fuel = c.int_bounded(0, 6);
+            format!(
+                "(do (def ({h} (: {p} Int64)) (if (<= {p} 0) {base} (not ({h} (- {p} 1))))) ({h} {fuel}))"
+            )
+        }
+    };
+    format!("(do (def (main) {body}) (export main))")
+}
+
 pub fn generate_typecheck(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
     let mut iscope: Vec<String> = Vec::new();
     let mut bscope: Vec<String> = Vec::new();
     let mut fresh = 0usize;
+    // ~1/6: a top-level LOCAL FN-DEF program — a helper `(def (h …) …)` that `main` calls, optionally
+    // MONOMORPHICALLY RECURSIVE (T1.21 local defs + T1.22 monomorphic recursion). Its own whole-program
+    // shape (a sibling def of `main`), so it returns early rather than wrapping a `main` body.
+    if c.variant(6) == 0 {
+        return Program {
+            source: gen_typefuzz_localdef_program(&mut c, &mut fresh),
+        };
+    }
     // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed body — an Int64, a
     // Bool, or a COMPOUND/SUM value (tuple/record construction + Option/Ordering construct — the oracle
     // models tuple/proj + closed records T1.13/14 + sum-construct T1.15, so these judge, not skip).
