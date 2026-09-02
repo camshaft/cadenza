@@ -4860,11 +4860,13 @@ fn local_binder(db: &mut Db, node: StructId) -> Option<StructId> {
 /// terminal else is the catch-all body. This runs from the `Core::Let` BODY emit (so `s` is already bound in
 /// `env.lets`), and reconstructs the surface match from that if-chain.
 ///
-/// SUB-SLICE 1: binder-only FIXED-WIDTH INT segments — every arm's cond is exactly `bytes-len(s) == TOTAL`
-/// (no `And`-ed literal probes), every read is a static-offset `BinIntRead` (no `off_plus` / `BinRestRead` /
-/// `BinSizedRead`), and the read widths tile `[0, TOTAL)` contiguously (no unused/`_` segment). Anything else
-/// → `None` (fall through to the ordinary `if` emit, which declines on the unhandled read → a clean todo, no
-/// regression). Literal segments / le-signed-mix / rest / dependent / bit-fields are later sub-slices.
+/// SUB-SLICES 1–2: FIXED-WIDTH INT segments — BINDER `(uN x)` (read via `BinIntRead` in the body) and LITERAL
+/// `(uN lit)` (a magic-number / tag probe in the cond's AND-chain). Every arm's cond is `bytes-len(s) == TOTAL`
+/// optionally AND-ed with `BinIntRead(s,off,w) == lit` literal probes; every read is a static-offset
+/// `BinIntRead` (no `off_plus` / `BinRestRead` / `BinSizedRead`); and the literal + binder segments tile
+/// `[0, TOTAL)` contiguously (no unused/`_` gap). Anything else → `None` (fall through to the ordinary `if`
+/// emit, which declines on the unhandled read → a clean todo, no regression). `le`/signed already ride each
+/// segment; rest / dependent-size / bit-field matches are later sub-slices.
 fn try_emit_bin_match(
     db: &mut Db,
     b: &mut Builder,
@@ -4873,31 +4875,59 @@ fn try_emit_bin_match(
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Option<Result<StructId, Reject>> {
-    // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin-length probe.
-    let (scrut_binder, _) = parse_bin_len_cond(db, body)?;
-    // Walk the if-chain, collecting (segments, arm_body) per arm + the terminal catch-all body.
+    // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin arm cond.
+    let (scrut_binder, _, _) = parse_bin_len_cond(db, body)?;
+    // One merged bin segment: a LITERAL probe (from the cond) or a BINDER read (from the body).
+    enum Seg {
+        Lit(u8, bool, bool, IntValue), // width, signed, little_endian, literal value
+        Binder(u8, bool, bool),        // width, signed, little_endian
+    }
     struct BinReArm {
-        segs: Vec<(u32, u8, bool, bool)>, // (byte_offset, width, signed, little_endian), offset-sorted
+        segs: Vec<(u32, Seg)>, // (byte_offset, segment), offset-sorted + contiguous, tiling [0, TOTAL)
         body: StructId,
     }
     let mut arms: Vec<BinReArm> = Vec::new();
     let mut cur = body;
     let catchall = loop {
-        let Core::If { cond, then_, else_ } = core_of(db, cur) else {
+        let Core::If { then_, else_, .. } = core_of(db, cur) else {
             break cur; // terminal else = catch-all body
         };
-        // Each arm's cond must be a bin-length probe over the SAME scrutinee.
-        let Some((sb, _total)) = parse_bin_len_cond(db, cur) else {
-            // A non-bin-length if in the chain (a guard / literal probe / unrelated if) → not sub-slice 1.
-            return None;
+        // Each arm's cond must be a bin arm cond over the SAME scrutinee: a length probe + literal segments.
+        let Some((sb, total, lits)) = parse_bin_len_cond(db, cur) else {
+            return None; // a guard / non-Eq / rest / dependent cond → not this sub-slice
         };
         if sb != scrut_binder {
             return None;
         }
-        let _ = cond;
-        // Collect the arm body's static-offset int-segment reads over the scrutinee; bail on any shape this
-        // sub-slice does not handle (dynamic offset, rest/dependent reads).
-        let segs = collect_bin_int_segs(db, then_, scrut_binder)?;
+        // The body's BINDER int reads (literal segments are only probed in the cond, never read).
+        let binders = collect_bin_int_segs(db, then_, scrut_binder)?;
+        // Merge literal + binder segments by offset; a collision (both at one offset) or a non-contiguous
+        // tiling of `[0, total)` means a shape this sub-slice cannot faithfully reconstruct → bail.
+        let mut by_off: std::collections::BTreeMap<u32, Seg> = std::collections::BTreeMap::new();
+        for (off, w, signed, le, lit) in lits {
+            if by_off.insert(off, Seg::Lit(w, signed, le, lit)).is_some() {
+                return None;
+            }
+        }
+        for (off, w, signed, le) in binders {
+            if by_off.insert(off, Seg::Binder(w, signed, le)).is_some() {
+                return None;
+            }
+        }
+        let mut expect_off: u32 = 0;
+        let mut segs: Vec<(u32, Seg)> = Vec::with_capacity(by_off.len());
+        for (off, seg) in by_off {
+            if off != expect_off {
+                return None; // gap/overlap → an unused/`_` or unmodeled segment
+            }
+            expect_off += u32::from(match &seg {
+                Seg::Lit(w, ..) | Seg::Binder(w, ..) => *w,
+            });
+            segs.push((off, seg));
+        }
+        if expect_off != total {
+            return None; // widths do not account for the whole scrutinee length
+        }
         arms.push(BinReArm { segs, body: then_ });
         cur = else_;
     };
@@ -4912,24 +4942,35 @@ fn try_emit_bin_match(
     let match_head = b.name("match");
     let mut children = vec![match_head, scrut_node];
     for arm in &arms {
-        // Build `(bin (uN xK) …)` + register each segment binder in `env.bin_fields` so the arm body's
-        // `BinIntRead` reads resolve to the binder NAME. Scoped to THIS arm (saved/restored) — sibling arms
-        // reuse the same `(offset, width)` keys.
+        // Build `(bin <seg>…)` — a LITERAL segment `(uN <lit>)` (a magic-number / tag probe), a BINDER segment
+        // `(uN xK)` registered in `env.bin_fields` so the body's `BinIntRead` reads resolve to the binder NAME.
+        // Scoped to THIS arm (saved/restored) — sibling arms reuse the same `(offset, width)` keys.
         let saved = std::mem::take(&mut env.bin_fields);
         let bin_head = b.name("bin");
         let mut pat_children = vec![bin_head];
-        for &(offset, width, signed, le) in &arm.segs {
-            let name = synth_payload_name(env.next_payload);
-            env.next_payload += 1;
+        for (offset, seg) in &arm.segs {
+            let (width, signed, le) = match seg {
+                Seg::Lit(w, s, l, _) | Seg::Binder(w, s, l) => (*w, *s, *l),
+            };
             let bits = u32::from(width) * 8;
             let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
-            let binder = b.name(name.clone());
-            let mut seg = vec![ty, binder];
+            let value = match seg {
+                Seg::Lit(_, _, _, lit) => b.atom_leaf(Leaf::Int {
+                    value: lit.clone(),
+                    radix: Radix::Dec,
+                }),
+                Seg::Binder(..) => {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    env.bin_fields.insert((*offset, width), name.clone());
+                    b.name(name)
+                }
+            };
+            let mut seg_children = vec![ty, value];
             if le {
-                seg.push(b.name("le"));
+                seg_children.push(b.name("le"));
             }
-            pat_children.push(b.list(seg));
-            env.bin_fields.insert((offset, width), name);
+            pat_children.push(b.list(seg_children));
         }
         let pat = b.list(pat_children);
         let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
@@ -4952,37 +4993,101 @@ fn try_emit_bin_match(
     Some(Ok(b.list(children)))
 }
 
-/// Parse a node as a bin-match arm's length probe `Compare{Eq, BytesLen(s), ConstInt(total)}` (the `cond` of
-/// the desugared `(if (= (bytes-len s) total) …)`). Returns `(scrutinee-binder, total)` when it matches
-/// EXACTLY that shape — NOT an `And` (a literal-probe conjunction), NOT `Ge` (a final-rest length) — so
-/// sub-slice 1 admits only the whole-scrutinee binder-only arm. `node` may be the `If` itself or its `cond`.
-fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<(StructId, u32)> {
+/// A LITERAL bin-match segment recovered from an arm cond's probe: `(byte_offset, width, signed,
+/// little_endian, literal-value)` — a `(uN <lit>)` / `(iN <lit>)` segment (a magic-number / tag probe).
+type BinLitSeg = (u32, u8, bool, bool, IntValue);
+
+/// Parse a bin-match arm cond (`Compare{Eq, BytesLen(s), total}` optionally AND-ed with `BinIntRead(s, off,
+/// w) == lit` LITERAL-segment probes — the whole-scrutinee, fixed-width shape). Returns `(scrutinee-binder,
+/// total_bytes, literal-segments)`; `None` on any other conjunct (a `Ge` final-rest length, a dependent-size
+/// floor, a user guard, a non-`Eq`) — those are later sub-slices. `node` may be the `If` itself or its `cond`.
+fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<(StructId, u32, Vec<BinLitSeg>)> {
     let cond = match core_of(db, node) {
         Core::If { cond, .. } => cond,
         _ => node,
     };
-    let Core::Compare { op, lhs, rhs } = core_of(db, cond) else {
-        return None;
-    };
-    if op != crate::resolved::Prim::Eq {
-        return None;
+    // A bin-match arm cond is a short-circuit AND-chain of `Eq` conjuncts: exactly ONE length probe
+    // `BytesLen(s) == total`, plus zero+ LITERAL-segment probes `BinIntRead(s, off, w) == lit`. Flatten the
+    // chain and classify each conjunct; any other shape (`Ge` — a final-rest length; a dependent-size floor;
+    // a user guard; a non-`Eq`) → `None` (not this sub-slice).
+    fn flatten(db: &mut Db, n: StructId, out: &mut Vec<StructId>) {
+        if let Core::And {
+            lhs,
+            rhs,
+            is_and: true,
+        } = core_of(db, n)
+        {
+            flatten(db, lhs, out);
+            flatten(db, rhs, out);
+        } else {
+            out.push(n);
+        }
     }
-    let Core::BytesLen { operand } = core_of(db, lhs) else {
-        return None;
+    let mut conjuncts = Vec::new();
+    flatten(db, cond, &mut conjuncts);
+    let mut scrut: Option<StructId> = None;
+    let mut total: Option<u32> = None;
+    let mut lits: Vec<BinLitSeg> = Vec::new();
+    let set_scrut = |scrut: &mut Option<StructId>, sb: StructId| -> bool {
+        match scrut {
+            Some(s) if *s != sb => false, // a probe over a DIFFERENT value → not one bin-match arm
+            _ => {
+                *scrut = Some(sb);
+                true
+            }
+        }
     };
-    let sb = local_binder(db, operand)?;
-    let Core::ConstInt(total) = core_of(db, rhs) else {
-        return None;
-    };
-    let total = total.to_i64().filter(|&t| t >= 0)? as u32;
-    Some((sb, total))
+    for c in conjuncts {
+        let Core::Compare {
+            op: crate::resolved::Prim::Eq,
+            lhs,
+            rhs,
+        } = core_of(db, c)
+        else {
+            return None;
+        };
+        match core_of(db, lhs) {
+            Core::BytesLen { operand } => {
+                let sb = local_binder(db, operand)?;
+                if !set_scrut(&mut scrut, sb) {
+                    return None;
+                }
+                let Core::ConstInt(t) = core_of(db, rhs) else {
+                    return None;
+                };
+                if total.is_some() {
+                    return None; // two length probes in one arm — not a shape we model
+                }
+                total = Some(t.to_i64().filter(|&x| x >= 0)? as u32);
+            }
+            Core::BinIntRead {
+                bytes,
+                byte_offset,
+                off_plus: None,
+                width,
+                signed,
+                little_endian,
+            } => {
+                let sb = local_binder(db, bytes)?;
+                if !set_scrut(&mut scrut, sb) {
+                    return None;
+                }
+                let Core::ConstInt(lit) = core_of(db, rhs) else {
+                    return None;
+                };
+                lits.push((byte_offset, width, signed, little_endian, lit));
+            }
+            _ => return None,
+        }
+    }
+    Some((scrut?, total?, lits))
 }
 
-/// Collect an arm body's fixed-width int-segment reads (`Core::BinIntRead`) over the scrutinee `scrut_binder`,
-/// returned offset-sorted as `(byte_offset, width, signed, little_endian)`. Returns `None` (not sub-slice 1)
-/// if the body carries any read this slice does not reconstruct — a DYNAMIC-offset int read (`off_plus`),
-/// a `BinRestRead` / `BinSizedRead` (rest / dependent-size segments) — or if the collected int widths do NOT
-/// tile `[0, Σwidth)` contiguously from 0 (an unused/`_` segment leaves a gap the reads cannot witness).
+/// Collect an arm body's BINDER fixed-width int-segment reads (`Core::BinIntRead`) over the scrutinee
+/// `scrut_binder`, offset-sorted + deduped as `(byte_offset, width, signed, little_endian)`. Returns `None`
+/// if the body carries any read this slice does not reconstruct — a DYNAMIC-offset int read (`off_plus`), a
+/// `BinRestRead` / `BinSizedRead` (rest / dependent-size). The result may be EMPTY (a literal-only arm reads
+/// nothing); the caller MERGES these binder segments with the cond's literal segments and checks the tiling.
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
@@ -5031,21 +5136,11 @@ fn collect_bin_int_segs(
     let mut out: Vec<(u32, u8, bool, bool)> = Vec::new();
     let mut bail = false;
     walk(db, body, scrut_binder, &mut seen, &mut out, &mut bail);
-    if bail || out.is_empty() {
+    if bail {
         return None;
     }
-    // Dedup identical (offset,width,signed,le) reads, sort by offset, and require a contiguous tiling from 0
-    // (each segment starts where the previous ended) — else a gap/overlap means an unused or non-int segment
-    // this sub-slice cannot faithfully reconstruct.
     out.sort_unstable();
     out.dedup();
-    let mut expect_off: u32 = 0;
-    for &(off, width, _, _) in &out {
-        if off != expect_off {
-            return None;
-        }
-        expect_off += u32::from(width);
-    }
     Some(out)
 }
 
