@@ -5848,6 +5848,62 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             continue;
         }
 
+        // WEDGE OVERRIDE (concierge issue 2026-09-02) — runs BEFORE the pane_busy "left alone" guard
+        // below, which is FOOLED by the stale "esc to interrupt" footer that lingers after Claude Code's
+        // auto-UPDATE banner stops the /loop. A has-heartbeated agent wedged on "Restart to update" reads
+        // as "work in flight" and is never restarted (v-inference + v-varargs sat 1h+ with undrained mail,
+        // needing a manual concierge kill + `fleet up`). We are PAST the fresh-heartbeat continue, so the
+        // heartbeat IS stale; if a FRESH capture affirmatively shows the update banner, the /loop is
+        // DEFINITIVELY wedged (a session cannot be mid-work AND awaiting a restart-to-update) → AUTO-RESTART
+        // via the same `restart_window` the 100%-wall wedge uses (kill + relaunch; durable state persists),
+        // thrash-guarded by WEDGE_RESTART_GRACE. A capture FAILURE (None) or a non-banner pane falls through
+        // (never destroy a possibly-working window on an unsure signal — the PR#1937 lesson). FRESH capture
+        // taken here, just before the destructive kill, not the stale sweep-top snapshot.
+        let banner_wedged = capture_pane(&session, &a.name)
+            .as_deref()
+            .is_some_and(pane_shows_update_banner);
+        let update_restarted_recently =
+            wedge_restart_age_secs(fleet, &a.name, now).is_some_and(|s| s < WEDGE_RESTART_GRACE);
+        if banner_wedged && !update_restarted_recently {
+            if dry_run {
+                println!(
+                    "  DRY-RUN would AUTO-RESTART '{}' (update-banner wedge: heartbeat stale {age}s + 'Restart to update' — the /loop is dead behind a stale 'esc to interrupt' footer)",
+                    a.name
+                );
+            } else {
+                match restart_window(fleet, &session, &a.name) {
+                    RestartOutcome::Restarted => {
+                        stamp_wedge_restart(fleet, &a.name);
+                        wedge_restarts += 1;
+                        eprintln!(
+                            "  ⟳ AUTO-RESTARTED '{}' (UPDATE-BANNER WEDGE: heartbeat stale {age}s + 'Restart \
+                             to update' banner — the /loop was dead but the stale 'esc to interrupt' footer \
+                             masked it as work-in-flight). Window killed + relaunched; durable state \
+                             persists. (self-heal, no operator needed)",
+                            a.name
+                        );
+                        println!("  ⟳ auto-restarted '{}' update-banner wedge", a.name);
+                    }
+                    RestartOutcome::RelaunchFailed => {
+                        eprintln!(
+                            "  ‼ '{}' update-banner wedge: RELAUNCH FAILED (window killed or already gone) \
+                             — no window running now. `fleet up` will re-create it; not rate-limiting so the \
+                             next sweep retries.",
+                            a.name
+                        );
+                    }
+                    RestartOutcome::KillFailed => {
+                        eprintln!(
+                            "  ! '{}' update-banner wedge: tmux kill-window failed — left as-is, will retry \
+                             next sweep.",
+                            a.name
+                        );
+                    }
+                }
+            }
+            continue;
+        }
+
         // Don't interrupt a real tick: if the pane shows Claude working ("esc to interrupt"), the loop
         // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop.
         //
@@ -7776,6 +7832,22 @@ fn pane_shows_working(pane_text: &str) -> bool {
         // prints while the model is producing output — present through a long percolating turn even when
         // the "esc to interrupt" affordance is not on the visible pane.
         || ((pane_text.contains("↓") || pane_text.contains("↑")) && pane_text.contains("tokens"))
+}
+
+/// Does the pane show Claude Code's AUTO-UPDATE banner — "Update installed · Restart to update" (or the
+/// bare "Restart to update")? This is a WEDGE signal, not liveness: after CC self-updates it prints this
+/// banner and the running session's `/loop` STOPS ticking (heartbeat goes stale, inbox mail piles
+/// undrained), yet the pane keeps rendering the static "esc to interrupt" footer above it — so
+/// [`pane_shows_working`] mislabels the dead loop as "work in flight" and the watchdog leaves it alone
+/// forever (hit v-inference + v-varargs 1h+, needed a manual concierge kill + `fleet up` — concierge issue
+/// 2026-09-02). The banner is UNAMBIGUOUS: a session cannot be genuinely mid-work AND awaiting a
+/// restart-to-update, so pairing this with an already-stale heartbeat is safe proof of a wedge to
+/// AUTO-RESTART (reusing the 100%-wall `restart_window` path; durable state persists). Case-insensitive
+/// substring so it is robust to surrounding pane chrome. Tracks CC's current banner vocabulary — a future
+/// CC UI change is the maintenance point (same as `pane_shows_working`). Pure + unit-tested.
+fn pane_shows_update_banner(pane_text: &str) -> bool {
+    let lower = pane_text.to_ascii_lowercase();
+    lower.contains("restart to update") || lower.contains("update installed")
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -18769,6 +18841,29 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // A bare arrow glyph WITHOUT the "tokens" meter must NOT count as working (e.g. prose mentioning
         // a download arrow) — the meter needs BOTH the arrow AND "tokens", so this stays idle.
         assert!(!pane_shows_working("❯ see the ↓ section below for details"));
+    }
+
+    #[test]
+    fn pane_shows_update_banner_detects_the_wedge_regardless_of_the_stale_working_footer() {
+        // The reported wedge (concierge 2026-09-02): CC's auto-update banner is up AND the stale
+        // "esc to interrupt" footer still renders — pane_shows_working says "working" (fooled), but the
+        // update banner is the WEDGE truth. Both banner phrasings, case-insensitive.
+        assert!(pane_shows_update_banner(
+            "✻ Update installed · Restart to update\n  esc to interrupt"
+        ));
+        assert!(pane_shows_update_banner("Restart to update"));
+        assert!(pane_shows_update_banner("RESTART TO UPDATE")); // case-insensitive
+        // The footer alone still reads as "working" — which is exactly why the banner override is needed:
+        // the wedged pane shows BOTH, and only the banner disambiguates it as dead-not-working.
+        let wedged = "✻ Update installed · Restart to update\n  ⏵ esc to interrupt";
+        assert!(pane_shows_working(wedged) && pane_shows_update_banner(wedged));
+        // A normal working pane (no banner) must NOT trip it — else we'd kill a live agent.
+        assert!(!pane_shows_update_banner(
+            "✶ Thinking… (2m 3s · ↑ 12.1k tokens)"
+        ));
+        assert!(!pane_shows_update_banner("esc to interrupt"));
+        assert!(!pane_shows_update_banner("❯ "));
+        assert!(!pane_shows_update_banner(""));
     }
 
     #[test]
