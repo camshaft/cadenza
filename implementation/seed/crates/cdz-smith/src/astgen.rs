@@ -363,18 +363,30 @@ fn gen_typefuzz_toplevel_helpers<C: Choice>(
 fn gen_typefuzz_usersum_program<C: Choice>(c: &mut C, fresh: &mut usize) -> String {
     let n = *fresh;
     *fresh += 1;
+    // ~1/2: QUALIFY the CONSTRUCTOR (T1.27 — `T.A` / `(Q.M arg)`); patterns stay unqualified (T1.26).
+    let qual = c.variant(2) == 0;
     if c.variant(2) == 0 {
         // Tagged: a payload variant `(Mn Int64)` + a nullary variant `(Zn)`.
         let a = c.int_bounded(0, 9);
         let z = c.int_bounded(0, 9);
+        let ctor = if qual {
+            format!("(T{n}.M{n} {a})")
+        } else {
+            format!("(M{n} {a})")
+        };
         format!(
-            "(do (type T{n} (M{n} Int64) (Z{n})) (def (main) (match (M{n} {a}) ((M{n} v) v) ((Z{n}) {z}))) (export main))"
+            "(do (type T{n} (M{n} Int64) (Z{n})) (def (main) (match {ctor} ((M{n} v) v) ((Z{n}) {z}))) (export main))"
         )
     } else {
-        // Bare-name nullary enum with 3 variants; match over one of them.
+        // Bare-name nullary enum with 3 variants; match over one of them (qualified or bare scrutinee).
         let pick = ["R", "G", "B"][c.variant(3)];
+        let scrut = if qual {
+            format!("E{n}.{pick}{n}")
+        } else {
+            format!("{pick}{n}")
+        };
         format!(
-            "(do (type E{n} R{n} G{n} B{n}) (def (main) (match {pick}{n} (R{n} 1) (G{n} 2) (B{n} 3))) (export main))"
+            "(do (type E{n} R{n} G{n} B{n}) (def (main) (match {scrut} (R{n} 1) (G{n} 2) (B{n} 3))) (export main))"
         )
     }
 }
