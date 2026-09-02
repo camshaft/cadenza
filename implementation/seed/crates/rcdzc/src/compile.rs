@@ -2243,11 +2243,26 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             // NOT caught here — its head IS a declaration keyword, so it registers and its own pass
             // diagnoses the shape; this fires ONLY for a head that is not a declaration keyword at all.
             let head = db.ast.head_name(member);
-            let is_decl = matches!(
+            // `import` is a KNOWN module form (a library module imports a sibling), NOT a "not a
+            // declaration" category error — the single-module path names it a linker-boundary form with
+            // its OWN diagnostic (the `unknown_top_forms` `import` arm above). Exclude it here, exactly as
+            // `pragma` (a directive with its own key/arity validation) is excluded, so this check does not
+            // shadow the linker-boundary message with a competing "not a declaration" one.
+            let is_known_member_form = matches!(
                 head,
-                Some("def" | "effect" | "op" | "type" | "module" | "doc" | "export" | "pragma")
+                Some(
+                    "def"
+                        | "effect"
+                        | "op"
+                        | "type"
+                        | "module"
+                        | "doc"
+                        | "export"
+                        | "pragma"
+                        | "import"
+                )
             );
-            if is_decl {
+            if is_known_member_form {
                 continue;
             }
             // A near-miss of a declaration keyword (`deff`→`def`, `exprot`→`export`) gets a did-you-mean
@@ -2280,6 +2295,84 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 )
                 .at(member),
             );
+        }
+        // A module `(export …)` clause naming a member the module does NOT declare is ill-formed — the
+        // nested-module analogue of the top-level "export names no definition" (CDZ0101) validated
+        // elsewhere over `db.exports`. That top-level pass reads the PROGRAM's exports, NEVER a nested
+        // module's `(export …)` clause, so `(module m (def (a) 1) (export a b))` with an undefined `b`
+        // was SILENTLY accepted — `modules::module_export_set` collects the export names only to FILTER
+        // the module's record, so a name matching no member just filters nothing (an invisible no-op).
+        // Validate each exported name against the module's DECLARED member names (a `def`'s field name,
+        // or a `type`/`effect`/`module` member's name), rejecting CDZ0101 anchored at the offending name
+        // atom, with a did-you-mean over the member names — the same code + shape as the top-level check.
+        // The ROOT module's members ARE the program's top-level defs/exports, so its `(export …)` clauses
+        // populate `db.exports` and are ALREADY validated by the top-level export check (the abstract-type
+        // handle / type / effect nuances live there). Only a NESTED module (inside a `(do …)`) escapes that
+        // pass — the gap this block fills — so skip the arena-root module here to avoid a redundant fault.
+        if form == db.ast.root {
+            continue;
+        }
+        let member_name = |m: StructId| -> Option<String> {
+            if let Some(tail) = db.ast.as_form(m, "def") {
+                let sig = *tail.first()?;
+                if let Some(n) = db.ast.as_name(sig) {
+                    return Some(n.to_string()); // bare-name value def `(def x V)`
+                }
+                // Signature `(f p…)` — the function name is the head.
+                if let crate::ast::Struct::List(children) = db.ast.get(sig) {
+                    return children
+                        .first()
+                        .and_then(|&c| db.ast.as_name(c))
+                        .map(str::to_string);
+                }
+                return None;
+            }
+            // A `(type <head> …)` / `(effect <head> …)` / `(module NAME …)` member declares its NAME. Use
+            // the shared `type_decl_head_name` so a PARENTHESIZED generic head `(type (Box a) …)` resolves
+            // to `Box` (a bare `tail.first().as_name()` returns None for the `(Box a)` list head → the type
+            // would be invisible and a valid `(export Box)` would false-positive).
+            for kw in ["type", "effect", "module"] {
+                if let Some(tail) = db.ast.as_form(m, kw) {
+                    return db
+                        .ast
+                        .type_decl_head_name(*tail.first()?)
+                        .map(str::to_string);
+                }
+            }
+            None
+        };
+        let declared: crate::fxhash::FxHashSet<String> = mtail
+            .get(1..)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|&m| member_name(m))
+            .collect();
+        for &member in mtail.get(1..).unwrap_or(&[]) {
+            let Some(export_tail) = db.ast.as_form(member, "export").map(<[_]>::to_vec) else {
+                continue;
+            };
+            for name_occ in export_tail {
+                let Some(name) = db.ast.as_name(name_occ).map(str::to_string) else {
+                    continue; // a malformed non-name export element is a separate concern
+                };
+                if declared.contains(&name) {
+                    continue;
+                }
+                let near = crate::diag::suggest::nearest(&name, &declared);
+                let msg = match near.as_deref() {
+                    Some(n) => {
+                        format!(
+                            "export `{name}` names no definition in the module — did you mean `{n}`?"
+                        )
+                    }
+                    None => format!("export `{name}` names no definition in the module"),
+                };
+                let mut reject = Reject::coded(Code::Unbound, msg).at(name_occ);
+                if let Some(n) = near {
+                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(name_occ, n));
+                }
+                faults.push(reject);
+            }
         }
     }
     // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry

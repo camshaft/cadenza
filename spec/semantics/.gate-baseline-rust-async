@@ -3130,6 +3130,7 @@ pass	a nested match on a recursive sum with a statically-known outer disc reads 
 pass	a nested match on a runtime scrutinee
 pass	a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm
 pass	a nested module and a sibling def in the same outer module both stay reachable
+pass	a nested module exporting a name it does not declare is rejected
 pass	a nested module's exported member IS reachable through the chain despite a private sibling
 pass	a nested module's function export is applied through the projection chain
 pass	a nested module's inner function calls its inner sibling by bare name
