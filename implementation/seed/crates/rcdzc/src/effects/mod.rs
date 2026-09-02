@@ -101,6 +101,15 @@ pub(crate) use reduce::*;
 /// or a re-inject guard) so it never duplicates.
 pub(crate) fn inject_prelude_eval_effect(ast: &mut Arenas) {
     let root = ast.root;
+    // Only inject into a top-level-ITEMS CONTAINER — a `(do …)` or `(module …)`. A program whose root is a
+    // BARE single form (a lone `(def sig body)`, or a bare expression) is NOT an item list: appending the
+    // Eval member to it would corrupt the form — e.g. `(def main body)` → `(def main body (effect Eval …))`,
+    // read as a def with TWO bodies → a spurious CDZ0201 "more than one body" on a valid single-def program
+    // (#7823 regression, breaks the cdz lsp diagnostic-count tests). Such a program has no macro/`{Eval}` use
+    // anyway, so skipping the inject there loses nothing. `scan_top_level` still handles the bare-form root.
+    if ast.as_form(root, "do").is_none() && ast.as_form(root, "module").is_none() {
+        return;
+    }
     let items = match ast.get(root) {
         Struct::List(items) => items.clone(),
         Struct::Atom(_) => return,
