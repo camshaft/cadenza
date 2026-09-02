@@ -1917,9 +1917,26 @@ impl Ty {
             }
             // A nominal renders as its declared NAME (`(: (Mk 42) UserId)`) — its identity is the name,
             // not its underlying shape (`type-system.md §A Nominal Type's Identity Is Its
-            // Fully-Qualified Name`). Recovered from `decl` via the render-context (no longer carried on
-            // the type); a nameless synth decl falls back to `<nominal>`.
-            Ty::Nominal { decl, .. } => ncx.name_of(*decl).unwrap_or("<nominal>").to_string(),
+            // Fully-Qualified Name`). A GENERIC nominal is the name APPLIED to its type args (`(Box a)`,
+            // `(Box Int64)`) — the same `(Name arg…)` shape the `Ty::Sum` arm above uses and that #7380 /
+            // `render_ty` show on the host query/hover/exports surfaces; rendering the args here keeps the
+            // ERROR-message vocabulary consistent with those surfaces (a user seeing `(Box a)` in a hover
+            // but bare `Box` in an error is a needless inconsistency). A monomorphic nominal (`args: []`)
+            // is the bare name. Recovered from `decl`; a nameless synth decl falls back to `<nominal>`.
+            Ty::Nominal { decl, args, .. } => {
+                let name = ncx.name_of(*decl).unwrap_or("<nominal>");
+                if args.is_empty() {
+                    name.to_string()
+                } else {
+                    let mut s = format!("({name}");
+                    for a in args.iter() {
+                        s.push(' ');
+                        s.push_str(&a.render_name(ncx));
+                    }
+                    s.push(')');
+                    s
+                }
+            }
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(ncx), r.render_name(ncx)),
             // A reified continuation renders as `(Cont resume answer)` — the type a stored/escaping `k`
             // would be named. Compile-time-only until the step-3 heap rep lands; a name for diagnostics.
@@ -2020,7 +2037,20 @@ impl Ty {
                     unit.render()
                 )
             }
-            // Every scalar / nominal / non-var-bearing arm renders identically to `render_name`.
+            // A generic nominal renders `(Name arg…)` with each arg through `render_named_vars`, so a
+            // scheme surface (`cdz type`) shows the STABLE letter vars (`(Box a)`), not the `_` the
+            // `render_name` fallthrough would collapse them to — mirroring the `Ty::Sum` arm above.
+            Ty::Nominal { decl, args, .. } if !args.is_empty() => {
+                let name = ncx.name_of(*decl).unwrap_or("<nominal>");
+                let mut s = format!("({name}");
+                for a in args.iter() {
+                    s.push(' ');
+                    s.push_str(&a.render_named_vars(names, ncx));
+                }
+                s.push(')');
+                s
+            }
+            // Every scalar / monomorphic-nominal / non-var-bearing arm renders identically to `render_name`.
             _ => self.render_name(ncx),
         }
     }
@@ -2172,6 +2202,43 @@ mod tests {
             "(Unit.^ (Unit.base #\"m\\\"\") 2)",
             "a powered factor escapes its base name"
         );
+    }
+
+    #[test]
+    fn render_name_of_a_generic_nominal_applies_its_type_args() {
+        // A GENERIC nominal must render `(Name arg…)` in error text — the same `(Box a)` shape #7380 /
+        // `render_ty` show on the host query/hover surfaces — not the bare `Name` the arm used to collapse
+        // to (the cross-surface inconsistency the concierge routed). Mirrors the `Ty::Sum` arm, which the
+        // corpus generic-SUM cases already exercise; this pins the NOMINAL twin, for which no reachable
+        // corpus case exists yet.
+        use super::{NameCtx, Ty};
+        use std::rc::Rc;
+        let occ = crate::ast::StructId(0);
+        let decls = vec![crate::db::TypeDecl {
+            name: "Box".to_string(),
+            occ,
+            params: vec!["a".to_string()],
+            variants: vec![],
+            open_tail: None,
+            synth: None,
+            associated: vec![],
+        }];
+        let ncx = NameCtx::new(&decls);
+        let mk = |args: Rc<[Ty]>| Ty::Nominal {
+            decl: occ,
+            args,
+            inner: Rc::new(Ty::int64()),
+        };
+        // GENERIC instantiation → `(Box Int64)` (was bare `Box` before this fix).
+        assert_eq!(mk(Rc::from([Ty::int64()])).render_name(&ncx), "(Box Int64)");
+        // MONOMORPHIC (no args) → bare name, unchanged (a nominal newtype `(type UserId …)`).
+        assert_eq!(mk(Rc::from([] as [Ty; 0])).render_name(&ncx), "Box");
+        // A free var arg: `render_name` collapses it to `_` (a diagnostic's "some type"); the scheme-aware
+        // `render_named_vars` shows the STABLE letter (`cdz type` surface), like the `Ty::Sum` twin.
+        let gen_ty = mk(Rc::from([Ty::Var(0)]));
+        assert_eq!(gen_ty.render_name(&ncx), "(Box _)");
+        let names = std::collections::BTreeMap::from([(0u32, "a".to_string())]);
+        assert_eq!(gen_ty.render_named_vars(&names, &ncx), "(Box a)");
     }
 
     // `is_fully_solved` is the B2 bind-safety gate P1 (core_analysis.rs) — a share whose type is NOT fully
