@@ -62,3 +62,12 @@ jobs:
       # bad case doesn't abort the whole warm (a corpus code-red must not block seeding the rest).
       - name: warm + push per-case corpus wasm extraction
         run: nix build .#packages.aarch64-linux.corpus-wasm-extract-warm --print-build-logs --keep-going
+      # AUTHORITATIVE full-corpus Core↔wasm differential (v-lean-oracle #7691, checks.<sys>.oracle-wasm-diff).
+      # Runs AFTER the extraction warm above, in the SAME job, so it reuses the just-warmed per-case extractions
+      # in-store and PULLS the emit.wasm + oracle-lean layers from cachix instead of cold-building (~12h cold).
+      # continue-on-error: a real Core↔wasm DIVERGE reds only this advisory step, not the warm's cachix-push
+      # purpose; the cachix post-step still pushes this check's realized paths. v-wasm-oracle reads the
+      # agree/diverge/skip tally and routes any DIVERGE to v-cadenza-backend.
+      - name: build + run oracle-wasm-diff (advisory full-corpus differential)
+        continue-on-error: true
+        run: nix build .#checks.aarch64-linux.oracle-wasm-diff --print-build-logs --keep-going
