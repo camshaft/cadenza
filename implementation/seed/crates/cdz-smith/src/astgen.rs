@@ -268,6 +268,38 @@ fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
     }
 }
 
+/// Build a RECURSIVE COLLECTION-BUILDER program — a top-level recursive `def` that GROWS a heap
+/// collection (List via `List.push`, or Map via `Map.insert`) across its `k` calls, and `main` consumes
+/// the built collection to a deterministic scalar (`List.len` / `List.at 0` matched / `Map.len`). Grades
+/// the recursion × collection interaction — heap allocation + reference-counting across recursive calls,
+/// then the marshaled value — which the coercing grammar never reached (the text crash-oracle's
+/// `rec_list_builder` is crash-only). Must be TOP-LEVEL (a local recursive def SKIPs in the oracle).
+/// Terminating: `n` decrements to the `(<= n 0)` base; `k` is `2..=6` so the collection stays small.
+/// Returns `(defs, main_body)`.
+fn gen_recursive_collection_body<C: Choice>(c: &mut C) -> (String, String) {
+    let form = c.variant(3);
+    let k = c.int_bounded(2, 6);
+    let list_builder = "(def (build (: n Int64) (: acc (List Int64))) (if (<= n 0) acc (build (- n 1) (List.push acc n))))";
+    match form {
+        // recursive List.push builder → element count.
+        0 => (
+            list_builder.to_string(),
+            format!("(List.len (build {k} (list)))"),
+        ),
+        // recursive List.push builder → the element at index 0 (matched out of the Option).
+        1 => (
+            list_builder.to_string(),
+            format!("(match (List.at (build {k} (list)) 0) ((Some v) v) (None 0))"),
+        ),
+        // recursive Map.insert builder → distinct-key count.
+        _ => (
+            "(def (bm (: n Int64) (: acc (Map Int64 Int64))) (if (<= n 0) acc (bm (- n 1) (Map.insert acc n n))))"
+                .to_string(),
+            format!("(Map.len (bm {k} Map.empty))"),
+        ),
+    }
+}
+
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
     // Two TOP-LEVEL special shapes, chosen by a SINGLE `variant(6)` (one choice consumed, so the fall-through
@@ -276,8 +308,8 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     // in-body, and the oracle captures a LOCAL fn def's env EAGERLY (excluding itself/later siblings) so a
     // local recursive/mutual call is unbound → SKIP. Gated on NON-ZERO values so an EXHAUSTED cursor
     // (variant → 0) falls through to the base-case path (a bare-literal main), preserving that invariant.
-    match c.variant(8) {
-        // ~1/8: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
+    match c.variant(9) {
+        // ~1/9: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
         3 => {
             let (type_decl, body) = gen_usersum(c);
             write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
@@ -303,6 +335,16 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
         // is crash-only). Must be top-level (an inline module is a whole-program shape, like a `(type …)`).
         7 => {
             let (defs, body) = gen_module_body(c);
+            write!(source, "{defs} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        // ~1/9: a RECURSIVE COLLECTION-BUILDER — a top-level recursive `def` GROWS a heap collection
+        // (List/Map) across its calls, and `main` consumes the built collection to a scalar. Grades the
+        // recursion × collection interaction (heap allocation + RC across recursive calls, then the
+        // marshaled value), which the value-diff never reached (the text crash-oracle's rec_list_builder
+        // is crash-only). Must be top-level (a recursive def SKIPs in the oracle when local).
+        8 => {
+            let (defs, body) = gen_recursive_collection_body(c);
             write!(source, "{defs} (def (main) {body}) (export main))").ok();
             return Program { source };
         }
@@ -2915,6 +2957,47 @@ mod tests {
         for (i, m) in markers.iter().enumerate() {
             assert!(seen[i], "should reach the cross-module form {m}");
         }
+    }
+
+    /// `build_program` REACHES the RECURSIVE COLLECTION-BUILDER shape — a top-level recursive `def` that
+    /// grows a List/Map across its calls, consumed by `main` — and every such program COMPILES. The
+    /// builder def must be TOP-LEVEL (a local recursive def SKIPs in the oracle). Asserts both the List
+    /// (`build`) and Map (`bm`) builders are reached.
+    #[test]
+    fn build_program_reaches_recursive_collection_builder_and_compiles() {
+        let (mut saw, mut saw_list, mut saw_map) = (false, false, false);
+        for seed in 0u64..2048 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2027);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = build_program(&mut ByteCursorChoice::new(&bytes)).source;
+            if !src.contains("(def (build ") && !src.contains("(def (bm ") {
+                continue; // not the recursive-collection-builder shape this seed
+            }
+            saw = true;
+            let builder = if src.contains("(def (build ") {
+                "(def (build "
+            } else {
+                "(def (bm "
+            };
+            assert!(
+                src.find(builder).unwrap() < src.find("(def (main)").unwrap(),
+                "the recursive builder def must be TOP-LEVEL (before main): {src}"
+            );
+            saw_list |= src.contains("(def (build ");
+            saw_map |= src.contains("(def (bm ");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "recursive collection-builder program must COMPILE: {src}"
+            );
+        }
+        assert!(saw, "should reach the recursive collection-builder shape");
+        assert!(saw_list, "should reach the List builder (build)");
+        assert!(saw_map, "should reach the Map builder (bm)");
     }
 
     /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
