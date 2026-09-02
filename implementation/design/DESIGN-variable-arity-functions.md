@@ -520,7 +520,7 @@ the tuple-expansion typing + list-rest concat typing + the const-param-at-positi
 > which is insufficient for the fixed-params callee.
 
 **What #7712 shipped (all the common paths):** a single-source **transparent resolve** in
-`resolved.rs` (`resolved_of`, before `compute`) resolves a call-arg `(.. operand)` node structurally
+`resolve.rs` (`resolved_of`, before `compute`) resolves a call-arg `(.. operand)` node structurally
 *as the operand* (no `type_of` recursion) when the parent is a non-construction application AND either
 the operand is a syntactic tuple OR the callee `callee_is_varargs`. `apply_lambda_uncached` then
 expands the marker via the AST (literal-tuple splice; per-slot `(. t i)` for a tuple Ref/Param;
