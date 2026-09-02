@@ -136,8 +136,14 @@ pub struct Record {
     /// emitted CODED diagnostic meets the golden-standard rubric (`DESIGN-diagnostic-quality-rubric.md`): no
     /// forbidden phrase (§1) + the per-code required tokens (§2). A bare case-level flag like
     /// `(no-other-errors)`; graded on the diagnostics-wire path (`cdz_corpus_grade::grade_diagnostic_quality`),
-    /// not the flat direct-gate manifest. Opt-in per scope first, default once the corpus is clean.
+    /// not the flat direct-gate manifest. NOW A NO-OP: the C1 lint is DEFAULT-ON (the opt-in→default flip),
+    /// so this legacy opt-IN marker no longer gates; retained so existing chapter markers parse harmlessly.
     pub diagnostic_quality: bool,
+    /// `true` iff the case (or its file, via a bare top-level form) authored `(no-diagnostic-quality)` — the
+    /// C1 opt-OUT escape hatch: SUPPRESS the default-on §1 lint for this case (reversible per-case/file
+    /// safety net for a case that legitimately must carry a §1 forbidden phrase; none known today). Carried
+    /// to the grade side as `cdz_corpus_grade::TestRun::diagnostic_quality_opt_out`.
+    pub diagnostic_quality_opt_out: bool,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -539,13 +545,22 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
     };
     let mut records = Vec::new();
     let mut file_diagnostic_quality = false;
+    let mut file_diagnostic_quality_opt_out = false;
     for &top_id in top {
         let form_id = arenas.peel_comments(top_id);
         match arenas.head_name(form_id) {
             Some("case") => records.push(parse_case(&arenas, form_id)?),
-            // A bare top-level `(diagnostic-quality)` (not inside a case) — file-scope C1 opt-in.
+            // A bare top-level `(diagnostic-quality)` (not inside a case) — file-scope C1 opt-in (now a
+            // no-op: the lint is default-on; retained so existing file-level markers parse harmlessly).
             Some("diagnostic-quality") => file_diagnostic_quality = true,
+            // A bare top-level `(no-diagnostic-quality)` — file-scope C1 opt-OUT (suppress §1 for the file).
+            Some("no-diagnostic-quality") => file_diagnostic_quality_opt_out = true,
             _ => {} // any other top-level form is skipped (as `read_cases` does)
+        }
+    }
+    if file_diagnostic_quality_opt_out {
+        for r in &mut records {
+            r.diagnostic_quality_opt_out = true;
         }
     }
     if file_diagnostic_quality {
@@ -951,6 +966,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
     let mut diagnostic_quality = false;
+    let mut diagnostic_quality_opt_out = false;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -1243,6 +1259,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // `(diagnostic-quality)` — a bare CASE-LEVEL C1 opt-in: every emitted coded diagnostic must meet
             // the golden-standard rubric (§1 no forbidden phrase, §2 per-code required tokens).
             Some("diagnostic-quality") => diagnostic_quality = true,
+            // `(no-diagnostic-quality)` — the C1 opt-OUT escape hatch (suppress the default-on §1 lint).
+            Some("no-diagnostic-quality") => diagnostic_quality_opt_out = true,
             // `(no-diagnostic "phrase")` — a CASE-LEVEL program-scoped cross-kind message-ABSENCE pin: the
             // phrase must appear in NO diagnostic emitted for the program (any kind). Repeatable (each an
             // independent required-absence). See the `Record` field doc. Non-string / empty children are
@@ -1350,6 +1368,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         no_other_errors,
         no_diagnostic,
         diagnostic_quality,
+        diagnostic_quality_opt_out,
     })
 }
 
