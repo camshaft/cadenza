@@ -133,6 +133,14 @@ enum Cmd {
         /// guarded regression run. Prefer this over any "release-trap" run for memory-safety verification.
         #[arg(long)]
         guarded_all: bool,
+        /// TRIAGE: list every DECLINED (todo) case + a one-line decline reason (the code/message the
+        /// compiler returned), grouped by code, instead of a pass/fail tally — so a backend owner sees a
+        /// whole file's gaps in ONE run rather than `--case`-probing titles one at a time. Read-only (never
+        /// writes a baseline). Honors `--files`/`--target`; runs IN-PROCESS (the per-case debug path, so a
+        /// per-file or small-set scope is the intended use, not the full corpus). Mutually exclusive with
+        /// `--case`/`--save`/`--check` (it is its own report, not a verdict tally or a debug view).
+        #[arg(long, conflicts_with_all = ["case", "save", "check", "opt_sweep", "shard"])]
+        show_declines: bool,
     },
     /// The parser/printer golden-corpus grader (DESIGN-parser-test-corpus.md §4): grade each
     /// `spec/syntax/<surface>/<case>/` directory against the reference `cdz` tool — the case's structural
@@ -243,6 +251,7 @@ fn main() {
             opt_sweep,
             shard,
             guarded_all,
+            show_declines,
         } => {
             let shard = shard
                 .as_deref()
@@ -266,6 +275,7 @@ fn main() {
                 },
                 shard,
                 guarded_all,
+                show_declines,
             };
             if opt_sweep {
                 gate_opt_sweep(&paths, profile, &gate_opts);
@@ -4020,6 +4030,9 @@ struct GateOpts {
     /// deterministic under-retain/UAF verification of a global escape/RC change. Forces the in-process
     /// path and fail-fasts if the store's debug runtime is missing/stale.
     guarded_all: bool,
+    /// `--show-declines`: list every DECLINED (todo) case + its one-line reason grouped by code (a triage
+    /// report), read-only, in-process. Mutually exclusive with case/save/check/shard.
+    show_declines: bool,
 }
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
@@ -4230,6 +4243,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // for CI separately.) The delegated path is regression-gated by construction anyway (the nix exec runs
     // `--baseline`), so an agent's plain `gate <files>` still catches a pass→not-pass regression.
     if opts.case.is_none()
+        && !opts.show_declines
         && !opts.save
         && !opts.check
         && opts.shard.is_none()
@@ -4333,6 +4347,13 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // single-case debug loop, not a pass/fail tally.
     if let Some(needle) = &opts.case {
         gate_one_case(&tools, &opts.store, &files, needle, opts.target);
+        return;
+    }
+
+    // `--show-declines`: a triage report of every declined (todo) case + its reason, grouped by code —
+    // read-only, in-process (like `--case`), for a backend owner to see a file's whole gap-set at once.
+    if opts.show_declines {
+        show_declines(&tools, &opts.store, &files, opts.target);
         return;
     }
 
@@ -4731,6 +4752,125 @@ fn grade_all_parallel(
         .collect()
 }
 
+/// One trial's ACTUAL outcome as a human-readable line — the `actual:` label of `--case` and the reason
+/// column of `--show-declines`. Factored out so BOTH triage views render a decline/trap/value identically
+/// (one source for the ICE-vs-honest-decline classification + the message-surfacing that makes a new ICE
+/// signature discoverable — breaker's B2/#4523 catches live here, not duplicated).
+fn ran_actual(ran: &Ran) -> String {
+    match ran {
+        Ran::Value(v, calls, _) if calls.is_empty() => format!("value {v}"),
+        Ran::Value(v, calls, _) => format!("value {v} [host-calls: {}]", calls.join(", ")),
+        Ran::Declined { code: Some(c), .. } => format!("rejected [{c}]"),
+        // A code-less decline whose message is an ICE signature is graded FAIL — the label must FOLLOW that
+        // classification (not the generic "compiler can't compile it yet", which reads as an honest gap).
+        Ran::Declined {
+            code: None,
+            message,
+        } if is_ice_signature(message) => {
+            format!("ICE — compiler bug, declined with no diagnostic code: {message}")
+        }
+        // A code-less HONEST decline: SHOW its message so a NEW ICE-flavored signature not yet in
+        // `is_ice_signature` is DISCOVERABLE. A truly silent decline (empty message) keeps the generic phrase.
+        Ran::Declined {
+            code: None,
+            message,
+        } if !message.is_empty() => {
+            format!("declined, no diagnostic code (compiler can't compile it yet): {message}")
+        }
+        Ran::Declined { code: None, .. } => "declined (compiler can't compile it yet)".to_string(),
+        Ran::Trap(t) => format!("trap: {t}"),
+        Ran::BadArtifact(e) => format!("artifact did not build: {e}"),
+    }
+}
+
+/// A DECLINED case's grouping key — the diagnostic CODE it declined with (`CDZ0101`), or a synthetic label
+/// for the code-less outcomes, so `--show-declines` can group a file's gaps by cause. Derived from the
+/// FIRST trial whose outcome isn't a plain matching value (the decline a backend owner triages). `None`
+/// means no trial declined (a todo from a value/trap-KIND-unconfirmed reason) — grouped under `(other)`.
+fn decline_group_key(rans: &[Ran]) -> Option<String> {
+    rans.iter().find_map(|r| match r {
+        Ran::Declined { code: Some(c), .. } => Some(c.clone()),
+        Ran::Declined {
+            code: None,
+            message,
+        } if is_ice_signature(message) => Some("(ICE — no code)".to_string()),
+        Ran::Declined { code: None, .. } => Some("(decline — no code)".to_string()),
+        Ran::Trap(_) => Some("(trap)".to_string()),
+        Ran::BadArtifact(_) => Some("(bad-artifact)".to_string()),
+        Ran::Value(..) => None,
+    })
+}
+
+/// `--show-declines`: run every case (in the given `--files`, or the whole corpus) and print a one-line
+/// TRIAGE entry for each DECLINED (todo) case — its title + the one-line reason — grouped by decline code,
+/// so a backend owner sees a file's whole gap-set in ONE run. Read-only (no baseline). In-process on the
+/// per-case debug path (like `--case`), so a per-file / small-set scope is the intended use.
+fn show_declines(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], target: GateTarget) {
+    // (code-key, title, reason) for every todo case, collected then grouped-and-sorted for a stable report.
+    let mut declines: Vec<(String, String, String)> = Vec::new();
+    let mut total_cases = 0usize;
+    for file in files {
+        for rec in read_corpus(&tools.corpus, file) {
+            total_cases += 1;
+            let rans: Vec<Ran> = rec
+                .trials
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let live_objects = live_objects_for_trial(
+                        &rec,
+                        i,
+                        std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some(),
+                        &t.expect,
+                    );
+                    run_program(
+                        tools,
+                        store,
+                        &rec.program,
+                        &rec.modules,
+                        &rec.peers,
+                        t.call.as_ref(),
+                        &rec.host_responses,
+                        &rec.host_calls,
+                        rec.wit_world.as_deref(),
+                        rec.component_name.as_deref(),
+                        live_objects,
+                        target,
+                    )
+                })
+                .collect();
+            // Only the DECLINED (todo) cases are the gap-set; a PASS/FAIL is out of this report's scope.
+            if !matches!(grade_ran(&rec, &rans, target), Grade::Todo) {
+                continue;
+            }
+            let key = decline_group_key(&rans).unwrap_or_else(|| "(other)".to_string());
+            // The reason = the first declining/non-value trial's actual (the gap), else the first trial's.
+            let reason = rans
+                .iter()
+                .find(|r| !matches!(r, Ran::Value(..)))
+                .or_else(|| rans.first())
+                .map(ran_actual)
+                .unwrap_or_else(|| "(no trial)".to_string());
+            declines.push((key, rec.description.clone(), reason));
+        }
+    }
+    declines.sort();
+    let mut current_group = String::new();
+    for (key, title, reason) in &declines {
+        if key != &current_group {
+            println!("\n══ {key} ══");
+            current_group = key.clone();
+        }
+        println!("  todo  {title}\n        {reason}");
+    }
+    eprintln!(
+        "\nxtask gate --show-declines: {} declined (todo) of {total_cases} case(s) across {} file(s), \
+         grouped by decline code above.",
+        declines.len(),
+        files.len()
+    );
+}
+
 /// Run only the case(s) whose description contains `needle`, printing each one's normalized program,
 /// expected result, and actual outcome. A focused debug view, not a tally.
 fn gate_one_case(
@@ -4789,39 +4929,7 @@ fn gate_one_case(
                 if let Some(call) = &trial.call {
                     println!("call:     {} {}", call.export, call.args.join(" "));
                 }
-                let actual = match ran {
-                    Ran::Value(v, calls, _) if calls.is_empty() => format!("value {v}"),
-                    Ran::Value(v, calls, _) => {
-                        format!("value {v} [host-calls: {}]", calls.join(", "))
-                    }
-                    Ran::Declined { code: Some(c), .. } => format!("rejected [{c}]"),
-                    // A code-less decline whose message is an ICE signature is graded FAIL — the `actual:`
-                    // label must FOLLOW that classification (not the generic "compiler can't compile it yet",
-                    // which reads as an honest capability gap). breaker's cosmetic catch on #4523.
-                    Ran::Declined {
-                        code: None,
-                        message,
-                    } if is_ice_signature(message) => {
-                        format!("ICE — compiler bug, declined with no diagnostic code: {message}")
-                    }
-                    // A code-less HONEST decline: SHOW its message so a NEW ICE-flavored signature not yet in
-                    // `is_ice_signature` is DISCOVERABLE in the output (breaker's B2 — the label used to DROP
-                    // the message, hiding candidate signatures). A truly silent decline (empty message) keeps
-                    // the generic phrasing.
-                    Ran::Declined {
-                        code: None,
-                        message,
-                    } if !message.is_empty() => {
-                        format!(
-                            "declined, no diagnostic code (compiler can't compile it yet): {message}"
-                        )
-                    }
-                    Ran::Declined { code: None, .. } => {
-                        "declined (compiler can't compile it yet)".to_string()
-                    }
-                    Ran::Trap(t) => format!("trap: {t}"),
-                    Ran::BadArtifact(e) => format!("artifact did not build: {e}"),
-                };
+                let actual = ran_actual(ran);
                 println!("expect:   {}", trial.expect);
                 println!("actual:   {actual}");
             }
@@ -8039,6 +8147,50 @@ mod trap_grading_tests {
         assert_eq!(
             sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 3".into())),
             sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 7".into()))
+        );
+    }
+
+    #[test]
+    fn show_declines_helpers_render_and_group_by_cause() {
+        // ran_actual: the shared reason renderer (one source for --case's `actual:` + --show-declines' reason).
+        assert_eq!(
+            ran_actual(&Ran::Declined {
+                code: Some("CDZ0101".to_string()),
+                message: "unbound".to_string()
+            }),
+            "rejected [CDZ0101]"
+        );
+        assert_eq!(
+            ran_actual(&Ran::Value("42".to_string(), vec![], vec![])),
+            "value 42"
+        );
+        // A code-less HONEST decline surfaces its message (so a new ICE signature stays discoverable).
+        assert!(
+            ran_actual(&Ran::Declined {
+                code: None,
+                message: "no machine representation".to_string()
+            })
+            .contains("no machine representation")
+        );
+
+        // decline_group_key: the FIRST non-value trial's cause is the group; an all-value run has no key.
+        assert_eq!(
+            decline_group_key(&[Ran::Declined {
+                code: Some("CDZ0203".to_string()),
+                message: String::new()
+            }]),
+            Some("CDZ0203".to_string())
+        );
+        assert_eq!(
+            decline_group_key(&[
+                Ran::Value("1".to_string(), vec![], vec![]),
+                Ran::Trap("boom".to_string()),
+            ]),
+            Some("(trap)".to_string())
+        );
+        assert_eq!(
+            decline_group_key(&[Ran::Value("1".to_string(), vec![], vec![])]),
+            None
         );
     }
 
