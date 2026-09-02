@@ -2522,6 +2522,43 @@ pub fn handle_arm_state_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::T
     Some(seed_ty)
 }
 
+/// If `id` is a handler SEED (`init`) node whose computed type `t` still has a free var, ground it against
+/// the handler's resume next-states — otherwise return `t` unchanged. Called from `infer::type_of` right
+/// after `compute`, this grounds the state type AT TYPE-CHECK (the FIRST demand of the seed's type),
+/// BEFORE lowering reads it: `type_of` does not memoize a free-var type but DOES memoize the resulting
+/// fully-ground one, so the grounded state type becomes the cached answer every later read sees — including
+/// the type match-lowering reads for the seed scrutinee (`(match s …)` where `s` resolves to a `Ref` to
+/// this init). Without this the nested-SUM payload of an unannotated `(None)` seed stays `_` at the inner
+/// match dispatch (`(Option (Option Int64))` → "sum match dispatches on a non-sum sub-value"): the
+/// binder-keyed [`handle_arm_state_ty`] fill runs only once the state BINDER is typed, which for a
+/// nested-match shape happens AFTER lowering has already read the raw seed type. Navigates by AST parent
+/// (`id → (handle-internal INIT ARMS BODY) → ARMS`), valid at type-check (the lowering-time parent is a
+/// restructured node, so this must run at type-check, which it does). Takes the pre-computed `t` so it
+/// never re-enters `type_of(id)`; the grounding's own re-entrancy is bounded by `GROUNDING_ARMS`.
+pub fn ground_seed_if_handle_init(db: &mut Db, id: StructId, t: crate::ty::Ty) -> crate::ty::Ty {
+    if !crate::infer::ty_has_free_var(db, &t) {
+        return t;
+    }
+    let Some(handle) = db.parent_of(id) else {
+        return t;
+    };
+    // Scope the `as_form` borrow (a `&[StructId]` into `db.ast`) so it ends before the `&mut db` grounding
+    // call below. `id` must be the SEED (element 0) of `(handle-internal INIT ARMS BODY)`; ARMS is element 1.
+    let arms_list = {
+        let Some(tail) = db.ast.as_form(handle, HANDLE_INTERNAL) else {
+            return t;
+        };
+        if tail.first().copied() != Some(id) {
+            return t;
+        }
+        match tail.get(1) {
+            Some(&a) => a,
+            None => return t,
+        }
+    };
+    crate::infer::ground_handler_state_ty(db, t, arms_list)
+}
+
 fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
     match resolved_of(db, node) {
         Resolved::Resume { next_state, .. } => Some(next_state),
