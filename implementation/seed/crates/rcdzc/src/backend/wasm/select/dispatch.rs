@@ -247,8 +247,9 @@ pub(super) fn try_emit_scalar_br_table(
     // arm). A NON-self-loop match — value position (`NonTail`) OR a plain tail position with no loop
     // (`Tail(None)`, e.g. an exported non-recursive body) — is eligible: its arm bodies are ordinary
     // values `br`'d to the join block, and the join's value is the function's result. Disqualify only
-    // `Tail(Some(_))`.
-    if matches!(tail, TailPos::Tail(Some(_))) {
+    // `Tail(Some(_))` with real loop members (an empty-members `TailLoop` — the #7942
+    // `returncall_shell_drop` carrier — never loop-iterates, so it stays eligible; see `is_self_loop_tail`).
+    if is_self_loop_tail(tail) {
         return Ok(None);
     }
     // Split off a trailing unguarded wildcard default; the rest must be unguarded `Int` probes.
@@ -415,6 +416,20 @@ pub(super) fn deeper_tail(tail: TailPos) -> TailPos {
     }
 }
 
+/// Whether `tail` is a REAL self-loop tail — a `Tail(Some(tl))` with actual loop MEMBERS that a
+/// self-tail-call `br`s back to. The self-loop-depth-sensitive dispatch optimizations below
+/// (unguarded-rest fall-through, disc `br_table`, branchless `select`, multi-column flat `br_if` chain)
+/// SKIP when this is true, because their block nesting cannot carry a loop `br` (they'd need
+/// flat-specific depth math). A `NonTail`, a `Tail(None)`, OR a `Tail(Some(tl))` whose `tl.members` is
+/// EMPTY are all safe: an empty-members `TailLoop` never loop-iterates (`member_which` matches nothing),
+/// so no self-loop `br` occurs and the depth stays static. Such an empty carrier is the #7942 cross-fn
+/// `returncall_shell_drop` slot-holder for a NON-looped fn — a bare `matches!(tail, Tail(Some(_)))` check
+/// wrongly treated it as a self-loop and disabled these opts (the multi-column flatten regressed to a
+/// 510-`if` exponential tree). `TailPos`/`TailLoop` are `Copy`, so this takes `tail` by value.
+fn is_self_loop_tail(tail: TailPos) -> bool {
+    matches!(tail, TailPos::Tail(Some(tl)) if !tl.members.is_empty())
+}
+
 /// Emit a match-arm BODY at [`TailPos`] `tp`. Every arm produces the match's RESULT type, so a bare
 /// `ConstInt` body is grounded to the result's integer width (`result_it`) — else a default-Int64 literal
 /// arm beside a narrow arm pushes a mismatched slot and wasm rejects the block. A tail body goes through
@@ -508,7 +523,7 @@ pub(super) fn emit_list_arms_tailable(
     // UNCONDITIONAL cover — the fall-through emits its body with NO cond re-test (the `is_tail_arm` rule),
     // so its own `cond` (whether `Any` or a now-redundant length like `LenGe(1)` complementing the first
     // arm's `LenEq(0)`) is irrelevant. Any single unguarded `rest` arm qualifies.
-    if !matches!(tail, TailPos::Tail(Some(_)))
+    if !is_self_loop_tail(tail)
         && matches!(block_ty, BlockType::Val(_))
         && first.guard.is_none()
         && !matches!(first.cond, crate::core::ListArmCond::Any)
@@ -980,7 +995,7 @@ pub(super) fn emit_sum_match_arms(
     // emitted `NonTail` (a `return_call` `br`s to `$join` fine — it's frame-replacing, not depth-relative;
     // and a self-loop `br` never occurs here since there is no loop), so it is byte-identical to the
     // pre-tail behavior for both.
-    if !matches!(tail, TailPos::Tail(Some(_)))
+    if !is_self_loop_tail(tail)
         && let Some(()) = try_emit_disc_br_table(
             db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
             out,
@@ -1014,7 +1029,7 @@ pub(super) fn emit_sum_match_arms(
             // `if` would. Only for NON-self-loop position (`select` cannot carry a loop `br`; a `Leaf`
             // select-arm is never a tail call anyway) and when both continuations are plain leaves — a
             // guarded / nested-switch / lit-test continuation keeps the structured `if` below.
-            if !matches!(tail, TailPos::Tail(Some(_)))
+            if !is_self_loop_tail(tail)
                 && matches!(block_ty, BlockType::Val(_))
                 && let [cover] = rest
                 && let crate::core::SumCont::Leaf(then_body) = &arm.cont
@@ -1528,7 +1543,7 @@ pub(super) fn emit_sum_cont(
             // emitted `NonTail` inside `$arm_fail` — no loop `br` occurs, so the depth is static (0 to the
             // arm-fail body's own frame). The body sits inside `$arm_fail`→`$join` (2 blocks): its value
             // `br $join` is depth 1.
-            if !matches!(tail, TailPos::Tail(Some(_)))
+            if !is_self_loop_tail(tail)
                 && let Some((cols, body, shared)) = flattenable_multicol_arm(cont)
             {
                 out.push(Lir::Block(block_ty)); // $join (typed — carries the arm/tail result value)
