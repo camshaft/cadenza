@@ -660,6 +660,34 @@ fn try_macro_expand(
 /// resolve at the call site. Iterates to a FIXPOINT (a macro whose output contains another macro call
 /// expands next round); `db.resolved` is invalidated between rounds because a spliced node's memoized
 /// resolution is stale. A non-macro program appends nothing and returns after one no-op scan.
+/// Collect the `(form …)` binding nodes (`form` = `"def"` or `"type"`) a macro-spliced STATEMENT-position
+/// node introduces into the ENCLOSING scope by splice-flatten. Per the v-spec-oracle multi-def + recursion
+/// ruling (position-per-level): a spliced `(form …)` registers directly; a spliced statement-position
+/// `(do …)` flattens its NON-FINAL children (each at a statement position) RECURSIVELY, while its FINAL child
+/// — the do's tail = VALUE/expression position — stays SCOPED and is never flattened (so `(do (do (def N …))
+/// 0)` flattens N, but `(do 0 (do (def N …) 0))` keeps N do-local). `out` gathers the form nodes to register.
+fn collect_flatten_forms(
+    ast: &crate::ast::Arenas,
+    node: StructId,
+    form: &str,
+    out: &mut Vec<StructId>,
+) {
+    if ast.as_form(node, form).is_some() {
+        out.push(node);
+        return;
+    }
+    if let Some(items) = ast.as_form(node, "do") {
+        let items = items.to_vec();
+        let n = items.len();
+        for (i, &child) in items.iter().enumerate() {
+            if i + 1 == n {
+                continue; // FINAL child = the do's value (expression position) → scoped, never flattened
+            }
+            collect_flatten_forms(ast, child, form, out);
+        }
+    }
+}
+
 pub(crate) fn expand_macros(db: &mut Db) {
     // FAST BAIL: no quote-param anywhere → no macro to expand (the overwhelming common case).
     if db.quote_params.is_empty() {
@@ -760,24 +788,15 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 // that ctor name's own provenance via `variant_ctor_index` (registered above per variant).
                 if db.parent_of(id) == Some(db.ast.root) {
                     // The `(type …)` forms this splice introduces at ROOT statement position: `id` itself if
-                    // it is a type decl, OR each `(type …)` CHILD of a spliced wrapping `(do …)` — the
-                    // multi-def splice-flatten (#7749) generalized from defs to TYPES (breaker's #7749∩#7757
-                    // compositional edge: `(quasiquote (do (type …) (def …)))` flattened the def but not the
-                    // type). Register each here, before the round's `rebuild_parent_index` (synth appends
-                    // nodes). A def inside the wrapping do is registered END-of-round by the `def_forms`
-                    // descend below; a type must register HERE for the parent/scope ordering. `id` (the
-                    // splice site) carries the file for the file-scope registration.
-                    let type_forms: Vec<StructId> = if db.ast.as_form(id, "type").is_some() {
-                        vec![id]
-                    } else if let Some(items) = db.ast.as_form(id, "do") {
-                        items
-                            .iter()
-                            .copied()
-                            .filter(|&c| db.ast.as_form(c, "type").is_some())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
+                    // it is a type decl, OR each `(type …)` reached by SPLICE-FLATTENING a spliced wrapping
+                    // `(do …)` — including a NESTED statement-position do, RECURSIVELY (v-spec-oracle
+                    // multi-def + recursion ruling; a nested TAIL/value-position do stays scoped). Register
+                    // each here, before the round's `rebuild_parent_index` (synth appends nodes). A def
+                    // reached the same way is registered END-of-round by the `def_forms` descend below; a
+                    // type must register HERE for the parent/scope ordering. `id` (the splice site) carries
+                    // the file for the file-scope registration.
+                    let mut type_forms: Vec<StructId> = Vec::new();
+                    collect_flatten_forms(&db.ast, id, "type", &mut type_forms);
                     for tnode in type_forms {
                         let name_node = db
                             .ast
@@ -860,15 +879,14 @@ pub(crate) fn expand_macros(db: &mut Db) {
             if db.parent_of(sid) != Some(db.ast.root) {
                 continue;
             }
-            if db.ast.as_form(sid, "def").is_some() {
-                def_forms.push((sid, sid));
-            } else if let Some(items) = db.ast.as_form(sid, "do") {
-                let items: Vec<StructId> = items.to_vec();
-                for child in items {
-                    if db.ast.as_form(child, "def").is_some() {
-                        def_forms.push((child, sid));
-                    }
-                }
+            // Splice-flatten (recursive): a spliced `(def …)` directly, OR each `(def …)` reached by
+            // flattening a spliced statement-position `(do …)` and its NON-FINAL nested statement dos (the
+            // final/tail element of each do stays scoped). Each paired with the splice-site `sid` (real-file,
+            // carries the file for file-scope registration; a flattened child is a reconstruction node).
+            let mut here: Vec<StructId> = Vec::new();
+            collect_flatten_forms(&db.ast, sid, "def", &mut here);
+            for dnode in here {
+                def_forms.push((dnode, sid));
             }
         }
         for (dnode, site) in def_forms {
