@@ -244,7 +244,15 @@ struct BinderEnv {
     /// (BIN-MATCH re-emit) The FINAL `(bytes rest)` binder of the arm currently being emitted, keyed by the
     /// rest's byte offset (the fixed prefix length) — the field a `Core::BinRestRead` carries. Populated +
     /// cleared per arm alongside `bin_fields`; a `Core::BinRestRead` in the body resolves to this binder NAME.
+    /// A rest after a DEPENDENT-SIZE segment carries `off_plus: Some(…)` (its runtime offset is `byte_offset +
+    /// Σn`), but the surface `(bytes rest)` is offset-free — so the emit arm resolves by `byte_offset` alone.
     bin_rest_fields: std::collections::HashMap<u32, std::rc::Rc<str>>,
+    /// (BIN-MATCH re-emit) The DEPENDENT-SIZE `(bytes payload <size>)` binder of the arm currently being
+    /// emitted, keyed by the payload's static `byte_offset` — the field a `Core::BinSizedRead` carries. The
+    /// segment's runtime length is the value of an earlier int-segment binder (`<size>` names it); `emit_bin_
+    /// match` emits `(bytes <payload-name> <size-name>)` after the fixed prefix and registers the payload name
+    /// here so the body's `Core::BinSizedRead` resolves to it. Populated + cleared per arm alongside `bin_fields`.
+    bin_sized_fields: std::collections::HashMap<u32, std::rc::Rc<str>>,
 }
 
 /// True iff `ty` is a fully-solved NON-DEFAULT-width numeric: a non-`Float64` float (`Float32`) or a
@@ -3350,15 +3358,24 @@ fn emit_expr_viewed(
             )),
         },
         // A final `(bytes rest)` segment READ inside a recognized bin-match arm — resolve to the rest binder
-        // NAME `try_emit_bin_match` registered in `env.bin_rest_fields` (keyed by the rest's byte offset).
-        Core::BinRestRead {
-            byte_offset,
-            off_plus: None,
-            ..
-        } => match env.bin_rest_fields.get(&byte_offset) {
+        // NAME `try_emit_bin_match` registered in `env.bin_rest_fields` (keyed by the rest's byte offset). A
+        // rest after a DEPENDENT-SIZE segment carries `off_plus: Some(…)` (dynamic runtime offset), but the
+        // surface `(bytes rest)` is offset-free, so both static + dynamic rests resolve by `byte_offset` alone.
+        Core::BinRestRead { byte_offset, .. } => match env.bin_rest_fields.get(&byte_offset) {
             Some(name) => Ok(b.name(name.clone())),
             None => Err(Reject::unsupported(
                 "the Cadenza backend does not support a binary rest read outside a recognized bin-match"
+                    .to_string(),
+            )),
+        },
+        // A DEPENDENT-SIZE `(bytes payload <size>)` segment READ inside a recognized bin-match arm — resolve to
+        // the payload binder NAME `try_emit_bin_match` registered in `env.bin_sized_fields` (keyed by the
+        // payload's static byte offset). The runtime length + dynamic `off_plus` are reconstructed by the
+        // surface size-name reference, so only the payload's static `byte_offset` identifies the binder here.
+        Core::BinSizedRead { byte_offset, .. } => match env.bin_sized_fields.get(&byte_offset) {
+            Some(name) => Ok(b.name(name.clone())),
+            None => Err(Reject::unsupported(
+                "the Cadenza backend does not support a dependent-size binary read outside a recognized bin-match"
                     .to_string(),
             )),
         },
@@ -4877,14 +4894,16 @@ fn local_binder(db: &mut Db, node: StructId) -> Option<StructId> {
 /// terminal else is the catch-all body. This runs from the `Core::Let` BODY emit (so `s` is already bound in
 /// `env.lets`), and reconstructs the surface match from that if-chain.
 ///
-/// SUB-SLICES 1–3: FIXED-WIDTH INT segments — BINDER `(uN x)` (read via `BinIntRead` in the body), LITERAL
-/// `(uN lit)` (a magic-number / tag probe in the cond's AND-chain), plus an optional FINAL `(bytes rest)`
-/// (a `BinRestRead` tail, signalled by a `>=` length probe). Every arm's cond is `bytes-len(s) {==|>=} PREFIX`
-/// optionally AND-ed with `BinIntRead(s,off,w) == lit` literal probes; every fixed read is a static-offset
-/// `BinIntRead` (no `off_plus` / `BinSizedRead`); the literal + binder segments tile `[0, PREFIX)`
-/// contiguously (no unused/`_` gap); and a final rest (if any) begins exactly at `PREFIX`. Anything else →
-/// `None` (fall through to the ordinary `if` emit, which declines on the unhandled read → a clean todo, no
-/// regression). `le`/signed ride each segment; dependent-size / bit-field matches are later sub-slices.
+/// FIXED-WIDTH INT segments — BINDER `(uN x)` (read via `BinIntRead` in the body), LITERAL `(uN lit)` (a
+/// magic-number / tag probe in the cond's AND-chain), an optional FINAL `(bytes rest)` (a `BinRestRead` tail,
+/// signalled by a `>=` length probe), and a SINGLE DEPENDENT-SIZE `(bytes payload <size>)` (a `BinSizedRead`
+/// whose length is an earlier int binder — the cond then carries the reshaped `floor AND Σ(n>=0) AND (bytes-len
+/// {==|>=} total + Σn)` guard, see `parse_bin_len_cond`). The literal + binder segments tile the FIXED prefix
+/// `[0, PREFIX)` contiguously (no unused/`_` gap — gaps fill with `(u8 _)`); the dependent payload + rest begin
+/// exactly at `PREFIX`. Anything else → `None` (fall through to the ordinary `if` emit, which declines on the
+/// unhandled read → a clean todo, no regression). `le`/signed ride each segment. A fixed int at a DYNAMIC
+/// offset (a fixed segment after a dependent size), MULTIPLE dependent sizes, and bit-field / dependent-utf8
+/// matches are later sub-slices (they decline cleanly).
 fn try_emit_bin_match(
     db: &mut Db,
     b: &mut Builder,
@@ -4894,7 +4913,7 @@ fn try_emit_bin_match(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Option<Result<StructId, Reject>> {
     // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin arm cond.
-    let (scrut_binder, _, _, _) = parse_bin_len_cond(db, body)?;
+    let (scrut_binder, _, _, _, _) = parse_bin_len_cond(db, body)?;
     // One merged bin segment: a LITERAL probe (from the cond), a BINDER read (from the body), or a WILDCARD
     // (an UNREAD segment — an `_`/unused binder that neither the cond probes nor the body reads, so it leaves
     // a gap in the tiling; emitted as a `(u8 _)`-per-byte filler, value-equivalent since the bytes are unread).
@@ -4904,8 +4923,9 @@ fn try_emit_bin_match(
         Wild,                          // one unread byte → `(u8 _)`
     }
     struct BinReArm {
-        segs: Vec<(u32, Seg)>, // (byte_offset, segment), offset-sorted + contiguous, tiling [0, prefix)
-        rest: Option<u32>,     // a final `(bytes rest)` at this byte offset (== the fixed prefix)
+        segs: Vec<(u32, Seg)>, // (byte_offset, segment) for the FIXED prefix, sorted + contiguous, tiling [0, prefix)
+        dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
+        rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== the fixed prefix; dynamic offset via off_plus)
         body: StructId,
     }
     let mut arms: Vec<BinReArm> = Vec::new();
@@ -4914,16 +4934,21 @@ fn try_emit_bin_match(
         let Core::If { then_, else_, .. } = core_of(db, cur) else {
             break cur; // terminal else = catch-all body
         };
-        // Each arm's cond must be a bin arm cond over the SAME scrutinee: a length probe + literal segments.
-        let Some((sb, total, lits, has_rest)) = parse_bin_len_cond(db, cur) else {
-            return None; // a guard / non-Eq / dependent-floor cond → not this sub-slice
+        // Each arm's cond must be a bin arm cond over the SAME scrutinee: a length probe + literal segments,
+        // plus (dependent-size) the `n>=0` floors + the dynamic `total + Σn` length compare.
+        let Some((sb, total, lits, has_rest, is_dependent)) = parse_bin_len_cond(db, cur) else {
+            return None; // a guard / unmodeled conjunct → not this sub-slice
         };
         if sb != scrut_binder {
             return None;
         }
-        // The body's BINDER int reads + an optional final `(bytes rest)` read (literal segments are only
-        // probed in the cond, never read).
-        let (binders, rest_off) = collect_bin_int_segs(db, then_, scrut_binder)?;
+        // The body's BINDER int reads, an optional final `(bytes rest)` read, and an optional single
+        // DEPENDENT-SIZE `(bytes payload n)` read (literal segments are only probed in the cond, never read).
+        let BinBodySegs {
+            binders,
+            rest: rest_off,
+            dep,
+        } = collect_bin_int_segs(db, then_, scrut_binder)?;
         // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
         // the fixed prefix `total` (the tail after the fixed segments). A mismatch → a shape we don't model.
         if has_rest != rest_off.is_some() {
@@ -4931,6 +4956,18 @@ fn try_emit_bin_match(
         }
         if let Some(ro) = rest_off
             && ro != total
+        {
+            return None;
+        }
+        // The cond's dependent-size flag and the body's dependent read must AGREE — a dependent cond with no
+        // reconstructed `BinSizedRead` (e.g. a dependent-size `utf8` segment, a later sub-slice), or a
+        // `BinSizedRead` under a non-dependent cond, is a shape we don't model → decline. A dependent payload
+        // begins exactly at the fixed prefix `total` (right after the tiled fixed segments).
+        if is_dependent != dep.is_some() {
+            return None;
+        }
+        if let Some(d) = &dep
+            && d.payload_off != total
         {
             return None;
         }
@@ -4972,6 +5009,7 @@ fn try_emit_bin_match(
         }
         arms.push(BinReArm {
             segs,
+            dep,
             rest: rest_off,
             body: then_,
         });
@@ -4994,6 +5032,7 @@ fn try_emit_bin_match(
         // `BinRestRead`. Scoped to THIS arm (saved/restored) — sibling arms reuse the same keys.
         let saved = std::mem::take(&mut env.bin_fields);
         let saved_rest = std::mem::take(&mut env.bin_rest_fields);
+        let saved_sized = std::mem::take(&mut env.bin_sized_fields);
         let bin_head = b.name("bin");
         let mut pat_children = vec![bin_head];
         for (offset, seg) in &arm.segs {
@@ -5022,8 +5061,31 @@ fn try_emit_bin_match(
             }
             pat_children.push(b.list(seg_children));
         }
-        // A final `(bytes rest)` segment — binds the tail after the fixed prefix; the body's `BinRestRead`
-        // resolves to this binder via `bin_rest_fields` (keyed by the rest's byte offset).
+        // A DEPENDENT-SIZE `(bytes payload <size>)` segment — binds `payload` = the runtime-length slice whose
+        // byte count is the value of an earlier int-segment binder. `<size>` NAMES that binder (looked up in
+        // `bin_fields` by its `(offset, width)` — it was emitted above as a fixed-prefix `(uN <size>)`), and the
+        // payload name is registered in `bin_sized_fields` so the body's `BinSizedRead` resolves to it. Emitted
+        // AFTER the fixed prefix and BEFORE any final `(bytes rest)`, mirroring the source segment order.
+        if let Some(d) = &arm.dep {
+            let Some(size_name) = env.bin_fields.get(&(d.size_off, d.size_width)).cloned() else {
+                // The size field was not reconstructed as a fixed-prefix binder → we cannot name it. Bail out
+                // of this whole recognition (restore env first) rather than emit a dangling reference.
+                env.bin_fields = saved;
+                env.bin_rest_fields = saved_rest;
+                env.bin_sized_fields = saved_sized;
+                return None;
+            };
+            let payload_name = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            env.bin_sized_fields
+                .insert(d.payload_off, payload_name.clone());
+            let bytes_head = b.name("bytes");
+            let payload_binder = b.name(payload_name);
+            let size_ref = b.name(size_name);
+            pat_children.push(b.list(vec![bytes_head, payload_binder, size_ref]));
+        }
+        // A final `(bytes rest)` segment — binds the tail after the fixed prefix (+ any dependent payload); the
+        // body's `BinRestRead` resolves to this binder via `bin_rest_fields` (keyed by the rest's byte offset).
         if let Some(ro) = arm.rest {
             let name = synth_payload_name(env.next_payload);
             env.next_payload += 1;
@@ -5036,6 +5098,7 @@ fn try_emit_bin_match(
         let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
         env.bin_fields = saved;
         env.bin_rest_fields = saved_rest;
+        env.bin_sized_fields = saved_sized;
         let body_node = match body_res {
             Ok(n) => n,
             Err(e) => return Some(Err(e)),
@@ -5062,23 +5125,45 @@ type BinLitSeg = (u32, u8, bool, bool, IntValue);
 /// signed, little_endian)`.
 type BinIntSeg = (u32, u8, bool, bool);
 
+/// A DEPENDENT-SIZE `(bytes payload n)` segment recovered from an arm body's `Core::BinSizedRead`: the
+/// payload's static `byte_offset`, and the `(byte_offset, width)` of the earlier int segment whose runtime
+/// value is the payload length `n` (its `len` is a `Core::BinIntRead` — resolved to that segment's surface
+/// binder NAME on emit, so the payload reconstructs as `(bytes <payload> <size-name>)`).
+struct BinDepSeg {
+    payload_off: u32,
+    size_off: u32,
+    size_width: u8,
+}
+
+/// An arm body's recovered bin segments: the fixed-width int BINDER reads, an optional final `(bytes rest)`
+/// (its static byte offset — the fixed prefix), and an optional single DEPENDENT-SIZE payload segment.
+struct BinBodySegs {
+    binders: Vec<BinIntSeg>,
+    rest: Option<u32>,
+    dep: Option<BinDepSeg>,
+}
+
 /// Parse a bin-match arm cond: a length probe `BytesLen(s) {==|>=} total` optionally AND-ed with `BinIntRead(
 /// s, off, w) == lit` LITERAL-segment probes. Returns `(scrutinee-binder, fixed_prefix_bytes, literal-segments,
-/// has_final_rest)` — `has_final_rest` true when the length probe is `>=` (a final `(bytes rest)` absorbs the
-/// remainder, so the fixed prefix need only be PRESENT), false when `==` (whole-scrutinee exact). `None` on any
-/// other conjunct (a dependent-size floor `n >= 0`, a user guard, a non-`Eq` literal probe) — later sub-slices.
+/// has_final_rest, is_dependent)` — `has_final_rest` true when a final `(bytes rest)` absorbs the remainder (the
+/// length probe is `>=`), false when the scrutinee is exact-length (`==`). `is_dependent` true when a DEPENDENT-
+/// SIZE `(bytes payload n)` segment is present, which reshapes the cond (`lower.rs::build_bin_arm_predicate`):
+///   (bytes-len >= total)  AND  (each size n >= 0)  AND  (bytes-len {==|>=} total + Σn)
+/// — a `>=` FLOOR (const `total` = the fixed prefix), zero+ non-negativity floors `BinIntRead(s,off,w) >= 0`
+/// (recognized + skipped — implied by the shape), and the DYNAMIC length compare whose RHS is `Add(total, Σ
+/// BinIntRead(s,…))`. Here `has_final_rest` comes from the DYNAMIC compare's op (the floor is always `>=`), and
+/// `total` is that Add's base const. `None` on any conjunct we don't model (a user guard, a non-`Eq` literal
+/// probe, a dependent Add over a different value).
 fn parse_bin_len_cond(
     db: &mut Db,
     node: StructId,
-) -> Option<(StructId, u32, Vec<BinLitSeg>, bool)> {
+) -> Option<(StructId, u32, Vec<BinLitSeg>, bool, bool)> {
     let cond = match core_of(db, node) {
         Core::If { cond, .. } => cond,
         _ => node,
     };
-    // A bin-match arm cond is a short-circuit AND-chain of `Eq` conjuncts: exactly ONE length probe
-    // `BytesLen(s) == total`, plus zero+ LITERAL-segment probes `BinIntRead(s, off, w) == lit`. Flatten the
-    // chain and classify each conjunct; any other shape (`Ge` — a final-rest length; a dependent-size floor;
-    // a user guard; a non-`Eq`) → `None` (not this sub-slice).
+    // A bin-match arm cond is a short-circuit AND-chain of compare conjuncts. Flatten the chain and classify
+    // each: the length probe(s), literal-segment probes, and (dependent-size only) the `n >= 0` floors.
     fn flatten(db: &mut Db, n: StructId, out: &mut Vec<StructId>) {
         if let Core::And {
             lhs,
@@ -5092,11 +5177,34 @@ fn parse_bin_len_cond(
             out.push(n);
         }
     }
+    // A dependent-size length RHS is `Add(Add(…Add(ConstInt(total), n1), n2)…, nk)` — the base const `total`
+    // plus one `BinIntRead(s,…)` addend per dependent segment. Descend the left-nested `Add` chain: return the
+    // base `total` and confirm every addend is a `BinIntRead` over `scrut` (any other addend shape → `None`).
+    fn parse_dyn_len_rhs(db: &mut Db, node: StructId, scrut: StructId) -> Option<u32> {
+        match core_of(db, node) {
+            Core::ConstInt(t) => Some(t.to_i64().filter(|&x| x >= 0)? as u32),
+            Core::Arith {
+                op: crate::resolved::Prim::Add,
+                lhs,
+                rhs,
+            } => {
+                // The addend must be a size read over the scrutinee.
+                match core_of(db, rhs) {
+                    Core::BinIntRead { bytes, .. } if local_binder(db, bytes) == Some(scrut) => {}
+                    _ => return None,
+                }
+                parse_dyn_len_rhs(db, lhs, scrut)
+            }
+            _ => None,
+        }
+    }
     let mut conjuncts = Vec::new();
     flatten(db, cond, &mut conjuncts);
     let mut scrut: Option<StructId> = None;
-    let mut total: Option<u32> = None;
-    let mut has_rest = false;
+    // A plain length probe `BytesLen(s) {op} ConstInt(total)` — the floor (dependent) or the whole length (not).
+    let mut plain_len: Option<(u32, crate::resolved::Prim)> = None;
+    // A dependent DYNAMIC length probe `BytesLen(s) {op} Add(total, Σn)` — its op decides `has_final_rest`.
+    let mut dyn_len: Option<(u32, crate::resolved::Prim)> = None;
     let mut lits: Vec<BinLitSeg> = Vec::new();
     let set_scrut = |scrut: &mut Option<StructId>, sb: StructId| -> bool {
         match scrut {
@@ -5113,7 +5221,8 @@ fn parse_bin_len_cond(
         };
         match core_of(db, lhs) {
             // The length probe: `== total` (whole-scrutinee exact) or `>= total` (a final `(bytes rest)`
-            // absorbs the remainder — the fixed prefix `total` need only be present).
+            // absorbs the remainder — the fixed prefix `total` need only be present). A dependent-size arm has
+            // TWO: a `>=` FLOOR over a const `total`, plus a DYNAMIC compare over `Add(total, Σn)`.
             Core::BytesLen { operand }
                 if matches!(op, crate::resolved::Prim::Eq | crate::resolved::Prim::Ge) =>
             {
@@ -5121,14 +5230,36 @@ fn parse_bin_len_cond(
                 if !set_scrut(&mut scrut, sb) {
                     return None;
                 }
-                let Core::ConstInt(t) = core_of(db, rhs) else {
-                    return None;
-                };
-                if total.is_some() {
-                    return None; // two length probes in one arm — not a shape we model
+                match core_of(db, rhs) {
+                    Core::ConstInt(t) => {
+                        if plain_len.is_some() {
+                            return None; // two plain length probes — not a shape we model
+                        }
+                        plain_len = Some((t.to_i64().filter(|&x| x >= 0)? as u32, op));
+                    }
+                    Core::Arith { .. } => {
+                        // A dependent dynamic length `Add(total, Σ BinIntRead)`.
+                        let sc = scrut?;
+                        let total = parse_dyn_len_rhs(db, rhs, sc)?;
+                        if dyn_len.is_some() {
+                            return None;
+                        }
+                        dyn_len = Some((total, op));
+                    }
+                    _ => return None,
                 }
-                total = Some(t.to_i64().filter(|&x| x >= 0)? as u32);
-                has_rest = matches!(op, crate::resolved::Prim::Ge);
+            }
+            // A dependent-size NON-NEGATIVITY floor `BinIntRead(s, off, w) >= 0` — recognized + skipped (it is
+            // implied by the reconstructed shape; the surface `(bytes payload n)` re-lowers the same guard).
+            Core::BinIntRead { bytes, .. } if op == crate::resolved::Prim::Ge => {
+                let sb = local_binder(db, bytes)?;
+                if !set_scrut(&mut scrut, sb) {
+                    return None;
+                }
+                match core_of(db, rhs) {
+                    Core::ConstInt(z) if z.to_i64() == Some(0) => {} // the `n >= 0` floor — skip
+                    _ => return None,
+                }
             }
             // A LITERAL-segment probe (always `==`).
             Core::BinIntRead {
@@ -5151,30 +5282,46 @@ fn parse_bin_len_cond(
             _ => return None,
         }
     }
-    Some((scrut?, total?, lits, has_rest))
+    // Resolve the fixed prefix + rest flag. Dependent: the DYNAMIC compare gives `total` + `has_rest` (its op);
+    // any plain-const floor must agree on `total`. Non-dependent: the single plain length probe is it.
+    let (total, has_rest, is_dependent) = if let Some((dt, dop)) = dyn_len {
+        if let Some((pt, _)) = plain_len
+            && pt != dt
+        {
+            return None; // floor const ≠ dynamic base — not the reconstructed shape
+        }
+        (dt, dop == crate::resolved::Prim::Ge, true)
+    } else {
+        let (t, op) = plain_len?;
+        (t, op == crate::resolved::Prim::Ge, false)
+    };
+    Some((scrut?, total, lits, has_rest, is_dependent))
 }
 
 /// Collect an arm body's segment reads over the scrutinee `scrut_binder`: the BINDER fixed-width int reads
-/// (`Core::BinIntRead`, offset-sorted + deduped `(byte_offset, width, signed, little_endian)`) and the FINAL
-/// `(bytes rest)` read (`Core::BinRestRead`) if present, returned as `Some(rest_byte_offset)`. Returns `None`
-/// if the body carries a read this sub-slice does not reconstruct — a DYNAMIC-offset read (`off_plus`), a
-/// `BinSizedRead` (dependent-size), or MORE THAN ONE `BinRestRead`. The int result may be EMPTY (a literal-
-/// only arm reads nothing); the caller MERGES with the cond's literal segments + rest flag and tile-checks.
+/// (`Core::BinIntRead`, offset-sorted + deduped `(byte_offset, width, signed, little_endian)`), the FINAL
+/// `(bytes rest)` read (`Core::BinRestRead`, static OR dynamic `off_plus`) as `rest = Some(byte_offset)`, and
+/// a SINGLE DEPENDENT-SIZE `(bytes payload n)` payload read (`Core::BinSizedRead`) as `dep`. Returns `None` if
+/// the body carries a read this sub-slice does not reconstruct — a DYNAMIC-offset FIXED int read (`off_plus`
+/// on a `BinIntRead`, i.e. a fixed segment after a dependent size), MORE THAN ONE `BinRestRead` or
+/// `BinSizedRead`, or a `BinSizedRead` whose `len` is not a plain scrutinee `BinIntRead`. The int result may
+/// be EMPTY (a literal-only arm reads nothing); the caller MERGES with the cond's literal segments + tile-checks.
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
     scrut_binder: StructId,
-) -> Option<(Vec<BinIntSeg>, Option<u32>)> {
-    fn walk(
-        db: &mut Db,
-        node: StructId,
-        scrut: StructId,
-        seen: &mut std::collections::HashSet<StructId>,
-        out: &mut Vec<BinIntSeg>,
-        rest: &mut Option<u32>,
-        bail: &mut bool,
-    ) {
-        if *bail || !seen.insert(node) {
+) -> Option<BinBodySegs> {
+    // The walk's mutable accumulator (bundled to keep `walk`'s arg count under the clippy limit): the collected
+    // binder int segs, an optional rest / dependent payload, and a `bail` latch set on the first unmodeled read.
+    struct Acc {
+        seen: std::collections::HashSet<StructId>,
+        out: Vec<BinIntSeg>,
+        rest: Option<u32>,
+        dep: Option<BinDepSeg>,
+        bail: bool,
+    }
+    fn walk(db: &mut Db, node: StructId, scrut: StructId, acc: &mut Acc) {
+        if acc.bail || !acc.seen.insert(node) {
             return;
         }
         match core_of(db, node) {
@@ -5187,56 +5334,84 @@ fn collect_bin_int_segs(
                 little_endian,
             } => {
                 if off_plus.is_some() || local_binder(db, bytes) != Some(scrut) {
-                    *bail = true;
+                    // A fixed int at a DYNAMIC offset (a fixed segment after a dependent size), or a read over a
+                    // different value — this sub-slice reconstructs only a fixed prefix + one dependent payload.
+                    acc.bail = true;
                     return;
                 }
-                out.push((byte_offset, width, signed, little_endian));
+                acc.out.push((byte_offset, width, signed, little_endian));
             }
-            // A FINAL `(bytes rest)` read — the tail from a static byte offset (no `off_plus`). At most one per
-            // arm; a dynamic-offset rest, or a second rest, is a later sub-slice → bail.
+            // A FINAL `(bytes rest)` read — the tail from a static byte offset, with `off_plus: Some(Σn)` when a
+            // dependent-size segment precedes it (dynamic runtime offset) or `None` for a purely-fixed prefix.
+            // The surface `(bytes rest)` is offset-free either way; at most one per arm (else bail).
             Core::BinRestRead {
+                bytes, byte_offset, ..
+            } if local_binder(db, bytes) == Some(scrut) => {
+                if acc.rest.is_some() {
+                    acc.bail = true;
+                    return;
+                }
+                acc.rest = Some(byte_offset);
+            }
+            // A DEPENDENT-SIZE `(bytes payload n)` read — exactly `n` bytes at a static `byte_offset`, where `n`
+            // is an earlier int segment (`len` is a `Core::BinIntRead` over the scrutinee). At most one per arm.
+            // A dynamic `off_plus` (a second dependent size precedes) or a non-`BinIntRead` `len` → bail.
+            Core::BinSizedRead {
                 bytes,
                 byte_offset,
-                off_plus: None,
+                off_plus,
+                len,
             } if local_binder(db, bytes) == Some(scrut) => {
-                if rest.is_some() {
-                    *bail = true;
+                if acc.dep.is_some() || off_plus.is_some() {
+                    acc.bail = true;
                     return;
                 }
-                *rest = Some(byte_offset);
-            }
-            // A dependent-size read (or a dynamic-offset rest) over the scrutinee is a later sub-slice — bail.
-            Core::BinSizedRead { bytes, .. } | Core::BinRestRead { bytes, .. }
-                if local_binder(db, bytes) == Some(scrut) =>
-            {
-                *bail = true;
-                return;
+                let (size_off, size_width) = match core_of(db, len) {
+                    Core::BinIntRead {
+                        bytes: lb,
+                        byte_offset: lo,
+                        off_plus: None,
+                        width: lw,
+                        ..
+                    } if local_binder(db, lb) == Some(scrut) => (lo, lw),
+                    _ => {
+                        acc.bail = true;
+                        return;
+                    }
+                };
+                acc.dep = Some(BinDepSeg {
+                    payload_off: byte_offset,
+                    size_off,
+                    size_width,
+                });
             }
             _ => {}
         }
         for c in crate::backend::wasm::select::core_child_ids(db, node) {
-            walk(db, c, scrut, seen, out, rest, bail);
+            walk(db, c, scrut, acc);
         }
     }
-    let mut seen = std::collections::HashSet::new();
-    let mut out: Vec<BinIntSeg> = Vec::new();
-    let mut rest: Option<u32> = None;
-    let mut bail = false;
-    walk(
-        db,
-        body,
-        scrut_binder,
-        &mut seen,
-        &mut out,
-        &mut rest,
-        &mut bail,
-    );
-    if bail {
+    let mut acc = Acc {
+        seen: std::collections::HashSet::new(),
+        out: Vec::new(),
+        rest: None,
+        dep: None,
+        bail: false,
+    };
+    walk(db, body, scrut_binder, &mut acc);
+    if acc.bail {
         return None;
     }
+    let Acc {
+        mut out, rest, dep, ..
+    } = acc;
     out.sort_unstable();
     out.dedup();
-    Some((out, rest))
+    Some(BinBodySegs {
+        binders: out,
+        rest,
+        dep,
+    })
 }
 
 /// Reconstruct the surface `(match <scrutinee> (<list-pattern> <body>)…)` for a `Core::MatchList` — a match
