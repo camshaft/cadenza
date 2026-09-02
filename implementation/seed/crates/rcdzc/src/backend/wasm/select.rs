@@ -1430,6 +1430,7 @@ pub fn select_function_of(
         scrut_shell_reclaim: None,
         selfloop_scrut_slot: None,
         list_scrut_divergent: false,
+        returncall_shell_drop: None,
     });
     // Initialize `which` to this function's OWN discriminant BEFORE the loop opens — it selects which
     // member body runs on the FIRST iteration (this function's own). A member cross-call updates `which`
@@ -3318,6 +3319,19 @@ struct TailLoop<'a> {
     /// `vec-drop` already freed the original, so dropping again would DOUBLE-FREE. `false` on every MatchSum
     /// path (the existing pt3 behavior is unchanged).
     list_scrut_divergent: bool,
+    /// A scratch/param slot holding an enclosing tail-`MatchSum`'s OWNED scrutinee SHELL that is DEAD on a
+    /// CROSS-FUNCTION `return_call` arm (a mutual-recursion tail call to a NON-loop-member peer) and must be
+    /// `drop`ed BEFORE the `ReturnCall` — else it leaks (the post-match fall-through reclaim drop, which the
+    /// value-returning arms reach, is `br`/`return`ed PAST by the tail call). The self-loop twin of
+    /// [`scrut_shell_reclaim`]/[`selfloop_scrut_slot`], but for a CROSS-FN `return_call` (which `member_which`
+    /// does NOT loop-iterate) rather than a self-loop back-edge. Set by the tail `MatchSum` emit ONLY when the
+    /// shell is reclaimable (`reclaim_shell`) AND the return_call arm's args carry NO payload-of-scrutinee
+    /// (`!expr_tail_is_call_consuming_payload` — the UAF fence: the callee must not receive a live handle into
+    /// the shell we free; checked at the MatchSum where the scrutinee is in scope, so the `Core::Call` arm can
+    /// drop UNCONDITIONALLY when this is `Some`). Fires on a DIFFERENT exit path than the post-match drop
+    /// (return vs fall-through), so no double-free. The fallible-parser `pf` t==0 `return_call pe(i+1)`
+    /// Some-shell leak (fp residual 1→0). `None` on every ordinary loop/match.
+    returncall_shell_drop: Option<u32>,
 }
 
 impl TailLoop<'_> {
@@ -3325,6 +3339,20 @@ impl TailLoop<'_> {
     /// the callee is not in this loop's group (so the call stays a `return_call`).
     fn member_which(&self, callee: usize) -> Option<usize> {
         self.members.iter().position(|&m| m == callee)
+    }
+}
+
+/// Drop an enclosing tail-`MatchSum`'s dead owned scrutinee shell BEFORE a cross-fn `return_call`, when the
+/// MatchSum emit set [`TailLoop::returncall_shell_drop`] (it is reclaimable AND the return_call args carry no
+/// payload-of-scrutinee — the UAF fence, checked at the MatchSum where the scrutinee is in scope, so this
+/// drops UNCONDITIONALLY here). The args are already on the stack; `OP_DROP` consumes only the pushed shell
+/// handle, leaving them intact. Fires on the return_call exit path (which `return`s past the post-match
+/// reclaim drop), never the value-fall-through path → no double-free. Deep + rc-aware, so its cascade nets
+/// the dup-backed children exactly as the post-match drop does.
+fn emit_returncall_shell_drop(tl: &Option<TailLoop>, out: &mut Emit) {
+    if let Some(s) = tl.and_then(|t| t.returncall_shell_drop) {
+        out.push(Lir::LocalGet(s));
+        out.push(Lir::CallImport(OP_DROP));
     }
 }
 
@@ -3413,6 +3441,7 @@ fn emit_tail(
                     let callee_result_ty = match callee_body {
                         Some(b) => type_of(db, b),
                         None => {
+                            emit_returncall_shell_drop(&tl, out);
                             out.push(Lir::ReturnCall(idx));
                             return Ok(());
                         }
@@ -3420,6 +3449,7 @@ fn emit_tail(
                     let callee_vt = valtype_of(&callee_result_ty);
                     if callee_vt == out.fn_ret_vt {
                         trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
+                        emit_returncall_shell_drop(&tl, out);
                         out.push(Lir::ReturnCall(idx));
                         return Ok(());
                     }
@@ -4115,22 +4145,70 @@ fn emit_tail(
             } else {
                 None
             };
-            let arm_tp = if view_reclaim && arms_tail_call {
+            // The reclaimable shell's slot (the stashed temp, OR the non-tail-spine PARAM scrutinee's own
+            // slot) — resolved ONCE here for BOTH the cross-fn-return_call drop (threaded into the arms) and
+            // the post-match fall-through drop below (they fire on DISJOINT exit paths).
+            let reclaim_slot: Option<u32> =
+                stashed_slot
+                    .map(|s| s.0)
+                    .or_else(|| match core_of(db, scrutinee) {
+                        Core::Param { binder } | Core::LocalRef { binder } => {
+                            arms_slots.get(&binder).copied()
+                        }
+                        _ => None,
+                    });
+            // CROSS-FN return_call shell drop (fp-residual): when the shell is reclaimable AND no arm's
+            // tail-call consumes a payload-of-scrutinee (`!sum_cont_payload_consumed_in_tail_call` — the UAF
+            // fence, checked HERE where the scrutinee is in scope), thread its slot so the `Core::Call` arm
+            // drops the dead shell before a cross-fn `return_call` (which `return`s PAST the post-match drop
+            // that only the value-returning arms reach). Fence-at-MatchSum → unconditional drop at the Call
+            // arm. A tail-call CONSUMING the payload (a live handle into the shell) fails the fence → no drop
+            // (leak-safe, never a UAF). The looping/member-tail-call path is handled by
+            // scrut_shell_reclaim/selfloop_scrut_slot, not this (member_which loop-iterates before the drop).
+            let returncall_shell_drop =
+                if reclaim_shell && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee) {
+                    reclaim_slot
+                } else {
+                    None
+                };
+            let base_tl: Option<TailLoop> = if view_reclaim && arms_tail_call {
                 let shell_slot = stashed_slot
                     .expect("matchsum_view_shell_reclaim_ok implies a stashed I32 slot")
                     .0;
-                TailPos::Tail(tl.map(|t| TailLoop {
+                tl.map(|t| TailLoop {
                     scrut_shell_reclaim: Some(shell_slot),
                     ..t
-                }))
+                })
             } else if let Some(slot) = selfloop_scrut_slot {
-                TailPos::Tail(tl.map(|t| TailLoop {
+                tl.map(|t| TailLoop {
                     selfloop_scrut_slot: Some(slot),
                     ..t
-                }))
+                })
             } else {
-                TailPos::Tail(tl)
+                tl
             };
+            // Overlay the cross-fn return_call shell drop. When there is no enclosing loop context
+            // (`base_tl` is None — a NON-looped fn like the fallible-parser `pf` whose only tail call is a
+            // cross-fn `return_call` to a peer), construct a MINIMAL TailLoop (empty members ⇒ `member_which`
+            // never loop-iterates, so the arm still `return_call`s) purely to carry the drop slot.
+            let arm_tl: Option<TailLoop> = match (base_tl, returncall_shell_drop) {
+                (Some(t), rc) => Some(TailLoop {
+                    returncall_shell_drop: rc,
+                    ..t
+                }),
+                (None, Some(s)) => Some(TailLoop {
+                    members: &[],
+                    param_slots: &[],
+                    which: None,
+                    depth: 0,
+                    scrut_shell_reclaim: None,
+                    selfloop_scrut_slot: None,
+                    list_scrut_divergent: false,
+                    returncall_shell_drop: Some(s),
+                }),
+                (None, None) => None,
+            };
+            let arm_tp = TailPos::Tail(arm_tl);
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -4151,16 +4229,9 @@ fn emit_tail(
                 // `binder -> slot`), so resolve the scrutinee's binder, not its occurrence id. op_drop is
                 // DEEP + rc-aware: the shell frees, cascading into the payload m which the arm already dup'd
                 // (collect_shell_reclaim_child_dups non-tail-spine path) → m lands at its owned rc, no
-                // double-free / no leak.
-                let slot = stashed_slot
-                    .map(|s| s.0)
-                    .or_else(|| match core_of(db, scrutinee) {
-                        Core::Param { binder } | Core::LocalRef { binder } => {
-                            arms_slots.get(&binder).copied()
-                        }
-                        _ => None,
-                    });
-                let Some(slot) = slot else {
+                // double-free / no leak. (Resolved as `reclaim_slot` above — shared with the cross-fn
+                // return_call drop, which fires on the DISJOINT return_call exit paths.)
+                let Some(slot) = reclaim_slot else {
                     return Err(Reject::decline(
                         "shell reclaim: no stashed slot or param binder slot for the scrutinee",
                     ));
