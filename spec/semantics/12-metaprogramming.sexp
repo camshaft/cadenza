@@ -5572,3 +5572,16 @@ c")))
       (export main)))
   (call main (: 1 Int64))
   (output (: 6 Int64)))
+
+; A misspelled Ast-module member is rejected CDZ0201 with a PREFIX-rank did-you-mean: `Sym` is a PREFIX of
+; `Symbol`, and a prefix-extension candidate must LEAD the closest-matches (ranks above an edit-distance hit)
+; — #7733 (before, the prefix candidate was dropped). Portable conformance guard, off the rust-#[test].
+(case
+  "a misspelled Ast module member Sym is rejected CDZ0201 with Symbol leading the did-you-mean (prefix-rank)"
+  (doc
+    "`Ast.Sym` is not a member of the `Ast` module → CDZ0201 with a `closest matches: …` list, and the
+        PREFIX-extension candidate `Symbol` (`Sym` is a prefix) must appear — a prefix hit ranks above an
+        edit-distance hit, the #7733 fix. The `(message …)` substrings pin the stable lead `closest matches:`
+        and the presence of `Symbol` in the list (both front-end diagnostic, backend-independent).")
+  (input (do (def (main) (Ast.Sym 5)) (export main)))
+  (error CDZ0201 (message "closest matches:") (message "Symbol")))
