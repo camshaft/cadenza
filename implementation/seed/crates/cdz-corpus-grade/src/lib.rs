@@ -1257,8 +1257,14 @@ pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
         let Some(code) = f.code.as_deref() else {
             continue; // codeless — out of scope (message-quality of a coded diagnostic only)
         };
+        // Scan the PROSE only: strip any `(trap …)` suggested-fix STUB span first (§1-note, #7896) — a
+        // `(trap "TODO: collect")` / `(trap TODO-colon-collect)` is runnable user-code-to-fill (the Cadenza
+        // analogue of Rust `todo!()`), golden practice, NOT deferral prose; a forbidden token inside it
+        // (CDZ0405's inline `(resume (trap TODO…) s)`) must not trip. §1 governs the compiler's prose,
+        // never the user-code it suggests. (A `(fix …)` facet is already out of scope — we scan `message`.)
+        let prose = strip_trap_stubs(&f.message);
         for phrase in C1_FORBIDDEN_PHRASES {
-            if contains_word_ci(&f.message, phrase) {
+            if contains_word_ci(&prose, phrase) {
                 return Some(format!(
                     "(diagnostic-quality): {code} message contains the forbidden phrase {phrase:?} \
                      (rubric §1) — {:?}",
@@ -1268,6 +1274,57 @@ pub fn grade_diagnostic_quality(faults: &[DiagFault]) -> Option<String> {
         }
     }
     None
+}
+
+/// Remove every `(trap …)` s-expression span from a diagnostic message — the §1 fix-stub carve-out
+/// (#7896). A `(trap …)` in a message is a suggested-fix STUB (runnable user-code-to-fill, the Cadenza
+/// `todo!()`), so a §1 forbidden token INSIDE it (e.g. `TODO` in CDZ0405's inline `(resume (trap
+/// TODO-colon-collect) s)`) is legitimate and must not be scanned. Balanced-paren removal, string-aware
+/// (a `)` inside a `"…"` trap payload does not close the span), covering both bare and quoted trap forms;
+/// an unbalanced/trailing `(trap` strips to end (a malformed stub, still not scanned). `(trapfoo …)` (a
+/// non-`trap` head with a `trap` prefix) is NOT stripped — the char after `trap` must be a non-word char.
+fn strip_trap_stubs(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(pos) = rest.find("(trap") {
+        // Word-boundary: the char after `(trap` must be a non-word char (so `(traperror …)` is not a stub).
+        if rest[pos + 5..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            out.push_str(&rest[..pos + 5]);
+            rest = &rest[pos + 5..];
+            continue;
+        }
+        out.push_str(&rest[..pos]); // prose before the stub is kept
+        let span = &rest[pos..];
+        let (mut depth, mut in_str, mut prev, mut end) = (0usize, false, '\0', span.len());
+        for (j, ch) in span.char_indices() {
+            if in_str {
+                if ch == '"' && prev != '\\' {
+                    in_str = false;
+                }
+            } else {
+                match ch {
+                    '"' => in_str = true,
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = j + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            prev = ch;
+        }
+        rest = &span[end..]; // the `(trap …)` span [0..end] is dropped
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The FIRST error diagnostic in a compiler stderr as `(code, message)` — `error [CODE] (node N): msg`
@@ -2260,6 +2317,48 @@ mod tests {
         // Not a false-trip inside a larger word.
         assert!(!contains_word_ci("unimplementedness", "unimplemented"));
         assert!(contains_word_ci("marked unimplemented.", "unimplemented"));
+    }
+
+    #[test]
+    fn c1_lint_trap_stub_carve_out_does_not_flag_todo_inside_a_trap() {
+        // CDZ0405's real message embeds a suggested-fix STUB inline: a `(trap …)` is user-code-to-fill, so
+        // its `TODO` must NOT trip §1 (#7896). Bare and quoted forms; nested parens; string-with-paren.
+        let cdz0405 = "this handler does not discharge every operation its effect declares: operation \
+             collect not handled — a handle must discharge its effect's whole operation set; add \
+             (collect () s (resume (trap TODO-colon-collect) s))";
+        assert!(
+            grade_diagnostic_quality(&[coded_fault("CDZ0405", cdz0405)]).is_none(),
+            "TODO inside a (trap …) fix-stub is golden, not deferral prose"
+        );
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0405",
+                "add (resume (trap \"TODO: collect\") s)"
+            )])
+            .is_none()
+        );
+        // A forbidden token in the PROSE (outside any trap) STILL flags — the carve-out is scoped to traps.
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0405",
+                "this handler is not yet supported"
+            )])
+            .is_some()
+        );
+        // A prose TODO alongside a trap stub still flags (only the trap span is exempt).
+        assert!(
+            grade_diagnostic_quality(&[coded_fault(
+                "CDZ0405",
+                "TODO: rework this; add (resume (trap \"fill\") s)"
+            )])
+            .is_some()
+        );
+        // `strip_trap_stubs` keeps surrounding prose + does not strip a non-trap `(trapfoo …)` head.
+        assert_eq!(
+            strip_trap_stubs("before (trap TODO) after"),
+            "before  after"
+        );
+        assert_eq!(strip_trap_stubs("a (trapfoo x) b"), "a (trapfoo x) b");
     }
 
     #[test]
