@@ -14,6 +14,8 @@
 ; SCOPE (C-HOST-1): a NO-CAPTURE closure `(-> Int64 Int64)` exported directly, its `call` dispatched
 ; through the guest's own funcref table. Capturing closures + parameterized exports + multi-arg
 ; signatures + the host handing a closure back are later increments (C-HOST-2..4).
+(diagnostic-quality)
+
 (case
   "a closure exported to the host is called by the host"
   (doc
