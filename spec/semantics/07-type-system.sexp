@@ -1232,9 +1232,12 @@
            type is undetermined (no element constrains it, so it grounds to `Any`, the collection analogue
            of bare `None`'s free-variable payload). The escaped value has no defined serialization and is
            rejected (CDZ0203, annotate — e.g. `(: (list) (List Int64))`). Pins that the undetermined-escape
-           reject catches the `Any` grounding, not only a free `Var`; a `Set.of (list)` is the same fault.")
+           reject catches the `Any` grounding, not only a free `Var`; a `Set.of (list)` is the same fault.
+           The message is ACTIONABLE (#7739): it names the unconstrained part + the annotation template,
+           pinned below via the `(message …)` substrings — distinct from the bare not-fully-determined the
+           Set-path cases pin, this is the escape-result path via an empty list.")
   (input (do (def (main) #list()) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (message "not fully determined") (message "unconstrained part shown above")))
 
 (case
   "an annotated empty list escapes fine (the undetermined-empty-list control)"
