@@ -1,0 +1,22 @@
+# corpus-case-titles — the pure, cdz-FREE corpus-case-title parse helper.
+#
+# One job: read `spec/semantics/*.sexp` corpus files and return the SET of case titles the corpus
+# actually defines — the first string child of every top-level `(case "…" …)` / `(platform-case "…" …)`
+# form. FORMAT-ROBUST (AST-based via the sexpr reader, never grep) and FAIL-OPEN by contract.
+#
+# Consumers: (1) the `fleet-baseline` git merge-driver (`xtask-merge-baseline`) — after union+dedup it
+# prunes `.gate-baseline` lines whose title matches NO case (the orphan-vanished re-add hazard, see
+# union-merge-driver-re-adds-orphan-vanished-baseline-line-on-retitle); (2) `cdz-corpus vanished-check
+# --prune`. Both key on: a title present in a baseline but absent from the corpus is a vanished orphan.
+#
+# Deps are the LEAN sexpr surface only — NO cdz/compiler/nix. `cadenza-syntax-sexpr` gives the reader;
+# `cadenza-syntax-core` names the arena types (`Struct`/`Leaf`/`StructId`) the reader returns (the sexpr
+# crate re-exports only `MAX_NESTING_DEPTH`, not the ast types).
+[package]
+name = "corpus-case-titles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-syntax-sexpr = { path = "../cadenza-syntax-sexpr" }
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }
