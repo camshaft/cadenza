@@ -1911,3 +1911,24 @@ fn a_tuple_pattern_destructure_reject_from_a_reconstructed_handler_state_is_loca
         d.message
     );
 }
+
+#[test]
+fn a_char_export_result_wasm_boundary_decline_is_located() {
+    // Breaker report: `(def (main) #\a)` exports a `Char` result. A `Char` has no component-boundary
+    // representation, so the WASM backend declines it — but the decline was UNANCHORED (`Reject::decline`
+    // with no `.at`), printing a bare position-less `cdz: error:` with no file:line:col. It now anchors at
+    // the export BODY (the returned value) so `cdz compile` points at the offending expression. (WASM-emit
+    // only; the Rust backend represents a `Char` result fine and is untouched — verified by the suite.)
+    let src = "(module m (def (main) #\\a) (export main))";
+    let d = first_error(src);
+    assert!(
+        d.message.contains("no component boundary representation"),
+        "the Char-boundary decline fires: {}",
+        d.message
+    );
+    assert!(
+        d.node.is_some(),
+        "the Char-boundary decline must be LOCATED (carry a node), not a bare position-less message: {}",
+        d.message
+    );
+}
