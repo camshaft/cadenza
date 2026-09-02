@@ -214,12 +214,12 @@ def topLevelValueDefTy? (m : Ast.Module) (defChildren : Array Nat) : Option (Byt
 
 /-- The T1.1b top-level value environment: `(name, τ)` for every top-level `(def x <scalar-literal>)` in
 the `(do …)` program. The V rule (design §3, `ts:36`) resolves a body name against it. -/
-def topLevelValueEnv (m : Ast.Module) : List (ByteArray × Ty) :=
+def topLevelValueEnv (m : Ast.Module) : List (ByteArray × (List Nat × Ty)) :=
   match m.nodes[m.root]? with
   | some (.list stmts) =>
     stmts.toList.filterMap (fun sid =>
       match Eval.asDef? m sid with
-      | some dc => topLevelValueDefTy? m dc
+      | some dc => (topLevelValueDefTy? m dc).map (fun p => (p.1, ([], p.2)))   -- top-level scalar def → mono scheme
       | none => none)
   | _ => []
 
@@ -385,6 +385,53 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   | .ok s => .ok { st with subst := s }
   | .error c => .error (.illTyped c)
 
+/-- A HINDLEY-MILNER TYPE SCHEME: a body type universally quantified over a set of GENERAL type-var ids.
+A monomorphic binding is `([], τ)` (nothing quantified — a `fn`/`match`/λ-bound name). Only GENERAL vars
+(`.var`) are ever quantified — never a `.numVar` (a width-polymorphic int literal that defaults to `Int64`,
+not a real type var). The environment binds names to schemes so a `let`-bound definition can be used at
+different instantiations (spec type-system.md "A Let-Bound Definition Is Generalized"). -/
+abbrev Scheme := List Nat × Ty
+
+/-- The GENERAL type-var ids (`.var`) free in a type — for generalization and the not-free-in-env check.
+Excludes `.numVar` (never generalized). -/
+partial def freeGenVars : Ty → List Nat
+  | .var i => [i]
+  | .fn d c => freeGenVars d ++ freeGenVars c
+  | .tuple es => es.flatMap freeGenVars
+  | .record fs => fs.flatMap (fun f => freeGenVars f.2)
+  | .sum vs => vs.flatMap (fun v => match v.2 with | some t => freeGenVars t | none => [])
+  | _ => []
+
+/-- Free general vars of a scheme = free vars of its body MINUS its quantified vars. -/
+def schemeFreeGenVars (s : Scheme) : List Nat := (freeGenVars s.2).filter (fun v => !s.1.contains v)
+
+/-- Resolve a scheme's body under a substitution (its quantified vars are fresh ids never bound by `s`). -/
+def schemeApplySubst (subst : Subst) (s : Scheme) : Scheme := (s.1, applySubst subst s.2)
+
+/-- The general vars free anywhere in the environment (after `subst`) — the vars a `let` binding may NOT
+generalize, since they are still constrained by an enclosing binding (spec type-system.md §"constrained"). -/
+def envFreeGenVars (subst : Subst) (env : List (ByteArray × Scheme)) : List Nat :=
+  env.flatMap (fun e => schemeFreeGenVars (schemeApplySubst subst e.2))
+
+/-- INSTANTIATE a scheme at a use site: allocate a fresh general var per quantified id and substitute,
+yielding a fresh monomorphic copy (each use gets its own vars — this is what makes the binding polymorphic). -/
+def instantiateScheme (s : Scheme) (st : InferState) : Ty × InferState :=
+  let (sub, st') := s.1.foldl (fun (acc : Subst × InferState) qv =>
+      ((qv, Ty.var acc.2.next) :: acc.1, { acc.2 with next := acc.2.next + 1 })) (([] : Subst), st)
+  (applySubst sub s.2, st')
+
+/-- GENERALIZE a type at a `let` / `do`-def binding (spec type-system.md "A Let-Bound Definition Is
+Generalized"): apply the current subst, then quantify the general vars free in the type but NOT free in the
+environment (a var still constrained by an enclosing binding MUST NOT be generalized, else generalization
+escapes the scope in which it is still being solved). -/
+def generalizeScheme (env : List (ByteArray × Scheme)) (subst : Subst) (τ : Ty) : Scheme :=
+  let τr := applySubst subst τ
+  let envFree := envFreeGenVars subst env
+  ((freeGenVars τr).eraseDups.filter (fun v => !envFree.contains v), τr)
+
+/-- Wrap a monomorphic type as a scheme with nothing quantified (a `fn`/`match`/λ-bound name). -/
+def monoScheme (τ : Ty) : Scheme := ([], τ)
+
 /-- Recursive HM inference over the analyzable T1 fragment: synthesize a type + threaded state, or fail
 (`IllTyped code` / `Unsupported reason`).
 * T1.1a — scalar literal → its type.
@@ -426,16 +473,19 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   `Unsupported` (never a false width-reject).
 * T1.11 — **Fn** (`ts:28-36`): `(fn (p…) body)` gives each param a fresh var (bare) or its annotated
   type, infers `body`, and yields the curried arrow `p₁→…→body`.
-* T1.12 — **App** (`ts:36`): `(f a…)` with `f` a name bound to a CONCRETE function type unifies the
-  arrow against each arg to a fresh result var → the codomain; a domain clash / non-fn head is `CDZ0203`.
-  A polymorphic (var-containing) head or an unbound head → `Unsupported` (defers `let`-generalization).
+* T1.12/T1.18 — **App** (`ts:36`): `(f a…)` with `f` a name bound to a scheme — INSTANTIATE it (fresh
+  vars per use), then unify the arrow against each arg to a fresh result var → the codomain; a domain
+  clash / non-fn head is `CDZ0203`. An unbound head (a prelude/builtin) → `Unsupported`.
+* T1.18 — **let-generalization**: a `let`/`do`-bound definition is generalized over its free general vars
+  not free in the env (spec "A Let-Bound Definition Is Generalized"), so it may be used at several
+  instantiations; `fn`/`match`/λ-bound names stay monomorphic.
 * T1.16 — **Mat** (`match`): `(match scrut (pat body)…)` over a built-in sum — infer the scrutinee to a
   concrete sum, classify each arm's pattern (variant + payload binder, or catch-all) via
   `matchPatClassify?`, bind payloads, and unify all arm bodies to one result type. Non-sum scrutinee /
   unmodeled pattern → `Unsupported`; arm-body type clash → `CDZ0203`; a modeled match omitting a variant
   with no catch-all → `CDZ0210` NonExhaustive (T1.17).
 Any other construct → `Unsupported` until its rule lands. -/
-partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
+partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
   | some (.int _ _) =>                                    -- OQ-G: an int LITERAL occurrence is width-polymorphic
@@ -445,7 +495,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
     match Eval.nameOf? m nodeId with
     | some nm =>
       match env.find? (fun e => e.1 == nm) with
-      | some (_, τ) => .ok (τ, st)
+      | some (_, sch) => let (τ, st') := instantiateScheme sch st; .ok (τ, st')   -- V rule: instantiate the scheme (fresh vars per use)
       | none =>
         -- a bare NULLARY built-in constructor as an atom: `Less`/`Equal`/`Greater` → Ordering; `None` →
         -- `Option α` (fresh payload var). Only on an env-miss (a local binding shadows).
@@ -598,16 +648,18 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
               | none => .error (.unsupported "type oracle: malformed projection")
             | _, _ => .error (.unsupported "type oracle: malformed projection")
           else if h == "let".toUTF8 then
-            -- T1.8 — LET (`ts:40-44`), MONOMORPHIC: `(let ((x e)…) body)` infers each binding value and
-            -- extends the env with `x:τ` SEQUENTIALLY (a later binding sees the earlier), then infers the
-            -- body under the extended env. Monomorphic (no ∀-generalization) — COMPLETE for the current
-            -- fn-free fragment (a let-bound value has no polymorphic reuse without lambdas); generalization
-            -- lands with the Fn rule. An `IllTyped`/`Unsupported` binding value propagates.
+            -- T1.8/T1.18 — LET (`ts:40-44`), now with HM GENERALIZATION: `(let ((x e)…) body)` infers each
+            -- binding value and extends the env with `x : GENERALIZE(τ)` SEQUENTIALLY (a later binding sees
+            -- the earlier), then infers the body under the extended env. Each binding's type is generalized
+            -- over its free general vars NOT free in the env (spec type-system.md "A Let-Bound Definition Is
+            -- Generalized"), so a polymorphic `x` (e.g. `(fn (a) a) : ∀α.α→α`) may be used at several
+            -- instantiations in the body (the V rule instantiates fresh vars per use). An `IllTyped`/
+            -- `Unsupported` binding value propagates.
             match children[1]?, children[2]? with
             | some bindingsId, some bodyId =>
               (match m.nodes[bindingsId]? with
                | some (Ast.Node.list pairs) =>
-                 (match pairs.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Ty) × InferState) pid =>
+                 (match pairs.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Scheme) × InferState) pid =>
                      match m.nodes[pid]? with
                      | some (Ast.Node.list pc) =>
                        (match pc[0]?, pc[1]? with
@@ -615,7 +667,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                           (match Eval.nameOf? m nId with
                            | some nm =>
                              (match inferE m acc.1 acc.2 vId with
-                              | .ok (τ, st') => .ok (((nm, τ) :: acc.1), st')
+                              | .ok (τ, st') => .ok (((nm, generalizeScheme acc.1 st'.subst τ) :: acc.1), st')
                               | .error e => .error e)
                            | none => .error (.unsupported "type oracle: let binding missing name"))
                         | _, _ => .error (.unsupported "type oracle: malformed let binding"))
@@ -636,15 +688,15 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
             | none => .error (.unsupported "type oracle: empty do")
             | some lastId =>
               let stmts := items.extract 0 (items.size - 1)
-              (match stmts.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Ty) × InferState) sid =>
+              (match stmts.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Scheme) × InferState) sid =>
                   match Eval.asDef? m sid with
                   | some dc =>
                     (match dc[1]?, dc[dc.size - 1]? with
                      | some targetId, some valId =>
                        (match Eval.nameOf? m targetId with
-                        | some nm =>                       -- value def → bind x:τ
+                        | some nm =>                       -- value def → bind x : GENERALIZE(τ) (like let)
                           (match inferE m acc.1 acc.2 valId with
-                           | .ok (τ, st') => .ok (((nm, τ) :: acc.1), st')
+                           | .ok (τ, st') => .ok (((nm, generalizeScheme acc.1 st'.subst τ) :: acc.1), st')
                            | .error e => .error e)
                         | none => .error (.unsupported "type oracle: local function def in a do not yet modeled"))
                      | _, _ => .error (.unsupported "type oracle: malformed do def"))
@@ -686,19 +738,19 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
               (match m.nodes[paramsId]? with
                | some (Ast.Node.list paramNodes) =>
                  (match paramNodes.foldlM (m := Except InferFail)
-                     (fun (acc : List (ByteArray × Ty) × List Ty × InferState) pid =>
+                     (fun (acc : List (ByteArray × Scheme) × List Ty × InferState) pid =>
                        match m.nodes[pid]? with
-                       | some (Ast.Node.atom lid) =>            -- bare param → fresh var
+                       | some (Ast.Node.atom lid) =>            -- bare param → fresh var, bound MONOMORPHIC (λ-bound)
                          (match m.leaves[lid]? with
                           | some (.name nm) =>
                             let α : Ty := .var acc.2.2.next
-                            .ok ((nm, α) :: acc.1, α :: acc.2.1, { acc.2.2 with next := acc.2.2.next + 1 })
+                            .ok ((nm, ([], α)) :: acc.1, α :: acc.2.1, { acc.2.2 with next := acc.2.2.next + 1 })
                           | _ => .error (.unsupported "type oracle: malformed fn param"))
                        | some (Ast.Node.list pc) =>            -- (: name T)
                          (match pc[1]?, pc[2]? with
                           | some nId, some tId =>
                             (match Eval.nameOf? m nId, parseTy? m tId with
-                             | some nm, some τ => .ok ((nm, τ) :: acc.1, τ :: acc.2.1, acc.2.2)
+                             | some nm, some τ => .ok ((nm, ([], τ)) :: acc.1, τ :: acc.2.1, acc.2.2)
                              | some _, none => .error (.unsupported "type oracle: fn param has an unmodeled type annotation")
                              | none, _ => .error (.unsupported "type oracle: fn param missing name"))
                           | _, _ => .error (.unsupported "type oracle: malformed fn param spec"))
@@ -783,7 +835,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                                (match matchPatClassify? m vs (.sum vs) patId with
                                 | none => .error (.unsupported "type oracle: unmodeled match pattern — declined")
                                 | some (cov, catchAll, binds) =>
-                                  (match inferE m (binds ++ env) acc.2.2.2 bodyId with
+                                  (match inferE m (binds.map (fun b => (b.1, ([], b.2))) ++ env) acc.2.2.2 bodyId with  -- pattern binders are monomorphic
                                    | .error e => .error e
                                    | .ok (τb, st') =>
                                      (match acc.2.2.1 with
@@ -804,33 +856,31 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                           else .error (.illTyped "CDZ0210")))    -- T1.17: a modeled match missing a variant (no catch-all) is NonExhaustive
                   | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
           else
-            -- T1.12 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env to a
-            -- function; unify the (curried) fn type against each argument to a fresh result var, yielding the
-            -- codomain. 🪤 SOUNDNESS: only apply a CONCRETE (no-free-var) function type — a POLYMORPHIC head
-            -- (e.g. a let-bound `(fn (x) x) : α→α`) declines to `Unsupported`, because monomorphic
-            -- instantiation without `let`-generalization would FALSE-REJECT it used at two types (design §5).
+            -- T1.12/T1.18 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env
+            -- to a scheme; INSTANTIATE it (fresh vars per use — this is where `let`-polymorphism pays off),
+            -- then unify the (curried) instantiated fn type against each argument to a fresh result var,
+            -- yielding the codomain. A let-bound `(fn (a) a) : ∀α.α→α` instantiates to a fresh `β→β` at each
+            -- call, so it types at several argument types; a MONOMORPHIC (λ/param-bound) `f` instantiates to
+            -- itself, so using it at two types clashes → `CDZ0203` (correct — a λ-bound name is monomorphic).
             -- A head not bound in the env (a prelude/builtin) → `Unsupported`. `(f)` (no args) = grouping →
-            -- `f`'s type. Applying a non-function concrete type, or an arg-domain clash → `IllTyped CDZ0203`.
+            -- `f`'s type. Applying a non-function type, or an arg-domain clash → `IllTyped CDZ0203`.
             match env.find? (fun e => e.1 == h) with
-            | some (_, τf0) =>
-              let τf := applySubst st.subst τf0
-              if hasGenVar τf then
-                .error (.unsupported "type oracle: polymorphic application not modeled (needs let-generalization)")
-              else
-                (match (children.extract 1 children.size).foldlM (m := Except InferFail)
+            | some (_, sch) =>
+              let (τf, stInst) := instantiateScheme sch st
+              (match (children.extract 1 children.size).foldlM (m := Except InferFail)
                     (fun (acc : Ty × InferState) aid =>
                       match inferE m env acc.2 aid with
                       | .ok (τa, st1) =>
                         let β : Ty := .var st1.next
                         let st2 := { st1 with next := st1.next + 1 }
-                        (match unifyInfer acc.1 (.fn τa β) st2 with
+                        (match unifyInfer (applySubst st2.subst acc.1) (.fn τa β) st2 with
                          | .ok st3 => .ok (applySubst st3.subst β, st3)
                          | .error e => .error e)
-                      | .error e => .error e) (τf, st) with
+                      | .error e => .error e) (τf, stInst) with
                  | .ok (τres, st') => .ok (τres, st')
                  | .error e => .error e)
             | none => .error (.unsupported
-                "type oracle: unmodeled application head / construct (App/Match — prelude & polymorphic heads decline)")
+                "type oracle: unmodeled application head / construct (App/Match — prelude heads decline)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -859,7 +909,7 @@ partial def hasUndeterminedSum : Ty → Bool
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
 the verdict algebra. A resolved type (with the final substitution applied, unresolved numeric literals
 defaulted to `Int64`) is `WellTyped`; a modeled fault is `IllTyped`; a coverage gap is `Unsupported`. -/
-def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
+def inferBody (m : Ast.Module) (env : List (ByteArray × Scheme)) (nodeId : Nat) : TypeVerdict :=
   match inferE m env {} nodeId with
   | .ok (τ, st) =>
     let final := defaultNumVars (applySubst st.subst τ)
@@ -1197,18 +1247,8 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[16], .atom 1, .list #[18, 17, 15],
                            .atom 10, .atom 2, .list #[20, 21], .atom 0, .list #[23, 19, 22]],
                 root := 24 } == .illTyped "CDZ0203")
--- T1.12 (App): `(let ((id (fn (x) x))) (id 5))` — a POLYMORPHIC head (id : α→α) declines → Unsupported
--- (NOT a false reject: monomorphic instantiation without let-generalization would be unsound).
-#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
-                                  .name "id".toUTF8, .name "fn".toUTF8, .name "x".toUTF8,
-                                  .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
-                      nodes := #[.atom 6, .atom 6, .list #[1], .atom 5, .list #[3, 2, 0],  -- x, (x), (fn (x) x)
-                                 .atom 4, .list #[5, 4], .list #[6],       -- (id (fn …)), ((id (fn …)))
-                                 .atom 4, .atom 7, .list #[8, 9],          -- (id 5)
-                                 .atom 3, .list #[11, 7, 10],              -- (let ((id …)) (id 5))
-                                 .atom 2, .list #[13], .atom 1, .list #[15, 14, 12],
-                                 .atom 8, .atom 2, .list #[17, 18], .atom 0, .list #[20, 16, 19]],
-                      root := 21 } with | .unsupported _ => true | _ => false)
+-- (T1.12's `(let ((id (fn (x) x))) (id 5))` → Unsupported guard removed — T1.18 let-generalization now
+-- types it WellTyped Int64; the T1.18 #guard above asserts that superseding behavior.)
 -- SOUNDNESS GATE: a program with an extra fn-def `(def (f x) x)` is NOT fully modeled → Unsupported
 -- (declined, NOT a false WellTyped — the whole-program gate prevents over-claiming on unvetted defs).
 #guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "f".toUTF8, .name "x".toUTF8,
@@ -1313,6 +1353,17 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[5, 6], .atom 3, .list #[8, 2, 7], .atom 2, .list #[10], .atom 1,
                            .list #[12, 11, 9], .atom 7, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
                 root := 18 } == .illTyped "CDZ0210")
+-- T1.18 (let-generalization): `(let ((id (fn (x) x))) (id 5))` → WellTyped Int64. The let-bound `id`
+-- generalizes to `∀α.α→α`; the V rule instantiates a fresh var at the use, App unifies it with the
+-- numeric arg → Int64 (defaulted). Exercises generalize → instantiate → App on a let-bound fn.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                            .name "id".toUTF8, .name "fn".toUTF8, .name "x".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 6, .list #[0], .atom 6, .atom 5, .list #[3, 1, 2], .atom 4, .list #[5, 4],
+                           .list #[6], .atom 4, .atom 7, .list #[8, 9], .atom 3, .list #[11, 7, 10],
+                           .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 8, .atom 2,
+                           .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                root := 21 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
