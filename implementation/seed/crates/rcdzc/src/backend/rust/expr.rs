@@ -5782,6 +5782,21 @@ fn arith_operand_diverges(db: &mut Db, id: StructId) -> bool {
         | Core::StrCmp { lhs, rhs, .. } => {
             arith_operand_diverges(db, lhs) || arith_operand_diverges(db, rhs)
         }
+        // An effect NON-LOCAL EXIT (`Core::HandleAbort`) emits a `return <value>` — Rust `!`, exactly like a
+        // trap's `panic!` — so an abort sitting in an arith/compare OPERAND makes the op dead, and emitting
+        // it verbatim yields `(return v).checked_add(…)` → E0599 ("no method `checked_add` for type `!`";
+        // `!` coerces to a value but is not a method receiver). `body_diverges` deliberately does NOT know
+        // `HandleAbort` — it is backend-agnostic and the WASM `If`/`Match` emit must KEEP the abort branches
+        // (not fold both-abort branches to a value-less `unreachable`, which would drop the abort values). So
+        // recognize the abort HERE, rust-side, threaded through the value-carrying `Seq`/`Let`/`If` nodes so
+        // `(+ (let (…) (Bail.bail 7)) 9)` / an all-abort `if` operand is caught too. (`(+ (Bail.bail 7)
+        // (Bail.bail 9))` const-folds its `if` to a bare `HandleAbort` — the shape v-effects reported.)
+        Core::HandleAbort { .. } => true,
+        Core::Seq { tail, .. } => arith_operand_diverges(db, tail),
+        Core::Let { body, .. } => arith_operand_diverges(db, body),
+        Core::If { then_, else_, .. } => {
+            arith_operand_diverges(db, then_) && arith_operand_diverges(db, else_)
+        }
         _ => false,
     }
 }
