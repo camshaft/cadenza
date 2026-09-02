@@ -13,7 +13,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use cdz_corpus_grade::{
-    GTrial, GradeResult, Outcome as GradeOutcome, Verdict, decode_test_run, exec_exit, grade_run,
+    GTrial, Grade, GradeResult, Outcome as GradeOutcome, Verdict, decode_test_run, exec_exit,
+    grade_run,
 };
 
 use crate::driver::build_driver_source;
@@ -39,18 +40,37 @@ pub fn grade(
     // success WITHOUT the baseline regression check — the rust analogue of `cdz-run --emit-verdict`. Takes
     // precedence over `baseline`.
     emit_verdict: Option<&Path>,
+    // The case's imposed WIT-WORLD (`wit-world.ast`), present ONLY for a `(wit-world …)` case. When
+    // `Some`, this RUST target DECLINES the case → `Todo`: an imposed external world runs ONLY on the wasm
+    // backend (the standalone `.rs` emit has no external-world ingest; the corpus header prescribes rust/ML
+    // → todo). Skips emit/compile/run entirely — otherwise the rust pipeline compiles the bare program
+    // (ignoring the world) and E0425s on the world-declared export = a dishonest FAIL. Keeps declined≠error
+    // (the fuzzer differential) + honestly characterizes the rust column (imposed-WIT-world = rust todo-by-
+    // design). The compiler cannot self-decline this — the world is a corpus sibling clause it never sees.
+    wit_world: Option<&Path>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
-    let result = grade_to_result(
-        &test_run,
-        module,
-        rlibs,
-        async_mode,
-        compile_status,
-        compile_diag,
-        diag_wire,
-        workdir,
-    )?;
+    let result = if wit_world.is_some() {
+        GradeResult {
+            grade: Grade::Todo(
+                "imposed WIT-world: the rust backend has no external-world ingest (wasm-only) — \
+                 declines by design"
+                    .to_string(),
+            ),
+            ran_a_trial: false,
+        }
+    } else {
+        grade_to_result(
+            &test_run,
+            module,
+            rlibs,
+            async_mode,
+            compile_status,
+            compile_diag,
+            diag_wire,
+            workdir,
+        )?
+    };
     // The exit reproduces `xtask gate --check --target rust` when a baseline is supplied (fail ONLY on a
     // pass→not-pass regression; a baseline-todo/absent case that is now todo/fail — e.g. an imposed-WIT-world
     // reducer the rust backend declines → todo, that this pipeline compiles-without-the-world → fail — is NOT

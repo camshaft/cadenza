@@ -85,6 +85,15 @@ struct Cli {
     /// state; it never regression-fails). The rust/rust-async analogue of `cdz-run --emit-verdict`.
     #[arg(long = "emit-verdict", value_name = "PATH")]
     emit_verdict: Option<PathBuf>,
+
+    /// The case's imposed WIT-WORLD (`wit-world.ast` from the shred), present ONLY for a `(wit-world …)`
+    /// case. When set, the RUST/ML target DECLINES the case (verdict `todo`) — skipping emit/compile/run —
+    /// because an imposed external world runs ONLY on the wasm backend (no external-world ingest in the
+    /// standalone `.rs` emit; the corpus header prescribes rust/ML → todo). Without it the rust pipeline
+    /// compiles the bare program (ignoring the world) and the world-declared export is missing → a dishonest
+    /// build-error FAIL. The nix corpus-rust-exec derivation passes `$case/wit-world.ast` when present.
+    #[arg(long = "wit-world", value_name = "PATH")]
+    wit_world: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -145,5 +154,6 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         &workdir,
         baseline.as_deref(),
         cli.emit_verdict.as_deref(),
+        cli.wit_world.as_deref(),
     )
 }
