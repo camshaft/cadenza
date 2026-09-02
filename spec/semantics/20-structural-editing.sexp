@@ -565,6 +565,26 @@
   (live-objects 0))
 
 (case
+  "a BigInt-newtype payload built from BigInt ARITHMETIC round-trips through the cadenza backend"
+  (doc
+    "The arithmetic sibling of the runtime-built BigInt sum-payload probe above: `(type W (Mk
+           BigInt))`'s payload is built by BigInt ADDITION `(Mk (+ (BigInt.of k) (BigInt.of 1)))`, then
+           probed against the literal `(Mk 5)`. At k=4 the sum is 5 → matches → 40. This pins the
+           `--target cadenza` re-emit of a newtype whose erased payload is a `Core::BigIntBinOp` (the
+           arbitrary-precision arithmetic tower's `+`): the newtype value's Core IS the bignum add, an
+           intrinsic BigInt PRODUCER, so it is a CONSTRUCTION site here exactly like `(BigInt.of k)` or a
+           default-width `Arith` — without it the erased value fell to nominal_disposition's ambiguous
+           `_ => Decline` → CDZ0900. Green on all backends; the cadenza round-trip is the witness.")
+  (input
+    (do
+      (type W (Mk BigInt))
+      (def (main (: k Int64)) (match (Mk (+ (BigInt.of k) (BigInt.of 1))) ((Mk 5) 40) (_ -1)))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 40 Int64))
+  (live-objects 0))
+
+(case
   "a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload"
   (doc
     "The miss companion: the same `(match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1))` at k=2 does NOT
