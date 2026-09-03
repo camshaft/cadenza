@@ -3845,15 +3845,18 @@
   (output (: "hi?" String)))
 
 ; ebx1: a bin match NESTED INSIDE another bin match's ARM BODY — outer (bin (u8 x) (u8 y)) arm whose
-; body bin-matches a SECOND helper-returned Bytes. Computes on wasm/rust (182010 + 101n; all four
-; binders live across the nesting); the cadenza target currently DECLINES CDZ0900 ("binary segment
-; read outside a recognized bin-match"). Isolated by controls: a SINGLE bin match over a helper call
-; hops (even with a performing scrutinee), a bin match nested in a TUPLE match's arm hops, two
-; SEQUENTIAL bin matches in operator position hop — the trigger is precisely bin-inside-a-bin-arm,
-; regardless of the inner scrutinee's provenance (a fresh call here; an extracted payload in the
-; earlier nf5 shape, which this subsumes/sharpens). Idealistic TODO per corpus policy, auto-flips
-; when the nested bin-arm recognition lands. (breaker probe eb3, verified two-sided: wasm exact x3
-; args, rust fold-opaque combined leg exact, live-objects 0/0.)
+; body bin-matches a SECOND helper-returned Bytes. Computes tri-target (182010 + 101n; all four
+; binders live across the nesting). Was a cadenza CDZ0900 decline ("binary segment read outside a
+; recognized bin-match") until #8024: the backend keyed segment-binder maps by (offset,width) alone,
+; so nested scrutinees collided and the outer collect bailed on the inner's reads; fixed by keying by
+; (scrutinee-binder, offset, width). The breaker isolation that pinned it: a SINGLE bin match over a
+; helper call hopped (even with a performing scrutinee), bin-in-a-TUPLE-arm hopped, SEQUENTIAL bin
+; matches hopped — the trigger was precisely bin-inside-a-bin-arm, regardless of the inner
+; scrutinee's provenance (a fresh call here; an extracted payload in the earlier nf5 shape, which
+; this subsumed). Post-fix breaker re-verification also covered 3-LEVEL nesting and SAME-scrutinee
+; re-match under a different segmentation (u8+u8 outer, u16 inner over one binder) — all exact
+; tri-target + byte-idempotent. (breaker probe eb3; wasm exact x3 args, rust fold-opaque combined
+; leg exact, live-objects 0/0.)
 (case
   "a bin match nested inside another bin match's arm body computes"
   (input
@@ -3875,3 +3878,64 @@
   (output (: 182010 Int64))
   (call main (: 3 Int64))
   (output (: 182313 Int64)))
+
+; ebx2: THREE-LEVEL bin-in-bin-arm nesting — three helper-returned scrutinees, each inner match in
+; the enclosing bin arm's body, binders from all levels combined (x + 100v + 10000p + 1000000q =
+; 9302010 + 10101n). Regression fence for #8024's (scrutinee-binder, offset, width) segment-binder
+; keying at depth >2: all three scrutinees carry segments at the SAME (offset,width) pairs, so the
+; pre-fix (offset,width)-only maps would collide pairwise. (breaker probe eb7, verified tri-target
+; exact + byte-idempotent post-#8024.)
+(case
+  "three-level nested bin matches combine binders from every level"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list((UInt8.of a) 9)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk (+ 10 n))
+          ((bin (u8 x) (u8 _y))
+            (match
+              (mk (+ 20 n))
+              ((bin (u8 v) (u8 _w))
+                (match
+                  (mk (+ 30 n))
+                  ((bin (u8 p) (u8 q))
+                    (+
+                      (Int64.of x)
+                      (+ (* 100 (Int64.of v)) (+ (* 10000 (Int64.of p)) (* 1000000 (Int64.of q))))))
+                  (_ -3)))
+              (_ -2)))
+          (_ -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 9302010 Int64))
+  (call main (: 4 Int64))
+  (output (: 9342414 Int64)))
+
+; ebx3: the SAME scrutinee binder re-matched under a DIFFERENT segmentation — outer (bin (u8 x)
+; (u8 y)) then, inside that arm, the same let-bound bytes re-matched as (bin (u16 w)). The u16
+; window overlaps both u8 windows at different widths (w = 256n + 7, big-endian), so the segment
+; reads share a scrutinee-binder and offsets but differ in width — the sharpest probe of #8024's
+; three-component key. (breaker probe eb8, verified tri-target exact + byte-idempotent post-#8024.)
+(case
+  "re-matching one bytes binder under a different segmentation reads both layouts"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((b (Bytes.of #list((UInt8.of n) 7))))
+          (match
+            b
+            ((bin (u8 x) (u8 y))
+              (match
+                b
+                ((bin (u16 w)) (+ (Int64.of x) (+ (* 1000 (Int64.of y)) (* 1000000 (Int64.of w)))))
+                (_ -2)))
+            (_ -1))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 263007001 Int64))
+  (call main (: 5 Int64))
+  (output (: 1287007005 Int64)))
