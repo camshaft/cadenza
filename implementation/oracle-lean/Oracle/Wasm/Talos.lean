@@ -194,4 +194,13 @@ private def watHeapReuse : String :=
   "(module (import \"heap\" \"arr-alloc\" (func (param i32) (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"arr-set\" (func (param i32) (param i32) (param i32) (result i32))) (import \"heap\" \"reset\" (func (param i32) (result i32))) (import \"heap\" \"arr-alloc-reuse\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"arr-len\" (func (param i32) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i32) (local i32) (local i32) (local i32) i32.const 1 call 0 local.set 0 i64.const 5 call 1 local.set 1 local.get 0 i32.const 0 local.get 1 call 2 local.set 0 local.get 0 call 3 local.set 0 i32.const 2 local.get 0 call 4 local.set 0 local.get 0 call 5 local.set 2 local.get 0 call 6 local.get 2))"
 example : (talosDriver watHeapReuse { entry := "main" } == .ok #[.i32 2]) = true := by native_decide
 
+/-- End-to-end BORROW-heavy numeric (BigInt): `bigint-of-i64 2` and `bigint-of-i64 3`, `bigint-add` (BORROWS
+both — a, b survive), `bigint-to-i64-checked` reads 5; the caller then drops a, b AND the sum → `main() = 5`
+with `leakCount 0`. Complements the consume-semantics witnesses (map/set/reuse) by exercising the OPPOSITE
+ownership discipline — the operands survive the op and are dropped by the caller — end-to-end through talos.
+(The numeric ops are not in the in-progress full-corpus run, so this is their first end-to-end validation.) -/
+private def watHeapBigInt : String :=
+  "(module (import \"heap\" \"bigint-of-i64\" (func (param i64) (result i32))) (import \"heap\" \"bigint-add\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"bigint-to-i64-checked\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i32) (local i32) (local i64) i64.const 2 call 0 local.set 0 i64.const 3 call 0 local.set 1 local.get 0 local.get 1 call 1 local.set 2 local.get 2 call 2 local.set 3 local.get 0 call 3 local.get 1 call 3 local.get 2 call 3 local.get 3))"
+example : (talosDriver watHeapBigInt { entry := "main" } == .ok #[.i64 5]) = true := by native_decide
+
 end Oracle.Wasm
