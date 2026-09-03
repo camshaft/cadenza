@@ -20035,3 +20035,41 @@
   ; flat 4 live at every call (breaker census 2026-08-30) — the Box-of-closure retention family,
   ; same class as the B multi-apply residuals (v-core-opt); #5766 tolerate-fewer passes the collapse.
   (live-objects known-leak))
+
+; nzx1: the EQUALITY/ORDER split on the two float specials, juxtaposed in ONE matrix. Cadenza's `=`
+; is the canonical TOTAL structural equality (distinguishes -0.0 from +0.0; NaN self-equal) while
+; `<`/`<=` are the IEEE PARTIAL order (zeros compare equal; NaN unordered). The corners a rewrite
+; must not merge: (-0.0, +0.0) satisfies <= AND >= yet NOT = (antisymmetry does not transfer), and
+; (NaN, NaN) satisfies = yet NOT <= (reflexivity of <= does not follow from =). So the plausible
+; strength reductions (and (<= a b) (>= a b)) -> (= a b) and (= a a) -> true-for-<= are BOTH unsound
+; over floats. Digits (low to high): (= -z +z) | Set.len{-z,+z} (the collection face: two members) |
+; (<= -z +z) | (= NaN NaN) | (<= NaN NaN) | sign witness (1/-z < 0, proving -z is a true -0.0 when
+; n=0). n=0 -> 101120; n=5 (ordinary values: -5 vs 5, NaN slot becomes 1.0) -> 111120. (breaker
+; probe nzx, verified tri-target exact + byte-idempotent + const-folder agreement, live-objects
+; 0/0.)
+(case
+  "float total-equality and IEEE order disagree exactly on the specials"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((pz (Float64.of-int n)))
+          (let
+            ((nz (Float64.neg pz)))
+            (let
+              ((qn (/ pz pz)))
+              (+
+                (if (= nz pz) 1 0)
+                (+
+                  (* 10 (Set.len (Set.of #list(nz pz))))
+                  (+
+                    (* 100 (if (<= nz pz) 1 0))
+                    (+
+                      (* 1000 (if (= qn qn) 1 0))
+                      (+ (* 10000 (if (<= qn qn) 1 0)) (* 100000 (if (< (/ 1.0 nz) 0.0) 1 0)))))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 101120 Int64))
+  (call main (: 5 Int64))
+  (output (: 111120 Int64)))
