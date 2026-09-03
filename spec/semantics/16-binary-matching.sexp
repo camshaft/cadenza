@@ -1235,6 +1235,35 @@
   (output (: -1 Int64)))
 
 (case
+  "a guarded dependent-size arm whose runtime size OVERRUNS the remaining bytes falls through, not a trap"
+  (doc
+    "The runtime-path bounds-check companion of the guarded dependent-read case above (and the runtime twin
+           of the constant-scrutinee overrun cases). The arm is `(guard (bin (u8 k) (bytes p k)) (> (Bytes.len
+           p) 1))` and `main` builds a THREE-byte scrutinee `(bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))` — the
+           leading `(u8 k)` reads `k` at run time, then `(bytes p k)` needs `k` more bytes. n=2 → `[2, 65, 66]`:
+           k=2, `p` = `[65, 66]` (exact), guard `2 > 1` holds → 1002 (the arm IS live). n=5 → `[5, 65, 66]`:
+           k=5 but only two bytes remain after the size byte, so the dependent read OVERRUNS → the arm cannot
+           match → -1. Pins that a dependent size larger than the remaining bytes is a clean NON-MATCH on the
+           RUNTIME (wasm-emit) path — a fall-through, NOT a trap and NOT a short read. This is the bounds
+           guard that must precede the dependent read: the size is decoded, then the read is admitted only if
+           `bytes-len >= byte_offset + k`, else the arm falls through. A codegen that read the dependent bytes
+           before (or without) that length check would trap on the short input instead of falling through.")
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1)) (+ 1000 (Bytes.len p)))
+          (_ -1)))
+      (def (main (: n Int64)) (f (bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 1002 Int64))
+  (call main (: 5 Int64))
+  (output (: -1 Int64)))
+
+(case
   "an OR-guarded dependent-size bin arm over a runtime scrutinee emits a valid module and disjoins correctly"
   (doc
     "The OR companion of the guarded dependent-read case above: the guard is a DISJUNCTION `(or (> (Bytes.len
