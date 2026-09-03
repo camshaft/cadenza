@@ -52,6 +52,7 @@ inductive HeapValue where
   | bytes   (bs : Array UInt8)
   | sum     (disc : UInt32) (payload : UInt32)
   | bigint  (v : Int)
+  | rational (num : UInt32) (den : UInt32)
 deriving Repr, DecidableEq, Inhabited, BEq
 
 /-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set/
@@ -59,12 +60,14 @@ vec) — the child set the free-cascade and `mark-immortal-deep` walk. -/
 def HeapValue.arity : HeapValue → Nat
   | .array e | .map e | .set e | .vec e => e.size
   | .sum _ _                            => 1
+  | .rational _ _                       => 2
   | _                                   => 0
 
 /-- The owned child handles (array/map/set/vec slots; `[]` for a scalar). -/
 def HeapValue.children : HeapValue → List UInt32
   | .array e | .map e | .set e | .vec e => e.toList
   | .sum _ p                            => [p]
+  | .rational n d                       => [n, d]
   | _                                   => []
 
 /-- One heap object: its value, refcount, liveness (`false` once freed at rc 0), and immortality flag
@@ -383,6 +386,8 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
         | .sum d1 p1, .sum d2 p2 =>
           d1 == d2 && valueEqWork fuel s ((p1, p2) :: rest)
         | .bigint a,  .bigint b  => a == b && valueEqWork fuel s rest
+        | .rational n1 d1, .rational n2 d2 =>
+          valueEqWork fuel s ((n1, n2) :: (d1, d2) :: rest)
         | _,          _          => false
       | _, _ => false
 
@@ -1263,6 +1268,114 @@ def bigintCmp : HeapState → List Value → HeapResult
     | _, _ => .trap "bigint-cmp: an operand is not a bigint"
   | s, _ => .trap "bigint-cmp: expected (i32, i32)"
 
+/-! ### Exact rational (indices 74–81) — a NORMALIZED 2-handle node `[num, den]`, each child a BigInt leaf
+(lowest terms, sign on the numerator, den > 0). Per v-runtime (scalars.rs): `rational-of` CONSUMES its two
+BigInt operands and normalizes (gcd-reduce, sign→num, den>0; TRAP on den=0), so 2/4 and 1/2 are the SAME node;
+`rational-num`/`-den` BORROW the rational and return an OWNED (dup'd) handle to the normalized child; the arith
++ `rational-cmp` BORROW both operands and box a FRESH result (same borrow-heavy discipline as BigInt). A
+rational is an ordinary node — dup/drop recurse into BOTH children. -/
+
+/-- Normalize `(x, y)` (y ≠ 0) to lowest terms with den > 0 (sign on the numerator). -/
+def normRat (x y : Int) : Int × Int :=
+  let (x, y) := if y < 0 then (-x, -y) else (x, y)
+  let g : Int := (Int.gcd x y : Nat)   -- gcd of |x|,|y|; ≥ 1 since y ≠ 0 (gcd 0 y = |y|)
+  (x / g, y / g)
+
+/-- Allocate a normalized rational node `[num, den]` (two fresh BigInt leaves + the rational). Caller ensures
+`y ≠ 0`. -/
+def mkRational (s : HeapState) (x y : Int) : UInt32 × HeapState :=
+  let (n, d) := normRat x y
+  let (nh, s1) := s.mkBigInt n
+  let (dh, s2) := s1.mkBigInt d
+  s2.alloc (.rational nh dh)
+
+/-- The (numerator, denominator) VALUES of a live rational node (reading its BigInt children). -/
+def ratComponents? (s : HeapState) (r : UInt32) : Option (Int × Int) :=
+  match s.getObj? r with
+  | some o =>
+    if o.live then
+      match o.value with
+      | .rational nh dh =>
+        match s.bigintVal? nh, s.bigintVal? dh with
+        | some x, some y => some (x, y)
+        | _, _           => none
+      | _ => none
+    else none
+  | none => none
+
+/-- `rational-of(num, den) → r` [CONSUMES num, den]: normalize `(num, den)` to lowest terms; TRAP on den = 0. -/
+def rationalOf : HeapState → List Value → HeapResult
+  | s, [.i32 num, .i32 den] =>
+    match s.bigintVal? num, s.bigintVal? den with
+    | some x, some y =>
+      if y == 0 then .trap "rational-of: zero denominator"
+      else
+        let (r, s1) := s.mkRational x y
+        .ret [.i32 r] ((s1.dropH num).dropH den)
+    | _, _ => .trap "rational-of: an operand is not a bigint"
+  | s, _ => .trap "rational-of: expected (i32, i32)"
+
+/-- `rational-num(r) → num`: the numerator (a fresh OWNED handle, dup'd from the normalized child; BORROWS r). -/
+def rationalNum : HeapState → List Value → HeapResult
+  | s, [.i32 r] =>
+    match s.getObj? r with
+    | none   => .trap s!"rational-num: unknown handle {r}"
+    | some o =>
+      if !o.live then .trap s!"rational-num: use-after-free (handle {r} freed)"
+      else match o.value with
+        | .rational nh _ => .ret [.i32 nh] (s.dupH nh)
+        | _              => .trap s!"rational-num: handle {r} is not a rational"
+  | s, _ => .trap "rational-num: expected (i32)"
+
+/-- `rational-den(r) → den`: the denominator (a fresh OWNED handle; BORROWS r). -/
+def rationalDen : HeapState → List Value → HeapResult
+  | s, [.i32 r] =>
+    match s.getObj? r with
+    | none   => .trap s!"rational-den: unknown handle {r}"
+    | some o =>
+      if !o.live then .trap s!"rational-den: use-after-free (handle {r} freed)"
+      else match o.value with
+        | .rational _ dh => .ret [.i32 dh] (s.dupH dh)
+        | _              => .trap s!"rational-den: handle {r} is not a rational"
+  | s, _ => .trap "rational-den: expected (i32)"
+
+/-- The shared shape of a binary rational arith op: BORROW a, b; box a FRESH normalized result from the
+component values via `op`. `op (xa,ya) (xb,yb)` returns the un-normalized `(num, den)`. -/
+def rationalBin (s : HeapState) (op : Int × Int → Int × Int → Int × Int) (a b : UInt32) : HeapResult :=
+  match s.ratComponents? a, s.ratComponents? b with
+  | some pa, some pb =>
+    let (n, d) := op pa pb
+    if d == 0 then .trap "rational arith: zero denominator"
+    else let (r, s') := s.mkRational n d; .ret [.i32 r] s'
+  | _, _ => .trap "rational arith: an operand is not a rational"
+
+/-- `rational-add(a,b)` = (xa·yb + xb·ya)/(ya·yb) — BORROWS both, fresh normalized result. -/
+def rationalAdd : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.rationalBin (fun (xa, ya) (xb, yb) => (xa * yb + xb * ya, ya * yb)) a b
+  | s, _ => .trap "rational-add: expected (i32, i32)"
+/-- `rational-sub(a,b)` = (xa·yb − xb·ya)/(ya·yb). -/
+def rationalSub : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.rationalBin (fun (xa, ya) (xb, yb) => (xa * yb - xb * ya, ya * yb)) a b
+  | s, _ => .trap "rational-sub: expected (i32, i32)"
+/-- `rational-mul(a,b)` = (xa·xb)/(ya·yb). -/
+def rationalMul : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.rationalBin (fun (xa, ya) (xb, yb) => (xa * xb, ya * yb)) a b
+  | s, _ => .trap "rational-mul: expected (i32, i32)"
+/-- `rational-div(a,b)` = (xa·yb)/(ya·xb) — TRAPS on a zero divisor (xb = 0). -/
+def rationalDiv : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.rationalBin (fun (xa, ya) (xb, yb) => (xa * yb, ya * xb)) a b
+  | s, _ => .trap "rational-div: expected (i32, i32)"
+
+/-- `rational-cmp(a,b) → -1|0|1`: compare xa·yb vs xb·ya (both dens > 0); BORROWS. -/
+def rationalCmp : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.ratComponents? a, s.ratComponents? b with
+    | some (xa, ya), some (xb, yb) =>
+      let l := xa * yb; let r := xb * ya
+      .ret [.i64 (intToU64Bits (if l < r then -1 else if l == r then 0 else 1))] s
+    | _, _ => .trap "rational-cmp: an operand is not a rational"
+  | s, _ => .trap "rational-cmp: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -1352,6 +1465,15 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("bigint-div",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintDiv)
   , ("bigint-rem",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintRem)
   , ("bigint-cmp",            toHostFn [.i32, .i32]          [.i64]  HeapState.bigintCmp)
+    -- exact rational: rational-of consumes+normalizes; num/den + arith/cmp borrow (fresh owned result)
+  , ("rational-of",           toHostFn [.i32, .i32]          [.i32]  HeapState.rationalOf)
+  , ("rational-num",          toHostFn [.i32]                [.i32]  HeapState.rationalNum)
+  , ("rational-den",          toHostFn [.i32]                [.i32]  HeapState.rationalDen)
+  , ("rational-add",          toHostFn [.i32, .i32]          [.i32]  HeapState.rationalAdd)
+  , ("rational-sub",          toHostFn [.i32, .i32]          [.i32]  HeapState.rationalSub)
+  , ("rational-mul",          toHostFn [.i32, .i32]          [.i32]  HeapState.rationalMul)
+  , ("rational-div",          toHostFn [.i32, .i32]          [.i32]  HeapState.rationalDiv)
+  , ("rational-cmp",          toHostFn [.i32, .i32]          [.i64]  HeapState.rationalCmp)
     -- lists (vec-*, growable sequence) — core + the extra constructors (concat/prepend/of-arr/drop)
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -2158,5 +2280,88 @@ private def probeBigIntDivRem : Bool :=
     | _ => false
   | _ => false
 example : probeBigIntDivRem = true := by native_decide
+
+/-! #### Rational witnesses — normalization (2/4 = 1/2), borrow-heavy arith (1/2 + 1/3 = 5/6), div-by-zero trap. -/
+
+/-- Build a rational `n/d` from two i64 literals (via two BigInt leaves + rational-of); returns (r, s'). -/
+private def mkRatI64 (s : HeapState) (n d : UInt64) : Option (UInt32 × HeapState) :=
+  match bigintOfI64 s [.i64 n] with
+  | .ret [.i32 bn] s1 =>
+    match bigintOfI64 s1 [.i64 d] with
+    | .ret [.i32 bd] s2 =>
+      match rationalOf s2 [.i32 bn, .i32 bd] with
+      | .ret [.i32 r] s3 => some (r, s3)
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- rational-of(2,4) NORMALIZES to 1/2: num reads 1, den reads 2; the rational + its 2 fresh BigInt children =
+liveCount 3 (the two input BigInts consumed); dropping num/den handles + the rational balances to census 0. -/
+private def probeRationalNormalize : Bool :=
+  match bigintOfI64 ({} : HeapState) [.i64 2] with
+  | .ret [.i32 b2] s0 =>
+    match bigintOfI64 s0 [.i64 4] with
+    | .ret [.i32 b4] s1 =>
+      match rationalOf s1 [.i32 b2, .i32 b4] with
+      | .ret [.i32 r] s2 =>
+        (s2.liveCount == 3) &&
+        (match rationalNum s2 [.i32 r] with
+         | .ret [.i32 nh] s3 =>
+           (match bigintToI64Checked s3 [.i32 nh] with | .ret [.i64 1] _ => true | _ => false) &&
+           (match drop s3 [.i32 nh] with
+            | .ret [] s4 =>
+              (match rationalDen s4 [.i32 r] with
+               | .ret [.i32 dh] s5 =>
+                 (match bigintToI64Checked s5 [.i32 dh] with | .ret [.i64 2] _ => true | _ => false) &&
+                 (match drop s5 [.i32 dh] with
+                  | .ret [] s6 => (match drop s6 [.i32 r] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+                  | _ => false)
+               | _ => false)
+            | _ => false)
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeRationalNormalize = true := by native_decide
+
+/-- 1/2 + 1/3 = 5/6 (numerator reads 5); cmp(1/2, 1/3) = +1; BORROW-heavy (a,b survive the add), so the caller
+drops a, b, and the sum → census 0. -/
+private def probeRationalArith : Bool :=
+  match mkRatI64 ({} : HeapState) 1 2 with
+  | some (a, s0) =>
+    match mkRatI64 s0 1 3 with
+    | some (b, s1) =>
+      match rationalAdd s1 [.i32 a, .i32 b] with
+      | .ret [.i32 c] s2 =>
+        (match rationalNum s2 [.i32 c] with
+         | .ret [.i32 nh] s3 =>
+           (match bigintToI64Checked s3 [.i32 nh] with | .ret [.i64 5] _ => true | _ => false) &&
+           (match drop s3 [.i32 nh] with | .ret [] _ => true | _ => false)
+         | _ => false) &&
+        (match rationalCmp s2 [.i32 a, .i32 b] with | .ret [.i64 n] _ => n == intToU64Bits 1 | _ => false) &&
+        (match drop s2 [.i32 a] with
+         | .ret [] t1 =>
+           (match drop t1 [.i32 b] with
+            | .ret [] t2 => (match drop t2 [.i32 c] with | .ret [] t3 => t3.liveCount == 0 | _ => false)
+            | _ => false)
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeRationalArith = true := by native_decide
+
+/-- rational-div by a zero rational (0/1) TRAPS (the result denominator is 0); drop the operands → census 0. -/
+private def probeRationalDivZero : Bool :=
+  match mkRatI64 ({} : HeapState) 0 1 with
+  | some (z, s0) =>
+    match mkRatI64 s0 1 2 with
+    | some (a, s1) =>
+      (match rationalDiv s1 [.i32 a, .i32 z] with | .trap _ => true | _ => false) &&
+      (match drop s1 [.i32 a] with
+       | .ret [] t1 => (match drop t1 [.i32 z] with | .ret [] t2 => t2.liveCount == 0 | _ => false)
+       | _ => false)
+    | _ => false
+  | _ => false
+example : probeRationalDivZero = true := by native_decide
 
 end Oracle.Heap
