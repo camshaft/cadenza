@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 24 };
+    let arms = if depth == 0 { 2 } else { 25 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -895,6 +895,18 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(. (Record.extend (record (= x {a})) #\"y\" {v}) y)")
             }
         }
+        // A RECORD merge/pop result projected → Int64 (T1.49): `(Record.merge (record (= x <int>)) (record
+        // (= y <int>)))` (disjoint union) projected to a field; or `(Record.pop (record (= x <int>) (= y
+        // <int>)) #"x")` → `(Tuple <field> <rest>)` with `.0` the popped value. Both infer Int64 → agreement.
+        23 => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (Record.merge (record (= x {a})) (record (= y {b}))) x)")
+            } else {
+                format!("(. (Record.pop (record (= x {a}) (= y {b})) #\"x\") 0)")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1227,7 +1239,18 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(29) {
+    match c.variant(30) {
+        // An ILL-TYPED Record merge/pop (T1.49 — false-accept hunt): `Record.merge` with an OVERLAPPING
+        // key → CDZ0211 (merge is disjoint, not last-writer-wins); `Record.pop` on an ABSENT key →
+        // CDZ0212. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        28 => {
+            let a = int(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (Record.merge (record (= x {a})) (record (= x 2))) x)") // overlap → CDZ0211
+            } else {
+                format!("(. (Record.pop (record (= x {a})) #\"z\") 0)") // absent → CDZ0212
+            }
+        }
         // An ILL-TYPED Record row op (T1.48 — false-accept hunt): `Record.with` on an ABSENT field →
         // CDZ0212; `Record.extend` on a PRESENT field → CDZ0211; or a non-record base → coded fault. rcdzc
         // rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
