@@ -5871,3 +5871,42 @@
   (output (: 221303 Int64))
   (call main (: 5 Int64))
   (output (: 231021 Int64)))
+
+; ckx1: a Char.from-int-DERIVED runtime char carries the same collection identity as a literal char.
+; The existing char-collection cases source their runtime char from an `(if b …)` join; this sources
+; it from `(Char.from-int (+ 97 (% n 3)))` matched out of its Option — a VALIDITY-CHECKED char (the
+; T1.45 op) — then uses it as BOTH a Set element and a Map key against literal `#\a`/`#\b`. n=0 -> a
+; (Set {a,a,b} len 2, contains a, map {a↦5} lookup a = 5 -> 512); n=1 -> b (len 2, contains a, map
+; {b↦5} lookup a MISS -> -88); n=2 -> c (len 3, distinct, map miss -> -87). Pins that from-int's
+; scalar result hashes/compares identically to a literal char in the champ paths — a from-int that
+; produced a differently-tagged char would mis-dedup or miss its own key. (breaker probe ck1, verified
+; tri-target VALUE-exact + hop recompiles-and-runs; leaks 1 object — ISOLATED to the from-int
+; Option-match binder used TWICE into collections (char-collections alone AND from-int-match alone
+; both census 0), an Option-shell reclaim on a multiply-used match binder; pinned known-leak + filed.)
+(case
+  "a Char.from-int-derived runtime char has literal-char collection identity"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (Char.from-int (+ 97 (% n 3)))
+          ((Some c)
+            (let
+              ((s (Set.of #list(c #\a #\b))))
+              (+
+                (Set.len s)
+                (+
+                  (* 10 (if (Set.contains s #\a) 1 0))
+                  (*
+                    100
+                    (match (Map.lookup (Map.insert Map.empty c 5) #\a) ((Some v) v) ((None) -1)))))))
+          ((None) -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 512 Int64))
+  (call main (: 1 Int64))
+  (output (: -88 Int64))
+  (call main (: 2 Int64))
+  (output (: -87 Int64))
+  (live-objects known-leak))
