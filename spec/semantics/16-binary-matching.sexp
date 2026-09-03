@@ -3745,3 +3745,39 @@
   (output (: -97993 Int64))
   (call main (: 200 Int64))
   (output (: -97993 Int64)))
+
+; bfx1/bfx2: BIT-FIELD bin-matches ride the byte-read + shift/mask fallback on the cadenza target —
+; no dedicated re-emission slice needed (v-cadenza-backend coverage finding, breaker-verified:
+; tri-target exact + byte-idempotent + live-objects 0). bfx1 pins nibble BINDERS reconstructing the
+; byte; bfx2 pins a LITERAL bit tag (the high bit) discriminating two arms with a 7-bit payload.
+(case
+  "nibble bit-field binders reconstruct the byte"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match b ((bin (bits hi 4) (bits lo 4)) (+ (* 16 (Int64.of hi)) (Int64.of lo))) (_ -1)))
+      (def (main (: n Int64)) (parse (Bytes.of #list((UInt8.of n)))))
+      (export main)))
+  (call main (: 171 Int64))
+  (output (: 171 Int64))
+  (call main (: 15 Int64))
+  (output (: 15 Int64)))
+
+(case
+  "a literal high-bit tag discriminates two arms over a seven-bit payload"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match
+          b
+          ((bin (bits 1 1) (bits v 7)) (+ 100 (Int64.of v)))
+          ((bin (bits 0 1) (bits v 7)) (+ 200 (Int64.of v)))
+          (_ -1)))
+      (def (main (: n Int64)) (parse (Bytes.of #list((UInt8.of n)))))
+      (export main)))
+  (call main (: 171 Int64))
+  (output (: 143 Int64))
+  (call main (: 15 Int64))
+  (output (: 215 Int64)))
