@@ -430,6 +430,19 @@ pub fn generate_typecheck(entropy: &[u8]) -> Program {
             source: gen_typefuzz_usersum_program(&mut c, &mut fresh),
         };
     }
+    // ~1/6: a NEWTYPE-OVER-RECORD field access (T1.37 — the tag erases in field access). A single-variant
+    // single-payload sum wrapping a record; reading a field THROUGH the constructor `(Mk (record …))` sees
+    // past the tag to the payload record. Whole-program shape (top-level `(type …)`), so it returns early.
+    if c.variant(6) == 0 {
+        let n = c.int_bounded(0, 9);
+        let (k, other, kt) = [("x", "y", "Int64"), ("val", "tag", "Int64")][c.variant(2)];
+        return Program {
+            source: format!(
+                "(do (type W{n} (Mk{n} (Record (: {k} {kt}) (: {other} Int64)))) \
+                 (def (main) (. (Mk{n} (record (= {k} {n}) (= {other} 0))) {k})) (export main))"
+            ),
+        };
+    }
     // ~1/5 a genuinely ill-typed program (false-accept hunt), else a well-typed body — an Int64, a
     // Bool, or a COMPOUND/SUM value (tuple/record construction + Option/Ordering construct — the oracle
     // models tuple/proj + closed records T1.13/14 + sum-construct T1.15, so these judge, not skip).
@@ -727,22 +740,29 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(Set.len (. (tuple {s} {n}) 0))")
             }
         },
-        // An ANNOTATED-TUPLE op (T1.36 — `(Tuple T1..Tn)` type-constructor annotation now parses), the
-        // value ASCRIBED to its tuple type, then projected/consumed to Int64. A scalar `(Tuple Int64 Int64)`
-        // projected, or a `(Tuple (List Int64) Int64)` whose List field is consumed by `List.len`. Both
-        // rcdzc + oracle read the `(Tuple …)` annotation → agreement.
-        14 => {
-            if c.variant(2) == 0 {
+        // An ANNOTATED-PRODUCT op — a tuple/record value ASCRIBED to its `(Tuple …)` (T1.36) / `(Record …)`
+        // (T1.37) type-constructor annotation, then projected/consumed to Int64. Both rcdzc + oracle read
+        // the annotation → agreement.
+        14 => match c.variant(3) {
+            0 => {
                 let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
                 let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
                 let idx = c.variant(2);
                 format!("(. (: (tuple {a} {b}) (Tuple Int64 Int64)) {idx})")
-            } else {
+            }
+            1 => {
                 let xs = gen_typefuzz_list(c, iscope, bscope, fresh, false);
                 let n = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
                 format!("(List.len (. (: (tuple {xs} {n}) (Tuple (List Int64) Int64)) 0))")
             }
-        }
+            _ => {
+                // (Record (: k T)…) annotation (T1.37), projected to a field.
+                let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                let k = if c.variant(2) == 0 { "a" } else { "b" };
+                format!("(. (: (record (= a {a}) (= b {b})) (Record (: a Int64) (: b Int64))) {k})")
+            }
+        },
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1012,13 +1032,17 @@ fn gen_typefuzz_illtyped<C: Choice>(
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
     match c.variant(19) {
-        // A TUPLE VALUE/ANNOTATION mismatch (T1.36 — `(Tuple …)` annotation guard): a `(tuple <int> <int>)`
-        // ascribed `(Tuple Int64 Bool)` — the 2nd element's Int64 clashes with the annotated Bool → CDZ0203.
-        // rcdzc rejects + the oracle reads the `(Tuple …)` annotation and infers IllTyped ⇒ holds.
+        // A PRODUCT VALUE/ANNOTATION mismatch (T1.36 `(Tuple …)` / T1.37 `(Record …)` annotation guard): an
+        // all-Int64 tuple/record ascribed a type whose 2nd field is Bool — the Int64 clashes with the
+        // annotated Bool → CDZ0203. rcdzc rejects + the oracle reads the annotation, infers IllTyped ⇒ holds.
         17 => {
             let a = int(c, iscope, bscope, fresh);
             let b = int(c, iscope, bscope, fresh);
-            format!("(. (: (tuple {a} {b}) (Tuple Int64 Bool)) 0)")
+            if c.variant(2) == 0 {
+                format!("(. (: (tuple {a} {b}) (Tuple Int64 Bool)) 0)")
+            } else {
+                format!("(. (: (record (= a {a}) (= b {b})) (Record (: a Int64) (: b Bool))) a)")
+            }
         }
         // A NON-ORDERABLE to-list (T1.35 — false-accept/regression guard): `Set.to-list` over a set whose
         // ELEMENTS are sets, or `Map.to-list` over a map whose KEY is a set — a set/map leaf carries no
