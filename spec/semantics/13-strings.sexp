@@ -1988,7 +1988,10 @@
 ; a param string consumed by byte-len/at with NO slice reclaims 0 (SCRATCH param bytelen); slicing a
 ; LITERAL source (the value cases above) reclaims 0; slicing a runtime CONCAT-built source reclaims 0.
 ; Filed to v-memory-safety. Fenced known-leak so a reclaim fix auto-flips it. (An escaping param slice is a
-; separate CDZ0900 decline — not covered here.)
+; separate CDZ0900 decline — not covered here.) NIX-CONFIRMED REAL: flipping this pin to (live-objects 0)
+; reds nix corpus-13-strings (got 1) — so unlike the md2/md3 Map-husk case (in-process over-count, nix=0),
+; the slice-retention husk is counted faithfully by BOTH the in-process gate and nix. The known-leak pin
+; stands; the reclaim is genuinely needed.
 (case
   "slicing a boundary parameter String retains one husk (param-source slice-retention leak)"
   (doc
