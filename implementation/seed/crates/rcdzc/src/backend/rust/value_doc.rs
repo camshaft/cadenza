@@ -950,3 +950,67 @@ mod set_map_float_key_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod float_render_width_tests {
+    //! Pin the WIDTH-DEPENDENT float codec: a `Float32` renders via `Decimal::from_f32` on its OWN f32,
+    //! NOT the f32→f64 promotion (operator ruling #7554 — the promoted shortest decimal is a DIFFERENT
+    //! number, e.g. 0.1_f32 promoted to f64 prints extra digits). A `Float64` (and a still-deferred float,
+    //! which grounds to Float64) renders via `from_f64`. A refactor that used one codec for both widths
+    //! would silently change every Float32 rendered value — a value MISCOMPILE the corpus catches only in
+    //! pr-sync's full battery, so pin the width→codec mapping here at the ms level.
+    use super::*;
+    use crate::ty::FloatTy;
+
+    fn db() -> Db {
+        Db::load(crate::testkit::parse("(do (def (main) 0) (export main))"))
+    }
+
+    #[test]
+    fn a_float32_renders_via_from_f32_not_the_f64_promotion() {
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Float(FloatTy::fixed(32)), "main()")
+            .expect("a Float32 result must render");
+        assert!(
+            body.contains("from_f32(") && !body.contains("from_f64("),
+            "a Float32 must render via `from_f32` on its own f32 (NOT the f64 promotion, ruling #7554), got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_float64_renders_via_from_f64() {
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Float(FloatTy::f64()), "main()")
+            .expect("a Float64 result must render");
+        assert!(
+            body.contains("from_f64(") && !body.contains("from_f32("),
+            "a Float64 must render via `from_f64`, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_deferred_float_grounds_to_f64() {
+        // A bare-literal float whose width never got constrained grounds to Float64 (`ground_width`
+        // default) — so it takes the `from_f64` codec, not a "no width" panic.
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Float(FloatTy::deferred()), "main()")
+            .expect("a deferred-width float grounds to Float64 and renders");
+        assert!(
+            body.contains("from_f64(") && !body.contains("from_f32("),
+            "a deferred float grounds to Float64 → `from_f64`, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_float_render_handles_nan_and_inf_dispositions() {
+        // The finite path uses the width codec above; NaN → `FloatNan`, ±inf → `FloatInf` — pin that the
+        // arm emits BOTH non-finite branches (a canonical value_codec disposition, backend-parity).
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Float(FloatTy::f64()), "main()")
+            .expect("a Float64 result must render");
+        assert!(
+            body.contains("FloatNan") && body.contains("FloatInf"),
+            "the float arm must emit the NaN and ±inf non-finite dispositions, got:\n{body}"
+        );
+    }
+}
