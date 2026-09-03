@@ -13,6 +13,7 @@ host increment). Talos value → `WasmVal` uses the SIGNED reading (`toInt32`/`t
 -/
 import Oracle.Wasm
 import Oracle.Wasm.HeapHost
+import Oracle.Wasm.HeapDecode
 import Interpreter.Wasm.SmallStep
 import Interpreter.Wasm.Decoder.Wat
 import Interpreter.Wasm.Host.Registry
@@ -95,10 +96,29 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
         | .ok cfg =>
           match (_root_.Wasm.SmallStep.runSteps fuel cfg).result with
           | .success results finalStore =>
-            match results.reverse.mapM talosToWasmVal with
+            let host := finalStore.wasm.host
             -- W6: carry the final heap-leak census (liveCount) on `.ok` (per v-lean-oracle's leakCount seam).
-            | some vs => .ok vs.toArray finalStore.wasm.host.liveCount
-            | none => .err "non-scalar wasm result"
+            let scalarMap : WasmOutcome :=
+              match results.reverse.mapM talosToWasmVal with
+              | some vs => .ok vs.toArray host.liveCount
+              | none    => .err "non-scalar wasm result"
+            -- HEAP-valued result: a single i32 that is a live HEAP OBJECT (getObj? some) is a returned handle
+            -- → decode it structurally from the final HeapState → `.compound`. A raw scalar / immediate result
+            -- has `getObj? = none` (or isn't a lone i32) → the scalar map. An undecodable heap object (a sum,
+            -- which declines) also falls through to the scalar map (and its result-type isn't heap-decodable, so
+            -- `runWasmWithLeak` skips it anyway).
+            match results.reverse with
+            | [.i32 rawh] =>
+              match host.getObj? rawh with
+              | some _ =>
+                match host.decodeValue? rawh with
+                -- The returned handle is the RESULT (legitimately live — the component lift consumes it), so it
+                -- must NOT count as a leak: drop it (cascades into its children) and the REMAINING live count is
+                -- the actual leak census. A clean heap-valued run → 0; anything else still live → a real leak.
+                | some v => .ok #[.compound v] (host.dropH rawh).liveCount
+                | none   => scalarMap
+              | none => scalarMap
+            | _ => scalarMap
           | .trapped reason _ => .trap reason.message
           | .outOfFuel _ => .outOfFuel
           | .internalError err _ => .err s!"small-step internal: {err.message}"
@@ -202,5 +222,14 @@ ownership discipline — the operands survive the op and are dropped by the call
 private def watHeapBigInt : String :=
   "(module (import \"heap\" \"bigint-of-i64\" (func (param i64) (result i32))) (import \"heap\" \"bigint-add\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"bigint-to-i64-checked\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i32) (local i32) (local i64) i64.const 2 call 0 local.set 0 i64.const 3 call 0 local.set 1 local.get 0 local.get 1 call 1 local.set 2 local.get 2 call 2 local.set 3 local.get 0 call 3 local.get 1 call 3 local.get 2 call 3 local.get 3))"
 example : (talosDriver watHeapBigInt { entry := "main" } == .ok #[.i64 5]) = true := by native_decide
+
+/-- End-to-end HEAP-VALUED RESULT decode: `main` builds a BigInt (of-i64 1000000000, a HEAP leaf) and RETURNS
+its handle. The driver detects the lone-i32-heap-object result, decodes it from the final `HeapState` →
+`WasmVal.compound (.int 1000000000)`, and reports `leakCount 0` (the returned handle is the RESULT — dropped
+for the census, not a leak). This is the read+driver half of the heap-result lever, end-to-end through talos;
+`runWasmWith … (rtBytes "BigInt")` then maps it to `.value (.int …)` (witnessed in `Oracle.Wasm`). -/
+private def watHeapBigIntResult : String :=
+  "(module (import \"heap\" \"bigint-of-i64\" (func (param i64) (result i32))) (func (export \"main\") (result i32) i64.const 1000000000 call 0))"
+example : (talosDriver watHeapBigIntResult { entry := "main" } == .ok #[.compound (.int 1000000000)]) = true := by native_decide
 
 end Oracle.Wasm
