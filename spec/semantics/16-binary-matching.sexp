@@ -1687,6 +1687,57 @@
   (output (: -1 Int64))
   (live-objects known-leak))
 
+; The `Bytes.slice b start LENGTH` BOUNDARY contract — and the key contrast with `String.slice s start END`:
+; the THIRD ARG IS A LENGTH (count of bytes), NOT an end offset. So the same numerals denote different
+; windows: `Bytes.slice b 1 2` is the 2-byte window at offset 1, while `String.slice s 1 2` is the 1-scalar
+; window [1,2). Like String.slice it is TOTAL and FALLIBLE, `(Option Bytes)`: `Some` when the window fits
+; (`start + length <= len`, length may span to the end, `length == 0` is the empty Some), `None` for ANY
+; out-of-range request — `start + length` past the end, a NEGATIVE start, or a NEGATIVE length — never a trap
+; and never a CLAMPED short read (which would hide an over-long request). Source is a BUILT literal here so
+; the value semantics are clean of the param-source slice-retention husk (ssx3, 13-strings). Verified breaker
+; probe bs: fold == runtime == cadenza-hop. (The huge-index / i64-wrap face is the 10-bytes overflow family.)
+(case
+  "Bytes.slice takes a LENGTH third arg and returns the fitting window"
+  (doc
+    "`Bytes.slice (Bytes.of [10,20,30,40,50]) start length` over runtime bounds: `[start=1,len=2]` = a
+           2-byte window (Bytes.len 2); `[0,5]` = the full 5-byte buffer (len==buffer length is in range, the
+           full-span boundary); `[2,0]` = the empty window (0). Pins the third arg is a byte COUNT — contrast
+           String.slice whose third arg is an END offset (`String.slice s 1 2` is a 1-scalar window).")
+  (input
+    (do
+      (def (sl (: a Int64) (: n Int64))
+        (match (Bytes.slice (Bytes.of #list(10 20 30 40 50)) a n)
+          ((Some x) (Bytes.len x)) ((None) -1)))
+      (export sl)))
+  (call sl (: 1 Int64) (: 2 Int64))
+  (output (: 2 Int64))
+  (call sl (: 0 Int64) (: 5 Int64))
+  (output (: 5 Int64))
+  (call sl (: 2 Int64) (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "Bytes.slice returns None for any out-of-range length window (total, no trap, no clamp)"
+  (doc
+    "The totality/safety pin, LENGTH face: an out-of-range `Bytes.slice` returns None (rendered -1), NOT
+           a trap and NOT a clamped short read. Over a 5-byte buffer: `[0,6]` length past the end → None;
+           `[4,3]` start+length = 7 > 5 → None; `[-1,2]` negative start → None; `[0,-1]` negative length →
+           None. A clamp-to-fit reimpl would return a truncated Some and mask the over-long request.")
+  (input
+    (do
+      (def (sl (: a Int64) (: n Int64))
+        (match (Bytes.slice (Bytes.of #list(10 20 30 40 50)) a n)
+          ((Some x) (Bytes.len x)) ((None) -1)))
+      (export sl)))
+  (call sl (: 0 Int64) (: 6 Int64))
+  (output (: -1 Int64))
+  (call sl (: 4 Int64) (: 3 Int64))
+  (output (: -1 Int64))
+  (call sl (: -1 Int64) (: 2 Int64))
+  (output (: -1 Int64))
+  (call sl (: 0 Int64) (: -1 Int64))
+  (output (: -1 Int64)))
+
 (case
   "a NESTED runtime bin match re-parses a bin-decoded payload"
   (doc
