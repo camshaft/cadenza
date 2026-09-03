@@ -3440,10 +3440,10 @@ version = "0.0.0"
 dependencies = [
  "cadenza-ast",
  "cdz-contract",
- "prettyplease",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "xtask-codegen-support",
 ]
 
 [[package]]
@@ -3451,10 +3451,9 @@ name = "xtask-codegen-declines"
 version = "0.0.0"
 dependencies = [
  "cadenza-ast",
- "prettyplease",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "xtask-codegen-support",
 ]
 
 [[package]]
@@ -3467,15 +3466,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "xtask-codegen-wasm-abi"
+name = "xtask-codegen-support"
 version = "0.0.0"
 dependencies = [
- "cadenza-ast",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "xtask-codegen-wasm-abi"
+version = "0.0.0"
+dependencies = [
+ "cadenza-ast",
+ "proc-macro2",
+ "quote",
  "wasm-encoder 0.239.0",
+ "xtask-codegen-support",
 ]
 
 [[package]]

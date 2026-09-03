@@ -23,8 +23,8 @@ cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
 # The spec byte encoder — now the cross-check ORACLE (the `--oracle-check` mode asserts each named op's
 # wasm-encoder const matches the sexpr byte), inverted from the old extract-from-encoder. Same version family.
 wasm-encoder = "0.239"
-# The render stack: build the table as a token tree (`quote!`), pretty-print (prettyplease) + rustfmt.
-prettyplease = "0.2"
-syn = { version = "2", features = ["full", "parsing"] }
+# The render stack: build the table as a token tree (`quote!`); the parse→prettyplease→rustfmt render tail
+# (format_tokens + rustfmt_stdin) is shared via xtask-codegen-support (syn + prettyplease are its deps).
+xtask-codegen-support = { path = "../xtask-codegen-support" }
 quote = "1"
 proc-macro2 = "1"

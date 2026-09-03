@@ -22,8 +22,8 @@ path = "src/main.rs"
 [dependencies]
 # The AST + binary codec — the codegen IR (reads data/unsupported.sexp's cadenza-ast BINARY). No rcdzc.
 cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
-# The rust-emit stack: build the module as a token tree (`quote!`), pretty-print (prettyplease) + rustfmt.
-prettyplease = "0.2"
-syn = { version = "2", features = ["full", "parsing"] }
+# The rust-emit stack: build the module as a token tree (`quote!`); the parse→prettyplease→rustfmt render
+# tail is shared via xtask-codegen-support (so syn + prettyplease are its deps, not duplicated here).
+xtask-codegen-support = { path = "../xtask-codegen-support" }
 quote = "1"
 proc-macro2 = "1"
