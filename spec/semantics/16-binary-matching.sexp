@@ -1363,6 +1363,35 @@
   (output (: -1 Int64)))
 
 (case
+  "a guarded bin arm with a COMPOUND (and …) guard reads the decoded binder in every conjunct"
+  (doc
+    "The existing guarded-bin cases all carry a SINGLE guard conjunct (`(> n 5)`). This pins a COMPOUND
+           guard `(and (> n 5) (< n 100))` — two conjuncts over the SAME decoded segment binder `n`, a
+           closed range-check on the one-byte field. Both conjuncts read the runtime-decoded `n`, and the arm
+           fires only when BOTH hold; a failure of EITHER falls through to the wildcard (the guard is one
+           short-circuit `and`, not two arms). h=50 → `50 > 5` AND `50 < 100` → 100; h=3 → `3 > 5` fails →
+           300; h=200 → `UInt8.wrap 200` = 200, `200 > 5` holds but `200 < 100` fails → 300. The scrutinee
+           `(bin (u8 (UInt8.wrap h)))` is built from a runtime `h` so it cannot fold — the compound guard is a
+           runtime `pred AND (c0 AND c1)` chain. Pins that the whole `(and …)` cond is evaluated as the arm
+           guard and that both conjuncts see the segment binder in scope (the `--target cadenza` re-emit must
+           reconstruct the compound guard as ONE `(guard (bin …) (and …))`, not decline or split it).")
+  (input
+    (do
+      (def
+        (main (: h Int64))
+        (match
+          (bin (u8 (UInt8.wrap h)))
+          ((guard (bin (u8 n)) (and (> n 5) (< n 100))) 100)
+          (_ 300)))
+      (export main)))
+  (call main (: 50 Int64))
+  (output (: 100 Int64))
+  (call main (: 3 Int64))
+  (output (: 300 Int64))
+  (call main (: 200 Int64))
+  (output (: 300 Int64)))
+
+(case
   "a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through"
   (doc
     "The TRAP face of bin-guard evaluation, closing the guard-outcome triple (true → select, false →

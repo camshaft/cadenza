@@ -4982,7 +4982,7 @@ fn try_emit_bin_match(
         dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
         post: Vec<(u32, Seg)>, // POST-payload fixed segments (dynamic offset), tiling [payload_off, total) with `(u8 _)` gap fill
         rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== total; dynamic offset via off_plus)
-        guard: Option<StructId>, // a user GUARD expr reading the decoded segment binders → `(guard (bin …) <expr>)`
+        guard: Vec<StructId>, // user GUARD conjunct(s) reading the decoded segment binders → `(guard (bin …) (and …))`
         body: StructId,
     }
     let mut arms: Vec<BinReArm> = Vec::new();
@@ -5009,7 +5009,7 @@ fn try_emit_bin_match(
             rest: rest_off,
             dep,
             const_utf8,
-        } = collect_bin_int_segs(db, then_, guard, scrut_binder)?;
+        } = collect_bin_int_segs(db, then_, &guard, scrut_binder)?;
         // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
         // `total` (the tail after ALL fixed segments). A mismatch → a shape we don't model.
         if has_rest != rest_off.is_some() {
@@ -5134,7 +5134,10 @@ fn try_emit_bin_match(
         // re-lowers that validity intrinsically, and the guard reads a payload with no bytes-binder — so DROP a
         // guard that is exactly the utf8-validity for a const-utf8 offset. A REAL user guard is a different node
         // (a Compare/Call), so it is KEPT (this recognition is precise — no user-guard is mis-dropped).
-        let guard = guard.filter(|&g| !is_utf8_validity_guard(db, g, scrut_binder, &utf8_offs));
+        let guard: Vec<StructId> = guard
+            .into_iter()
+            .filter(|&g| !is_utf8_validity_guard(db, g, scrut_binder, &utf8_offs))
+            .collect();
         arms.push(BinReArm {
             segs,
             dep,
@@ -5292,22 +5295,43 @@ fn try_emit_bin_match(
         // emit it in the same env scope as the body; the arm pattern becomes `(guard <bin-pat> <guard-expr>)`.
         // A guard that references an unbound read (a mis-classified probe over a segment we did not bind)
         // DECLINES here → the whole match falls through to the ordinary `if` emit (safe, no wrong program).
-        let guard_res = arm
-            .guard
-            .map(|g| emit_expr(db, b, g, None, env, emitted))
-            .transpose();
+        let mut guard_nodes: Vec<StructId> = Vec::with_capacity(arm.guard.len());
+        let mut guard_err = None;
+        for &g in &arm.guard {
+            match emit_expr(db, b, g, None, env, emitted) {
+                Ok(n) => guard_nodes.push(n),
+                Err(e) => {
+                    guard_err = Some(e);
+                    break;
+                }
+            }
+        }
         let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
         env.bin_fields = saved;
         env.bin_rest_fields = saved_rest;
         env.bin_sized_fields = saved_sized;
         env.bin_utf8_fields = saved_utf8;
-        let guard_node = match guard_res {
-            Ok(g) => g,
-            Err(e) => return Some(Err(e)),
-        };
+        if let Some(e) = guard_err {
+            return Some(Err(e));
+        }
         let body_node = match body_res {
             Ok(n) => n,
             Err(e) => return Some(Err(e)),
+        };
+        // Combine the surviving guard conjuncts into ONE guard cond: none → no guard; one → the bare cond; more
+        // than one (a COMPOUND guard, e.g. `(and (> n 5) (< n 100))`) → a RIGHT-nested `(and c0 (and c1 …))`
+        // chain. This mirrors how a source `(and a (and b …))` lowers + re-flattens in the SAME order, so the
+        // round-trip is idempotent (hop-2 re-flattens the chain to the same conjunct list, re-emitting it).
+        let guard_node = if guard_nodes.is_empty() {
+            None
+        } else {
+            let mut it = guard_nodes.into_iter().rev();
+            let mut acc = it.next().unwrap();
+            for g in it {
+                let and_head = b.name("and");
+                acc = b.list(vec![and_head, g, acc]);
+            }
+            Some(acc)
         };
         let pat = match guard_node {
             Some(g) => {
@@ -5335,15 +5359,16 @@ fn try_emit_bin_match(
 type BinLitSeg = (u32, u8, bool, bool, IntValue);
 
 /// A parsed bin-match arm cond ([`parse_bin_len_cond`]): `(scrutinee-binder, fixed_prefix_bytes,
-/// pre-payload-literal-segments, has_final_rest, is_dependent, guard, post-payload-literal-segments)` — see
-/// that function's doc for each field.
+/// pre-payload-literal-segments, has_final_rest, is_dependent, guard-conjuncts, post-payload-literal-segments)` —
+/// see that function's doc for each field. The guard is a VEC of the unmodeled boolean conjuncts (each reading the
+/// decoded segment binders); on emit they are re-combined into one `(and …)` surface guard (empty = no guard).
 type BinArmCond = (
     StructId,
     u32,
     Vec<BinLitSeg>,
     bool,
     bool,
-    Option<StructId>,
+    Vec<StructId>,
     Vec<BinLitSeg>,
 );
 
@@ -5553,14 +5578,11 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
         let (t, op) = plain_len?;
         (t, op == crate::resolved::Prim::Ge, false)
     };
-    // Combine the guard conjuncts: none → no guard; exactly one → that node; MORE than one (a compound guard,
-    // OR several mis-classified conjuncts) → decline (a later sub-slice — keep this bounded + avoid emitting a
-    // synthesized `(and …)` whose shape we haven't validated).
-    let guard = match guard.len() {
-        0 => None,
-        1 => Some(guard[0]),
-        _ => return None,
-    };
+    // Return ALL guard conjuncts (in flatten/source order). `try_emit_bin_match` filters the utf8-validity probe
+    // per-conjunct then re-combines the survivors into ONE `(and …)` surface guard — so a COMPOUND guard like
+    // `(and (> n 5) (< n 100))` (which flattens to two conjuncts here) re-emits as `(guard … (and (> n 5)
+    // (< n 100)))` rather than declining. Emitting the conjuncts in this stable order keeps the round-trip
+    // idempotent: re-lowering the `(and …)` re-flattens to the SAME ordered list, re-emitting the SAME guard.
     Some((
         scrut?,
         total,
@@ -5609,7 +5631,7 @@ fn is_utf8_validity_guard(
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
-    guard: Option<StructId>,
+    guard: &[StructId],
     scrut_binder: StructId,
 ) -> Option<BinBodySegs> {
     // The walk's mutable accumulator (bundled to keep `walk`'s arg count under the clippy limit): the collected
@@ -5739,9 +5761,10 @@ fn collect_bin_int_segs(
         bail: false,
     };
     walk(db, body, scrut_binder, &mut acc);
-    // Also scan the GUARD expr: a segment binder read ONLY in the guard (`(guard (bin (u8 n)) (> n 5))` whose
-    // body never reads `n`) must still be reconstructed as a `(uN x)` binder so the guard's read resolves.
-    if let Some(g) = guard {
+    // Also scan the GUARD conjuncts: a segment binder read ONLY in the guard (`(guard (bin (u8 n)) (> n 5))` whose
+    // body never reads `n`) must still be reconstructed as a `(uN x)` binder so the guard's read resolves. Each
+    // conjunct of a compound guard is walked so every binder it reads is recovered.
+    for &g in guard {
         walk(db, g, scrut_binder, &mut acc);
     }
     if acc.bail {
