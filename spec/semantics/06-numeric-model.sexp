@@ -1782,7 +1782,7 @@
            `(BigInt.of …)`.")
   (input (+ 100N 1N))
   (output (: 101 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a RADIX literal carries the N type suffix"
@@ -1805,7 +1805,7 @@
            does. Pins that the whole `<radix-body-with-underscores><suffix>` is one suffixed literal.")
   (input (+ 0b1010N 0xffffN))
   (output (: 65545 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a radix literal carries the R (Rational) suffix"
@@ -4540,7 +4540,7 @@
            the `value-encode` walker (`Shape::BigInt`, a variable-length KIND_INT leaf).")
   (input (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "runtime BigInt arithmetic leaves no live heap objects (balanced)"
@@ -4742,7 +4742,7 @@
            through the looping `value-encode` (like a runtime collection), not the fixed hole-template.")
   (input (+ (BigInt.of 40) (BigInt.of 2)))
   (output (: 42 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 ; A BigInt mixed with a fixed-width Int is the numeric no-promotion rule (BigInt counts as numeric in the
 ; unify mismatch), so `(+ (BigInt.of n) 1)` is CDZ0301 — NOT the generic CDZ0203 type mismatch — and carries
@@ -4765,7 +4765,7 @@
            the sign path of the runtime-BigInt escape, distinct from the positive `(+ 40 2)` companion.")
   (input (- (BigInt.of 42) (BigInt.of 100)))
   (output (: -58 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a runtime BigInt divide crosses the host boundary as its truncated quotient"
@@ -4776,7 +4776,7 @@
            the escape walker (100/7 = 14 remainder 2, truncated to 14).")
   (input (/ (BigInt.of 100) (BigInt.of 7)))
   (output (: 14 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 ; The divide/remainder cases here use SMALL single-limb operands (100/7, 17%5). This pins the division
 ; INVARIANT on a genuinely MULTI-LIMB dividend: the runtime limb-library `divmod` must satisfy the
@@ -6054,7 +6054,7 @@
         (def (double x) (* x 2)))
       (crypto.double (BigInt.of 21))))
   (output (: 42 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a default-integer pragma fixes a type but adds no conversion — no-promotion still holds"
@@ -12572,7 +12572,7 @@
       (def (main) (loop 70 (BigInt.of 1)))
       (export main)))
   (output (: 1180591620717411303424 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 ; The CONSUMED-to-scalar companion of the escaping-BigInt case above. The above RETURNS its BigInt, so the
 ; result crosses to the host and is live at the census — a (live-objects known-leak) ESCAPING-VALUE artifact
@@ -12617,7 +12617,7 @@
       (def (main) (fac 25 (BigInt.of 1)))
       (export main)))
   (output (: 15511210043330985984000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "a BigInt is usable as a set element, deduplicated by its arbitrary-precision value"
@@ -12973,7 +12973,7 @@
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational))
-  (live-objects known-leak))
+  (live-objects 3))
 
 ; The boundary escapes above are all RESULT-side (a Rational crosses OUT to the host). The ENTRY-arg
 ; direction — a Rational boundary PARAMETER marshaled IN by the driver — is realized on the rust targets
@@ -13165,7 +13165,7 @@
   (input (do (def (main (: a Int64)) (* (BigInt.of a) (BigInt.of 3))) (export main)))
   (call main (: 5000000000 Int64))
   (output (: 15000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 ; `BigInt.of` is `∀a.(Int a)->BigInt`, so its runtime widening MUST honor the source width's SIGNEDNESS. A
 ; SIGNED source (Int8..Int64) widens through `bigint-of-i64`, whose operand is a signed i64 — correct. But a
@@ -13451,7 +13451,7 @@
   (input (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
   (call main (: 1 Int64))
   (output (: 1/3 Rational))
-  (live-objects known-leak))
+  (live-objects 3))
 
 (case
   "runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms"
@@ -14123,7 +14123,7 @@
            the type). Witnesses negation over BigInt.")
   (input (let ((b (BigInt.of 5))) (Num.neg b)))
   (output (: -5 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 (case
   "Num.neg of a quantity preserves its unit"
