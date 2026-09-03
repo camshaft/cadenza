@@ -6407,6 +6407,20 @@ fn collect_module_decl(
         if ast.as_form(member, "module").is_some() {
             // A MODULE-IN-MODULE member — register + descend it (a nested record field of this module).
             collect_module_decl(ast, member, top, types, effects, modules);
+        } else if ast.as_form(member, "type").is_some() {
+            // A module-MEMBER `(type Sh …)` — collect it so it is SYNTHESIZED and resolvable, exactly as
+            // `collect_nested_decls` collects a `do`-nested type into `types`. Without this a member type
+            // was NEVER registered (this loop descended only nested modules + def bodies), so a sibling
+            // member's reference to `Sh` / `Sh.Box` was unbound (CDZ0101) — the #7946 gap. A sibling resolves
+            // it through the ordinary type path (`resolve_name` step 3, the occurrence-keyed `type_decls`),
+            // and its variant constructors through the variant/ctor index, like any top-level or `do`-nested
+            // sum. Identity stays OCC-KEYED (the declaration occurrence, not the name), so two modules that
+            // each declare a same-named `(type Sh …)` are DISTINCT — the name index is a first-wins
+            // accelerator, never identity. A member type is NOT a record field (it is a legitimate
+            // non-export), so this does not change closed-record projection (`m.Sh` stays CDZ0201).
+            if let Some(decl) = scan_type_decl(ast, member) {
+                types.push(decl);
+            }
         } else if let Some(def_tail) = ast.as_form(member, "def")
             && let Some(&def_body) = def_tail.get(1)
         {
