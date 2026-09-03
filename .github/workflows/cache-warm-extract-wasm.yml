@@ -65,10 +65,24 @@ jobs:
         with:
           name: camshaft
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      # Realize the whole per-case extraction closure → the cachix post-step pushes it. --keep-going so one
-      # bad case doesn't abort the whole warm (a corpus code-red must not block seeding the rest).
-      - name: warm + push per-case corpus wasm extraction
+          # skipPush (v-nix, rolled out from the cache-warm.yml #8138 pilot): keep pull+auth, DROP the streaming
+          # per-build post-build-hook (the concurrent mid-build client that races the ca-derivations migration →
+          # "SchemaMigrations UNIQUE" red). Push POST-JOB instead (step below, after the extraction warm).
+          skipPush: true
+      # Realize the whole per-case extraction closure. --keep-going so one bad case doesn't abort the whole warm.
+      - name: warm per-case corpus wasm extraction
         run: nix build .#packages.aarch64-linux.corpus-wasm-extract-warm --print-build-logs --keep-going
+      # POST-JOB CACHIX PUSH (v-nix — replaces the streaming post-build-hook skipPush dropped; no concurrent-client
+      # migration race). Pushes the EXTRACTION warm layer (the paths the daily oracle-wasm-diff + fleet PULL); the
+      # oracle-diff check below is report-only (not a pulled layer), so we push the warm layer, not the check.
+      # Placed BEFORE the diff so the layer is seeded even if the diff step diverges. Piloted #8138.
+      - name: push the extraction warm closure to cachix (post-job — no concurrent-client migration race)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm --no-link --print-out-paths --keep-going)
       # AUTHORITATIVE full-corpus Core↔wasm differential (v-lean-oracle #7691, checks.<sys>.oracle-wasm-diff).
       # Runs AFTER the extraction warm above, in the SAME job, so it reuses the just-warmed per-case extractions
       # in-store and PULLS the emit.wasm + oracle-lean layers from cachix instead of cold-building (~12h cold).
