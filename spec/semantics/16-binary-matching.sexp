@@ -3815,3 +3815,31 @@
   (output (: "hi!" String))
   (call main (: 255 Int64))
   (output (: "none" String)))
+
+; cux1: a CONST-SIZE utf8 segment over a RUNTIME scrutinee — (bin (u8 t) (utf8 s 2)) where the bytes
+; carry a runtime first byte, so nothing folds and the decode must run. The existing const-size utf8
+; cases above use fully-CONST scrutinees that fold at compile time, so they never exercise the runtime
+; re-emit path. Computes on wasm/rust ("hi!"/"hi?" keyed off the runtime tag byte t, both binders live);
+; the cadenza target currently DECLINES CDZ0900 ("does not support a dependent-size binary read outside
+; a recognized bin-match" — the const-size read rides the same lowering) — idealistic TODO per corpus
+; policy, auto-flips when the (utf8 s C) re-emit lands (v-cadenza-backend: needs a
+; SumExpect{StrFromBytes{BinSizedRead}}->s arm; the (bytes p C) literal-size path is not lowerable, so
+; #8008's bytes+guard rewrite cannot apply). (v-cadenza-backend candidate, breaker-verified: wasm+rust
+; exact x2 args with a fold-opaque rust leg, live-objects 0/0.)
+(case
+  "a constant-size utf8 segment over a runtime scrutinee decodes and both binders are used"
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match
+          b
+          ((bin (u8 t) (utf8 s 2))
+            (if (> (Int64.of t) 9) (String.concat s "?") (String.concat s "!")))
+          (_ "x")))
+      (def (main (: n Int64)) (f (Bytes.of #list((UInt8.of n) 104 105))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "hi!" String))
+  (call main (: 50 Int64))
+  (output (: "hi?" String)))
