@@ -5684,6 +5684,31 @@
   (call main (: "日本語" String))
   (output (: 6 Int64)))
 
+; An OWNING consumer of a String entry parameter — `(String.concat s "!")` — SHOULD cross and return the
+; owned result. IDEALISTIC ruling by v-rust-backend (boundary/ABI owner): a WIT component-model `string`
+; PARAM is a VALUE type the callee OWNS (the ABI copies its bytes in; `borrow<t>` exists only for `resource`
+; handles, never a plain `string`), so `f(s) = s ++ "!"` is well-formed semantics, not an extension. The
+; read-only crossing above (byte-len / = / scalar-len) is a borrow-VIEW OPTIMIZATION, NOT a semantic ceiling;
+; an owning consumer must trigger materialization of the boundary borrow into an owned value-heap String.
+; CURRENT STATUS (breaker-confirmed empirically): declines CDZ0900 "parameter String has no scalar boundary
+; representation" on BOTH wasm AND rust today — the entry-param materialization gap ((A)-gated, operator
+; low-pri; v-rust-backend owns it, coordinating with v-memory-safety). So this is an idealistic-should-cross
+; TODO (grades `todo` on the decline, auto-flips to pass when materialization lands) — NOT a borrow-only-by-
+; design contrast, which corpus policy forbids (never lock in an impl gap as intended). `"hi" ++ "!"` = "hi!",
+; byte-len 3. The recursive-String.at-walk entry-arg (the walk case above) is the same materialization todo.
+(case
+  "an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result"
+  (doc
+    "`(def (main (: s String)) (String.byte-len (String.concat s \"!\")))` called with \"hi\" → SHOULD be 3
+           (\"hi!\"): a WIT `string` param is an owned value, so concatenating it is well-formed. Currently
+           declines CDZ0900 on both backends (the entry-param borrow is not yet materialized into an owned
+           String) — an idealistic should-cross TODO per v-rust-backend, auto-flipping to pass when the
+           value-heap entry-materialization lands, distinct from the read-only byte-len/=/scalar-len entry args
+           above which already cross via the borrow-view optimization.")
+  (input (do (def (main (: s String)) (String.byte-len (String.concat s "!"))) (export main)))
+  (call main (: "hi" String))
+  (output (: 3 Int64)))
+
 (case
   "String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None"
   (doc
