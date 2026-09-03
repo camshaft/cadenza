@@ -240,19 +240,25 @@ struct BinderEnv {
     /// `Core::BinIntRead { byte_offset, width, .. }` in the body resolves to its segment binder NAME instead of
     /// hitting the generic node decline. Scoped per arm (offsets repeat across sibling arms); absent ⇒ a
     /// `BinIntRead` outside a recognized bin-match declines (it has no surface form of its own).
-    bin_fields: std::collections::HashMap<(u32, u8), std::rc::Rc<str>>,
+    /// KEYED BY THE SCRUTINEE BINDER too (`(scrutinee, byte_offset, width)`) so NESTED bin-matches — an inner
+    /// `(match b2 ((bin …) …))` inside an outer bin-arm body — do not COLLIDE at the same offsets: the inner
+    /// arm ADDS its own scrutinee's entries without clobbering the outer's, and each read resolves by its
+    /// bytes' own binder. A read's key is `(local_binder(bytes), byte_offset, width)`.
+    bin_fields: std::collections::HashMap<(StructId, u32, u8), std::rc::Rc<str>>,
     /// (BIN-MATCH re-emit) The FINAL `(bytes rest)` binder of the arm currently being emitted, keyed by the
     /// rest's byte offset (the fixed prefix length) — the field a `Core::BinRestRead` carries. Populated +
     /// cleared per arm alongside `bin_fields`; a `Core::BinRestRead` in the body resolves to this binder NAME.
     /// A rest after a DEPENDENT-SIZE segment carries `off_plus: Some(…)` (its runtime offset is `byte_offset +
     /// Σn`), but the surface `(bytes rest)` is offset-free — so the emit arm resolves by `byte_offset` alone.
-    bin_rest_fields: std::collections::HashMap<u32, std::rc::Rc<str>>,
+    /// Keyed by the SCRUTINEE BINDER too (nested bin-matches — see `bin_fields`).
+    bin_rest_fields: std::collections::HashMap<(StructId, u32), std::rc::Rc<str>>,
     /// (BIN-MATCH re-emit) The DEPENDENT-SIZE `(bytes payload <size>)` binder of the arm currently being
     /// emitted, keyed by the payload's static `byte_offset` — the field a `Core::BinSizedRead` carries. The
     /// segment's runtime length is the value of an earlier int-segment binder (`<size>` names it); `emit_bin_
     /// match` emits `(bytes <payload-name> <size-name>)` after the fixed prefix and registers the payload name
     /// here so the body's `Core::BinSizedRead` resolves to it. Populated + cleared per arm alongside `bin_fields`.
-    bin_sized_fields: std::collections::HashMap<u32, std::rc::Rc<str>>,
+    /// Keyed by the SCRUTINEE BINDER too (nested bin-matches — see `bin_fields`).
+    bin_sized_fields: std::collections::HashMap<(StructId, u32), std::rc::Rc<str>>,
 }
 
 /// True iff `ty` is a fully-solved NON-DEFAULT-width numeric: a non-`Float64` float (`Float32`) or a
@@ -3346,11 +3352,16 @@ fn emit_expr_viewed(
         // that `try_emit_bin_match` registered in `env.bin_fields` for THIS arm (keyed by the read's
         // `(byte_offset, width)`). Outside a recognized bin-match the map is empty → decline (a bare
         // `BinIntRead` has no surface form of its own; the `(bin …)` pattern is what re-lowers back to it).
+        // A binary PATTERN segment READ inside a recognized bin-match arm — resolve to the segment binder NAME
+        // that `try_emit_bin_match` registered in `env.bin_fields` for THIS arm, keyed by `(scrutinee-binder,
+        // byte_offset, width)` — the read's own bytes' `local_binder` selects which (possibly NESTED) match's
+        // scrutinee it belongs to. Outside a recognized bin-match (or over a value with no binder) → decline.
         Core::BinIntRead {
+            bytes,
             byte_offset,
             width,
             ..
-        } => match env.bin_fields.get(&(byte_offset, width)) {
+        } => match local_binder(db, bytes).and_then(|s| env.bin_fields.get(&(s, byte_offset, width))) {
             Some(name) => Ok(b.name(name.clone())),
             None => Err(Reject::unsupported(
                 "the Cadenza backend does not support a binary segment read outside a recognized bin-match"
@@ -3358,10 +3369,13 @@ fn emit_expr_viewed(
             )),
         },
         // A final `(bytes rest)` segment READ inside a recognized bin-match arm — resolve to the rest binder
-        // NAME `try_emit_bin_match` registered in `env.bin_rest_fields` (keyed by the rest's byte offset). A
-        // rest after a DEPENDENT-SIZE segment carries `off_plus: Some(…)` (dynamic runtime offset), but the
-        // surface `(bytes rest)` is offset-free, so both static + dynamic rests resolve by `byte_offset` alone.
-        Core::BinRestRead { byte_offset, .. } => match env.bin_rest_fields.get(&byte_offset) {
+        // NAME `try_emit_bin_match` registered in `env.bin_rest_fields`, keyed by `(scrutinee-binder,
+        // byte_offset)`. A rest after a DEPENDENT-SIZE segment carries `off_plus: Some(…)` (dynamic runtime
+        // offset), but the surface `(bytes rest)` is offset-free, so both static + dynamic rests resolve by
+        // `(scrutinee, byte_offset)`.
+        Core::BinRestRead {
+            bytes, byte_offset, ..
+        } => match local_binder(db, bytes).and_then(|s| env.bin_rest_fields.get(&(s, byte_offset))) {
             Some(name) => Ok(b.name(name.clone())),
             None => Err(Reject::unsupported(
                 "the Cadenza backend does not support a binary rest read outside a recognized bin-match"
@@ -3369,10 +3383,12 @@ fn emit_expr_viewed(
             )),
         },
         // A DEPENDENT-SIZE `(bytes payload <size>)` segment READ inside a recognized bin-match arm — resolve to
-        // the payload binder NAME `try_emit_bin_match` registered in `env.bin_sized_fields` (keyed by the
-        // payload's static byte offset). The runtime length + dynamic `off_plus` are reconstructed by the
-        // surface size-name reference, so only the payload's static `byte_offset` identifies the binder here.
-        Core::BinSizedRead { byte_offset, .. } => match env.bin_sized_fields.get(&byte_offset) {
+        // the payload binder NAME `try_emit_bin_match` registered in `env.bin_sized_fields`, keyed by
+        // `(scrutinee-binder, byte_offset)`. The runtime length + dynamic `off_plus` are reconstructed by the
+        // surface size-name reference, so `(scrutinee, byte_offset)` identifies the binder here.
+        Core::BinSizedRead {
+            bytes, byte_offset, ..
+        } => match local_binder(db, bytes).and_then(|s| env.bin_sized_fields.get(&(s, byte_offset))) {
             Some(name) => Ok(b.name(name.clone())),
             None => Err(Reject::unsupported(
                 "the Cadenza backend does not support a dependent-size binary read outside a recognized bin-match"
@@ -5075,10 +5091,13 @@ fn try_emit_bin_match(
         // Build `(bin <seg>…)` — a LITERAL segment `(uN <lit>)` (a magic-number / tag probe), a BINDER segment
         // `(uN xK)` registered in `env.bin_fields` so the body's `BinIntRead` reads resolve to the binder NAME,
         // and (if present) a final `(bytes rest)` registered in `env.bin_rest_fields` for the body's
-        // `BinRestRead`. Scoped to THIS arm (saved/restored) — sibling arms reuse the same keys.
-        let saved = std::mem::take(&mut env.bin_fields);
-        let saved_rest = std::mem::take(&mut env.bin_rest_fields);
-        let saved_sized = std::mem::take(&mut env.bin_sized_fields);
+        // `BinRestRead`. CLONE-save (not `take`) so this arm's entries ADD to any ENCLOSING bin-match's (a
+        // NESTED inner match inside an outer arm body must still resolve the OUTER scrutinee's binders); keys
+        // are scrutinee-qualified so there is no collision, and the restore drops this arm's entries. Sibling
+        // arms of the same match reuse the same scrutinee+offsets, so the restore also resets them per arm.
+        let saved = env.bin_fields.clone();
+        let saved_rest = env.bin_rest_fields.clone();
+        let saved_sized = env.bin_sized_fields.clone();
         let bin_head = b.name("bin");
         let mut pat_children = vec![bin_head];
         for (offset, seg) in &arm.segs {
@@ -5096,7 +5115,8 @@ fn try_emit_bin_match(
                 Seg::Binder(..) => {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
-                    env.bin_fields.insert((*offset, width), name.clone());
+                    env.bin_fields
+                        .insert((scrut_binder, *offset, width), name.clone());
                     b.name(name)
                 }
                 Seg::Wild => b.name("_"),
@@ -5113,7 +5133,11 @@ fn try_emit_bin_match(
         // payload name is registered in `bin_sized_fields` so the body's `BinSizedRead` resolves to it. Emitted
         // AFTER the fixed prefix and BEFORE any final `(bytes rest)`, mirroring the source segment order.
         if let Some(d) = &arm.dep {
-            let Some(size_name) = env.bin_fields.get(&(d.size_off, d.size_width)).cloned() else {
+            let Some(size_name) = env
+                .bin_fields
+                .get(&(scrut_binder, d.size_off, d.size_width))
+                .cloned()
+            else {
                 // The size field was not reconstructed as a fixed-prefix binder → we cannot name it. Bail out
                 // of this whole recognition (restore env first) rather than emit a dangling reference.
                 env.bin_fields = saved;
@@ -5124,7 +5148,7 @@ fn try_emit_bin_match(
             let payload_name = synth_payload_name(env.next_payload);
             env.next_payload += 1;
             env.bin_sized_fields
-                .insert(d.payload_off, payload_name.clone());
+                .insert((scrut_binder, d.payload_off), payload_name.clone());
             let bytes_head = b.name("bytes");
             let payload_binder = b.name(payload_name);
             let size_ref = b.name(size_name);
@@ -5150,7 +5174,8 @@ fn try_emit_bin_match(
                 Seg::Binder(..) => {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
-                    env.bin_fields.insert((*offset, width), name.clone());
+                    env.bin_fields
+                        .insert((scrut_binder, *offset, width), name.clone());
                     b.name(name)
                 }
                 Seg::Wild => b.name("_"),
@@ -5166,7 +5191,7 @@ fn try_emit_bin_match(
         if let Some(ro) = arm.rest {
             let name = synth_payload_name(env.next_payload);
             env.next_payload += 1;
-            env.bin_rest_fields.insert(ro, name.clone());
+            env.bin_rest_fields.insert((scrut_binder, ro), name.clone());
             let bytes_head = b.name("bytes");
             let rest_binder = b.name(name);
             pat_children.push(b.list(vec![bytes_head, rest_binder]));
@@ -5474,11 +5499,11 @@ fn collect_bin_int_segs(
                     acc.out.push((byte_offset, width, signed, little_endian));
                 }
             }
-            // A `BinIntRead` over a DIFFERENT value than the scrutinee — not a shape we model.
-            Core::BinIntRead { .. } => {
-                acc.bail = true;
-                return;
-            }
+            // A `BinIntRead` over a DIFFERENT value than THIS scrutinee — a read belonging to a NESTED inner
+            // bin-match (its arm body is inside ours), or any other bytes read. SKIP it (fall through to walk
+            // children); it is collected + resolved by its OWN scrutinee's `try_emit_bin_match`. (Bailing here
+            // is what broke bin-inside-a-bin-arm — the outer collect must ignore the inner's reads.)
+            Core::BinIntRead { .. } => {}
             // A FINAL `(bytes rest)` read — the tail from a static byte offset, with `off_plus: Some(Σn)` when a
             // dependent-size segment precedes it (dynamic runtime offset) or `None` for a purely-fixed prefix.
             // The surface `(bytes rest)` is offset-free either way; at most one per arm (else bail).
