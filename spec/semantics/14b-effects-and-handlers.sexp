@@ -13774,3 +13774,40 @@
   (output (: 10 Int64))
   (call main (: 9 Int64))
   (output (: 110 Int64)))
+
+; mvx1: the VALUE-position counterpart completing the mkx1/skx1 leak triangulation — a bin-match-
+; extracted value stored as a Map VALUE (under a CONSTANT key) in handler-state RECLAIMS to 0, where
+; the same bin-extracted value used as a Map KEY (mkx1) LEAKS. A handler op bin-matches its Bytes
+; arg, inserts (7, extracted-byte) into the Map state, reads it back. Triangulation: bin-value as Map
+; KEY leaks (mkx1), as Map VALUE reclaims (this), as Set ELEMENT reclaims (skx1) — pinning that the
+; leak is specific to the KEY slot of a Map's (key,value) entry, the sharpest localization for the
+; CHAMP-insert reclaim fix. put(n) stores n@7 then put(3) overwrites: n + 100*3. n=5 -> 305; n=9 ->
+; 309. (breaker probe mv1, verified tri-target exact + byte-idempotent + live-objects 0 in-gate.)
+(case
+  "a bin-extracted value stored as a Map value under a constant key reclaims cleanly"
+  (input
+    (do
+      (effect T (op put (-> Bytes Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          T
+          Map.empty
+          ((put
+              (b)
+              s
+              (match
+                b
+                ((bin (u8 k) (u8 _r))
+                  (let
+                    ((val (Int64.of k)))
+                    (let
+                      ((s2 (Map.insert s 7 val)))
+                      (resume (match (Map.lookup s2 7) ((Some v) v) ((None) -1)) s2))))
+                (_ (resume -1 s)))))
+          (+ (T.put (Bytes.of #list((UInt8.of n) 0))) (* 100 (T.put (Bytes.of #list(3 0)))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 305 Int64))
+  (call main (: 9 Int64))
+  (output (: 309 Int64)))
