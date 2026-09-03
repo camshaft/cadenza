@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 21 };
+    let arms = if depth == 0 { 2 } else { 22 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -866,6 +866,9 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(match (Char.from-int {n}) ((Some {bn}) (Char.to-int {bn})) ((None) 0))")
             }
         }
+        // `(Int64.of (BigInt.of <int>))` → Int64 (T1.46): NARROWING a BigInt source back to Int64 (the
+        // `of` fresh-numVar arg absorbs the bigint). Both rcdzc + oracle infer Int64 → agreement.
+        20 => format!("(Int64.of {})", typefuzz_bigint(c)),
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -881,7 +884,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 13 };
+    let arms = if depth == 0 { 2 } else { 14 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -1002,6 +1005,19 @@ fn gen_typefuzz_bool<C: Choice>(
             let b = typefuzz_rat(c);
             format!("({op} {a} {b})")
         }
+        // A BIGINT COMPARISON → Bool (T1.46): BigInt is totally ordered. Two shapes — a full bigint/bigint
+        // ordering over `< > <= >= =`, or an EQUALITY `(= <bigint> <bare-literal>)` where the literal
+        // GROUNDS to bigint (a bigint peer; unlike arithmetic, equality/ordering ground). Both infer Bool.
+        12 => {
+            let a = typefuzz_bigint(c);
+            if c.variant(2) == 0 {
+                let op = ["<", ">", "<=", ">=", "="][c.variant(5)];
+                let b = typefuzz_bigint(c);
+                format!("({op} {a} {b})")
+            } else {
+                format!("(= {a} {})", c.int_bounded(0, 9)) // bare literal grounds to bigint for `=`
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
         // Bool (Mat rule T1.16).
         _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, true),
@@ -1108,6 +1124,13 @@ fn typefuzz_rat<C: Choice>(c: &mut C) -> String {
     format!("(Rational.of {n} {d})")
 }
 
+/// A BigInt VALUE (T1.46) — `(BigInt.of <int>)` (exact widening). Shared by the BigInt value/int/bool
+/// arms. (A bare int LITERAL grounds to BigInt for equality/ordering but NOT in arithmetic; use this
+/// helper for the BigInt operand so arithmetic stays a clean bigint+bigint judged shape.)
+fn typefuzz_bigint<C: Choice>(c: &mut C) -> String {
+    format!("(BigInt.of {})", c.int_bounded(0, 9))
+}
+
 fn gen_typefuzz_map<C: Choice>(
     c: &mut C,
     iscope: &mut Vec<String>,
@@ -1178,7 +1201,16 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(26) {
+    match c.variant(27) {
+        // A BIGINT ARITHMETIC no-silent-promote clash (T1.46 — false-accept hunt): `(+ (BigInt.of 1)
+        // <bare-literal>)` — a bigint mixed with a bare int literal in ARITHMETIC does NOT ground (unlike
+        // equality/ordering) → CDZ0301. rcdzc rejects + the oracle infers IllTyped ⇒ holds.
+        25 => {
+            let big = typefuzz_bigint(c);
+            let n = int(c, iscope, bscope, fresh);
+            let op = ["+", "-", "*", "/"][c.variant(4)];
+            format!("({op} {big} {n})")
+        }
         // A CHAR op with a wrong-typed operand (T1.45 — false-accept hunt): `(Char.to-int <int>)` (a
         // non-Char receiver) → CDZ0203. rcdzc rejects + the oracle infers IllTyped ⇒ holds.
         24 => {
@@ -1437,7 +1469,7 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(14) {
+    match c.variant(15) {
         // A RATIONAL VALUE (T1.44): `(Rational.of a b)` / `(Rational.of-int n)` / `(Rational.neg r)` /
         // `(Rational.value r)`, exact-rational ARITHMETIC `(+/-/* / r r)` → Rational, or a numeric literal
         // GROUNDED to Rational via an ascription `(: <int> Rational)` (arithmetic never silently promotes).
@@ -1642,6 +1674,22 @@ fn gen_typefuzz_value<C: Choice>(
                 1 => "(: None (Option Int64))".to_string(),
                 2 => format!("(: (Ok {i}) (Result Int64 Bool))"),
                 _ => format!("(: (Err {b}) (Result Int64 Bool))"),
+            }
+        }
+        // A BigInt VALUE (T1.46): `(BigInt.of <int>)` (exact widening), `(BigInt.neg …)`, or exact-integer
+        // ARITHMETIC `(+/-/* /% (BigInt.of a) (BigInt.of b))` → BigInt. Unlike float/rational, `%` IS
+        // defined on BigInt (arbitrary-precision integer). Both operands are `BigInt.of` (a bare literal in
+        // arithmetic would NOT silently promote → the ill-typed arm covers that). Both rcdzc + oracle agree.
+        13 => {
+            let b = typefuzz_bigint(c);
+            match c.variant(3) {
+                0 => b,
+                1 => format!("(BigInt.neg {b})"),
+                _ => {
+                    let op = ["+", "-", "*", "/", "%"][c.variant(5)];
+                    let d = typefuzz_bigint(c);
+                    format!("({op} {b} {d})")
+                }
             }
         }
         // An Ordering nullary variant.
