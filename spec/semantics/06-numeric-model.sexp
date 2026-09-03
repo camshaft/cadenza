@@ -20073,3 +20073,33 @@
   (output (: 101120 Int64))
   (call main (: 5 Int64))
   (output (: 111120 Int64)))
+
+; u64x1: the WIDE (UInt64) runtime companion of the narrow unsigned composition case above — the
+; i64-width unsigned lowerings (i64.lt_u / div_u / rem_u) over a runtime operand with the TOP BIT
+; set. UInt64.wrap -1 = 2^64-1: `<` against 1 is FALSE by magnitude (a signed lowering reads -1 and
+; answers true), the halving equals 2^63-1 exactly (signed: -1/2 = 0), and `% 10` is 5 (…551615;
+; signed rem would be -1). Each wrong lowering shifts a different digit, so 510/501 pin all three
+; ops at the wide width — distinct emissions from the narrow (masked-i32) case, and from the CONST
+; magnitude-fold case, neither of which exercises the runtime i64 unsigned instructions. (breaker
+; probe u64x, verified tri-target exact + byte-idempotent; checked-trap on genuine UInt64 overflow
+; verified separately.)
+(case
+  "wide unsigned runtime compare, divide and remainder order by magnitude"
+  (input
+    (do
+      (def
+        (main (: a Int64) (: b Int64))
+        (let
+          ((x (UInt64.wrap a)))
+          (let
+            ((y (UInt64.wrap b)))
+            (+
+              (if (< x y) 1 0)
+              (+
+                (* 10 (if (= (/ x (UInt64.wrap 2)) (UInt64.wrap 9223372036854775807)) 1 0))
+                (* 100 (Int64.wrap (% x (UInt64.wrap 10)))))))))
+      (export main)))
+  (call main (: -1 Int64) (: 1 Int64))
+  (output (: 510 Int64))
+  (call main (: 5 Int64) (: 9 Int64))
+  (output (: 501 Int64)))
