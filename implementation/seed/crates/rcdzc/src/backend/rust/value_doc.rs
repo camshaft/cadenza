@@ -771,3 +771,103 @@ fn doc_type_node(
         }
     }
 }
+
+#[cfg(test)]
+mod qty_display_scale_tests {
+    //! Pin the value-doc Qty display-scale EMIT at the dev-gate level. The `5 kilometer` → `5000.0
+    //! meter` reference-scale render is protected end-to-end by the units corpus
+    //! (`spec/semantics/18-units-of-measure.sexp`, `pass` on `.gate-baseline-rust`), but that only runs
+    //! in pr-sync's full battery. This module guards the exact emit arm above in ~ms — the path took
+    //! TWO false-alarm regression reports (#7824 fix, then a stale-binary alarm), so a fast local
+    //! witness that fails the instant the scale multiply is dropped is worth pinning.
+    use super::*;
+    use crate::ty::{FloatTy, IntTy, Unit};
+
+    // A minimal loadable program → a real `Db` to thread through `emit_result_doc`. The Float
+    // display-scale arm consults only the `Ty` + `Unit` (never the Db), but the signature requires one.
+    fn db() -> Db {
+        Db::load(crate::testkit::parse("(do (def (main) 0) (export main))"))
+    }
+
+    fn qty(inner: Ty, unit: Unit) -> Ty {
+        Ty::Qty {
+            inner: Box::new(inner),
+            unit,
+        }
+    }
+
+    #[test]
+    fn kilo_prefixed_float64_qty_emits_the_x1000_reference_scale_multiply() {
+        let mut db = db();
+        let ty = qty(
+            Ty::Float(FloatTy::f64()),
+            Unit::base("meter").scaled(1000, 1).unwrap(),
+        );
+        let body = emit_result_doc(&mut db, &ty, "main()").expect(
+            "value-doc covers the Float display-scale, so a kilo-meter f64 Qty must render",
+        );
+        assert!(
+            body.contains("* (1000i128 as f64) / (1i128 as f64)"),
+            "expected the ×1000 kilo display-scale multiply in the emitted body, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn milli_prefixed_float64_qty_emits_the_div1000_reference_scale_multiply() {
+        let mut db = db();
+        let ty = qty(
+            Ty::Float(FloatTy::f64()),
+            Unit::base("meter").scaled(1, 1000).unwrap(),
+        );
+        let body =
+            emit_result_doc(&mut db, &ty, "main()").expect("a milli-meter f64 Qty must render");
+        assert!(
+            body.contains("* (1i128 as f64) / (1000i128 as f64)"),
+            "expected the /1000 milli display-scale multiply in the emitted body, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn base_scale_1_float64_qty_emits_no_scaling_multiply() {
+        let mut db = db();
+        let ty = qty(Ty::Float(FloatTy::f64()), Unit::base("meter"));
+        let body =
+            emit_result_doc(&mut db, &ty, "main()").expect("a base-meter f64 Qty must render");
+        // A reference/base unit (scale 1/1) is byte-neutral: the magnitude renders AS-IS, no multiply.
+        assert!(
+            !body.contains("i128 as f64"),
+            "a scale-1 base-unit Qty must render its magnitude UNSCALED (no display-scale multiply), got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn kilo_prefixed_float32_qty_scales_in_f64_then_narrows_to_f32() {
+        let mut db = db();
+        let ty = qty(
+            Ty::Float(FloatTy::fixed(32)),
+            Unit::base("meter").scaled(1000, 1).unwrap(),
+        );
+        let body =
+            emit_result_doc(&mut db, &ty, "main()").expect("a kilo-meter f32 Qty must render");
+        assert!(
+            body.contains("* (1000i128 as f64) / (1i128 as f64)") && body.contains("as f32)"),
+            "a Float32 prefixed Qty must scale in f64 then narrow to f32, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn prefixed_int_qty_declines_to_the_render_fallback() {
+        // The value-doc Qty arm covers only the FLOAT display-scale; a non-(1/1) scale on an INTEGER
+        // inner declines to `cdz_render_at` (which scales the integer truncating). Pin the decline so a
+        // future change can't silently start emitting an unscaled/wrong integer magnitude here.
+        let mut db = db();
+        let ty = qty(
+            Ty::Int(IntTy::i64()),
+            Unit::base("meter").scaled(1000, 1).unwrap(),
+        );
+        assert!(
+            emit_result_doc(&mut db, &ty, "main()").is_err(),
+            "a prefixed INT Qty must DECLINE (the integer display-scale lives in the cdz_render_at fallback)"
+        );
+    }
+}
