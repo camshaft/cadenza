@@ -8319,6 +8319,7 @@ pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equ
 pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
+pass	ilc1 an internal (non-exported) recursive-local-param-capture helper, called once, still compiles + runs
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
 pass	imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal

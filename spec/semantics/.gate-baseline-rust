@@ -6748,6 +6748,7 @@ pass	if5 runtime division by zero produces Infinity and crosses the boundary
 pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
+pass	ilc1 an internal (non-exported) recursive-local-param-capture helper, called once, still compiles + runs
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	immortal-nullary FBIP witness: a recursive Nat walk REBUILDS the spine (FBIP-reuses S cells) and returns a fresh terminal (Z), then re-folds it — value-correct + the rebuilt immortal Z is shared (0-leak after the immortal fix)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
