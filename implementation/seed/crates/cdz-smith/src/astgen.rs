@@ -1440,6 +1440,22 @@ fn gen_compound<C: Choice>(
 /// arms) the coercing grammar never reached. All segment values are small + width-typed via `<T>.of` so
 /// construction is TOTAL (in-range, no CDZ0304). All forms verified wasm-vs-rust AGREE.
 fn gen_bin_body<C: Choice>(c: &mut C, out: &mut String) {
+    // A BITS construction: N nibble PAIRS (each `(bits v 4)` with v in 0..=15) — two 4-bit fields close a
+    // byte, so the running bit-sum is always byte-aligned (a non-closing `bits` run is CDZ0220). Consumed
+    // by `Bytes.len` → N bytes. Exercises the sub-byte `bits` segment lowering + the static byte-alignment
+    // check the byte-width segments never reach.
+    if c.variant(3) == 2 {
+        let pairs = 1 + c.variant(3); // 1..=3 bytes (pairs of nibbles)
+        let mut segs = String::new();
+        for i in 0..(pairs * 2) {
+            if i > 0 {
+                segs.push(' ');
+            }
+            segs.push_str(&format!("(bits {} 4)", c.int_bounded(0, 15)));
+        }
+        out.push_str(&format!("(Bytes.len (bin {segs}))"));
+        return;
+    }
     if c.variant(2) == 0 {
         // CONSTRUCTION consumed by `Bytes.len` → the total byte width (deterministic, value-comparable).
         let n = 1 + c.variant(4); // 1..=4 segments
