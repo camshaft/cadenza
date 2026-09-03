@@ -3219,7 +3219,12 @@
               # cadenza BACKEND cannot yet emit → genuine early decline → skip (unchanged).
               # (v-cadenza-backend sign-off 2026-09-03; v-corpus-harness root-cause; native twin #8076.)
               if [ "$(cat "$case/expect-kind" 2>/dev/null)" != error ]; then
-                touch "$out/cadenza-declined"
+                # Surface the recovered hop1 decline CODE into the marker (mirror #8236 native): a bare touch
+                # made the exec print an ANONYMOUS "declined (early)" skip, masking the cadenza-front-end code
+                # compile.err already has — costing peers ticks chasing a decline via the nix board (merge-truth).
+                # hop1 failed here, so compile.err holds only hop1's stderr → head -1 is the hop1 code.
+                hop1code=$(grep -oE 'error \[CDZ[0-9]+\]' "$out/compile.err" | head -1 | grep -oE 'CDZ[0-9]+' || true)
+                printf 'hop1 cadenza re-emit declined%s\n' "''${hop1code:+ [$hop1code]}" > "$out/cadenza-declined"
               fi
               printf '%s' "$st" > "$out/compile.status"
             fi
@@ -3235,8 +3240,10 @@
                 # (v-cadenza-backend) SKIP the whole case if ANY component's cadenza hop declines — a
                 # cross-component case is only meaningful when EVERY part round-trips; a partial hop would
                 # leave the consumer's peer import unsatisfied and grade divergently (a false red, not a
-                # value-miscompile). Mark declined so the exec skips (like a consumer-hop decline).
-                touch "$out/cadenza-declined"
+                # value-miscompile). Mark declined so the exec skips (like a consumer-hop decline). Surface the
+                # peer's recovered hop1 code (mirror #8236) — the peer diag is appended LAST to compile.err → tail -1.
+                peerhop1=$(grep -oE 'error \[CDZ[0-9]+\]' "$out/compile.err" | tail -1 | grep -oE 'CDZ[0-9]+' || true)
+                printf 'peer %s hop1 cadenza re-emit declined%s\n' "$pn" "''${peerhop1:+ [$peerhop1]}" > "$out/cadenza-declined"
               fi
               cp "$case/$pn.iface" "$out/$pn.iface"
             done
@@ -3254,7 +3261,10 @@
             } ''
             set -euo pipefail
             if [ -e ${build}/cadenza-declined ]; then
-              echo "skip: corpus-cadenza ${name} case ${idx} — cadenza backend declined (early)" > "$out"
+              # Surface the recovered decline reason+code from the marker (mirror #8236) instead of an anonymous
+              # "declined (early)" — so a reader on the merge-truth nix board sees e.g. "hop1 cadenza re-emit
+              # declined [CDZ0900]" / "peer P hop1 … [CDZ…]" without spelunking the drv's compile.err.
+              echo "skip: corpus-cadenza ${name} case ${idx} — $(cat ${build}/cadenza-declined)" > "$out"
               exit 0
             fi
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
