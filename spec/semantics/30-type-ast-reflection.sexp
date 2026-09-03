@@ -411,3 +411,38 @@
            it fenceable.")
   (input (do (effect E (op bail (-> Int64))) (def (main) (Type.ast E)) (export main)))
   (error CDZ0203 (message "requires a concrete type-value")))
+
+; tdx1: the DERIVE idiom — the reflected declaration CONSUMED, not merely compared. The cases above
+; pin equality against hand-built quotes and the codec round-trip; this walks the reflected decl
+; with ordinary collection ops + nested Ast matches to derive facts a metaprogram would need:
+; variant COUNT (list length minus the head pair) and a variant's payload ARITY (List.at into the
+; decl, match the ctor list, length minus the name). (type Color (Red) (Green) (Rgb Int64 Int64
+; Int64)) -> 3 variants, Rgb arity 3 -> 33 + n, all folding at compile time (the reflected Ast is a
+; first-class constant). Pins that reflection output feeds the ordinary Ast/List toolchain with no
+; reflection-specific accessors. (breaker probe td1, verified tri-target exact + byte-idempotent.)
+(case
+  "a reflected declaration is walked with collection ops to derive variant count and arity"
+  (input
+    (do
+      (type Color (Red) (Green) (Rgb Int64 Int64 Int64))
+      (def (count-variants (: a Ast)) (match a ((Ast.List items) (- (List.len items) 2)) (_ -1)))
+      (def
+        (payload-arity (: a Ast))
+        (match
+          a
+          ((Ast.List items)
+            (match
+              (List.at items 4)
+              ((Some v) (match v ((Ast.List parts) (- (List.len parts) 1)) (_ -2)))
+              ((None) -3)))
+          (_ -1)))
+      (def
+        (main (: n Int64))
+        (+
+          (count-variants (Type.ast-generic Color))
+          (+ (* 10 (payload-arity (Type.ast-generic Color))) n)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 33 Int64))
+  (call main (: 5 Int64))
+  (output (: 38 Int64)))
