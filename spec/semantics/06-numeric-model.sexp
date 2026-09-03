@@ -12574,6 +12574,33 @@
   (output (: 1180591620717411303424 BigInt))
   (live-objects known-leak))
 
+; The CONSUMED-to-scalar companion of the escaping-BigInt case above. The above RETURNS its BigInt, so the
+; result crosses to the host and is live at the census — a (live-objects known-leak) ESCAPING-VALUE artifact
+; (host holds the encoded result until store teardown), NOT an intermediate-reclaim gap: breaker-isolated
+; that ANY escaping BigInt (even a bare `(BigInt.of 5)`) reads got-1 in the in-process gate, while consuming
+; the same recursion to a SCALAR reclaims 0. This case takes that consumed path: the recursive doubling runs
+; to 2^200 (a 61-digit BigInt, larger than the 2^70 above), then a `=` against the literal collapses the
+; result to a Bool → 1, so NO BigInt escapes and every intermediate limb allocation (`* acc (BigInt.of 2)`
+; per level, the old accumulator freed each step) is reclaimed to `(live-objects 0)`. Pins that BigInt
+; recursive multiply-accumulate has NO intermediate husk leak — the reclaim the escaping case's artifact
+; masks — and anchors the escaping-vs-consumed census contrast. (breaker probe bi, verified tri-target exact
+; + hop value-parity + byte-idempotent; value cross-checked wasm=rust=cadenza on 2^200.)
+(case
+  "a recursive BigInt multiply-accumulate consumed to a scalar reclaims every intermediate (no husk leak)"
+  (input
+    (do
+      (def (powk (: acc BigInt) (: k Int64)) (if (< k 1) acc (powk (* acc (BigInt.of 2)) (- k 1))))
+      (def
+        (main (: k Int64))
+        (if
+          (= (powk (BigInt.of 1) k) 1606938044258990275541962092341162602522202993782792835301376)
+          1
+          0))
+      (export main)))
+  (call main (: 200 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
 (case
   "a BigInt factorial accumulator computes 25! exactly"
   (doc
