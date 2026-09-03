@@ -470,6 +470,14 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
 def valueEq (s : HeapState) (h1 h2 : UInt32) : Bool :=
   s.valueEqWork (s.objects.size + s.edges + 1) [(h1, h2)]
 
+/-- `value-eq(a, b) → bool` (i32 0/1) [BORROWS both, like `set-contains`]: the runtime's structural value
+equality. Wraps `valueEq` — now order-INDEPENDENT for set/map and total (W5.5 Gap 2 closed), so it matches
+Core's `valueEqSpec`. Immediates compare by handle identity (canonical), heap objects structurally. (Floats
+compare bit-exact via the `.float`/`.float32` arms — same as `valueEqSpec`.) -/
+def valueEqOp : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => .ret [.i32 (if s.valueEq a b then 1 else 0)] s
+  | s, _                => .trap "value-eq: expected (i32, i32)"
+
 /-- `map-empty() → m`: a fresh empty map. -/
 def mapEmpty : HeapState → List Value → HeapResult
   | s, []     => s.box (.map #[])
@@ -1543,6 +1551,8 @@ def heapHostOps : List (String × HostFn HeapState) :=
     -- map/set enumeration (W5.2c): the program-observable, canonical value-sorted `to-list`
   , ("map-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.mapToList)
   , ("set-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.setToList)
+    -- value-* (W5.5): structural value equality (borrows both). eq-shaped/canonicalize/cmp = follow-ups.
+  , ("value-eq",           toHostFn [.i32, .i32]             [.i32]  HeapState.valueEqOp)
     -- bytes + strings (W5.3a): packed byte buffer + UTF-8; concat/slice/compact rope = W5.3b
   , ("bytes-alloc",        toHostFn [.i32]                   [.i32]  HeapState.bytesAlloc)
   , ("bytes-set",          toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.bytesSet)
@@ -1969,6 +1979,34 @@ private def probeMapIntOrderIndep : Bool :=
     | _ => false
   | _ => false
 example : probeMapIntOrderIndep = true := by native_decide
+
+/-- `value-eq` (W5.5): wraps `valueEq` — immediate ints eq/neq, AND order-independent set equality
+({1,2} `value-eq` {2,1} = 1). Returns the input state unchanged (BORROWS both, no census change). -/
+private def probeValueEqOp : Bool :=
+  let e1 : UInt32 := match boxInt ({} : HeapState) [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+  let e2 : UInt32 := match boxInt ({} : HeapState) [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+  (match valueEqOp ({} : HeapState) [.i32 e1, .i32 e1] with | .ret [.i32 1] _ => true | _ => false) &&
+  (match valueEqOp ({} : HeapState) [.i32 e1, .i32 e2] with | .ret [.i32 0] _ => true | _ => false) &&
+  (match setEmpty ({} : HeapState) [] with
+   | .ret [.i32 se] s0 =>
+     match setInsert s0 [.i32 se, .i32 e1] with
+     | .ret [.i32 a1] s1 =>
+       match setInsert s1 [.i32 a1, .i32 e2] with
+       | .ret [.i32 sa] s2 =>                              -- sa = {1,2}
+         match setEmpty s2 [] with
+         | .ret [.i32 se2] s3 =>
+           match setInsert s3 [.i32 se2, .i32 e2] with
+           | .ret [.i32 b1] s4 =>
+             match setInsert s4 [.i32 b1, .i32 e1] with
+             | .ret [.i32 sb] s5 =>                        -- sb = {2,1}
+               match valueEqOp s5 [.i32 sa, .i32 sb] with | .ret [.i32 1] _ => true | _ => false
+             | _ => false
+           | _ => false
+         | _ => false
+       | _ => false
+     | _ => false
+   | _ => false)
+example : probeValueEqOp = true := by native_decide
 
 /-! #### Collection CONSUME-op witnesses (map-merge, set-union, set-intersection, set-difference),
 immediate-aware. Re-added after the immediates rework (they were dropped from the focused set). Each op
