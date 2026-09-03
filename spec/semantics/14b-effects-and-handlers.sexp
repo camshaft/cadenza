@@ -13695,3 +13695,42 @@
   (output (: 7015 Int64))
   (call main (: 0 Int64))
   (output (: 7010 Int64)))
+
+; mkx1: a bin-match-EXTRACTED value used as a Map KEY in a lookup+insert cycle under a handler leaks
+; (value-correct). A handler op bin-matches its Bytes arg, uses the extracted byte as a Map key,
+; does Map.lookup then Map.insert (a counter), threading the Map handler-state. VALUE exact — two
+; bumps of the same key => count reaches 2, so 1 + 10*2 = 21. But it leaks 1 object. ISOLATED: a
+; Map handler-state with a PLAIN Int key (no bin-match) reclaims 0; the SAME bin-match feeding
+; LIST-state (List.push, no Map) reclaims 0 (ixx1); only the bin-extracted-key-into-Map-lookup/insert
+; combination leaks — a distinct locus (the bin-extracted key's borrow/own classification flowing into
+; the Map CHAMP lookup+insert cycle) from the utf8-decode-husk and Ast-construction families. Gate
+; counts this accurately (Map husk class). Pinned known-leak + filed to v-memory-safety.
+(case
+  "a bin-extracted Map key in a lookup-insert handler-state cycle counts correctly (leaks pending Map-key reclaim)"
+  (input
+    (do
+      (effect T (op bump (-> Bytes Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          T
+          Map.empty
+          ((bump
+              (b)
+              s
+              (match
+                b
+                ((bin (u8 k) (u8 _r))
+                  (let
+                    ((key (Int64.of k)))
+                    (let
+                      ((cur (match (Map.lookup s key) ((Some v) v) ((None) 0))))
+                      (resume (+ cur 1) (Map.insert s key (+ cur 1))))))
+                (_ (resume -1 s)))))
+          (+
+            (T.bump (Bytes.of #list((UInt8.of n) 0)))
+            (* 10 (T.bump (Bytes.of #list((UInt8.of n) 0)))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 21 Int64))
+  (live-objects known-leak))
