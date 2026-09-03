@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 23 };
+    let arms = if depth == 0 { 2 } else { 24 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -883,6 +883,18 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(Tuple.size (Tuple.concat (tuple {a} {b}) (tuple {x})))")
             }
         }
+        // A RECORD ROW-op result projected → Int64 (T1.48): `(Record.with (record (= x <int>)) #"x" <int>)`
+        // (REPLACE the present field x) or `(Record.extend (record (= x <int>)) #"y" <int>)` (ADD an
+        // absent field y), then project the updated/new field. Both rcdzc + oracle infer Int64 → agreement.
+        22 => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let v = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (Record.with (record (= x {a})) #\"x\" {v}) x)")
+            } else {
+                format!("(. (Record.extend (record (= x {a})) #\"y\" {v}) y)")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1215,7 +1227,18 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(28) {
+    match c.variant(29) {
+        // An ILL-TYPED Record row op (T1.48 — false-accept hunt): `Record.with` on an ABSENT field →
+        // CDZ0212; `Record.extend` on a PRESENT field → CDZ0211; or a non-record base → coded fault. rcdzc
+        // rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        27 => {
+            let a = int(c, iscope, bscope, fresh);
+            match c.variant(3) {
+                0 => format!("(. (Record.with (record (= x {a})) #\"z\" 9) z)"), // absent field → CDZ0212
+                1 => format!("(. (Record.extend (record (= x {a})) #\"x\" 9) x)"), // present field → CDZ0211
+                _ => format!("(Record.with {a} #\"x\" 9)"), // non-record base
+            }
+        }
         // A NON-TUPLE operand to a Tuple op (T1.47 — false-accept hunt): `(Tuple.size <int>)` — the
         // operand must be a tuple → a coded fault (rcdzc CDZ0201). rcdzc rejects + the oracle infers
         // IllTyped ⇒ holds on the accept/reject agreement.
