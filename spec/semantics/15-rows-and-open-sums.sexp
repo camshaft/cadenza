@@ -2434,3 +2434,34 @@
   (output (: 12001 Int64))
   (call main (: 3 Int64))
   (output (: 42031 Int64)))
+
+; osx1: OPEN-SUM dispatch x the EFFECT fold — the open-sum sibling of orp2 (which composes the fold
+; with open-ROW projection). A performing helper returns an open-sum value ((A (+ k tick)) or
+; (B tick), ascribed to the open V), and the caller matches named + OPEN-TAIL arms, with the second
+; match's open-tail arm containing a THIRD performing match. The handler state must thread through
+; the variant construction AND the open-tail dispatch in program order: tick1 = n builds A(1+n)
+; (named arm), tick2 = n+1 builds B(n+1) (falls to the open tail), tick3 = n+2 builds A(4+n) inside
+; the tail. (1+n) + 1000*(4+n) = 4001 + 1001n. A fold that reorders the performs across the open-tail
+; boundary, or an open-tail bind that disturbs the pending handler state, shifts a digit. (breaker
+; probe os1, verified tri-target exact + byte-idempotent.)
+(case
+  "open-tail dispatch of a performing open-sum helper threads handler state in program order"
+  (input
+    (do
+      (type V (A Int64) (B Int64) .. r)
+      (effect C (op tick (-> Int64)))
+      (def (mk (: k Int64)) (: (if (> k 0) (A (+ k (C.tick))) (B (C.tick))) V))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (+
+            (match (mk 1) ((A x) x) (_ -50))
+            (* 1000 (match (mk 0) ((A x) x) (_ (match (mk 2) ((A y) y) (_ -70))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 4001 Int64))
+  (call main (: 3 Int64))
+  (output (: 7004 Int64)))
