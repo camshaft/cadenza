@@ -1854,6 +1854,35 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                      else if op == "neg".toUTF8 && children.size == 2 then
                        (match unifyInfer τa .bigint st1 with | .ok st2 => .ok (.bigint, st2) | .error e => .error e)
                      else .error (.unsupported "type oracle: unmodeled BigInt op")))
+             else if q == "Tuple".toUTF8 then
+               -- T1.47 — Tuple OPS `(Tuple.<op> …)` (sigs from resolved.rs Prim::Tuple*): `size (Tuple e…) →
+               -- Int64` (arity); `concat`/`cat (Tuple a…)(Tuple b…) → (Tuple a… b…)` (element-list append).
+               -- Operand must resolve to a concrete `.tuple`; a non-tuple → CDZ0203, an unresolved var → declined.
+               if op == "size".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some tId => (match inferE m env st tId with
+                                 | .ok (τt, st1) => (match applySubst st1.subst τt with
+                                                     | .tuple _ => .ok (.int 64 true, st1)
+                                                     | .never => .ok (.int 64 true, st1)
+                                                     | .var _ => .error (.unsupported "type oracle: Tuple.size on an unresolved operand")
+                                                     | _ => .error (.illTyped "CDZ0203"))
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Tuple.size"))
+               else if (op == "concat".toUTF8 || op == "cat".toUTF8) && children.size == 3 then
+                 (match children[1]?, children[2]? with
+                  | some aId, some bId =>
+                    (match inferE m env st aId with
+                     | .ok (τa, st1) =>
+                       (match inferE m env st1 bId with
+                        | .ok (τb, st2) =>
+                          (match applySubst st2.subst τa, applySubst st2.subst τb with
+                           | .tuple xs, .tuple ys => .ok (.tuple (xs ++ ys), st2)
+                           | .tuple _, _ | _, .tuple _ => .error (.unsupported "type oracle: Tuple.concat with an unresolved/non-tuple operand")
+                           | _, _ => .error (.illTyped "CDZ0203"))
+                        | .error e => .error e)
+                     | .error e => .error e)
+                  | _, _ => .error (.unsupported "type oracle: malformed Tuple.concat"))
+               else .error (.unsupported "type oracle: unmodeled Tuple op")
              else if q == "Char".toUTF8 then
                -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
                -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
@@ -2784,6 +2813,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
                            .list #[13, 9, 12]],
                 root := 14 } == .wellTyped .bigint)
+-- T1.47 (Tuple op): `(do (def (main) (Tuple.size (tuple 1 2))) (export main))` → WellTyped Int64.
+-- `size` reads the tuple's arity. (`concat`/`cat` append two tuples' element lists → a wider Tuple.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Tuple".toUTF8, .name "size".toUTF8, .name "tuple".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .atom 8,
+                           .list #[4, 5, 6], .list #[3, 7], .atom 2, .list #[9], .atom 1, .list #[11, 10, 8],
+                           .atom 9, .atom 2, .list #[13, 14], .atom 0, .list #[16, 12, 15]],
+                root := 17 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
