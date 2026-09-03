@@ -146,6 +146,34 @@ def symOf? (m : Ast.Module) (nid : Nat) : Option ByteArray :=
   | some (.atom lid) => (match m.leaves[lid]? with | some (.sym b) => some b | _ => none)
   | _ => none
 
+/-- Read a Record row op's LITERAL field-name LIST operand `(a c)` — a `.list` node whose children are each
+a bare `.name` leaf (a LABEL, not an evaluated value; `project`/`without`'s 2nd operand). `none` if the node
+is not a list or any child is not a bare name (a malformed label list → the oracle declines rather than
+guessing rcdzc's CDZ0201). -/
+def labelBytesOf? (m : Ast.Module) (k : Nat) : Option ByteArray :=
+  match m.nodes[k]? with
+  | some (.atom lid) => (match m.leaves[lid]? with | some (.name b) => some b | _ => none)
+  | _ => none
+
+/-- Collect a label list's bare-name children (structural recursion — `#guard`-evaluable, unlike `mapM`). -/
+def collectLabels? (m : Ast.Module) : List Nat → Option (List ByteArray)
+  | []      => some []
+  | k :: ks =>
+    match labelBytesOf? m k, collectLabels? m ks with
+    | some b, some rest => some (b :: rest)
+    | _, _              => none
+
+def labelsOf? (m : Ast.Module) (nid : Nat) : Option (List ByteArray) :=
+  match m.nodes[nid]? with
+  | some (.list kids) => collectLabels? m kids.toList
+  | _ => none
+
+/-- Does a label list contain a DUPLICATE (by ByteArray value)? A record's fields are a fixed SET of names,
+so a label named twice in a `project`/`without` list is CDZ0201 (matches a duplicate record-literal field). -/
+def hasDupBytes : List ByteArray → Bool
+  | []      => false
+  | x :: xs => xs.any (fun y => Eval.cmpBytes x y == .eq) || hasDupBytes xs
+
 /-- Parse a width-namespaced INTEGER MODULE name (`Int64`/`UInt8`/…) → `(width, signed)`. Only the realized
 fixed widths 8/16/32/64 (bare `Int`/`UInt`/`BigInt` → `none`, no fixed width). Used by the int-module ops
 `(. Int64 max)` / `(UInt8.wrap …)` etc. (T1.43). -/
@@ -1954,7 +1982,47 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                           | none => .error (.illTyped "CDZ0212"))
                        | _ => .error (.illTyped "CDZ0203"))
                   | _, _ => .error (.unsupported "type oracle: malformed Record.pop"))
-               else .error (.unsupported "type oracle: unmodeled Record op (without/project — label-list, later)")
+               else if op == "project".toUTF8 && children.size == 3 then
+                 -- `project r (a c)` → narrow r to EXACTLY the named labels (each carrying r's type for it).
+                 -- The 2nd operand is a LITERAL label LIST (bare names, not a value). A label ABSENT from r is
+                 -- CDZ0212; a DUPLICATE label is CDZ0201. A non-record / unresolved operand or a malformed
+                 -- label list → declined (safe abstain — rcdzc's non-record path yields `Any`, not a clear
+                 -- reject, so the oracle stays out of that fragment).
+                 (match children[1]?, children[2]? with
+                  | some rId, some lId =>
+                    (match labelsOf? m lId with
+                     | none => .error (.unsupported "type oracle: Record.project labels are not a bare-name list")
+                     | some labels => do
+                       let (τr, st1) ← inferE m env st rId
+                       match applySubst st1.subst τr with
+                       | .record fields =>
+                         if hasDupBytes labels then .error (.illTyped "CDZ0201")
+                         else if labels.any (fun l => !fields.any (fun f => Eval.cmpBytes f.1 l == .eq)) then .error (.illTyped "CDZ0212")
+                         else
+                           let kept := labels.filterMap (fun l => (fields.find? (fun f => Eval.cmpBytes f.1 l == .eq)).map (fun f => (l, f.2)))
+                           .ok (.record ((kept.toArray.qsort (fun a b => Eval.cmpBytes a.1 b.1 == .lt)).toList), st1)
+                       | .var _ => .error (.unsupported "type oracle: Record.project on an unresolved record")
+                       | _ => .error (.unsupported "type oracle: Record.project on a non-record operand"))
+                  | _, _ => .error (.unsupported "type oracle: malformed Record.project"))
+               else if op == "without".toUTF8 && children.size == 3 then
+                 -- `without r (b)` → r MINUS the named labels (the complement of `project`). Same literal label
+                 -- list, same faults: absent label → CDZ0212, duplicate → CDZ0201. Non-record / unresolved /
+                 -- malformed-list → declined.
+                 (match children[1]?, children[2]? with
+                  | some rId, some lId =>
+                    (match labelsOf? m lId with
+                     | none => .error (.unsupported "type oracle: Record.without labels are not a bare-name list")
+                     | some labels => do
+                       let (τr, st1) ← inferE m env st rId
+                       match applySubst st1.subst τr with
+                       | .record fields =>
+                         if hasDupBytes labels then .error (.illTyped "CDZ0201")
+                         else if labels.any (fun l => !fields.any (fun f => Eval.cmpBytes f.1 l == .eq)) then .error (.illTyped "CDZ0212")
+                         else .ok (.record (fields.filter (fun f => !labels.any (fun l => Eval.cmpBytes f.1 l == .eq))), st1)
+                       | .var _ => .error (.unsupported "type oracle: Record.without on an unresolved record")
+                       | _ => .error (.unsupported "type oracle: Record.without on a non-record operand"))
+                  | _, _ => .error (.unsupported "type oracle: malformed Record.without"))
+               else .error (.unsupported "type oracle: unmodeled Record op")
              else if q == "Char".toUTF8 then
                -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
                -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
@@ -2919,6 +2987,19 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12], .atom 1, .list #[14, 13, 11], .atom 11, .atom 2, .list #[16, 17],
                            .atom 0, .list #[19, 15, 18]],
                 root := 20 } == .wellTyped (.tuple [.int 64 true, .record []]))
+-- T1.50 (Record.project): `(do (def (main) (Record.project (record (= x 1) (= y 2)) (x))) (export main))` →
+-- WellTyped (Record x:Int64) — narrow to the named labels (drops y). The 2nd operand `(x)` is a LITERAL
+-- label list (bare names). (`without` is the complement; an absent label → CDZ0212, a duplicate → CDZ0201.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "project".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "y".toUTF8, .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .atom 7, .atom 10, .atom 11,
+                           .list #[5, 6, 7], .list #[0, 4, 8], .atom 3, .atom 4, .atom 5, .list #[10, 11, 12],
+                           .atom 8, .list #[14], .list #[13, 9, 15], .atom 2, .list #[17], .atom 1,
+                           .list #[19, 18, 16], .atom 12, .atom 2, .list #[21, 22], .atom 0,
+                           .list #[24, 20, 23]],
+                root := 25 } == .wellTyped (.record [("x".toUTF8, .int 64 true)]))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
