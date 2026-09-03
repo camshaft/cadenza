@@ -9163,6 +9163,40 @@
   (live-objects 0))
 
 (case
+  "a host block WRAPS a match whose let-bound host result is captured by two escaping closures — fires once (adv-62)"
+  (doc
+    "adv-62 host-WRAPS-match face: the host block is on the OUTSIDE of the match — `(host (io) (match (let
+           ((v (io.get))) #tuple(closures…)) arms))` — instead of INSIDE the scrutinee (the `(match (host …
+           (let …) …) arms)` shape the sibling case above pins). This is exactly the shape the `--target
+           cadenza` re-emit produces when it faithfully HOISTS a helper's `(host …)` block to wrap the whole
+           match (inlining the `mk` call), and it TRAPPED on a fresh wasm compile too: the match-scrutinee
+           materialization guard (`scrutinee_reaches_host_perform`) walked the `let`-scrutinee's bindings
+           SUBLIST `((v (io.get …)))`, which mis-resolves as an arg-less `Resolved::Apply` and bailed WITHOUT
+           descending into the `(io.get …)` init — so the guard MISSED the perform, DROPPED the `MatchSum`
+           wrapper, and the bare-body fold re-emitted the whole host block once per tuple binder → `io.get`
+           fired TWICE and the second call had no recorded response (trap). FIX (v-effects): the guard gained
+           a `Resolved::Let` arm that descends into each binding init + the body (a strict WIDENING — detects
+           more performs → keeps more materialization wrappers, always safe), so the `let`-bound host result
+           is materialized ONCE and both closures capture the same slot. With io.get=21: `f(10)=21+10=31`,
+           `g(100)=21*100=2100`, sum 2131, and the (host-calls) fixture pins the SINGLE firing on every
+           backend.")
+  (input
+    (do
+      (effect io (op get (-> Unit Int64)))
+      (def
+        (main)
+        (host
+          (io)
+          (match
+            (let ((v (io.get unit))) #tuple((fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x))))
+            (#tuple(f g) (+ (f 10) (g 100))))))
+      (export main)))
+  (host-responses (respond io.get (: 21 Int64)))
+  (host-calls (call io.get))
+  (output (: 2131 Int64))
+  (live-objects 0))
+
+(case
   "two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)"
   (doc
     "The two-distinct-calls ORDER companion of the adv-62 single-call pin above (breaker escalation):

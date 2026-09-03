@@ -456,6 +456,19 @@ pub(super) fn scrutinee_reaches_host_perform(db: &mut Db, scrutinee: StructId) -
         if let Resolved::Host { .. } = resolved_of(db, node) {
             return true;
         }
+        // A `let`-scrutinee: descend into each binding INIT and the body. Necessary because the raw-AST
+        // fallthrough below mis-resolves a `let`'s bindings SUBLIST `((v init)…)` as an arg-less
+        // `Resolved::Apply` (its first element becomes the head, `args` is empty), so it bails WITHOUT
+        // walking the inits — a `(let ((v (E.op …))) …)` scrutinee (the adv-62 host-WRAPS-match shape:
+        // `(host (E) (match (let ((v (E.op …))) …) arms))`, where a host block WRAPS a match over a
+        // let-bound host result) would go UNDETECTED, drop the materialization wrapper, and re-emit the
+        // host call per payload binder (the host op double-fires and traps). Explicit init/body recursion
+        // is a strict WIDENING (detects more performs → keeps more wrappers), so it stays a safe
+        // over-approximation.
+        if let Resolved::Let { bindings, body } = resolved_of(db, node) {
+            return bindings.iter().any(|&(_, init)| walk(db, init, depth + 1))
+                || walk(db, body, depth + 1);
+        }
         if let Resolved::Apply { head, args } = resolved_of(db, node) {
             if crate::eval::effect_op_of(db, head).is_some() {
                 return true;
