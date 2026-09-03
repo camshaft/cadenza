@@ -7946,6 +7946,19 @@ fn capture_pane(session: &str, agent: &str) -> Option<String> {
 /// These track Claude Code's current status-line vocabulary — a future CC UI change is the known
 /// maintenance point for this heuristic. Pure + unit-testable (no tmux).
 fn pane_shows_working(pane_text: &str) -> bool {
+    // IDLE-PROMPT OVERRIDE (concierge 2026-09-03): an IDLE window shows a bare `❯` input prompt, but two
+    // things LINGER at that idle prompt and would otherwise false-positive the substring checks below:
+    // (1) Claude Code's persistent FOOTER hint carries the literal "esc to interrupt" ("⏵⏵ bypass
+    // permissions on (shift+tab to cycle) · esc to interrupt · ← for agents"), and (2) a COMPLETED turn's
+    // token-meter remnant ("↓ N tokens") stays in the visible pane. Observed: v-cadenza-backend IDLE at `❯`
+    // yet its pane held BOTH → `window_is_working` mislabeled it working → the fleet-send DELIVERY wake was
+    // skipped as "already mid-tick" → its mail waited for the watchdog drain-nudge (a lag + a drain-stall
+    // warning each cycle; worse now that several agents run low-cadence 2h/3h so windows sit long-idle). A
+    // GENERATING turn has NO bare `❯` prompt (the input line is the live status), so a visible idle prompt
+    // is a reliable "not working" signal that overrides the lingering footer/remnant strings.
+    if pane_shows_idle_prompt(pane_text) {
+        return false;
+    }
     pane_text.contains("esc to interrupt")
         || pane_text.contains("Retrying in ")
         || pane_text.contains("Retrying…")
@@ -7955,6 +7968,16 @@ fn pane_shows_working(pane_text: &str) -> bool {
         // prints while the model is producing output — present through a long percolating turn even when
         // the "esc to interrupt" affordance is not on the visible pane.
         || ((pane_text.contains("↓") || pane_text.contains("↑")) && pane_text.contains("tokens"))
+}
+
+/// Does the pane show Claude Code's IDLE input prompt — a line that is just the `❯` prompt glyph with an
+/// EMPTY input (optionally surrounding whitespace)? While a turn is GENERATING, the input line is replaced
+/// by the live status, so a bare `❯` prompt line is a reliable IDLE signal. Used by [`pane_shows_working`]
+/// to override the persistent footer/token-remnant false-positives that otherwise make an idle window read
+/// as "working" (and get its delivery wake skipped). A line with TYPED text after `❯` (`❯ some cmd`) does
+/// NOT match — something is pending, so we do not claim idle. Pure + unit-tested.
+fn pane_shows_idle_prompt(pane_text: &str) -> bool {
+    pane_text.lines().any(|l| l.trim() == "❯")
 }
 
 /// Does the pane show Claude Code's AUTO-UPDATE banner — "Update installed · Restart to update" (or the
@@ -19020,6 +19043,29 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // A bare arrow glyph WITHOUT the "tokens" meter must NOT count as working (e.g. prose mentioning
         // a download arrow) — the meter needs BOTH the arrow AND "tokens", so this stays idle.
         assert!(!pane_shows_working("❯ see the ↓ section below for details"));
+        // REGRESSION (concierge 2026-09-03): an IDLE `❯` prompt whose pane ALSO carries the persistent
+        // footer "esc to interrupt" hint AND a completed-turn token remnant must read as NOT working — else
+        // the fleet-send DELIVERY wake is skipped as "mid-tick" and the idle low-cadence agent's mail waits
+        // for the watchdog drain-nudge (v-cadenza-backend, idle at `❯` but footer+remnant tripped it).
+        assert!(!pane_shows_working(
+            "  ⎿ done 4:24 AM\n❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents\n↓ 4.8k tokens"
+        ));
+        // But a GENERATING turn (NO bare `❯` prompt) with the affordance IS still working — the override
+        // only fires on a visible idle prompt, so a real long turn is never mislabeled idle.
+        assert!(pane_shows_working(
+            "✻ Percolating… (2m · ↓ 5k tokens)\n  esc to interrupt"
+        ));
+    }
+
+    #[test]
+    fn pane_shows_idle_prompt_matches_only_a_bare_prompt() {
+        assert!(pane_shows_idle_prompt(
+            "some output\n❯ \n  ⏵⏵ bypass permissions"
+        ));
+        assert!(pane_shows_idle_prompt("❯"));
+        assert!(!pane_shows_idle_prompt("❯ ls -la")); // typed text pending → not cleanly idle
+        assert!(!pane_shows_idle_prompt("✻ Thinking… (1m · ↓ 3k tokens)")); // generating, no prompt
+        assert!(!pane_shows_idle_prompt(""));
     }
 
     #[test]
