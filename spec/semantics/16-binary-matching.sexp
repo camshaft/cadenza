@@ -3990,3 +3990,65 @@
   (output (: "hihj" String))
   (call main (: 255 Int64))
   (output (: "x" String)))
+
+; plx1: a post-payload literal probe that FAILS at the dynamic offset — the mismatch face of the
+; non-final dependent-utf8 case above (which pins the utf8-VALIDITY fall-through; here the utf8 is
+; valid and the trailing LITERAL is what differs). The trailing byte is the runtime parameter, so
+; the (u8 7) probe at offset 1+n must read the right byte and fall through on 8. (breaker probe pl2
+; post-#8035, verified tri-target exact + byte-idempotent, live-objects 0/0.)
+(case
+  "a post-payload literal mismatch at the dynamic offset falls through"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list(2 104 105 (UInt8.of a))))
+      (def
+        (main (: n Int64))
+        (match (mk n) ((bin (u8 c) (utf8 s c) (u8 7)) (String.concat s "-ok")) (_ "x")))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: "hi-ok" String))
+  (call main (: 8 Int64))
+  (output (: "x" String)))
+
+; plx2: a MULTI-BYTE literal segment after a dependent payload — (u16 258) spans TWO bytes at the
+; dynamic offset 1+n (0x0102 big-endian = bytes 1,2), widening the single-byte (u8 lit) post-payload
+; face. Ill-formed utf8 in the payload window still falls through first. (breaker probe pl4
+; post-#8035, verified tri-target exact + byte-idempotent, live-objects 0/0.)
+(case
+  "a u16 literal segment matches at the dynamic offset after a dependent payload"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list(2 104 (UInt8.of a) 1 2)))
+      (def
+        (main (: n Int64))
+        (match (mk n) ((bin (u8 c) (utf8 s c) (u16 258)) (String.concat s "-16ok")) (_ "x")))
+      (export main)))
+  (call main (: 105 Int64))
+  (output (: "hi-16ok" String))
+  (call main (: 255 Int64))
+  (output (: "x" String)))
+
+; plx3: TWO length-prefixed dependent frames chained at RUNTIME — (u8 c)(utf8 s c)(u8 0)(u8 d)
+; (utf8 r d), a separator-delimited two-string frame. The CONST twin folds (the chained-dependent
+; case near the top of this file pins the semantics); at runtime the second length prefix sits at a
+; DYNAMIC offset and its dependent read is the documented dynamically-offset not-yet: BOTH targets
+; decline CDZ0900 today ("a runtime bin match with a dynamically-offset dependent size field is not
+; lowered" — symmetric, front-end lowering, confirmed wasm-reject + run-rust-declined). Idealistic
+; TODO per corpus policy: pins the should-happen values from the const semantics; auto-flips when
+; dynamic-offset dependent-size lowering lands. (breaker probe pl3.)
+(case
+  "two length-prefixed dependent frames chain at runtime"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list(2 104 (UInt8.of a) 0 1 33)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk n)
+          ((bin (u8 c) (utf8 s c) (u8 0) (u8 d) (utf8 r d)) (String.concat s (String.concat "+" r)))
+          (_ "x")))
+      (export main)))
+  (call main (: 105 Int64))
+  (output (: "hi+!" String))
+  (call main (: 255 Int64))
+  (output (: "x" String)))
