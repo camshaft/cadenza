@@ -3843,3 +3843,35 @@
   (output (: "hi!" String))
   (call main (: 50 Int64))
   (output (: "hi?" String)))
+
+; ebx1: a bin match NESTED INSIDE another bin match's ARM BODY — outer (bin (u8 x) (u8 y)) arm whose
+; body bin-matches a SECOND helper-returned Bytes. Computes on wasm/rust (182010 + 101n; all four
+; binders live across the nesting); the cadenza target currently DECLINES CDZ0900 ("binary segment
+; read outside a recognized bin-match"). Isolated by controls: a SINGLE bin match over a helper call
+; hops (even with a performing scrutinee), a bin match nested in a TUPLE match's arm hops, two
+; SEQUENTIAL bin matches in operator position hop — the trigger is precisely bin-inside-a-bin-arm,
+; regardless of the inner scrutinee's provenance (a fresh call here; an extracted payload in the
+; earlier nf5 shape, which this subsumes/sharpens). Idealistic TODO per corpus policy, auto-flips
+; when the nested bin-arm recognition lands. (breaker probe eb3, verified two-sided: wasm exact x3
+; args, rust fold-opaque combined leg exact, live-objects 0/0.)
+(case
+  "a bin match nested inside another bin match's arm body computes"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list((UInt8.of a) 9)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk (+ 10 n))
+          ((bin (u8 x) (u8 y))
+            (match
+              (mk (+ 20 n))
+              ((bin (u8 v) (u8 w))
+                (+ (Int64.of x) (+ (* 100 (Int64.of v)) (* 10000 (+ (Int64.of y) (Int64.of w))))))
+              (_ -2)))
+          (_ -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 182010 Int64))
+  (call main (: 3 Int64))
+  (output (: 182313 Int64)))
