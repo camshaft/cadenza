@@ -13501,3 +13501,33 @@
   (host-responses (respond h.log (: 100 Int64)))
   (host-calls (call h.log (: 8 Int64)))
   (output (: 230 Int64)))
+
+; cpx1: the COLLECTION-mediated face of the escaped-performing-closure dispatch (dcx1 above pins the
+; direct let flow: creation-site 111, call-site 222, the CALL-site handler wins). Here the closure is
+; created under handler 111 inside a LIST, the list escapes the handle, and the element is retrieved
+; and applied TWICE under a second handler with advancing state. Today the collection-mediated flow
+; DECLINES CDZ0900 (the specializer's escaped-closure fold tracks direct value flow, not flow through
+; a collection element) — a safe reject, never a wrong-home dispatch. Idealistic values from dcx1's
+; call-site-dispatch semantics: applications read the SECOND handler's advancing state 10n then
+; 10n+1, so (1 + 10n) + (2 + 10n + 1) = 20n + 4. Flips when the escaped-closure fold (or a runtime
+; dispatch representation) covers collection-element flow. (breaker probe cp2; the no-creation-
+; handler variant cp1 is a separate bare-error reject, queued to diagnostics.)
+(case
+  "a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (main (: n Int64))
+        (let
+          ((fs (handle C 111 ((tick () s (resume s s))) #list((fn ((: x Int64)) (+ x (C.tick)))))))
+          (handle
+            C
+            (* n 10)
+            ((tick () s (resume s (+ s 1))))
+            (match (List.at fs 0) ((Some f) (+ (f 1) (f 2))) ((None) -1)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 4 Int64))
+  (call main (: 2 Int64))
+  (output (: 44 Int64)))
