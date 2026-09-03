@@ -88,6 +88,13 @@ jobs:
         with:
           name: camshaft
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # skipPush (v-nix): configure camshaft as a substituter (pull) + install the cachix CLI + auth, but do
+          # NOT install the streaming per-build post-build-hook — that hook spawns a concurrent nix/cachix client
+          # DURING each build that races the build's own nix to apply the 20220326-ca-derivations schema migration
+          # → intermittent "SchemaMigrations UNIQUE" red (recurred post-#7874's up-front `nix store ping`). We push
+          # POST-JOB instead (the trailing step below), after the build's nix has already applied the migration, so
+          # there is no second concurrent client → the race cannot fire. Pull is unaffected.
+          skipPush: true
       # SAVE-ON-SUCCESS SPLIT (v-nix+v-ft 2026-08-06): cache-warm does NOT use the shared nix-store-cache
       # composite (which the 10 checks.yml jobs use for combined restore+save) — it splits restore + save so
       # the SAVE can be gated on JOB success. WHY: a cache-warm run that FAILS a later step (e.g. the 10:01
@@ -207,6 +214,24 @@ jobs:
         if: matrix.arch == 'aarch64'
         continue-on-error: true
         run: nix build .#checks.aarch64-linux.cad-tests --print-build-logs
+      # POST-JOB CACHIX PUSH (v-nix — replaces the streaming per-build post-build-hook that skipPush dropped above).
+      # Runs AFTER every warm build, so the build's nix has already applied the ca-derivations migration → no second
+      # concurrent client → the SchemaMigrations UNIQUE race cannot fire. Re-evals the SAME first-party attrs the
+      # warm steps built (a cache-hit that just prints out-paths); `cachix push` pushes each path AND its full
+      # requisite closure, reproducing exactly what the streaming hook pushed. Default-branch-gated like the old push.
+      - name: push the warm closure to cachix (post-job — no concurrent-client migration race)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          attrs=( .#packages.${{ matrix.arch }}-linux.cargo-artifacts .#packages.${{ matrix.arch }}-linux.store )
+          if [ "${{ matrix.arch }}" = aarch64 ]; then
+            attrs+=( .#packages.aarch64-linux.runtime .#packages.aarch64-linux.runtime-debug \
+                     .#packages.aarch64-linux.seed-compiler .#checks.aarch64-linux.cad-tests \
+                     .#packages.aarch64-linux.corpus-verdicts-coarse )
+          fi
+          cachix push camshaft $(nix build "${attrs[@]}" --no-link --print-out-paths)
       # DRV-IN-SAVE-KEY (v-nix+v-ft 2026-08-06): compute the SAVE key with the seed-compiler's OUTPUT drv-hash
       # as a suffix ON AARCH64, so the key rotates WITH the payload. WHY: the seed-compiler drv rotates on every
       # rcdzc/cdz/cdz-run closure commit (~90min cadence, measured), but the c2 key (hashFiles(flake.lock,
