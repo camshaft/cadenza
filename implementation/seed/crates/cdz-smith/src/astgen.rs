@@ -459,7 +459,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 12 };
+    let arms = if depth == 0 { 2 } else { 13 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -601,6 +601,40 @@ fn gen_typefuzz_int<C: Choice>(
             *fresh += 1;
             let dflt = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             format!("(match (List.at {xs} {idx}) ((Some {v}) {v}) ((None) {dflt}))")
+        }
+        // An Int64-producing Map op (T1.33), always CONSUMING a map to a scalar. `(Map.len <map>)`;
+        // `(List.len (Map.to-list <map>))`; `(Map.len (<Map-producing-op> …))` over insert/remove/merge
+        // (each → `Map k v`); or `Map.lookup` (→ `Option v`) matched to Int64. Well-typed (Int64 keys +
+        // values) → both rcdzc + oracle infer Int64 → agreement.
+        11 => {
+            let m = gen_typefuzz_map(c, iscope, bscope, fresh, false);
+            match c.variant(6) {
+                0 => format!("(Map.len {m})"),
+                1 => format!("(List.len (Map.to-list {m}))"),
+                2 => {
+                    let (k, v) = (
+                        c.int_bounded(0, 9),
+                        gen_typefuzz_int(c, 0, iscope, bscope, fresh),
+                    );
+                    format!("(Map.len (Map.insert {m} {k} {v}))")
+                }
+                3 => {
+                    let k = c.int_bounded(0, 2);
+                    format!("(Map.len (Map.remove {m} {k}))")
+                }
+                4 => {
+                    let m2 = gen_typefuzz_map(c, iscope, bscope, fresh, false);
+                    format!("(Map.len (Map.merge {m} {m2}))")
+                }
+                _ => {
+                    // lookup → Option v, matched to Int64.
+                    let k = c.int_bounded(0, 2);
+                    let v = format!("i{}", *fresh);
+                    *fresh += 1;
+                    let dflt = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                    format!("(match (Map.lookup {m} {k}) ((Some {v}) {v}) ((None) {dflt}))")
+                }
+            }
         }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
@@ -796,6 +830,31 @@ fn gen_typefuzz_set<C: Choice>(
     format!("(set {})", elems.join(" "))
 }
 
+/// A WELL-TYPED HOMOGENEOUS map literal `(map (= k v)...)` — 1..=3 entries, Int64 keys, and Int64 (or
+/// Bool if `val_bool`) values (T1.33). Entries are the record field-pair form but the KEY is an
+/// EXPRESSION. Keys/values are DEPTH-0 leaves (keep entries simple, as for sets). Distinct small-int keys
+/// (0,1,2) avoid a duplicate-key literal. Never empty (an empty `(map)` skips — unconstrained K/V).
+fn gen_typefuzz_map<C: Choice>(
+    c: &mut C,
+    iscope: &mut Vec<String>,
+    bscope: &mut Vec<String>,
+    fresh: &mut usize,
+    val_bool: bool,
+) -> String {
+    let n = 1 + c.variant(3); // 1..=3 entries
+    let entries: Vec<String> = (0..n)
+        .map(|k| {
+            let v = if val_bool {
+                gen_typefuzz_bool(c, 0, iscope, bscope, fresh)
+            } else {
+                gen_typefuzz_int(c, 0, iscope, bscope, fresh)
+            };
+            format!("(= {k} {v})") // distinct literal keys 0,1,2
+        })
+        .collect();
+    format!("(map {})", entries.join(" "))
+}
+
 /// An EXHAUSTIVE `match` over a built-in sum (Mat rule T1.16), arms producing Int64 (`want_bool=false`)
 /// or Bool. Option (`(Some x)` binds the Int64 payload / `(None)`) or Ordering (all three nullary
 /// variants). Flat `(Ctor binder)` patterns only + fully covered — nested/literal/tuple patterns and
@@ -845,7 +904,20 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(16) {
+    match c.variant(17) {
+        // An ILL-TYPED Map op (T1.33 — false-accept hunt): a heterogeneous-VALUE map literal (values fail
+        // to unify) or a `Map.lookup` with a key whose type differs from the map's key type → a coded type
+        // fault. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        15 => {
+            let iv = int(c, iscope, bscope, fresh);
+            let bv = boolean(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(map (= 0 {iv}) (= 1 {bv}))") // value clash: Int64 vs Bool value
+            } else {
+                // lookup with a Bool key on an Int64-keyed map, matched → key-type clash.
+                format!("(match (Map.lookup (map (= 0 {iv})) {bv}) ((Some mv) mv) ((None) 0))")
+            }
+        }
         // A `List.at` result MIS-USED as the raw element (T1.34 regression guard): `List.at` returns
         // `Option a`, so using it directly in arithmetic is `Option Int64` vs `Int64` → CDZ0203. rcdzc
         // rejects + oracle IllTyped ⇒ holds; an rcdzc ACCEPT here is the S231-class false-accept returning.
@@ -986,7 +1058,27 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(8) {
+    match c.variant(9) {
+        // A `Map K V` value (T1.33): a `(map (= k v)…)` literal, or a Map-producing op `(Map.insert …)` /
+        // `(Map.merge …)`. Int64 keys + Int64 values; a bare map main RESULT is accepted (unlike Set).
+        // Both rcdzc + oracle infer `Map Int64 Int64` → agreement.
+        7 => {
+            let m = gen_typefuzz_map(c, iscope, bscope, fresh, false);
+            match c.variant(3) {
+                0 => m,
+                1 => {
+                    let (k, v) = (
+                        c.int_bounded(0, 9),
+                        gen_typefuzz_int(c, 0, iscope, bscope, fresh),
+                    );
+                    format!("(Map.insert {m} {k} {v})")
+                }
+                _ => {
+                    let m2 = gen_typefuzz_map(c, iscope, bscope, fresh, false);
+                    format!("(Map.merge {m} {m2})")
+                }
+            }
+        }
         // A HOMOGENEOUS list construction `(list e...)` (T1.29 — first collection type). 2..=4 elements,
         // all Int64 OR all Bool (a List is homogeneous — the oracle UNIFIES the element types to one
         // `.listTy tau`). Both rcdzc + oracle infer a List elem-type from the (non-empty) elements →
