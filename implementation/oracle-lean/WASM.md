@@ -283,6 +283,41 @@ registry). Witnessed at the pure `HeapState` layer.
   **post-run inspection of our own `HeapState.liveCount == 0`** (W6). The `w51aHeapOps` `live-objects` entry is
   harmless-but-dead (no emitted module imports it); the real leak assertion lives in the driver/differential.
 
+### W5.2 landed (maps + sets + list core) + the IMMEDIATES ABI finding
+
+**W5.2 surface (`Oracle/Wasm/HeapHost.lean`, on main):** the collection ops, modeled clean-room over the same
+value-eq + dup-and-drop machinery as the arrays:
+- **Maps** — positional literal-construction (`map` node = interleaved `[k0,v0,k1,v1,…]`) + the functional
+  READ-ONLY ops (`map-empty`/`-lookup`/`-size`, key match = structural `valueEq`, borrow) + the CONSUMING ops
+  (`map-insert`/`-remove`/`-merge`) with ownership transfer by dup-and-drop per v-runtime's champ.rs contract
+  (last-write-wins; `map-merge` b-wins, folds b's dup'd pairs into a then drops b).
+- **Sets** — mirror maps at stride 1 (one element handle per entry, no value column): `set-empty`/`-contains`/
+  `-size` (borrow) + `set-insert`/`-remove` (consume) + the 2-set ops `set-union`/`-intersection`/`-difference`
+  (each CONSUMES both; union = insert-all-of-b with dedup-drop, intersection/difference filter a then free the
+  rest of a + all of b).
+- **List core (`vec-*`, #8127)** — the growable sequence (`vec-empty`/`-len`/`-get`/`-push`/`-update`),
+  immediate-aware; unblocks `map`/`set`-`to-list` (returns a `List` → needs the vec model).
+
+**🔑 The IMMEDIATES ABI finding (#8116 — the W5.2 root-cause fix).** A full-corpus run surfaced 76 DIVERGE +
+27 LEAK the moment maps/sets went in. Root cause (read from `cdz-runtime` lib.rs:735–835): the runtime does NOT
+heap-allocate small scalars — handles are **tagged**, low 2 bits: `00` heap/NULL, `01` fixnum int (value =
+`h>>2`, window ±2^29), `10` atom (unit / bool). `box-int(fixnum)`/`box-bool`/`arr-alloc(0)`→imm-unit produce
+**inline immediates**: dup/drop NO-OPS, **census-excluded**. My model heap-allocated them → false leaks (wasm
+never drops an immediate) + wrong map-key value-eq (immediate handles read as heap indices). Fixed by modeling
+the exact tag ABI (`isImmediate`/`immInt`/`immBool`/`immUnit` + signed fixnum decode) and reworking the pool to
+a `(index+1)<<2` heap-handle scheme that never collides with a tag. **LESSON banked:** validate the model at
+full-corpus scale *before* extending it — the immediates bug was invisible at the witness layer.
+
+**Witness coverage (on main + #8134 in-flight):** immediates (`probeImmInt`/`-Neg`/`-NoLeak`/`-DupDrop`,
+`probeBool`, `probeImmUnit`), heap round-trip + UAF/double-free (`probeHeapInt`/`-UseAfterFree`/`-Cascade`),
+immediate-elem containers (`probeArrImmElems`/`-MapImmKeys`/`-VecImmElems`), list core (`probeVec*`), and the
+CONSUME-op leak-balance witnesses (`probeMapMerge` b-wins + `probeSet{Union,Intersection,Difference}`, #8134):
+each drops the result and asserts `liveCount == 0` (the Perceus property) alongside result size.
+
+**W5.2c (next, needs the list core now on main):** `map`/`set` `iter` (cursor-only, no list dep) + `to-list`
+(value-SORTED per v-lean-oracle's canonical order — Int signed, Bool false<true, String/Bytes raw-byte
+lexicographic; homogeneous collections so cross-type never arises; floats are CDZ0203, never reach to-list).
+
 ## Gate coverage
 
 `Oracle.Wasm`'s invariants are pinned by compiled `example` witnesses in the module (no corpus case
