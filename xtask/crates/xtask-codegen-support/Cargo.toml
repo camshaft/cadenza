@@ -1,9 +1,11 @@
-# xtask-codegen-support — the shared rust-emit tail for the `xtask-codegen-*` bins (v-xtask-decompose).
+# xtask-codegen-support — the shared helpers for the `xtask-codegen-*` bins (v-xtask-decompose).
 #
-# Every codegen bin (declines / wasm-abi / contracts) builds a `proc_macro2::TokenStream` via `quote!`
-# and must render it to BYTE-IDENTICAL committed Rust: parse → prettyplease → rustfmt. That tail was
-# copy-pasted identically into all three; single-sourced here so a fix (e.g. the rustfmt-required
-# hard-error) can't drift between them. Dev-desk only — never enters the shipped compiler.
+# Two shared tails, each formerly copy-pasted identically across the codegen bins:
+#   - the sexpr READER: `cdz convert --from sexpr --to binary` → `cadenza_ast::codec::decode` → Arenas (the
+#     operator's SEXPR→binary-AST codegen IR; declines + wasm-abi shared this verbatim), and
+#   - the rust EMIT tail: parse a `proc_macro2::TokenStream` (syn) → prettyplease → rustfmt for byte-identical
+#     committed output (all three bins shared this).
+# Single-sourced here so a fix can't drift between the bins. Dev-desk only — never enters the shipped compiler.
 [package]
 name = "xtask-codegen-support"
 version = "0.0.0"
@@ -11,6 +13,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# The sexpr reader's IR: `cdz convert` produces cadenza-ast BINARY, decoded here to Arenas (no-json). The
+# codegen bins already dep cadenza-ast directly, so routing the shared reader through here adds nothing to
+# their closures — only this crate's.
+cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
 # The rust-emit render tail: parse the generated token tree (syn) → pretty-print (prettyplease) → rustfmt.
 prettyplease = "0.2"
 syn = { version = "2", features = ["full", "parsing"] }

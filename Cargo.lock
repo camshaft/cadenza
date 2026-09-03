@@ -3469,6 +3469,7 @@ dependencies = [
 name = "xtask-codegen-support"
 version = "0.0.0"
 dependencies = [
+ "cadenza-ast",
  "prettyplease",
  "proc-macro2",
  "quote",
