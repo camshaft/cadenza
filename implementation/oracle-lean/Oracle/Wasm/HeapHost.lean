@@ -741,7 +741,14 @@ def setSize : HeapState → List Value → HeapResult
   | s, _ => .trap "set-size: expected (i32)"
 
 /-- `set-insert(s, elem) → s'` [consumes s, elem]: add elem unless already present (by value-eq), in which
-case the incoming DUPLICATE elem is dropped (the set keeps its stored element). Dup-and-drop transfer. -/
+case the incoming DUPLICATE elem is dropped (the set keeps its stored element).
+
+FBIP: at `rc == 1` (UNIQUE owner, not immortal) the runtime REUSES the set's node IN PLACE and returns the SAME
+handle (no free + fresh alloc) — so the Perceus emit can `drop` that handle later to free the reused storage
+exactly once. Modeling this is REQUIRED for fidelity: without it, `set-insert` frees `st` + returns a fresh
+handle, and a subsequent `drop st` (the Perceus tail-drop of the consumed, now-reused base) DOUBLE-FREES → a
+FALSE TRAP on correct codegen (e.g. 19-sets-0055). At `rc > 1` / immortal (SHARED) we keep the copy-then-drop
+(dup the survivors into a fresh node, drop the input's ref). Mirrors the `reset` rc==1 gate. -/
 def setInsert : HeapState → List Value → HeapResult
   | s, [.i32 st, .i32 elem] =>
     match s.getObj? st with
@@ -750,15 +757,22 @@ def setInsert : HeapState → List Value → HeapResult
       if !o.live then .trap s!"set-insert: use-after-free (handle {st} freed)"
       else match o.value with
         | .set elems =>
-          if (elems.toList).any (fun e => s.valueEq e elem) then
-            -- already present: keep all elements (dup'd), drop the incoming duplicate
-            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.set elems)
-            .ret [.i32 r] ((s2.dropH st).dropH elem)
+          let present := (elems.toList).any (fun e => s.valueEq e elem)
+          if o.rc == 1 && !o.immortal then
+            -- UNIQUE (rc==1): reuse `st`'s node in place, return the SAME handle (FBIP). No dup of survivors,
+            -- no drop of `st`. Present → drop the incoming duplicate; absent → absorb `elem` (ownership moved in).
+            if present then .ret [.i32 st] (s.dropH elem)
+            else .ret [.i32 st] (s.setObj st { o with value := .set (elems.push elem) })
           else
-            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.set (elems.push elem))
-            .ret [.i32 r] (s2.dropH st)
+            -- SHARED (rc>1) / immortal: copy-then-drop.
+            if present then
+              let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.set elems)
+              .ret [.i32 r] ((s2.dropH st).dropH elem)
+            else
+              let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.set (elems.push elem))
+              .ret [.i32 r] (s2.dropH st)
         | _ => .trap s!"set-insert: handle {st} is not a set"
   | s, _ => .trap "set-insert: expected (i32, i32)"
 
@@ -2097,6 +2111,27 @@ private def probeSetUnion : Bool :=
     | _ => false
   | _ => false
 example : probeSetUnion = true := by native_decide
+
+/-- FBIP rc==1 in-place reuse (19-sets-0055 shape): `s2 = set-insert(s1, 2)` on a UNIQUE (rc==1) `s1` REUSES
+`s1`'s node and returns the SAME handle — so the Perceus tail `drop s1` (the consumed base, now the survivor)
+frees the reused storage EXACTLY ONCE (no double-free). Pins the model-fidelity fix: previously `set-insert`
+freed `s1` + returned a fresh handle, and dropping `s1` afterwards FALSE-TRAPPED as a double-free. -/
+private def probeSetInsertRc1Reuse : Bool :=
+  match setEmpty ({} : HeapState) [] with
+  | .ret [.i32 se] s0 =>
+    let e1 : UInt32 := match boxInt s0 [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+    let e2 : UInt32 := match boxInt s0 [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+    match setInsert s0 [.i32 se, .i32 e1] with
+    | .ret [.i32 s1h] s1 =>                                        -- s1 = {1} (rc==1)
+      match setInsert s1 [.i32 s1h, .i32 e2] with
+      | .ret [.i32 s2h] s2 =>                                      -- s2 = set-insert(s1, 2): rc==1 → reuse
+        (s2h == s1h) &&                                            -- SAME handle (in-place reuse)
+        (match setSize s2 [.i32 s2h] with | .ret [.i32 2] _ => true | _ => false) &&  -- value: {1,2}
+        (match drop s2 [.i32 s1h] with | .ret [] s3 => s3.liveCount == 0 | _ => false)  -- single drop of s1==s2: no trap, balances
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetInsertRc1Reuse = true := by native_decide
 
 /-- set-intersection: {1.0,2.0} ∩ {2.0,3.0} = {2.0}: size 1, and dropping the result returns the census to 0
 (a's non-shared 1.0 plus all of b freed, no leak). -/
