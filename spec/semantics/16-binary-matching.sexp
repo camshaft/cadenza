@@ -1234,6 +1234,65 @@
   (call main (: 1 Int64))
   (output (: -1 Int64)))
 
+(case
+  "an OR-guarded dependent-size bin arm over a runtime scrutinee emits a valid module and disjoins correctly"
+  (doc
+    "The OR companion of the guarded dependent-read case above: the guard is a DISJUNCTION `(or (> (Bytes.len
+           p) 5) (= (Int64.of k) 2))` over the dependent payload `p` and the size binder `k`. This exercises the
+           short-circuit `Core::And` emit with `is_and = false` (the `or` node) — the SAME slot-base discipline as
+           the `and` guard (the guard's `(bytes p k)` `BinSizedRead` must float its i32 handle above the arm
+           predicate's i64 length-probe scratch, else one wasm local is declared at two widths → an invalid
+           module). n=2 → bytes `[2, 65, 66]`: k=2, `p` = `[65, 66]` (len 2, exact), guard `(2 > 5)` FALSE or
+           `(2 = 2)` TRUE → 100 + 2 = 102. n=1 → `[1, 65, 66]`: k=1, `p` = `[65]`, byte 66 left unconsumed → the
+           sizeless arm cannot match the whole input → -1. Pins that an `or`-connected guard over a dependent-size
+           bin arm emits a valid module and evaluates the disjunction (the second disjunct decides at n=2).")
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k)) (or (> (Bytes.len p) 5) (= (Int64.of k) 2)))
+            (+ 100 (Bytes.len p)))
+          (_ -1)))
+      (def (main (: n Int64)) (f (bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 102 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))
+
+(case
+  "NESTED guarded dependent-size bin arms over a runtime scrutinee emit a valid module"
+  (doc
+    "Two guarded dependent-size bin matches nested INSIDE one another, the outer's dependent payload `p`
+           itself matched by the inner. Each arm's predicate stashes its own i64 `off + size` length-probe
+           scratch, and each guard reads its dependent binder — so the inner match's scratch must stay disjoint
+           from the outer's (nested `Core::And`/`if` chains at advancing bases). `g` matches `(guard (bin (u8 k)
+           (bytes p k)) (> k 0))` then matches `p` against `(guard (bin (u8 j) (bytes q j)) (> (Bytes.len q) 0))`.
+           n=2 → outer bytes `[2, 1, 90]`: k=2, `p` = `[1, 90]` (exact); inner over `[1, 90]`: j=1, `q` = `[90]`
+           (exact), guard `(len q > 0)` holds → `Int64.of j + Bytes.len q` = 1 + 1 = 2. n=0 → `[0, 1, 90]`: outer
+           k=0 binds an empty `p` but leaves `[1, 90]` unconsumed → the sizeless outer arm cannot match → -1.
+           Pins that nested guarded dependent-read arms keep their per-level probe scratch disjoint (valid module).")
+  (input
+    (do
+      (def
+        (g (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k)) (> k 0))
+            (match
+              p
+              ((guard (bin (u8 j) (bytes q j)) (> (Bytes.len q) 0)) (+ (Int64.of j) (Bytes.len q)))
+              (_ -2)))
+          (_ -1)))
+      (def (main (: n Int64)) (g (bin (u8 (UInt8.wrap n)) (u8 1) (u8 90))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; A runtime `(bin …)` construction result IS a Bytes value (this file's opening: "expression position
 ; `(bin …)` CONSTRUCTS a Bytes value"), so it must be `=`-comparable like any Bytes. It builds a FRESH
 ; owned Bytes on the rope heap — exactly as `Bytes.of` does — so as an operand of the borrowing `=` it is
