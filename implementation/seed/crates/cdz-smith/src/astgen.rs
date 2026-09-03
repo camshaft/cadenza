@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 22 };
+    let arms = if depth == 0 { 2 } else { 23 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -869,6 +869,20 @@ fn gen_typefuzz_int<C: Choice>(
         // `(Int64.of (BigInt.of <int>))` → Int64 (T1.46): NARROWING a BigInt source back to Int64 (the
         // `of` fresh-numVar arg absorbs the bigint). Both rcdzc + oracle infer Int64 → agreement.
         20 => format!("(Int64.of {})", typefuzz_bigint(c)),
+        // A TUPLE structural op → Int64 (T1.47): `(Tuple.size <tuple>)` (arity), or the size of a
+        // `(Tuple.concat t1 t2)` (element-list append → wider tuple). Tuples are heterogeneous (mixed
+        // Int64/Bool elements). Both rcdzc + oracle infer Int64 → agreement. (`Tuple.cat` is NOT used — it
+        // is rcdzc-CDZ0603 / oracle-skip; only `Tuple.concat` cleanly judges.)
+        21 => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = ["true", "false"][c.variant(2)];
+            if c.variant(2) == 0 {
+                format!("(Tuple.size (tuple {a} {b}))")
+            } else {
+                let x = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(Tuple.size (Tuple.concat (tuple {a} {b}) (tuple {x})))")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1201,7 +1215,14 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(27) {
+    match c.variant(28) {
+        // A NON-TUPLE operand to a Tuple op (T1.47 — false-accept hunt): `(Tuple.size <int>)` — the
+        // operand must be a tuple → a coded fault (rcdzc CDZ0201). rcdzc rejects + the oracle infers
+        // IllTyped ⇒ holds on the accept/reject agreement.
+        26 => {
+            let n = int(c, iscope, bscope, fresh);
+            format!("(Tuple.size {n})")
+        }
         // A BIGINT ARITHMETIC no-silent-promote clash (T1.46 — false-accept hunt): `(+ (BigInt.of 1)
         // <bare-literal>)` — a bigint mixed with a bare int literal in ARITHMETIC does NOT ground (unlike
         // equality/ordering) → CDZ0301. rcdzc rejects + the oracle infers IllTyped ⇒ holds.
