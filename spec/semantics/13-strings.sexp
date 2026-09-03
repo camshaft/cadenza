@@ -4219,7 +4219,8 @@
            it zero-extends that slot to the `Int64` result. `b`=true -> #\\a -> 97; `b`=false -> #\\z -> 122.
            Pins that a runtime char has a real scalar slot and `Char.to-int` reads it on every backend
            (upgrading the long-standing `runtime char declines pending the Char rep` boundary for this
-           read path — the `if`-join char source, distinct from the still-declining runtime `Char.from-int`).")
+           read path — the `if`-join char source; the runtime `Char.from-int` path now computes too and
+           its boundary sweep is fenced in the from-int family below).")
   (input (do (def (main (: b Bool)) (Char.to-int (if b #\a #\z))) (export main)))
   (call main (: true Bool))
   (output (: 97 Int64))
@@ -6743,4 +6744,30 @@
   (call main (: 1 Int64))
   (output (: 206 Int64))
   (call main (: 3 Int64))
+  (output (: -1 Int64)))
+
+; cfx1: the Char.from-int VALID-SCALAR DOMAIN at a RUNTIME argument. The from-int cases above pin the
+; boundary points as CONSTANTS (compile-time fold); this fences the same domain when the integer is a
+; runtime parameter — the check must execute: Some on [0, 0xD7FF] and [0xE000, 0x10FFFF] including
+; both inner edges (55295 = U+D7FF, 57344 = U+E000) and the max (1114111 = U+10FFFF); None (as data,
+; never a trap, never an ill-formed Char) on the surrogate block entry (55296 = U+D800) and one past
+; the max (1114112 = U+110000). Negative-at-runtime rides the same check (const twin above). Encodes
+; to-int of the Some payload, -1 for None. (breaker probe cf1, verified tri-target exact at 9
+; boundary args + byte-idempotent hop; rust leg mixes const and fold-opaque runtime facets = 307
+; validity bitmap, const twin == runtime.)
+(case
+  "the Char.from-int scalar-domain check executes on a runtime integer"
+  (input
+    (do
+      (def (main (: n Int64)) (match (Char.from-int n) ((Some c) (Char.to-int c)) ((None u) -1)))
+      (export main)))
+  (call main (: 55295 Int64))
+  (output (: 55295 Int64))
+  (call main (: 55296 Int64))
+  (output (: -1 Int64))
+  (call main (: 57344 Int64))
+  (output (: 57344 Int64))
+  (call main (: 1114111 Int64))
+  (output (: 1114111 Int64))
+  (call main (: 1114112 Int64))
   (output (: -1 Int64)))
