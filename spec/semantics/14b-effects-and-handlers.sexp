@@ -13662,3 +13662,36 @@
   (host-responses (respond e.op (: 7 Int64)) (respond e.op (: 9 Int64)))
   (host-calls (call e.op) (call e.op))
   (output (: 907 Int64)))
+
+; ixx1: an INTEGRATION witness — a handler op that BIN-MATCHES its Bytes argument in the arm and
+; accumulates the extracted byte into a LIST handler-state, exercising the effect fold + a bin-match
+; in an op arm + list-state threading + the list-state reclaim (#8107 family) together. `Acc.feed`
+; takes a Bytes, the arm matches `(bin (u8 x) (u8 y))`, resumes with x+y, and threads `List.push s x`.
+; feed(#list(n 10)) then feed(#list(3 4)): (n+10) + 1000*(3+4). Value-correct AND the accumulated
+; list-state reclaims to 0 (implicit corpus assertion holds — a composition of mechanisms each fenced
+; alone, pinned together as a regression witness). n=5 -> 15 + 7000 = 7015; n=0 -> 7010. (breaker
+; probe ix1, verified tri-target exact + byte-idempotent + live-objects 0 in-gate.)
+(case
+  "a handler op bin-matches its Bytes argument and accumulates the byte in list-state"
+  (input
+    (do
+      (effect Acc (op feed (-> Bytes Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          Acc
+          #list()
+          ((feed
+              (b)
+              s
+              (match
+                b
+                ((bin (u8 x) (u8 y))
+                  (resume (+ (Int64.of x) (Int64.of y)) (List.push s (Int64.of x))))
+                (_ (resume -1 s)))))
+          (+ (Acc.feed (Bytes.of #list((UInt8.of n) 10))) (* 1000 (Acc.feed (Bytes.of #list(3 4)))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 7015 Int64))
+  (call main (: 0 Int64))
+  (output (: 7010 Int64)))
