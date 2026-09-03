@@ -139,6 +139,13 @@ partial def eraseNewtypes : Ty → Ty
   | .sum [(_, some τ)] => eraseNewtypes τ
   | t => t
 
+/-- The `#symbol` (`.sym` leaf) bytes a node references, if it is an `atom → sym` leaf. Used for record
+row-op field keys `(Record.with r #k v)` — `#k` is a symbol, not a name (T1.48). -/
+def symOf? (m : Ast.Module) (nid : Nat) : Option ByteArray :=
+  match m.nodes[nid]? with
+  | some (.atom lid) => (match m.leaves[lid]? with | some (.sym b) => some b | _ => none)
+  | _ => none
+
 /-- Parse a width-namespaced INTEGER MODULE name (`Int64`/`UInt8`/…) → `(width, signed)`. Only the realized
 fixed widths 8/16/32/64 (bare `Int`/`UInt`/`BigInt` → `none`, no fixed width). Used by the int-module ops
 `(. Int64 max)` / `(UInt8.wrap …)` etc. (T1.43). -/
@@ -1883,6 +1890,42 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                      | .error e => .error e)
                   | _, _ => .error (.unsupported "type oracle: malformed Tuple.concat"))
                else .error (.unsupported "type oracle: unmodeled Tuple op")
+             else if q == "Record".toUTF8 then
+               -- T1.48 — Record ROW ops `(Record.with r #k v)` / `(Record.extend r #k v)` (sigs from
+               -- compute.rs lower_record_insert): the field key is a `#symbol` (`.sym` leaf); the result is
+               -- a NEW record type (row update yields a new value — type-system.md). `with` REPLACES a
+               -- PRESENT field (its type becomes typeof(v); an ABSENT field is CDZ0212); `extend` ADDS an
+               -- ABSENT field (a PRESENT field is CDZ0211). A non-record base → CDZ0203; unresolved →
+               -- declined. (merge/without/project/pop are label-list / disjoint / tuple-shaped — later.)
+               if (op == "with".toUTF8 || op == "extend".toUTF8) && children.size == 4 then
+                 (match children[1]?, children[2]?, children[3]? with
+                  | some rId, some kId, some vId =>
+                    (match symOf? m kId with
+                     | none => .error (.unsupported "type oracle: Record.with/extend key is not a #symbol")
+                     | some k =>
+                       (match inferE m env st rId with
+                        | .error e => .error e
+                        | .ok (τr, st1) =>
+                          (match applySubst st1.subst τr with
+                           | .record fields =>
+                             (match inferE m env st1 vId with
+                              | .ok (τv, st2) =>
+                                let vt := applySubst st2.subst τv
+                                let present := fields.any (fun f => Eval.cmpBytes f.1 k == .eq)
+                                -- `with` replaces a PRESENT field (absent → CDZ0212); `extend` ADDS an
+                                -- ABSENT field (present → CDZ0211). Result is a NEW record type.
+                                if op == "with".toUTF8 then
+                                  if present then .ok (.record (fields.map (fun f => if Eval.cmpBytes f.1 k == .eq then (k, vt) else f)), st2)
+                                  else .error (.illTyped "CDZ0212")
+                                else if present then .error (.illTyped "CDZ0211")
+                                else
+                                  let extended := ((fields ++ [(k, vt)]).toArray.qsort (fun a b => Eval.cmpBytes a.1 b.1 == .lt)).toList
+                                  .ok (.record extended, st2)
+                              | .error e => .error e)
+                           | .var _ => .error (.unsupported "type oracle: Record.with/extend on an unresolved record")
+                           | _ => .error (.illTyped "CDZ0203"))))
+                  | _, _, _ => .error (.unsupported "type oracle: malformed Record.with/extend"))
+               else .error (.unsupported "type oracle: unmodeled Record op (merge/without/project/pop — later)")
              else if q == "Char".toUTF8 then
                -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
                -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
@@ -2823,6 +2866,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[4, 5, 6], .list #[3, 7], .atom 2, .list #[9], .atom 1, .list #[11, 10, 8],
                            .atom 9, .atom 2, .list #[13, 14], .atom 0, .list #[16, 12, 15]],
                 root := 17 } == .wellTyped (.int 64 true))
+-- T1.48 (Record row op): `(do (def (main) (Record.with (record (= x 1)) #"x" #t)) (export main))` →
+-- WellTyped (Record x:Bool). `with` replaces the PRESENT field `x` — its type becomes the value's (Bool),
+-- a new record type. (`extend` would ADD an absent field; an absent `with`/present `extend` → CDZ0212/0211.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "with".toUTF8, .name "record".toUTF8, .name "=".toUTF8,
+                            .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .sym "x".toUTF8,
+                            .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 10, .atom 11, .list #[9, 5, 10, 11],
+                           .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 12, .atom 2,
+                           .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                root := 21 } == .wellTyped (.record [("x".toUTF8, .bool)]))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
