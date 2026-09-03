@@ -946,13 +946,21 @@ fn matchlist_scrutinee_consumed(
 /// keeps consuming=`true` (leak, never UAF); the fix only removes an over-dup with no matching drop.
 fn matchlist_arms_rest_mint(db: &mut Db, arms: &[crate::core::ListArm]) -> bool {
     fn walk(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
-        if !seen.insert(id) { return false; }
+        if !seen.insert(id) {
+            return false;
+        }
         if let Core::SumPayload { path, .. } = core_of(db, id)
-            && matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) { return true; }
-        core_child_ids(db, id).into_iter().any(|c| walk(db, c, seen))
+            && matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+        {
+            return true;
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| walk(db, c, seen))
     }
     let mut seen = HashSet::new();
-    arms.iter().any(|a| walk(db, a.body, &mut seen) || a.guard.is_some_and(|g| walk(db, g, &mut seen)))
+    arms.iter()
+        .any(|a| walk(db, a.body, &mut seen) || a.guard.is_some_and(|g| walk(db, g, &mut seen)))
 }
 
 /// Whether subtree `id` REST-MINTS binder `sb` — contains a `SumPayload` whose path's last step is a
