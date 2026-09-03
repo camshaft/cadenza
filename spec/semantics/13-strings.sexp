@@ -6771,3 +6771,38 @@
   (output (: 1114111 Int64))
   (call main (: 1114112 Int64))
   (output (: -1 Int64)))
+
+; bxx1: Bytes.slice takes a LENGTH, not an end — the sibling CONTRAST with String.slice's scalar
+; [start, END) window (ssx2 above). Over #list(10 20 30 40): slice(1,3) is THREE bytes from index 1
+; (an end-reading would give two), slice(2,2) is the two-byte tail (an end-reading would give the
+; empty window), slice(2,3) overruns -> None (strict bounds, no clamp), slice(0,4) is the last-fits
+; boundary (length == remaining is a match), and slice(0,0) is Some EMPTY (encoded -10: len 0, at(0)
+; on it -> None -> -1). This is the documented divergence the range-as-a-first-class-value proposal
+; would migrate (its corpus reframe flips exactly these pins), so the current meaning is locked
+; deliberately. Encodes 10*first-byte + len for Some, -1 for None. (breaker probe bxx, verified
+; tri-target exact + byte-idempotent, both faces of the at/len machinery exercised on the slice
+; result.)
+(case
+  "Bytes.slice third argument is a length and bounds are strict"
+  (input
+    (do
+      (def
+        (main (: a Int64) (: k Int64))
+        (let
+          ((b (Bytes.of #list(10 20 30 40))))
+          (match
+            (Bytes.slice b a k)
+            ((Some t)
+              (+ (* 10 (match (Bytes.at t 0) ((Some v) (Int64.of v)) ((None) -1))) (Bytes.len t)))
+            ((None) -1))))
+      (export main)))
+  (call main (: 1 Int64) (: 3 Int64))
+  (output (: 203 Int64))
+  (call main (: 2 Int64) (: 2 Int64))
+  (output (: 302 Int64))
+  (call main (: 2 Int64) (: 3 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64) (: 4 Int64))
+  (output (: 104 Int64))
+  (call main (: 0 Int64) (: 0 Int64))
+  (output (: -10 Int64)))
