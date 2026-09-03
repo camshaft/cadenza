@@ -1431,6 +1431,62 @@ fn gen_compound<C: Choice>(
 /// `Option` / annotated `Result` — the type-directed step past the Int64-element compounds `gen_compound`
 /// builds (named-record + Option/Result sum value lowering); the typed-fn arm ([`gen_typed_fn_call_body`])
 /// defines + calls a locally-typed function (typed param/return/call across scalar types).
+/// A BIN-MATCH body (binary construction / destructure) — value-comparable Int64. `(bin <seg>…)` in
+/// expression position BUILDS a Bytes value (consumed by `Bytes.len` → deterministic byte count); in a
+/// `match` pattern it DESTRUCTURES a Bytes scrutinee (u8 binders decode to integers, combined → Int64,
+/// with the required catch-all arm). Exercises the segment-width lowering, the `le` byte-order modifier,
+/// signed segments, the `(bytes …)` splice, and the decode/endianness path — the heavily-churned
+/// cadenza-backend bin-match re-emit (#7972 dependent-size / #7977 fixed-after-dependent / #7979 guarded
+/// arms) the coercing grammar never reached. All segment values are small + width-typed via `<T>.of` so
+/// construction is TOTAL (in-range, no CDZ0304). All forms verified wasm-vs-rust AGREE.
+fn gen_bin_body<C: Choice>(c: &mut C, out: &mut String) {
+    if c.variant(2) == 0 {
+        // CONSTRUCTION consumed by `Bytes.len` → the total byte width (deterministic, value-comparable).
+        let n = 1 + c.variant(4); // 1..=4 segments
+        let mut segs = String::new();
+        for i in 0..n {
+            if i > 0 {
+                segs.push(' ');
+            }
+            let seg = match c.variant(6) {
+                0 => format!("(u8 (UInt8.of {}))", c.int_bounded(0, 255)),
+                1 => {
+                    let le = if c.variant(2) == 0 { " le" } else { "" };
+                    format!("(u16 (UInt16.of {}){})", c.int_bounded(0, 60000), le)
+                }
+                2 => {
+                    let le = if c.variant(2) == 0 { " le" } else { "" };
+                    format!("(u32 (UInt32.of {}){})", c.int_bounded(0, 100000), le)
+                }
+                3 => format!("(i8 (Int8.of {}))", c.int_bounded(-128, 127)),
+                4 => format!("(i16 (Int16.of {}))", c.int_bounded(-30000, 30000)),
+                _ => "(bytes b\"AB\")".to_string(), // splice a fixed 2-byte literal
+            };
+            segs.push_str(&seg);
+        }
+        out.push_str(&format!("(Bytes.len (bin {segs}))"));
+    } else {
+        // MATCH-DESTRUCTURE: build a bin, match it back into u8 binders, sum them → Int64, with the
+        // required catch-all arm (a bin pattern is never exhaustive). Two shapes: same-width (two u8s
+        // round-trip) or a u16 decoded as two u8s (exercises byte-ORDER: `le` flips hi/lo).
+        if c.variant(2) == 0 {
+            let a = c.int_bounded(0, 255);
+            let b = c.int_bounded(0, 255);
+            out.push_str(&format!(
+                "(match (bin (u8 (UInt8.of {a})) (u8 (UInt8.of {b}))) \
+                 ((bin (u8 bx) (u8 by)) (+ bx by)) (_ 0))"
+            ));
+        } else {
+            let v = c.int_bounded(0, 60000);
+            let le = if c.variant(2) == 0 { " le" } else { "" };
+            out.push_str(&format!(
+                "(match (bin (u16 (UInt16.of {v}){le})) \
+                 ((bin (u8 bhi) (u8 blo)) (+ bhi blo)) (_ 0))"
+            ));
+        }
+    }
+}
+
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -1438,7 +1494,11 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(34) {
+    match c.variant(35) {
+        // A BIN-MATCH body (binary construction / destructure) → value-comparable Int64. Exercises the
+        // heavily-churned cadenza-backend bin-match re-emit (#7972 dependent-size / #7977 fixed-after-
+        // dependent / #7979 guarded arms) the coercing grammar never reached. See [`gen_bin_body`].
+        34 => gen_bin_body(c, out),
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
