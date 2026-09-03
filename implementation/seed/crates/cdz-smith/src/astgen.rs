@@ -459,7 +459,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 13 };
+    let arms = if depth == 0 { 2 } else { 14 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -658,6 +658,38 @@ fn gen_typefuzz_int<C: Choice>(
                 }
             }
         }
+        // A NESTED-COLLECTION op (T1.29-33 — collections whose ELEMENTS are themselves collections),
+        // consumed to Int64. `List (List Int)` / `List (Set Int)` via `List.len`; `Map Int (List Int)` via
+        // `Map.len`; or a `List.at` over a `List (List Int)` matched (→ `Option (List Int)`) to the inner
+        // `List.len`. The outer container is always List/Map (a Set whose element is a set LITERAL is a
+        // rcdzc capability-gap — nested set-literal not-yet-built — so Set is only ever an inner element).
+        12 => match c.variant(4) {
+            0 => {
+                let a = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let b = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                format!("(List.len (list {a} {b}))")
+            }
+            1 => {
+                let a = gen_typefuzz_set(c, iscope, bscope, fresh, false);
+                let b = gen_typefuzz_set(c, iscope, bscope, fresh, false);
+                format!("(List.len (list {a} {b}))")
+            }
+            2 => {
+                let v1 = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let v2 = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                format!("(Map.len (map (= 0 {v1}) (= 1 {v2})))")
+            }
+            _ => {
+                let a = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let b = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let idx = c.int_bounded(0, 1);
+                let inner = format!("i{}", *fresh);
+                *fresh += 1;
+                format!(
+                    "(match (List.at (list {a} {b}) {idx}) ((Some {inner}) (List.len {inner})) ((None) 0))"
+                )
+            }
+        },
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
