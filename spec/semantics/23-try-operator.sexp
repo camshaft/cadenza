@@ -963,3 +963,37 @@
   (output (: 42 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64)))
+
+; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
+; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return)
+; currently REJECTS with `CDZ0101: unbound name #seed7636` — a compiler-SYNTHESIZED seed binder
+; leaking as a user-facing unbound-name, target-independent (wasm/rust/cadenza identical). Every
+; three-factor neighbor compiles and runs: scalar seed (15/-1 verified), list seed + trivial arm +
+; tick + try, list seed + match arm + try without the leading tick. Idealistic values from the
+; scalar-seed twin + the arm's List.at-0 semantics (a=10 on both ticks): Ok path 5+10 = 15, Err path
+; unwinds to -1. (breaker probe tr3, filed to v-effects tick 1475.)
+(case
+  "a try early-return unwinds a handle with a list seed and a match-shaped arm"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (inner (: b Bool)) (: (if b (Ok 5) (Err "bad")) (Result Int64 String)))
+      (def
+        (f (: b Bool))
+        (handle
+          C
+          #list(10)
+          ((tick
+              ()
+              s
+              (match
+                (List.at s 0)
+                ((Some a) (resume a (List.push s (+ a (List.len s)))))
+                ((None) (resume -9 s)))))
+          (do (C.tick) (let ((v (try (inner b)))) (Ok (+ v (C.tick)))))))
+      (def (main (: n Int64)) (match (f (> n 0)) ((Ok v) v) ((Err _e) -1)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 15 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
