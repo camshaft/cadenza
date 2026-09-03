@@ -772,6 +772,44 @@ def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)
     some (deduped.qsort (fun a b => cmpValue a.1 b.1 == some Ordering.lt))
   else none
 
+/-- Recursively put a Value into CANONICAL form: SETS sorted+deduped (`canonSet`), MAPS sorted-by-key+deduped
+(`canonMap`), RECORD fields sorted by key bytes — and every compound CHILD canonicalized FIRST (so the parent
+sort sees canonical children). This is the helper the wasm heap-result DECODER (v-wasm-oracle, W5.5) calls so a
+value decoded from the final `HeapState` in arbitrary (insertion/hash) order matches Core's canonical form
+under the order-SENSITIVE `Value.valueEqSpec` — without it a decoded set/map/record would false-diverge on
+ordering. An UNORDERABLE set/map (a float mixed with non-floats, or a closure/poison key → `canonSet`/`canonMap`
+return `none`) is left AS-IS: such a value never reaches a successful compare on either side (Core's own
+construction declines it too), so leaving it unsorted is sound. -/
+partial def canonicalizeValue : Value → Value
+  | .set es =>
+    let es' := es.map canonicalizeValue
+    (match canonSet es' with | some c => .set c | none => .set es')
+  | .map ps =>
+    let ps' := ps.map (fun e => (canonicalizeValue e.1, canonicalizeValue e.2))
+    (match canonMap ps' with | some c => .map c | none => .map ps')
+  | .record fs =>
+    let fs' := fs.map (fun e => (e.1, canonicalizeValue e.2))
+    .record (fs'.qsort (fun a b => cmpBytes a.1 b.1 == .lt))
+  | .tuple es    => .tuple (es.map canonicalizeValue)
+  | .list es     => .list (es.map canonicalizeValue)
+  | .some v      => .some (canonicalizeValue v)
+  | .ok v        => .ok (canonicalizeValue v)
+  | .err v       => .err (canonicalizeValue v)
+  | .variant t v => .variant t (canonicalizeValue v)
+  | v            => v
+
+-- canonicalizeValue: an out-of-order set with a duplicate → sorted + deduped.
+#guard (canonicalizeValue (.set #[.int 3, .int 1, .int 2, .int 1]) == .set #[.int 1, .int 2, .int 3])
+-- record fields reordered to canonical key-sorted order.
+#guard (canonicalizeValue (.record #[("b".toUTF8, .int 1), ("a".toUTF8, .int 2)])
+        == .record #[("a".toUTF8, .int 2), ("b".toUTF8, .int 1)])
+-- NESTED: a set inside a tuple is canonicalized recursively (child sorted, then the tuple preserved).
+#guard (canonicalizeValue (.tuple #[.set #[.int 2, .int 1], .int 9])
+        == .tuple #[.set #[.int 1, .int 2], .int 9])
+-- map entries sorted by key, last-value-wins dedupe (canonMap semantics).
+#guard (canonicalizeValue (.map #[(.int 2, .str "b".toUTF8), (.int 1, .str "a".toUTF8)])
+        == .map #[(.int 1, .str "a".toUTF8), (.int 2, .str "b".toUTF8)])
+
 /-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`). -/
 def mapInsertRaw (entries : Array (Value × Value)) (k v : Value) : Array (Value × Value) :=
   (entries.filter (fun e => !(e.1 == k))).push (k, v)
