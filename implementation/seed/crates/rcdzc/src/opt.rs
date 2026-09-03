@@ -1005,6 +1005,36 @@ mod tests {
     }
 
     #[test]
+    fn global_cse_does_not_hoist_a_repeat_whose_other_occurrence_is_branch_local() {
+        // GUARD D1 WITNESS (the per-OCCURRENCE dominating-frontier gate — `candidate_groups`:
+        // `if !dominating.contains(&id) { continue }`). `(+ (& x 7) (if (< x 0) (& x 7) 0))`: the FIRST
+        // `(& x 7)` (lhs of `+`) is in the dominating frontier (always evaluated), but the SECOND lives
+        // inside the `if`'s then-branch — a CONDITIONAL, non-frontier position. The scope-unaware MVP wraps
+        // the WHOLE body in one body-ROOT `Core::Let`, so it may only share occurrences the root binding
+        // dominates. The frontier occurrence alone is a class of ONE (the branch-local occurrence is a
+        // distinct StructId excluded from the candidate set by D1), so the `sum(counts) >= 2` keep-filter
+        // drops it → NO override. This is the exact regression the per-occurrence gate closed: before it,
+        // only the CLASS needed one frontier member, and a non-frontier member sitting inside the arm was
+        // still overridden to read the root binding → CDZ0101 when the arm-scoped position wasn't live at
+        // the root. Contrast `global_cse_shares_a_repeated_scalar_subexpression_in_a_let`, where BOTH
+        // occurrences are frontier operands of `+` and the repeat DOES share.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (& x 7) (if (< x 0) (& x 7) 0))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        assert!(!db.has_core_overrides(), "no override before the pass");
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "a repeat with only ONE frontier occurrence (the other buried in a branch) is not hoisted to \
+             the body root — guard D1 keeps the scope-unaware CSE from speculating/detaching the arm-local \
+             occurrence (the CDZ0101 fence)"
+        );
+    }
+
+    #[test]
     fn body_admits_cse_gates_on_the_context_free_lowering_allow_list() {
         // The eligibility gate (`body_admits_cse`) is the pass's correctness FENCE: it admits ONLY
         // context-free-lowering forms (pure scalar/control leaves, field reads, heap constructors) and
