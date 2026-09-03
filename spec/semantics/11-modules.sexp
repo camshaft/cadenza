@@ -390,10 +390,12 @@
            `(type Sh …)` is a module member like any def, so a sibling must resolve `Sh` and its ctors (bare
            `Box`/`Dot` within the module scope, `Sh.Box` self-qualified) exactly as sibling defs are mutually
            visible (§A Module Function Calls A Sibling Export By Name). get(5): match (Sh.Box 5) binds n=5 → 5.
-           Declines TODAY (CDZ0101 unbound `Sh`): the type-scan is root-only (collect_nested_decls handles
-           do-block-nested types, not module-MEMBER types), an IMPLEMENTATION limitation — NOT a decl-reject.
-           todo→pass when module-member type registration + sibling/qualified resolution land (v-module-system
-           scan/resolution + v-inference module-scoped type-decl identity == the file-module scheme).")
+           NOW WORKS on all three backends (v-module-system #8215): module-MEMBER type registration + sibling/
+           qualified resolution landed, so `Sh`/`Sh.Box` resolve from a sibling exactly as the file-module
+           scheme does — the MAKE-IT-WORK ruling is realized and the todo was removed from all three baselines.
+           (Was CDZ0101 unbound `Sh` until #8215: the type-scan was root-only — collect_nested_decls handled
+           do-block-nested types but not module-MEMBER types — an implementation limitation, never a
+           decl-reject; the bare-LITERAL-payload ctor face is a separate still-open gap, fenced todo below.)")
   (input
     (do
       (module m
@@ -403,6 +405,20 @@
       (def (main) (m.get 5))
       (export main)))
   (output (: 5 Int64)))
+
+; The BARE-LITERAL-payload ctor face of the module-member type above — the separate still-open gap
+; (v-module-system, co-owned with v-inference). A module-member `(type W (W Int64))` used with a BARE
+; INTEGER LITERAL payload in a sibling — `(match (W 42) ((W n) n))` — SHOULD ground the `42` to the ctor's
+; declared `Int64` field and bind n=42. It declines CDZ0201 TODAY: bare-literal grounding through a
+; module-member-type ctor payload isn't wired (the self-qualified `W.W`/`m.W` and typed-parameter `(W k)`
+; forms already resolve; only the bare-literal-into-member-ctor grounding lags). Idealistic should-cross
+; TODO (grades todo on all three backends, auto-flips when the grounding lands) — NOT a decl-reject.
+; (breaker verified via the gate: CDZ0201 on wasm/rust/cadenza; a standalone `cdz compile` of the same
+; module MIS-succeeds — the gate's module context is authoritative, like the units-prelude recompile trap.)
+(case
+  "a bare-literal payload in a module-member-type ctor grounds to the field type (idealistic)"
+  (input (module m (type W (W Int64)) (def (main) (match (W 42) ((W n) n))) (export main)))
+  (output (: 42 Int64)))
 
 (case
   "a private sibling defined after its exported caller still resolves"
