@@ -3546,20 +3546,20 @@
   (input (do (export Undeclared.A) (def (main) 1) (export main)))
   (error CDZ0201 (message "to be a sum type") (message "not a declared type")))
 
-; --- A mutual-recursion cycle CROSSING a module boundary must DECLINE, not ICE. ---
+; --- A mutual-recursion cycle CROSSING a module boundary COMPUTES like a root-level cycle (#7984). ---
 (case
-  "a mutual-recursion cycle crossing a module boundary declines (not a compiler panic)"
+  "a mutual-recursion cycle crossing a module boundary computes like its root-level twin"
   (doc
     "A module fn `lib.f` and a ROOT fn `g` form a mutual-recursion CYCLE through the module projection
-           (`lib.f` → `g` → `lib.f`). Re-entering the cycle via the module member transiently loses the lambda
-           head, which used to PANIC the compiler ('lambda_body implies a lambda head', an ICE that also
-           crashed `cdz check` / the editor loop; breaker). It now DECLINES with a coded reject
-           (decline-don't-crash): the cycle is a recursion the inliner can't reduce and the module member
-           can't (yet) emit a stable `Core::Call` for. IDEALISTIC (should-work, routed to v-module-system): a
-           cross-module mutual cycle SHOULD compile like a ROOT-level mutual cycle does (a real recursive
-           `Core::Call` once the module member resolves to its top-level def index) — this decline is the
-           coded-reject-for-now, flipping to a value when that resolution-side lowering lands. One-way
-           module→root refs and root-level mutual cycles already compile (breaker's green controls).")
+           (`lib.f` → `g` → `lib.f`). This now COMPILES + COMPUTES like a ROOT-level mutual cycle — a real
+           recursive `Core::Call` to the module member (#7984: `callee_def_index` resolves the member via an
+           unguarded Ref→Record follow). The idealistic is realized. HISTORY (regression fences): re-entering
+           the cycle via the module member once PANICked the compiler ('lambda_body implies a lambda head',
+           an ICE that also crashed `cdz check` / the editor loop; breaker), then DECLINED with a coded
+           CDZ0900 (decline-don't-crash, #7916) while the member couldn't emit a stable `Core::Call`; #7984
+           closed it to a value. The fix is BACKEND-AGNOSTIC (the resolution is in lower, before the backend
+           split), so wasm/rust/cadenza compute the same. One-way module→root refs + root-level mutual
+           cycles already compiled (breaker's green controls).")
   (input
     (do
       (module lib
@@ -3569,17 +3569,15 @@
       (def (g (: k Int64)) (if (= k 0) 1 (lib.f (- k 1))))
       (def (main (: n Int64)) (lib.f n))
       (export main)))
-  ; IDEALISTIC should-work (operator: corpus is the impl-independent spec; a not-yet-implemented DECLINE is
-  ; a TODO `(output V)`, NEVER `(error CDZ0900 …)`): the cross-module cycle SHOULD compute like its
-  ; root-level twin — f(even)=0, f(odd)=1 — auto-Passing when the specializer lowers cross-module cycles;
-  ; today it DECLINES (CDZ0900), so this grades TODO (decline-don't-crash: it must not ICE, #7916/breaker).
+  ; Computes like its root-level twin — f(even)=0, f(odd)=1 (#7984 lowers the cross-module cycle to a real
+  ; recursive Core::Call). This grades PASS on all backends now (was a CDZ0900 TODO before #7984).
   (call main (: 4 Int64))
   (output (: 0 Int64))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
 
 (case
-  "two modules in a mutual-recursion cycle compute like a root-level pair (should-work; today the specializer declines)"
+  "two modules in a mutual-recursion cycle compute like a root-level pair"
   (input
     (do
       (module a
