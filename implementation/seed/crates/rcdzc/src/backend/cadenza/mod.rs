@@ -259,6 +259,12 @@ struct BinderEnv {
     /// here so the body's `Core::BinSizedRead` resolves to it. Populated + cleared per arm alongside `bin_fields`.
     /// Keyed by the SCRUTINEE BINDER too (nested bin-matches — see `bin_fields`).
     bin_sized_fields: std::collections::HashMap<(StructId, u32), std::rc::Rc<str>>,
+    /// (BIN-MATCH re-emit) The CONSTANT-SIZE `(utf8 s C)` decoded-STRING binder of the arm currently being
+    /// emitted, keyed by `(scrutinee, payload_byte_offset)`. Unlike a dependent-size utf8 (which re-emits as
+    /// `(bytes payload n)` + a `from-bytes` validity guard, #8008), a const-size utf8 CANNOT — `(bytes p C)`
+    /// with a literal size is not lowerable — so it re-emits as the true `(utf8 s C)` surface binding the
+    /// decoded String directly; the body's `SumExpect{StrFromBytes{BinSizedRead@off}}` read resolves to `<s>`.
+    bin_utf8_fields: std::collections::HashMap<(StructId, u32), std::rc::Rc<str>>,
 }
 
 /// True iff `ty` is a fully-solved NON-DEFAULT-width numeric: a non-`Float64` float (`Float32`) or a
@@ -3109,6 +3115,21 @@ fn emit_expr_viewed(
         // `SumExpect`, message dropped again — byte-idempotent) and is value-equivalent (present → the
         // payload, unaffected by the message; absent → the same textless trap).
         Core::SumExpect { scrutinee, .. } => {
+            // A CONST-SIZE `(utf8 s C)` segment's decoded string is read in the body as `SumExpect{ StrFromBytes{
+            // BinSizedRead@off } }` (unwrap the utf8-decode Option). If that payload was reconstructed as a
+            // `(utf8 <s> C)` segment (registered in `bin_utf8_fields`), resolve the WHOLE read to `<s>` — do NOT
+            // descend to the inner `BinSizedRead` (a utf8 segment binds the String, not a raw-bytes binder).
+            if let Core::StrFromBytes { bytes, .. } = core_of(db, scrutinee)
+                && let Core::BinSizedRead {
+                    bytes: bb,
+                    byte_offset,
+                    ..
+                } = core_of(db, bytes)
+                && let Some(s) = local_binder(db, bb)
+                    .and_then(|sc| env.bin_utf8_fields.get(&(sc, byte_offset)))
+            {
+                return Ok(b.name(s.clone()));
+            }
             let sty = crate::infer::type_of(db, scrutinee);
             let module = match &sty {
                 Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl).map(|t| t.name.as_str()) {
@@ -4938,6 +4959,7 @@ fn try_emit_bin_match(
         Lit(u8, bool, bool, IntValue), // width, signed, little_endian, literal value
         Binder(u8, bool, bool),        // width, signed, little_endian
         Wild,                          // one unread byte → `(u8 _)`
+        Utf8(u32), // a CONSTANT-size `(utf8 s C)` string segment occupying C bytes
     }
     struct BinReArm {
         segs: Vec<(u32, Seg)>, // (byte_offset, segment) for the PRE-payload fixed prefix, sorted + contiguous, tiling [0, payload/prefix)
@@ -4969,6 +4991,7 @@ fn try_emit_bin_match(
             post,
             rest: rest_off,
             dep,
+            const_utf8,
         } = collect_bin_int_segs(db, then_, guard, scrut_binder)?;
         // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
         // `total` (the tail after ALL fixed segments). A mismatch → a shape we don't model.
@@ -5007,6 +5030,16 @@ fn try_emit_bin_match(
                 return None;
             }
         }
+        // CONSTANT-SIZE `(utf8 s C)` segments occupy `C` bytes at a static offset in the fixed prefix — tile
+        // them like a wide binder (a const-size utf8 only occurs at a static offset, off_plus:None). Register
+        // the offset set so the validity guard (a `MatchSum` is-some over the payload) can be recognized + dropped.
+        let utf8_offs: std::collections::HashSet<u32> =
+            const_utf8.iter().map(|&(o, _)| o).collect();
+        for (off, c) in const_utf8 {
+            if by_off.insert(off, Seg::Utf8(c)).is_some() {
+                return None;
+            }
+        }
         // Tile `[0, prefix_end)` (the PRE-payload fixed prefix): consume the literal/binder segment at each
         // offset, and FILL any gap (an unread `_`/unused segment the cond doesn't probe + the body doesn't
         // read) with a `(u8 _)` wildcard byte — value-equivalent (the bytes are unread; only the total length
@@ -5021,6 +5054,7 @@ fn try_emit_bin_match(
                 let w = match &seg {
                     Seg::Lit(w, ..) | Seg::Binder(w, ..) => u32::from(*w),
                     Seg::Wild => 1,
+                    Seg::Utf8(c) => *c,
                 };
                 segs.push((expect_off, seg));
                 expect_off += w;
@@ -5055,6 +5089,7 @@ fn try_emit_bin_match(
                     let w = match &seg {
                         Seg::Lit(w, ..) | Seg::Binder(w, ..) => u32::from(*w),
                         Seg::Wild => 1,
+                        Seg::Utf8(c) => *c,
                     };
                     post_segs.push((off, seg));
                     off += w;
@@ -5067,6 +5102,12 @@ fn try_emit_bin_match(
         if !post_by_off.is_empty() {
             return None; // a post segment past `total`, or overlapping a wider one → unmodeled
         }
+        // A CONST-SIZE utf8 arm's cond carries the utf8-VALIDITY probe (`MatchSum` is-some over
+        // `StrFromBytes(BinSizedRead@off)`) which `parse_bin_len_cond` routed to `guard`. Emitting `(utf8 s C)`
+        // re-lowers that validity intrinsically, and the guard reads a payload with no bytes-binder — so DROP a
+        // guard that is exactly the utf8-validity for a const-utf8 offset. A REAL user guard is a different node
+        // (a Compare/Call), so it is KEPT (this recognition is precise — no user-guard is mis-dropped).
+        let guard = guard.filter(|&g| !is_utf8_validity_guard(db, g, scrut_binder, &utf8_offs));
         arms.push(BinReArm {
             segs,
             dep,
@@ -5098,12 +5139,31 @@ fn try_emit_bin_match(
         let saved = env.bin_fields.clone();
         let saved_rest = env.bin_rest_fields.clone();
         let saved_sized = env.bin_sized_fields.clone();
+        let saved_utf8 = env.bin_utf8_fields.clone();
         let bin_head = b.name("bin");
         let mut pat_children = vec![bin_head];
         for (offset, seg) in &arm.segs {
+            // A CONSTANT-SIZE utf8 segment `(utf8 <s> C)` — binds the decoded String `s` (NOT a `(uN …)` int
+            // segment), registered in `bin_utf8_fields` so the body's `SumExpect{StrFromBytes{BinSizedRead@off}}`
+            // read resolves to `<s>`. The arm's utf8-validity guard was already dropped (re-lowered intrinsically).
+            if let Seg::Utf8(c) = seg {
+                let name = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                env.bin_utf8_fields
+                    .insert((scrut_binder, *offset), name.clone());
+                let utf8_head = b.name("utf8");
+                let s_binder = b.name(name);
+                let size_lit = b.atom_leaf(Leaf::Int {
+                    value: IntValue::from_i64(i64::from(*c)),
+                    radix: Radix::Dec,
+                });
+                pat_children.push(b.list(vec![utf8_head, s_binder, size_lit]));
+                continue;
+            }
             let (width, signed, le) = match seg {
                 Seg::Lit(w, s, l, _) | Seg::Binder(w, s, l) => (*w, *s, *l),
                 Seg::Wild => (1, false, false), // an unread byte → `(u8 _)`
+                Seg::Utf8(_) => unreachable!("Seg::Utf8 handled above"),
             };
             let bits = u32::from(width) * 8;
             let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
@@ -5120,6 +5180,7 @@ fn try_emit_bin_match(
                     b.name(name)
                 }
                 Seg::Wild => b.name("_"),
+                Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
             let mut seg_children = vec![ty, value];
             if le {
@@ -5143,6 +5204,7 @@ fn try_emit_bin_match(
                 env.bin_fields = saved;
                 env.bin_rest_fields = saved_rest;
                 env.bin_sized_fields = saved_sized;
+                env.bin_utf8_fields = saved_utf8;
                 return None;
             };
             let payload_name = synth_payload_name(env.next_payload);
@@ -5163,6 +5225,7 @@ fn try_emit_bin_match(
             let (width, signed, le) = match seg {
                 Seg::Lit(w, s, l, _) | Seg::Binder(w, s, l) => (*w, *s, *l),
                 Seg::Wild => (1, false, false),
+                Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
             let bits = u32::from(width) * 8;
             let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
@@ -5179,6 +5242,7 @@ fn try_emit_bin_match(
                     b.name(name)
                 }
                 Seg::Wild => b.name("_"),
+                Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
             let mut seg_children = vec![ty, value];
             if le {
@@ -5209,6 +5273,7 @@ fn try_emit_bin_match(
         env.bin_fields = saved;
         env.bin_rest_fields = saved_rest;
         env.bin_sized_fields = saved_sized;
+        env.bin_utf8_fields = saved_utf8;
         let guard_node = match guard_res {
             Ok(g) => g,
             Err(e) => return Some(Err(e)),
@@ -5269,6 +5334,10 @@ struct BinBodySegs {
     post: Vec<BinIntSeg>,
     rest: Option<u32>,
     dep: Option<BinDepSeg>,
+    /// CONSTANT-SIZE `(utf8 s C)` segments: `(payload_byte_offset, C)` — a `BinSizedRead` with a `ConstInt(C)`
+    /// len (a const-size utf8 is the only such shape; const-size `(bytes p C)` is not lowerable). Tiled into
+    /// the fixed prefix as `Seg::Utf8(C)` and emitted as `(utf8 <s> C)`.
+    const_utf8: Vec<(u32, u32)>,
 }
 
 /// Parse a bin-match arm cond: a length probe `BytesLen(s) {==|>=} total` optionally AND-ed with `BinIntRead(
@@ -5459,6 +5528,31 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
 /// a `BinSizedRead` with a dynamic `off_plus` (a second dependent size precedes), or a `BinSizedRead` whose `len`
 /// is not a plain scrutinee `BinIntRead`. The int results may be EMPTY (a literal-only arm reads nothing); the
 /// caller MERGES with the cond's literal segments + tile-checks the pre-payload prefix.
+/// True iff `node` is EXACTLY the utf8-VALIDITY probe for a const-size utf8 payload — the shape
+/// `bin_option_is_some` builds (lower/bin_match.rs): `Core::MatchSum { scrutinee: StrFromBytes { bytes:
+/// BinSizedRead { bytes over `scrut`, byte_offset ∈ `utf8_offs` } } }`. That guard is redundant once the
+/// segment re-emits as `(utf8 s C)` (which re-lowers the same validity) AND unresolvable (its inner
+/// BinSizedRead has no bytes-binder in the `(utf8 …)` reconstruction), so the caller DROPS it. A real user
+/// guard is a different node (a `Compare`/`Call`), so this precise structural match never mis-drops one.
+fn is_utf8_validity_guard(
+    db: &mut Db,
+    node: StructId,
+    scrut: StructId,
+    utf8_offs: &std::collections::HashSet<u32>,
+) -> bool {
+    let Core::MatchSum { scrutinee, .. } = core_of(db, node) else {
+        return false;
+    };
+    let Core::StrFromBytes { bytes, .. } = core_of(db, scrutinee) else {
+        return false;
+    };
+    matches!(
+        core_of(db, bytes),
+        Core::BinSizedRead { bytes: bb, byte_offset, .. }
+            if local_binder(db, bb) == Some(scrut) && utf8_offs.contains(&byte_offset)
+    )
+}
+
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
@@ -5473,6 +5567,7 @@ fn collect_bin_int_segs(
         post: Vec<BinIntSeg>,
         rest: Option<u32>,
         dep: Option<BinDepSeg>,
+        const_utf8: Vec<(u32, u32)>,
         bail: bool,
     }
     fn walk(db: &mut Db, node: StructId, scrut: StructId, acc: &mut Acc) {
@@ -5534,30 +5629,45 @@ fn collect_bin_int_segs(
                     acc.bail = true;
                     return;
                 }
-                if let Some(existing) = &acc.dep {
-                    if existing.payload_off != byte_offset {
-                        acc.bail = true; // a genuine SECOND dependent payload at a different offset — unmodeled
+                match core_of(db, len) {
+                    // DEPENDENT-size `(bytes/utf8 payload n)` — `len` is an earlier int segment's `BinIntRead`.
+                    Core::BinIntRead {
+                        bytes: lb,
+                        byte_offset: size_off,
+                        off_plus: None,
+                        width: size_width,
+                        ..
+                    } if local_binder(db, lb) == Some(scrut) => {
+                        if let Some(existing) = &acc.dep {
+                            // The SAME payload read again (validity guard + body decode) — keep the first; a
+                            // DIFFERENT offset is a genuine (unmodeled) second dependent payload → bail.
+                            if existing.payload_off != byte_offset {
+                                acc.bail = true;
+                            }
+                        } else {
+                            acc.dep = Some(BinDepSeg {
+                                payload_off: byte_offset,
+                                size_off,
+                                size_width,
+                            });
+                        }
                     }
-                    // else: the same payload read again (validity guard + body decode) — skip, keep the first.
-                } else {
-                    let (size_off, size_width) = match core_of(db, len) {
-                        Core::BinIntRead {
-                            bytes: lb,
-                            byte_offset: lo,
-                            off_plus: None,
-                            width: lw,
-                            ..
-                        } if local_binder(db, lb) == Some(scrut) => (lo, lw),
-                        _ => {
+                    // CONSTANT-size `(utf8 s C)` — `len` is a `ConstInt(C)`. (A const-size `(bytes p C)` is not
+                    // lowerable, so a const-len BinSizedRead is always a utf8 segment.) Deduped by offset (the
+                    // range is read in both the validity guard and the body decode).
+                    Core::ConstInt(c) => {
+                        let Some(c) = c.to_i64().filter(|&x| x >= 0) else {
                             acc.bail = true;
                             return;
+                        };
+                        if !acc.const_utf8.iter().any(|&(o, _)| o == byte_offset) {
+                            acc.const_utf8.push((byte_offset, c as u32));
                         }
-                    };
-                    acc.dep = Some(BinDepSeg {
-                        payload_off: byte_offset,
-                        size_off,
-                        size_width,
-                    });
+                    }
+                    _ => {
+                        acc.bail = true;
+                        return;
+                    }
                 }
             }
             _ => {}
@@ -5572,6 +5682,7 @@ fn collect_bin_int_segs(
         post: Vec::new(),
         rest: None,
         dep: None,
+        const_utf8: Vec::new(),
         bail: false,
     };
     walk(db, body, scrut_binder, &mut acc);
@@ -5588,6 +5699,7 @@ fn collect_bin_int_segs(
         mut post,
         rest,
         dep,
+        const_utf8,
         ..
     } = acc;
     out.sort_unstable();
@@ -5599,6 +5711,7 @@ fn collect_bin_int_segs(
         post,
         rest,
         dep,
+        const_utf8,
     })
 }
 
