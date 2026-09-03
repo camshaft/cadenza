@@ -13308,3 +13308,28 @@
   (output (: 222 Int64))
   (call main (: 5 Int64))
   (output (: 227 Int64)))
+
+; esx1: a SAME-effect perform in the inner shadow's ARM RESUME-VALUE homes to the OUTER handler — the
+; arm-position companion of mo4 (which pins the SEED homing outward). The inner handler's own arm is
+; OUTSIDE its handled region, so the bare `(E.get)` inside `(resume (+ (E.get) s) s)` dispatches to
+; the enclosing E handler (seed 7), never to itself: body draw = 7 + 50 = 57 (a self-dispatch would
+; double the inner state to 100 or loop forever). Distinct from the adv-69 a3 sub-faces, whose
+; BRANCH-wrapped arm performs decline; this plain perform FOLDS. (breaker probe hsx2, verified
+; tri-target exact + byte-idempotent; fully scalar, composes no value-heap runtime.)
+(case
+  "a same-effect perform in the inner arm's resume-value homes to the outer handler"
+  (input
+    (do
+      (effect E (op get (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          7
+          ((get () s (resume s s)))
+          (handle E 50 ((get () s (resume (+ (E.get) s) s))) (+ (E.get) (* 100 n)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 57 Int64))
+  (call main (: 3 Int64))
+  (output (: 357 Int64)))
