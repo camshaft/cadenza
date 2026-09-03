@@ -2320,6 +2320,7 @@ pass	a let-bound Bytes.concat result is read three ways (len, index, order-compa
 pass	a let-bound Rational borrowed by two reads is dropped once and leaves no live heap objects
 pass	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
 pass	a host block WRAPS a match whose let-bound host result is captured by two escaping closures — fires once (adv-62)
+pass	a host block WRAPS a match binding TWO distinct host calls each captured by its own closure — fires once each in order (adv-62)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound partial application of a runtime closure builds a residual closure and completes

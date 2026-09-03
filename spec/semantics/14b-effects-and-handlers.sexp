@@ -9197,6 +9197,35 @@
   (live-objects 0))
 
 (case
+  "a host block WRAPS a match binding TWO distinct host calls each captured by its own closure — fires once each in order (adv-62)"
+  (doc
+    "The two-distinct-calls ORDER companion of the host-WRAPS-match single-call pin above — coverage the
+           single-op case can't give. The host block WRAPS the whole match (the host-wraps-match shape the
+           adv-62 fix targets); the `let` binds `x = io.a` and `y = io.b` and returns `(tuple (fn (n) (+ x n))
+           (fn (n) (* y n)))`; `main` calls both closures. Each host op must fire EXACTLY ONCE and IN ORDER
+           (io.a then io.b) — the pre-fix host-wraps-match double-fire would have fired each per capturing
+           closure and/or lost the order. This pins that the `Resolved::Let` scrutinee-materialization arm
+           (the adv-62 host-wraps-match fix) materializes a MULTI-binding let-scrutinee once, preserving both
+           the single firing of each op AND their order, not just the single-op count. With io.a=3, io.b=5:
+           `f(10)=3+10=13`, `g(100)=5*100=500`, sum 513, and the (host-calls io.a io.b) fixture pins both
+           firings and their order.")
+  (input
+    (do
+      (effect io (op a (-> Unit Int64)) (op b (-> Unit Int64)))
+      (def
+        (main)
+        (host
+          (io)
+          (match
+            (let ((x (io.a unit)) (y (io.b unit))) #tuple((fn ((: n Int64)) (+ x n)) (fn ((: n Int64)) (* y n))))
+            (#tuple(f g) (+ (f 10) (g 100))))))
+      (export main)))
+  (host-responses (respond io.a (: 3 Int64)) (respond io.b (: 5 Int64)))
+  (host-calls (call io.a) (call io.b))
+  (output (: 513 Int64))
+  (live-objects 0))
+
+(case
   "two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)"
   (doc
     "The two-distinct-calls ORDER companion of the adv-62 single-call pin above (breaker escalation):
