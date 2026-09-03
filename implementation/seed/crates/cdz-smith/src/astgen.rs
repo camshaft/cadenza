@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 17 };
+    let arms = if depth == 0 { 2 } else { 18 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -791,6 +791,39 @@ fn gen_typefuzz_int<C: Choice>(
                 }
             }
         }
+        // An Int64-producing Bytes op (T1.39), consuming a Bytes value built via `(String.to-bytes <str>)`
+        // (the judged Bytes value — the oracle skips `b"…"` literals and `Bytes.of`). `Bytes.len`;
+        // `Bytes.len ∘ concat`/`compact` (→ Bytes); `Bytes.at` (→ Option Int64) matched; `Bytes.slice`
+        // (→ Option Bytes) matched; or `String.from-bytes` (→ Option String) matched. Int64 → agreement.
+        16 => {
+            let s = typefuzz_str(c);
+            match c.variant(6) {
+                0 => format!("(Bytes.len (String.to-bytes {s}))"),
+                1 => {
+                    let t = typefuzz_str(c);
+                    format!(
+                        "(Bytes.len (Bytes.concat (String.to-bytes {s}) (String.to-bytes {t})))"
+                    )
+                }
+                2 => format!("(Bytes.len (Bytes.compact (String.to-bytes {s})))"),
+                3 => {
+                    let i = c.int_bounded(0, 3);
+                    format!(
+                        "(match (Bytes.at (String.to-bytes {s}) {i}) ((Some bn) bn) ((None) 0))"
+                    )
+                }
+                4 => {
+                    let i = c.int_bounded(0, 2);
+                    let j = c.int_bounded(2, 4);
+                    format!(
+                        "(match (Bytes.slice (String.to-bytes {s}) {i} {j}) ((Some bs) (Bytes.len bs)) ((None) 0))"
+                    )
+                }
+                _ => format!(
+                    "(match (String.from-bytes (String.to-bytes {s})) ((Some fs) (String.byte-len fs)) ((None) 0))"
+                ),
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1065,7 +1098,7 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(20) {
+    match c.variant(21) {
         // A NON-STRING receiver to a String op (T1.38 — false-accept hunt): `(String.byte-len <int>)` /
         // `(String.concat <str> <int>)` — the receiver/arg must be String → CDZ0203. rcdzc rejects + the
         // oracle unifies the receiver with String, infers IllTyped ⇒ holds; an rcdzc ACCEPT is a hole.
@@ -1076,6 +1109,12 @@ fn gen_typefuzz_illtyped<C: Choice>(
             } else {
                 format!("(String.concat \"x\" {n})")
             }
+        }
+        // A NON-BYTES receiver to a Bytes op (T1.39 — false-accept hunt): `(Bytes.len <int>)` — the
+        // receiver must be Bytes → CDZ0203. rcdzc rejects + the oracle infers IllTyped ⇒ holds.
+        19 => {
+            let n = int(c, iscope, bscope, fresh);
+            format!("(Bytes.len {n})")
         }
         // A PRODUCT VALUE/ANNOTATION mismatch (T1.36 `(Tuple …)` / T1.37 `(Record …)` annotation guard): an
         // all-Int64 tuple/record ascribed a type whose 2nd field is Bool — the Int64 clashes with the
@@ -1258,7 +1297,7 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(10) {
+    match c.variant(11) {
         // A String VALUE (T1.38): a bare String literal or a `(String.concat a b)`. Both rcdzc + oracle
         // infer String → agreement.
         8 => {
@@ -1268,6 +1307,17 @@ fn gen_typefuzz_value<C: Choice>(
             } else {
                 let t = typefuzz_str(c);
                 format!("(String.concat {s} {t})")
+            }
+        }
+        // A Bytes VALUE (T1.39): `(String.to-bytes <str>)` or `(Bytes.concat …)` — the judged Bytes value
+        // (the oracle skips `b"…"` literals). Both rcdzc + oracle infer Bytes → agreement.
+        9 => {
+            let s = typefuzz_str(c);
+            if c.variant(2) == 0 {
+                format!("(String.to-bytes {s})")
+            } else {
+                let t = typefuzz_str(c);
+                format!("(Bytes.concat (String.to-bytes {s}) (String.to-bytes {t}))")
             }
         }
         // A `Map K V` value (T1.33): a `(map (= k v)…)` literal, or a Map-producing op `(Map.insert …)` /
