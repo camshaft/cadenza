@@ -1570,6 +1570,22 @@ fn emit_expr_viewed(
                 }
                 NominalDisp::PassThrough => {}
                 NominalDisp::Decline => {
+                    // At a Qty-EXPECTED position with TRIVIAL scale, a bare-inner magnitude of ANY core that
+                    // `qty_disposition` cannot classify (a special-inner constructor `Rational.of`/`BigInt.of`,
+                    // a const, an erased-op / call result) is nonetheless a GENUINE Qty element: `expected ==
+                    // Some(Ty::Qty …)` is the authoritative genuine-element signal (a `Qty.value` PEEL carries a
+                    // NON-Qty `expected`, handled above), and trivial scale means no scale-multiply is needed —
+                    // so WRAP `(Qty.of <mag> <unit>)` rather than decline. This generalizes the const (#8091) +
+                    // runtime-arith (#8089) arms above to all magnitude cores, closing the trivial-scale
+                    // special-inner COLLECTION-ELEMENT declines (a Rational/BigInt/Float32 quantity as a
+                    // list/set/map element). A SCALED runtime magnitude still declines (it needs a runtime
+                    // scale-multiply — a later slice); a NON-Qty / absent `expected` also keeps declining.
+                    if matches!(&expected, Some(Ty::Qty { .. })) && unit.scale() == (1, 1) {
+                        let head = member_access(b, "Qty", "of");
+                        let mag = emit_expr_viewed(db, b, id, Some(inner), None, env, emitted)?;
+                        let unit_node = crate::lower::unit_value_ast(b, &unit);
+                        return Ok(b.list(vec![head, mag, unit_node]));
+                    }
                     return Err(Reject::unsupported(
                         "the Cadenza backend does not support re-emitting a quantity value from this \
                          construction site (an ambiguous magnitude-vs-quantity position)"
