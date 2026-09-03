@@ -2932,6 +2932,8 @@ pass	a hoisted division traps by the selected divisor only
 pass	a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations
 pass	a homogeneous distinct-key name-alias (map …) literal is accepted and compares equal
 pass	a homogeneous nested Option distinguishes its outer and inner None
+pass	a host block WRAPS a match binding TWO distinct host calls each captured by its own closure — fires once each in order (adv-62)
+pass	a host block WRAPS a match whose let-bound host result is captured by two escaping closures — fires once (adv-62)
 pass	a host call SANDWICHED between two in-program dispatches — state survives the boundary crossing
 pass	a host call's response is an ordinary value that feeds a LATER host call
 pass	a host delegating a value definition rather than an effect is rejected
@@ -3043,8 +3045,6 @@ pass	a let-bound Rational borrowed by two reads is dropped once and leaves no li
 pass	a let-bound handle whose seed is an EXPRESSION over the caller's runtime arg folds
 pass	a let-bound handle with a runtime seed composes with arithmetic after the let
 pass	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
-pass	a host block WRAPS a match whose let-bound host result is captured by two escaping closures — fires once (adv-62)
-pass	a host block WRAPS a match binding TWO distinct host calls each captured by its own closure — fires once each in order (adv-62)
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
@@ -3232,7 +3232,9 @@ pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejecte
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a macro builds new syntax from its argument via quasiquote and the expansion is type-checked directly
+pass	a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)
 pass	a macro emitting a wrapping (do def…) at a statement position SPLICE-FLATTENS its sibling defs (multi-def idiom)
+pass	a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)
 pass	a macro may INTRODUCE a local binding in its expansion and reference it within that expansion
 pass	a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)
 pass	a macro may introduce a HELPER FUNCTION and its parameter resolves in the function's body
@@ -3244,6 +3246,7 @@ pass	a macro-internal helper flattened from a nested do stays CALLER-hygienic-lo
 pass	a macro-internal helper introduced in a NESTED do is usable by an outer sibling (structural flatten, intra-expansion visibility)
 pass	a macro-internal name in a splice-flattened wrapping (do def…) stays hygienic-local
 pass	a macro-internal type in a wrapping (do …) splice stays hygienic-local
+pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)
 pass	a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)
 pass	a macro-introduced MATCH resolves its arm-pattern binders in the arm body (accessor macros)
 pass	a macro-introduced SIBLING FN def with a caller-spliced name binds visibly (callable) at the enclosing scope
@@ -5598,7 +5601,6 @@ pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in nu
 pass	a trie of 40 RECORD keys resolves descriptor-ordered field descent at depth
 pass	a trie of 40 TUPLE keys resolves compound-key descent at depth
 pass	a trie of 40 rope-built String keys resolves content descent at depth
-pass	a try early-return unwinds a handle with a list seed and a match-shaped arm
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
 pass	a triply-nested narrow Int8 add computes at the consuming width
@@ -5606,6 +5608,7 @@ pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
+pass	a try early-return unwinds a handle with a list seed and a match-shaped arm
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
 pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple ARGUMENT with one too many elements carries a delete fix on the trailing element
@@ -6150,6 +6153,7 @@ pass	an IN-RANGE literal in the transitive-arith-width position compiles and run
 pass	an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)
 pass	an IN-RANGE literal through a Map.insert builder chain compiles and runs (no over-rejection)
 pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it
+pass	an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	an ISOLATED multiply with no narrow-width ancestor leaves the literal at its Int64 default
 pass	an Instant and a Duration are DISTINCT nominal types — a point cannot be used where a span is expected
@@ -6610,7 +6614,6 @@ pass	an inline HOF applies a bare operator passed as its function argument
 pass	an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs
 pass	an inline lambda with more than one body is rejected
 pass	an inline-materialized BigInt constant operand is dropped, leaving no live heap objects
-todo	an inline-module member TYPE is visible to a sibling (module-scoped type, no import)
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture
@@ -8865,6 +8868,7 @@ pass	oax1 two nested OR-by-constants collapse to their bitwise-OR (value parity)
 pass	oax2 two nested XOR-by-constants collapse to their bitwise-XOR (value parity)
 pass	oax3 a double complement (^ (^ x -1) -1) is the identity
 pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
+pass	oc10 a NESTED-Option state (Option (Option Int64)) grounds its inner payload from concrete next-states (no seed annotation)
 pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
 pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
 pass	oc4 an Option state with a RESET cycle — put promotes None to Some or accumulates inside Some; reset reports and returns to None; a fresh put re-promotes
@@ -8873,7 +8877,6 @@ pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair u
 pass	oc7 an Option-of-(Int,String) tuple accumulator — the mixed-scalar payload grounds from concrete resume next-states, no annotation on the (None) seed
 pass	oc8 a NESTED-tuple Option accumulator — (Option (Tuple Int64 (Tuple Int64 String))) grounds recursively from concrete next-states, no annotation
 pass	oc9 a RECORD-payload Option accumulator — (Option (Record tot tag)) grounds from concrete next-states, no annotation on the (None) seed
-pass	oc10 a NESTED-Option state (Option (Option Int64)) grounds its inner payload from concrete next-states (no seed annotation)
 pass	od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)
 pass	od2 string order across fifty rope seams discriminates at the final divergent char
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
@@ -9782,6 +9785,7 @@ pass	spj1 a single-use projected list consume stays on the FBIP fast path
 pass	splice flattens where unquote nests
 pass	splice-flatten RECURSES through a nested statement-position (do …) — a def in a non-final inner do binds visibly
 pass	splice-flatten does NOT descend a TAIL-position nested (do …) — its defs stay scoped (the boundary)
+pass	splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing a string value into a quasiquote is a type error (a string is not a list to splice)
 pass	splicing an integer literal directly is a type error
@@ -10515,6 +10519,7 @@ pass	two host-seeded SIBLING handlers — each region's seed consumes its respon
 pass	two inclusive bounds at the same point collapse to equality
 pass	two inclusive bounds collapse to equality at a negative point
 pass	two inclusive bounds collapse to equality over an unsigned width
+pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)
 pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
 pass	two let-sequenced sibling self-calls thread out-state via multi-value return
 pass	two lists are concatenated into one flat list
@@ -10802,6 +10807,9 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a continuation call whose body ITSELF performs is not effect-free and declines
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 todo	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
+todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
+todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
+todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 todo	a match-discard chain sequencing 3 dispatches over LIST-OF-LISTS state declines cleanly (let-chain twin folds)
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
@@ -10820,9 +10828,9 @@ todo	a self-call gated behind an and short-circuit in an if-condition declines c
 todo	a tuple splat inside an effect-handler body spreads its elements
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-pass	an INDIRECT (helper-hidden) abortive perform in a non-tail accumulator recursion declines cleanly (safe floor; was a miscompile pre-fix)
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an escaping captured continuation is refused, not miscompiled
+todo	an inline-module member TYPE is visible to a sibling (module-scoped type, no import)
 todo	an under-applied built-in operation curries — completing it yields a value (should-work)
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
@@ -10872,11 +10880,3 @@ todo	two do-def-bound performs whose sum mixes handler-state width with a narrow
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
-todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
-pass	a macro-internal type stays caller-hygienic-local even as it becomes intra-expansion visible (orthogonal axes)
-pass	a macro evaluates a caller argument via the Eval.in-caller op — the compile-time Eval effect (slice 1: literal-valued)
-pass	a macro const-evaluates a COMPOUND caller argument via Eval.in-caller (compile-time Eval effect, slice 1b)
-todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
-pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)
-todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
-pass	splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly

@@ -9825,7 +9825,7 @@
   (output (: 10201 Int64))
   (call main (: -13 Int64))
   (output (: -2799 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on"
@@ -9852,7 +9852,7 @@
   (output (: 12099 Int64))
   (call main (: -12 Int64))
   (output (: -21 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Cross-effect INTERLEAVING at the body level (breaker il) ──────────────────────────────────
 ; Two independent effect threads advancing in alternation. il1 is the strict O-I-O-I lockstep —
