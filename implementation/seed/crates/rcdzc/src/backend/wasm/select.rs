@@ -2152,6 +2152,36 @@ fn param_only_borrowed_or_reclaimed_backedge(
     param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false, true)
 }
 
+/// lgx1 (v-memory-safety co-design): whether a member back-edge ARG reboxes `binder` by CONSUMING it as the
+/// BASE COLLECTION of a persistent-extend op (`List.push`/`List.prepend`/`Map.insert`/`Set.insert` base, or a
+/// `List.concat`/`Bytes.concat` operand) — the varying-accumulator idiom `worker (List.push acc x)`. Such a
+/// consume is RECLAIMED-ON-EDGE (the op consumes `binder` into the new value threaded to the next iteration:
+/// FBIP-reuse-in-place at rc1, else path-copy + drop-old), so — UNLIKE a frame-escape / heap-child-MOVE — it
+/// does NOT need the whole-function epilogue drop suppressed on its account; the epilogue drop reclaims only
+/// the FINAL (base-case, un-consumed) value on the disjoint loop-EXIT path (no double-free — v-mem Q1). GATED
+/// to `binder` being the BASE-collection operand ONLY (`is_ref_to`), with `binder` NOT occurring in the
+/// element/key/value/other-concat-operand (a heap-child-MOVE like `List.push other (List.at acc 0)` stays
+/// denied — `binding_escapes` catches it; v-mem Q2). This is the reclaimed-rebox relaxation's extension from
+/// RestFrom-tail-borrow to whole-base-consume.
+fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: StructId) -> bool {
+    match core_of(db, arg) {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            is_ref_to(db, list, binder) && !occurs_in(db, elem, binder)
+        }
+        Core::SetInsert { set, elem, .. } => {
+            is_ref_to(db, set, binder) && !occurs_in(db, elem, binder)
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            is_ref_to(db, map, binder) && !occurs_in(db, key, binder) && !occurs_in(db, val, binder)
+        }
+        Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
+            (is_ref_to(db, lhs, binder) && !occurs_in(db, rhs, binder))
+                || (is_ref_to(db, rhs, binder) && !occurs_in(db, lhs, binder))
+        }
+        _ => false,
+    }
+}
+
 /// The worker, with a `borrowed` flag: `true` iff THIS occurrence is reached through a BORROW position (a
 /// projection / len / sum-payload read / match-dispatch scrutinee), where a direct `Param(binder)` is a
 /// pure read (OK); `false` in a CONSUME/result position, where a direct `Param(binder)` is an ownership
@@ -2201,10 +2231,18 @@ fn param_only_borrowed_or_backedge_rec(
                     return true;
                 }
                 if allow_reclaimed_rebox {
-                    // VARYING-rebound (slice-1): accept a rebox that only BORROWS / reclaimed-consumes binder
-                    // (`!binding_escapes` — RestFrom tail = fresh-tail borrow, reclaimed on the edge; a whole
-                    // or heap-child-move consume ESCAPES → denied). The old value is drop_old_borrowed-reclaimed.
+                    // VARYING-rebound: accept a rebox that only BORROWS / reclaimed-consumes binder.
+                    // (a) `!binding_escapes` — RestFrom tail = fresh-tail borrow, reclaimed on the edge.
+                    // (b) lgx1: `binder` CONSUMED as the BASE COLLECTION of a persistent-extend rebox
+                    //     (`List.push acc x` / prepend / Map/Set.insert base / a concat operand) — reclaimed
+                    //     ON THE EDGE (the op consumes it into the threaded new value: FBIP-reuse rc1 / copy+
+                    //     drop-old), so the epilogue drop (loop-EXIT path only) reclaims just the FINAL un-
+                    //     consumed value → no double-free (v-mem Q1). A heap-child-MOVE stays denied by (a).
+                    //     GATED further by the SCALAR-RETURN fence in `varying_param_epilogue_droppable` (v-mem
+                    //     Q3): the epilogue drop fires only when the fn returns a SCALAR, so no heap child of
+                    //     `binder` can escape the frame via an if/let terminal (the terminal_arms hole).
                     !binding_escapes(db, arg, binder, false)
+                        || arg_reclaims_binder_as_base(db, arg, binder)
                 } else {
                     // Invariant path (UNCHANGED): a non-identity arg must not reference binder at all.
                     !occurs_in(db, arg, binder)
@@ -2402,6 +2440,20 @@ fn varying_param_epilogue_droppable(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
 ) -> bool {
+    // SCALAR-RETURN FENCE (lgx1, v-memory-safety Q3 — closes a real UAF hole): the base-case-exit epilogue
+    // drop is UAF-safe ONLY if no heap CHILD of `binder` can escape the frame. `terminal_arms_no_heapchild_
+    // escape` runs `arm_borrows_heap_subvalue` ONLY for a MATCH-ON-`binder` terminal — for an `if`/`let`/bare-
+    // op terminal (lgx1's is an `if`) its check-set is EMPTY and it returns true VACUOUSLY. So a sibling
+    // `if`-terminal returning a heap child of `binder` (`(List.at acc 0)`/`(. acc 0)`) would pass vacuously and
+    // — with the base-consume relaxation above admitting the back-edge — get the drop, deep-freeing the escaped
+    // child → UAF (the sread/tr3 axis-B). FENCE: require the fn to return a SCALAR (no machine heap rep). Then
+    // NO heap child of `binder` reaches the result, so the deep-drop is safe by construction; and it covers
+    // EVERY consume-to-scalar case (List.len/Map.len/String.byte-len → Int64 — lgx1/wk1/sgx1/Map-len). A heap
+    // return (returns `binder` or a child) → NOT dropped (leak-safe = the escaping-return case, which must stay
+    // un-dropped). Tighter + strictly sound vs extending terminal_arms to if/let terminals.
+    if is_heap_type(&type_of(db, body)) {
+        return false;
+    }
     param_only_borrowed_or_reclaimed_backedge(db, body, binder, members, param_slots, slots)
         && terminal_arms_no_heapchild_escape(db, body, binder, members)
 }

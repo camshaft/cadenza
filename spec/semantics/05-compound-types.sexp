@@ -3188,7 +3188,7 @@
       (def (main) (loop 0 0))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
@@ -36419,8 +36419,12 @@
 ; (List.len acc) at the base still LEAKS. So the trigger is CONSUMING the threaded accumulator by a
 ; scalar projection at the recursion base (it dies to a scalar, not RETURNED) — those husks aren't
 ; reclaimed, where an ESCAPING accumulator (returned, len'd by the caller) is. Type-general
-; (List/Map/String — see sgx1). Distinct from the utf8/Ast/Map-key-slot loci. Known-leak + filed.
-; (breaker probe lb2; controls wk1/wk2/lb1.)
+; (List/Map/String — see sgx1). Distinct from the utf8/Ast/Map-key-slot loci.
+; PINNED 0: the looped owned accumulator is now reclaimed at the loop-EXIT epilogue when it is
+; consumed-to-scalar at the base case — the reclaimed-rebox back-edge relaxation now accepts a
+; whole-consume of the accumulator as the BASE of a persistent-extend rebox (List.push/…),
+; gated by a SCALAR-RETURN fence (no heap child of the accumulator can escape a scalar-returning
+; terminal). (breaker probe lb2; controls wk1/wk2/lb1; v-core-opt + v-memory-safety co-design.)
 (case
   "a list accumulator inspected by length in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)"
   (input
