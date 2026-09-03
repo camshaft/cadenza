@@ -2531,3 +2531,31 @@
   (output (: 4306 Int64))
   (call main (: 0 Int64))
   (output (: 4301 Int64)))
+
+; tcx2: Tuple.concat x the EFFECT fold — the concat's operand-tuple ELEMENTS perform, so the two
+; performing elements (one in each concat operand) must thread the handler state in program order:
+; first operand's `(C.tick)` reads n, second operand's reads n+1, and concat interleaves them at the
+; right positions. #tuple((C.tick) 100) ++ #tuple((C.tick)) = #tuple(n 100 n+1); a + 10*b + 1000*c =
+; n + 1000 + 1000*(n+1) = 1000n + n + 2000... = 2000 at n=0, 7005 at n=5. The runtime-Tuple.concat
+; face (tcx1) fixed the operands; this pins that PERFORMING operand elements thread state correctly
+; across the concat (a materialization that reordered the two operands' performs would swap n and
+; n+1). (breaker probe ex3, verified tri-target exact + byte-idempotent, scalar.)
+(case
+  "Tuple.concat threads performing operand elements in program order under a handler"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (let
+            ((t (Tuple.concat #tuple((C.tick) 100) #tuple((C.tick)))))
+            (match t (#tuple(a b c) (+ a (+ (* 10 b) (* 1000 c)))) (_ -1)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2000 Int64))
+  (call main (: 5 Int64))
+  (output (: 7005 Int64)))
