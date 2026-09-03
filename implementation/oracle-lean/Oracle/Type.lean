@@ -341,6 +341,12 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
              | some kT, some vT => some (.mapTy kT vT)
              | _, _ => none)
           | _, _ => none)
+       else if h == "Tuple".toUTF8 && cs.size >= 3 then
+         -- tuple TYPE constructor `(Tuple T1 T2 … Tn)` (n ≥ 2) → `.tuple [T1…Tn]`. (`Tuple` is the type
+         -- ctor; `tuple` is the value ctor.) Each element parsed recursively; an unmodeled element → decline.
+         (match (cs.extract 1 cs.size).toList.mapM (parseTy? m) with
+          | some ts => some (.tuple ts)
+          | none => none)
        else if h == "->".toUTF8 && cs.size >= 3 then
          -- function type `(-> t1 t2 … tn)` = `t1 → t2 → … → tn` (curried; last element = result). Each
          -- element parsed recursively; an unmodeled element → `none` (decline).
@@ -2285,6 +2291,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.mapTy (.int 64 true) (.int 64 true)))
+-- T1.36 (Tuple type annotation): `(do (def (main) (: (tuple 1 2) (Tuple Int64 Int64))) (export main))` →
+-- WellTyped (Tuple Int64 Int64). `(Tuple T…)` in parseTy? → `.tuple [T…]`; the ascription unifies the
+-- `(tuple 1 2)` value (`.tuple [numVar, numVar]`) with it → `.tuple [Int64, Int64]`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .name "tuple".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "Tuple".toUTF8,
+                            .name "Int64".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2], .atom 7, .atom 8, .atom 8,
+                           .list #[4, 5, 6], .atom 3, .list #[8, 3, 7], .atom 2, .list #[10], .atom 1,
+                           .list #[12, 11, 9], .atom 9, .atom 2, .list #[14, 15], .atom 0,
+                           .list #[17, 13, 16]],
+                root := 18 } == .wellTyped (.tuple [.int 64 true, .int 64 true]))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
