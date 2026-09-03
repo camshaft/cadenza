@@ -830,6 +830,78 @@ def vecUpdate : HeapState → List Value → HeapResult
         | _ => .trap s!"vec-update: handle {v} is not a list"
   | s, _ => .trap "vec-update: expected (i32, i32, i32)"
 
+/-! ### List — the extra constructors (`vec-concat`/`-prepend`/`-of-arr`/`-drop`, indices 55/97/60/72). The
+runtime uses an RRB relaxed-radix trie (O(log N) concat/split), unobservable — a flat element array is a
+faithful value model. All CONSUME per "Constructors Consume And Accessors Borrow" (dup the KEPT element
+handles into the fresh list, then drop the consumed list/arr — on a UNIQUE input the drop's cascade cancels
+the dups and frees the handles that LEAVE; the moved-in element is not dup'd), matching `vec-push`. -/
+
+/-- `vec-concat(a, b) → v` [CONSUMES a, b]: a's elements then b's. -/
+def vecConcat : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"vec-concat: unknown handle {a}"
+    | _, none => .trap s!"vec-concat: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"vec-concat: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"vec-concat: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .vec ea, .vec eb =>
+          let joined := ea ++ eb
+          let s1 := joined.toList.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.vec joined)
+          .ret [.i32 r] ((s2.dropH a).dropH b)
+        | _, _ => .trap s!"vec-concat: handle {a} or {b} is not a list"
+  | s, _ => .trap "vec-concat: expected (i32, i32)"
+
+/-- `vec-prepend(v, elem) → v'` [CONSUMES v, elem]: `elem` then v's elements (front-growth twin of push). -/
+def vecPrepend : HeapState → List Value → HeapResult
+  | s, [.i32 v, .i32 elem] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-prepend: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-prepend: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems =>
+          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.vec (#[elem] ++ elems))
+          .ret [.i32 r] (s2.dropH v)
+        | _ => .trap s!"vec-prepend: handle {v} is not a list"
+  | s, _ => .trap "vec-prepend: expected (i32, i32)"
+
+/-- `vec-of-arr(arr) → v` [CONSUMES arr]: a list of the array's element handles (order preserved). -/
+def vecOfArr : HeapState → List Value → HeapResult
+  | s, [.i32 arr] =>
+    if isImmediate arr then s.box (.vec #[])   -- the inline unit is the empty array → the empty list
+    else match s.getObj? arr with
+    | none   => .trap s!"vec-of-arr: unknown handle {arr}"
+    | some o =>
+      if !o.live then .trap s!"vec-of-arr: use-after-free (handle {arr} freed)"
+      else match o.value with
+        | .array elems =>
+          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.vec elems)
+          .ret [.i32 r] (s2.dropH arr)
+        | _ => .trap s!"vec-of-arr: handle {arr} is not an array"
+  | s, _ => .trap "vec-of-arr: expected (i32)"
+
+/-- `vec-drop(v, index) → v'` [CONSUMES v]: the TAIL `[index, len)`, dropping the prefix `[0, index)`; the
+dropped prefix elements leave (freed by the consumed list's cascade). `index ≥ len` → the empty list. -/
+def vecDrop : HeapState → List Value → HeapResult
+  | s, [.i32 v, .i32 index] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-drop: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-drop: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems =>
+          let keep := (elems.toList.drop index.toNat).toArray
+          let s1 := keep.toList.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.vec keep)
+          .ret [.i32 r] (s2.dropH v)
+        | _ => .trap s!"vec-drop: handle {v} is not a list"
+  | s, _ => .trap "vec-drop: expected (i32, i32)"
+
 /-! ### Map/Set → List (`map-to-list`/`set-to-list`, W5.2c) — the program-observable enumeration, and the
 ONLY one: the language has no fold/iter/keys, and the raw CHAMP cursor's hash order is NEVER program-observable
 (v-runtime, from champ.rs/prelude). Both BORROW their collection (and the shape `desc`, which we ignore — for
@@ -1187,12 +1259,16 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("sum-new",            toHostFn [.i32, .i32]             [.i32]  HeapState.sumNew)
   , ("sum-disc",           toHostFn [.i32]                   [.i32]  HeapState.sumDisc)
   , ("sum-payload",        toHostFn [.i32]                   [.i32]  HeapState.sumPayload)
-    -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
+    -- lists (vec-*, growable sequence) — core + the extra constructors (concat/prepend/of-arr/drop)
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
   , ("vec-get",            toHostFn [.i32, .i32]             [.i32]  HeapState.vecGet)
   , ("vec-push",           toHostFn [.i32, .i32]             [.i32]  HeapState.vecPush)
   , ("vec-update",         toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.vecUpdate)
+  , ("vec-concat",         toHostFn [.i32, .i32]             [.i32]  HeapState.vecConcat)
+  , ("vec-prepend",        toHostFn [.i32, .i32]             [.i32]  HeapState.vecPrepend)
+  , ("vec-of-arr",         toHostFn [.i32]                   [.i32]  HeapState.vecOfArr)
+  , ("vec-drop",           toHostFn [.i32, .i32]             [.i32]  HeapState.vecDrop)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -1798,5 +1874,126 @@ private def probeSumNullary : Bool :=
     | _ => false
   | _ => false
 example : probeSumNullary = true := by native_decide
+
+/-! #### List extra-constructor witnesses (concat / prepend / of-arr / drop), each leak-balanced. -/
+
+/-- vec-concat [1] ++ [2] = [1,2] (immediate ints): len 2, elems read 1,2, consumes both inputs, drop → 0. -/
+private def probeVecConcat : Bool :=
+  match vecEmpty ({} : HeapState) [] with
+  | .ret [.i32 e0] s0 =>
+    match boxInt s0 [.i64 1] with
+    | .ret [.i32 x1] s1 =>
+      match vecPush s1 [.i32 e0, .i32 x1] with
+      | .ret [.i32 a] s2 =>
+        match vecEmpty s2 [] with
+        | .ret [.i32 e1] s3 =>
+          match boxInt s3 [.i64 2] with
+          | .ret [.i32 x2] s4 =>
+            match vecPush s4 [.i32 e1, .i32 x2] with
+            | .ret [.i32 b] s5 =>
+              match vecConcat s5 [.i32 a, .i32 b] with
+              | .ret [.i32 c] s6 =>
+                (match vecLen s6 [.i32 c] with | .ret [.i32 2] _ => true | _ => false) &&
+                (match vecGet s6 [.i32 c, .i32 0] with
+                 | .ret [.i32 g] _ => (match getInt s6 [.i32 g] with | .ret [.i64 1] _ => true | _ => false)
+                 | _ => false) &&
+                (match vecGet s6 [.i32 c, .i32 1] with
+                 | .ret [.i32 g] _ => (match getInt s6 [.i32 g] with | .ret [.i64 2] _ => true | _ => false)
+                 | _ => false) &&
+                (match drop s6 [.i32 c] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecConcat = true := by native_decide
+
+/-- vec-prepend 1 onto [2] = [1,2] (immediate ints): len 2, elem 0 reads 1, drop → 0. -/
+private def probeVecPrepend : Bool :=
+  match vecEmpty ({} : HeapState) [] with
+  | .ret [.i32 e0] s0 =>
+    match boxInt s0 [.i64 2] with
+    | .ret [.i32 x2] s1 =>
+      match vecPush s1 [.i32 e0, .i32 x2] with
+      | .ret [.i32 v] s2 =>
+        match boxInt s2 [.i64 1] with
+        | .ret [.i32 x1] s3 =>
+          match vecPrepend s3 [.i32 v, .i32 x1] with
+          | .ret [.i32 p] s4 =>
+            (match vecLen s4 [.i32 p] with | .ret [.i32 2] _ => true | _ => false) &&
+            (match vecGet s4 [.i32 p, .i32 0] with
+             | .ret [.i32 g] _ => (match getInt s4 [.i32 g] with | .ret [.i64 1] _ => true | _ => false)
+             | _ => false) &&
+            (match drop s4 [.i32 p] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecPrepend = true := by native_decide
+
+/-- vec-of-arr: an array [10,20] (immediate ints) becomes a list [10,20]; consumes the array, drop → 0. -/
+private def probeVecOfArr : Bool :=
+  match arrAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 a] s0 =>
+    match boxInt s0 [.i64 10] with
+    | .ret [.i32 e0] s1 =>
+      match arrSet s1 [.i32 a, .i32 0, .i32 e0] with
+      | .ret [.i32 _] s2 =>
+        match boxInt s2 [.i64 20] with
+        | .ret [.i32 e1] s3 =>
+          match arrSet s3 [.i32 a, .i32 1, .i32 e1] with
+          | .ret [.i32 _] s4 =>
+            match vecOfArr s4 [.i32 a] with
+            | .ret [.i32 v] s5 =>
+              (match vecLen s5 [.i32 v] with | .ret [.i32 2] _ => true | _ => false) &&
+              (match vecGet s5 [.i32 v, .i32 1] with
+               | .ret [.i32 g] _ => (match getInt s5 [.i32 g] with | .ret [.i64 20] _ => true | _ => false)
+               | _ => false) &&
+              (match drop s5 [.i32 v] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecOfArr = true := by native_decide
+
+/-- vec-drop: [f1,f2,f3] (HEAP floats) drop prefix [0,1) → tail [f2,f3]; the dropped f1 is FREED by the
+consumed list's cascade (liveCount 3 after: tail + f2 + f3); tail elem 0 reads 2.0; drop tail → 0. -/
+private def probeVecDrop : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 f1] s0 =>
+    match boxFloat s0 [.f64 2] with
+    | .ret [.i32 f2] s1 =>
+      match boxFloat s1 [.f64 3] with
+      | .ret [.i32 f3] s2 =>
+        match vecEmpty s2 [] with
+        | .ret [.i32 e] s3 =>
+          match vecPush s3 [.i32 e, .i32 f1] with
+          | .ret [.i32 v1] s4 =>
+            match vecPush s4 [.i32 v1, .i32 f2] with
+            | .ret [.i32 v2] s5 =>
+              match vecPush s5 [.i32 v2, .i32 f3] with
+              | .ret [.i32 v3] s6 =>
+                match vecDrop s6 [.i32 v3, .i32 1] with
+                | .ret [.i32 t] s7 =>
+                  (match vecLen s7 [.i32 t] with | .ret [.i32 2] _ => true | _ => false) &&
+                  (s7.liveCount == 3) &&
+                  (match vecGet s7 [.i32 t, .i32 0] with
+                   | .ret [.i32 g] _ => (match getFloat s7 [.i32 g] with | .ret [.f64 2] _ => true | _ => false)
+                   | _ => false) &&
+                  (match drop s7 [.i32 t] with | .ret [] s8 => s8.liveCount == 0 | _ => false)
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecDrop = true := by native_decide
 
 end Oracle.Heap
