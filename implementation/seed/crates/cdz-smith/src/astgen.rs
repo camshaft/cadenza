@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 19 };
+    let arms = if depth == 0 { 2 } else { 20 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -846,6 +846,9 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(match (Int64.{op} {a} {b}) ((Some {bn}) {bn}) ((None) {dflt}))")
             }
         },
+        // `(Rational.truncate <rat>)` → Int64 (T1.44): the integer part of a Rational. Both rcdzc + oracle
+        // infer Int64 → agreement.
+        18 => format!("(Rational.truncate {})", typefuzz_rat(c)),
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -861,7 +864,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 12 };
+    let arms = if depth == 0 { 2 } else { 13 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -974,6 +977,14 @@ fn gen_typefuzz_bool<C: Choice>(
             let b = typefuzz_float(c);
             format!("({op} {a} {b})")
         }
+        // A RATIONAL COMPARISON → Bool (T1.44): Rationals are TOTALLY ordered, so `< > <= >= =` all yield
+        // Bool. Both rcdzc + oracle infer Bool → agreement.
+        11 => {
+            let op = ["<", ">", "<=", ">=", "="][c.variant(5)];
+            let a = typefuzz_rat(c);
+            let b = typefuzz_rat(c);
+            format!("({op} {a} {b})")
+        }
         // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
         // Bool (Mat rule T1.16).
         _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, true),
@@ -1072,6 +1083,14 @@ fn typefuzz_sized_width<C: Choice>(c: &mut C) -> &'static str {
     ][c.variant(7)]
 }
 
+/// A Rational VALUE (T1.44) — `(Rational.of <num> <den>)` with a non-zero denominator (an exact rational;
+/// construction is total type-wise). Shared by the Rational value/int/bool/illtyped arms.
+fn typefuzz_rat<C: Choice>(c: &mut C) -> String {
+    let n = c.int_bounded(0, 9);
+    let d = c.int_bounded(1, 9); // non-zero denominator
+    format!("(Rational.of {n} {d})")
+}
+
 fn gen_typefuzz_map<C: Choice>(
     c: &mut C,
     iscope: &mut Vec<String>,
@@ -1142,7 +1161,20 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(24) {
+    match c.variant(25) {
+        // A RATIONAL op clash (T1.44 — false-accept hunt): a REMAINDER `(% <rat> <rat>)` (no remainder on
+        // exact arithmetic → CDZ0301) or a MIXED rational/int `(+ <rat> <int>)` (numeric types do NOT
+        // silently promote → CDZ0301). rcdzc rejects + the oracle infers IllTyped ⇒ holds.
+        23 => {
+            let r = typefuzz_rat(c);
+            if c.variant(2) == 0 {
+                let s = typefuzz_rat(c);
+                format!("(% {r} {s})") // no rational remainder
+            } else {
+                let n = int(c, iscope, bscope, fresh);
+                format!("(+ {r} {n})") // mixed rational/int, no silent promotion
+            }
+        }
         // A MIXED-WIDTH sized-int op (T1.43 — false-accept hunt): `(UInt16.wrapping-add (UInt8.wrap 1)
         // (UInt16.wrap 2))` — the UInt8 arg does not match the op's UInt16 width → CDZ0301. rcdzc rejects +
         // the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
@@ -1382,7 +1414,25 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(13) {
+    match c.variant(14) {
+        // A RATIONAL VALUE (T1.44): `(Rational.of a b)` / `(Rational.of-int n)` / `(Rational.neg r)` /
+        // `(Rational.value r)`, exact-rational ARITHMETIC `(+/-/* / r r)` → Rational, or a numeric literal
+        // GROUNDED to Rational via an ascription `(: <int> Rational)` (arithmetic never silently promotes).
+        // Both rcdzc + oracle infer Rational → agreement.
+        12 => {
+            let r = typefuzz_rat(c);
+            match c.variant(5) {
+                0 => r,
+                1 => format!("(Rational.of-int {})", c.int_bounded(0, 9)),
+                2 => format!("(Rational.neg {r})"),
+                3 => {
+                    let op = ["+", "-", "*", "/"][c.variant(4)];
+                    let s = typefuzz_rat(c);
+                    format!("({op} {r} {s})")
+                }
+                _ => format!("(: {} Rational)", c.int_bounded(0, 9)),
+            }
+        }
         // A SIZED-INT VALUE (T1.43 — a non-default int width Int8/16/32 + UInt8/16/32/64). `(W.wrap <int>)`
         // truncating convert → `(Int W)`; `W.max`/`W.min` bound constant; `(W.wrapping-add (W.wrap a)
         // (W.wrap b))` modular → W; or `(W.checked-add (W.wrap a) (W.wrap b))` → `Option W` matched to W.
