@@ -3716,3 +3716,32 @@
   ; discriminated segment reads; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak,
   ; tighten to 0 once the bin-match segment-read interior reclaim lands. (breaker blx1 #7958, added unpinned.)
   (live-objects known-leak))
+
+; dzx1: the length-prefixed FRAME — a fixed tail segment AFTER a dependent-size payload (a trailing
+; read at a DYNAMIC offset). Round-trips on the cadenza hop since #7977 (dependent-final landed in
+; #7972; the trailing fixed read was the last framing rung). Pins the full mismatch matrix too: a
+; length shorter than the remaining bytes AND one past the end both fall to the wildcard.
+; (breaker dz1 probe, promoted; live-objects 0 census-checked.)
+(case
+  "a length-prefixed frame parses payload and trailing tag, rejecting bad lengths"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match
+          b
+          ((bin (u8 len) (bytes payload len) (u8 tail))
+            (+ (* 1000 (Bytes.len payload)) (Int64.of tail)))
+          (_ -1)))
+      (def
+        (main (: n Int64))
+        (+
+          (parse (Bytes.of #list(2 10 20 7)))
+          (* 100000 (parse (Bytes.of #list((UInt8.of n) 1 2 3 9))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 300902007 Int64))
+  (call main (: 0 Int64))
+  (output (: -97993 Int64))
+  (call main (: 200 Int64))
+  (output (: -97993 Int64)))
