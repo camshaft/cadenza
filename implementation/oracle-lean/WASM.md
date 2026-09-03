@@ -361,7 +361,8 @@ All remaining emitted (`lowerable`) heap ops except `value-*` / `bigint-of-bytes
 
 ### W5.5 — `value-*` (the last cluster): plan + two divergence-risk gaps
 
-`value-eq` (61) / `value-eq-shaped` (88) wrap the structural `valueEq` (floats bit-exact); `value-canonicalize`
+`value-eq` (61) is DONE — `valueEqOp` wraps `valueEq` (BORROWS both, like `set-contains`), now that `valueEq`
+is order-independent + total (Gap 2 closed). `value-eq-shaped` (88) also wraps structural `valueEq`; `value-canonicalize`
 (87) is identity/dup for canonical values; `value-encode`/`-decode` (the binary-AST byte codec, `cdzast\x00\x01`
 header) are DEFERRED (a `value-encode` result is non-scalar Bytes → low coverage). `value-cmp` (86) is the
 blessed three-way order = v-lean-oracle's `cmpValue` STRUCTURE (Int signed / Bool false<true / Str-Char-Bytes
