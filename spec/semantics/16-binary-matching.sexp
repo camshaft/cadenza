@@ -3799,3 +3799,19 @@
   (output (: 3 Int64))
   (call main (: 1 Int64))
   (output (: -1 Int64)))
+
+; u8x1: a DEPENDENT-UTF8 segment whose DECODED STRING is USED in the body — (utf8 s n) with n read
+; from the length prefix, the decoded s concat-extended. Re-emits on the cadenza target since #8008.
+; Invalid UTF-8 in the sized window falls to the wildcard. (v-cadenza-backend probe, breaker-verified:
+; tri-target exact ×3 args incl. the invalid-utf8 and NUL legs, byte-idempotent.)
+(case
+  "a dependent-utf8 segment decodes and the string is used, invalid bytes fall through"
+  (input
+    (do
+      (def (parse (: b Bytes)) (match b ((bin (u8 n) (utf8 s n)) (String.concat s "!")) (_ "none")))
+      (def (main (: k Int64)) (parse (Bytes.of #list(2 104 (UInt8.of k)))))
+      (export main)))
+  (call main (: 105 Int64))
+  (output (: "hi!" String))
+  (call main (: 255 Int64))
+  (output (: "none" String)))
