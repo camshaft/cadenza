@@ -2291,7 +2291,7 @@ pub(super) fn const_value_ast(
 /// rounds to a finite decimal, Rational scales exactly (cross-multiply + renormalize), Int multiplies
 /// then truncates on a non-whole ratio (the numeric core's integer-division rule). Declines (None) on a
 /// non-scalar inner or a Float scale with no finite decimal form.
-pub(super) fn const_value_ast_scaled(
+pub(crate) fn const_value_ast_scaled(
     db: &mut Db,
     b: &mut crate::ast::Builder,
     id: StructId,

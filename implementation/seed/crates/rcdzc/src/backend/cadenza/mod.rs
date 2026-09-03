@@ -1031,6 +1031,33 @@ fn emit_def(
             let unit_node = crate::lower::unit_value_ast(b, &unit);
             b.list(vec![head, mag, unit_node])
         }
+        // A SCALED (prefix/family/derived) const quantity return `(def (main) (Qty.of 5.0 (Unit.prefix kilo
+        // meter)))` — the def result unit carries a non-trivial scale (`1000/1`). A stored quantity displays at
+        // its dimension's REFERENCE unit (units-of-measure.md §a-stored-quantity-displays-at-its-dimension's-
+        // reference-unit), so re-emit the CANONICAL value form `(Qty.of <const×scale> <reference-unit>)`: scale
+        // the const to the reference IN ITS INNER TYPE via `const_value_ast_scaled` (the SAME helper the value/
+        // display render uses — Int truncates toward zero, Float rounds, Rational stays exact, matching the
+        // wasm value byte-for-byte), and drop to the reference unit (`unit.at_reference()`, scale 1/1). This
+        // avoids the tick-5 mispair (unscaled const + reference unit = wrong value) by SCALING the const to
+        // match. A const that does not decode to a scalar magnitude (a BigInt beyond i128, a ±inf/NaN float)
+        // → `None` → decline (a later slice).
+        Some(Ty::Qty { inner, unit }) if qty_leaf(db, body) == LeafKind::ConstMag => {
+            let (num, den) = unit.scale();
+            match crate::lower::const_value_ast_scaled(db, b, body, &inner, num, den) {
+                Some(mag) => {
+                    let head = member_access(b, "Qty", "of");
+                    let unit_node = crate::lower::unit_value_ast(b, &unit.at_reference());
+                    b.list(vec![head, mag, unit_node])
+                }
+                None => {
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support re-emitting this scaled constant quantity \
+                         magnitude (a non-scalar / out-of-range const)"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         // A partial-bare-inner control-flow tail (a checked-narrow arm mixed with a Param/other arm) can be
         // neither wrapped-whole (the Param arm self-constructs → double-wrap) nor passed through (the bare-inner
         // arm silently drops its wrapper — the #5341 miscompile in an arm position). Decline it (a uniform-arm
