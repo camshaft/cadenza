@@ -3781,3 +3781,21 @@
   (output (: 143 Int64))
   (call main (: 15 Int64))
   (output (: 215 Int64)))
+
+; gxd1: GUARDED × DEPENDENT-SIZE combo — a guard over a dependent-payload bin pattern
+; ((guard (bin (u8 len) (bytes payload len)) (> len 1))). Re-emits on the cadenza target
+; (v-cadenza-backend coverage batch, breaker-verified: tri-target exact + byte-idempotent +
+; live-objects 0). Guard-true takes the payload length; guard-false falls to the wildcard.
+(case
+  "a guard over a dependent-size bin pattern gates on the length field"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match b ((guard (bin (u8 len) (bytes payload len)) (> len 1)) (Bytes.len payload)) (_ -1)))
+      (def (main (: n Int64)) (parse (Bytes.of #list((UInt8.of n) 10 20 30))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))

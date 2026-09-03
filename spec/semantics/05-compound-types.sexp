@@ -35894,3 +35894,46 @@
   (output (: 2006 Int64))
   (call main (: 5 Int64))
   (output (: 5006 Int64)))
+
+; mpx1-mpx3: MAP-PATTERN re-emit fences (v-cadenza-backend coverage batch, breaker-verified: exact
+; tri-target + byte-idempotent). A #map((= k v)) pattern re-emits via Map.lookup + Option match on the
+; cadenza target; mpx2 pins the RECURSIVE (non-inlined) fn face where the MapHasKeys node survives;
+; mpx3 pins the multi-key pattern.
+(case
+  "a single-key map pattern binds the value or falls through"
+  (input
+    (do
+      (def (lookup (: m (Map Int64 Int64))) (match m (#map((= 1 v)) (+ 100 v)) (_ -1)))
+      (def (main (: n Int64)) (lookup #map((= 1 n) (= 2 20))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 105 Int64))
+  (call main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case
+  "a map pattern in a recursive drain matches then exhausts"
+  (input
+    (do
+      (def
+        (drain (: m (Map Int64 Int64)) (: acc Int64))
+        (match m (#map((= 1 v)) (drain (Map.remove m 1) (+ acc v))) (_ acc)))
+      (def (main (: n Int64)) (drain #map((= 1 n) (= 2 20)) 0))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
+(case
+  "a multi-key map pattern binds both values"
+  (input
+    (do
+      (def (f (: m (Map Int64 Int64))) (match m (#map((= 1 a) (= 2 b)) (+ a b)) (_ -1)))
+      (def (main (: n Int64)) (f #map((= 1 n) (= 2 20))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 25 Int64))
+  (call main (: 0 Int64))
+  (output (: 20 Int64)))
