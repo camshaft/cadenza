@@ -5492,36 +5492,48 @@ fn collect_bin_int_segs(
                 acc.rest = Some(byte_offset);
             }
             // A DEPENDENT-SIZE `(bytes payload n)` read — exactly `n` bytes at a static `byte_offset`, where `n`
-            // is an earlier int segment (`len` is a `Core::BinIntRead` over the scrutinee). At most one per arm.
-            // A dynamic `off_plus` (a second dependent size precedes) or a non-`BinIntRead` `len` → bail.
+            // is an earlier int segment (`len` is a `Core::BinIntRead` over the scrutinee). At most one DISTINCT
+            // dependent payload per arm; a dynamic `off_plus` (a second dependent size precedes) or a
+            // non-`BinIntRead` `len` → bail. The SAME payload may be read MORE THAN ONCE — a `(utf8 s n)`
+            // segment reads its byte range both in the arm's validity guard (`is-some(String.from-bytes …)`) AND
+            // in the body (`SumExpect{String.from-bytes …}` for the decoded string), each a `BinSizedRead` at the
+            // SAME `byte_offset`. A repeat at the SAME offset is that ONE segment (dedup — keep the first), not a
+            // second dependent size; only a DIFFERENT offset is a genuine (unmodeled) second dependent payload.
             Core::BinSizedRead {
                 bytes,
                 byte_offset,
                 off_plus,
                 len,
             } if local_binder(db, bytes) == Some(scrut) => {
-                if acc.dep.is_some() || off_plus.is_some() {
+                if off_plus.is_some() {
                     acc.bail = true;
                     return;
                 }
-                let (size_off, size_width) = match core_of(db, len) {
-                    Core::BinIntRead {
-                        bytes: lb,
-                        byte_offset: lo,
-                        off_plus: None,
-                        width: lw,
-                        ..
-                    } if local_binder(db, lb) == Some(scrut) => (lo, lw),
-                    _ => {
-                        acc.bail = true;
-                        return;
+                if let Some(existing) = &acc.dep {
+                    if existing.payload_off != byte_offset {
+                        acc.bail = true; // a genuine SECOND dependent payload at a different offset — unmodeled
                     }
-                };
-                acc.dep = Some(BinDepSeg {
-                    payload_off: byte_offset,
-                    size_off,
-                    size_width,
-                });
+                    // else: the same payload read again (validity guard + body decode) — skip, keep the first.
+                } else {
+                    let (size_off, size_width) = match core_of(db, len) {
+                        Core::BinIntRead {
+                            bytes: lb,
+                            byte_offset: lo,
+                            off_plus: None,
+                            width: lw,
+                            ..
+                        } if local_binder(db, lb) == Some(scrut) => (lo, lw),
+                        _ => {
+                            acc.bail = true;
+                            return;
+                        }
+                    };
+                    acc.dep = Some(BinDepSeg {
+                        payload_off: byte_offset,
+                        size_off,
+                        size_width,
+                    });
+                }
             }
             _ => {}
         }
