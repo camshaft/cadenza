@@ -2228,15 +2228,21 @@ pub(crate) fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerC
                 None => return node, // not actually reducible — leave it
             },
         };
-        // eg1 HYGIENE: α-rename the inlined helper body's MATCH-ARM pattern binders to fresh names before
-        // re-walking. The resumptive-conditional commute later nests the enclosing match's CONTINUATION under
-        // this inlined body's arm binders; without freshening, a continuation reference whose spelling
-        // collides with a helper arm binder (e.g. the caller reuses `a`, the helper's internal binder) is
-        // CAPTURED → a silent wrong value (the eg1 name-collision miscompile). Freshening makes the collision
-        // impossible (a `#a{n}` binder shares its name with nothing), so it supersedes the pre-inline
-        // safe-decline. Semantically INERT for a non-colliding body (a pure α-conversion re-resolving
-        // identically), so a byte-identical fold for every existing case; it engages only where a rename
-        // actually applies.
+        // eg1 HYGIENE: α-rename the inlined helper body's LOCAL BINDERS to fresh names before re-walking. The
+        // resumptive-conditional commute later nests the enclosing match's CONTINUATION under this inlined
+        // body's binders; without freshening, a continuation reference whose spelling collides with a helper
+        // binder (e.g. the caller reuses `a`, the helper's internal binder) is CAPTURED → a silent wrong value
+        // (the eg1 name-collision miscompile). BOTH binder classes must be freshened: `freshen_local_binders`
+        // (freshen_walk) covers `let`/`do`-def/`fn` binders but SKIPS match-arm pattern binders, and
+        // `freshen_match_arm_binders` covers exactly those — a helper arm with a nested `let` rebinding the
+        // colliding name captures through the LET binder if only the match-arm class is freshened (probe:
+        // `(match p (#tuple(a b) (let ((a (+ a 100))) …)))` folded 102202 not 102201). The pre-inline
+        // `freshen_local_binders` at reduce_handle's top ran BEFORE this inline, so the inlined body's binders
+        // are still their original names — freshen them here. Both passes make the collision impossible (a
+        // `#a{n}` binder shares its name with nothing) and supersede the pre-inline safe-decline. Semantically
+        // INERT for a non-colliding body (a pure α-conversion re-resolving identically → byte-identical fold);
+        // each engages only where a rename actually applies.
+        let reduced = freshen_local_binders(db, reduced);
         let reduced =
             freshen_match_arm_binders(db, reduced, &HashMap::default()).unwrap_or(reduced);
         return reduce_applied_lambdas(db, reduced, ctx);
