@@ -3468,6 +3468,36 @@
   (input (do (def (main) (Map.len (: (Map.empty) (Map Float32 Int64)))) (export main)))
   (output (: 0 Int64)))
 
+; The float-key canonicalization contract (ch03: canonicalize NaN, preserve signed zero) governs the Set
+; INSERT/DEDUP path too, not only Map.lookup — a distinct codepath (champ insert collision resolution +
+; cardinality). If insert-dedup disagreed with lookup/`=`, a Set could hold two "equal" NaNs or wrongly
+; merge +0.0/-0.0 — a cardinality soundness bug. Verified breaker probe sdedup, tri-target exact + hop
+; value-parity + idempotent. (1) +0.0 and -0.0 inserted into one Set stay DISTINCT → Set.len 2 (signed
+; zero preserved on insert). (2) two independently-computed NaNs inserted into one Set DEDUP → Set.len 1
+; (NaN canonicalized on insert). Same contract as the scalar/compound Map key and the `=` operator.
+(case
+  "positive and negative zero are distinct set elements — cardinality two"
+  (input
+    (do
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((nz (Float64.neg z))) (Set.len (Set.insert (Set.of #list(z)) nz)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case
+  "two independently-computed NaNs dedup to one set element — cardinality one"
+  (input
+    (do
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((q1 (/ z z)))
+            (let ((q2 (/ (Float64.neg z) z))) (Set.len (Set.insert (Set.of #list(q1)) q2))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
 ; A collection construction whose element/key siblings INTERLEAVE a BigInt heap handle (i32) with GUARDED
 ; Int64 arithmetic (i64) must emit a VALID module. `(Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of
 ; (+ n 2))))` has a FIRST element that is a BigInt sum — its `bigint-add` operands stash i32 handles in
