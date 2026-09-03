@@ -5311,7 +5311,6 @@ fn try_emit_bin_match(
                 Seg::Utf8(_) => unreachable!("Seg::Utf8 handled above"),
             };
             let bits = u32::from(width) * 8;
-            let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
             let value = match seg {
                 Seg::Lit(_, _, _, lit) => b.atom_leaf(Leaf::Int {
                     value: lit.clone(),
@@ -5327,11 +5326,29 @@ fn try_emit_bin_match(
                 Seg::Wild => b.name("_"),
                 Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
-            let mut seg_children = vec![ty, value];
-            if le {
-                seg_children.push(b.name("le"));
+            // A NON-byte-aligned int width (24/40/48/56 bits — a `Core::BinIntRead{width:3/5/6/7}`, e.g. the
+            // packed RUN of a byte-aligned bit-field pair `(bits n 8) (bits m 16)` = a 24-bit run whose body
+            // shift/masks out each field) has NO `uN`/`iN` spelling — a bare `u24` is CDZ0201 ("not a
+            // byte-aligned width — use `(bits v k)`") on recompile. Re-emit it as a WIDE `(bits <value> <k>)`
+            // bit-field segment (UNSIGNED, MSB-first): value-equivalent + recompilable, and idempotent (a
+            // `(bits x 24)` decode re-lowers to `BinIntRead{width:3} & (1<<24)-1`, which `peel_full_mask` peels
+            // back to the run read here). A little-endian or signed non-standard width has no bit-field form, so
+            // it falls through to the `uN`/`iN` path (still declines on recompile — a rarer unmodeled shape).
+            if !matches!(bits, 8 | 16 | 32 | 64) && !signed && !le {
+                let bits_head = b.name("bits");
+                let k = b.atom_leaf(Leaf::Int {
+                    value: crate::ast::IntValue::from_i64(bits as i64),
+                    radix: Radix::Dec,
+                });
+                pat_children.push(b.list(vec![bits_head, value, k]));
+            } else {
+                let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
+                let mut seg_children = vec![ty, value];
+                if le {
+                    seg_children.push(b.name("le"));
+                }
+                pat_children.push(b.list(seg_children));
             }
-            pat_children.push(b.list(seg_children));
         }
         // A DEPENDENT-SIZE `(bytes payload <size>)` segment — binds `payload` = the runtime-length slice whose
         // byte count is the value of an earlier int-segment binder. `<size>` NAMES that binder (looked up in
@@ -5373,7 +5390,6 @@ fn try_emit_bin_match(
                 Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
             let bits = u32::from(width) * 8;
-            let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
             let value = match seg {
                 Seg::Lit(_, _, _, lit) => b.atom_leaf(Leaf::Int {
                     value: lit.clone(),
@@ -5389,11 +5405,29 @@ fn try_emit_bin_match(
                 Seg::Wild => b.name("_"),
                 Seg::Utf8(_) => unreachable!("Seg::Utf8 tiles only the pre-payload prefix"),
             };
-            let mut seg_children = vec![ty, value];
-            if le {
-                seg_children.push(b.name("le"));
+            // A NON-byte-aligned int width (24/40/48/56 bits — a `Core::BinIntRead{width:3/5/6/7}`, e.g. the
+            // packed RUN of a byte-aligned bit-field pair `(bits n 8) (bits m 16)` = a 24-bit run whose body
+            // shift/masks out each field) has NO `uN`/`iN` spelling — a bare `u24` is CDZ0201 ("not a
+            // byte-aligned width — use `(bits v k)`") on recompile. Re-emit it as a WIDE `(bits <value> <k>)`
+            // bit-field segment (UNSIGNED, MSB-first): value-equivalent + recompilable, and idempotent (a
+            // `(bits x 24)` decode re-lowers to `BinIntRead{width:3} & (1<<24)-1`, which `peel_full_mask` peels
+            // back to the run read here). A little-endian or signed non-standard width has no bit-field form, so
+            // it falls through to the `uN`/`iN` path (still declines on recompile — a rarer unmodeled shape).
+            if !matches!(bits, 8 | 16 | 32 | 64) && !signed && !le {
+                let bits_head = b.name("bits");
+                let k = b.atom_leaf(Leaf::Int {
+                    value: crate::ast::IntValue::from_i64(bits as i64),
+                    radix: Radix::Dec,
+                });
+                pat_children.push(b.list(vec![bits_head, value, k]));
+            } else {
+                let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
+                let mut seg_children = vec![ty, value];
+                if le {
+                    seg_children.push(b.name("le"));
+                }
+                pat_children.push(b.list(seg_children));
             }
-            pat_children.push(b.list(seg_children));
         }
         // A final `(bytes rest)` segment — binds the tail after the fixed prefix (+ any dependent payload); the
         // body's `BinRestRead` resolves to this binder via `bin_rest_fields` (keyed by the rest's byte offset).
