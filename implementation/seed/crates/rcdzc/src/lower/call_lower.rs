@@ -2184,12 +2184,49 @@ pub(super) fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
     match resolved_of(db, head) {
         Resolved::Lambda { body, .. } => db.def_index_by_body(body),
         Resolved::Ref { value } => callee_def_index(db, value),
-        Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
-            crate::eval::Member::Field(v) => callee_def_index(db, v),
-            _ => None,
-        },
+        Resolved::Member { operand, key } => {
+            let field = match crate::eval::member_value(db, operand, &key) {
+                crate::eval::Member::Field(v) => Some(v),
+                // The GUARDED `member_value` (→ `reduce_to_record_id`, under the reduction budget/depth
+                // guard) is DENIED the trivial `Ref → Record` hop when the cumulative budget is exhausted
+                // DEEP IN A REDUCTION CYCLE, returning `NotRecord` even though the operand DOES resolve
+                // `Ref → Record` via unguarded `resolved_of`. That made a cross-module mutual-recursion
+                // cycle's β-copied `(. lib f)` head fail `callee_def_index` → no `Core::Call` → the #7916
+                // ICE-fix's coded CDZ0900 decline (where a ROOT cycle compiles). Finding a def INDEX is a
+                // STRUCTURAL lookup, NOT a β-reduction, so retry NotRecord with an UNGUARDED, cycle-BOUNDED
+                // `Ref → Record` follow — independent of the reduction budget. `NoField` (the key is
+                // genuinely absent from the record) is a real miss and does NOT retry.
+                crate::eval::Member::NotRecord => member_field_unguarded(db, operand, &key),
+                crate::eval::Member::NoField => None,
+            };
+            field.and_then(|v| callee_def_index(db, v))
+        }
         _ => None,
     }
+}
+
+/// Resolve module-member `operand`'s RECORD and read field `key` via an UNGUARDED, cycle-BOUNDED `Ref`
+/// follow (no reduction budget/depth guard) — the structural companion of `eval::member_value` for
+/// `callee_def_index`, which only needs a def-index lookup, never a β-reduction. Used when the guarded
+/// `member_value` returns `NotRecord` deep in a reduction cycle (the budget denied its trivial `Ref →
+/// Record` hop). The `Ref` chain of a module name is short; a bound (64) terminates a value `Ref` cycle
+/// (a self/mutually-referential value def) at `None` rather than looping. Only follows `Ref`/reads
+/// `Record` — an `Apply`-operand (a call-RETURNED record) still needs the guarded `member_value` and is
+/// left to it (returns `None` here, so the caller keeps `member_value`'s original answer for that shape).
+fn member_field_unguarded(
+    db: &mut Db,
+    operand: StructId,
+    key: &crate::resolved::Symbol,
+) -> Option<StructId> {
+    let mut cur = operand;
+    for _ in 0..64 {
+        match resolved_of(db, cur) {
+            Resolved::Record { fields } => return fields.get(key).copied(),
+            Resolved::Ref { value } => cur = value,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Per-binding use facts for a whole `let`, collected in ONE walk of the binding region (all initializer
