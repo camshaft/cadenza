@@ -35983,15 +35983,17 @@
   (call main (: 0 Int64))
   (output (: 20 Int64)))
 
-; lgx1: a recursive function that reads its List accumulator's length in the RECURSION GUARD each
-; iteration leaks the accumulator (value-correct). `worker acc = if (> (List.len acc) 2) (List.len
-; acc) else worker (List.push acc 1)` — building [1,1,1] then returning its length 3. VALUE exact,
-; but leaks 2 List husks. ISOLATED: build-the-list-THEN-len-once (`List.len (build 3 #list())`)
-; reclaims 0; the leak is the per-iteration `(List.len acc)` BORROW in the loop GUARD — each guard
-; re-borrow of the heap accumulator inflates its rc so the base-case deep-drop leaves husks (the
-; loop-guard-borrow analogue of the stacked-guard re-borrow reclaim). A common accumulate-until-size
-; idiom; distinct from the utf8-decode-husk / Ast-construction / Map-key-slot leak loci. Pinned
-; known-leak + filed to v-memory-safety. (breaker probe lb2.)
+; lgx1: a recursive builder that CONSUMES its threaded List accumulator via a scalar-returning op
+; (List.len) at the recursion BASE CASE leaks the accumulator (value-correct). `worker acc = if (>
+; (List.len acc) 2) (List.len acc) else worker (List.push acc 1)` — builds [1,1,1], returns length 3.
+; VALUE exact, leaks 2 List husks. CORRECTED ROOT CAUSE (breaker, tick 1546): NOT the loop-guard
+; re-borrow — a control that reads (List.len acc) in the guard EVERY iteration but RETURNS acc
+; (escapes, len'd OUTSIDE) reclaims 0; a control that guards on a SCALAR counter but returns
+; (List.len acc) at the base still LEAKS. So the trigger is CONSUMING the threaded accumulator by a
+; scalar projection at the recursion base (it dies to a scalar, not RETURNED) — those husks aren't
+; reclaimed, where an ESCAPING accumulator (returned, len'd by the caller) is. Type-general
+; (List/Map/String — see sgx1). Distinct from the utf8/Ast/Map-key-slot loci. Known-leak + filed.
+; (breaker probe lb2; controls wk1/wk2/lb1.)
 (case
   "a list accumulator inspected by length in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)"
   (input

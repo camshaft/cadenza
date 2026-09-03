@@ -6807,13 +6807,14 @@
   (call main (: 0 Int64) (: 0 Int64))
   (output (: -10 Int64)))
 
-; sgx1: the STRING (rope) instance of the loop-guard-borrow leak class (lgx1 is the List instance) —
-; a recursive worker reading its String accumulator's byte-len in the RECURSION GUARD each iteration
-; leaks (value-correct). `worker acc = if (> (String.byte-len acc) 2) (String.byte-len acc) else
-; worker (String.concat acc "x")` — builds "xxx", returns 3. Leaks 1 rope husk. Confirms the
-; loop-guard re-borrow reclaim gap is TYPE-GENERAL (List/Map/String all leak; a build-then-inspect-
-; ONCE reclaims 0), NOT container-specific — the fix must cover the rope reclaim path too, distinct
-; from lgx1's list path. Pinned known-leak + filed to v-memory-safety. (breaker probe slg.)
+; sgx1: the STRING (rope) instance of the base-case-consume leak class (lgx1 is the List instance) —
+; a recursive worker that CONSUMES its threaded String accumulator via String.byte-len at the
+; recursion base case leaks (value-correct). `worker acc = if (> (String.byte-len acc) 2)
+; (String.byte-len acc) else worker (String.concat acc "x")` — builds "xxx", returns 3. Leaks 1 rope
+; husk. CORRECTED (tick 1546): the trigger is the base-case scalar-consume of the threaded
+; accumulator (not the loop guard — see lgx1's corrected note), and it is TYPE-GENERAL (List/Map/
+; String all leak; escape-then-inspect reclaims 0). The rope reclaim path is distinct from lgx1's
+; list path, so the fix must cover it too. Pinned known-leak + filed. (breaker probe slg.)
 (case
   "a string accumulator inspected by byte-len in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)"
   (input
