@@ -3405,6 +3405,48 @@
   (live-objects 0))
 
 (case
+  "a self-recursive fold that binds its recursive results in a NESTED LET arm reclaims its owned param shell (no leak)"
+  (doc
+    "The tr3 leak class: `depth` matches an OWNED recursive-sum param and, in the `(Node …)` arm, binds
+           its two recursive results in a nested `(let ((a (depth l)) (b (depth r))) …)` continuation.
+           That nested-let lambda-lifts `depth`'s body WITH captures — but `depth` is a DIRECT-called
+           self-recursive combinator (never caller-drop'd: the caller-drop is excluded for any looped
+           callee), so the captures are SPURIOUS for the ownership question and `depth` must reclaim its
+           own tree-node shell at every frame. A capturing-lifted proxy that excludes the shell reclaim
+           for ANY captured body (ignoring self-recursion) leaks the whole spine (fold owns its param but
+           neither the callee nor the caller drops it); the VALUE is correct either way. `build` grows a
+           6-node right-leaning tree, so `depth` = 6, `sum` = 2+5+8+11+14+17 = 57, and
+           6 + 100·57 = 5706. `(live-objects 0)` pins that both the nested-let fold (`depth`) AND the
+           direct-recursion fold (`sum`) reclaim the shared owned tree — a future reclaim-selection change
+           can't silently re-leak the common self-recursive-nested-let-arm idiom (depth/max/balance).")
+  (input
+    (do
+      (type Tree (Leaf) (Node Tree Int64 Tree))
+      (def
+        (ins (: t Tree) (: v Int64))
+        (match
+          t
+          ((Leaf) (Node (Leaf) v (Leaf)))
+          ((Node l x r) (if (< v x) (Node (ins l v) x r) (Node l x (ins r v))))))
+      (def
+        (sum (: t Tree))
+        (match t ((Leaf) 0) ((Node l x r) (+ (sum l) (+ x (sum r))))))
+      (def
+        (depth (: t Tree))
+        (match
+          t
+          ((Leaf) 0)
+          ((Node l _x r) (+ 1 (let ((a (depth l)) (b (depth r))) (if (> a b) a b))))))
+      (def
+        (build (: k Int64) (: t Tree))
+        (if (> k 0) (build (- k 1) (ins t (% (* k 37) 20))) t))
+      (def (main (: n Int64)) (let ((t (build n (Leaf)))) (+ (depth t) (* 100 (sum t)))))
+      (export main)))
+  (call main (: 6 Int64))
+  (output (: 5706 Int64))
+  (live-objects 0))
+
+(case
   "pushing through ONE alias of a doubly-held list leaves the sibling field intact"
   (doc
     "The same-value-in-BOTH-FIELDS consume face: `(Mk xs xs)` holds ONE list in two payload slots
