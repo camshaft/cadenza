@@ -1113,16 +1113,22 @@ fn gen_typefuzz_illtyped<C: Choice>(
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
     match c.variant(22) {
-        // A FLOAT type clash (T1.40 — false-accept hunt): a MIXED int/float comparison `(< <float> <int>)`
-        // (float does not unify with int/numVar) or a float literal ASCRIBED Int64 `(: <float> Int64)` → a
-        // coded type fault. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a hole.
+        // A FLOAT type/op clash (T1.40/T1.41 — false-accept hunt): a MIXED int/float comparison
+        // `(< <float> <int>)` (float ⊥ int/numVar), a float ASCRIBED Int64 `(: <float> Int64)`, or a float
+        // REMAINDER `(% <float> <float>)` (no float remainder → CDZ0301) → a coded type fault. rcdzc rejects
+        // + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
         20 => {
             let f = typefuzz_float(c);
-            let n = int(c, iscope, bscope, fresh);
-            if c.variant(2) == 0 {
-                format!("(< {f} {n})") // mixed float/int compare
-            } else {
-                format!("(: {f} Int64)") // float ascribed Int64
+            match c.variant(3) {
+                0 => {
+                    let n = int(c, iscope, bscope, fresh);
+                    format!("(< {f} {n})") // mixed float/int compare
+                }
+                1 => format!("(: {f} Int64)"), // float ascribed Int64
+                _ => {
+                    let g = typefuzz_float(c);
+                    format!("(% {f} {g})") // float remainder → CDZ0301
+                }
             }
         }
         // A NON-STRING receiver to a String op (T1.38 — false-accept hunt): `(String.byte-len <int>)` /
@@ -1324,14 +1330,20 @@ fn gen_typefuzz_value<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     match c.variant(12) {
-        // A FLOAT VALUE (T1.40): a bare float literal (→ Float64, width-defaulted) or one ASCRIBED
-        // `(: <lit> Float32)` / `(: <lit> Float64)`. Both rcdzc + oracle infer the Float → agreement.
+        // A FLOAT VALUE (T1.40 literal/ascription + T1.41 arithmetic): a bare float literal (→ Float64,
+        // width-defaulted), an ASCRIBED `(: <lit> Float32|Float64)`, or float ARITHMETIC `(+/-/* / a b)`
+        // → Float (T1.41; width-poly, still resolves under an ascription). Both rcdzc + oracle → agreement.
         10 => {
             let f = typefuzz_float(c);
-            match c.variant(3) {
+            match c.variant(4) {
                 0 => f.to_string(),
                 1 => format!("(: {f} Float64)"),
-                _ => format!("(: {f} Float32)"),
+                2 => format!("(: {f} Float32)"),
+                _ => {
+                    let op = ["+", "-", "*", "/"][c.variant(4)];
+                    let g = typefuzz_float(c);
+                    format!("({op} {f} {g})")
+                }
             }
         }
         // A String VALUE (T1.38): a bare String literal or a `(String.concat a b)`. Both rcdzc + oracle
