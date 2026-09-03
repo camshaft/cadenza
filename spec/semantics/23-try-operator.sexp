@@ -965,11 +965,15 @@
   (output (: -1 Int64)))
 
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
-; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return)
-; currently REJECTS with `CDZ0101: unbound name #seed7636` — a compiler-SYNTHESIZED seed binder
-; leaking as a user-facing unbound-name, target-independent (wasm/rust/cadenza identical). Every
-; three-factor neighbor compiles and runs: scalar seed (15/-1 verified), list seed + trivial arm +
-; tick + try, list seed + match arm + try without the leading tick. Idealistic values from the
+; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
+; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction
+; the resumptive fold DUPLICATES the continuation and some `#seed` reference COPIES were memoized UNBOUND
+; at threading time (before `apply_seed_wrap` minted the binder), sitting OUTSIDE the drained-`#st`
+; `pending_inits` set `reduce_handle` forgets, so they stayed unbound. Fix = a targeted `forget_name_refs`
+; that clears the stale `#seed{init}` NAME refs throughout the wrapped result so they re-resolve against
+; the grafted binder (effects/reduce.rs). It now COMPILES and folds; and the handler-completion seam
+; reclaims the final threaded list-seed on the success path (v-memory-safety's compound-payload sum-shell
+; reclaim fix, #8105 — live-objects 0, confirmed under --guarded-all). Idealistic values from the
 ; scalar-seed twin + the arm's List.at-0 semantics (a=10 on both ticks): Ok path 5+10 = 15, Err path
 ; unwinds to -1. (breaker probe tr3, filed to v-effects tick 1475.)
 (case
@@ -996,7 +1000,8 @@
   (call main (: 1 Int64))
   (output (: 15 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects 0))
 
 ; tmx1: the MUTUAL-RECURSION face of the BRICK-3b runtime-operand gap — `try` over a call whose
 ; callee is one half of a mutually-recursive pair (ev/od Result-returning accumulators, the operand
