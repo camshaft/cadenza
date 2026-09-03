@@ -6694,3 +6694,53 @@
   "a runtime non-String operand to String.slice is the same CDZ0203 as its constant twin"
   (input (do (def (f (: n Int64)) (String.slice n 0 1)) (export f)))
   (error CDZ0203))
+
+; ssx1: scalar addressing over an ASTRAL scalar at a RUNTIME index. The scalar-at cases above use
+; constant string+index, so they fold at compile time and never exercise the runtime decode path.
+; Here the index is a runtime parameter over "a𝄞é!" (1-byte a, 4-byte astral 𝄞 U+1D11E, 2-byte NFC
+; é, 1-byte !): `String.at` returns the whole 1-SCALAR substring (byte-len 4 at the astral — scalar-
+; indexed, never a byte or a surrogate half) and `String.scalar-at` the scalar itself
+; (Char.to-int 119070 = U+1D11E). Both are None past the 4-scalar end. Encodes bat(n) + 1000*sat(n).
+; (breaker probe su2, verified tri-target exact + byte-idempotent, live-objects clean.)
+(case
+  "String.at and String.scalar-at at a runtime index are scalar-indexed across an astral char"
+  (input
+    (do
+      (def
+        (sat (: n Int64))
+        (match (String.scalar-at "a𝄞é!" n) ((Some c) (Char.to-int c)) ((None) -1)))
+      (def
+        (bat (: n Int64))
+        (match (String.at "a𝄞é!" n) ((Some t) (String.byte-len t)) ((None) -1)))
+      (def (main (: n Int64)) (+ (bat n) (* 1000 (sat n))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 119070004 Int64))
+  (call main (: 2 Int64))
+  (output (: 233002 Int64))
+  (call main (: 4 Int64))
+  (output (: -1001 Int64)))
+
+; ssx2: String.slice with a RUNTIME start over the same astral string — scalar-window [i, i+2) as an
+; Option. In-range windows land on scalar boundaries regardless of byte widths ([1,3) spans the
+; 4-byte 𝄞 + 2-byte é = byte-len 6, scalar-len 2); a window whose END passes the 4-scalar length is
+; None (not a clamp, not a trap). Encodes byte-len + 100*scalar-len of the slice, -1 for None.
+; (breaker probe su1, verified tri-target exact + byte-idempotent, const twin = runtime value.)
+(case
+  "String.slice with a runtime start is a scalar window and None past the end"
+  (input
+    (do
+      (def
+        (probe (: s String) (: i Int64))
+        (match
+          (String.slice s i (+ i 2))
+          ((Some t) (+ (String.byte-len t) (* 100 (String.scalar-len t))))
+          ((None) -1)))
+      (def (main (: n Int64)) (probe "a𝄞é!" n))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 205 Int64))
+  (call main (: 1 Int64))
+  (output (: 206 Int64))
+  (call main (: 3 Int64))
+  (output (: -1 Int64)))
