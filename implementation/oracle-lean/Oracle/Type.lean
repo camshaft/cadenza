@@ -3023,6 +3023,39 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[19, 18, 16], .atom 11, .atom 2, .list #[21, 22], .atom 0,
                            .list #[24, 20, 23]],
                 root := 25 } == .illTyped "CDZ0211")
+-- T1.49-fault (Record.pop ABSENT key): `(Record.pop (record (= x 1)) #"y")` → IllTyped CDZ0212 — `#"y"`
+-- names no field of `{x}` (the field access fails). Pins the pop fault path.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "pop".toUTF8, .name "record".toUTF8, .name "=".toUTF8,
+                            .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .sym "y".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 10, .list #[9, 5, 10], .atom 2,
+                           .list #[12], .atom 1, .list #[14, 13, 11], .atom 11, .atom 2, .list #[16, 17],
+                           .atom 0, .list #[19, 15, 18]],
+                root := 20 } == .illTyped "CDZ0212")
+-- T1.50-fault (Record.without ABSENT label): `(Record.without (record (= x 1)) (y))` → IllTyped CDZ0212 —
+-- `y` names no field of `{x}` (same absent-field check as project). Pins the without fault path.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "without".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "y".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 10, .list #[10], .list #[9, 5, 11],
+                           .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 11, .atom 2,
+                           .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                root := 21 } == .illTyped "CDZ0212")
+-- T1.50-fault (Record.project DUPLICATE label): `(Record.project (record (= x 1)) (x x))` → IllTyped
+-- CDZ0201 — a label named twice is ill-formed (a record's fields are a fixed SET). Pins the dup-label path.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "project".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 8, .atom 8, .list #[10, 11],
+                           .list #[9, 5, 12], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13], .atom 10,
+                           .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
+                root := 22 } == .illTyped "CDZ0201")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
