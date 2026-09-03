@@ -59,7 +59,21 @@ jobs:
         with:
           name: camshaft
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      # Realize the whole per-case emit.wasm closure → the cachix post-step pushes it. --keep-going so one
-      # bad case doesn't abort the whole warm (a corpus code-red must not block seeding the rest).
-      - name: warm + push per-case corpus emit.wasm
+          # skipPush (v-nix, rolled out from the cache-warm.yml #8138 pilot): keep pull+auth, DROP the streaming
+          # per-build post-build-hook that spawns the concurrent mid-build client racing the 20220326-ca-derivations
+          # migration → intermittent "SchemaMigrations UNIQUE" red. We push POST-JOB instead (step below).
+          skipPush: true
+      # Realize the whole per-case emit.wasm closure. --keep-going so one bad case doesn't abort the whole warm.
+      - name: warm per-case corpus emit.wasm
         run: nix build .#packages.aarch64-linux.corpus-emit-wasm-warm --print-build-logs --keep-going
+      # POST-JOB CACHIX PUSH (v-nix — replaces the streaming post-build-hook skipPush dropped; runs after the
+      # build's nix applied the ca-derivations migration → no 2nd concurrent client → SchemaMigrations race can't
+      # fire). Cache-hit re-eval of the emit.wasm warm layer (the paths consumers PULL) + push its closure.
+      # Piloted on cache-warm.yml (#8138: 2 consecutive green pushes, no flake).
+      - name: push the emit.wasm warm closure to cachix (post-job — no concurrent-client migration race)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-emit-wasm-warm --no-link --print-out-paths --keep-going)
