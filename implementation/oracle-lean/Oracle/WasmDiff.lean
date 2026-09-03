@@ -32,6 +32,10 @@ inductive Verdict where
   | agree
   | diverge (core wasm : Outcome)
   | skip (reason : String)
+  -- W6 — the Perceus LEAK dimension: the values agree but the wasm run left `count` live heap objects at
+  -- end-of-run (`HeapState.liveCount > 0`), i.e. an alloc was never balanced by a drop. A distinct verdict
+  -- from `diverge` (the VALUE is correct) and from `trap` (UAF/double-free already trap on the wasm side).
+  | leak (count : Nat)
   deriving BEq, Inhabited
 
 /-- The typed ZERO value for an ANNOTATED scalar param spec `(: name Ty)` (param-main zero-init, Option A —
@@ -75,11 +79,15 @@ def differential (drive : Driver) (coreAst : Ast.Module) (coreWat : String)
             | some zeros => Oracle.execute coreAst zeros.toArray
             | none => .unsupported "wasm-diff: param-main with a bare / non-scalar param — zero-init skip")
     | none => Oracle.reduce coreAst
-  let wasm := runWasmWith drive coreWat rtBytes trial
+  let (wasm, leak) := runWasmWithLeak drive coreWat rtBytes trial
   match core, wasm with
   | _, .unsupported r => .skip r
   | .unsupported r, _ => .skip r
-  | .value cv, .value wv => if Value.valueEqSpec cv wv then .agree else .diverge core wasm
+  -- Value agreement: if the wasm run ALSO left live heap objects (W6, leak > 0) it is a Perceus LEAK
+  -- (the value is right, memory was not); otherwise a clean agree. Leak is only meaningful on a `.ok` run
+  -- (`runWasmWithLeak` reports 0 for trap/err/outOfFuel), so this arm is the only place it can fire.
+  | .value cv, .value wv =>
+    if Value.valueEqSpec cv wv then (if leak > 0 then .leak leak else .agree) else .diverge core wasm
   | .trap _, .trap _ => .agree
   | .diverges, .diverges => .agree
   | .errReturn _, _ | _, .errReturn _ => .skip "errReturn at boundary"
@@ -104,6 +112,9 @@ private def _progMain (n : UInt8) : Ast.Module :=
 
 -- Core reference `reduce (main = 5)` = `.value (.int 5)`; the stub wasm run returns i64 5 → AGREE.
 #guard differential (fun _ _ => .ok #[.i64 5]) (_progMain 5) "(module)" (rt "Int") { entry := "main" } == .agree
+-- W6: SAME value (5=5) but the wasm run left 2 live heap objects (leakCount 2) → LEAK 2 (value correct,
+-- memory leaked — a Perceus violation, distinct from agree/diverge). leakCount 0 (the default above) → agree.
+#guard differential (fun _ _ => .ok #[.i64 5] 2) (_progMain 5) "(module)" (rt "Int") { entry := "main" } == .leak 2
 -- wasm returns a DIFFERENT value (6 ≠ 5) → DIVERGE (the miscompile signal, both outcomes carried).
 #guard differential (fun _ _ => .ok #[.i64 6]) (_progMain 5) "(module)" (rt "Int") { entry := "main" }
        == .diverge (.value (.int 5)) (.value (.int 6))
@@ -136,6 +147,7 @@ structure Tally where
   agree : Nat := 0
   diverge : Nat := 0
   skip : Nat := 0
+  leak : Nat := 0          -- W6: value-agreeing runs that left live heap objects (a Perceus leak)
   deriving Repr, BEq, Inhabited
 
 /-- Run the differential over a corpus, tallying agree/diverge/skip + collecting divergence details
@@ -148,7 +160,8 @@ def runCorpus (drive : Driver) (trial : Trial)
     match differential drive c.2.1 c.2.2.1 c.2.2.2 trial with
     | .agree => ({t with agree := t.agree + 1}, divs)
     | .diverge cv wv => ({t with diverge := t.diverge + 1}, (c.1, cv, wv) :: divs)
-    | .skip _ => ({t with skip := t.skip + 1}, divs)) ({}, [])
+    | .skip _ => ({t with skip := t.skip + 1}, divs)
+    | .leak _ => ({t with leak := t.leak + 1}, divs)) ({}, [])
 
 -- runner tally over 3 stub cases: agree (5=5) / diverge (5≠9) / skip (unmodeled result type).
 #guard (runCorpus (fun _ _ => .ok #[.i64 5]) { entry := "main" }

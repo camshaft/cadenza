@@ -55,7 +55,7 @@ inductive ScalarTy where
 exit-code contract (talos: OK/TRAP/OUT_OF_FUEL/ERR). `ok` carries the result stack (a Cadenza `main`
 produces exactly one scalar; other arities are a harness/model gap → `.unsupported`). -/
 inductive WasmOutcome where
-  | ok (vals : Array WasmVal)
+  | ok (vals : Array WasmVal) (leakCount : Nat := 0)  -- W6: `leakCount` = final `HeapState.liveCount` (0 = no leak / no-alloc / hostless); the `:= 0` default keeps every existing `.ok vs` construction valid.
   | trap (msg : String)
   | outOfFuel
   | err (msg : String)
@@ -107,7 +107,7 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
   -- lets bounded-long loops actually complete → AGREE; only a genuinely huge/infinite loop hits this skip.
   | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
   | .err msg => .unsupported msg
-  | .ok vals =>
+  | .ok vals _ =>          -- W6: leakCount does not affect the SCALAR value mapping (differential reads it separately)
     match ty, vals.toList with
     -- Unit: a Cadenza `unit`-returning `main` emits no (or a discarded) result value.
     | .unit, [] => .value .unit
@@ -245,14 +245,26 @@ structure Trial where
 in here (an adapter over `Wasm.Decoder.Wat` + `Wasm.SmallStep`) once the Lean-4.32.2 toolchain lands. -/
 abbrev Driver := (coreWat : String) → (trial : Trial) → WasmOutcome
 
-/-- The pure `run_wasm` boundary: resolve the entry's scalar result type from the `cdz-result-type` section,
-drive the interpreter on the core-module WAT, and map the result to an `Oracle.Outcome`. `none` result type
-(compound/heap/unmodeled) → `.unsupported`, so the driver is never even invoked for an unmodeled shape. -/
+/-- The heap-leak census on a wasm run's `.ok` outcome (W6): 0 for trap/err/outOfFuel or a no-alloc run. -/
+def wasmLeakOf : WasmOutcome → Nat
+  | .ok _ lc => lc
+  | _ => 0
+
+/-- Like `runWasmWith` but ALSO surfaces the final heap-leak census (`HeapState.liveCount`, W6): the pair
+`(scalar Outcome, leakCount)`. Drives ONCE. The differential asserts `leakCount == 0` on a value-agreeing
+run (the Perceus dynamic witness); `leakCount` is 0 whenever the run did not `.ok` or allocated nothing. -/
+def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray)
+    (trial : Trial) : Outcome × Nat :=
+  match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
+  | some ty => let o := drive coreWat trial; (toOutcome o ty, wasmLeakOf o)
+  | none => (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
+
+/-- The pure `run_wasm` boundary: resolve the entry's scalar result type, drive the interpreter on the
+core-module WAT, and map the result to an `Oracle.Outcome` — the leak-agnostic projection of
+`runWasmWithLeak` (a `none` result type → `.unsupported`, driver never invoked for an unmodeled shape). -/
 def runWasmWith (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray)
     (trial : Trial) : Outcome :=
-  match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
-  | some ty => toOutcome (drive coreWat trial) ty
-  | none => .unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8)
+  (runWasmWithLeak drive coreWat resultTypeBytes trial).1
 
 /-! ### Gate witnesses — the mapping invariants (compiled = checked; no corpus case exercises this
 internal boundary, so per PRINCIPLES.md this is exactly the kind of check that belongs in Lean, not the

@@ -113,7 +113,11 @@ def main (args : List String) : IO UInt32 := do
       | .skip r => tally := { tally with skip := tally.skip + 1 }
                    skipReasons := r :: skipReasons
                    IO.println s!"SKIP {id}: {r}"
-    IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip (of {cases.length} cases)"
+      | .leak n => tally := { tally with leak := tally.leak + 1 }
+                   -- W6: values AGREE but the wasm run left `n` live heap objects at end-of-run — a Perceus
+                   -- leak (an alloc never balanced by a drop). A distinct signal from diverge/skip.
+                   IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak)"
+    IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip, {tally.leak} leak (of {cases.length} cases)"
     -- Skip-reason histogram (descending) — where the runnable fraction is lost; with v-wasm-oracle's
     -- head-tagged reason `… (head=<name>)` it surfaces which unmodeled result-type heads dominate.
     IO.println "oracle-wasm-diff skip-reason histogram:"

@@ -76,9 +76,10 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
         | .error err => .err s!"small-step init: {err.message}"
         | .ok cfg =>
           match (_root_.Wasm.SmallStep.runSteps fuel cfg).result with
-          | .success results _ =>
+          | .success results finalStore =>
             match results.reverse.mapM talosToWasmVal with
-            | some vs => .ok vs.toArray
+            -- W6: carry the final heap-leak census (liveCount) on `.ok` (per v-lean-oracle's leakCount seam).
+            | some vs => .ok vs.toArray finalStore.wasm.host.liveCount
             | none => .err "non-scalar wasm result"
           | .trapped reason _ => .trap reason.message
           | .outOfFuel _ => .outOfFuel
