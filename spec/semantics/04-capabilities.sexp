@@ -312,6 +312,7 @@
     (do
       (module m
         (effect E (op ask (-> Int64)))
+
         (def (compute (: k Int64)) (+ k (E.ask))))
       0))
   (error CDZ0401 (message "module-member effect reached with no host delegation")))
@@ -656,3 +657,24 @@
   (host-calls (call hr.h))
   (output (: b"\x07" Bytes))
   (live-objects known-leak))
+
+; hrx1: an UNRESPONDED host call is a TRAP, not a hang or a default value — the negative-space
+; companion of every (host-responses …) fixture in this chapter. The delegated (H.ask) reaches the
+; host, no response is recorded, and the run traps naming the unresponded call. Pins the host
+; boundary's totality contract: a missing response can never be silently zero-filled (a default-0
+; host shim would return n+0 here and pass values through as if the host had answered). Grades TODO
+; today: the runner's precise reason ("host call h.ask has no recorded response (call 1 of the run;
+; 0 response(s) supplied)") rides a BACKTRACE FRAME, so the grader's trap headline is the generic
+; "error while executing" — unlike integer-overflow/stack-exhausted traps whose reasons are hoisted
+; into the headline. Auto-flips when cdz-run hoists the host-shim root cause the same way. (breaker
+; probe hd3; the wrong-TYPE response face — "cannot parse X as Int64" — is CLI-parse-path-only and
+; is exercised outside the fixture harness.)
+(case
+  "a delegated perform with no recorded host response traps"
+  (input
+    (do
+      (effect H (op ask (-> Int64)))
+      (def (main (: n Int64)) (host (H) (+ (H.ask) n)))
+      (export main)))
+  (call main (: 5 Int64))
+  (trap "no recorded response"))
