@@ -937,6 +937,24 @@ fn matchlist_scrutinee_consumed(
         .any(|b| body_rest_mints_binder(db, b, sb, &mut HashSet::new()))
 }
 
+/// Whether ANY arm of a `MatchList` REST-MINTS its scrutinee — an arm body/guard contains a `Core::SumPayload`
+/// whose path ends in `RestFrom` (the `(.. r)` slice → `vec-drop` consuming the scrutinee spine). SHAPE-
+/// INDEPENDENT of the scrutinee (unlike [`matchlist_scrutinee_consumed`], which bails `true` for a non-ref).
+/// Used by [`mark_binder_dups_inner`]'s `MatchList` scrutinee-recursion consuming flag: a borrow-projection
+/// scrutinee of the marked binder with NO rest-mint is BORROWED (mirrors `binding_escapes`:607), so its
+/// child-extraction must not be over-marked as a child-retain dup. CONSERVATIVE: an unrelated `RestFrom`
+/// keeps consuming=`true` (leak, never UAF); the fix only removes an over-dup with no matching drop.
+fn matchlist_arms_rest_mint(db: &mut Db, arms: &[crate::core::ListArm]) -> bool {
+    fn walk(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) { return false; }
+        if let Core::SumPayload { path, .. } = core_of(db, id)
+            && matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) { return true; }
+        core_child_ids(db, id).into_iter().any(|c| walk(db, c, seen))
+    }
+    let mut seen = HashSet::new();
+    arms.iter().any(|a| walk(db, a.body, &mut seen) || a.guard.is_some_and(|g| walk(db, g, &mut seen)))
+}
+
 /// Whether subtree `id` REST-MINTS binder `sb` — contains a `SumPayload` whose path's last step is a
 /// `RestFrom` and whose scrutinee is a direct ref to `sb` (the `(.. r)` tail-extraction that `vec-drop`-
 /// CONSUMES `sb`'s spine). Recurses all children (cycle-guarded).
@@ -2083,6 +2101,31 @@ pub(super) fn collect_payload_safe_match_binders(
             } else {
                 excluded.insert(binder);
             }
+        }
+    }
+    // The MatchLIST twin of the MatchSum payload-safe classifier above (lpn1) — the missing case that let
+    // `collect_sumpayload_escape_dup_sites` over-mark a borrow-only nested-list head as an escape-dup. A
+    // param matched by a `MatchList` is PAYLOAD-SAFE (its head/element extractions are borrow-then-dead, so
+    // the escape query's nested-compound-projection "escape" is the #5833 FALSE POSITIVE) iff NO arm reads a
+    // head/element handle OUT as a live handle (`arm_borrows_heap_subvalue` — the SAME sread fence
+    // `list_shell_reclaim_slot` uses, which already handles `MatchList`) AND no arm RE-MATCHES the scrutinee
+    // (`list_arms_rematch_scrutinee` — an inner re-read consumes it). DEFAULT-KEEP (leak > UAF, the #5833
+    // discipline): an arm that returns / ctors / re-matches a head → NOT payload-safe → EXCLUDED → its
+    // escape-dups are KEPT (no under-dup double-free). PER-ARM over ALL arms: a single head-escaping arm
+    // excludes the binder even if the others are borrow-only. lpn1's `(+ 10 a)`/`(+ 100 (+ a b))` read only
+    // scalars out → payload-safe → the escape-dup is suppressed → xs's `blx1` deep-drop reclaims the heads.
+    if let Core::MatchList { scrutinee, arms } = core_of(db, id)
+        && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+        && is_heap_type(&type_of(db, scrutinee))
+    {
+        let head_escapes = arms.iter().any(|a| {
+            arm_borrows_heap_subvalue(db, a.body)
+                || a.guard.is_some_and(|g| arm_borrows_heap_subvalue(db, g))
+        }) || list_arms_rematch_scrutinee(db, scrutinee, &arms);
+        if head_escapes {
+            excluded.insert(binder);
+        } else {
+            safe.insert(binder);
         }
     }
     for child in core_child_ids(db, id) {
@@ -3483,8 +3526,21 @@ pub(super) fn mark_binder_dups_inner(
                 }
                 arms_occur = arms_occur || body_occurs;
             }
-            let scrutinee_occurs =
-                mark_binder_dups(db, scrutinee, binder, true, live_after || arms_occur, sites);
+            // Borrow-classify (consuming=false) a MatchList scrutinee that is a BORROWING PROJECTION of the
+            // marked binder with NO arm rest-mint — mirrors `binding_escapes`:607 (`!matchlist_scrutinee_
+            // consumed`), the invariant this pass's header promises. The prior unconditional `true` over-marked
+            // lpn1's borrow-only inner-match head-child as a child-retain dup. A fresh-producer / rest-minting
+            // scrutinee keeps consuming=true (unchanged). Under-admit = leak, never a UAF (tr3 bar).
+            let scrut_consuming = !payload_or_proj_chain_roots_at_binder(db, scrutinee, binder)
+                || matchlist_arms_rest_mint(db, &arms);
+            let scrutinee_occurs = mark_binder_dups(
+                db,
+                scrutinee,
+                binder,
+                scrut_consuming,
+                live_after || arms_occur,
+                sites,
+            );
             scrutinee_occurs || arms_occur
         }
         // A SUM match: the scrutinee is evaluated first; the continuation's arms are independent paths.
