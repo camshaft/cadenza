@@ -21,6 +21,7 @@ namespace Oracle.Heap
 open Oracle (Value)
 open HeapState (isImmediate immIsInt immAsIntBits u64Signed immIsBool immAsBool immIsUnit)
 
+mutual
 /-- Structurally decode a heap handle + state → a raw `Oracle.Value` (PRE-canonicalize, PRE-type-fixup).
 Fuel-bounded recursion. Immediates decode inline (fixnum → `.int`, atom → `.bool`/`.unit`); a live heap object
 decodes by its `HeapValue`: scalars/bigint → `.int`, floats → `.f64`, a byte buffer → `.bytes` (a String
@@ -28,7 +29,7 @@ result is fixed up by result-type later), rational → `.rational`, array → `.
 map → `.map` (all children decoded recursively, RAW order — canonicalized later). A SUM declines (`none` —
 mapping a numeric disc → `Some/None/Ok/Err`/`variant name` needs the result type). `none` = undecodable
 (sum / unknown / non-heap-non-immediate / exhausted fuel). -/
-def decodeValueWork : Nat → HeapState → UInt32 → Option Value
+partial def decodeValueWork : Nat → HeapState → UInt32 → Option Value
   | 0,        _, _ => Option.none
   | fuel + 1, s, h =>
     if isImmediate h then
@@ -51,15 +52,30 @@ def decodeValueWork : Nat → HeapState → UInt32 → Option Value
             match decodeValueWork fuel s nh, decodeValueWork fuel s dh with
             | Option.some (.int n), Option.some (.int d) => Option.some (.rational n d)
             | _, _ => Option.none
-          | .array es => (es.toList.mapM (decodeValueWork fuel s)).map (fun vs => .tuple vs.toArray)
-          | .vec es   => (es.toList.mapM (decodeValueWork fuel s)).map (fun vs => .list vs.toArray)
-          | .set es   => (es.toList.mapM (decodeValueWork fuel s)).map (fun vs => .set vs.toArray)
-          | .map es   =>
-            ((List.range (es.size / 2)).mapM (fun i =>
-                match decodeValueWork fuel s (es[2 * i]!), decodeValueWork fuel s (es[2 * i + 1]!) with
-                | Option.some k, Option.some v => Option.some (k, v)
-                | _, _ => Option.none)).map (fun ps => .map ps.toArray)
+          | .array es => (decodeSeqWork fuel s es.toList).map (fun vs => .tuple vs.toArray)
+          | .vec es   => (decodeSeqWork fuel s es.toList).map (fun vs => .list vs.toArray)
+          | .set es   => (decodeSeqWork fuel s es.toList).map (fun vs => .set vs.toArray)
+          | .map es   => (decodeMapWork fuel s es.toList).map (fun ps => .map ps.toArray)
           | .sum _ _ => Option.none
+
+/-- Decode a handle LIST structurally (NOT `List.mapM` over `Option` — that generates a `_spec_` the
+compiler cannot evaluate → `native_decide`/`#guard` fail with "uses sorry"). -/
+partial def decodeSeqWork : Nat → HeapState → List UInt32 → Option (List Value)
+  | _,    _, []      => Option.some []
+  | fuel, s, h :: hs =>
+    match decodeValueWork fuel s h, decodeSeqWork fuel s hs with
+    | Option.some v, Option.some rest => Option.some (v :: rest)
+    | _, _ => Option.none
+
+/-- Decode a flat `[k0,v0,k1,v1,…]` handle list into key/value pairs (odd length → `none`). -/
+partial def decodeMapWork : Nat → HeapState → List UInt32 → Option (List (Value × Value))
+  | _,    _, []            => Option.some []
+  | _,    _, [_]           => Option.none
+  | fuel, s, kh :: vh :: rest =>
+    match decodeValueWork fuel s kh, decodeValueWork fuel s vh, decodeMapWork fuel s rest with
+    | Option.some k, Option.some v, Option.some ps => Option.some ((k, v) :: ps)
+    | _, _, _ => Option.none
+end
 
 /-- Decode a heap handle → `Oracle.Value` (fuel sized to the pool). The RAW structural value; the caller
 applies result-type fixups + `canonicalizeValue`. -/
