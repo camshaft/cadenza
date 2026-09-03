@@ -2621,6 +2621,21 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                       nodes := #[.atom 3, .list #[0], .atom 2, .list #[2], .atom 1, .list #[4, 3, 1],
                                  .atom 4, .atom 2, .list #[6, 7], .atom 0, .list #[9, 5, 8]],
                       root := 10 } with | .unsupported _ => true | _ => false)
+-- T1.15 (Esc, ts:34): `(Ok 5)` DETERMINES only the Ok side — the Err side stays a free var, so the Result
+-- ESCAPES undetermined → Unsupported (a sound decline, NOT a false reject). Contrast `(Some 5)` above, whose
+-- single payload IS determined → WellTyped. Pins the asymmetry + the Ok construction→escape path.
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "Ok".toUTF8,
+                                  .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                      nodes := #[.atom 3, .atom 4, .list #[0, 1], .atom 2, .list #[3], .atom 1,
+                                 .list #[5, 4, 2], .atom 5, .atom 2, .list #[7, 8], .atom 0, .list #[10, 6, 9]],
+                      root := 11 } with | .unsupported _ => true | _ => false)
+-- T1.15 (Esc, ts:34): `(Err #t)` symmetrically determines only the Err side (Ok side free) → escapes
+-- undetermined → Unsupported. Pins the Err construction→escape path.
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "Err".toUTF8,
+                                  .boolLit true, .name "export".toUTF8],
+                      nodes := #[.atom 3, .atom 4, .list #[0, 1], .atom 2, .list #[3], .atom 1,
+                                 .list #[5, 4, 2], .atom 5, .atom 2, .list #[7, 8], .atom 0, .list #[10, 6, 9]],
+                      root := 11 } with | .unsupported _ => true | _ => false)
 -- T1.16 (Mat): exhaustive Option match `(match (Some 5) ((Some x) x) ((None _) 0))` → WellTyped Int64
 -- (Some binds x:numVar, None arm covers the rest, both bodies numeric → unify → default Int64).
 #guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "match".toUTF8,
