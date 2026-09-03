@@ -1035,6 +1035,54 @@ mod tests {
     }
 
     #[test]
+    fn global_cse_does_not_share_a_repeated_bare_parameter() {
+        // `is_trivial` FENCE (`candidate_groups`: `if is_trivial(db, id) … continue`). `(+ x x)` reads the
+        // param `x` twice, and `x` is the maximal repeat (count 2, scalar, both frontier). WITHOUT the
+        // trivial fence a bare `Core::Param` would be a shareable leaf and the pass would manufacture a
+        // pointless `let t = x in (+ t t)` — an indirection that names something already live in a single
+        // slot for the whole body. The fence excludes `Param`/`ConstInt`/`ConstBool`/`Unit` so no binding is
+        // synthesized. Pins that the pass never trades a param read for a redundant slot copy.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ x x)) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "a repeated BARE PARAMETER is trivial (already a single body-wide slot) → the is_trivial fence \
+             keeps the pass from synthesizing a pointless `let t = x in (+ t t)` indirection"
+        );
+    }
+
+    #[test]
+    fn global_cse_does_not_share_a_subexpression_reading_a_let_local() {
+        // `is_cse_candidate` LET-LOCAL FENCE (`Core::LocalRef { .. } => false`). Body:
+        // `(let ((k (& x 5))) (+ (& k 7) (& k 7)))`. The repeated `(& k 7)` reads the SOURCE let-local `k`
+        // (a `Core::LocalRef`). This pass wraps the WHOLE body in one body-ROOT `Core::Let`, which sits
+        // OUTSIDE the inner `let ((k …))`, so a shared subexpression reading `k` would be bound BEFORE `k`'s
+        // slot exists → "let-binding reference has no local slot". `is_cse_candidate` returns false for any
+        // subtree reaching a `LocalRef`, so `(& k 7)` is not a candidate → no override. (Extending CSE to
+        // let-local subexpressions needs the sharing `Let` placed at the enclosing let's scope — a later,
+        // more invasive slice; this MVP shares only body-root-live param/const-rooted reads.) Pins that a
+        // let-local-rooted repeat is left in place, never hoisted past its binder.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (let ((k (& x 5))) (+ (& k 7) (& k 7)))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "a repeat reading a source let-local is NOT hoisted to the body root — the is_cse_candidate \
+             LocalRef fence keeps the body-root `Let` from binding a `k`-reader before `k`'s slot exists \
+             (the \"let-binding reference has no local slot\" hazard)"
+        );
+    }
+
+    #[test]
     fn body_admits_cse_gates_on_the_context_free_lowering_allow_list() {
         // The eligibility gate (`body_admits_cse`) is the pass's correctness FENCE: it admits ONLY
         // context-free-lowering forms (pure scalar/control leaves, field reads, heap constructors) and
