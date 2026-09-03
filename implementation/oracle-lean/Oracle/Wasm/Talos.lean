@@ -63,6 +63,24 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
         -- host STATE starts empty (`initialStore` seeds `host := default`, the empty `HeapState`).
         let host := heapRegistry.envFor m
         let store0 := m.runActiveSegments fuel (m.runConstGlobals fuel (m.initialStore (α := Oracle.Heap.HeapState)) host) host
+        -- Run the module's `(start $f)` BEFORE the entry. The emitted COMPONENT instantiates the core module —
+        -- which runs its start, and the start BUILDS the program's constant/static compound data (a literal
+        -- `{1,2,3}` set, a `(map …)`, …) via the heap ops into a global — and only THEN calls `main`. Extracting
+        -- the bare core module and calling `main` directly would SKIP start, leaving that global at 0, so `main`
+        -- reads handle 0 and the op traps `unknown handle 0` while Core produced a value — a FALSE divergence
+        -- (the dominant 76-diverge cluster). Per the wasm spec, start runs at instantiation before any export,
+        -- so running it here is the conformant instantiation. A start trap/out-of-fuel falls back to `store0`
+        -- (rare; the entry run then surfaces the failure rather than crashing the driver).
+        let store1 :=
+          match m.startFunc with
+          | none => store0
+          | some sidx =>
+            match _root_.Wasm.SmallStep.initSingleModuleConfig m host sidx store0 [] with
+            | .error _  => store0
+            | .ok scfg  =>
+              match (_root_.Wasm.SmallStep.runSteps fuel scfg).result with
+              | .success _ fin => fin.wasm
+              | _              => store0
         -- Zero-init the entry's params so a PARAM-TAKING `main` runs `f(0⃗)` instead of failing `local.get 0`
         -- on an unbound param slot (see W5.1a). The entry's unified index `idx` counts IMPORTS first, so the
         -- entry's own function is `m.funcs[idx - m.imports.length]` — with heap imports now present this
@@ -72,7 +90,7 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
         -- makes the Core side SKIP, so a compound param never yields a false differential.
         let zeroArgs : List _root_.Wasm.Value :=
           (((m.funcs[idx - m.imports.length]?).map (fun fn => fn.params.map _root_.Wasm.ValueType.zero)).getD []).reverse
-        match _root_.Wasm.SmallStep.initSingleModuleConfig m host idx store0 zeroArgs with
+        match _root_.Wasm.SmallStep.initSingleModuleConfig m host idx store1 zeroArgs with
         | .error err => .err s!"small-step init: {err.message}"
         | .ok cfg =>
           match (_root_.Wasm.SmallStep.runSteps fuel cfg).result with
