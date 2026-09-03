@@ -933,9 +933,12 @@ def vecPush : HeapState → List Value → HeapResult
       if !o.live then .trap s!"vec-push: use-after-free (handle {v} freed)"
       else match o.value with
         | .vec elems =>
-          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
-          let (r, s2) := s1.alloc (.vec (elems.push elem))
-          .ret [.i32 r] (s2.dropH v)
+          if o.rc == 1 && !o.immortal then
+            .ret [.i32 v] (s.setObj v { o with value := .vec (elems.push elem) })  -- reuse: absorb elem
+          else
+            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.vec (elems.push elem))
+            .ret [.i32 r] (s2.dropH v)
         | _ => .trap s!"vec-push: handle {v} is not a list"
   | s, _ => .trap "vec-push: expected (i32, i32)"
 
@@ -950,11 +953,15 @@ def vecUpdate : HeapState → List Value → HeapResult
       else match o.value with
         | .vec elems =>
           if i.toNat < elems.size then
-            let keep := (List.range elems.size).filterMap
-              (fun j => if j == i.toNat then none else some elems[j]!)
-            let s1 := keep.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.vec (elems.set! i.toNat elem))
-            .ret [.i32 r] (s2.dropH v)
+            if o.rc == 1 && !o.immortal then
+              -- reuse: set slot i to elem (absorbed), free the OLD element at i (it leaves).
+              .ret [.i32 v] ((s.dropH (elems[i.toNat]!)).setObj v { o with value := .vec (elems.set! i.toNat elem) })
+            else
+              let keep := (List.range elems.size).filterMap
+                (fun j => if j == i.toNat then none else some elems[j]!)
+              let s1 := keep.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.vec (elems.set! i.toNat elem))
+              .ret [.i32 r] (s2.dropH v)
           else .trap s!"vec-update: index {i} out of bounds (len {elems.size})"
         | _ => .trap s!"vec-update: handle {v} is not a list"
   | s, _ => .trap "vec-update: expected (i32, i32, i32)"
@@ -992,9 +999,12 @@ def vecPrepend : HeapState → List Value → HeapResult
       if !o.live then .trap s!"vec-prepend: use-after-free (handle {v} freed)"
       else match o.value with
         | .vec elems =>
-          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
-          let (r, s2) := s1.alloc (.vec (#[elem] ++ elems))
-          .ret [.i32 r] (s2.dropH v)
+          if o.rc == 1 && !o.immortal then
+            .ret [.i32 v] (s.setObj v { o with value := .vec (#[elem] ++ elems) })  -- reuse: absorb elem (front)
+          else
+            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.vec (#[elem] ++ elems))
+            .ret [.i32 r] (s2.dropH v)
         | _ => .trap s!"vec-prepend: handle {v} is not a list"
   | s, _ => .trap "vec-prepend: expected (i32, i32)"
 
@@ -1008,9 +1018,12 @@ def vecOfArr : HeapState → List Value → HeapResult
       if !o.live then .trap s!"vec-of-arr: use-after-free (handle {arr} freed)"
       else match o.value with
         | .array elems =>
-          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
-          let (r, s2) := s1.alloc (.vec elems)
-          .ret [.i32 r] (s2.dropH arr)
+          if o.rc == 1 && !o.immortal then
+            .ret [.i32 arr] (s.setObj arr { o with value := .vec elems })  -- reuse: retag the array node as a vec
+          else
+            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.vec elems)
+            .ret [.i32 r] (s2.dropH arr)
         | _ => .trap s!"vec-of-arr: handle {arr} is not an array"
   | s, _ => .trap "vec-of-arr: expected (i32)"
 
@@ -1025,9 +1038,14 @@ def vecDrop : HeapState → List Value → HeapResult
       else match o.value with
         | .vec elems =>
           let keep := (elems.toList.drop index.toNat).toArray
-          let s1 := keep.toList.foldl (fun acc h => acc.dupH h) s
-          let (r, s2) := s1.alloc (.vec keep)
-          .ret [.i32 r] (s2.dropH v)
+          if o.rc == 1 && !o.immortal then
+            -- reuse: keep the tail; free the dropped PREFIX `[0, index)` (it leaves).
+            let s1 := (elems.toList.take index.toNat).foldl (fun acc h => acc.dropH h) s
+            .ret [.i32 v] (s1.setObj v { o with value := .vec keep })
+          else
+            let s1 := keep.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.vec keep)
+            .ret [.i32 r] (s2.dropH v)
         | _ => .trap s!"vec-drop: handle {v} is not a list"
   | s, _ => .trap "vec-drop: expected (i32, i32)"
 
@@ -1868,6 +1886,30 @@ private def probeVecUpdate : Bool :=
     | _ => false
   | _ => false
 example : probeVecUpdate = true := by native_decide
+
+/-- FBIP rc==1 reuse for vec ops: `vec-push` then `vec-drop` on a UNIQUE list each reuse in place (SAME handle),
+give the right length, and a single drop balances to 0 (no double-free on the Perceus tail-drop of the base). -/
+private def probeVecRc1Reuse : Bool :=
+  match vecEmpty ({} : HeapState) [] with
+  | .ret [.i32 ve] s0 =>
+    let e1 : UInt32 := match boxInt s0 [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+    let e2 : UInt32 := match boxInt s0 [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+    match vecPush s0 [.i32 ve, .i32 e1] with
+    | .ret [.i32 p1] s1 =>                          -- [1] (reuse ve, rc==1)
+      match vecPush s1 [.i32 p1, .i32 e2] with
+      | .ret [.i32 p2] s2 =>                         -- [1,2]
+        (p2 == p1) &&
+        (match vecLen s2 [.i32 p2] with | .ret [.i32 2] _ => true | _ => false) &&
+        (match vecDrop s2 [.i32 p2, .i32 1] with     -- drop prefix [0,1) → [2]
+         | .ret [.i32 d1] s3 =>
+           (d1 == p2) &&
+           (match vecLen s3 [.i32 d1] with | .ret [.i32 1] _ => true | _ => false) &&
+           (match drop s3 [.i32 d1] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecRc1Reuse = true := by native_decide
 
 /-- `valueEq` on Lists (`.vec`) is POSITIONAL: two lists `[1,2]` are equal, but `[1,2]` ≠ `[2,1]` (order
 matters for a List). Pins the newly-added `.vec` arm (previously two lists fell through to `false`, a latent
