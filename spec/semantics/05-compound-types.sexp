@@ -12785,7 +12785,7 @@
   (output (: 4291 Int64))
   (call main (: 10 Int64))
   (output (: 167961 Int64))
-  ; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
+  ; per-call live-objects (B2): now reclaims cleanly — the compound husk is released each call (pinned (live-objects 0); the earlier pre-existing-leak note is closed by the compound-shell reclaim wins — coord v-corpus-harness)
   (live-objects 0))
 
 (case
@@ -26835,7 +26835,7 @@
   (output (: 32 Int64))
   (call main (: 7 Int64))
   (output (: 107 Int64))
-  ; per-call live-objects (B2): pre-existing leak, verified identical pre/post recent emit changes (coord v-corpus-harness)
+  ; per-call live-objects (B2): now reclaims cleanly — the compound husk is released each call (pinned (live-objects 0); the earlier pre-existing-leak note is closed by the compound-shell reclaim wins — coord v-corpus-harness)
   (live-objects 0))
 
 ; --- The config-table read idiom and the api-error dispatch idiom. ---
