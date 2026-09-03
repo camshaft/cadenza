@@ -13531,3 +13531,30 @@
   (output (: 4 Int64))
   (call main (: 2 Int64))
   (output (: 44 Int64)))
+
+; sqx1: the escaped performing CLOSURE under two SEQUENTIAL call-site handlers — composes dcx1
+; (escape + call-site homing, one application) with hc3 (a performing DEF helper under sequential
+; handles). The closure escapes its creation-site handler (111, never observed), is applied TWICE
+; under the first call-site handle (advancing state: reads n then n+1 -> (1+n)+(2+n+1) = 2n+4) and
+; once under a second handle with a DIFFERENT arm semantics (decrementing, seed 500 -> 503). Pins
+; per-application re-homing of a first-class closure across handles for DIRECT value flow — the
+; boundary the collection-mediated cpx1 todo sits just past (list flow declines; this direct flow
+; must keep folding while that flip is built). (breaker probe sq1, verified tri-target exact +
+; byte-idempotent; fully scalar.)
+(case
+  "an escaped performing closure re-homes per application across two sequential handlers"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (main (: n Int64))
+        (let
+          ((f (handle C 111 ((tick () s (resume s s))) (fn ((: x Int64)) (+ x (C.tick))))))
+          (+
+            (handle C n ((tick () s (resume s (+ s 1)))) (+ (f 1) (f 2)))
+            (* 100000 (handle C 500 ((tick () s (resume s (- s 1)))) (f 3))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 50300004 Int64))
+  (call main (: 3 Int64))
+  (output (: 50300010 Int64)))
