@@ -371,10 +371,26 @@ fn strip_ascription(s: &str) -> String {
     let rest = rest.trim_start();
     // Read one balanced sub-expression: the value ends at the first depth-0 whitespace (a bare atom) or
     // when the group that started it closes (a `(…)`/`#ctor(…)`/`{…}` compound). `#ctor(` opens on the `(`.
+    // A String/Bytes literal (`"…"` / `b"…"`) is OPAQUE: a bracket or whitespace BYTE inside it (e.g. the
+    // `(` byte 0x28 in `b"\xa2(h"`) must NOT count toward depth, or a value containing such a byte would
+    // never balance and the ascription would spuriously fail to strip (a false differential mismatch).
     let mut depth: i32 = 0;
     let mut end = None;
+    let mut in_str = false;
+    let mut escaped = false;
     for (i, c) in rest.char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
         match c {
+            '"' => in_str = true,
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => {
                 depth -= 1;
@@ -1467,6 +1483,12 @@ mod tests {
         assert_eq!(strip_ascription("#tuple(1 2)"), "#tuple(1 2)");
         assert_eq!(strip_ascription("42"), "42");
         assert_eq!(strip_ascription("(tuple 1 2)"), "(tuple 1 2)");
+        // A Bytes/String literal is OPAQUE: a bracket/whitespace BYTE inside it must not corrupt the
+        // depth count (regression: `b"\xa2(h"` has a `(` byte 0x28 that previously left the ascription
+        // unstripped → a false differential mismatch, wasm `b"\xa2(h"` vs rust `(: b"\xa2(h" Bytes)`).
+        assert_eq!(strip_ascription(r#"(: b"\xa2(h" Bytes)"#), r#"b"\xa2(h""#);
+        assert_eq!(strip_ascription(r#"(: "a )b [c" String)"#), r#""a )b [c""#);
+        assert_eq!(strip_ascription(r#"(: b"a\"b" Bytes)"#), r#"b"a\"b""#);
     }
 
     /// A non-zero `run-rust` exit (a usage/harness error for one program) must classify as a
