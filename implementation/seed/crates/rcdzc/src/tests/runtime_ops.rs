@@ -1189,3 +1189,32 @@ fn project_meta_reads_a_meta_field_without_scanning_the_wide_user_block() {
 }
 
 // ── common-subexpression elimination: an identical operand is computed once ───────────────────
+
+#[test]
+fn a_guarded_dependent_size_bin_arm_emits_a_valid_module() {
+    // cg3c (breaker): a guarded dependent-size `bin` arm emitted an INVALID module. The arm lowers to
+    // `if (pred AND guard) body else …`; `Core::And` emitted its `rhs` at the SAME `base` as its `lhs`,
+    // so the guard's `(bytes p k)` `BinSizedRead` (an i32 handle, base-anchored) aliased the arm
+    // predicate's length probe `off + k` slot (an i64 checked-arith temp over the i64 `(u8 k)` read),
+    // declaring one wasm local at two widths → `type mismatch: expected i32, found i64` at validation.
+    // `compile_component` does NOT validate, so this pins the fix (rhs floats above lhs's high-water) with
+    // an independent `wasmparser::validate` — a FAST in-crate guard that runs in `dev-gate` every
+    // iteration, complementing the runtime corpus case (16-binary-matching) that only runs the full gate.
+    // `main` takes an Int64 and builds the Bytes internally (a non-scalar entry param would decline), so
+    // the match runs through the wasm backend rather than folding a constant scrutinee.
+    let bytes = compile_component(&crate::codec::encode(&parse(
+        "(module m \
+           (def (f (: b Bytes)) \
+             (match b \
+               ((guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1)) (+ 1000 (Bytes.len p))) \
+               (_ -1))) \
+           (def (main (: n Int64)) (f (bin (u8 (UInt8.wrap n)) (u8 65) (u8 66)))) \
+           (export main))",
+    )))
+    .expect("a guarded dependent-size bin arm compiles");
+    wasmparser::validate(&bytes).expect(
+        "a guarded dependent-size bin arm emits a VALID module (Core::And rhs floats above lhs's \
+         high-water, so the guard's BinSizedRead handle does not alias the predicate's i64 length-probe \
+         slot — cg3c)",
+    );
+}
