@@ -25,8 +25,8 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use std::path::{Path, PathBuf};
-use xtask_codegen_support::{format_tokens, rustfmt_stdin};
+use std::path::PathBuf;
+use xtask_codegen_support::{cdz_bin, format_tokens, rustfmt_stdin, sexpr_to_arenas};
 
 fn main() {
     let repo = std::env::var_os("CDZ_REPO_ROOT")
@@ -128,46 +128,6 @@ fn main() {
         std::process::exit(1);
     }
     println!("xtask codegen: wrote {}", out.display());
-}
-
-/// The `cdz` that converts wasm-abi.sexp → cadenza-ast binary (the sexpr→binary pipeline step). From
-/// `CDZ_SEED_BIN_DIR` (the nix-built cdz the derivation injects), else `<repo>/target/debug` for dev.
-fn cdz_bin(repo: &Path) -> PathBuf {
-    std::env::var_os("CDZ_SEED_BIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.join("target/debug"))
-        .join("cdz")
-}
-
-/// Convert `sexpr` (the authoritative wasm-abi source) to its cadenza-ast BINARY via `cdz convert` and
-/// decode it — the sexpr→binary pipeline step (dogfoods cadenza-ast as the codegen IR, no-json).
-fn sexpr_to_arenas(cdz: &Path, sexpr: &Path) -> cadenza_ast::ast::Arenas {
-    let out = std::process::Command::new(cdz)
-        .args(["convert", "--from", "sexpr", "--to", "binary"])
-        .arg(sexpr)
-        .output()
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "xtask codegen: could not run `cdz convert` on {}: {e}",
-                sexpr.display()
-            );
-            std::process::exit(1);
-        });
-    if !out.status.success() {
-        eprintln!(
-            "xtask codegen: `cdz convert --to binary {}` failed:\n{}",
-            sexpr.display(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        std::process::exit(1);
-    }
-    cadenza_ast::codec::decode(&out.stdout).unwrap_or_else(|| {
-        eprintln!(
-            "xtask codegen: `cdz convert {} --to binary` did not produce a decodable cadenza-ast",
-            sexpr.display()
-        );
-        std::process::exit(1);
-    })
 }
 
 /// The `//!` banner prepended to `wasm_abi.rs` — the "do-not-edit / regenerate" notice.
