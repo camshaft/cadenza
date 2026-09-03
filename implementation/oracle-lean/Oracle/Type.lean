@@ -21,6 +21,7 @@ the T0.1 declining stage; extended (rows, sums, units, effects) as inference lan
 inductive Ty where
   | int (width : Nat) (signed : Bool)   -- fixed-width integers (I8…I64/U8…U64)
   | bool | unit | string | char | bytes   -- `bytes` (T1.39): a param-less leaf like `string` (a heap byte-sequence)
+  | rational                               -- `rational` (T1.44): a param-less leaf — exact rational, totally ordered
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
   | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
@@ -201,6 +202,7 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .string, .string => .ok s
   | .char, .char => .ok s
   | .bytes, .bytes => .ok s
+  | .rational, .rational => .ok s
   | .fn d1 c1, .fn d2 c2 => do let s ← unify d1 d2 s; unify c1 c2 s
   | .tuple e1, .tuple e2 =>
       if e1.length == e2.length then
@@ -437,6 +439,7 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
               | some "Bytes" => some .bytes
               | some "Float64" => some (.float 64)
               | some "Float32" => some (.float 32)
+              | some "Rational" => some .rational
               | some "Ordering" => some orderingTy
               | _ => none)
            | _ => none)
@@ -824,6 +827,9 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 -- (18-units-of-measure:2456 "no float remainder"; exact/float division is total). Matches rcdzc.
                 | .float w => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.float w, st)
                 | .floatVar i => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.floatVar i, st)
+                -- T1.44 — RATIONAL arithmetic: `+ - * /` → Rational (exact). `%` → CDZ0301 (no remainder on
+                -- exact/floating arithmetic — 18-units-of-measure:2429, same carve-out as float).
+                | .rational => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.rational, st)
                 | .never => .ok (.never, st)
                 | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
                 | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
@@ -1146,6 +1152,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                    let (τ, st) ← inferE m env st eId
                    match applySubst st.subst τ, τT with
                    | .int _ _, .int _ _ => .error (.unsupported "type oracle: int-width ascription deferred (OQ-G)")
+                   -- T1.44 — a numeric LITERAL explicitly annotated `Rational` GROUNDS to Rational (an int
+                   -- literal or a decimal/scientific literal — 06-numeric-model:0136-0141). This grounding is
+                   -- ONLY at the explicit ascription: arithmetic/app do NOT silently promote (unify has no
+                   -- numVar/floatVar↔rational arm, so `(+ (Rational.of 1 2) 1)` still clashes CDZ0301).
+                   | .numVar _, .rational => .ok (.rational, st)
+                   | .floatVar _, .rational => .ok (.rational, st)
                    | τr, _ =>
                      (match unifyInfer τr τT st with
                       | .ok st' => .ok (τT, st')
@@ -1762,6 +1774,45 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         | .error e => .error e)
                      | _, _ => .error (.unsupported "type oracle: malformed int-module binary op"))
                   else .error (.unsupported "type oracle: unmodeled int-module op"))
+             else if q == "Rational".toUTF8 then
+               -- T1.44 — Rational OPS `(Rational.<op> …)` (sigs from prelude.rs rational_module): `of (Int a)
+               -- (Int b) → Rational`; `of-int (Int a) → Rational`; `value`/`neg (Rational) → Rational`;
+               -- `truncate (Rational) → Int64` (integer part toward zero). `numerator`/`denominator` → BigInt
+               -- (unmodeled) → declined. A wrong-shape arg → CDZ0203.
+               if op == "of".toUTF8 && children.size == 3 then
+                 -- (Int a)(Int b) → Rational: both args any int (unify with fresh numVars).
+                 (match children[1]?, children[2]? with
+                  | some nId, some dId =>
+                    (match inferE m env st nId with
+                     | .ok (τn, st1) =>
+                       (match unifyInfer τn (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                        | .ok st2 =>
+                          (match inferE m env st2 dId with
+                           | .ok (τd, st3) => (match unifyInfer τd (.numVar st3.next) { st3 with next := st3.next + 1 } with
+                                               | .ok st4 => .ok (.rational, st4)
+                                               | .error e => .error e)
+                           | .error e => .error e)
+                        | .error e => .error e)
+                     | .error e => .error e)
+                  | _, _ => .error (.unsupported "type oracle: malformed Rational.of"))
+               else if op == "of-int".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some aId => (match inferE m env st aId with
+                                 | .ok (τa, st1) => (match unifyInfer τa (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                                                     | .ok st2 => .ok (.rational, st2)
+                                                     | .error e => .error e)
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Rational.of-int"))
+               else if (op == "value".toUTF8 || op == "neg".toUTF8 || op == "truncate".toUTF8) && children.size == 2 then
+                 -- receiver is a Rational; value/neg → Rational, truncate → Int64.
+                 (match children[1]? with
+                  | some rId => (match inferE m env st rId with
+                                 | .ok (τr, st1) => (match unifyInfer τr .rational st1 with
+                                                     | .ok st2 => .ok (if op == "truncate".toUTF8 then .int 64 true else .rational, st2)
+                                                     | .error e => .error e)
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Rational unary op"))
+               else .error (.unsupported "type oracle: unmodeled Rational op (e.g. numerator/denominator → BigInt)")
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2649,6 +2700,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[7], .atom 1, .list #[9, 8, 6], .atom 8, .atom 2, .list #[11, 12],
                            .atom 0, .list #[14, 10, 13]],
                 root := 15 } == .wellTyped (.int 64 true))
+-- T1.44 (Rational op): `(do (def (main) (Rational.of 1 2)) (export main))` → WellTyped Rational.
+-- `of` takes two ints (numerator, denominator) → an exact Rational.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Rational".toUTF8, .name "of".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .list #[3, 4, 5],
+                           .atom 2, .list #[7], .atom 1, .list #[9, 8, 6], .atom 8, .atom 2, .list #[11, 12],
+                           .atom 0, .list #[14, 10, 13]],
+                root := 15 } == .wellTyped .rational)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
