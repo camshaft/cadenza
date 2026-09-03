@@ -35,6 +35,11 @@ inductive Ty where
                                         -- with any `int` width (OQ-G width-polymorphism) but NOT with a
                                         -- non-numeric type — so `(< #t 1)` still clashes, while `(: 5 Int32)` /
                                         -- `(+ (x:Int32) 1)` resolve the literal to the annotated/param width.
+  | float (bits : Nat)                  -- a fixed-width float (Float32 / Float64) — T1.40
+  | floatVar (id : Nat)                 -- a FLOAT unification variable (an unannotated float literal): the
+                                        -- float twin of `numVar` — unifies with any `float` width (default
+                                        -- Float64), NOT with a non-float, so `(+ (x:Float32) 1.5)` resolves
+                                        -- the literal to Float32 and mixed int/float still clashes (CDZ0203).
   deriving BEq, Inhabited
 
 /-- A CDZ diagnostic code (e.g. `"CDZ0203"`), carried on a coded reject. -/
@@ -67,6 +72,7 @@ CONTAINING `i` is the infinite-type case — an unsatisfiable constraint (`CDZ02
 partial def occurs (i : Nat) : Ty → Bool
   | .var j => i == j
   | .numVar j => i == j
+  | .floatVar j => i == j
   | .fn d c => occurs i d || occurs i c
   | .tuple es => es.any (occurs i)
   | .listTy e => occurs i e
@@ -82,6 +88,7 @@ a polymorphic let-bound fn used at two types, so a var-containing head declines 
 partial def hasVar : Ty → Bool
   | .var _ => true
   | .numVar _ => true
+  | .floatVar _ => true
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
   | .listTy e => hasVar e
@@ -113,6 +120,8 @@ CONSTRUCTION / contains / insert / union still work; only the ORDER-based to-lis
 partial def containsSetOrMap : Ty → Bool
   | .setTy _ => true
   | .mapTy _ _ => true
+  | .float _ => true       -- a FLOAT carries no blessed total order either (19-sets:4340 — set/map are the "all-leaf sibling of the FLOAT case")
+  | .floatVar _ => true    -- an undetermined float literal defaults to Float64, also non-orderable
   | .listTy e => containsSetOrMap e
   | .tuple es => es.any containsSetOrMap
   | .fn d c => containsSetOrMap d || containsSetOrMap c
@@ -140,6 +149,9 @@ partial def applySubst (s : Subst) : Ty → Ty
   | .numVar i => match s.find? (fun p => p.1 == i) with
                  | some (_, t) => applySubst s t
                  | none => .numVar i
+  | .floatVar i => match s.find? (fun p => p.1 == i) with
+                   | some (_, t) => applySubst s t
+                   | none => .floatVar i
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
   | .listTy e => .listTy (applySubst s e)
@@ -166,6 +178,13 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .numVar i, .int w g => .ok ((i, .int w g) :: s)
   | .int w g, .numVar i => .ok ((i, .int w g) :: s)
   | .int w1 g1, .int w2 g2 => if w1 == w2 && g1 == g2 then .ok s else .error "CDZ0203"
+  -- a FLOAT var (a float literal): the float twin of the numVar arms — unifies with another floatVar or a
+  -- concrete float width; a float-width clash (Float32 vs Float64) is CDZ0203. Does NOT unify with .int/.numVar
+  -- (mixed int/float falls to the `_,_` clash → CDZ0203, matching rcdzc's no-implicit-int↔float rule).
+  | .floatVar i, .floatVar j => if i == j then .ok s else .ok ((i, .floatVar j) :: s)
+  | .floatVar i, .float w => .ok ((i, .float w) :: s)
+  | .float w, .floatVar i => .ok ((i, .float w) :: s)
+  | .float w1, .float w2 => if w1 == w2 then .ok s else .error "CDZ0203"
   | .bool, .bool => .ok s
   | .unit, .unit => .ok s
   | .string, .string => .ok s
@@ -238,6 +257,11 @@ def scalarLitTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
     | some (.boolLit _) => some .bool
     | some (.str _) => some .string
     | some (.char _) => some .char
+    -- a FLOAT literal (`3.5` / `nan` / `inf`) — returns `.float 64` as the "it's a float literal" MARKER;
+    -- `inferE` intercepts it (like the int marker) and allocates a fresh width-poly `.floatVar` instead.
+    | some (.float _ _ _) => some (.float 64)
+    | some .floatNan => some (.float 64)
+    | some (.floatInf _) => some (.float 64)
     | _ => none
   | _ => none
 
@@ -400,6 +424,8 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
               | some "String" => some .string
               | some "Char" => some .char
               | some "Bytes" => some .bytes
+              | some "Float64" => some (.float 64)
+              | some "Float32" => some (.float 32)
               | some "Ordering" => some orderingTy
               | _ => none)
            | _ => none)
@@ -700,6 +726,8 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
   match scalarLitTy? m nodeId with
   | some (.int _ _) =>                                    -- OQ-G: an int LITERAL occurrence is width-polymorphic
     .ok (.numVar st.next, { st with next := st.next + 1 })  -- → a fresh numeric var, resolved by use/ascription
+  | some (.float _) =>                                   -- a FLOAT literal is width-polymorphic too (T1.40)
+    .ok (.floatVar st.next, { st with next := st.next + 1 }) -- → a fresh float var, resolved by use/ascription (default Float64)
   | some τ => .ok (τ, st)
   | none =>
     match Eval.nameOf? m nodeId with
@@ -758,9 +786,9 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             -- to be NUMERIC — `Int` → result that int type; a same-typed NON-numeric operand (`Bool`/`String`/
             -- `Char`/`Unit`) is `IllTyped CDZ0301` NumericMismatch (§4). A mixed operand clash was already
             -- caught by the unify (`CDZ0203`). `never` absorbs (`(+ (trap) x)`). SOUND on float: a float
-            -- literal isn't a modeled scalar (`scalarLitTy?` declines it) → its operand is `Unsupported` →
-            -- the whole expr skips, never a false `Int`-reject of valid Float arithmetic. A still-unresolved
-            -- operand type → `Unsupported` (can't classify numeric-ness).
+            -- operand (`.float`/`.floatVar`, now modeled — T1.40) falls to the `_` catch-all → `Unsupported`
+            -- (a SKIP), never a false `Int`-reject — float ARITHMETIC is a deliberate later increment (needs
+            -- per-op validity, e.g. `%`-on-float). A still-unresolved operand type → `Unsupported` too.
             match children[1]?, children[2]? with
             | some aId, some bId => do
                 let (τa, st) ← inferE m env st aId
@@ -1660,6 +1688,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
 model-default `Int64` — the numeric-model default for an unannotated literal at an escape (OQ-G). -/
 partial def defaultNumVars : Ty → Ty
   | .numVar _ => .int 64 true
+  | .floatVar _ => .float 64                 -- an unconstrained float literal defaults to Float64 (01-literals:329)
   | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
   | .tuple es => .tuple (es.map defaultNumVars)
   | .listTy e => .listTy (defaultNumVars e)
@@ -2487,6 +2516,13 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.int 64 true))
+-- T1.40 (Float literal): `(do (def (main) nan) (export main))` → WellTyped Float64. A float literal (here
+-- `nan`) is width-polymorphic (`.floatVar`), defaulting to Float64 at escape (01-literals:329).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .floatNan,
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 2, .list #[1], .atom 1, .list #[3, 2, 0], .atom 4, .atom 2,
+                           .list #[5, 6], .atom 0, .list #[8, 4, 7]],
+                root := 9 } == .wellTyped (.float 64))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
