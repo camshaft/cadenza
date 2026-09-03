@@ -949,6 +949,53 @@ mod set_map_float_key_tests {
             "a Map float VALUE stays a bare f{{N}} (only the KEY position wraps) — no `.get()` unwrap, got:\n{body}"
         );
     }
+
+    // A tuple `(Int64, Float64)`: NOT a direct float and NOT Ord (a float component makes the tuple
+    // unordered), so it hits neither the `.get()` branch nor the bare-Ord branch.
+    fn tuple_with_float() -> Ty {
+        Ty::Tuple(std::rc::Rc::from([int(), f64()]))
+    }
+
+    #[test]
+    fn a_set_of_a_compound_float_element_declines() {
+        // A COMPOUND-float element (a tuple carrying a float, wrapped PER-POSITION in `__CdzF` inside the
+        // ord-key) is a follow-up increment — it needs a per-position unwrap the arm does not emit yet, so
+        // it DECLINES to the cdz_render_at fallback. Pin the decline: a future change that started EMITTING
+        // it would `.get()` a whole tuple (uncompilable), and when the per-position unwrap IS built this
+        // test flips as a tripwire to update coverage.
+        let mut db = db();
+        assert!(
+            emit_result_doc(&mut db, &Ty::Set(Box::new(tuple_with_float())), "main()").is_err(),
+            "a compound-float Set element must DECLINE (per-position __CdzF unwrap not covered yet)"
+        );
+    }
+
+    #[test]
+    fn a_map_with_a_compound_float_key_declines() {
+        let mut db = db();
+        assert!(
+            emit_result_doc(
+                &mut db,
+                &Ty::Map(Box::new(tuple_with_float()), Box::new(int())),
+                "main()"
+            )
+            .is_err(),
+            "a compound-float Map key must DECLINE (per-position __CdzF unwrap not covered yet)"
+        );
+    }
+
+    #[test]
+    fn a_set_of_an_all_ord_compound_element_still_renders() {
+        // Positive control isolating that the decline above is FLOAT-specific, not tuple-specific: a
+        // tuple of all-Ord scalars `(Int64, Int64)` IS Ord, reads bare, and renders normally — so the
+        // compound-float decline is about the float, not about being a compound.
+        let mut db = db();
+        let ord_tuple = Ty::Tuple(std::rc::Rc::from([int(), int()]));
+        assert!(
+            emit_result_doc(&mut db, &Ty::Set(Box::new(ord_tuple)), "main()").is_ok(),
+            "a Set of an all-Ord tuple must render (the decline is float-specific, not compound-specific)"
+        );
+    }
 }
 
 #[cfg(test)]
