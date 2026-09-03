@@ -12,8 +12,10 @@ host increment). Talos value → `WasmVal` uses the SIGNED reading (`toInt32`/`t
 `Runner.renderValue`.
 -/
 import Oracle.Wasm
+import Oracle.Wasm.HeapHost
 import Interpreter.Wasm.SmallStep
 import Interpreter.Wasm.Decoder.Wat
+import Interpreter.Wasm.Host.Registry
 
 namespace Oracle.Wasm
 
@@ -33,32 +35,44 @@ def talosToWasmVal : _root_.Wasm.Value → Option WasmVal
   | .f64 b => some (.f64 b)
   | _ => none
 
-/-- The talos `Driver`: decode the core-module `.wat`, reject imports, run the entry via the small-step
-machine, and map the outcome to a `WasmOutcome`. Pure (talos's decode/run are `Except`/fuel-bounded), so
-`runWasmWith talosDriver …` is a provable Lean term for the differential theorem. -/
+/-- The heap-host registry: every modeled `"heap"` op (from `Oracle.Heap.heapHostOps`) keyed by its
+`ImportDecl` — module `"heap"`, the op name, and the `HostFn`'s own declared core signature (talos resolves
+the emitted `(type N)` import sig to the same params/results, so the decl matches). `HostRegistry.envFor`
+walks a module's imports and resolves each against this; `covers` checks every import is claimed. -/
+def heapRegistry : _root_.Wasm.HostRegistry Oracle.Heap.HeapState :=
+  Oracle.Heap.heapHostOps.map fun (name, hf) =>
+    { decl := { «module» := "heap", name := name, params := hf.params, results := hf.results }, fn := hf }
+
+/-- The talos `Driver`: decode the core-module `.wat`, supply the modeled `"heap"` runtime imports via the
+heap-host registry (declining only a module that imports an op we do NOT yet model — a sound skip), run the
+entry via the small-step machine over the `HeapState` host, and map the outcome to a `WasmOutcome`. Pure
+(talos's decode/run are `Except`/fuel-bounded), so `runWasmWith talosDriver …` is a provable Lean term for
+the differential theorem. W5.1c is VALUE-ONLY — the leak dimension (reading the final `HeapState.liveCount`)
+is W6, per v-lean-oracle's `WasmOutcome.leakCount` seam ruling. -/
 def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
   match _root_.Wasm.Decoder.Wat.decode coreWat with
   | .error e => .err s!"wat decode: {e}"
   | .ok m =>
-    if m.imports.length > 0 then
-      .err "module declares imports (runtime-importing case not yet modeled)"
+    if !heapRegistry.covers m then
+      .err "module imports an unmodeled runtime op (heap op not yet in the host)"
     else
       match m.findExport trial.entry with
       | none => .err s!"unknown export `{trial.entry}`"
       | some idx =>
-        let store0 := m.runActiveSegments fuel (m.runConstGlobals fuel (m.initialStore (α := Unit)) {}) {}
-        let inst : _root_.Wasm.SmallStep.ModuleInstance Unit := { module := m, host := {} }
-        -- Zero-init the entry's params so a PARAM-TAKING `main` (a program `(def (main x) …)` → a wasm `main`
-        -- with params) runs `f(0⃗)` instead of failing `local.get 0` on an unbound param slot (the dominant
-        -- skip cluster). Imports are already rejected above, so the entry function is `m.funcs[idx]`. Passed
-        -- REVERSED: talos binds `(args.take numParams).reverse` to local 0.. (params are reversed on entry per
-        -- the wasm calling convention), so a param-order zero list must be reversed to land in position.
-        -- v-lean-oracle's runCorpus applies Core `main` to the SAME typed zeros (co-landed) so both compute
-        -- `f(0⃗)`; a NON-SCALAR Core param makes the Core side SKIP (per-wasm-param zeros ≠ per-Core-param zeros
-        -- for a compound that lowered to several wasm params) → the case skips, never a false differential.
+        -- Supply the modeled heap ops as the module's host environment (positional over `m.imports`); the
+        -- host STATE starts empty (`initialStore` seeds `host := default`, the empty `HeapState`).
+        let host := heapRegistry.envFor m
+        let store0 := m.runActiveSegments fuel (m.runConstGlobals fuel (m.initialStore (α := Oracle.Heap.HeapState)) host) host
+        -- Zero-init the entry's params so a PARAM-TAKING `main` runs `f(0⃗)` instead of failing `local.get 0`
+        -- on an unbound param slot (see W5.1a). The entry's unified index `idx` counts IMPORTS first, so the
+        -- entry's own function is `m.funcs[idx - m.imports.length]` — with heap imports now present this
+        -- offset matters (in W5.1a `imports.length` was 0). Passed REVERSED: talos binds
+        -- `(args.take numParams).reverse` to local 0.. (params reversed on entry per the calling convention).
+        -- v-lean-oracle's runCorpus applies Core `main` to the SAME typed zeros; a NON-SCALAR Core param
+        -- makes the Core side SKIP, so a compound param never yields a false differential.
         let zeroArgs : List _root_.Wasm.Value :=
-          (((m.funcs[idx]?).map (fun fn => fn.params.map _root_.Wasm.ValueType.zero)).getD []).reverse
-        match _root_.Wasm.SmallStep.initConfig inst idx store0 zeroArgs with
+          (((m.funcs[idx - m.imports.length]?).map (fun fn => fn.params.map _root_.Wasm.ValueType.zero)).getD []).reverse
+        match _root_.Wasm.SmallStep.initSingleModuleConfig m host idx store0 zeroArgs with
         | .error err => .err s!"small-step init: {err.message}"
         | .ok cfg =>
           match (_root_.Wasm.SmallStep.runSteps fuel cfg).result with
@@ -97,5 +111,22 @@ skip cluster before this fix). -/
 private def watIdI64 : String :=
   "(module (func (export \"main\") (param i64) (result i64) local.get 0))"
 example : (talosDriver watIdI64 { entry := "main" } == .ok #[.i64 0]) = true := by native_decide
+
+/-! ### W5.1c heap-host witnesses — a module importing `"heap"` ops now RUNS (not declined), proving the
+registry pivot end-to-end: emitted import → resolved against `heapRegistry` → heap op executes → scalar
+result. (Numeric func/local indices, matching `wasm-tools print` output on an unnamed emitted module.) -/
+
+/-- Boxes 42, reads it back, drops it, returns the read value — importing `box-int` (call 0), `get-int`
+(call 1), `drop` (call 2) from `"heap"`. With the heap host wired, `main() = 42` (balanced: box allocates,
+drop frees, so no leak). Proves the registry resolves + the heap ops run + the scalar returns. -/
+private def watHeapBoxGet : String :=
+  "(module (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"get-int\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i64) i64.const 42 call 0 local.set 0 local.get 0 call 1 local.set 1 local.get 0 call 2 local.get 1))"
+example : (talosDriver watHeapBoxGet { entry := "main" } == .ok #[.i64 42]) = true := by native_decide
+
+/-- A module importing an UNMODELED runtime op (`vec-push`, not yet in the host) declines to a sound skip
+(`.err`), NOT a spurious run — the `covers` gate. -/
+private def watHeapUnmodeled : String :=
+  "(module (import \"heap\" \"vec-push\" (func (param i32 i32) (result i32))) (func (export \"main\") (result i64) i64.const 0))"
+example : (match talosDriver watHeapUnmodeled { entry := "main" } with | .err _ => true | _ => false) = true := by native_decide
 
 end Oracle.Wasm
