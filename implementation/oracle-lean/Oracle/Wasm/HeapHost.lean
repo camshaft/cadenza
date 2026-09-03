@@ -96,20 +96,65 @@ size the traversal fuel. -/
 def edges (s : HeapState) : Nat :=
   s.objects.foldl (fun n o => n + o.value.arity) 0
 
-/-- Allocate a fresh live object (rc 1); return its handle + the new state. Handles are **1-based**: `0` is
-reserved as the NULL sentinel (an unset array slot / absent handle), so a real handle never collides with
-it — the object stored at 0-based index `i` is addressed by handle `i + 1`. -/
+/-! ### Immediate (tagged-inline) handles — the runtime's handle ABI (cdz-runtime lib.rs:735-835). A handle's
+low 2 bits tag it: `00` = HEAP pointer / NULL; `01` = fixnum INT (value = arith `h >> 2`, window ±2^29);
+`10` = ATOM (`0b0010` = UNIT, bool = `0b0110`/`0b10110`). `box-int(fixnum)`/`box-bool`/`arr-alloc(0)` produce
+immediates (NO heap object, NO refcount); `dup`/`drop` are NO-OPS on them and they are EXCLUDED from the leak
+census. This matters because the COMPILER pushes `imm_unit` (0b0010) as an `i32.const` constant (from the
+`cdz-abi` `IMM_UNIT` section), so my host RECEIVES immediate handles it must decode — an ABI fact, not a
+clean-room choice. Heap handles are therefore encoded `(index+1) <<< 2` (low 2 bits `00`, never the `0` NULL). -/
+
+/-- A handle is immediate iff its low 2 bits are non-zero (NULL = 0 is heap-tagged, not immediate). -/
+def isImmediate (h : UInt32) : Bool := (h &&& 3) != 0
+
+/-- The inline `unit` (empty tuple / `arr-alloc(0)` / nullary-sum payload): atom subkind `00`, bits `0b0010`. -/
+def immUnit : UInt32 := 2
+
+/-- An inline boolean: false = `0b0110`, true = `0b10110` (value in bit 4). -/
+def immBool (b : Bool) : UInt32 := if b then 22 else 6
+
+/-- The inline fixnum window `[-2^29, 2^29 - 1]`. -/
+def fixnumFits (v : Int) : Bool := (-536870912 : Int) ≤ v && v ≤ (536870911 : Int)
+
+/-- Encode a fixnum (given its i64 bits) as an immediate: `(low-32-bits <<< 2) ||| 0b01` (matches the runtime
+`imm_int`; caller has checked `fixnumFits`). -/
+def immInt (bits : UInt64) : UInt32 := (bits.toUInt32 <<< 2) ||| 1
+
+/-- The signed i32 value of a 32-bit word (for decoding an immediate's payload). -/
+def u32Signed (h : UInt32) : Int :=
+  let n : Int := (h.toNat : Int)
+  if n ≥ 2147483648 then n - 4294967296 else n
+
+/-- Two's-complement i64 bits of an `Int` (to reconstruct a `get-int` result). -/
+def intToU64Bits (v : Int) : UInt64 :=
+  (if v ≥ 0 then v else v + 18446744073709551616).toNat.toUInt64
+
+/-- Decode a fixnum immediate to its i64 bits: arithmetic `>> 2` (= floor-div by 4) of the signed word. -/
+def immAsIntBits (h : UInt32) : UInt64 := intToU64Bits (Int.fdiv (u32Signed h) 4)
+
+/-- Decode an inline boolean (bit 4). -/
+def immAsBool (h : UInt32) : Bool := ((h >>> 4) &&& 1) != 0
+
+/-- Whether an immediate is the fixnum-int kind (tag `01`). -/
+def immIsInt (h : UInt32) : Bool := (h &&& 3) == 1
+/-- Whether an immediate is a bool atom (`10`, subkind `01`). -/
+def immIsBool (h : UInt32) : Bool := (h &&& 3) == 2 && ((h >>> 2) &&& 3) == 1
+/-- Whether an immediate is the unit atom (`10`, subkind `00`). -/
+def immIsUnit (h : UInt32) : Bool := (h &&& 3) == 2 && ((h >>> 2) &&& 3) == 0
+
+/-- Allocate a fresh live HEAP object (rc 1); return its handle + the new state. Heap handles are
+`(index+1) <<< 2` (low 2 bits `00`, distinct from `0` NULL and from immediates). -/
 def alloc (s : HeapState) (v : HeapValue) : UInt32 × HeapState :=
-  ((s.objects.size + 1).toUInt32,
+  (((s.objects.size + 1) <<< 2).toUInt32,
    { s with objects := s.objects.push { value := v, rc := 1, live := true } })
 
-/-- Look up an object by handle (`none` = null handle `0` or a handle never allocated). -/
+/-- Look up a HEAP object by handle (`none` for NULL, an immediate, or a handle never allocated). -/
 def getObj? (s : HeapState) (h : UInt32) : Option HeapObject :=
-  if h == 0 then none else s.objects[h.toNat - 1]?
+  if h == 0 || isImmediate h then none else s.objects[(h >>> 2).toNat - 1]?
 
-/-- Overwrite the object at `h` (caller has already checked `h` is in range via `getObj?`, so `h ≥ 1`). -/
+/-- Overwrite the heap object at `h` (caller has checked `h` is a live heap handle via `getObj?`). -/
 def setObj (s : HeapState) (h : UInt32) (o : HeapObject) : HeapState :=
-  { s with objects := s.objects.set! (h.toNat - 1) o }
+  { s with objects := s.objects.set! ((h >>> 2).toNat - 1) o }
 
 /-! ### Boxing -/
 
@@ -118,8 +163,15 @@ def box (s : HeapState) (v : HeapValue) : HeapResult :=
   let (h, s') := s.alloc v
   .ret [.i32 h] s'
 
+/-- Signed `Int` value of a 64-bit word (for the fixnum-window check). -/
+def u64Signed (n : UInt64) : Int :=
+  let x : Int := (n.toNat : Int)
+  if x ≥ 9223372036854775808 then x - 18446744073709551616 else x
+
+/-- `box-int(v)`: a fixnum-window value inlines as an `imm_int` IMMEDIATE (no heap, no rc — matching the
+runtime); a larger value heap-boxes. -/
 def boxInt : HeapState → List Value → HeapResult
-  | s, [.i64 n] => s.box (.int n)
+  | s, [.i64 n] => if fixnumFits (u64Signed n) then .ret [.i32 (immInt n)] s else s.box (.int n)
   | s, _        => .trap "box-int: expected (i64)"
 
 def boxFloat : HeapState → List Value → HeapResult
@@ -130,8 +182,9 @@ def boxFloat32 : HeapState → List Value → HeapResult
   | s, [.f32 b] => s.box (.float32 b)
   | s, _        => .trap "box-float32: expected (f32)"
 
+/-- `box-bool(v)`: always inlines as an `imm_bool` IMMEDIATE (no heap, no rc — matching the runtime). -/
 def boxBool : HeapState → List Value → HeapResult
-  | s, [.i32 n] => s.box (.bool (n != 0))
+  | s, [.i32 n] => .ret [.i32 (immBool (n != 0))] s
   | s, _        => .trap "box-bool: expected (i32)"
 
 /-- Read a boxed handle, requiring it to be live (else UAF) and of the expected shape. -/
@@ -145,8 +198,12 @@ def getWith (s : HeapState) (h : UInt32) (who : String) (f : HeapValue → Optio
       | none   => .trap s!"{who}: handle {h} holds the wrong boxed type"
 
 def getInt : HeapState → List Value → HeapResult
-  | s, [.i32 h] => s.getWith h "get-int" (fun | .int bits => some (.i64 bits) | _ => none)
-  | s, _        => .trap "get-int: expected (i32)"
+  | s, [.i32 h] =>
+    if isImmediate h then
+      if immIsInt h then .ret [.i64 (immAsIntBits h)] s
+      else .trap s!"get-int: immediate handle {h} is not an int"
+    else s.getWith h "get-int" (fun | .int bits => some (.i64 bits) | _ => none)
+  | s, _ => .trap "get-int: expected (i32)"
 
 def getFloat : HeapState → List Value → HeapResult
   | s, [.i32 h] => s.getWith h "get-float" (fun | .float bits => some (.f64 bits) | _ => none)
@@ -157,21 +214,30 @@ def getFloat32 : HeapState → List Value → HeapResult
   | s, _        => .trap "get-float32: expected (i32)"
 
 def getBool : HeapState → List Value → HeapResult
-  | s, [.i32 h] => s.getWith h "get-bool" (fun | .bool b => some (.i32 (if b then 1 else 0)) | _ => none)
-  | s, _        => .trap "get-bool: expected (i32)"
+  | s, [.i32 h] =>
+    if isImmediate h then
+      if immIsBool h then .ret [.i32 (if immAsBool h then 1 else 0)] s
+      else .trap s!"get-bool: immediate handle {h} is not a bool"
+    else s.getWith h "get-bool" (fun | .bool b => some (.i32 (if b then 1 else 0)) | _ => none)
+  | s, _ => .trap "get-bool: expected (i32)"
 
 /-! ### Arrays (the fixed-arity tuple/record product) -/
 
 /-- `arr-alloc(len) → handle`: a fresh array of `len` NULL (`0`) handle-slots. -/
 def arrAlloc : HeapState → List Value → HeapResult
-  | s, [.i32 len] => s.box (.array (List.replicate len.toNat (0 : UInt32)).toArray)
-  | s, _          => .trap "arr-alloc: expected (i32)"
+  | s, [.i32 len] =>
+    -- A length-0 array is the inline UNIT immediate (matches the runtime + the compiler's pushed `imm_unit`
+    -- for empty tuples / nullary-sum payloads); a non-empty array heap-allocates its slots.
+    if len == 0 then .ret [.i32 immUnit] s
+    else s.box (.array (List.replicate len.toNat (0 : UInt32)).toArray)
+  | s, _ => .trap "arr-alloc: expected (i32)"
 
 /-- `arr-set(arr, i, elem) → arr`: store `elem` at slot `i` WITHOUT dup (an ownership MOVE — the array
 takes `elem`'s existing reference), returning the array handle for threading. OOB traps. -/
 def arrSet : HeapState → List Value → HeapResult
   | s, [.i32 arr, .i32 i, .i32 elem] =>
-    match s.getObj? arr with
+    if isImmediate arr then .trap s!"arr-set: index {i} out of bounds (inline unit has 0 slots)"
+    else match s.getObj? arr with
     | none   => .trap s!"arr-set: unknown handle {arr}"
     | some o =>
       if !o.live then .trap s!"arr-set: use-after-free (handle {arr} freed)"
@@ -187,7 +253,8 @@ def arrSet : HeapState → List Value → HeapResult
 that keeps the handle gets a compiler-emitted `dup`). OOB traps. -/
 def arrGet : HeapState → List Value → HeapResult
   | s, [.i32 arr, .i32 i] =>
-    match s.getObj? arr with
+    if isImmediate arr then .trap s!"arr-get: index {i} out of bounds (inline unit has 0 slots)"
+    else match s.getObj? arr with
     | none   => .trap s!"arr-get: unknown handle {arr}"
     | some o =>
       if !o.live then .trap s!"arr-get: use-after-free (handle {arr} freed)"
@@ -202,7 +269,8 @@ def arrGet : HeapState → List Value → HeapResult
 /-- `arr-len(arr) → len`: the slot count. -/
 def arrLen : HeapState → List Value → HeapResult
   | s, [.i32 arr] =>
-    match s.getObj? arr with
+    if isImmediate arr then .ret [.i32 0] s   -- the inline unit is a length-0 array
+    else match s.getObj? arr with
     | none   => .trap s!"arr-len: unknown handle {arr}"
     | some o =>
       if !o.live then .trap s!"arr-len: use-after-free (handle {arr} freed)"
@@ -347,10 +415,12 @@ def mapSize : HeapState → List Value → HeapResult
 
 /-! ### Refcount / liveness core (+ the free-cascade) -/
 
-/-- `dup(h)`: require live (else UAF); on an immortal node it is a NO-OP (sentinel rc); else rc++. -/
+/-- `dup(h)`: an IMMEDIATE handle is a NO-OP (immediates carry no rc); require live (else UAF); on an
+immortal node it is a NO-OP (sentinel rc); else rc++. -/
 def dup : HeapState → List Value → HeapResult
   | s, [.i32 h] =>
-    match s.getObj? h with
+    if isImmediate h then .ret [] s
+    else match s.getObj? h with
     | none   => .trap s!"dup: unknown handle {h}"
     | some o =>
       if o.immortal then .ret [] s
@@ -379,10 +449,12 @@ def dropCascade : Nat → HeapState → List UInt32 → HeapState
           else dropCascade fuel s1 rest
 
 /-- `drop(h)`: require live + rc>0 + non-immortal-or-no-op (else double-free); rc--; at 0 → freed +
-recursively drop the owned children (the cascade). No result. -/
+recursively drop the owned children (the cascade). An IMMEDIATE handle is a NO-OP (no rc, nothing to free).
+No result. -/
 def drop : HeapState → List Value → HeapResult
   | s, [.i32 h] =>
-    match s.getObj? h with
+    if isImmediate h then .ret [] s
+    else match s.getObj? h with
     | none   => .trap s!"drop: unknown handle {h}"
     | some o =>
       if o.immortal then .ret [] s
@@ -397,7 +469,8 @@ def drop : HeapState → List Value → HeapResult
 Returns the same handle. -/
 def markImmortal : HeapState → List Value → HeapResult
   | s, [.i32 h] =>
-    match s.getObj? h with
+    if isImmediate h then .ret [.i32 h] s   -- an immediate is already census-excluded; return unchanged
+    else match s.getObj? h with
     | none   => .trap s!"mark-immortal: unknown handle {h}"
     | some o => .ret [.i32 h] (s.setObj h { o with immortal := true })
   | s, _ => .trap "mark-immortal: expected (i32)"
@@ -419,7 +492,8 @@ def markDeep : Nat → HeapState → List UInt32 → HeapState
 /-- `mark-immortal-deep(h) → h`: mark the root AND every transitively-reachable node immortal. -/
 def markImmortalDeep : HeapState → List Value → HeapResult
   | s, [.i32 h] =>
-    match s.getObj? h with
+    if isImmediate h then .ret [.i32 h] s
+    else match s.getObj? h with
     | none   => .trap s!"mark-immortal-deep: unknown handle {h}"
     | some _ => .ret [.i32 h] (s.markDeep (s.objects.size + s.edges + 1) [h])
   | s, _ => .trap "mark-immortal-deep: expected (i32)"
@@ -739,691 +813,152 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
 
-/-! ### Witnesses — compiled every build, so a regression in the host semantics fails the oracle-lean
-build. These exercise the pure `HeapState` layer (no `Store` needed; `Store` has no `Inhabited`). The
-`Store`-marshalling `toHostFn` layer + a real emitted heap module are exercised end-to-end by W5.1c's
-driver differential. -/
+/-! ### Witnesses — compiled every build (a regression fails the oracle-lean build). Immediate-aware after the
+IMMEDIATES rework: box-int(fixnum)/box-bool produce inline immediates (no heap, census-excluded, dup/drop
+no-op); a value that must be a HEAP object for a refcount/cascade test uses box-float (floats never inline).
+This focused set proves the immediates model; the collection consume-op witnesses (map-merge/set-union/vec/…)
+are re-added immediate-aware in a follow-up. -/
 
 open HeapState
 
-/-- box then get round-trips the value bit-for-bit, and one live object exists. -/
-private def probeBoxGet : Bool :=
+/-- box-int of a fixnum inlines as an IMMEDIATE: no heap object (liveCount 0), and get-int round-trips. -/
+private def probeImmInt : Bool :=
   match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 h] s1 =>
-    (s1.liveCount == 1) &&
-    (match getInt s1 [.i32 h] with
-     | .ret [.i64 5] _ => true
-     | _               => false)
+  | .ret [.i32 h] s =>
+    isImmediate h && (s.liveCount == 0) &&
+    (match getInt s [.i32 h] with | .ret [.i64 5] _ => true | _ => false)
   | _ => false
-example : probeBoxGet = true := by native_decide
+example : probeImmInt = true := by native_decide
 
-/-- `dup` raises the refcount; two `drop`s are needed to free (rc 1→2→1→0). liveCount tracks liveness. -/
-private def probeDupDrop : Bool :=
+/-- A NEGATIVE fixnum immediate round-trips (exercises the signed decode). -/
+private def probeImmIntNeg : Bool :=
+  match boxInt ({} : HeapState) [.i64 0xFFFFFFFFFFFFFFFD] with
+  | .ret [.i32 h] s =>
+    isImmediate h &&
+    (match getInt s [.i32 h] with | .ret [.i64 n] _ => n == 0xFFFFFFFFFFFFFFFD | _ => false)
+  | _ => false
+example : probeImmIntNeg = true := by native_decide
+
+/-- The LEAK fix: boxing a fixnum (immediate) without dropping leaves NO live heap object → no false leak. -/
+private def probeImmNoLeak : Bool :=
   match boxInt ({} : HeapState) [.i64 7] with
-  | .ret [.i32 h] s1 =>
-    match dup s1 [.i32 h] with
-    | .ret [] s2 =>
-      (s2.liveCount == 1) &&
-      (match drop s2 [.i32 h] with
-       | .ret [] s3 =>
-         (s3.liveCount == 1) &&
-         (match drop s3 [.i32 h] with
-          | .ret [] s4 => s4.liveCount == 0
-          | _          => false)
-       | _ => false)
-    | _ => false
+  | .ret [.i32 _] s => s.liveCount == 0
   | _ => false
-example : probeDupDrop = true := by native_decide
+example : probeImmNoLeak = true := by native_decide
 
-/-- Use-after-free: an access or `drop` of a freed handle traps. -/
+/-- dup/drop of an immediate are NO-OPS (census stays 0). -/
+private def probeImmDupDrop : Bool :=
+  match boxInt ({} : HeapState) [.i64 3] with
+  | .ret [.i32 h] s =>
+    (match dup s [.i32 h] with
+     | .ret [] s1 => (match drop s1 [.i32 h] with | .ret [] s2 => s2.liveCount == 0 | _ => false)
+     | _          => false)
+  | _ => false
+example : probeImmDupDrop = true := by native_decide
+
+/-- box-bool inlines as an immediate; get-bool round-trips (5 → true → 1); no heap. -/
+private def probeBool : Bool :=
+  match boxBool ({} : HeapState) [.i32 5] with
+  | .ret [.i32 h] s =>
+    isImmediate h && (s.liveCount == 0) &&
+    (match getBool s [.i32 h] with | .ret [.i32 1] _ => true | _ => false)
+  | _ => false
+example : probeBool = true := by native_decide
+
+/-- box-int of a NON-fixnum heap-allocates (liveCount 1); get-int round-trips; drop frees it. -/
+private def probeHeapInt : Bool :=
+  match boxInt ({} : HeapState) [.i64 1000000000] with
+  | .ret [.i32 h] s =>
+    (!isImmediate h) && (s.liveCount == 1) &&
+    (match getInt s [.i32 h] with | .ret [.i64 1000000000] _ => true | _ => false) &&
+    (match drop s [.i32 h] with | .ret [] s2 => s2.liveCount == 0 | _ => false)
+  | _ => false
+example : probeHeapInt = true := by native_decide
+
+/-- use-after-free / double-free trap on a HEAP object (box-float, drop, then access / re-drop). -/
 private def probeUseAfterFree : Bool :=
-  match boxInt ({} : HeapState) [.i64 1] with
+  match boxFloat ({} : HeapState) [.f64 1] with
   | .ret [.i32 h] s1 =>
     match drop s1 [.i32 h] with
     | .ret [] s2 =>
-      (match getInt s2 [.i32 h] with | .trap _ => true | _ => false) &&
-      (match drop s2 [.i32 h]   with | .trap _ => true | _ => false)
+      (match getFloat s2 [.i32 h] with | .trap _ => true | _ => false) &&
+      (match drop s2 [.i32 h]     with | .trap _ => true | _ => false)
     | _ => false
   | _ => false
 example : probeUseAfterFree = true := by native_decide
 
-/-- Leak oracle: allocating two objects without dropping leaves a non-zero live census. -/
-private def probeLeak : Bool :=
-  match boxInt ({} : HeapState) [.i64 1] with
-  | .ret [.i32 _] s1 =>
-    match boxFloat s1 [.f64 0] with
-    | .ret [.i32 _] s2 => s2.liveCount == 2
-    | _                => false
-  | _ => false
-example : probeLeak = true := by native_decide
-
-/-- `box-bool` normalizes any non-zero i32 to `true`; `get-bool` returns a canonical 0/1 i32. -/
-private def probeBool : Bool :=
-  match boxBool ({} : HeapState) [.i32 5] with
-  | .ret [.i32 h] s1 =>
-    match getBool s1 [.i32 h] with
-    | .ret [.i32 1] _ => true
-    | _               => false
-  | _ => false
-example : probeBool = true := by native_decide
-
-/-- A wrong-shape access traps (a boxed float read as an int). -/
-private def probeTypeMismatch : Bool :=
-  match boxFloat ({} : HeapState) [.f64 0] with
-  | .ret [.i32 h] s1 =>
-    match getInt s1 [.i32 h] with | .trap _ => true | _ => false
-  | _ => false
-example : probeTypeMismatch = true := by native_decide
-
-/-! #### W5.1b: arrays, cascade-drop, immortality -/
-
-/-- Build a 2-element array `[box 5, box 9]`, returning the handles for later probes. -/
-private def buildPair : Option (UInt32 × UInt32 × UInt32 × HeapState) :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 h0] s0 =>
-    match boxInt s0 [.i64 9] with
-    | .ret [.i32 h1] s1 =>
+/-- Cascade-drop with HEAP children: an array owns two boxed floats (liveCount 3); dropping it frees all. -/
+private def probeHeapCascade : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 f1] s0 =>
+    match boxFloat s0 [.f64 2] with
+    | .ret [.i32 f2] s1 =>
       match arrAlloc s1 [.i32 2] with
       | .ret [.i32 a] s2 =>
-        match arrSet s2 [.i32 a, .i32 0, .i32 h0] with
+        match arrSet s2 [.i32 a, .i32 0, .i32 f1] with
         | .ret [.i32 _] s3 =>
-          match arrSet s3 [.i32 a, .i32 1, .i32 h1] with
-          | .ret [.i32 _] s4 => some (a, h0, h1, s4)
-          | _ => none
-        | _ => none
-      | _ => none
-    | _ => none
-  | _ => none
-
-/-- arr-alloc/set/get/len round-trip: `arr-get a 0` returns `h0`, `get-int` reads 5 back, `arr-len` is 2. -/
-private def probeArray : Bool :=
-  match buildPair with
-  | some (a, h0, _, s) =>
-    (match arrGet s [.i32 a, .i32 0] with
-     | .ret [.i32 g] _ => g == h0
-     | _               => false) &&
-    (match arrGet s [.i32 a, .i32 0] with
-     | .ret [.i32 g] _ =>
-       (match getInt s [.i32 g] with | .ret [.i64 5] _ => true | _ => false)
-     | _ => false) &&
-    (match arrLen s [.i32 a] with | .ret [.i32 2] _ => true | _ => false)
-  | none => false
-example : probeArray = true := by native_decide
-
-/-- Out-of-bounds `arr-get` / `arr-set` trap. -/
-private def probeArrayOob : Bool :=
-  match arrAlloc ({} : HeapState) [.i32 1] with
-  | .ret [.i32 a] s =>
-    (match arrGet s [.i32 a, .i32 5]           with | .trap _ => true | _ => false) &&
-    (match arrSet s [.i32 a, .i32 5, .i32 0]   with | .trap _ => true | _ => false)
-  | _ => false
-example : probeArrayOob = true := by native_decide
-
-/-- Cascade-drop: an array owns its two boxed elements (liveCount 3); dropping the array frees it AND
-recursively frees both children → the leak census balances to 0. This is the Perceus dup/drop balance
-witness for a compound value. -/
-private def probeCascadeDrop : Bool :=
-  match buildPair with
-  | some (a, _, _, s) =>
-    (s.liveCount == 3) &&
-    (match drop s [.i32 a] with
-     | .ret [] s' => s'.liveCount == 0
-     | _          => false)
-  | none => false
-example : probeCascadeDrop = true := by native_decide
-
-/-- `mark-immortal` excludes a node from the census and makes dup/drop no-ops. -/
-private def probeImmortal : Bool :=
-  match boxInt ({} : HeapState) [.i64 3] with
-  | .ret [.i32 h] s1 =>
-    (s1.liveCount == 1) &&
-    (match markImmortal s1 [.i32 h] with
-     | .ret [.i32 _] s2 =>
-       (s2.liveCount == 0) &&
-       (match dup s2 [.i32 h] with
-        | .ret [] s3 =>
-          (match drop s3 [.i32 h] with
-           | .ret [] s4 => s4.liveCount == 0
-           | _          => false)
-        | _ => false)
-     | _ => false)
-  | _ => false
-example : probeImmortal = true := by native_decide
-
-/-- `mark-immortal-deep` marks the array AND its children — the whole structure leaves the census. -/
-private def probeImmortalDeep : Bool :=
-  match buildPair with
-  | some (a, _, _, s) =>
-    (s.liveCount == 3) &&
-    (match markImmortalDeep s [.i32 a] with
-     | .ret [.i32 _] s' => s'.liveCount == 0
-     | _                => false)
-  | none => false
-example : probeImmortalDeep = true := by native_decide
-
-/-- Handles are 1-based: the null sentinel `0` never names a real object, and the first allocation is `1`.
-This is load-bearing — the free-cascade / mark-deep skip `h == 0` as a null slot, so a 0-based handle would
-collide with the sentinel and silently skip dropping/marking the first-allocated object. -/
-private def probeNullSentinel : Bool :=
-  match boxInt ({} : HeapState) [.i64 0] with
-  | .ret [.i32 h] s => (h == 1) && (s.getObj? 0).isNone && (s.getObj? 1).isSome
-  | _               => false
-example : probeNullSentinel = true := by native_decide
-
-/-! #### W5.1b coverage hardening — deeper cascade / sharing / DAG invariants (pinning edges the base
-witnesses do not exercise). -/
-
-/-- Nested-array cascade: array A holds array B holds a boxed int (3 live objects). Dropping A frees
-A → B → the int transitively — the MULTI-LEVEL cascade + traversal-fuel depth. Leak census → 0. -/
-private def probeNestedCascade : Bool :=
-  match boxInt ({} : HeapState) [.i64 7] with
-  | .ret [.i32 h] s0 =>
-    match arrAlloc s0 [.i32 1] with
-    | .ret [.i32 b] s1 =>
-      match arrSet s1 [.i32 b, .i32 0, .i32 h] with
-      | .ret [.i32 _] s2 =>
-        match arrAlloc s2 [.i32 1] with
-        | .ret [.i32 a] s3 =>
-          match arrSet s3 [.i32 a, .i32 0, .i32 b] with
+          match arrSet s3 [.i32 a, .i32 1, .i32 f2] with
           | .ret [.i32 _] s4 =>
             (s4.liveCount == 3) &&
-            (match drop s4 [.i32 a] with
-             | .ret [] s5 => s5.liveCount == 0
-             | _          => false)
+            (match drop s4 [.i32 a] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
           | _ => false
         | _ => false
       | _ => false
     | _ => false
   | _ => false
-example : probeNestedCascade = true := by native_decide
+example : probeHeapCascade = true := by native_decide
 
-/-- Shared child: an array owns ONE ref to a child that is ALSO held elsewhere (rc 2). Dropping the array
-decrements the child but does NOT free it (rc 2→1, still live); dropping the remaining ref then frees it.
-Pins the sharing refcount discipline (a single owner's drop must not free a shared node). -/
-private def probeSharedChild : Bool :=
-  match boxInt ({} : HeapState) [.i64 1] with
-  | .ret [.i32 h] s0 =>
-    match dup s0 [.i32 h] with
-    | .ret [] s1 =>
-      match arrAlloc s1 [.i32 1] with
-      | .ret [.i32 a] s2 =>
-        match arrSet s2 [.i32 a, .i32 0, .i32 h] with
-        | .ret [.i32 _] s3 =>
-          (s3.liveCount == 2) &&
-          (match drop s3 [.i32 a] with
-           | .ret [] s4 =>
-             (s4.liveCount == 1) &&
-             (match drop s4 [.i32 h] with
-              | .ret [] s5 => s5.liveCount == 0
-              | _          => false)
-           | _ => false)
-        | _ => false
+/-- An array of IMMEDIATE int elements: only the array node is heap (liveCount 1); arr-get yields the
+immediate, get-int reads it; cascade-drop skips the immediate elements and frees just the node → 0. -/
+private def probeArrImmElems : Bool :=
+  match arrAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 a] s0 =>
+    match boxInt s0 [.i64 5] with
+    | .ret [.i32 e] s1 =>
+      match arrSet s1 [.i32 a, .i32 0, .i32 e] with
+      | .ret [.i32 _] s2 =>
+        (s2.liveCount == 1) &&
+        (match arrGet s2 [.i32 a, .i32 0] with
+         | .ret [.i32 g] _ => (match getInt s2 [.i32 g] with | .ret [.i64 5] _ => true | _ => false)
+         | _               => false) &&
+        (match drop s2 [.i32 a] with | .ret [] s3 => s3.liveCount == 0 | _ => false)
       | _ => false
     | _ => false
   | _ => false
-example : probeSharedChild = true := by native_decide
+example : probeArrImmElems = true := by native_decide
 
-/-- DAG-safe mark-immortal-deep: an array with TWO slots pointing to the SAME child. The deep-mark visits
-the shared child ONCE (the already-immortal skip), marking array + child immortal → census 0, no
-double-processing of the shared node. -/
-private def probeDagMarkDeep : Bool :=
-  match boxInt ({} : HeapState) [.i64 2] with
-  | .ret [.i32 h] s0 =>
-    match dup s0 [.i32 h] with
-    | .ret [] s1 =>
-      match arrAlloc s1 [.i32 2] with
-      | .ret [.i32 a] s2 =>
-        match arrSet s2 [.i32 a, .i32 0, .i32 h] with
-        | .ret [.i32 _] s3 =>
-          match arrSet s3 [.i32 a, .i32 1, .i32 h] with
-          | .ret [.i32 _] s4 =>
-            (s4.liveCount == 2) &&
-            (match markImmortalDeep s4 [.i32 a] with
-             | .ret [.i32 _] s5 => s5.liveCount == 0
-             | _                => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
+/-- arr-alloc(0) is the inline UNIT immediate: it IS immUnit, no heap (liveCount 0), arr-len 0, arr-get OOB. -/
+private def probeImmUnit : Bool :=
+  match arrAlloc ({} : HeapState) [.i32 0] with
+  | .ret [.i32 u] s =>
+    (u == immUnit) && (s.liveCount == 0) &&
+    (match arrLen s [.i32 u]         with | .ret [.i32 0] _ => true | _ => false) &&
+    (match arrGet s [.i32 u, .i32 0] with | .trap _ => true | _ => false)
   | _ => false
-example : probeDagMarkDeep = true := by native_decide
+example : probeImmUnit = true := by native_decide
 
-/-! #### W5.2a: positional maps (map-alloc/set/key/val/len). -/
-
-/-- Build a 1-entry map {box 5 ↦ box 9}: box the key + value, map-alloc 1, map-set pair 0. -/
-private def buildMap1 : Option (UInt32 × UInt32 × UInt32 × HeapState) :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 k] s0 =>
-    match boxInt s0 [.i64 9] with
-    | .ret [.i32 v] s1 =>
-      match mapAlloc s1 [.i32 1] with
-      | .ret [.i32 m] s2 =>
-        match mapSet s2 [.i32 m, .i32 0, .i32 k, .i32 v] with
-        | .ret [.i32 _] s3 => some (m, k, v, s3)
-        | _ => none
-      | _ => none
-    | _ => none
-  | _ => none
-
-/-- map-alloc/set/key/val/len round-trip: map-key/val at pair 0 return the boxed key/value; map-len is 1. -/
-private def probeMap : Bool :=
-  match buildMap1 with
-  | some (m, k, v, s) =>
-    (match mapKey s [.i32 m, .i32 0] with | .ret [.i32 g] _ => g == k | _ => false) &&
-    (match mapVal s [.i32 m, .i32 0] with | .ret [.i32 g] _ => g == v | _ => false) &&
-    (match mapLen s [.i32 m]         with | .ret [.i32 1] _ => true   | _ => false)
-  | none => false
-example : probeMap = true := by native_decide
-
-/-- Out-of-bounds map-key / map-set trap. -/
-private def probeMapOob : Bool :=
-  match mapAlloc ({} : HeapState) [.i32 1] with
-  | .ret [.i32 m] s =>
-    (match mapKey s [.i32 m, .i32 5]                 with | .trap _ => true | _ => false) &&
-    (match mapSet s [.i32 m, .i32 5, .i32 0, .i32 0] with | .trap _ => true | _ => false)
-  | _ => false
-example : probeMapOob = true := by native_decide
-
-/-- Cascade-drop a map frees it AND both its key + value handles (leak census → 0). -/
-private def probeMapCascade : Bool :=
-  match buildMap1 with
-  | some (m, _, _, s) =>
-    (s.liveCount == 3) &&
-    (match drop s [.i32 m] with
-     | .ret [] s' => s'.liveCount == 0
-     | _          => false)
-  | none => false
-example : probeMapCascade = true := by native_decide
-
-/-! #### W5.2b-1: functional map read-only (map-empty/lookup/size) + structural value-eq key match. -/
-
-/-- map-lookup matches by structural VALUE-equality, not handle identity: a SECOND key handle boxed with the
-same value (5) as the stored key still finds the entry's value. -/
-private def probeMapLookup : Bool :=
-  match buildMap1 with
-  | some (m, k, v, s) =>
-    match boxInt s [.i64 5] with
-    | .ret [.i32 k2] s2 =>
-      (k2 != k) &&
-      (match mapLookup s2 [.i32 m, .i32 k2] with
-       | .ret [.i32 got] _ => got == v
-       | _                 => false)
-    | _ => false
-  | none => false
-example : probeMapLookup = true := by native_decide
-
-/-- map-lookup of an absent key returns NULL (0). -/
-private def probeMapLookupMiss : Bool :=
-  match buildMap1 with
-  | some (m, _, _, s) =>
-    match boxInt s [.i64 7] with
-    | .ret [.i32 k7] s2 =>
-      (match mapLookup s2 [.i32 m, .i32 k7] with
-       | .ret [.i32 0] _ => true
-       | _               => false)
-    | _ => false
-  | none => false
-example : probeMapLookupMiss = true := by native_decide
-
-/-- map-empty is size 0; a 1-entry map is size 1. -/
-private def probeMapEmptySize : Bool :=
+/-- A map with IMMEDIATE int keys (the realistic corpus case): value-eq matches the deterministic immediate
+key, lookup returns the heap value, and dropping the map frees the map node + the value (the immediate key is
+census-excluded) → 0. This is the fix for the map diverge/leak from small-int keys. -/
+private def probeMapImmKeys : Bool :=
   match mapEmpty ({} : HeapState) [] with
   | .ret [.i32 e] s0 =>
-    (match mapSize s0 [.i32 e] with | .ret [.i32 0] _ => true | _ => false) &&
-    (match buildMap1 with
-     | some (m, _, _, s) => (match mapSize s [.i32 m] with | .ret [.i32 1] _ => true | _ => false)
-     | none              => false)
-  | _ => false
-example : probeMapEmptySize = true := by native_decide
-
-/-! #### W5.2b-2: functional map CONSUMING ops (map-insert/map-remove) — value + leak balance. -/
-
-/-- Insert a NEW key into the empty map: lookup finds it, size 1, and dropping the result frees everything
-(leak census → 0). -/
-private def probeMapInsertNew : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 k] s0 =>
-    match boxInt s0 [.i64 9] with
-    | .ret [.i32 v] s1 =>
-      match mapEmpty s1 [] with
-      | .ret [.i32 e] s2 =>
-        match mapInsert s2 [.i32 e, .i32 k, .i32 v] with
-        | .ret [.i32 m] s3 =>
-          (match mapLookup s3 [.i32 m, .i32 k] with | .ret [.i32 g] _ => g == v | _ => false) &&
-          (match mapSize s3 [.i32 m]         with | .ret [.i32 1] _ => true   | _ => false) &&
-          (match drop s3 [.i32 m]            with | .ret [] s4 => s4.liveCount == 0 | _ => false)
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeMapInsertNew = true := by native_decide
-
-/-- Insert an EXISTING key (matched by value-eq via a distinct key handle) REPLACES the value: lookup returns
-the new value, and dropping the result frees everything (→ 0) — proving the old value + redundant incoming
-key were dropped (else the census would not balance). -/
-private def probeMapInsertReplace : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 k] s0 =>
-    match boxInt s0 [.i64 90] with
-    | .ret [.i32 v0] s1 =>
-      match mapEmpty s1 [] with
-      | .ret [.i32 e] s2 =>
-        match mapInsert s2 [.i32 e, .i32 k, .i32 v0] with
-        | .ret [.i32 m0] s3 =>
-          match boxInt s3 [.i64 5] with
-          | .ret [.i32 k2] s4 =>
-            match boxInt s4 [.i64 91] with
-            | .ret [.i32 v1] s5 =>
-              match mapInsert s5 [.i32 m0, .i32 k2, .i32 v1] with
-              | .ret [.i32 m1] s6 =>
-                (match mapLookup s6 [.i32 m1, .i32 k] with | .ret [.i32 g] _ => g == v1 | _ => false) &&
-                (match drop s6 [.i32 m1] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
-              | _ => false
-            | _ => false
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeMapInsertReplace = true := by native_decide
-
-/-- Remove an existing key (matched by value-eq) → empty map; the removed key+value are freed (borrowed query
-survives). Dropping the result + the borrowed query → 0. -/
-private def probeMapRemove : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 k] s0 =>
-    match boxInt s0 [.i64 9] with
-    | .ret [.i32 v] s1 =>
-      match mapEmpty s1 [] with
-      | .ret [.i32 e] s2 =>
+    match boxInt s0 [.i64 5] with
+    | .ret [.i32 k] s1 =>
+      match boxFloat s1 [.f64 9] with
+      | .ret [.i32 v] s2 =>
         match mapInsert s2 [.i32 e, .i32 k, .i32 v] with
         | .ret [.i32 m] s3 =>
           match boxInt s3 [.i64 5] with
           | .ret [.i32 k2] s4 =>
-            match mapRemove s4 [.i32 m, .i32 k2] with
-            | .ret [.i32 m2] s5 =>
-              (match mapSize s5 [.i32 m2]              with | .ret [.i32 0] _ => true | _ => false) &&
-              (match mapLookup s5 [.i32 m2, .i32 k2]   with | .ret [.i32 0] _ => true | _ => false) &&
-              (match drop s5 [.i32 m2] with
-               | .ret [] s6 => (match drop s6 [.i32 k2] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
-               | _          => false)
-            | _ => false
+            (match mapLookup s4 [.i32 m, .i32 k2] with | .ret [.i32 g] _ => g == v | _ => false) &&
+            (match mapSize s4 [.i32 m]             with | .ret [.i32 1] _ => true | _ => false) &&
+            (match drop s4 [.i32 m] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
           | _ => false
         | _ => false
       | _ => false
     | _ => false
   | _ => false
-example : probeMapRemove = true := by native_decide
-
-/-- Remove of an ABSENT key is a no-op identity: the same handle back, size unchanged. -/
-private def probeMapRemoveAbsent : Bool :=
-  match buildMap1 with
-  | some (m, _, _, s) =>
-    match boxInt s [.i64 7] with
-    | .ret [.i32 k7] s2 =>
-      match mapRemove s2 [.i32 m, .i32 k7] with
-      | .ret [.i32 m2] s3 =>
-        (m2 == m) && (match mapSize s3 [.i32 m2] with | .ret [.i32 1] _ => true | _ => false)
-      | _ => false
-    | _ => false
-  | none => false
-example : probeMapRemoveAbsent = true := by native_decide
-
-/-- SHARED-map insert path-copies (the case v-lean-oracle flagged): inserting into a map with rc>1 leaves the
-ORIGINAL unchanged and produces a SEPARATE updated version — both coexist, then both drop to 0 with no leak.
-This exercises the dup-and-drop transfer's shared branch (drop m does NOT cascade; result holds dup'd refs). -/
-private def probeMapInsertShared : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 k] s0 =>
-    match boxInt s0 [.i64 90] with
-    | .ret [.i32 v0] s1 =>
-      match mapEmpty s1 [] with
-      | .ret [.i32 e] s2 =>
-        match mapInsert s2 [.i32 e, .i32 k, .i32 v0] with
-        | .ret [.i32 m0] s3 =>
-          match dup s3 [.i32 m0] with
-          | .ret [] s4 =>
-            match boxInt s4 [.i64 5] with
-            | .ret [.i32 k2] s5 =>
-              match boxInt s5 [.i64 91] with
-              | .ret [.i32 v1] s6 =>
-                match mapInsert s6 [.i32 m0, .i32 k2, .i32 v1] with
-                | .ret [.i32 m1] s7 =>
-                  (match mapLookup s7 [.i32 m0, .i32 k] with | .ret [.i32 g] _ => g == v0 | _ => false) &&
-                  (match mapLookup s7 [.i32 m1, .i32 k] with | .ret [.i32 g] _ => g == v1 | _ => false) &&
-                  (match drop s7 [.i32 m0] with
-                   | .ret [] s8 => (match drop s8 [.i32 m1] with | .ret [] s9 => s9.liveCount == 0 | _ => false)
-                   | _          => false)
-                | _ => false
-              | _ => false
-            | _ => false
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeMapInsertShared = true := by native_decide
-
-/-! #### W5.2b-3: map-merge (b wins on conflict). -/
-
-/-- Build a 1-entry map {box ki ↦ box vi} via empty + insert. -/
-private def build1 (s : HeapState) (ki vi : UInt64) : Option (UInt32 × HeapState) :=
-  match boxInt s [.i64 ki] with
-  | .ret [.i32 k] s1 =>
-    match boxInt s1 [.i64 vi] with
-    | .ret [.i32 v] s2 =>
-      match mapEmpty s2 [] with
-      | .ret [.i32 e] s3 =>
-        match mapInsert s3 [.i32 e, .i32 k, .i32 v] with
-        | .ret [.i32 m] s4 => some (m, s4)
-        | _                => none
-      | _ => none
-    | _ => none
-  | _ => none
-
-/-- Merge of DISJOINT maps {1↦10} ∪ {2↦20} has both entries (size 2) and leak-balances to 0 on drop. -/
-private def probeMapMergeDisjoint : Bool :=
-  match build1 ({} : HeapState) 1 10 with
-  | some (a, s1) =>
-    match build1 s1 2 20 with
-    | some (b, s2) =>
-      match mapMerge s2 [.i32 a, .i32 b] with
-      | .ret [.i32 m] s3 =>
-        (match mapSize s3 [.i32 m] with | .ret [.i32 2] _ => true | _ => false) &&
-        (match drop s3 [.i32 m]    with | .ret [] s4 => s4.liveCount == 0 | _ => false)
-      | _ => false
-    | none => false
-  | none => false
-example : probeMapMergeDisjoint = true := by native_decide
-
-/-- Merge with a CONFLICTING key {1↦90} ∪ {1↦91}: b WINS (lookup → 91), deduped (size 1), and a's losing
-value (90) is dropped so the census balances to 0 on drop. -/
-private def probeMapMergeConflict : Bool :=
-  match build1 ({} : HeapState) 1 90 with
-  | some (a, s1) =>
-    match build1 s1 1 91 with
-    | some (b, s2) =>
-      match mapMerge s2 [.i32 a, .i32 b] with
-      | .ret [.i32 m] s3 =>
-        match boxInt s3 [.i64 1] with
-        | .ret [.i32 kq] s4 =>
-          (match mapSize s4 [.i32 m] with | .ret [.i32 1] _ => true | _ => false) &&
-          (match mapLookup s4 [.i32 m, .i32 kq] with
-           | .ret [.i32 g] _ => (match getInt s4 [.i32 g] with | .ret [.i64 91] _ => true | _ => false)
-           | _               => false) &&
-          (match drop s4 [.i32 m] with
-           | .ret [] s5 => (match drop s5 [.i32 kq] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
-           | _          => false)
-        | _ => false
-      | _ => false
-    | none => false
-  | none => false
-example : probeMapMergeConflict = true := by native_decide
-
-/-! #### W5.2d-1: set core (empty/insert/contains/remove/size) — value-eq membership + dup-and-drop. -/
-
-/-- set-insert/contains/size: a set {5} contains 5 (by value-eq via a fresh box) but not 7; size 1;
-leak-balances on drop. -/
-private def probeSet : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 e5] s0 =>
-    match setEmpty s0 [] with
-    | .ret [.i32 se] s1 =>
-      match setInsert s1 [.i32 se, .i32 e5] with
-      | .ret [.i32 st] s2 =>
-        match boxInt s2 [.i64 5] with
-        | .ret [.i32 q5] s3 =>
-          match boxInt s3 [.i64 7] with
-          | .ret [.i32 q7] s4 =>
-            (match setContains s4 [.i32 st, .i32 q5] with | .ret [.i32 1] _ => true | _ => false) &&
-            (match setContains s4 [.i32 st, .i32 q7] with | .ret [.i32 0] _ => true | _ => false) &&
-            (match setSize s4 [.i32 st]              with | .ret [.i32 1] _ => true | _ => false) &&
-            (match drop s4 [.i32 st] with
-             | .ret [] s5 => (match drop s5 [.i32 q5] with
-               | .ret [] s6 => (match drop s6 [.i32 q7] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
-               | _          => false)
-             | _          => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeSet = true := by native_decide
-
-/-- set-insert dedups by value-eq: inserting a value-equal element leaves size 1 and drops the incoming
-duplicate (census balances to 0). -/
-private def probeSetDedup : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 e5] s0 =>
-    match setEmpty s0 [] with
-    | .ret [.i32 se] s1 =>
-      match setInsert s1 [.i32 se, .i32 e5] with
-      | .ret [.i32 st] s2 =>
-        match boxInt s2 [.i64 5] with
-        | .ret [.i32 e5b] s3 =>
-          match setInsert s3 [.i32 st, .i32 e5b] with
-          | .ret [.i32 st2] s4 =>
-            (match setSize s4 [.i32 st2] with | .ret [.i32 1] _ => true | _ => false) &&
-            (match drop s4 [.i32 st2]    with | .ret [] s5 => s5.liveCount == 0 | _ => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeSetDedup = true := by native_decide
-
-/-- set-remove (by value-eq): removes the element (freed via cascade), borrowed query survives; empty after,
-census 0 on drop. -/
-private def probeSetRemove : Bool :=
-  match boxInt ({} : HeapState) [.i64 5] with
-  | .ret [.i32 e5] s0 =>
-    match setEmpty s0 [] with
-    | .ret [.i32 se] s1 =>
-      match setInsert s1 [.i32 se, .i32 e5] with
-      | .ret [.i32 st] s2 =>
-        match boxInt s2 [.i64 5] with
-        | .ret [.i32 q] s3 =>
-          match setRemove s3 [.i32 st, .i32 q] with
-          | .ret [.i32 st2] s4 =>
-            (match setSize s4 [.i32 st2]             with | .ret [.i32 0] _ => true | _ => false) &&
-            (match setContains s4 [.i32 st2, .i32 q] with | .ret [.i32 0] _ => true | _ => false) &&
-            (match drop s4 [.i32 st2] with
-             | .ret [] s5 => (match drop s5 [.i32 q] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
-             | _          => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | _ => false
-  | _ => false
-example : probeSetRemove = true := by native_decide
-
-/-! #### W5.2d-2: set union / intersection / difference (each consumes both). -/
-
-/-- Build a 2-element int set {box x, box y}. -/
-private def buildSet2 (s : HeapState) (x y : UInt64) : Option (UInt32 × HeapState) :=
-  match boxInt s [.i64 x] with
-  | .ret [.i32 ex] s1 =>
-    match setEmpty s1 [] with
-    | .ret [.i32 se] s2 =>
-      match setInsert s2 [.i32 se, .i32 ex] with
-      | .ret [.i32 s1h] s3 =>
-        match boxInt s3 [.i64 y] with
-        | .ret [.i32 ey] s4 =>
-          match setInsert s4 [.i32 s1h, .i32 ey] with
-          | .ret [.i32 s2h] s5 => some (s2h, s5)
-          | _                  => none
-        | _ => none
-      | _ => none
-    | _ => none
-  | _ => none
-
-/-- {1,2} ∪ {2,3} = {1,2,3} (2 deduped): size 3, census 0 on drop. -/
-private def probeSetUnion : Bool :=
-  match buildSet2 ({} : HeapState) 1 2 with
-  | some (a, s1) =>
-    match buildSet2 s1 2 3 with
-    | some (b, s2) =>
-      match setUnion s2 [.i32 a, .i32 b] with
-      | .ret [.i32 u] s3 =>
-        (match setSize s3 [.i32 u] with | .ret [.i32 3] _ => true | _ => false) &&
-        (match drop s3 [.i32 u]    with | .ret [] s4 => s4.liveCount == 0 | _ => false)
-      | _ => false
-    | none => false
-  | none => false
-example : probeSetUnion = true := by native_decide
-
-/-- {1,2} ∩ {2,3} = {2}: size 1, has 2 not 1, census 0 on drop. -/
-private def probeSetIntersection : Bool :=
-  match buildSet2 ({} : HeapState) 1 2 with
-  | some (a, s1) =>
-    match buildSet2 s1 2 3 with
-    | some (b, s2) =>
-      match setIntersection s2 [.i32 a, .i32 b] with
-      | .ret [.i32 x] s3 =>
-        match boxInt s3 [.i64 2] with
-        | .ret [.i32 q2] s4 =>
-          match boxInt s4 [.i64 1] with
-          | .ret [.i32 q1] s5 =>
-            (match setSize s5 [.i32 x]              with | .ret [.i32 1] _ => true | _ => false) &&
-            (match setContains s5 [.i32 x, .i32 q2] with | .ret [.i32 1] _ => true | _ => false) &&
-            (match setContains s5 [.i32 x, .i32 q1] with | .ret [.i32 0] _ => true | _ => false) &&
-            (match drop s5 [.i32 x] with
-             | .ret [] s6 => (match drop s6 [.i32 q2] with
-               | .ret [] s7 => (match drop s7 [.i32 q1] with | .ret [] s8 => s8.liveCount == 0 | _ => false)
-               | _          => false)
-             | _          => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | none => false
-  | none => false
-example : probeSetIntersection = true := by native_decide
-
-/-- {1,2} \ {2,3} = {1}: size 1, has 1 not 2, census 0 on drop. -/
-private def probeSetDifference : Bool :=
-  match buildSet2 ({} : HeapState) 1 2 with
-  | some (a, s1) =>
-    match buildSet2 s1 2 3 with
-    | some (b, s2) =>
-      match setDifference s2 [.i32 a, .i32 b] with
-      | .ret [.i32 x] s3 =>
-        match boxInt s3 [.i64 1] with
-        | .ret [.i32 q1] s4 =>
-          match boxInt s4 [.i64 2] with
-          | .ret [.i32 q2] s5 =>
-            (match setSize s5 [.i32 x]              with | .ret [.i32 1] _ => true | _ => false) &&
-            (match setContains s5 [.i32 x, .i32 q1] with | .ret [.i32 1] _ => true | _ => false) &&
-            (match setContains s5 [.i32 x, .i32 q2] with | .ret [.i32 0] _ => true | _ => false) &&
-            (match drop s5 [.i32 x] with
-             | .ret [] s6 => (match drop s6 [.i32 q1] with
-               | .ret [] s7 => (match drop s7 [.i32 q2] with | .ret [] s8 => s8.liveCount == 0 | _ => false)
-               | _          => false)
-             | _          => false)
-          | _ => false
-        | _ => false
-      | _ => false
-    | none => false
-  | none => false
-example : probeSetDifference = true := by native_decide
+example : probeMapImmKeys = true := by native_decide
 
 end Oracle.Heap
