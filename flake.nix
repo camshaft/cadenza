@@ -752,6 +752,11 @@
           # (codegen→build-time-nix), deps only wasm-encoder (external). Registered so crane sees its Cargo.toml.
           xtask-codegen-wasm-abi = "xtask/crates/xtask-codegen-wasm-abi";
           xtask-codegen-declines = "xtask/crates/xtask-codegen-declines";
+          # xtask-codegen-support (v-xtask-decompose seq-202): the shared codegen helper lib single-sourcing
+          # format_tokens + rustfmt_stdin (deps syn+prettyplease+proc-macro2, external only — a workspace leaf).
+          # The 3 codegen crates (declines/wasm-abi/contracts) dep it + dropped their local copies. Registered so
+          # the crane deps-src includes its Cargo.toml + it gets its own clippy/test cranes.
+          xtask-codegen-support = "xtask/crates/xtask-codegen-support";
           # xtask-codegen-guide (v-guide-infra I5, whole-guide→sexpr flip; v-nix owns the nix wiring): the guide
           # sexp→TSX codegen (deps cadenza-syntax-sexpr + cadenza-ast). Registered so crane sees its Cargo.toml +
           # `xtaskCodegenGuideBin` builds it; guideExamplesCheck sets CDZ_XTASK_CODEGEN_GUIDE to the prebuilt bin.
@@ -1122,13 +1127,18 @@
               # mirroring xtask-roundtrip.
               xtask-save-baseline = [ "cadenza-ast" "cdz-contract" "xtask-save-baseline" "xtask-support" ];
               xtask-merge-baseline = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "cdz-contract" "corpus-case-titles" "xtask-merge-baseline" "xtask-support" ];
-              # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast).
-              xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" ];
-              # xtask-codegen-wasm-abi deps only external crates (wasm-encoder/syn/quote/prettyplease) — its
-              # workspace closure is just itself.
-              # now deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the --from-sexpr producer).
-              xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-wasm-abi" ];
-              xtask-codegen-declines = [ "cadenza-ast" "xtask-codegen-declines" ];
+              # xtask-codegen-support (v-xtask-decompose seq-202): shared format_tokens+rustfmt_stdin lib; deps
+              # ONLY external crates (syn/prettyplease/proc-macro2) — a workspace leaf, closure is just itself.
+              xtask-codegen-support = [ "xtask-codegen-support" ];
+              # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast); now also
+              # deps xtask-codegen-support (format_tokens); dropped its direct prettyplease (KEEPS syn: syn::Ident).
+              xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" "xtask-codegen-support" ];
+              # xtask-codegen-wasm-abi deps cadenza-ast (reads wasm-abi.sexp's cadenza-ast binary in the
+              # --from-sexpr producer) + now xtask-codegen-support (format_tokens+rustfmt_stdin); dropped its
+              # direct syn+prettyplease (reached transitively via xtask-codegen-support).
+              xtask-codegen-wasm-abi = [ "cadenza-ast" "xtask-codegen-support" "xtask-codegen-wasm-abi" ];
+              # xtask-codegen-declines now deps xtask-codegen-support (format_tokens); dropped direct syn+prettyplease.
+              xtask-codegen-declines = [ "cadenza-ast" "xtask-codegen-declines" "xtask-codegen-support" ];
               # xtask-codegen-guide (v-guide-infra I5): reads a chapter .sexp via the MAIN reader
               # (cadenza-syntax-sexpr → cadenza-syntax-core + cadenza-ast) into a cadenza-ast Arenas and emits
               # the @generated .tsx. Closure = the sexpr-reader stack + itself.
@@ -6308,6 +6318,7 @@
               clippy-xtask-codegen-contracts = mkCrateClippyCrane { crate = "xtask-codegen-contracts"; };
               clippy-xtask-codegen-wasm-abi = mkCrateClippyCrane { crate = "xtask-codegen-wasm-abi"; };
               clippy-xtask-codegen-declines = mkCrateClippyCrane { crate = "xtask-codegen-declines"; };
+              clippy-xtask-codegen-support = mkCrateClippyCrane { crate = "xtask-codegen-support"; };
               clippy-xtask-codegen-guide = mkCrateClippyCrane { crate = "xtask-codegen-guide"; };
               clippy-xtask-prune-baselines = mkCrateClippyCrane { crate = "xtask-prune-baselines"; };
               clippy-xtask-save-baseline = mkCrateClippyCrane { crate = "xtask-save-baseline"; };
@@ -6376,6 +6387,7 @@
               test-xtask-codegen-contracts = mkCrateTestCrane { crate = "xtask-codegen-contracts"; };
               test-xtask-codegen-wasm-abi = mkCrateTestCrane { crate = "xtask-codegen-wasm-abi"; };
               test-xtask-codegen-declines = mkCrateTestCrane { crate = "xtask-codegen-declines"; };
+              test-xtask-codegen-support = mkCrateTestCrane { crate = "xtask-codegen-support"; };
               test-xtask-codegen-guide = mkCrateTestCrane { crate = "xtask-codegen-guide"; };
               test-xtask-prune-baselines = mkCrateTestCrane { crate = "xtask-prune-baselines"; };
               test-xtask-save-baseline = mkCrateTestCrane { crate = "xtask-save-baseline"; };
@@ -6449,7 +6461,7 @@
               {
                 inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
-                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-declines clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-save-baseline clippy-xtask-merge-baseline clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+                  clippy-cdz-run clippy-xtask clippy-xtask-mandates clippy-xtask-support clippy-xtask-roundtrip clippy-xtask-lint-emoji clippy-xtask-canonicalize-baselines clippy-xtask-fmt clippy-xtask-codegen-contracts clippy-xtask-codegen-wasm-abi clippy-xtask-codegen-declines clippy-xtask-codegen-support clippy-xtask-codegen-guide clippy-xtask-prune-baselines clippy-xtask-save-baseline clippy-xtask-merge-baseline clippy-xtask-bench clippy-xtask-install-lsp clippy-xtask-duvet-check clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
               echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + xtask-mandates + xtask-lint-emoji + xtask-canonicalize-baselines + xtask-fmt + xtask-codegen-contracts + xtask-codegen-wasm-abi + xtask-prune-baselines + xtask-bench + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
