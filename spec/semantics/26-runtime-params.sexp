@@ -675,3 +675,29 @@
   (output (: 42 Int64))
   (call main (: 5 Int64))
   (output (: 47 Int64)))
+
+; prx2: the host bind SHADOWED regionally — composes prx1 (the generated effect is first-class) with
+; the host delegation: main delegates Param to the host, reads it once at the boundary, and reads it
+; again INSIDE an in-program handle that overrides the parameter for that region. The innermost-wins
+; discipline holds ACROSS the host/intra boundary: exactly ONE host call is recorded (the outer
+; read), the inner read resolves to the override (40 + n), and the sum is host + 100*(40+n). Pins
+; that the host bind is literally the outermost handler in the ordinary discipline — a regional
+; override never leaks a second boundary call. (breaker probe pr3, verified wasm + hop exact and
+; byte-idempotent; the rust host-shim gap keeps the rust row on the documented boundary todo.)
+(case
+  "an in-program handle shadows the host-bound Param regionally with one boundary call"
+  (input
+    (do
+      (pragma param (param (: widget slider)) (: width Int64))
+      (def
+        (main (: n Int64))
+        (host
+          (Param)
+          (+
+            (Param.width)
+            (* 100 (handle Param 0 ((width (u) s (resume (+ 40 n) s))) (Param.width))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (host-responses (respond param.width (: 7 Int64)))
+  (host-calls (call param.width))
+  (output (: 4007 Int64)))
