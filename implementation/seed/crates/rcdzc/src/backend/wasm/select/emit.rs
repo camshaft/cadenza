@@ -5060,9 +5060,29 @@ pub(super) fn emit(
             // bitwise/`not`/`wrap` combination of leaves, all total (`is_branchless_bool_rhs`). A `rhs`
             // that could trap (a checked op, `/`), call, allocate, or effect KEEPS the short-circuit `if`
             // so it runs only when reached.
+            // `rhs` starts its scratch ABOVE `lhs`'s high-water (`base.max(*high)`), NOT at `base`. `lhs`
+            // may leave a TRANSIENT scratch slot TYPED for the whole function (a `bin` length probe's
+            // checked-arith `off + n` stashes its operand `n`/result at an i64 slot); `rhs` reusing that
+            // slot index at a DIFFERENT width (a `(bytes p n)` `BinSizedRead` handle is an i32, blindly
+            // `scratch_ty.insert`ed) would declare one wasm local at two widths → an invalid module
+            // (`expected i32, found i64`, breaker cg3c: `(guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1))`
+            // — the guard's `BinSizedRead` of `p` aliased the predicate's i64 `off + k` slot). Floating
+            // `rhs` above `*high` hands it fresh, never-typed slots — the same disjoint-slot discipline the
+            // `Core::If` branches and checked-arith B-operand already apply (a slot's TYPE is fixed for the
+            // whole function, so width-disjoint temps must not alias even when their lifetimes don't overlap).
+            // `base.max(*high)` is read AFTER `emit(lhs)` raises `*high`, so it clears lhs's typed scratch.
             if is_branchless_bool_rhs(db, rhs) {
                 emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
-                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                emit(
+                    db,
+                    rhs,
+                    slots,
+                    base.max(*high),
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
                 out.push(if is_and { Lir::I32And } else { Lir::I32Or });
                 return Ok(());
             }
@@ -5070,14 +5090,32 @@ pub(super) fn emit(
             out.push(Lir::If(BlockType::Val(ValType::I32)));
             if is_and {
                 // then: rhs ; else: false (0)
-                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                emit(
+                    db,
+                    rhs,
+                    slots,
+                    base.max(*high),
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
                 out.push(Lir::Else);
                 out.push(Lir::ConstI32(0));
             } else {
                 // then: true (1) ; else: rhs
                 out.push(Lir::ConstI32(1));
                 out.push(Lir::Else);
-                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                emit(
+                    db,
+                    rhs,
+                    slots,
+                    base.max(*high),
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
             }
             out.push(Lir::End);
             Ok(())
