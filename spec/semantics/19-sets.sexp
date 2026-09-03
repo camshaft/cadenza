@@ -1171,13 +1171,7 @@
           (def ns #list(1 2 3 4 5))
           (def
             g0
-            (Map.insert
-              (Map.insert
-                (Map.insert (Map.insert (Map.insert Map.empty 1 #list(3)) 2 #list(3)) 3 #list(4))
-                4
-                #list())
-              5
-              #list(4)))
+            #map((= 1 #list(3)) (= 2 #list(3)) (= 3 #list(4)) (= 4 #list()) (= 5 #list(4))))
           (def g (if (> extra 0) (Map.insert g0 4 #list(extra)) g0))
           (def order (drain g ns (indeg-of g ns Map.empty) #set() #list()))
           (+ (* (chk order 0) 10) (edges-fwd g order ns))))
