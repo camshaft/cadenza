@@ -10883,3 +10883,20 @@
   (output (: 108 Int64))
   (call main (: 0 Int64))
   (output (: 203 Int64)))
+
+; nrx1: a `let`-bound LAMBDA cannot reference itself in its OWN init — `let` value binders are
+; BACKWARD-ONLY (a binding is not in scope in its own initializer), regardless of the value being a
+; function. This is the boundary between the two binding forms: a `(def (f …) … (f …))` — top-level,
+; module-member, or DO-LOCAL — IS self-visible (the recursion cases above), but a `(let ((f (fn …
+; (f …)))))` value binder is not, so the self-call `f` is unbound (CDZ0101), target-independent
+; (wasm + rust reject identically). The workaround is a do-local `def`, which is recursive (verified:
+; the fr3 def-form computes the same countdown). Pins that self-recursion is a property of the
+; function DECLARATION form, not of the value being a lambda — a let that treated its lambda binder as
+; recursive would silently accept an ill-scoped self-reference. (breaker probe fr2.)
+(case
+  "a let-bound lambda cannot call itself in its own initializer"
+  (input
+    (do
+      (def (main (: n Int64)) (let ((f (fn ((: k Int64)) (if (> k 0) (+ 1 (f (- k 1))) 0)))) (f n)))
+      (export main)))
+  (error CDZ0101))
