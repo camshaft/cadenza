@@ -13696,17 +13696,22 @@
   (call main (: 0 Int64))
   (output (: 7010 Int64)))
 
-; mkx1: a bin-match-EXTRACTED value used as a Map KEY in a lookup+insert cycle under a handler leaks
-; (value-correct). A handler op bin-matches its Bytes arg, uses the extracted byte as a Map key,
-; does Map.lookup then Map.insert (a counter), threading the Map handler-state. VALUE exact — two
-; bumps of the same key => count reaches 2, so 1 + 10*2 = 21. But it leaks 1 object. ISOLATED: a
-; Map handler-state with a PLAIN Int key (no bin-match) reclaims 0; the SAME bin-match feeding
-; LIST-state (List.push, no Map) reclaims 0 (ixx1); only the bin-extracted-key-into-Map-lookup/insert
-; combination leaks — a distinct locus (the bin-extracted key's borrow/own classification flowing into
-; the Map CHAMP lookup+insert cycle) from the utf8-decode-husk and Ast-construction families. Gate
-; counts this accurately (Map husk class). Pinned known-leak + filed to v-memory-safety.
+; mkx1: a handler that GROWS a Map handler-state and holds it to completion leaks 1 (value-correct). A
+; handler op bin-matches its Bytes arg, uses the extracted byte as a Map key, does Map.lookup then
+; Map.insert (a counter), threading the Map handler-state. VALUE exact — two bumps of the same key =>
+; count reaches 2, so 1 + 10*2 = 21. But it leaks 1 object. ROOT CAUSE (v-memory-safety rc-trace, superseding
+; my original "Map-key-slot" reading): the leaked node#6 is the FINAL threaded Map state at HANDLER
+; COMPLETION, not reclaimed — the trx1 family (handler-completion final-state), NOT a key-slot/CHAMP-key-half
+; issue. DECISIVE control: a NON-handler with the SAME bin-extracted key into Map.lookup+insert reclaims 0
+; (CHAMP/key reclaim is fine outside a handler); mkx1 leaks ONLY because the handler's grown final Map isn't
+; dropped at completion. The bin-KEY merely REVEALS the husk (a non-immortal entry makes the un-reclaimed
+; final-map husk COUNT; the const-key mvx1 below has an immortal key so the same husk isn't counted → looked
+; like 0 — a visibility artifact, not a key-vs-value reclaim difference). v-mem's #8105 compound-shell closed
+; the match-scrutinee + drain-to-empty (md2/md3) shapes; this GROW-and-hold final-state shape rides the
+; handler-completion reclaim (co-designed with v-effects reduce_handle). Gate counts it accurately (nix-real:
+; flipping to (live-objects 0) reds nix corpus-14b, got 1). Pinned known-leak + filed to v-memory-safety.
 (case
-  "a bin-extracted Map key in a lookup-insert handler-state cycle counts correctly (leaks pending Map-key reclaim)"
+  "a bin-extracted Map key in a lookup-insert handler-state cycle counts correctly (leaks pending handler-final-state reclaim)"
   (input
     (do
       (effect T (op bump (-> Bytes Int64)))
@@ -13735,15 +13740,18 @@
   (output (: 21 Int64))
   (live-objects known-leak))
 
-; skx1: the SET counterpart of mkx1's Map-key leak — a bin-match-extracted value used as a SET
-; ELEMENT in a contains+insert handler-state cycle RECLAIMS to 0 (where the Map-key version leaks).
+; skx1: the SET counterpart of mkx1 — a bin-match-extracted value used as a SET ELEMENT in a
+; contains+insert handler-state cycle reads 0 husks in-gate (where mkx1's Map version leaks 1).
 ; A handler op bin-matches its Bytes arg, uses the extracted byte as a Set element, does
 ; Set.contains then Set.insert (a seen-set), threading the Set handler-state. Value exact (first mark
 ; 0/new, repeat 1/seen): mark(n) mark(n) mark(9) -> 0 + 10*1 + 100*(0 if n!=9 else 1). n=5 -> 10;
-; n=9 -> 110 (all three mark 9: 0,1,1). Pins the mkx1 CONTRAST: Set.insert stores just the element and
-; reclaims the bin-extracted value cleanly, so mkx1's leak is specific to Map's KEY-VALUE pairing
-; (the extra value slot), NOT bin-extracted-value-into-CHAMP generally. (breaker probe sk1, verified
-; tri-target exact + byte-idempotent + live-objects 0 in-gate.)
+; n=9 -> 110 (all three mark 9: 0,1,1). NOTE (superseding my original "the leak is specific to Map's
+; KEY-VALUE pairing" reading): v-memory-safety's rc-trace localized mkx1 to HANDLER-COMPLETION final-state
+; reclaim (trx1 family), not a Map key-slot. So this skx1 0-reading is NOT proof of a key-vs-value/Set
+; distinction; it is only an in-gate 0 for the Set handler-final-state shape — whether the Set final-state
+; genuinely reclaims or is a husk-visibility artifact (like mvx1's immortal-const-key 0) is for v-mem to
+; confirm on nix. Kept as a value + in-gate-balance witness, not a root-cause contrast. (breaker probe sk1,
+; verified tri-target exact + byte-idempotent + live-objects 0 in-gate.)
 (case
   "a bin-extracted Set element in a contains-insert handler-state cycle reclaims cleanly"
   (input
@@ -13775,14 +13783,16 @@
   (call main (: 9 Int64))
   (output (: 110 Int64)))
 
-; mvx1: the VALUE-position counterpart completing the mkx1/skx1 leak triangulation — a bin-match-
-; extracted value stored as a Map VALUE (under a CONSTANT key) in handler-state RECLAIMS to 0, where
-; the same bin-extracted value used as a Map KEY (mkx1) LEAKS. A handler op bin-matches its Bytes
-; arg, inserts (7, extracted-byte) into the Map state, reads it back. Triangulation: bin-value as Map
-; KEY leaks (mkx1), as Map VALUE reclaims (this), as Set ELEMENT reclaims (skx1) — pinning that the
-; leak is specific to the KEY slot of a Map's (key,value) entry, the sharpest localization for the
-; CHAMP-insert reclaim fix. put(n) stores n@7 then put(3) overwrites: n + 100*3. n=5 -> 305; n=9 ->
-; 309. (breaker probe mv1, verified tri-target exact + byte-idempotent + live-objects 0 in-gate.)
+; mvx1: a bin-match-extracted value stored as a Map VALUE under a CONSTANT key in handler-state reads 0
+; husks in-gate (where mkx1's bin-extracted-KEY version reads 1). A handler op bin-matches its Bytes
+; arg, inserts (7, extracted-byte) into the Map state, reads it back. put(n) stores n@7 then put(3)
+; overwrites: n + 100*3. n=5 -> 305; n=9 -> 309. CORRECTION (v-memory-safety rc-trace, superseding my
+; original "the leak is specific to the KEY slot" triangulation): mkx1's leak is the un-reclaimed
+; HANDLER-COMPLETION final Map state (trx1 family), NOT a key-slot. This mvx1 0-reading is a husk-VISIBILITY
+; artifact: the CONSTANT key 7 is immortal, so the same un-reclaimed final-map husk is NOT counted here —
+; the key/value difference is about what makes the husk observable, not about which slot reclaims. So the
+; mkx1/skx1/mvx1 trio is a value + in-gate-balance witness set, NOT a key-vs-value reclaim localization.
+; (breaker probe mv1, verified tri-target exact + byte-idempotent + live-objects 0 in-gate.)
 (case
   "a bin-extracted value stored as a Map value under a constant key reclaims cleanly"
   (input
