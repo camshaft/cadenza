@@ -1242,6 +1242,44 @@
   (call main (: 0 Int64))
   (output (: 7 Int64)))
 
+; The SAME float-key canonicalization contract applies RECURSIVELY through a COMPOUND key with a float
+; leaf, `Map (Tuple Int64 Float64) Int64` — and, crucially, the compound key's HASH and EQ agree on that
+; recursion (else an inserted key would be silently unfindable, or two distinct keys would collide — a
+; heap soundness bug). Verified breaker probe ckey, tri-target exact + hop value-parity + idempotent.
+; (1) A NaN leaf is canonicalized inside the tuple: insert under `#tuple(1 q1)`, look up under
+; `#tuple(1 q2)` (two independently-computed NaNs) → FOUND (7). (2) A signed-zero leaf is preserved
+; inside the tuple: insert under `#tuple(1 +0.0)`, look up under `#tuple(1 -0.0)` → NOT found (-1). Same
+; canonicalize-NaN / preserve-signed-zero contract as the scalar float key above, now proven to compose
+; through the compound-key hash+eq without a mismatch.
+(case
+  "a NaN inside a compound (tuple) map key is canonicalized recursively — found"
+  (input
+    (do
+      (def (get (: m (Map (Tuple Int64 Float64) Int64)) (: k (Tuple Int64 Float64)))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((q1 (/ z z)))
+            (let ((q2 (/ (Float64.neg z) z)))
+              (get (Map.insert Map.empty #tuple(1 q1) 7) #tuple(1 q2))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case
+  "signed zero inside a compound (tuple) map key stays distinct recursively — not found"
+  (input
+    (do
+      (def (get (: m (Map (Tuple Int64 Float64) Int64)) (: k (Tuple Int64 Float64)))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((nz (Float64.neg z)))
+            (get (Map.insert Map.empty #tuple(1 z) 7) #tuple(1 nz)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
 ; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
 ; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric
