@@ -4951,7 +4951,7 @@ fn try_emit_bin_match(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Option<Result<StructId, Reject>> {
     // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin arm cond.
-    let (scrut_binder, _, _, _, _, _) = parse_bin_len_cond(db, body)?;
+    let (scrut_binder, _, _, _, _, _, _) = parse_bin_len_cond(db, body)?;
     // One merged bin segment: a LITERAL probe (from the cond), a BINDER read (from the body), or a WILDCARD
     // (an UNREAD segment — an `_`/unused binder that neither the cond probes nor the body reads, so it leaves
     // a gap in the tiling; emitted as a `(u8 _)`-per-byte filler, value-equivalent since the bytes are unread).
@@ -4977,7 +4977,8 @@ fn try_emit_bin_match(
         };
         // Each arm's cond must be a bin arm cond over the SAME scrutinee: a length probe + literal segments,
         // plus (dependent-size) the `n>=0` floors + the dynamic `total + Σn` length compare.
-        let Some((sb, total, lits, has_rest, is_dependent, guard)) = parse_bin_len_cond(db, cur)
+        let Some((sb, total, lits, has_rest, is_dependent, guard, post_lits)) =
+            parse_bin_len_cond(db, cur)
         else {
             return None; // an unmodeled conjunct / compound guard → not this sub-slice
         };
@@ -5009,9 +5010,9 @@ fn try_emit_bin_match(
         if is_dependent != dep.is_some() {
             return None;
         }
-        // POST-payload fixed segments (dynamic offset) only exist AFTER a dependent payload — a `post` seg with
-        // no dependent payload is an inconsistent shape.
-        if !post.is_empty() && dep.is_none() {
+        // POST-payload fixed segments (dynamic offset) only exist AFTER a dependent payload — a `post` binder
+        // or `post_lits` literal with no dependent payload is an inconsistent shape.
+        if (!post.is_empty() || !post_lits.is_empty()) && dep.is_none() {
             return None;
         }
         // The PRE-payload fixed prefix ends at the payload (dependent case) or at `total` (no dependent payload);
@@ -5076,6 +5077,16 @@ fn try_emit_bin_match(
         for (off, w, signed, le) in post {
             if post_by_off
                 .insert(off, Seg::Binder(w, signed, le))
+                .is_some()
+            {
+                return None;
+            }
+        }
+        // POST-payload LITERAL segments (a trailing fixed field like `(u8 7)` after a dependent payload) tile
+        // the same `[payload_off, total)` region as `(uN <lit>)`.
+        for (off, w, signed, le, lit) in post_lits {
+            if post_by_off
+                .insert(off, Seg::Lit(w, signed, le, lit))
                 .is_some()
             {
                 return None;
@@ -5308,8 +5319,17 @@ fn try_emit_bin_match(
 type BinLitSeg = (u32, u8, bool, bool, IntValue);
 
 /// A parsed bin-match arm cond ([`parse_bin_len_cond`]): `(scrutinee-binder, fixed_prefix_bytes,
-/// literal-segments, has_final_rest, is_dependent, guard)` — see that function's doc for each field.
-type BinArmCond = (StructId, u32, Vec<BinLitSeg>, bool, bool, Option<StructId>);
+/// pre-payload-literal-segments, has_final_rest, is_dependent, guard, post-payload-literal-segments)` — see
+/// that function's doc for each field.
+type BinArmCond = (
+    StructId,
+    u32,
+    Vec<BinLitSeg>,
+    bool,
+    bool,
+    Option<StructId>,
+    Vec<BinLitSeg>,
+);
 
 /// A BINDER fixed-width int bin segment recovered from an arm body's `BinIntRead`: `(byte_offset, width,
 /// signed, little_endian)`.
@@ -5403,6 +5423,10 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
     // A dependent DYNAMIC length probe `BytesLen(s) {op} Add(total, Σn)` — its op decides `has_final_rest`.
     let mut dyn_len: Option<(u32, crate::resolved::Prim)> = None;
     let mut lits: Vec<BinLitSeg> = Vec::new();
+    // POST-payload literal probes: `BinIntRead(s, off, w, off_plus: Some) == const` — a trailing fixed LITERAL
+    // field at a DYNAMIC offset after a dependent-size payload (`(bin (u8 n)(utf8 s n)(u8 7))`). Recognized as a
+    // post segment (NOT a user guard — else with the utf8-validity guard it exceeds the 1-guard cap → decline).
+    let mut post_lits: Vec<BinLitSeg> = Vec::new();
     // Conjuncts that are NOT a recognized length / literal / non-negativity probe are treated as a user GUARD
     // (a `(guard (bin …) <expr>)` arm). Safe: the length probe(s) MUST be recognized (else `total` is `None`
     // below → decline), so the pattern's implied length is never mis-derived; a mis-routed segment read simply
@@ -5479,13 +5503,18 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
                     }
                 } else if same
                     && op == crate::resolved::Prim::Eq
-                    && off_plus.is_none()
                     && let Core::ConstInt(lit) = core_of(db, rhs)
                 {
                     if let Some(b) = over_scrut {
                         scrut = Some(b);
                     }
-                    lits.push((byte_offset, width, signed, little_endian, lit));
+                    // A PRE-payload literal (static offset) tiles the fixed prefix; a POST-payload literal
+                    // (`off_plus: Some`, a trailing fixed field after a dependent payload) tiles the post region.
+                    if off_plus.is_none() {
+                        lits.push((byte_offset, width, signed, little_endian, lit));
+                    } else {
+                        post_lits.push((byte_offset, width, signed, little_endian, lit));
+                    }
                 } else {
                     guard.push(c);
                 }
@@ -5516,7 +5545,15 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
         1 => Some(guard[0]),
         _ => return None,
     };
-    Some((scrut?, total, lits, has_rest, is_dependent, guard))
+    Some((
+        scrut?,
+        total,
+        lits,
+        has_rest,
+        is_dependent,
+        guard,
+        post_lits,
+    ))
 }
 
 /// Collect an arm body's segment reads over the scrutinee `scrut_binder`: the PRE-payload BINDER fixed-width
