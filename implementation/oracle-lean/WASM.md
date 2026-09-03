@@ -338,6 +338,42 @@ order a program can observe is `to-list`'s CANONICAL value-sorted order, NOT the
   BORROW; a key/elem is NULL only when exhausted. The cursor owns its descent-path frames (reclaimed by the
   standard cascade). Modeling it is a W5.2c follow-up (after `to-list` lands).
 
+### W5.3 / W5.4 landed — the heap-op CORE is complete
+
+All remaining emitted (`lowerable`) heap ops except `value-*` / `bigint-of-bytes` / `ast-*` are now modeled
+(each clean-room from the WIT + v-runtime's rc.rs/scalars.rs/champ.rs contracts, witnessed, leak-balanced):
+
+- **Bytes + strings (W5.3):** `bytes-alloc/set/get/len/scalar-at`, `str-from-bytes` (a flat `Array UInt8` leaf;
+  String == Bytes share one heap rep — the Str/Bytes split is only a value-encode descriptor), and the rope
+  `bytes-concat/slice/compact` modeled **flat** — value-faithful AND leak-VERDICT-faithful (the leak oracle
+  thresholds `leak > 0`, not an exact count, and flat frees eagerly so `flat_census==0 ⇔ rope_census==0` for
+  consume-semantics ops; the slice-pins-parent sharing only shifts the count on an already-leaking run).
+- **Sums (tagged variants):** `sum-new/-disc/-payload` — `HeapValue.sum (disc, payload)`, arity-1 (payload
+  child); a nullary variant carries the unit immediate.
+- **Numeric:** BigInt (`of-i64/to-i64-checked/add/sub/mul/div/rem/cmp`) = a Lean `Int` leaf, ALWAYS heap (zero
+  is a fresh heap leaf, never null; null READS as 0); Rational (`of/num/den/add/sub/mul/div/cmp`) = a normalized
+  `[num,den]` node. **Borrow-heavy** (opposite of the CHAMP collection ops): every arith/cmp/convert BORROWS +
+  fresh owned result; only `rational-of` consumes.
+- **List extras:** `vec-concat/-prepend/-of-arr/-drop` (flat, consume).
+- **Reuse / FBIP (W5.4, the W7 crux):** `reset` (rc==1→drop-children+keep-shell-return-same-handle;
+  rc>1/immortal→NULL), `arr-alloc-reuse`/`sum-new-reuse` (refit the token or alloc fresh). The `rc==1` gate +
+  dup-before-drop makes BOTH dimensions catch a broken uniqueness gate (aliased-read/UAF value divergence).
+
+### W5.5 — `value-*` (the last cluster): plan + two divergence-risk gaps
+
+`value-eq` (61) / `value-eq-shaped` (88) wrap the structural `valueEq` (floats bit-exact); `value-canonicalize`
+(87) is identity/dup for canonical values; `value-encode`/`-decode` (the binary-AST byte codec, `cdzast\x00\x01`
+header) are DEFERRED (a `value-encode` result is non-scalar Bytes → low coverage). `value-cmp` (86) is the
+blessed three-way order = v-lean-oracle's `cmpValue` STRUCTURE (Int signed / Bool false<true / Str-Char-Bytes
+`cmpBytes` lex / Rational `a·d` vs `c·b` / Tuple-List-Set lex-over-children / Record + Map sorted-by-key then
+lex), same-type-only (cross-type `valRank` unobservable), DECLINES on floats. **TWO GAPS to resolve first:**
+1. **Sum ordering is NOT the numeric disc.** Option/Result have fixed ranks (Some<None, Ok<Err); user variants
+   order by TAG-NAME bytes. `HeapValue.sum` stores only a numeric disc (declaration order) → `value-cmp` on sums
+   needs the `desc` (variant names) or a confirmed disc convention. Defer `value-cmp`-on-sums.
+2. **`valueEq` compares set/map POSITIONALLY** (order-sensitive), but sets/maps are UNORDERED — two equal
+   sets/maps built in different insertion orders would false-unequal. Fix `valueEq` to be order-independent for
+   set/map (mutual containment via `valueEq`; no total order needed) — a real latent bug beyond `value-*`.
+
 ## Gate coverage
 
 `Oracle.Wasm`'s invariants are pinned by compiled `example` witnesses in the module (no corpus case
