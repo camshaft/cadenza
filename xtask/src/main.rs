@@ -1474,11 +1474,21 @@ fn run_program_cadenza(
     }
     // Precondition: the ORIGINAL program must compile to wasm (under its declared world, if any). If it
     // doesn't, this is a SHARED gap (the standard wasm gate owns it), NOT a cadenza-backend round-trip break
-    // → decline so it stays uncounted.
-    if emit_component_single_at(tools, program, None, wit_world, component_name).is_err() {
-        return Ran::Declined {
-            code: None,
-            message: String::new(),
+    // → decline so it stays uncounted — EXCEPT a coded FRONT-END rejection, which we PROPAGATE so an
+    // `(error CODE)` case grades Pass on the cadenza target exactly as on wasm: the cadenza compile
+    // front-end shares the checker and rejects identically, and `grade_trial`'s `error` arm maps a coded
+    // decline whose code matches the asserted CODE to Pass (real added parity coverage — otherwise every
+    // rejection-assertion case is silently ungraded as todo). A NON-rejection failure (a compile hang →
+    // `Ran::Trap`, or a codeless decline) is NOT propagated: it stays a bare decline (Todo), because the
+    // `output` arm grades a propagated `Ran::Trap` as a Fail. (v-cadenza-backend sign-off 2026-09-03; the
+    // AUTHORITATIVE twin is the nix `mkCorpusCadenzaBuild` HOP1, guarded on `expect-kind == error`.)
+    if let Err(e) = emit_component_single_at(tools, program, None, wit_world, component_name) {
+        return match e {
+            e @ Ran::Declined { code: Some(_), .. } => e,
+            _ => Ran::Declined {
+                code: None,
+                message: String::new(),
+            },
         };
     }
     // hop1: emit the optimized program BACK to a Cadenza surface (sexpr text), FORWARDING the declared world
