@@ -5439,3 +5439,31 @@
       (export main)))
   (call main (: 5 Int8))
   (output (: 13 Int64)))
+
+; qcx1: a const-Qty list element read at a RUNTIME index. The collection-element const-Qty re-emit
+; (trunk) handles a CONST index (the whole access folds through a working path) and a Qty in a
+; SIGNATURE position; a RUNTIME index keeps the #list live and re-emits the buried const-Qty element
+; whose unit surfaces no Qty type in any signature, so the cadenza hop currently grades a graceful
+; DECLINE (todo — CDZ0203 on the re-emitted runtime-indexed-list shape in the units-loaded gate;
+; NOT a board fail, and NOT the CDZ0101 the standalone units-not-loaded recompile shows). Runs on
+; wasm/rust: n=0 -> element 0 = 5.0, n=1 -> element 1 = 7.0. Idealistic values pinned; flips when the
+; runtime-index collection-Qty re-emit lands. (breaker probes qc1/qk4, tick 1515-1516; verified
+; wasm PASS + cadenza todo in the units-loaded gate, isolated to the runtime index across five
+; controls — const-index, single-element, non-collection all re-emit.)
+(case
+  "a const-Qty list element read at a runtime index re-emits once the runtime-index path lands"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (List.at
+            #list((Qty.of 5.0 (Unit.base #"meter")) (Qty.of 7.0 (Unit.base #"meter")))
+            (% n 2))
+          ((Some q) (Qty.value q))
+          ((None) -1.0)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 5.0 Float64))
+  (call main (: 1 Int64))
+  (output (: 7.0 Float64)))
