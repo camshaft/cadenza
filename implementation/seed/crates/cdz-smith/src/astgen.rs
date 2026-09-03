@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 18 };
+    let arms = if depth == 0 { 2 } else { 19 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -824,6 +824,28 @@ fn gen_typefuzz_int<C: Choice>(
                 ),
             }
         }
+        // An Int64-producing integer-module op (T1.43): `Int64.max`/`Int64.min` (bound CONSTANTS, UNAPPLIED
+        // — NOT binary min/max fns); `(Int64.of <int>)` (checked convert); `(Int64.wrapping-{add,sub,mul}
+        // a b)` (modular → Int64); or `(Int64.checked-{add,sub,mul} a b)` (→ `Option Int64`) matched. Both
+        // rcdzc + oracle infer Int64 → agreement.
+        17 => match c.variant(5) {
+            0 => "Int64.max".to_string(),
+            1 => "Int64.min".to_string(),
+            2 => format!("(Int64.of {})", c.int_bounded(0, 9)),
+            3 => {
+                let op = ["wrapping-add", "wrapping-sub", "wrapping-mul"][c.variant(3)];
+                let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+                format!("(Int64.{op} {a} {b})")
+            }
+            _ => {
+                let op = ["checked-add", "checked-sub", "checked-mul"][c.variant(3)];
+                let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+                let bn = format!("i{}", *fresh);
+                *fresh += 1;
+                let dflt = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(match (Int64.{op} {a} {b}) ((Some {bn}) {bn}) ((None) {dflt}))")
+            }
+        },
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1112,7 +1134,20 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(22) {
+    match c.variant(23) {
+        // An INTEGER-MODULE op with a NON-INT operand (T1.43 — false-accept hunt): `(Int64.wrapping-add
+        // <float|bool> <int>)` — the op requires int operands → CDZ0203 (no int↔float, non-int rejected).
+        // rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        21 => {
+            let n = int(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                let f = typefuzz_float(c);
+                format!("(Int64.wrapping-add {f} {n})") // float operand
+            } else {
+                let b = boolean(c, iscope, bscope, fresh);
+                format!("(Int64.wrapping-add {b} {n})") // bool operand
+            }
+        }
         // A FLOAT type/op clash (T1.40/T1.41 — false-accept hunt): a MIXED int/float comparison
         // `(< <float> <int>)` (float ⊥ int/numVar), a float ASCRIBED Int64 `(: <float> Int64)`, or a float
         // REMAINDER `(% <float> <float>)` (no float remainder → CDZ0301) → a coded type fault. rcdzc rejects
