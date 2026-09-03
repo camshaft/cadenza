@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 16 };
+    let arms = if depth == 0 { 2 } else { 17 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -763,6 +763,34 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(. (: (record (= a {a}) (= b {b})) (Record (: a Int64) (: b Int64))) {k})")
             }
         },
+        // An Int64-producing String op (T1.38), consuming a String literal. `byte-len`/`scalar-len`
+        // (→ Int64); `byte-len ∘ concat`; or `at`/`slice` (→ `Option String`, total-fallible) matched to
+        // the inner `byte-len`. (`scalar-at` → `Option Char` is omitted — the Char consumption op is
+        // unmodeled and skips.) Both rcdzc + oracle infer Int64 → agreement.
+        15 => {
+            let s = typefuzz_str(c);
+            match c.variant(5) {
+                0 => format!("(String.byte-len {s})"),
+                1 => format!("(String.scalar-len {s})"),
+                2 => {
+                    let t = typefuzz_str(c);
+                    format!("(String.byte-len (String.concat {s} {t}))")
+                }
+                3 => {
+                    let i = c.int_bounded(0, 3);
+                    format!(
+                        "(match (String.at {s} {i}) ((Some ss) (String.byte-len ss)) ((None) 0))"
+                    )
+                }
+                _ => {
+                    let i = c.int_bounded(0, 2);
+                    let j = c.int_bounded(2, 4);
+                    format!(
+                        "(match (String.slice {s} {i} {j}) ((Some ss) (String.byte-len ss)) ((None) 0))"
+                    )
+                }
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -961,6 +989,12 @@ fn gen_typefuzz_set<C: Choice>(
 /// Bool if `val_bool`) values (T1.33). Entries are the record field-pair form but the KEY is an
 /// EXPRESSION. Keys/values are DEPTH-0 leaves (keep entries simple, as for sets). Distinct small-int keys
 /// (0,1,2) avoid a duplicate-key literal. Never empty (an empty `(map)` skips — unconstrained K/V).
+/// A small fixed String literal (T1.38). ASCII so byte-len == scalar-len is unambiguous; a few lengths
+/// so String ops (byte-len/scalar-len/concat/at/slice) exercise varied sizes.
+fn typefuzz_str<C: Choice>(c: &mut C) -> &'static str {
+    ["\"a\"", "\"ab\"", "\"abc\"", "\"hi\"", "\"xyz\""][c.variant(5)]
+}
+
 fn gen_typefuzz_map<C: Choice>(
     c: &mut C,
     iscope: &mut Vec<String>,
@@ -1031,7 +1065,18 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(19) {
+    match c.variant(20) {
+        // A NON-STRING receiver to a String op (T1.38 — false-accept hunt): `(String.byte-len <int>)` /
+        // `(String.concat <str> <int>)` — the receiver/arg must be String → CDZ0203. rcdzc rejects + the
+        // oracle unifies the receiver with String, infers IllTyped ⇒ holds; an rcdzc ACCEPT is a hole.
+        18 => {
+            let n = int(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(String.byte-len {n})")
+            } else {
+                format!("(String.concat \"x\" {n})")
+            }
+        }
         // A PRODUCT VALUE/ANNOTATION mismatch (T1.36 `(Tuple …)` / T1.37 `(Record …)` annotation guard): an
         // all-Int64 tuple/record ascribed a type whose 2nd field is Bool — the Int64 clashes with the
         // annotated Bool → CDZ0203. rcdzc rejects + the oracle reads the annotation, infers IllTyped ⇒ holds.
@@ -1213,7 +1258,18 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(9) {
+    match c.variant(10) {
+        // A String VALUE (T1.38): a bare String literal or a `(String.concat a b)`. Both rcdzc + oracle
+        // infer String → agreement.
+        8 => {
+            let s = typefuzz_str(c);
+            if c.variant(2) == 0 {
+                s.to_string()
+            } else {
+                let t = typefuzz_str(c);
+                format!("(String.concat {s} {t})")
+            }
+        }
         // A `Map K V` value (T1.33): a `(map (= k v)…)` literal, or a Map-producing op `(Map.insert …)` /
         // `(Map.merge …)`. Int64 keys + Int64 values; a bare map main RESULT is accepted (unlike Set).
         // Both rcdzc + oracle infer `Map Int64 Int64` → agreement.
