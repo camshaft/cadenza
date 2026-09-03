@@ -5851,6 +5851,67 @@
       (export main)))
   (output (: 1 Int64)))
 
+; The value-yielding Map MUTATORS on a PRESENT vs ABSENT key — the plain-Int64-key boundary contract that
+; the float-special-key face (msx1, just below) canonicalizes over. Over m = {1:10, 2:20, 3:30} (len 3):
+; (1) `Map.remove m k` is IDEMPOTENT — a present key shrinks the map (len 2), an ABSENT key is a no-op
+; (len 3), never a trap. (2) `Map.take m k` → `(Option value, Map)`: present → `(Some 20, shrunk len 2)`,
+; absent → `(None, unchanged len 3)`. (3) `Map.swap m k v` is an UPSERT → `(Option old, Map)`: a PRESENT
+; key REPLACES (returns `Some 20`, len stays 3), an ABSENT key INSERTS (returns `None`, len GROWS to 4) —
+; the sharp edge: swap-on-absent is not a no-op or a failure, it adds the entry. Verified breaker probe mm:
+; fold == runtime == cadenza-hop.
+(case
+  "Map.remove is idempotent on an absent key"
+  (doc
+    "`Map.remove m k` over m = {1:10, 2:20, 3:30}: a PRESENT key k=2 removes its entry (len 2); an
+           ABSENT key k=99 is a no-op returning the map unchanged (len 3), never a trap. Pins remove is total
+           and idempotent on a missing key.")
+  (input
+    (do
+      (def (mk) (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30))
+      (def (main (: k Int64)) (Map.len (Map.remove (mk) k)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 99 Int64))
+  (output (: 3 Int64)))
+
+(case
+  "Map.take returns the value and shrunk map for a present key, None and the unchanged map for an absent key"
+  (doc
+    "`Map.take m k` yields `(Option value, Map)`. Present k=2 → `(Some 20, len 2)`: it reads AND removes.
+           Absent k=99 → `(None, len 3)`: the map is returned unchanged. Digit witness `100*len + value-or-0`:
+           k=2 → 200+20 = 220; k=99 → 300+0 = 300. Pins take is a fallible read-and-remove, total on a miss.")
+  (input
+    (do
+      (def (mk) (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30))
+      (def (main (: k Int64))
+        (match (Map.take (mk) k)
+          (#tuple(o m2) (+ (* 100 (Map.len m2)) (match o ((Some v) v) ((None) 0))))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 220 Int64))
+  (call main (: 99 Int64))
+  (output (: 300 Int64)))
+
+(case
+  "Map.swap is an upsert — replace and return the old value on a present key, insert and return None on an absent key"
+  (doc
+    "`Map.swap m k v` yields `(Option old, Map)` and is an UPSERT. Present k=2 → replaces 20 with 99,
+           returns `Some 20`, len stays 3. ABSENT k=99 → INSERTS (99, 99), returns `None`, len GROWS to 4 —
+           swap on a missing key is not a no-op or a failure, it adds the entry. Digit witness
+           `100*len + old-or-(-1)`: k=2 → 300+20 = 320; k=99 → 400+(-1) = 399. Pins the upsert semantics.")
+  (input
+    (do
+      (def (mk) (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30))
+      (def (main (: k Int64))
+        (match (Map.swap (mk) k 99)
+          (#tuple(o m2) (+ (* 100 (Map.len m2)) (match o ((Some v) v) ((None) -1))))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 320 Int64))
+  (call main (: 99 Int64))
+  (output (: 399 Int64)))
+
 ; msx1: the MUTATION-op face of float-special key canonicalization — Map.swap keyed by a FRESHLY
 ; COMPUTED NaN must find (and replace through) the existing canonical NaN entry, and Map.take by
 ; -0.0 must remove exactly the -0.0 entry while +0.0 survives. The lookup face is pinned above (a
