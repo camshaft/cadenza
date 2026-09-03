@@ -4926,7 +4926,7 @@ fn try_emit_bin_match(
     struct BinReArm {
         segs: Vec<(u32, Seg)>, // (byte_offset, segment) for the PRE-payload fixed prefix, sorted + contiguous, tiling [0, payload/prefix)
         dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
-        post: Vec<BinIntSeg>, // POST-payload fixed int segments (dynamic offset after the dependent payload), byte-offset-ordered
+        post: Vec<(u32, Seg)>, // POST-payload fixed segments (dynamic offset), tiling [payload_off, total) with `(u8 _)` gap fill
         rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== total; dynamic offset via off_plus)
         guard: Option<StructId>, // a user GUARD expr reading the decoded segment binders → `(guard (bin …) <expr>)`
         body: StructId,
@@ -4971,24 +4971,13 @@ fn try_emit_bin_match(
             return None;
         }
         // POST-payload fixed segments (dynamic offset) only exist AFTER a dependent payload — a `post` seg with
-        // no dependent payload is an inconsistent shape. And the byte accounting must close: the payload begins
-        // right after the PRE-payload fixed prefix (`payload_off`), and `total` (the sum of ALL fixed int
-        // widths, from the length cond) equals that prefix plus the POST-payload fixed widths.
+        // no dependent payload is an inconsistent shape.
         if !post.is_empty() && dep.is_none() {
             return None;
         }
-        let post_width_sum: u32 = post.iter().map(|(_, w, _, _)| u32::from(*w)).sum();
-        // The PRE-payload fixed prefix ends at the payload (dependent case) or at `total` (no dependent payload).
-        let prefix_end = match &dep {
-            Some(d) => {
-                // total == payload_off (pre-payload fixed prefix) + Σ post fixed widths.
-                if d.payload_off + post_width_sum != total {
-                    return None;
-                }
-                d.payload_off
-            }
-            None => total,
-        };
+        // The PRE-payload fixed prefix ends at the payload (dependent case) or at `total` (no dependent payload);
+        // the POST-payload region is `[payload_off, total)`, tiled from `post` below (with `(u8 _)` gap fill).
+        let prefix_end = dep.as_ref().map_or(total, |d| d.payload_off);
         // Merge literal + binder segments by offset; a collision (both at one offset) or a non-contiguous
         // tiling of `[0, total)` means a shape this sub-slice cannot faithfully reconstruct → bail.
         let mut by_off: std::collections::BTreeMap<u32, Seg> = std::collections::BTreeMap::new();
@@ -5027,10 +5016,45 @@ fn try_emit_bin_match(
         if !by_off.is_empty() {
             return None; // a segment past the prefix, or overlapping a wider one → unmodeled
         }
+        // Tile the POST-payload region `[payload_off, total)` (present only with a dependent payload): place each
+        // POST-payload fixed binder (`off_plus: Some` read, byte-offset = its static base) and FILL any gap — a
+        // bound-but-UNREAD trailing field (`(u8 _tail)` whose body never reads it) — with a `(u8 _)` wildcard,
+        // value-equivalent since the bytes are unread. Post-payload LITERALS ride the guard path (recognized as
+        // a `(guard … (= x lit))` arm), so only binders + wildcards tile here.
+        let mut post_by_off: std::collections::BTreeMap<u32, Seg> =
+            std::collections::BTreeMap::new();
+        for (off, w, signed, le) in post {
+            if post_by_off
+                .insert(off, Seg::Binder(w, signed, le))
+                .is_some()
+            {
+                return None;
+            }
+        }
+        let mut post_segs: Vec<(u32, Seg)> = Vec::new();
+        if dep.is_some() {
+            let mut off = prefix_end; // == payload_off
+            while off < total {
+                if let Some(seg) = post_by_off.remove(&off) {
+                    let w = match &seg {
+                        Seg::Lit(w, ..) | Seg::Binder(w, ..) => u32::from(*w),
+                        Seg::Wild => 1,
+                    };
+                    post_segs.push((off, seg));
+                    off += w;
+                } else {
+                    post_segs.push((off, Seg::Wild));
+                    off += 1;
+                }
+            }
+        }
+        if !post_by_off.is_empty() {
+            return None; // a post segment past `total`, or overlapping a wider one → unmodeled
+        }
         arms.push(BinReArm {
             segs,
             dep,
-            post,
+            post: post_segs,
             rest: rest_off,
             guard,
             body: then_,
@@ -5106,19 +5130,33 @@ fn try_emit_bin_match(
             let size_ref = b.name(size_name);
             pat_children.push(b.list(vec![bytes_head, payload_binder, size_ref]));
         }
-        // POST-payload fixed int segments — trailing fixed fields AFTER the dependent payload, at a DYNAMIC
-        // runtime offset (`off_plus` in the body's `BinIntRead`). Emitted in byte-offset order as `(uN xK)`
-        // binders and registered in `bin_fields` keyed by `(byte_offset, width)`; the body's dynamic-offset
-        // `BinIntRead` resolves by that key (the emit arm ignores `off_plus`). Re-lowering recomputes the
-        // dynamic offset from the surface segment order, so the surface carries only the segment kind.
-        for (offset, width, signed, le) in &arm.post {
-            let bits = u32::from(*width) * 8;
-            let ty = b.name(format!("{}{bits}", if *signed { "i" } else { "u" }));
-            let name = synth_payload_name(env.next_payload);
-            env.next_payload += 1;
-            env.bin_fields.insert((*offset, *width), name.clone());
-            let mut seg_children = vec![ty, b.name(name)];
-            if *le {
+        // POST-payload fixed segments — trailing fixed fields AFTER the dependent payload, at a DYNAMIC runtime
+        // offset (`off_plus` in the body's `BinIntRead`). Each BINDER emits `(uN xK)` registered in `bin_fields`
+        // keyed by `(byte_offset, width)` (the body's dynamic-offset `BinIntRead` resolves by that key — the
+        // emit arm ignores `off_plus`); a WILDCARD (a bound-but-unread trailing field) emits `(u8 _)`. Re-lowering
+        // recomputes the dynamic offsets from the surface segment order, so the surface carries only the kinds.
+        for (offset, seg) in &arm.post {
+            let (width, signed, le) = match seg {
+                Seg::Lit(w, s, l, _) | Seg::Binder(w, s, l) => (*w, *s, *l),
+                Seg::Wild => (1, false, false),
+            };
+            let bits = u32::from(width) * 8;
+            let ty = b.name(format!("{}{bits}", if signed { "i" } else { "u" }));
+            let value = match seg {
+                Seg::Lit(_, _, _, lit) => b.atom_leaf(Leaf::Int {
+                    value: lit.clone(),
+                    radix: Radix::Dec,
+                }),
+                Seg::Binder(..) => {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    env.bin_fields.insert((*offset, width), name.clone());
+                    b.name(name)
+                }
+                Seg::Wild => b.name("_"),
+            };
+            let mut seg_children = vec![ty, value];
+            if le {
                 seg_children.push(b.name("le"));
             }
             pat_children.push(b.list(seg_children));
