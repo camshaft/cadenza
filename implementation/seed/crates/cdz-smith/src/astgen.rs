@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 25 };
+    let arms = if depth == 0 { 2 } else { 26 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -907,6 +907,18 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(. (Record.pop (record (= x {a}) (= y {b})) #\"x\") 0)")
             }
         }
+        // A RECORD project/without result projected → Int64 (T1.50 — label-list row ops): `Record.project
+        // r (x)` narrows to exactly label x; `Record.without r (y)` drops y (complement). Then project a
+        // kept field. Both rcdzc + oracle infer Int64 → agreement.
+        24 => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (Record.project (record (= x {a}) (= y {b})) (x)) x)")
+            } else {
+                format!("(. (Record.without (record (= x {a}) (= y {b})) (y)) x)")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1239,7 +1251,18 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(30) {
+    match c.variant(31) {
+        // An ILL-TYPED Record project (T1.50 — false-accept hunt): `Record.project` with an ABSENT label
+        // → CDZ0212, or a DUPLICATE label in the list → CDZ0201. rcdzc rejects + the oracle infers IllTyped
+        // ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        29 => {
+            let a = int(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(. (Record.project (record (= x {a}) (= y 2)) (z)) z)") // absent → CDZ0212
+            } else {
+                format!("(. (Record.project (record (= x {a}) (= y 2)) (x x)) x)") // dup → CDZ0201
+            }
+        }
         // An ILL-TYPED Record merge/pop (T1.49 — false-accept hunt): `Record.merge` with an OVERLAPPING
         // key → CDZ0211 (merge is disjoint, not last-writer-wins); `Record.pop` on an ABSENT key →
         // CDZ0212. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
