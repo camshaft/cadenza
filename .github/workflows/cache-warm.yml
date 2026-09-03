@@ -148,13 +148,19 @@ jobs:
       # so the cachix-pull path is a dead wall. The $out is ALREADY the plain `<verdict>\t<title>` file (flake
       # corpusVerdictsCoarseAll: `: > $out; cat per-file >> $out`), so we just copy it out (the build above is a
       # same-job cache-hit). v-corpus-harness downloads it + diff-updates spec/semantics/.gate-baseline. aarch64-only.
+      # DECOUPLED via `always()` (v-corpus-harness): the coarse-verdicts artifact must NOT be starved by an
+      # UNRELATED earlier warm step failing (e.g. the cargo-artifacts warm hitting the intermittent SchemaMigrations
+      # push-hook flake → all later steps skip → no artifact). This step builds the coarse independently (its own
+      # `nix build`, cache-hit if the warm+push step above already built it), so `always() && aarch64` lets it run
+      # even when an earlier warm step failed → the baseline artifact still gets produced. (If the SchemaMigrations
+      # flake also hits THIS build's post-hook the run may still miss, but a subsequent warm produces it.)
       - name: stage corpus-verdicts-coarse for artifact upload
-        if: matrix.arch == 'aarch64'
+        if: ${{ always() && matrix.arch == 'aarch64' }}
         run: |
           out=$(nix build .#packages.aarch64-linux.corpus-verdicts-coarse --print-out-paths --print-build-logs)
           install -m644 "$out" "$RUNNER_TEMP/wasm-verdicts-coarse.txt"
       - name: upload wasm-verdicts-coarse artifact
-        if: matrix.arch == 'aarch64'
+        if: ${{ always() && matrix.arch == 'aarch64' }}
         uses: actions/upload-artifact@v7
         with:
           name: wasm-verdicts-coarse
