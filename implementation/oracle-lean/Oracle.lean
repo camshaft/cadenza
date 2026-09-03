@@ -11,6 +11,7 @@ import Oracle.Wasm
 import Oracle.WasmDiff
 import Oracle.Wasm.Talos
 import Oracle.Wasm.HeapHost
+import Oracle.Wasm.HeapDecode
 import Oracle.Symbolic
 import Oracle.SymbolicSound
 import Oracle.Check
