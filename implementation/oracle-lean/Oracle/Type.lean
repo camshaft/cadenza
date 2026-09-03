@@ -1514,6 +1514,55 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                               | .error e => .error e)
                            | _, _ => .error (.unsupported "type oracle: malformed Map.swap"))
                         else .error (.unsupported "type oracle: unmodeled Map op"))))
+             else if q == "String".toUTF8 then
+               -- T1.38 — String OPS `(String.<op> …)` (receiver-first, sigs from prelude.rs string_module):
+               -- `scalar-len`/`byte-len (s) → Int64`; `concat (s)(t) → String`; `at (s)(i) → (Option String)`
+               -- and `scalar-at (s)(i) → (Option Char)` and `slice (s)(a)(b) → (Option String)` are all
+               -- TOTAL-FALLIBLE (Option, never trap — collections-and-text.md, same as List.at). The receiver
+               -- (children[1]) must be a String; a non-String / non-numeric index is CDZ0203. Other member → declined.
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed String op (no receiver)")
+                | some sId =>
+                  (match inferE m env st sId with
+                   | .error e => .error e
+                   | .ok (τs, st1) =>
+                     (match unifyInfer τs .string st1 with
+                      | .error e => .error e
+                      | .ok st2 =>
+                        if op == "scalar-len".toUTF8 && children.size == 2 then .ok (.int 64 true, st2)
+                        else if op == "byte-len".toUTF8 && children.size == 2 then .ok (.int 64 true, st2)
+                        else if op == "concat".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some tId => (match inferE m env st2 tId with
+                                          | .ok (τt, st3) => (match unifyInfer τt .string st3 with
+                                                              | .ok st4 => .ok (.string, st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed String.concat"))
+                        else if (op == "at".toUTF8 || op == "scalar-at".toUTF8) && children.size == 3 then
+                          (match children[2]? with
+                           | some iId => (match inferE m env st2 iId with
+                                          | .ok (τi, st3) => (match unifyInfer τi (.numVar st3.next) { st3 with next := st3.next + 1 } with
+                                                              | .ok st4 => .ok (optionTy (if op == "at".toUTF8 then .string else .char), st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed String.at/scalar-at"))
+                        else if op == "slice".toUTF8 && children.size == 4 then
+                          (match children[2]?, children[3]? with
+                           | some aId, some bId =>
+                             (match inferE m env st2 aId with
+                              | .ok (τa, st3) =>
+                                (match unifyInfer τa (.numVar st3.next) { st3 with next := st3.next + 1 } with
+                                 | .ok st4 =>
+                                   (match inferE m env st4 bId with
+                                    | .ok (τb, st5) => (match unifyInfer τb (.numVar st5.next) { st5 with next := st5.next + 1 } with
+                                                        | .ok st6 => .ok (optionTy .string, st6)
+                                                        | .error e => .error e)
+                                    | .error e => .error e)
+                                 | .error e => .error e)
+                              | .error e => .error e)
+                           | _, _ => .error (.unsupported "type oracle: malformed String.slice"))
+                        else .error (.unsupported "type oracle: unmodeled String op"))))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2347,6 +2396,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12, 5, 11], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13],
                            .atom 10, .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
                 root := 22 } == .wellTyped (.record [("x".toUTF8, .int 64 true)]))
+-- T1.38 (String op): `(do (def (main) (String.byte-len "hi")) (export main))` → WellTyped Int64.
+-- `String.byte-len` = `((. String byte-len) …)`; the receiver unifies with String → the op yields Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "String".toUTF8, .name "byte-len".toUTF8, .str "hi".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .list #[3, 4], .atom 2,
+                           .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
+                           .list #[13, 9, 12]],
+                root := 14 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
