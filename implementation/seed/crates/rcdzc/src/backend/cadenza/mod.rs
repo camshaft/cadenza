@@ -4914,7 +4914,7 @@ fn try_emit_bin_match(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Option<Result<StructId, Reject>> {
     // Parse the first arm's cond to identify the scrutinee binder; bail (None) if it is not a bin arm cond.
-    let (scrut_binder, _, _, _, _) = parse_bin_len_cond(db, body)?;
+    let (scrut_binder, _, _, _, _, _) = parse_bin_len_cond(db, body)?;
     // One merged bin segment: a LITERAL probe (from the cond), a BINDER read (from the body), or a WILDCARD
     // (an UNREAD segment — an `_`/unused binder that neither the cond probes nor the body reads, so it leaves
     // a gap in the tiling; emitted as a `(u8 _)`-per-byte filler, value-equivalent since the bytes are unread).
@@ -4928,6 +4928,7 @@ fn try_emit_bin_match(
         dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
         post: Vec<BinIntSeg>, // POST-payload fixed int segments (dynamic offset after the dependent payload), byte-offset-ordered
         rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== total; dynamic offset via off_plus)
+        guard: Option<StructId>, // a user GUARD expr reading the decoded segment binders → `(guard (bin …) <expr>)`
         body: StructId,
     }
     let mut arms: Vec<BinReArm> = Vec::new();
@@ -4938,8 +4939,9 @@ fn try_emit_bin_match(
         };
         // Each arm's cond must be a bin arm cond over the SAME scrutinee: a length probe + literal segments,
         // plus (dependent-size) the `n>=0` floors + the dynamic `total + Σn` length compare.
-        let Some((sb, total, lits, has_rest, is_dependent)) = parse_bin_len_cond(db, cur) else {
-            return None; // a guard / unmodeled conjunct → not this sub-slice
+        let Some((sb, total, lits, has_rest, is_dependent, guard)) = parse_bin_len_cond(db, cur)
+        else {
+            return None; // an unmodeled conjunct / compound guard → not this sub-slice
         };
         if sb != scrut_binder {
             return None;
@@ -4951,7 +4953,7 @@ fn try_emit_bin_match(
             post,
             rest: rest_off,
             dep,
-        } = collect_bin_int_segs(db, then_, scrut_binder)?;
+        } = collect_bin_int_segs(db, then_, guard, scrut_binder)?;
         // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
         // `total` (the tail after ALL fixed segments). A mismatch → a shape we don't model.
         if has_rest != rest_off.is_some() {
@@ -5030,6 +5032,7 @@ fn try_emit_bin_match(
             dep,
             post,
             rest: rest_off,
+            guard,
             body: then_,
         });
         cur = else_;
@@ -5130,14 +5133,33 @@ fn try_emit_bin_match(
             let rest_binder = b.name(name);
             pat_children.push(b.list(vec![bytes_head, rest_binder]));
         }
-        let pat = b.list(pat_children);
+        let bin_pat = b.list(pat_children);
+        // A user GUARD reads the decoded segment binders (`bin_fields` etc. are populated for THIS arm), so
+        // emit it in the same env scope as the body; the arm pattern becomes `(guard <bin-pat> <guard-expr>)`.
+        // A guard that references an unbound read (a mis-classified probe over a segment we did not bind)
+        // DECLINES here → the whole match falls through to the ordinary `if` emit (safe, no wrong program).
+        let guard_res = arm
+            .guard
+            .map(|g| emit_expr(db, b, g, None, env, emitted))
+            .transpose();
         let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
         env.bin_fields = saved;
         env.bin_rest_fields = saved_rest;
         env.bin_sized_fields = saved_sized;
+        let guard_node = match guard_res {
+            Ok(g) => g,
+            Err(e) => return Some(Err(e)),
+        };
         let body_node = match body_res {
             Ok(n) => n,
             Err(e) => return Some(Err(e)),
+        };
+        let pat = match guard_node {
+            Some(g) => {
+                let guard_head = b.name("guard");
+                b.list(vec![guard_head, bin_pat, g])
+            }
+            None => bin_pat,
         };
         children.push(b.list(vec![pat, body_node]));
     }
@@ -5156,6 +5178,10 @@ fn try_emit_bin_match(
 /// A LITERAL bin-match segment recovered from an arm cond's probe: `(byte_offset, width, signed,
 /// little_endian, literal-value)` — a `(uN <lit>)` / `(iN <lit>)` segment (a magic-number / tag probe).
 type BinLitSeg = (u32, u8, bool, bool, IntValue);
+
+/// A parsed bin-match arm cond ([`parse_bin_len_cond`]): `(scrutinee-binder, fixed_prefix_bytes,
+/// literal-segments, has_final_rest, is_dependent, guard)` — see that function's doc for each field.
+type BinArmCond = (StructId, u32, Vec<BinLitSeg>, bool, bool, Option<StructId>);
 
 /// A BINDER fixed-width int bin segment recovered from an arm body's `BinIntRead`: `(byte_offset, width,
 /// signed, little_endian)`.
@@ -5191,12 +5217,12 @@ struct BinBodySegs {
 /// — a `>=` FLOOR (const `total` = the fixed prefix), zero+ non-negativity floors `BinIntRead(s,off,w) >= 0`
 /// (recognized + skipped — implied by the shape), and the DYNAMIC length compare whose RHS is `Add(total, Σ
 /// BinIntRead(s,…))`. Here `has_final_rest` comes from the DYNAMIC compare's op (the floor is always `>=`), and
-/// `total` is that Add's base const. `None` on any conjunct we don't model (a user guard, a non-`Eq` literal
-/// probe, a dependent Add over a different value).
-fn parse_bin_len_cond(
-    db: &mut Db,
-    node: StructId,
-) -> Option<(StructId, u32, Vec<BinLitSeg>, bool, bool)> {
+/// `total` is that Add's base const. Any conjunct that is NOT a recognized length / literal / non-negativity
+/// probe is returned as a user GUARD (the 6th element) — a `(> n 5)`-style expr over the decoded segment
+/// binders, re-emitted as a `(guard (bin …) <expr>)` arm; exactly ONE guard conjunct is supported (a compound
+/// guard, or several unmodeled conjuncts, → `None`). `None` also when no length probe is recognized (the
+/// pattern's length would be undetermined) or a dependent Add is over a different value.
+fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
     let cond = match core_of(db, node) {
         Core::If { cond, .. } => cond,
         _ => node,
@@ -5245,6 +5271,11 @@ fn parse_bin_len_cond(
     // A dependent DYNAMIC length probe `BytesLen(s) {op} Add(total, Σn)` — its op decides `has_final_rest`.
     let mut dyn_len: Option<(u32, crate::resolved::Prim)> = None;
     let mut lits: Vec<BinLitSeg> = Vec::new();
+    // Conjuncts that are NOT a recognized length / literal / non-negativity probe are treated as a user GUARD
+    // (a `(guard (bin …) <expr>)` arm). Safe: the length probe(s) MUST be recognized (else `total` is `None`
+    // below → decline), so the pattern's implied length is never mis-derived; a mis-routed segment read simply
+    // declines at emit (a `bin_fields` miss) or is semantically identical (the arm fires iff ALL conjuncts hold).
+    let mut guard: Vec<StructId> = Vec::new();
     let set_scrut = |scrut: &mut Option<StructId>, sb: StructId| -> bool {
         match scrut {
             Some(s) if *s != sb => false, // a probe over a DIFFERENT value → not one bin-match arm
@@ -5256,12 +5287,15 @@ fn parse_bin_len_cond(
     };
     for c in conjuncts {
         let Core::Compare { op, lhs, rhs } = core_of(db, c) else {
-            return None;
+            guard.push(c); // a non-`Compare` boolean conjunct (a bool binder, a call) → a user guard
+            continue;
         };
         match core_of(db, lhs) {
             // The length probe: `== total` (whole-scrutinee exact) or `>= total` (a final `(bytes rest)`
             // absorbs the remainder — the fixed prefix `total` need only be present). A dependent-size arm has
-            // TWO: a `>=` FLOOR over a const `total`, plus a DYNAMIC compare over `Add(total, Σn)`.
+            // TWO: a `>=` FLOOR over a const `total`, plus a DYNAMIC compare over `Add(total, Σn)`. A length
+            // probe MUST be recognizable (it fixes the pattern length); an unmodeled one is a hard decline, NOT
+            // a guard (a mis-guarded length would change the reconstructed pattern's length).
             Core::BytesLen { operand }
                 if matches!(op, crate::resolved::Prim::Eq | crate::resolved::Prim::Ge) =>
             {
@@ -5288,37 +5322,45 @@ fn parse_bin_len_cond(
                     _ => return None,
                 }
             }
-            // A dependent-size NON-NEGATIVITY floor `BinIntRead(s, off, w) >= 0` — recognized + skipped (it is
-            // implied by the reconstructed shape; the surface `(bytes payload n)` re-lowers the same guard).
-            Core::BinIntRead { bytes, .. } if op == crate::resolved::Prim::Ge => {
-                let sb = local_binder(db, bytes)?;
-                if !set_scrut(&mut scrut, sb) {
-                    return None;
-                }
-                match core_of(db, rhs) {
-                    Core::ConstInt(z) if z.to_i64() == Some(0) => {} // the `n >= 0` floor — skip
-                    _ => return None,
-                }
-            }
-            // A LITERAL-segment probe (always `==`).
+            // A read over the scrutinee: either the dependent-size NON-NEGATIVITY floor `BinIntRead(s,off,w)
+            // >= 0` (recognized + skipped — implied by the reconstructed shape) or a LITERAL-segment probe
+            // `BinIntRead(s,off,w) == const` (a static-offset read). Anything else reading the scrutinee — a
+            // `>= k` (k≠0), a `< …`, an `== <non-const>`, a dynamic-offset read — is a user GUARD.
             Core::BinIntRead {
                 bytes,
                 byte_offset,
-                off_plus: None,
+                off_plus,
                 width,
                 signed,
                 little_endian,
-            } if op == crate::resolved::Prim::Eq => {
-                let sb = local_binder(db, bytes)?;
-                if !set_scrut(&mut scrut, sb) {
-                    return None;
+            } => {
+                let over_scrut = local_binder(db, bytes);
+                let same = matches!((over_scrut, scrut), (Some(b), Some(s)) if b == s)
+                    || matches!((over_scrut, scrut), (Some(_), None));
+                if same
+                    && op == crate::resolved::Prim::Ge
+                    && matches!(core_of(db, rhs), Core::ConstInt(z) if z.to_i64() == Some(0))
+                {
+                    // the `n >= 0` floor — skip (the scrutinee is already fixed by the length probe).
+                    if let Some(b) = over_scrut {
+                        scrut = Some(b);
+                    }
+                } else if same
+                    && op == crate::resolved::Prim::Eq
+                    && off_plus.is_none()
+                    && let Core::ConstInt(lit) = core_of(db, rhs)
+                {
+                    if let Some(b) = over_scrut {
+                        scrut = Some(b);
+                    }
+                    lits.push((byte_offset, width, signed, little_endian, lit));
+                } else {
+                    guard.push(c);
                 }
-                let Core::ConstInt(lit) = core_of(db, rhs) else {
-                    return None;
-                };
-                lits.push((byte_offset, width, signed, little_endian, lit));
             }
-            _ => return None,
+            // Any other conjunct — a `(> n 5)` / `(< n 10)` / `(= n m)` / bool expr reading the decoded
+            // segment binders — is a user GUARD; re-emitted as `(guard (bin …) <expr>)`.
+            _ => guard.push(c),
         }
     }
     // Resolve the fixed prefix + rest flag. Dependent: the DYNAMIC compare gives `total` + `has_rest` (its op);
@@ -5334,7 +5376,15 @@ fn parse_bin_len_cond(
         let (t, op) = plain_len?;
         (t, op == crate::resolved::Prim::Ge, false)
     };
-    Some((scrut?, total, lits, has_rest, is_dependent))
+    // Combine the guard conjuncts: none → no guard; exactly one → that node; MORE than one (a compound guard,
+    // OR several mis-classified conjuncts) → decline (a later sub-slice — keep this bounded + avoid emitting a
+    // synthesized `(and …)` whose shape we haven't validated).
+    let guard = match guard.len() {
+        0 => None,
+        1 => Some(guard[0]),
+        _ => return None,
+    };
+    Some((scrut?, total, lits, has_rest, is_dependent, guard))
 }
 
 /// Collect an arm body's segment reads over the scrutinee `scrut_binder`: the PRE-payload BINDER fixed-width
@@ -5349,6 +5399,7 @@ fn parse_bin_len_cond(
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
+    guard: Option<StructId>,
     scrut_binder: StructId,
 ) -> Option<BinBodySegs> {
     // The walk's mutable accumulator (bundled to keep `walk`'s arg count under the clippy limit): the collected
@@ -5449,6 +5500,11 @@ fn collect_bin_int_segs(
         bail: false,
     };
     walk(db, body, scrut_binder, &mut acc);
+    // Also scan the GUARD expr: a segment binder read ONLY in the guard (`(guard (bin (u8 n)) (> n 5))` whose
+    // body never reads `n`) must still be reconstructed as a `(uN x)` binder so the guard's read resolves.
+    if let Some(g) = guard {
+        walk(db, g, scrut_binder, &mut acc);
+    }
     if acc.bail {
         return None;
     }
