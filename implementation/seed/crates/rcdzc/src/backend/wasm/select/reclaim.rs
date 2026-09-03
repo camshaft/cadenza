@@ -628,7 +628,23 @@ fn binding_escapes_dup_aware_inner(
             .iter()
             .any(|&c| binding_escapes_dup_aware(db, c, binder, false, dup_sites)),
         Core::CallClosure { closure, args } => {
-            binding_escapes_dup_aware(db, closure, binder, false, dup_sites)
+            // Applying a closure BORROWS it — the env-cell reclaim is a SEPARATE post-apply drop (SITE-A,
+            // `select/emit.rs`) that fires ONLY for an OWNED operand. So the closure operand ESCAPES (is
+            // consumed) only when SITE-A drops it (`heap_operand_ownership == Owned`); a BORROWED operand
+            // (a `Core::Captured`/param closure whose OWNER reclaims it) that is merely APPLIED does NOT
+            // escape → recurse it BORROWED so a captured closure applied is not spuriously hcz-escape-dup'd
+            // (hcn1: the applied captured inner closure leaked from an unbalanced dup — dup'd for the
+            // "escape" but SITE-A skips the borrowed operand, so the outer-cell cascade under-drops it).
+            // Mirrors `select.rs` `arm_borrows_heap_subvalue`'s CallClosure-callee relax + the
+            // Map.lookup/SumPayload borrowed-operand classification. SAFE: for an OWNED operand the flag
+            // stays `false` (consume) EXACTLY as before (SITE-A reclaims it → no double-free); only a
+            // borrowed operand relaxes, and its owner always reclaims it (no under-retain). The ARGS stay
+            // CONSUMING (a heap arg genuinely escapes into the callee).
+            let closure_owned = matches!(
+                heap_operand_ownership(db, closure),
+                Ok(HandleOwnership::Owned)
+            );
+            binding_escapes_dup_aware(db, closure, binder, !closure_owned, dup_sites)
                 || args
                     .iter()
                     .any(|&a| binding_escapes_dup_aware(db, a, binder, false, dup_sites))
