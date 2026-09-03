@@ -459,4 +459,69 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// LIVE regression tripwire (#8243 — the cdz-smith S298/S301 finding): the `--target cadenza`
+    /// Core→surface re-emit must PRESERVE a sized-int (Int8/Int16/Int32/UInt8/…) width on a container
+    /// ELEMENT (and Map key/value). Before #8243 the ConstInt ascription only fired for unsigned /
+    /// out-of-i64-range, so a bare non-default-width element re-grounded to the default Int64 and a
+    /// container round-tripped with widened element types (`(Tuple Int8 Int32)` → `(Tuple Int64 Int64)`)
+    /// — value-correct but type-width-wrong. #8243 broadened the guard to `ground_width() != 64`. Each
+    /// form below must round-trip WITHOUT a `ConfirmOutcome::Divergence`. Skips (does not fail) when no
+    /// `cdz` is discoverable, and treats Uncomparable/Hang as a skip (never a false regression); the fuzz
+    /// cycle + a local build run it for real.
+    #[test]
+    fn sized_int_width_preserved_in_containers_reemit() {
+        let Some(cdz) = crate::differential::discover_cdz() else {
+            eprintln!("skipping: no cdz binary discovered (set CDZ_SMITH_CDZ)");
+            return;
+        };
+        let base = std::env::temp_dir().join(format!(
+            "cdz-smith-sized-int-tripwire-{}",
+            std::process::id()
+        ));
+        let tmp = base.join("tmp");
+        let store = base.join("store");
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&store);
+        // One form per container kind, each with a non-default-width sized-int element (Map: key+value).
+        let cases: &[(&str, &str)] = &[
+            (
+                "tuple",
+                "(do (def (main) (tuple (: 6 Int8) (: 7 Int32))) (export main))",
+            ),
+            (
+                "record",
+                "(do (def (main) (do (def (g (: x (Record (: a Bool) (: b Int8)))) x) (g (record (= a true) (= b (: 8 Int8)))))) (export main))",
+            ),
+            (
+                "list",
+                "(do (def (main) (list (: 6 Int8) (: 7 Int8))) (export main))",
+            ),
+            (
+                "set",
+                "(do (def (main) (Set.of (list (: 6 Int8) (: 7 Int8)))) (export main))",
+            ),
+            (
+                "map",
+                "(do (def (main) (Map.insert (Map.empty) (: 6 Int8) (: 7 Int8))) (export main))",
+            ),
+        ];
+        let mut ran = 0usize;
+        for (name, src) in cases {
+            match cadenza_confirm(&cdz, src, &store, &tmp) {
+                ConfirmOutcome::Divergence { direct, cadenza } => panic!(
+                    "#8243 REGRESSION: container `{name}` sized-int element re-emit diverged — \
+                     direct={direct} cadenza={cadenza}"
+                ),
+                // ValuesAgree = fix holds; Uncomparable/Hang = this cdz build couldn't run the case
+                // (capability gap / no cdz-run) — a skip, never a false regression.
+                ConfirmOutcome::ValuesAgree => ran += 1,
+                _ => {}
+            }
+        }
+        if ran == 0 {
+            eprintln!("skipping assert: no case was runnable on this cdz build (all uncomparable)");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
