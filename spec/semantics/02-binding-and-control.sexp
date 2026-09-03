@@ -10856,3 +10856,30 @@
   (input (do (def (main) (match true (true 1) (false 2))) (export main)))
   (call main)
   (output (: 1 Int64)))
+
+; shx1: a THREE-level same-name shadow across THREE distinct types (Int64 -> Bool -> Symbol), each
+; occurrence read at its own scope. The two-level Int/Bool shadow above pins that the inner shadow
+; gets a FRESH slot (not the outer's); this pins the invariant holds at DEPTH 3 with a third type —
+; a slot allocator with an off-by-one across nested shadow frames could alias only at 3+ levels. The
+; outer `x`=n (Int) survives past the inner Bool shadow's scope, and the innermost Symbol shadow is
+; read (byte-len of the interned name) without disturbing either enclosing `x`. n=5: 5 + (5>2 -> 100)
+; + byte-len("tag")=3 = 108; n=0: 0 + (0>2 -> 200) + 3 = 203. (breaker probe sh1, verified tri-target
+; exact + byte-idempotent, fully scalar.)
+(case
+  "a three-level same-name shadow across Int, Bool and Symbol resolves each at its scope"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((x n))
+          (+
+            x
+            (let
+              ((x (> n 2)))
+              (+ (if x 100 200) (let ((x #"tag")) (String.byte-len (Symbol.to-string x))))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 108 Int64))
+  (call main (: 0 Int64))
+  (output (: 203 Int64)))
