@@ -4503,3 +4503,33 @@
   (output (: 316331 Int64))
   (call main (: 0 Int64) (: 0 Int64))
   (output (: 0 Int64)))
+
+; bfx7: decoding a SIGNED sub-byte field. A `(bits v k)` field is ALWAYS UNSIGNED — it binds/requires a
+; `(UInt k)` (a signed value into a bit-field is CDZ0203, cases above), so there is NO native signed
+; bit-field form and thus no separate signed-bit-field re-emit path. The IDIOM for a two's-complement signed
+; field is therefore explicit: read the k bits as unsigned, then sign-extend in the body — for a 5-bit field,
+; `if u >= 16 then u - 32 else u` (16 = 2^4 is the sign-bit weight; 32 = 2^5). Here `(bits n 5)` over one
+; runtime byte: n=0b11111=31 -> -1, 0b10000=16 -> -16 (the most-negative), 0b01111=15 -> +15 (the most-
+; positive), 0 -> 0. The unsigned bit-field READ re-emits (bfx5) and the sign-extend is ordinary Int
+; arithmetic, so the composition round-trips on the cadenza hop exact + byte-idempotent — the canonical way
+; to read a signed protocol field, pinned so a reader knows bit-fields are unsigned + how to sign a field.
+; (breaker probe sx, tri-target exact + hop value-parity; answers v-cadenza-backend's signed-sub-byte target:
+; no native signed field to mis-emit — the reject is CDZ0203, the signed READ is this idiom.)
+(case
+  "a signed sub-byte field is decoded by reading the unsigned bits then sign-extending (bit-fields are unsigned)"
+  (input
+    (do
+      (def (parse (: b Bytes))
+        (match b
+          ((bin (bits n 5) (bits _r 3)) (let ((u (Int64.of n))) (if (>= u 16) (- u 32) u)))
+          (_ -99)))
+      (def (main (: k Int64)) (parse (Bytes.of #list((UInt8.of k)))))
+      (export main)))
+  (call main (: 248 Int64))
+  (output (: -1 Int64))
+  (call main (: 128 Int64))
+  (output (: -16 Int64))
+  (call main (: 120 Int64))
+  (output (: 15 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64)))
