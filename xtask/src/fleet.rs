@@ -4672,24 +4672,48 @@ fn wake_window(
     }
 }
 
+/// Delay (ms) between typing a literal command into an agent's tmux composer and the Enter that submits
+/// it — see [`send_keys_submit`].
+const SEND_KEYS_SUBMIT_DELAY_MS: u64 = 400;
+
+/// Type LITERAL `text` into an agent's tmux composer, then submit with `enters` Enter keystroke(s), with a
+/// short delay BETWEEN the text and the Enter so the composer has REGISTERED the paste before the submit.
+/// WITHOUT the delay the Enter can land while tmux is still delivering the (especially long) literal text,
+/// so the composer absorbs it into the in-progress paste and the command sits UNSUBMITTED (observed: a
+/// drain-nudge's long command typed into breaker's composer with NO Enter landing, leaving it stalled with
+/// an unsent nudge — concierge 2026-09-03). `enters = 2` additionally clears paste-buffering on a long
+/// line. Returns false on any send-keys failure. The single place the type-then-submit race is handled —
+/// shared by every nudge / compact / reissue keystroke path.
+fn send_keys_submit(target: &str, text: &str, enters: usize) -> bool {
+    let typed = Command::new("tmux")
+        .args(["send-keys", "-t", target, "-l", text])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !typed {
+        return false;
+    }
+    // Let the composer register the pasted text BEFORE submitting (the submit-race fix).
+    std::thread::sleep(std::time::Duration::from_millis(SEND_KEYS_SUBMIT_DELAY_MS));
+    for _ in 0..enters {
+        let ok = Command::new("tmux")
+            .args(["send-keys", "-t", target, "Enter"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
 /// Type a one-shot tick prompt into an idle agent's pane (`continue` + Enter). Unlike
 /// [`rearm_window`], this does NOT re-invoke `/loop`, so it never stacks duplicate cron schedules —
 /// it just makes an already-scheduled, currently-idle agent run its next tick immediately.
 fn nudge_tick(session: &str, agent: &str) -> bool {
     let target = format!("{session}:{agent}");
-    let sent = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", "continue"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !sent {
-        return false;
-    }
-    Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    send_keys_submit(&target, "continue", 1)
 }
 
 /// Send a single Escape keystroke to an agent's pane — the watchdog's NON-DESTRUCTIVE un-wedge for a
@@ -4715,19 +4739,7 @@ fn escape_wait(session: &str, agent: &str) -> bool {
 /// triggers compaction; `send-keys` does the same. Same mechanism as [`nudge_tick`]'s `continue`.
 fn send_compact(session: &str, agent: &str) -> bool {
     let target = format!("{session}:{agent}");
-    let sent = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", "/compact"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !sent {
-        return false;
-    }
-    Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    send_keys_submit(&target, "/compact", 1)
 }
 
 /// Auto-nudge a drain-stalled agent's idle pane with the canonical drain instruction (opt-in, from the
@@ -4742,26 +4754,8 @@ fn nudge_drain_stall(session: &str, agent: &str) -> bool {
         "cargo xtask fleet inbox {agent} — drain your hub inbox via this resolver (NOT a relative \
          .claude/fleet/inbox glob, which silently matches nothing); process each message, then continue."
     );
-    let sent = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", &msg])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !sent {
-        return false;
-    }
-    // Two Enters: submit + clear paste-buffering (the by-hand workaround, now automated).
-    for _ in 0..2 {
-        let ok = Command::new("tmux")
-            .args(["send-keys", "-t", &target, "Enter"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            return false;
-        }
-    }
-    true
+    // Delay-then-Enter (submit-race fix) + two Enters (submit + clear paste-buffering on this long line).
+    send_keys_submit(&target, &msg, 2)
 }
 
 /// Is `s` a well-formed `/loop` interval (`<n><unit>`, unit ∈ {s,m,h,d} or bare = minutes, n≥1)? Strict
@@ -8471,26 +8465,9 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
     let target = format!("{session}:{agent}");
     let line = format!("/loop {interval} {tick_prompt}");
-    let sent = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", &line])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !sent {
-        return false;
-    }
-    // Two Enters: submit + clear paste-buffering on the long line (see the fn doc; mirrors nudge_drain_stall).
-    for _ in 0..2 {
-        let ok = Command::new("tmux")
-            .args(["send-keys", "-t", &target, "Enter"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            return false;
-        }
-    }
-    true
+    // Delay-then-Enter (submit-race fix) + two Enters: this ~600-char line is the most paste-buffering-prone
+    // keystroke the watchdog sends, so the delay before submit + the second Enter both matter here.
+    send_keys_submit(&target, &line, 2)
 }
 
 // ── archive ────────────────────────────────────────────────────────────────────────────────────
