@@ -1119,15 +1119,21 @@ fn gen_typefuzz_illtyped<C: Choice>(
         // + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
         20 => {
             let f = typefuzz_float(c);
-            match c.variant(3) {
+            match c.variant(4) {
                 0 => {
                     let n = int(c, iscope, bscope, fresh);
                     format!("(< {f} {n})") // mixed float/int compare
                 }
                 1 => format!("(: {f} Int64)"), // float ascribed Int64
-                _ => {
+                2 => {
                     let g = typefuzz_float(c);
                     format!("(% {f} {g})") // float remainder → CDZ0301
+                }
+                _ => {
+                    // ORDERING on a compound CONTAINING a float (T1.42): a tuple with a float leaf has no
+                    // total order → CDZ0203 (only `=` is defined; `<` is not). rcdzc rejects + oracle IllTyped.
+                    let g = typefuzz_float(c);
+                    format!("(< (tuple {f} 1) (tuple {g} 2))")
                 }
             }
         }
@@ -1330,19 +1336,33 @@ fn gen_typefuzz_value<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     match c.variant(12) {
-        // A FLOAT VALUE (T1.40 literal/ascription + T1.41 arithmetic): a bare float literal (→ Float64,
-        // width-defaulted), an ASCRIBED `(: <lit> Float32|Float64)`, or float ARITHMETIC `(+/-/* / a b)`
-        // → Float (T1.41; width-poly, still resolves under an ascription). Both rcdzc + oracle → agreement.
+        // A FLOAT VALUE (T1.40 literal/ascription + T1.41 arithmetic + T1.42 ops): a bare float literal
+        // (→ Float64, width-defaulted), an ASCRIBED `(: <lit> Float32|Float64)`, float ARITHMETIC
+        // `(+/-/* / a b)` → Float (T1.41, width-poly), or a width-namespaced Float OP (T1.42): `FloatW.nan`
+        // / `(FloatW.neg <float>)` / `(FloatW.of-int <int>)` / `(FloatW.of <float>)` → `(Float W)`. Both
+        // rcdzc + oracle → agreement.
         10 => {
             let f = typefuzz_float(c);
-            match c.variant(4) {
+            match c.variant(6) {
                 0 => f.to_string(),
                 1 => format!("(: {f} Float64)"),
                 2 => format!("(: {f} Float32)"),
-                _ => {
+                3 => {
                     let op = ["+", "-", "*", "/"][c.variant(4)];
                     let g = typefuzz_float(c);
                     format!("({op} {f} {g})")
+                }
+                4 => {
+                    let w = ["Float64", "Float32"][c.variant(2)];
+                    format!("({w}.of-int {})", c.int_bounded(0, 9))
+                }
+                _ => {
+                    let w = ["Float64", "Float32"][c.variant(2)];
+                    match c.variant(3) {
+                        0 => format!("{w}.nan"),
+                        1 => format!("({w}.neg {f})"),
+                        _ => format!("({w}.of {f})"),
+                    }
                 }
             }
         }
