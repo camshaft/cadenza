@@ -6208,6 +6208,7 @@ pass	an ABORTING arm derives its answer from an Ast op-arg and discards the cont
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an ABSORBING (* v 0) fold over a TRAPPING lazy binding preserves the trap (does not fold to 0)
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
+pass	an AND-of-OR compound guard on a dependent-size bin arm re-emits and evaluates correctly
 pass	an ANNOTATED empty-list Set key determines the element type and compiles
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast as a MAP key looks up by structural content
