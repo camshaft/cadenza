@@ -1487,6 +1487,30 @@ fn emit_expr_viewed(
         Ty::Qty { inner, unit } => {
             let inner = (**inner).clone();
             let unit = unit.clone();
+            // A CONST-magnitude quantity at a position that POSITIVELY EXPECTS a quantity — a COLLECTION
+            // ELEMENT (list/map/set/tuple/record, whose element type threads down as `expected`), or any
+            // Qty-typed slot. `expected == Some(Ty::Qty …)` is the authoritative "genuine Qty escape" signal
+            // (the value-position analogue of the def tail's `def_result_ty` — #8089/#8091), which DISTINGUISHES
+            // a real quantity element from an erased-`Qty.value`-peel: a peel is emitted with `expected` = the
+            // BARE inner numeric (threaded from the def result), never `Some(Ty::Qty)`, so it does NOT match
+            // here and stays bare (the tick-9 miscompile — a join whose magnitude reads back bare — is thereby
+            // excluded). Re-emit the canonical `(Qty.of <const×scale> <reference-unit>)` via the display path's
+            // own `const_value_ast_scaled` (Int truncates / Float rounds / Rational exact, byte-matching wasm)
+            // + `at_reference`. A const that does not decode to a scalar → `None` → fall to `qty_disposition`.
+            if matches!(&expected, Some(Ty::Qty { .. }))
+                && matches!(
+                    core_of(db, id),
+                    Core::ConstInt(_) | Core::ConstFloat(_) | Core::ConstRational(..)
+                )
+            {
+                let (num, den) = unit.scale();
+                if let Some(mag) = crate::lower::const_value_ast_scaled(db, b, id, &inner, num, den)
+                {
+                    let head = member_access(b, "Qty", "of");
+                    let unit_node = crate::lower::unit_value_ast(b, &unit.at_reference());
+                    return Ok(b.list(vec![head, mag, unit_node]));
+                }
+            }
             match qty_disposition(db, id) {
                 NominalDisp::Construct => {
                     let head = member_access(b, "Qty", "of");
