@@ -3712,10 +3712,14 @@
   (output (: 300520661005 Int64))
   (call main (: 137 Int64))
   (output (: 100120661137 Int64))
-  ; TODO(v-memory-safety): the arm-fused multi-arm bin match over a Bytes value currently leaks the
-  ; discriminated segment reads; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak,
-  ; tighten to 0 once the bin-match segment-read interior reclaim lands. (breaker blx1 #7958, added unpinned.)
-  (live-objects known-leak))
+  ; MEMORY: `classify` reads its owned `Bytes` param via a bin-match (segment reads = borrows) and returns
+  ; a SCALAR — a NON-inlined, non-looped, borrow-only owned-heap-param def whose shell had no callee-side
+  ; reclaim (the looped epilogue is empty; a bin-match borrow lowers to If/BinIntRead, not a MatchSum, so
+  ; the nontail-match reclaim misses it) and was NOT caller-dropped (call_arg_caller_drops declined) → it
+  ; leaked. Now closed by the non-looped owned-param epilogue drop (blx1), double-free-gated: the callee
+  ; owns the param at every call site (all-Owned args, not-export, not-funcref-taken) AND no heap sub-value
+  ; escapes into the scalar result. `(live-objects 0)` pins the reclaim so it can't silently re-leak.
+  (live-objects 0))
 
 ; dzx1: the length-prefixed FRAME — a fixed tail segment AFTER a dependent-size payload (a trailing
 ; read at a DYNAMIC offset). Round-trips on the cadenza hop since #7977 (dependent-final landed in
