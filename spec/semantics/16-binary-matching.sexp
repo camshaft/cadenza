@@ -4056,3 +4056,55 @@
   (output (: "hi+!" String))
   (call main (: 255 Int64))
   (output (: "x" String)))
+
+; ebx4: nested bin matches with IDENTICALLY-SPELLED segment binders — the hygiene margin of #8024's
+; (scrutinee-binder, offset, width) segment keying. Outer and inner arms both bind (u8 x)(u8 ...) at
+; the same offsets; the inner arm's body must read the INNER x (20+n) and the OUTER y (9) — a key
+; collapsed to the binder's NAME rather than its identity would alias the two x's reads (both u8@0).
+; 90920 + n. (breaker probe cb1, verified tri-target exact + byte-idempotent.)
+(case
+  "nested bin matches with identically-spelled binders shadow correctly"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list((UInt8.of a) 9)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk (+ 10 n))
+          ((bin (u8 x) (u8 y))
+            (match
+              (mk (+ 20 n))
+              ((bin (u8 x) (u8 w)) (+ (Int64.of x) (+ (* 100 (Int64.of y)) (* 10000 (Int64.of w)))))
+              (_ -2)))
+          (_ -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 90920 Int64))
+  (call main (: 3 Int64))
+  (output (: 90923 Int64)))
+
+; ebx5: the DECODED-STRING binder shadowed across nested utf8 segments — both arms bind (utf8 s 2)
+; over different payloads ("hi" outer, "jk" inner); the inner body's s must be the INNER decode
+; ("jk", not "hi"), with the outer tag threading into the inner scrutinee and the inner tag driving
+; the suffix. (breaker probe cb2, verified tri-target exact + byte-idempotent.)
+(case
+  "a shadowed utf8 string binder reads the inner decode"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list((UInt8.of a) 104 105)))
+      (def (mk2 (: a Int64)) (Bytes.of #list((UInt8.of a) 106 107)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk n)
+          ((bin (u8 t) (utf8 s 2))
+            (match
+              (mk2 (+ t 1))
+              ((bin (u8 v) (utf8 s 2)) (String.concat s (if (> (Int64.of v) 9) "?" "!")))
+              (_ "inner-x")))
+          (_ "x")))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "jk!" String))
+  (call main (: 42 Int64))
+  (output (: "jk?" String)))
