@@ -633,6 +633,55 @@ mod tests {
     }
 
     #[test]
+    fn render_binary_preserves_a_body_ascription_faithfully_both_ways() {
+        // RENDER-SIDE fence for the cadenza re-emit IDEMPOTENCE class (v-cadenza-backend #8046): the emit
+        // decides WHETHER to wrap a def body in a `(: <body> <type>)` ascription; the RENDER must then be
+        // FAITHFUL — neither DROP an ascription that is present nor ADD one that is absent — so the
+        // compile→render→recompile hop is a fixpoint (binary-AST-as-data-exchange). This pins that
+        // render_binary (and its single-line value form) preserves the PRESENCE and ABSENCE of a body
+        // ascription over a control-flow expression (the exact `(: (if …) UInt8)` shape from the fixed bug),
+        // both re-parsing to their own AST — so a future printer change that spuriously folds/introduces the
+        // ascription fails HERE, on the render side of the idempotence contract.
+        for (form, why) in [
+            // Ascription PRESENT → preserved (not dropped).
+            (
+                "(: (if (= x 0) 100 x) UInt8)",
+                "a body ascription over an if-expr is preserved verbatim",
+            ),
+            // Ascription ABSENT → not spuriously added.
+            (
+                "(if (= x 0) 100 x)",
+                "an un-ascribed if-expr renders without a spurious ascription",
+            ),
+        ] {
+            let arenas = crate::sexpr::read(form).expect("form parses");
+            let bytes = crate::codec::encode(&arenas);
+            // Pretty (general) render preserves the form byte-for-byte (it fits one line at the default width).
+            let pretty = render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Expr,
+                Options::default(),
+            )
+            .unwrap();
+            assert_eq!(pretty.trim_end(), form, "render_binary: {why}");
+            // Single-line value render agrees (same faithfulness).
+            assert_eq!(
+                render_binary_value_line(&bytes).unwrap(),
+                form,
+                "value_line: {why}"
+            );
+            // FIXPOINT: render → re-parse → re-render is stable (idempotent on the render side).
+            let rebytes = crate::codec::encode(&crate::sexpr::read(&pretty).unwrap());
+            assert_eq!(
+                render_binary_value_line(&rebytes).unwrap(),
+                form,
+                "render is a fixpoint (2nd hop identical): {why}"
+            );
+        }
+    }
+
+    #[test]
     fn render_binary_renders_non_finite_floats_inside_compounds() {
         // REGRESSION GUARD for the render HALF of breaker's wasm-boundary bug (2026-09-01): a non-finite
         // float (nan / ±inf) INSIDE a compound value renders SILENTLY WRONG on the wasm boundary (the whole
