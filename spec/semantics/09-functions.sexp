@@ -9441,9 +9441,11 @@
 ; LIBRARY was correct. Fixed in the rust gate harness (`rust_call_arg` now lowers each non-scalar arg via
 ; the SAME construction the library body uses: `cdz_num::Big`/`Rational`, a `Vec<u8>`/`vec!`, `Option`).
 ; breaker-found CLUSTER (corpus-bugfix); the surface was wholly untested (every case built the value INSIDE
-; the program). On wasm these DECLINE (a non-scalar across the component entry boundary is unrealized — a
-; sound todo); on rust they now run, matching the recorded value. (The String member is pinned in
-; 13-strings.sexp.)
+; the program). On wasm the picture is now SPLIT (the non-scalar entry lift was realized for the leaf/collection
+; shapes): the Bytes / List / Option entry args CROSS (copied into a value-heap value at the entry boundary),
+; while the BigInt / Rational / Symbol entry args STILL DECLINE (a sound todo — their non-scalar leaf is not yet
+; lifted). On rust they all run via the marshal, matching the recorded value. (The String member — likewise
+; read-only-crosses on wasm now — is pinned in 13-strings.sexp.)
 (case
   "a BigInt entry argument is marshalled through the value's own constructor"
   (doc
@@ -9507,7 +9509,8 @@
   "a List entry argument is marshalled as a vec!"
   (doc
     "`(def (main (: xs (List Int64))) (List.len xs))` called with `(list 1 2 3)` → 3. The driver
-           marshals it as `vec![1, 2, 3]`, not the bare `(list 1 2 3)` text.")
+           marshals it as `vec![1, 2, 3]`, not the bare `(list 1 2 3)` text; the wasm entry lift copies the
+           elements into a value-heap List, so it crosses on both backends.")
   (input (do (def (main (: xs (List Int64))) (List.len xs)) (export main)))
   (call main (: #list(1 2 3) (List Int64)))
   (output (: 3 Int64)))
@@ -9517,7 +9520,8 @@
   (doc
     "`(def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1)))` called with `(Some 5)`
            → 5. The driver marshals it as `Some(5)` (the native enum the backend emits), not the bare
-           `(Some 5)` text.")
+           `(Some 5)` text; the wasm entry lift copies the sum into a value-heap Option, so it crosses on
+           both backends.")
   (input (do (def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1))) (export main)))
   (call main (: (Some 5) (Option Int64)))
   (output (: 5 Int64)))
