@@ -4261,3 +4261,28 @@
   (output (: 1002 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64)))
+
+; usx1: the RESULT sibling of the #8129 under-determined-sum bin-arm re-emit — #8129 threads a
+; bin-match's own solved result type as the arm-body `expected`, so `(Some …)` recovers Option, but
+; a `(Ok …)` arm body still DECLINES CDZ0900 ("lowering a variant of an under-determined sum type")
+; on the cadenza hop. Isolated: `(Some (Int64.of a))` HOPS (us4 control), `(Ok (Int64.of a))` with an
+; explicit `(Result Int64 String)` ascription DECLINES — the two-type-parameter Result's
+; under-determination is not recovered from the own result type where the one-parameter Option is.
+; Computes on wasm/rust (n=5 -> 5, n=200 -> 200, the Ok payload = the first byte). Idealistic TODO;
+; auto-flips when the SumNew own-result-type recovery covers a 2-param sum (Result). (breaker probe
+; us3, tick 1531; filed to v-cadenza-backend.)
+(case
+  "a bin-match arm building an under-determined Result recovers its type once the 2-param SumNew fallback lands"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (: (match b ((bin (u8 a) (u8 _c)) (Ok (Int64.of a))) (_ (Err "bad"))) (Result Int64 String)))
+      (def
+        (main (: n Int64))
+        (match (parse (Bytes.of #list((UInt8.of n) 9))) ((Ok v) v) ((Err _e) -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (call main (: 200 Int64))
+  (output (: 200 Int64)))
