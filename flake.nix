@@ -1127,9 +1127,11 @@
               # mirroring xtask-roundtrip.
               xtask-save-baseline = [ "cadenza-ast" "cdz-contract" "xtask-save-baseline" "xtask-support" ];
               xtask-merge-baseline = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "cdz-contract" "corpus-case-titles" "xtask-merge-baseline" "xtask-support" ];
-              # xtask-codegen-support (v-xtask-decompose seq-202): shared format_tokens+rustfmt_stdin lib; deps
-              # ONLY external crates (syn/prettyplease/proc-macro2) — a workspace leaf, closure is just itself.
-              xtask-codegen-support = [ "xtask-codegen-support" ];
+              # xtask-codegen-support (v-xtask-decompose seq-202): shared codegen helpers (format_tokens +
+              # rustfmt_stdin + the SEXPR→binary-AST reader cdz_bin/sexpr_to_arenas). The reader adds a cadenza-ast
+              # path-dep (Arenas return + codec::decode), so the closure is cadenza-ast + itself. The 3 codegen
+              # consumers already dep cadenza-ast directly, so this widening adds nothing to their closures.
+              xtask-codegen-support = [ "cadenza-ast" "xtask-codegen-support" ];
               # xtask-codegen-contracts deps cadenza-ast + cdz-contract (cdz-contract deps cadenza-ast); now also
               # deps xtask-codegen-support (format_tokens); dropped its direct prettyplease (KEEPS syn: syn::Ident).
               xtask-codegen-contracts = [ "cadenza-ast" "cdz-contract" "xtask-codegen-contracts" "xtask-codegen-support" ];
