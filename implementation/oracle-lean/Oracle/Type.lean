@@ -120,6 +120,14 @@ partial def containsSetOrMap : Ty → Bool
   | .sum vs => vs.any (fun v => match v.2 with | some t => containsSetOrMap t | none => false)
   | _ => false
 
+/-- NEWTYPE ERASURE (05-compound-types:8519): a SINGLE-variant sum carrying ONE payload (`(type T (Mk τ))`)
+is a newtype — at runtime the value IS its payload `τ` (the tag erases). So member/field access sees THROUGH
+the tag to the payload. Unwrap such single-variant-single-payload sums repeatedly (a newtype over a newtype
+… over a record). A multi-variant sum, or a single NULLARY variant, is NOT erased (a real sum / unit-like). -/
+partial def eraseNewtypes : Ty → Ty
+  | .sum [(_, some τ)] => eraseNewtypes τ
+  | t => t
+
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
 abbrev Subst := List (Nat × Ty)
 
@@ -346,6 +354,26 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
          -- ctor; `tuple` is the value ctor.) Each element parsed recursively; an unmodeled element → decline.
          (match (cs.extract 1 cs.size).toList.mapM (parseTy? m) with
           | some ts => some (.tuple ts)
+          | none => none)
+       else if h == "Record".toUTF8 && cs.size >= 2 then
+         -- record TYPE constructor `(Record (: k1 T1) (: k2 T2) …)` — each field is `(: name Type)` (size-3,
+         -- head `:`) or the bare `(name Type)` (size-2) → `.record` (fields sorted by key, the canonical
+         -- form so `unify` compares field SETs). A non-name key, an unmodeled field type, or a DUPLICATE
+         -- field name → decline (`none`). A field whose type is a nominal/recursive user type → its
+         -- `parseTy?` is `none` → the whole record declines (sound; never a false-accept).
+         (match (cs.extract 1 cs.size).toList.mapM (fun fid => do
+             let fc ← (match m.nodes[fid]? with | some (.list fc) => some fc | _ => none)
+             let kt ← (if m.headName? (.list fc) == some ":".toUTF8 && fc.size == 3 then some (fc[1]!, fc[2]!)
+                       else if fc.size == 2 then some (fc[0]!, fc[1]!)
+                       else none)
+             let k ← Eval.nameOf? m kt.1
+             let τ ← parseTy? m kt.2
+             some (k, τ)) with
+          | some fields =>
+            let sorted := (fields.toArray.qsort (fun a b => Eval.cmpBytes a.1 b.1 == .lt)).toList
+            if (sorted.zip (sorted.drop 1)).any (fun (p : (ByteArray × Ty) × (ByteArray × Ty)) => p.1.1 == p.2.1)
+            then none                       -- duplicate field name → malformed record type
+            else some (.record sorted)
           | none => none)
        else if h == "->".toUTF8 && cs.size >= 3 then
          -- function type `(-> t1 t2 … tn)` = `t1 → t2 → … → tn` (curried; last element = result). Each
@@ -891,9 +919,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 -- type; an absent field is `IllTyped CDZ0212`, a field access on a non-record is `CDZ0203`.
                 -- A base that isn't a modeled record (e.g. a module member like `(. Float64 nan)` whose base
                 -- name doesn't resolve) infers `Unsupported` and propagates — never a false field access.
+                -- T1.37 — NEWTYPE ERASURE: `eraseNewtypes` sees through a single-variant newtype tag (e.g.
+                -- `(UserId.Mk record).x` reads the payload record's field — 05-compound-types:8519) to the
+                -- payload record; a bare record is unchanged (erasure is a no-op on non-newtypes).
                 (match inferE m env st baseId with
                  | .ok (τb, st') =>
-                   (match applySubst st'.subst τb with
+                   (match eraseNewtypes (applySubst st'.subst τb) with
                     | .record fields => (match fields.find? (fun f => f.1 == fld) with
                                          | some (_, τ) => .ok (τ, st')
                                          | none => .error (.illTyped "CDZ0212"))
@@ -906,7 +937,8 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                    if n < 0 then .error (.illTyped "CDZ0203")
                    else do
                      let (τb, st) ← inferE m env st baseId
-                     match applySubst st.subst τb with
+                     -- T1.37 newtype erasure applies to POSITIONAL projection too (a newtype over a tuple).
+                     match eraseNewtypes (applySubst st.subst τb) with
                      | .tuple τs => (match τs[n.toNat]? with
                                      | some τ => .ok (τ, st)
                                      | none => .error (.illTyped "CDZ0203"))
@@ -2303,6 +2335,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12, 11, 9], .atom 9, .atom 2, .list #[14, 15], .atom 0,
                            .list #[17, 13, 16]],
                 root := 18 } == .wellTyped (.tuple [.int 64 true, .int 64 true]))
+-- T1.37 (Record type annotation): `(do (def (main) (: (record (= x 1)) (Record (: x Int64)))) (export main))`
+-- → WellTyped (Record x:Int64). `(Record (: k T)…)` in parseTy? → `.record [(k,T)…]` (sorted); the
+-- ascription unifies the `(record (= x 1))` value (`.record [(x, numVar)]`) with it → `.record [(x, Int64)]`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .name "record".toUTF8, .name "=".toUTF8, .name "x".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .name "Record".toUTF8,
+                            .name "Int64".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .atom 7, .list #[1, 2, 3], .list #[0, 4], .atom 8,
+                           .atom 3, .atom 6, .atom 9, .list #[7, 8, 9], .list #[6, 10], .atom 3,
+                           .list #[12, 5, 11], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13],
+                           .atom 10, .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
+                root := 22 } == .wellTyped (.record [("x".toUTF8, .int 64 true)]))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
