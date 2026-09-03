@@ -48,18 +48,19 @@ inductive HeapValue where
   | array   (elems : Array UInt32)
   | map     (entries : Array UInt32)
   | set     (elems : Array UInt32)
+  | vec     (elems : Array UInt32)
 deriving Repr, DecidableEq, Inhabited, BEq
 
-/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set) —
-the child set the free-cascade and `mark-immortal-deep` walk. -/
+/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set/
+vec) — the child set the free-cascade and `mark-immortal-deep` walk. -/
 def HeapValue.arity : HeapValue → Nat
-  | .array e | .map e | .set e => e.size
-  | _                          => 0
+  | .array e | .map e | .set e | .vec e => e.size
+  | _                                   => 0
 
-/-- The owned child handles (array/map/set slots; `[]` for a scalar). -/
+/-- The owned child handles (array/map/set/vec slots; `[]` for a scalar). -/
 def HeapValue.children : HeapValue → List UInt32
-  | .array e | .map e | .set e => e.toList
-  | _                          => []
+  | .array e | .map e | .set e | .vec e => e.toList
+  | _                                   => []
 
 /-- One heap object: its value, refcount, liveness (`false` once freed at rc 0), and immortality flag
 (immortal objects have a sentinel rc — `dup`/`drop` are no-ops — and are excluded from the leak census). -/
@@ -747,6 +748,81 @@ def setDifference : HeapState → List Value → HeapResult
         | _, _ => .trap s!"set-difference: handle {a} or {b} is not a set"
   | s, _ => .trap "set-difference: expected (i32, i32)"
 
+/-! ### List (`vec-*`, W5-vec-1) — the language's growable LIST (a persistent sequence; the runtime uses a
+radix trie, unobservable, so a flat element array is a faithful value model). Per value-heap-runtime.md
+"Constructors Consume And Accessors Borrow": `vec-empty` produces a new owned list; `vec-get` BORROWS
+(rc unchanged, OOB traps); `vec-push`/`vec-update` are CONSTRUCTORS that CONSUME the list + element and
+produce a new owned list (dup-and-drop transfer, same as map-insert — dupH/dropH no-op on immediate elements).
+vec-concat, vec-prepend, vec-of-arr are a later slice. -/
+
+/-- `vec-empty() → v`: a fresh empty list. -/
+def vecEmpty : HeapState → List Value → HeapResult
+  | s, []     => s.box (.vec #[])
+  | _, _ :: _ => .trap "vec-empty: expected ()"
+
+/-- `vec-len(v) → len`: the element count. -/
+def vecLen : HeapState → List Value → HeapResult
+  | s, [.i32 v] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-len: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-len: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems => .ret [.i32 elems.size.toUInt32] s
+        | _          => .trap s!"vec-len: handle {v} is not a list"
+  | s, _ => .trap "vec-len: expected (i32)"
+
+/-- `vec-get(v, i) → elem`: the element handle at index `i`, BORROWED. OOB traps. -/
+def vecGet : HeapState → List Value → HeapResult
+  | s, [.i32 v, .i32 i] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-get: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-get: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems =>
+          match elems[i.toNat]? with
+          | some e => .ret [.i32 e] s
+          | none   => .trap s!"vec-get: index {i} out of bounds (len {elems.size})"
+        | _ => .trap s!"vec-get: handle {v} is not a list"
+  | s, _ => .trap "vec-get: expected (i32, i32)"
+
+/-- `vec-push(v, elem) → v'` [consumes v, elem]: a new list = v's elements with `elem` appended. Dup-and-drop
+transfer of the kept elements; `elem` moved in. -/
+def vecPush : HeapState → List Value → HeapResult
+  | s, [.i32 v, .i32 elem] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-push: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-push: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems =>
+          let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.vec (elems.push elem))
+          .ret [.i32 r] (s2.dropH v)
+        | _ => .trap s!"vec-push: handle {v} is not a list"
+  | s, _ => .trap "vec-push: expected (i32, i32)"
+
+/-- `vec-update(v, i, elem) → v'` [consumes v, elem]: a new list = v with index `i` set to `elem`; the old
+element at `i` is freed by the consumed list's cascade (not kept). OOB traps. -/
+def vecUpdate : HeapState → List Value → HeapResult
+  | s, [.i32 v, .i32 i, .i32 elem] =>
+    match s.getObj? v with
+    | none   => .trap s!"vec-update: unknown handle {v}"
+    | some o =>
+      if !o.live then .trap s!"vec-update: use-after-free (handle {v} freed)"
+      else match o.value with
+        | .vec elems =>
+          if i.toNat < elems.size then
+            let keep := (List.range elems.size).filterMap
+              (fun j => if j == i.toNat then none else some elems[j]!)
+            let s1 := keep.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.vec (elems.set! i.toNat elem))
+            .ret [.i32 r] (s2.dropH v)
+          else .trap s!"vec-update: index {i} out of bounds (len {elems.size})"
+        | _ => .trap s!"vec-update: handle {v} is not a list"
+  | s, _ => .trap "vec-update: expected (i32, i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -809,6 +885,12 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("set-union",          toHostFn [.i32, .i32]             [.i32]  HeapState.setUnion)
   , ("set-intersection",   toHostFn [.i32, .i32]             [.i32]  HeapState.setIntersection)
   , ("set-difference",     toHostFn [.i32, .i32]             [.i32]  HeapState.setDifference)
+    -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
+  , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
+  , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
+  , ("vec-get",            toHostFn [.i32, .i32]             [.i32]  HeapState.vecGet)
+  , ("vec-push",           toHostFn [.i32, .i32]             [.i32]  HeapState.vecPush)
+  , ("vec-update",         toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.vecUpdate)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -960,5 +1042,83 @@ private def probeMapImmKeys : Bool :=
     | _ => false
   | _ => false
 example : probeMapImmKeys = true := by native_decide
+
+/-! #### W5-vec-1: list core (empty/len/get/push/update), immediate-aware. -/
+
+/-- A list of two HEAP elements (box-float): len 2, get reads them back, OOB traps, cascade-drop frees all. -/
+private def probeVecHeap : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 f1] s0 =>
+    match boxFloat s0 [.f64 2] with
+    | .ret [.i32 f2] s1 =>
+      match vecEmpty s1 [] with
+      | .ret [.i32 ve] s2 =>
+        match vecPush s2 [.i32 ve, .i32 f1] with
+        | .ret [.i32 v1] s3 =>
+          match vecPush s3 [.i32 v1, .i32 f2] with
+          | .ret [.i32 v2] s4 =>
+            (match vecLen s4 [.i32 v2]          with | .ret [.i32 2] _ => true | _ => false) &&
+            (match vecGet s4 [.i32 v2, .i32 0]  with
+             | .ret [.i32 g] _ => (match getFloat s4 [.i32 g] with | .ret [.f64 1] _ => true | _ => false)
+             | _               => false) &&
+            (match vecGet s4 [.i32 v2, .i32 5]  with | .trap _ => true | _ => false) &&
+            (s4.liveCount == 3) &&
+            (match drop s4 [.i32 v2] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecHeap = true := by native_decide
+
+/-- A list of IMMEDIATE int elements: only the vec node is heap (liveCount 1); get yields the immediate,
+get-int reads it; cascade-drop skips the immediates and frees just the node → 0. -/
+private def probeVecImmElems : Bool :=
+  match vecEmpty ({} : HeapState) [] with
+  | .ret [.i32 ve] s0 =>
+    match boxInt s0 [.i64 5] with
+    | .ret [.i32 e] s1 =>
+      match vecPush s1 [.i32 ve, .i32 e] with
+      | .ret [.i32 v1] s2 =>
+        (s2.liveCount == 1) &&
+        (match vecGet s2 [.i32 v1, .i32 0] with
+         | .ret [.i32 g] _ => (match getInt s2 [.i32 g] with | .ret [.i64 5] _ => true | _ => false)
+         | _               => false) &&
+        (match drop s2 [.i32 v1] with | .ret [] s3 => s3.liveCount == 0 | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecImmElems = true := by native_decide
+
+/-- vec-update replaces index 0 (heap float 1 → 3): get 0 reads 3, len still 2, the old element freed so the
+census balances to 0 on drop. -/
+private def probeVecUpdate : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 f1] s0 =>
+    match boxFloat s0 [.f64 2] with
+    | .ret [.i32 f2] s1 =>
+      match vecEmpty s1 [] with
+      | .ret [.i32 ve] s2 =>
+        match vecPush s2 [.i32 ve, .i32 f1] with
+        | .ret [.i32 v1] s3 =>
+          match vecPush s3 [.i32 v1, .i32 f2] with
+          | .ret [.i32 v2] s4 =>
+            match boxFloat s4 [.f64 3] with
+            | .ret [.i32 f3] s5 =>
+              match vecUpdate s5 [.i32 v2, .i32 0, .i32 f3] with
+              | .ret [.i32 v3] s6 =>
+                (match vecLen s6 [.i32 v3]         with | .ret [.i32 2] _ => true | _ => false) &&
+                (match vecGet s6 [.i32 v3, .i32 0] with
+                 | .ret [.i32 g] _ => (match getFloat s6 [.i32 g] with | .ret [.f64 3] _ => true | _ => false)
+                 | _               => false) &&
+                (match drop s6 [.i32 v3] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecUpdate = true := by native_decide
 
 end Oracle.Heap
