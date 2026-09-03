@@ -606,6 +606,73 @@ def setRemove : HeapState → List Value → HeapResult
         | _ => .trap s!"set-remove: handle {st} is not a set"
   | s, _ => .trap "set-remove: expected (i32, i32)"
 
+/-! ### Set — the 2-set ops (W5.2d-2, per v-runtime's champ.rs contract, each CONSUMES both). union =
+insert-all-of-b (dup drops an incoming duplicate); intersection keeps a's elems that are also in b (a's
+others + all of b freed); difference (a\b) keeps a's elems NOT in b (a's others + all of b freed). -/
+
+/-- `set-union(a, b) → a∪b` [consumes both]: fold b's elements into a via `setInsert` (dedup drops incoming
+duplicates), then drop b — the same shape as `map-merge`. -/
+def setUnion : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"set-union: unknown handle {a}"
+    | _, none => .trap s!"set-union: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"set-union: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"set-union: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .set _, .set bElems =>
+          let (accH, s') := (List.range bElems.size).foldl
+            (fun (acc : UInt32 × HeapState) i =>
+              let (cur, st) := acc
+              let be := bElems[i]!
+              let st1 := st.dupH be
+              match setInsert st1 [.i32 cur, .i32 be] with
+              | .ret [.i32 acc'] st2 => (acc', st2)
+              | _                    => (cur, st1))
+            (a, s)
+          .ret [.i32 accH] (s'.dropH b)
+        | _, _ => .trap s!"set-union: handle {a} or {b} is not a set"
+  | s, _ => .trap "set-union: expected (i32, i32)"
+
+/-- `set-intersection(a, b) → {x ∈ a | x ∈ b}` [consumes both]: keep a's elements value-equal to some b
+element; a's other elements are freed by a's cascade, all of b is freed. -/
+def setIntersection : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"set-intersection: unknown handle {a}"
+    | _, none => .trap s!"set-intersection: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"set-intersection: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"set-intersection: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .set aElems, .set bElems =>
+          let keep := aElems.toList.filter (fun ae => bElems.toList.any (fun be => s.valueEq ae be))
+          let s1 := keep.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.set keep.toArray)
+          .ret [.i32 r] ((s2.dropH a).dropH b)
+        | _, _ => .trap s!"set-intersection: handle {a} or {b} is not a set"
+  | s, _ => .trap "set-intersection: expected (i32, i32)"
+
+/-- `set-difference(a, b) → {x ∈ a | x ∉ b}` [consumes both]: keep a's elements NOT value-equal to any b
+element; a's elements that are in b are freed by a's cascade, all of b is freed. -/
+def setDifference : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"set-difference: unknown handle {a}"
+    | _, none => .trap s!"set-difference: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"set-difference: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"set-difference: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .set aElems, .set bElems =>
+          let keep := aElems.toList.filter (fun ae => !bElems.toList.any (fun be => s.valueEq ae be))
+          let s1 := keep.foldl (fun acc h => acc.dupH h) s
+          let (r, s2) := s1.alloc (.set keep.toArray)
+          .ret [.i32 r] ((s2.dropH a).dropH b)
+        | _, _ => .trap s!"set-difference: handle {a} or {b} is not a set"
+  | s, _ => .trap "set-difference: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -665,6 +732,9 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("set-contains",       toHostFn [.i32, .i32]             [.i32]  HeapState.setContains)
   , ("set-remove",         toHostFn [.i32, .i32]             [.i32]  HeapState.setRemove)
   , ("set-size",           toHostFn [.i32]                   [.i32]  HeapState.setSize)
+  , ("set-union",          toHostFn [.i32, .i32]             [.i32]  HeapState.setUnion)
+  , ("set-intersection",   toHostFn [.i32, .i32]             [.i32]  HeapState.setIntersection)
+  , ("set-difference",     toHostFn [.i32, .i32]             [.i32]  HeapState.setDifference)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -1266,5 +1336,94 @@ private def probeSetRemove : Bool :=
     | _ => false
   | _ => false
 example : probeSetRemove = true := by native_decide
+
+/-! #### W5.2d-2: set union / intersection / difference (each consumes both). -/
+
+/-- Build a 2-element int set {box x, box y}. -/
+private def buildSet2 (s : HeapState) (x y : UInt64) : Option (UInt32 × HeapState) :=
+  match boxInt s [.i64 x] with
+  | .ret [.i32 ex] s1 =>
+    match setEmpty s1 [] with
+    | .ret [.i32 se] s2 =>
+      match setInsert s2 [.i32 se, .i32 ex] with
+      | .ret [.i32 s1h] s3 =>
+        match boxInt s3 [.i64 y] with
+        | .ret [.i32 ey] s4 =>
+          match setInsert s4 [.i32 s1h, .i32 ey] with
+          | .ret [.i32 s2h] s5 => some (s2h, s5)
+          | _                  => none
+        | _ => none
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- {1,2} ∪ {2,3} = {1,2,3} (2 deduped): size 3, census 0 on drop. -/
+private def probeSetUnion : Bool :=
+  match buildSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match buildSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setUnion s2 [.i32 a, .i32 b] with
+      | .ret [.i32 u] s3 =>
+        (match setSize s3 [.i32 u] with | .ret [.i32 3] _ => true | _ => false) &&
+        (match drop s3 [.i32 u]    with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+      | _ => false
+    | none => false
+  | none => false
+example : probeSetUnion = true := by native_decide
+
+/-- {1,2} ∩ {2,3} = {2}: size 1, has 2 not 1, census 0 on drop. -/
+private def probeSetIntersection : Bool :=
+  match buildSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match buildSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setIntersection s2 [.i32 a, .i32 b] with
+      | .ret [.i32 x] s3 =>
+        match boxInt s3 [.i64 2] with
+        | .ret [.i32 q2] s4 =>
+          match boxInt s4 [.i64 1] with
+          | .ret [.i32 q1] s5 =>
+            (match setSize s5 [.i32 x]              with | .ret [.i32 1] _ => true | _ => false) &&
+            (match setContains s5 [.i32 x, .i32 q2] with | .ret [.i32 1] _ => true | _ => false) &&
+            (match setContains s5 [.i32 x, .i32 q1] with | .ret [.i32 0] _ => true | _ => false) &&
+            (match drop s5 [.i32 x] with
+             | .ret [] s6 => (match drop s6 [.i32 q2] with
+               | .ret [] s7 => (match drop s7 [.i32 q1] with | .ret [] s8 => s8.liveCount == 0 | _ => false)
+               | _          => false)
+             | _          => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | none => false
+  | none => false
+example : probeSetIntersection = true := by native_decide
+
+/-- {1,2} \ {2,3} = {1}: size 1, has 1 not 2, census 0 on drop. -/
+private def probeSetDifference : Bool :=
+  match buildSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match buildSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setDifference s2 [.i32 a, .i32 b] with
+      | .ret [.i32 x] s3 =>
+        match boxInt s3 [.i64 1] with
+        | .ret [.i32 q1] s4 =>
+          match boxInt s4 [.i64 2] with
+          | .ret [.i32 q2] s5 =>
+            (match setSize s5 [.i32 x]              with | .ret [.i32 1] _ => true | _ => false) &&
+            (match setContains s5 [.i32 x, .i32 q1] with | .ret [.i32 1] _ => true | _ => false) &&
+            (match setContains s5 [.i32 x, .i32 q2] with | .ret [.i32 0] _ => true | _ => false) &&
+            (match drop s5 [.i32 x] with
+             | .ret [] s6 => (match drop s6 [.i32 q1] with
+               | .ret [] s7 => (match drop s7 [.i32 q2] with | .ret [] s8 => s8.liveCount == 0 | _ => false)
+               | _          => false)
+             | _          => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | none => false
+  | none => false
+example : probeSetDifference = true := by native_decide
 
 end Oracle.Heap
