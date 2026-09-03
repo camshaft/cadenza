@@ -498,6 +498,34 @@ def mapRemove : HeapState → List Value → HeapResult
         | _ => .trap s!"map-remove: handle {m} is not a map"
   | s, _ => .trap "map-remove: expected (i32, i32)"
 
+/-- `map-merge(a, b) → a∪b` [consumes both, b WINS on conflict]: fold b's entries into `a` (per v-runtime's
+champ.rs: `op_dup(k); op_dup(v); acc := op_map_insert(acc,k,v); … op_drop(b)`). Each of b's pairs is dup'd so
+b keeps its refs during the fold, then inserted (b-wins conflict handled by `mapInsert`'s replace: a's losing
+value + the redundant b-key are dropped, b's value taken); finally b is dropped. -/
+def mapMerge : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"map-merge: unknown handle {a}"
+    | _, none => .trap s!"map-merge: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"map-merge: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"map-merge: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .map _, .map bEntries =>
+          let (accH, s') := (List.range (bEntries.size / 2)).foldl
+            (fun (acc : UInt32 × HeapState) i =>
+              let (curAcc, st) := acc
+              let bk := bEntries[2 * i]!
+              let bv := bEntries[2 * i + 1]!
+              let st1 := (st.dupH bk).dupH bv
+              match mapInsert st1 [.i32 curAcc, .i32 bk, .i32 bv] with
+              | .ret [.i32 acc'] st2 => (acc', st2)
+              | _                    => (curAcc, st1))
+            (a, s)
+          .ret [.i32 accH] (s'.dropH b)
+        | _, _ => .trap s!"map-merge: handle {a} or {b} is not a map"
+  | s, _ => .trap "map-merge: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -550,6 +578,7 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("map-size",           toHostFn [.i32]                   [.i32]  HeapState.mapSize)
   , ("map-insert",         toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.mapInsert)
   , ("map-remove",         toHostFn [.i32, .i32]             [.i32]  HeapState.mapRemove)
+  , ("map-merge",          toHostFn [.i32, .i32]             [.i32]  HeapState.mapMerge)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -1018,5 +1047,61 @@ private def probeMapInsertShared : Bool :=
     | _ => false
   | _ => false
 example : probeMapInsertShared = true := by native_decide
+
+/-! #### W5.2b-3: map-merge (b wins on conflict). -/
+
+/-- Build a 1-entry map {box ki ↦ box vi} via empty + insert. -/
+private def build1 (s : HeapState) (ki vi : UInt64) : Option (UInt32 × HeapState) :=
+  match boxInt s [.i64 ki] with
+  | .ret [.i32 k] s1 =>
+    match boxInt s1 [.i64 vi] with
+    | .ret [.i32 v] s2 =>
+      match mapEmpty s2 [] with
+      | .ret [.i32 e] s3 =>
+        match mapInsert s3 [.i32 e, .i32 k, .i32 v] with
+        | .ret [.i32 m] s4 => some (m, s4)
+        | _                => none
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- Merge of DISJOINT maps {1↦10} ∪ {2↦20} has both entries (size 2) and leak-balances to 0 on drop. -/
+private def probeMapMergeDisjoint : Bool :=
+  match build1 ({} : HeapState) 1 10 with
+  | some (a, s1) =>
+    match build1 s1 2 20 with
+    | some (b, s2) =>
+      match mapMerge s2 [.i32 a, .i32 b] with
+      | .ret [.i32 m] s3 =>
+        (match mapSize s3 [.i32 m] with | .ret [.i32 2] _ => true | _ => false) &&
+        (match drop s3 [.i32 m]    with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+      | _ => false
+    | none => false
+  | none => false
+example : probeMapMergeDisjoint = true := by native_decide
+
+/-- Merge with a CONFLICTING key {1↦90} ∪ {1↦91}: b WINS (lookup → 91), deduped (size 1), and a's losing
+value (90) is dropped so the census balances to 0 on drop. -/
+private def probeMapMergeConflict : Bool :=
+  match build1 ({} : HeapState) 1 90 with
+  | some (a, s1) =>
+    match build1 s1 1 91 with
+    | some (b, s2) =>
+      match mapMerge s2 [.i32 a, .i32 b] with
+      | .ret [.i32 m] s3 =>
+        match boxInt s3 [.i64 1] with
+        | .ret [.i32 kq] s4 =>
+          (match mapSize s4 [.i32 m] with | .ret [.i32 1] _ => true | _ => false) &&
+          (match mapLookup s4 [.i32 m, .i32 kq] with
+           | .ret [.i32 g] _ => (match getInt s4 [.i32 g] with | .ret [.i64 91] _ => true | _ => false)
+           | _               => false) &&
+          (match drop s4 [.i32 m] with
+           | .ret [] s5 => (match drop s5 [.i32 kq] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+           | _          => false)
+        | _ => false
+      | _ => false
+    | none => false
+  | none => false
+example : probeMapMergeConflict = true := by native_decide
 
 end Oracle.Heap
