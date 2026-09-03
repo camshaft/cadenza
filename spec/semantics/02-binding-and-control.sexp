@@ -656,6 +656,70 @@
   (call pinned (: 7 Int64))
   (output (: 0 Int64)))
 
+; Boolean `and`/`or` SHORT-CIRCUIT: the right operand is evaluated ONLY when the left does not already
+; determine the result — `and` skips its RHS when the LHS is false, `or` skips its RHS when the LHS is
+; true. This is OBSERVABLE via a trapping RHS (a `(/ 1 n)` at n=0): a short-circuited RHS never runs, so no
+; trap; a REACHED RHS traps. And the CONST FOLD short-circuits the SAME way — `(and false <const-trap>)`
+; folds to false WITHOUT the RHS's CDZ0304 firing, matching the runtime skip, while `(and true <const-trap>)`
+; reaches the RHS and the fold DOES reject (CDZ0304). Existing short-circuit coverage is for `=`/compound
+; equality and `?`; this pins the boolean operators. Verified breaker probes scp/scc: fold == runtime == hop.
+(case
+  "the boolean and short-circuits its right operand (a trapping RHS is skipped when the LHS is false)"
+  (doc
+    "`(and b (= 0 (/ 1 n)))` over a runtime Bool `b`: b=false → the RHS `(/ 1 n)` is NOT evaluated, so
+           even at n=0 there is no trap → 0. b=true reaches the RHS: n=0 divide-by-zero TRAPS; n=5 computes
+           (1/5 = 0, 0 = 0 → true) → 1. Pins `and` skips its RHS exactly when the LHS is false.")
+  (input
+    (do (def (main (: b Bool) (: n Int64)) (if (and b (= 0 (/ 1 n))) 1 0)) (export main)))
+  (call main (: false Bool) (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: true Bool) (: 5 Int64))
+  (output (: 1 Int64))
+  (call main (: true Bool) (: 0 Int64))
+  (trap "divide by zero"))
+
+(case
+  "the boolean or short-circuits its right operand (a trapping RHS is skipped when the LHS is true)"
+  (doc
+    "`(or b (= 0 (/ 1 n)))` over a runtime Bool `b`: b=true → the RHS is NOT evaluated, so no trap even
+           at n=0 → 1. b=false reaches the RHS: n=0 TRAPS; n=5 → true → 1. Pins `or` skips its RHS exactly
+           when the LHS is true — the dual of the `and` case.")
+  (input
+    (do (def (main (: b Bool) (: n Int64)) (if (or b (= 0 (/ 1 n))) 1 0)) (export main)))
+  (call main (: true Bool) (: 0 Int64))
+  (output (: 1 Int64))
+  (call main (: false Bool) (: 5 Int64))
+  (output (: 1 Int64))
+  (call main (: false Bool) (: 0 Int64))
+  (trap "divide by zero"))
+
+(case
+  "the const fold short-circuits and-false / or-true past a constant-trapping right operand"
+  (doc
+    "The fold short-circuits like the runtime: `(and false (= 0 (/ 1 0)))` folds to false → 0 WITHOUT the
+           constant `(/ 1 0)` firing CDZ0304 (the RHS is never folded), and `(or true (= 0 (/ 1 0)))` folds to
+           true → 1. Pins the fold evaluates a boolean operand's RHS only when the LHS leaves the result open.")
+  (input
+    (do
+      (def (af) (if (and false (= 0 (/ 1 0))) 1 0))
+      (def (ot) (if (or true (= 0 (/ 1 0))) 1 0))
+      (export af)
+      (export ot)))
+  (call af)
+  (output (: 0 Int64))
+  (call ot)
+  (output (: 1 Int64)))
+
+(case
+  "the const fold reaches a boolean operator's right operand when the left does not decide it (and-true traps)"
+  (doc
+    "The complement of the short-circuit fold: `(and true (= 0 (/ 1 0)))` does NOT short-circuit — the
+           LHS true leaves the result open, so the fold REACHES the constant `(/ 1 0)` and rejects it (CDZ0304),
+           exactly as the runtime `and true` reaches and traps. Pins the fold's short-circuit is real (it fires
+           only when the LHS decides), not an unconditional skip of every RHS.")
+  (input (do (def (main) (if (and true (= 0 (/ 1 0))) 1 0)) (export main)))
+  (error CDZ0304 (message "divide by zero")))
+
 (case
   "a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin"
   (doc
