@@ -678,3 +678,33 @@
       (export main)))
   (call main (: 5 Int64))
   (trap "no recorded response"))
+
+; hhx1: a host-op argument computed by an INTRA-PROGRAM PERFORM — the computed-argument case above
+; passes guest ARITHMETIC; here each of two host-call arguments is a perform against an enclosing
+; in-program handler whose state ADVANCES between them (tick reads n then n+1), so the recorded
+; host-calls witness the threaded state crossing the boundary in program order, and the two
+; responses are consumed in the same order (41 then 43 -> 41 + 100*43 = 4341). Distinct from the
+; sibling-frames case in 14b (a handle BESIDE a host call): here the intra handler's state flows
+; INTO the boundary arguments. A wrong materialization order swaps the recorded args; a response
+; mis-order swaps the digits. (breaker probe hh2, verified live on cdz-run with in-order
+; response consumption.)
+(case
+  "a host-op argument computed by an intra-program perform crosses with the threaded state"
+  (input
+    (do
+      (effect out (op put (-> Int64 Int64)))
+      (effect ctr (op tick (-> Int64)))
+      (def
+        (main (: n Int64))
+        (host
+          (out)
+          (handle
+            ctr
+            n
+            ((tick () s (resume s (+ s 1))))
+            (+ (out.put (ctr.tick)) (* 100 (out.put (ctr.tick)))))))
+      (export main)))
+  (call main (: 7 Int64))
+  (host-responses (respond out.put (: 41 Int64)) (respond out.put (: 43 Int64)))
+  (host-calls (call out.put (: 7 Int64)) (call out.put (: 8 Int64)))
+  (output (: 4341 Int64)))
