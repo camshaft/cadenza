@@ -4172,3 +4172,33 @@
   (output (: "jk!" String))
   (call main (: 42 Int64))
   (output (: "jk?" String)))
+
+; cgx1: a guard reading the DEPENDENT-PAYLOAD binder — (Bytes.len p) in GUARD position over
+; (u8 k)(bytes p k). Until #8090 this EMITTED AN INVALID MODULE (Core::And rhs slot-width collision:
+; an i64 where cranelift expected i32; cdz compile succeeded, the artifact failed validation at
+; function[7]) — worse than a decline, though never a wrong value (nothing ran). The blast-radius
+; matrix that pinned the trigger: length-binder guards + payload-in-body (the gxd1 shape) always
+; worked; payload EQUALITY in guard worked; the utf8 decoded-STRING binder in guard worked; payload
+; MATERIALIZED AS A CALL ARG in guard ((Bytes.len p), or a user helper (chk p)) hit the collision.
+; Post-fix: guard-pass reads the payload length (1002), a 1-byte payload fails the guard to the
+; wildcard (-1). (breaker probes cg3/cg3a/cg3c/pg1-pg3, tick 1487-1504; verified tri-target exact +
+; byte-idempotent + census TRUE-0 on the fresh debug runtime; the helper-call and nested-and faces
+; verified computing the same tick the fix landed.)
+(case
+  "a guard reading the dependent-payload binder gates the arm"
+  (input
+    (do
+      (def
+        (classify (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1)) (+ 1000 (Bytes.len p)))
+          (_ -1)))
+      (def
+        (main (: n Int64))
+        (classify (if (> n 0) (Bytes.of #list(2 8 (UInt8.of n))) (Bytes.of #list(1 8)))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 1002 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
