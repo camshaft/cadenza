@@ -51,6 +51,7 @@ inductive HeapValue where
   | vec     (elems : Array UInt32)
   | bytes   (bs : Array UInt8)
   | sum     (disc : UInt32) (payload : UInt32)
+  | bigint  (v : Int)
 deriving Repr, DecidableEq, Inhabited, BEq
 
 /-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set/
@@ -381,6 +382,7 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
         | .sum d1 p1, .sum d2 p2 =>
           d1 == d2 && valueEqWork fuel s ((p1, p2) :: rest)
+        | .bigint a,  .bigint b  => a == b && valueEqWork fuel s rest
         | _,          _          => false
       | _, _ => false
 
@@ -1179,6 +1181,88 @@ def sumPayload : HeapState → List Value → HeapResult
         | _        => .trap s!"sum-payload: handle {h} is not a sum"
   | s, _ => .trap "sum-payload: expected (i32)"
 
+/-! ### Arbitrary-precision integer (BigInt, indices 65–73) — a sign-magnitude leaf (zero children), modeled
+as a Lean `Int`. Per v-runtime (scalars.rs): a BigInt is ALWAYS a heap leaf (never a fixnum immediate; and
+zero is NOT canonicalized to null — construction always allocs a FRESH heap zero-leaf, census-counted, the
+compiler emits its drop). A null/missing handle READS as canonical zero (a defensive scalar-read tolerance,
+never a trap), but construction never produces null; two zeros are DISTINCT leaves, equal by structural
+byte-eq. Ownership is BORROW-heavy (the OPPOSITE of the CHAMP collection ops): every arith/cmp/convert BORROWS
+its operand(s) and boxes a FRESH owned result — the caller drops the operands. `bigint-div`/`-rem` truncate
+toward zero and TRAP on a zero divisor. `bigint-of-bytes` (constant materialization) + Rational are a follow-up. -/
+
+/-- Allocate a heap BigInt leaf — ALWAYS heap, even for zero (no null canonicalization). -/
+def mkBigInt (s : HeapState) (v : Int) : UInt32 × HeapState := s.alloc (.bigint v)
+
+/-- Read a BigInt operand: a null/missing handle is canonical zero (read tolerance); a live `.bigint` leaf is
+its value; anything else → `none` (the caller traps). -/
+def bigintVal? (s : HeapState) (h : UInt32) : Option Int :=
+  if h == 0 then some 0
+  else match s.getObj? h with
+    | some o => if o.live then (match o.value with | .bigint v => some v | _ => none) else none
+    | none   => none
+
+/-- `bigint-of-i64(v) → handle`: widen a signed i64 into a fresh BigInt leaf. -/
+def bigintOfI64 : HeapState → List Value → HeapResult
+  | s, [.i64 n] => let (r, s') := s.mkBigInt (u64Signed n); .ret [.i32 r] s'
+  | s, _        => .trap "bigint-of-i64: expected (i64)"
+
+/-- `bigint-to-i64-checked(h) → i64`: narrow back (BORROWS); TRAPS if out of signed-i64 range. -/
+def bigintToI64Checked : HeapState → List Value → HeapResult
+  | s, [.i32 h] =>
+    match s.bigintVal? h with
+    | none   => .trap s!"bigint-to-i64-checked: handle {h} is not a bigint"
+    | some v =>
+      if (-9223372036854775808 : Int) ≤ v && v ≤ (9223372036854775807 : Int) then .ret [.i64 (intToU64Bits v)] s
+      else .trap "bigint-to-i64-checked: value out of i64 range"
+  | s, _ => .trap "bigint-to-i64-checked: expected (i32)"
+
+/-- The shared shape of a binary BigInt arith op: BORROW a, b; box a FRESH result via `op v_a v_b`. -/
+def bigintBin (s : HeapState) (op : Int → Int → Int) (a b : UInt32) : HeapResult :=
+  match s.bigintVal? a, s.bigintVal? b with
+  | some x, some y => let (r, s') := s.mkBigInt (op x y); .ret [.i32 r] s'
+  | _, _           => .trap "bigint arith: an operand is not a bigint"
+
+/-- `bigint-add(a,b)` — BORROWS both, fresh result. -/
+def bigintAdd : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.bigintBin (· + ·) a b
+  | s, _ => .trap "bigint-add: expected (i32, i32)"
+/-- `bigint-sub(a,b)`. -/
+def bigintSub : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.bigintBin (· - ·) a b
+  | s, _ => .trap "bigint-sub: expected (i32, i32)"
+/-- `bigint-mul(a,b)`. -/
+def bigintMul : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] => s.bigintBin (· * ·) a b
+  | s, _ => .trap "bigint-mul: expected (i32, i32)"
+
+/-- `bigint-div(a,b)`: truncate toward zero; TRAP on a zero divisor. -/
+def bigintDiv : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.bigintVal? a, s.bigintVal? b with
+    | some x, some y =>
+      if y == 0 then .trap "bigint-div: division by zero"
+      else let (r, s') := s.mkBigInt (Int.tdiv x y); .ret [.i32 r] s'
+    | _, _ => .trap "bigint-div: an operand is not a bigint"
+  | s, _ => .trap "bigint-div: expected (i32, i32)"
+
+/-- `bigint-rem(a,b)` = a % b (remainder of truncating division, DIVIDEND's sign); TRAP on a zero divisor. -/
+def bigintRem : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.bigintVal? a, s.bigintVal? b with
+    | some x, some y =>
+      if y == 0 then .trap "bigint-rem: division by zero"
+      else let (r, s') := s.mkBigInt (Int.tmod x y); .ret [.i32 r] s'
+    | _, _ => .trap "bigint-rem: an operand is not a bigint"
+  | s, _ => .trap "bigint-rem: expected (i32, i32)"
+
+/-- `bigint-cmp(a,b) → -1|0|1`: three-way compare (BORROWS). -/
+def bigintCmp : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.bigintVal? a, s.bigintVal? b with
+    | some x, some y => .ret [.i64 (intToU64Bits (if x < y then -1 else if x == y then 0 else 1))] s
+    | _, _ => .trap "bigint-cmp: an operand is not a bigint"
+  | s, _ => .trap "bigint-cmp: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -1259,6 +1343,15 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("sum-new",            toHostFn [.i32, .i32]             [.i32]  HeapState.sumNew)
   , ("sum-disc",           toHostFn [.i32]                   [.i32]  HeapState.sumDisc)
   , ("sum-payload",        toHostFn [.i32]                   [.i32]  HeapState.sumPayload)
+    -- arbitrary-precision integer (BigInt): borrow-heavy — arith/cmp/convert BORROW + fresh owned result
+  , ("bigint-of-i64",         toHostFn [.i64]                [.i32]  HeapState.bigintOfI64)
+  , ("bigint-to-i64-checked", toHostFn [.i32]                [.i64]  HeapState.bigintToI64Checked)
+  , ("bigint-add",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintAdd)
+  , ("bigint-sub",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintSub)
+  , ("bigint-mul",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintMul)
+  , ("bigint-div",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintDiv)
+  , ("bigint-rem",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintRem)
+  , ("bigint-cmp",            toHostFn [.i32, .i32]          [.i64]  HeapState.bigintCmp)
     -- lists (vec-*, growable sequence) — core + the extra constructors (concat/prepend/of-arr/drop)
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -1995,5 +2088,75 @@ private def probeVecDrop : Bool :=
     | _ => false
   | _ => false
 example : probeVecDrop = true := by native_decide
+
+/-! #### BigInt witnesses — heap leaves (borrow-heavy arith), zero is a HEAP leaf (not null), div/rem trap /0. -/
+
+/-- of-i64 2 + of-i64 3: two heap leaves (liveCount 2); add BORROWS both → fresh sum (liveCount 3); to-i64
+reads 5; cmp(2,3) = -1; the caller drops all three (both operands + the owned result) → census 0. -/
+private def probeBigIntArith : Bool :=
+  match bigintOfI64 ({} : HeapState) [.i64 2] with
+  | .ret [.i32 a] s0 =>
+    match bigintOfI64 s0 [.i64 3] with
+    | .ret [.i32 b] s1 =>
+      (s1.liveCount == 2) &&
+      (match bigintAdd s1 [.i32 a, .i32 b] with
+       | .ret [.i32 c] s2 =>
+         (s2.liveCount == 3) &&
+         (match bigintToI64Checked s2 [.i32 c] with | .ret [.i64 5] _ => true | _ => false) &&
+         (match bigintCmp s2 [.i32 a, .i32 b] with | .ret [.i64 n] _ => n == intToU64Bits (-1) | _ => false) &&
+         (match drop s2 [.i32 a] with
+          | .ret [] t1 =>
+            (match drop t1 [.i32 b] with
+             | .ret [] t2 => (match drop t2 [.i32 c] with | .ret [] t3 => t3.liveCount == 0 | _ => false)
+             | _ => false)
+          | _ => false)
+       | _ => false)
+    | _ => false
+  | _ => false
+example : probeBigIntArith = true := by native_decide
+
+/-- Zero is a HEAP leaf, NOT null (construction never canonicalizes): of-i64 0 → a nonzero handle, liveCount 1,
+to-i64 reads 0; dividing by it TRAPS; drop → census 0. -/
+private def probeBigIntZero : Bool :=
+  match bigintOfI64 ({} : HeapState) [.i64 0] with
+  | .ret [.i32 z] s0 =>
+    (z != 0) && (s0.liveCount == 1) &&
+    (match bigintToI64Checked s0 [.i32 z] with | .ret [.i64 0] _ => true | _ => false) &&
+    (match bigintOfI64 s0 [.i64 5] with
+     | .ret [.i32 a] s1 =>
+       (match bigintDiv s1 [.i32 a, .i32 z] with | .trap _ => true | _ => false) &&
+       (match drop s1 [.i32 a] with
+        | .ret [] t1 => (match drop t1 [.i32 z] with | .ret [] t2 => t2.liveCount == 0 | _ => false)
+        | _ => false)
+     | _ => false)
+  | _ => false
+example : probeBigIntZero = true := by native_decide
+
+/-- Truncating div/rem: 7 tdiv 2 = 3, 7 tmod 2 = 1 (both fresh leaves); drop all four → census 0. -/
+private def probeBigIntDivRem : Bool :=
+  match bigintOfI64 ({} : HeapState) [.i64 7] with
+  | .ret [.i32 a] s0 =>
+    match bigintOfI64 s0 [.i64 2] with
+    | .ret [.i32 b] s1 =>
+      match bigintDiv s1 [.i32 a, .i32 b] with
+      | .ret [.i32 q] s2 =>
+        match bigintRem s2 [.i32 a, .i32 b] with
+        | .ret [.i32 r] s3 =>
+          (match bigintToI64Checked s3 [.i32 q] with | .ret [.i64 3] _ => true | _ => false) &&
+          (match bigintToI64Checked s3 [.i32 r] with | .ret [.i64 1] _ => true | _ => false) &&
+          (match drop s3 [.i32 a] with
+           | .ret [] t1 =>
+             (match drop t1 [.i32 b] with
+              | .ret [] t2 =>
+                (match drop t2 [.i32 q] with
+                 | .ret [] t3 => (match drop t3 [.i32 r] with | .ret [] t4 => t4.liveCount == 0 | _ => false)
+                 | _ => false)
+              | _ => false)
+           | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBigIntDivRem = true := by native_decide
 
 end Oracle.Heap
