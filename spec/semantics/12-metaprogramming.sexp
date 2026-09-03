@@ -5627,3 +5627,38 @@ c")))
       (export main)))
   (call main)
   (output (: 3 Int64)))
+
+; qqm1: a construction quasiquote MIXING a mid-position `,@` const-splice with a trailing `,`
+; runtime-unquote and a fixed head — `` `(foo ,@xs ,(+ n 10)) `` with xs = a const #list(1 2 3). The
+; existing splice pins put `,@` LAST (`(f ,@x)`) or alone; this pins the splice in the MIDDLE with a
+; fixed head `foo` before it AND a runtime unquote AFTER it, in one form. Result is a 5-element
+; Ast.List: foo, the three spliced Int leaves (1 2 3), then the runtime `(+ n 10)` lifted to an
+; Ast.Int at the tail. Read via length (5) + items[1] (first spliced = 1) + items[4] (trailing
+; unquote = n+10): 5000 + 1 + 10*(n+10) = 5101 + 10n. Pins that a const `,@` and a runtime `,`
+; compose at distinct positions without disturbing the fixed head or each other's offsets.
+; (breaker probe ms5; VALUE tri-target exact, hop recompiles-and-runs, byte-idempotent; leaks 3
+; quasiquote-built Ast.List husks — the Ast-construction sum-shell family (sex1 sibling), pinned
+; known-leak + filed to v-memory-safety.)
+(case
+  "a construction quasiquote mixes a mid-position splice with a trailing runtime unquote"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((xs #list(1 2 3)))
+          (match
+            (quasiquote (foo (unquote-splicing xs) (unquote (+ n 10))))
+            ((Ast.List items)
+              (+
+                (* 1000 (List.len items))
+                (+
+                  (match (List.at items 1) ((Some (Ast.Int v)) (Int64.of v)) (_ -1))
+                  (* 10 (match (List.at items 4) ((Some (Ast.Int v)) (Int64.of v)) (_ -1))))))
+            (_ -1))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 5101 Int64))
+  (call main (: 5 Int64))
+  (output (: 5151 Int64))
+  (live-objects known-leak))
