@@ -3047,37 +3047,43 @@
 ; NESTED match-scrutinee destructuring of a TUPLE-returning performing helper (breaker eg1). `stamp`
 ; returns a tuple with a fresh `(C.tick)` embedded (`stamp p = match p (#tuple(a b) -> #tuple(a b
 ; (C.tick)))`); `main` calls it as the scrutinee of an outer match, then AGAIN as the scrutinee of an
-; inner match in the outer arm — two levels of tuple-destructure over a performing helper. The tail-
-; resumptive fold declines CDZ0900 (honest todo — reject-don't-miscompile; effect-context
-; monomorphization would emit the helper once and discharge both). NARROWED (verified with controls):
-; the trigger is this NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT "two
-; calls" and NOT genericity. Two cross-function performing-helper calls in OPERATOR / LET / DO position
-; COMPILE (even monomorphic: `(+ (bump 10) (bump 20))`, `(let ((a (bump 10))) (let ((b (bump 20))) …))`,
-; `(do (bump 10) (bump 20))` all fold); a SINGLE tuple-destructure call compiles (eg2); and nested
-; match-scrutinee performs over a BARE-BINDER (non-destructured) result compile. It is specifically the
-; tuple-RETURNING helper destructured by a tuple pattern, nested, that declines (a monomorphic single-
-; type nesting declines identically — genericity is orthogonal). Handler seeds n, `tick` returns the
-; current state and threads s+1, so the first stamp's tick reads t1=n and the second t2=n+1; the result
-; is byte-len("hi")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n. The recorded outputs (n=3 -> 40309,
-; n=0 -> 10009, n=5 -> 60509) are VERIFIED via the both-performs-inlined control (performs in-body,
-; which the fold discharges); they are the semantics a monomorphizing generation realizes.
+; inner match in the outer arm — two levels of tuple-destructure over a performing helper. This FOLDS.
+; It was a CDZ0900 decline until the resumptive-conditional hoist was made match-aware: after each stamp
+; call inlines to `(match tuple-literal (#tuple(a b) #tuple(a b (C.tick))))` and Site 5 lifts the
+; performing scrutinee to a `#cv` let, the fold is left with a well-formed `(match #cv (P (match … (Q b))))`.
+; The hoist's generic child-recursion then descended into the OUTER arm PAIR `(P body)` and — because a
+; two-element `(pattern body)` pair resolves as `Apply { head: pattern, args: [body] }` — Site 2 (strict-
+; application distribution) misread the PATTERN as a function head and distributed it into the inner
+; match's branches, corrupting the arm into a bare `(match … (P …))` (an arm slot holding a raw match →
+; resolve_match Poisons it → CDZ0900). The fix recurses into match arm BODIES only, never the arm pair as
+; an expression, so the pattern is preserved. NARROWED (verified with controls): the trigger was this
+; NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT "two calls" and NOT
+; genericity. Two cross-function performing-helper calls in OPERATOR / LET / DO position also fold (even
+; monomorphic: `(+ (bump 10) (bump 20))`, `(let ((a (bump 10))) (let ((b (bump 20))) …))`, `(do (bump 10)
+; (bump 20))`); a SINGLE tuple-destructure call folds (eg2); nested match-scrutinee performs over a
+; BARE-BINDER (non-destructured) result fold. Handler seeds n, `tick` returns the current state and
+; threads s+1, so the first stamp's tick reads t1=n and the second t2=n+1; the result is
+; byte-len("hi")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n (n=3 -> 40309, n=0 -> 10009, n=5 -> 60509).
 (case
-  "NESTED match-scrutinee destructure of a tuple-returning performing helper declines (single call + operator/let/do-position calls fold; the nested tuple-destructure over the helper does not)"
+  "NESTED match-scrutinee destructure of a tuple-returning performing helper folds (single call + operator/let/do-position calls fold; the nested tuple-destructure over the helper now folds too — the resumptive-conditional hoist recurses into match arm BODIES, not the arm pair)"
   (doc
     "breaker eg1, the effects x cross-function-inline frontier. `stamp` is a performing helper
            `stamp p = match p (#tuple(a b) -> #tuple(a b (C.tick)))` returning a tuple with a fresh `(C.tick)`
            embedded; `main` calls it as the scrutinee of an OUTER match, then AGAIN as the scrutinee of an
-           INNER match in the outer arm (here generic, used at (String,Bool) then (Int64,String)). The tail-
-           resumptive fold declines CDZ0900 (honest todo, never a hang or miscompile). NARROWED with controls:
-           the trigger is this NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT the
+           INNER match in the outer arm (here generic, used at (String,Bool) then (Int64,String)). This FOLDS.
+           It was a CDZ0900 decline until the resumptive-conditional hoist was made match-aware: its generic
+           child-recursion descended into a match arm PAIR `(pattern body)`, which resolves as an
+           `Apply { head: pattern, args: [body] }`, so Site 2 (strict-application distribution) misread the
+           PATTERN as a function head and distributed it into the arm body's branches — malforming the arm
+           into a bare `(match …)` (arm slot holding a raw match) that resolve_match Poisoned into CDZ0900.
+           The fix recurses into arm BODIES only, keeping the pattern intact. NARROWED with controls: the
+           trigger was this NESTED match-scrutinee-over-a-tuple-returning-performing-helper shape, NOT the
            number of calls and NOT genericity. Two cross-function performing-helper calls in OPERATOR / LET /
-           DO position COMPILE (even monomorphic); a single tuple-destructure call compiles (eg2); nested
-           match-scrutinee performs over a BARE-BINDER result compile. Only the tuple-RETURNING helper
-           destructured by a tuple pattern, nested, declines — a monomorphic single-type nesting declines
-           identically. Handler seeds n, `tick` returns the current state and threads s+1 -> first stamp reads
-           t1=n, second reads t2=n+1; result = byte-len(\"hi\")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n.
-           The recorded outputs are VERIFIED via the both-performs-inlined control. Effect-context
-           monomorphization (emit the helper once, read the handler as evidence) discharges both.")
+           DO position fold (even monomorphic); a single tuple-destructure call folds (eg2); nested
+           match-scrutinee performs over a BARE-BINDER result fold. Handler seeds n, `tick` returns the
+           current state and threads s+1 -> first stamp reads t1=n, second reads t2=n+1; result =
+           byte-len(\"hi\")=2 + 7 + 100*t1 + 10000*t2 = 10009 + 10100n. The recorded outputs are VERIFIED via
+           the both-performs-inlined control.")
   (input
     (do
       (effect C (op tick (-> Int64)))

@@ -3429,6 +3429,45 @@ pub(crate) fn hoist_resumptive_once(
     } else {
         None
     };
+    // A `match`: recurse into the SCRUTINEE and each ARM BODY as EXPRESSIONS — NEVER descend into an arm
+    // `(pattern body)` PAIR as a whole. A two-element arm pair `(pattern body)` resolves as an
+    // `Apply { head: pattern, args: [body] }`, so the generic child-recursion below would hand the pair to
+    // Site 2 (strict-application distribution), which reads the PATTERN as a function head and distributes
+    // it into the body's branches — corrupting a well-formed `(match #cv (P (match S (Q b))))` into the
+    // malformed `(match #cv (match S (Q (P b))))`, whose arm slot now holds a bare `(match …)` instead of a
+    // `(pattern body)` pair (resolve_match then Poisons it → the nested-match-scrutinee eg1 CDZ0900). Recurse
+    // the arm BODY only and rebuild `(pat new_body)`, keeping the pattern intact. (Site 5 above already
+    // handles a performing SCRUTINEE at the match level; this is the fallthrough that lifts a conditional
+    // nested inside the scrutinee or an arm body.)
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node) {
+        if let Some(new_scrut) = hoist_resumptive_once(db, scrutinee, ctx) {
+            return Some(rebuild_match_scrutinee(db, node, &arms, new_scrut));
+        }
+        if let Struct::List(children) = db.ast.get(node).clone() {
+            // Arm pairs are children [2..]; child 0 is the `match` head, child 1 is the scrutinee.
+            for (k, &arm) in children.iter().enumerate().skip(2) {
+                if let Struct::List(pb) = db.ast.get(arm).clone()
+                    && pb.len() == 2
+                {
+                    if let Some(new_body) = hoist_resumptive_once(db, pb[1], ctx) {
+                        let new_arm = db.push_list(vec![pb[0], new_body]);
+                        let mut new_children = children.clone();
+                        new_children[k] = new_arm;
+                        return Some(db.push_list(new_children));
+                    }
+                    continue; // do NOT recurse into the arm pair as an expression
+                }
+                // A non-pair arm child (malformed match — resolve would have Poisoned it): recurse
+                // generically, harmless since resolve_match rejects it anyway.
+                if let Some(new_c) = hoist_resumptive_once(db, arm, ctx) {
+                    let mut new_children = children.clone();
+                    new_children[k] = new_c;
+                    return Some(db.push_list(new_children));
+                }
+            }
+        }
+        return None;
+    }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
     // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
     // enclosing pass lifts it further if needed).
