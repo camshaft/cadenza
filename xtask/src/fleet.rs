@@ -396,6 +396,7 @@ impl Fleet {
             "warm-keep.sh",
             "baseline-drift-monitor.sh",
             "drain-nudge.sh",
+            "compact-nudge.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -1125,6 +1126,29 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 900)]
         drain_nudge_grace: u64,
     },
+    /// The autonomous CONCIERGE COMPACTION scan — an out-of-band `/compact` + 100%-restart for the concierge,
+    /// DECOUPLED from any agent tick (run by `fleet/compact-nudge.sh`'s system cron). WHY: the fleet watchdog
+    /// (which sends the pre-wall `/compact` + does the at-wall restart) is FOLDED INTO the concierge's
+    /// maintenance tick, so when it evaluates the CONCIERGE the concierge is BY DEFINITION mid-tick → it can
+    /// never send-keys `/compact` to itself and the concierge climbs to the 100% wall with no recovery (it
+    /// can't self-`/compact` — a built-in, not a tool). This scan runs OUTSIDE the concierge tick and catches
+    /// it while IDLE between cron fires: pre-wall [85,100) → `/compact`; at-wall [100+] → restart. Reuses the
+    /// SAME `should_send_compact`/`should_auto_restart_wedge` decisions + `COMPACT_NUDGE_GRACE`/
+    /// `WEDGE_RESTART_GRACE` thrash-guard stamps as the in-tick watchdog (so no double-action). Server-direct
+    /// (explicit `session`, works with no `$TMUX`). A strict SUBSET like `DrainNudge` — no re-arm, no other
+    /// watchdog action — so it is safe on a frequent decoupled cron. Concierge-only (the only agent whose
+    /// watchdog runs inside its own tick; every other agent IS compacted by the concierge-tick watchdog).
+    CompactNudge {
+        /// Report what WOULD be compacted/restarted, sending no keys (safe anytime).
+        #[arg(long)]
+        dry_run: bool,
+        /// The tmux session the fleet windows live in (targeted server-direct, so it works with no `$TMUX`).
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// The agent to compact-nudge (default: the concierge — the only structurally-uncompactable agent).
+        #[arg(long, default_value = "concierge")]
+        agent: String,
+    },
     /// Wrapped PR tool — the SANCTIONED way to open a PR (operator P0 seq-198: a raw `gh pr create`
     /// leaked the ENTIRE env dump into its description). It SANITIZES the title/body against env-dump +
     /// secret material (REFUSING if found) and hands the body to `gh` as a FILE (never a shell/argv
@@ -1291,6 +1315,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             session,
             drain_nudge_grace,
         } => drain_nudge_scan(&fleet, &session, dry_run, drain_nudge_grace),
+        FleetCmd::CompactNudge {
+            dry_run,
+            session,
+            agent,
+        } => compact_nudge_scan(&fleet, &session, &agent, dry_run),
         FleetCmd::Ack {
             request,
             outcome,
@@ -1875,6 +1904,53 @@ fn ensure_drain_nudge_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-5-min user-crontab line for the autonomous CONCIERGE COMPACTION heartbeat
+/// (v-fleet-tooling 2026-09-03), tagged `# fleet:compact-nudge` so [`reconcile_tagged_crons`] can find/heal
+/// it. Runs the HUB copy of `compact-nudge.sh` → a worktree's `xtask fleet compact-nudge --session main` —
+/// the out-of-band `/compact`-when-idle-pre-wall + restart-at-wall for the concierge, which the in-tick
+/// watchdog structurally cannot do (it runs DURING the concierge tick). Every 5 min (aligned with
+/// `COMPACT_NUDGE_GRACE`, so it never double-compacts within the grace) — the concierge climbs slowly, so
+/// 5-min catch-it-idle is ample. Silent (`>/dev/null 2>&1`): never emit cron mail.
+fn compact_nudge_cron_line(hub_script: &str) -> String {
+    format!("*/5 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:compact-nudge")
+}
+
+/// Ensure the `# fleet:compact-nudge` per-5-min user-crontab entry exists + points at THIS hub's
+/// `compact-nudge.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_drain_nudge_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`,
+/// preserving the others via [`reconcile_tagged_crons`]'s per-tag heal). This is the SCHEDULER that makes
+/// concierge compaction autonomous + decoupled from the concierge tick (the structural fix for the
+/// concierge-can't-self-compact wall). Skips silently if `compact-nudge.sh` isn't materialized yet (older
+/// tree) or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_compact_nudge_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("compact-nudge.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:compact-nudge",
+        compact_nudge_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
 /// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
 /// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
@@ -1990,6 +2066,11 @@ fn up(fleet: &Fleet) {
     // for the wake-miss stall. Independent of the other self-crons; fail-open + drift-healed. Shares the
     // watchdog's rate-limit marker, so overlapping the concierge's watchdog never double-nudges.
     ensure_drain_nudge_cron(fleet);
+    // The out-of-band CONCIERGE COMPACTION cron: `compact-nudge.sh` → `xtask fleet compact-nudge`, which
+    // sends the idle concierge a pre-wall `/compact` (or restarts it at the wall) that the in-tick watchdog
+    // structurally cannot (it runs DURING the concierge tick → always mid-tick). Independent + fail-open +
+    // drift-healed; shares the watchdog's COMPACT_NUDGE_GRACE/WEDGE_RESTART_GRACE stamps so no double-action.
+    ensure_compact_nudge_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -4929,6 +5010,85 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
     // Quiet on the cron hot path: summarize only when something happened (or a dry-run found candidates).
     if nudged > 0 || (dry_run && suspected > 0) {
         eprintln!("drain-nudge: {nudged} nudged, {suspected} suspected [session {session}]");
+    }
+}
+
+/// The autonomous CONCIERGE COMPACTION scan (out-of-band `/compact` + at-wall restart; see the
+/// `CompactNudge` CLI doc). Closes the structural gap where the in-tick watchdog can never compact the
+/// concierge (it runs DURING the concierge tick → always sees it mid-tick). Run by a system cron decoupled
+/// from any agent tick, it catches the concierge IDLE between its cron fires and, reusing the SAME pure
+/// decisions + thrash-guard stamps as the watchdog: pre-wall band [`CTX_SATURATION_THRESHOLD`,
+/// `CTX_WEDGE_THRESHOLD`) → send `/compact`; at/above the wall → `restart_window`. A strict SUBSET (no
+/// re-arm / no other watchdog action), so it is safe on a frequent decoupled cron; server-direct (explicit
+/// `session`, no `$TMUX` needed). IDLE-ONLY: a `/compact`/restart only lands cleanly at an idle prompt, and
+/// `pane_shows_working`'s idle-prompt override (#8030) is what lets an idle concierge — whose persistent
+/// footer literally says "esc to interrupt" — read as NOT working here (without it this scan would skip the
+/// idle concierge too). Concierge-focused (the only agent whose watchdog runs inside its own tick).
+fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) {
+    if fleet.stopfile(agent).exists() {
+        return; // a stopped agent stays down
+    }
+    if !tmux_windows(session).iter().any(|w| w == agent) {
+        return; // no live window to act on
+    }
+    let now = now_unix();
+    let pane = capture_pane(session, agent);
+    let ctx_pct = pane.as_deref().and_then(parse_context_pct);
+    // ACT ONLY WHEN IDLE: a mid-tick concierge is either genuinely working or running its own in-tick
+    // watchdog — never inject `/compact`/a restart into that. `pane_shows_working` (idle-prompt override,
+    // #8030) correctly reads an idle concierge (bare `❯` + the "esc to interrupt" footer) as NOT working.
+    let idle = pane.as_deref().is_some_and(|p| !pane_shows_working(p));
+    if !idle {
+        return;
+    }
+    // AT-WALL first ([100+]): a `/compact` can't submit at the wall — only a restart recovers it. Reuse the
+    // watchdog's decision + the SHARED WEDGE_RESTART_GRACE thrash-guard (so the two never double-restart).
+    let restarted_recently =
+        wedge_restart_age_secs(fleet, agent, now).is_some_and(|s| s < WEDGE_RESTART_GRACE);
+    if should_auto_restart_wedge(ctx_pct, restarted_recently) {
+        let pct = ctx_pct.map(|p| p.to_string()).unwrap_or_default();
+        if dry_run {
+            println!("  DRY-RUN would AUTO-RESTART '{agent}' (out-of-band; context wedge {pct}%)");
+            return;
+        }
+        match restart_window(fleet, session, agent) {
+            RestartOutcome::Restarted => {
+                stamp_wedge_restart(fleet, agent);
+                eprintln!(
+                    "  ⟳ AUTO-RESTARTED '{agent}' out-of-band (was at {pct}% — the wall; its in-tick \
+                     watchdog structurally can't restart it). Durable state persists. (self-heal)"
+                );
+                println!("  ⟳ out-of-band restarted '{agent}' context wedge ({pct}%)");
+            }
+            RestartOutcome::RelaunchFailed => eprintln!(
+                "  ‼ '{agent}' out-of-band wedge: RELAUNCH FAILED — no window now; `fleet up` re-creates it."
+            ),
+            RestartOutcome::KillFailed => eprintln!(
+                "  ! '{agent}' out-of-band wedge: tmux kill-window failed — retry next cron."
+            ),
+        }
+        return;
+    }
+    // PRE-WALL [85,100): send `/compact` (still submits + compacts). Reuse the watchdog's decision + the
+    // SHARED COMPACT_NUDGE_GRACE thrash-guard.
+    let compacted_recently =
+        compact_nudge_age_secs(fleet, agent, now).is_some_and(|s| s < COMPACT_NUDGE_GRACE);
+    if should_send_compact(ctx_pct, compacted_recently) {
+        let pct = ctx_pct.map(|p| p.to_string()).unwrap_or_default();
+        if dry_run {
+            println!(
+                "  DRY-RUN would send /compact to idle '{agent}' (out-of-band; pre-wall {pct}%)"
+            );
+        } else if send_compact(session, agent) {
+            stamp_compact_nudge(fleet, agent);
+            eprintln!(
+                "  ⊚ sent /compact to idle '{agent}' out-of-band (pre-wall {pct}% — its in-tick watchdog \
+                 structurally can't self-compact)"
+            );
+            println!("  ⊚ out-of-band compact-nudged '{agent}' (pre-wall {pct}%)");
+        } else {
+            eprintln!("  ! failed to send /compact keys to '{agent}'");
+        }
     }
 }
 
@@ -16785,6 +16945,7 @@ mod tests {
             "nix-shim.sh",
             "cpu-monitor.sh",
             "drain-nudge.sh",
+            "compact-nudge.sh",
         ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -17813,6 +17974,25 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             line.ends_with("# fleet:drain-nudge"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
+        );
+    }
+
+    #[test]
+    fn compact_nudge_cron_line_is_every_5min_silent_and_tagged() {
+        let line = compact_nudge_cron_line("/hub/compact-nudge.sh");
+        // Every 5 min (aligned with COMPACT_NUDGE_GRACE, so no double-compact within the grace), runs the
+        // hub script, silent, tagged for reconcile_tagged_crons to find/heal.
+        assert!(
+            line.starts_with("*/5 * * * * bash /hub/compact-nudge.sh"),
+            "every-5-min, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — a compaction scan never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:compact-nudge"),
+            "carries the reconcile tag: {line}"
         );
     }
 
