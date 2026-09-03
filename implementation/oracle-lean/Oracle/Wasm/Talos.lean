@@ -158,4 +158,13 @@ private def watHeapSetUnion : String :=
   "(module (import \"heap\" \"set-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"set-insert\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"set-union\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"set-size\" (func (param i32) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i32) (local i32) (local i32) (local i32) call 0 i64.const 1 call 1 call 2 i64.const 2 call 1 call 2 local.set 0 call 0 i64.const 2 call 1 call 2 i64.const 3 call 1 call 2 local.set 1 local.get 0 local.get 1 call 3 local.set 0 local.get 0 call 4 local.set 2 local.get 0 call 5 local.get 2))"
 example : (talosDriver watHeapSetUnion { entry := "main" } == .ok #[.i32 3]) = true := by native_decide
 
+/-- End-to-end USE-AFTER-FREE trap: box a heap float, DROP it, then `get-float` the freed handle → the host
+traps (UAF), talos surfaces it, and the run is `.trap` — NOT a value. Completes the end-to-end Perceus pair:
+`watHeapMapLeak` proves a MISSING drop is caught (leakCount > 0), this proves a drop-too-early / double-free is
+caught (a trap). A real emit with either bug surfaces here, not just at the pure `HeapState` layer. (box-float,
+not box-int: a fixnum would inline as an immediate whose drop is a no-op, so no freed handle to trap on.) -/
+private def watHeapUseAfterFree : String :=
+  "(module (import \"heap\" \"box-float\" (func (param f64) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (import \"heap\" \"get-float\" (func (param i32) (result f64))) (func (export \"main\") (result f64) (local i32) f64.const 1 call 0 local.set 0 local.get 0 call 1 local.get 0 call 2))"
+example : (match talosDriver watHeapUseAfterFree { entry := "main" } with | .trap _ => true | _ => false) = true := by native_decide
+
 end Oracle.Wasm
