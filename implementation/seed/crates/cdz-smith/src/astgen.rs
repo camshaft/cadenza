@@ -1466,23 +1466,47 @@ fn gen_bin_body<C: Choice>(c: &mut C, out: &mut String) {
         }
         out.push_str(&format!("(Bytes.len (bin {segs}))"));
     } else {
-        // MATCH-DESTRUCTURE: build a bin, match it back into u8 binders, sum them → Int64, with the
-        // required catch-all arm (a bin pattern is never exhaustive). Two shapes: same-width (two u8s
-        // round-trip) or a u16 decoded as two u8s (exercises byte-ORDER: `le` flips hi/lo).
-        if c.variant(2) == 0 {
-            let a = c.int_bounded(0, 255);
-            let b = c.int_bounded(0, 255);
-            out.push_str(&format!(
-                "(match (bin (u8 (UInt8.of {a})) (u8 (UInt8.of {b}))) \
-                 ((bin (u8 bx) (u8 by)) (+ bx by)) (_ 0))"
-            ));
-        } else {
-            let v = c.int_bounded(0, 60000);
-            let le = if c.variant(2) == 0 { " le" } else { "" };
-            out.push_str(&format!(
-                "(match (bin (u16 (UInt16.of {v}){le})) \
-                 ((bin (u8 bhi) (u8 blo)) (+ bhi blo)) (_ 0))"
-            ));
+        // MATCH-DESTRUCTURE: build a bin, match it back, combine binders → Int64, with the required
+        // catch-all arm (a bin pattern is never exhaustive). Four shapes exercise distinct decode paths:
+        // same-width u8 round-trip; a u16 decoded as two u8s (byte-ORDER: `le` flips hi/lo); a
+        // DEPENDENT-SIZE `(bytes p n)` whose length `n` is a binder from an earlier segment (#7972/#7980,
+        // the "crown jewel"); and a GUARDED arm `(guard (bin …) <cond>)` that reads its decoded binder and
+        // FALLS THROUGH to the catch-all when the guard fails (#7979).
+        match c.variant(4) {
+            0 => {
+                let a = c.int_bounded(0, 255);
+                let b = c.int_bounded(0, 255);
+                out.push_str(&format!(
+                    "(match (bin (u8 (UInt8.of {a})) (u8 (UInt8.of {b}))) \
+                     ((bin (u8 bx) (u8 by)) (+ bx by)) (_ 0))"
+                ));
+            }
+            1 => {
+                let v = c.int_bounded(0, 60000);
+                let le = if c.variant(2) == 0 { " le" } else { "" };
+                out.push_str(&format!(
+                    "(match (bin (u16 (UInt16.of {v}){le})) \
+                     ((bin (u8 bhi) (u8 blo)) (+ bhi blo)) (_ 0))"
+                ));
+            }
+            2 => {
+                // dependent-size: a length byte `n` then exactly `n` payload bytes; return `Bytes.len p`
+                // (== n). The spliced literal must be EXACTLY `n` bytes so the length prefix is accurate.
+                let (n, lit) = [(2usize, "AB"), (3, "ABC"), (4, "ABCD")][c.variant(3)];
+                out.push_str(&format!(
+                    "(match (bin (u8 (UInt8.of {n})) (bytes b\"{lit}\")) \
+                     ((bin (u8 bn) (bytes bp bn)) (Bytes.len bp)) (_ 0))"
+                ));
+            }
+            _ => {
+                // guarded arm: decode `n`, keep it only when `n > t`, else fall through to the catch-all.
+                let v = c.int_bounded(0, 255);
+                let t = c.int_bounded(0, 255);
+                out.push_str(&format!(
+                    "(match (bin (u8 (UInt8.of {v}))) \
+                     ((guard (bin (u8 bn)) (> bn {t})) bn) (_ 0))"
+                ));
+            }
         }
     }
 }
