@@ -3199,7 +3199,16 @@
               fi
             else
               st=$?
-              touch "$out/cadenza-declined"
+              # An (error CODE) case has no Core to re-emit, but the cadenza compile FRONT-END (shared
+              # checker) rejects it with the asserted CODE — proving that IS the parity coverage. So do NOT
+              # mark it declined: let the exec grade it via cdz-run (--compile-status/--compile-diag vs the
+              # wasm .gate-baseline), which maps a coded-rejection-matching-code to Pass exactly as the
+              # direct-wasm path. Every OTHER expect-kind that fails HOP1 is a well-formed program the
+              # cadenza BACKEND cannot yet emit → genuine early decline → skip (unchanged).
+              # (v-cadenza-backend sign-off 2026-09-03; v-corpus-harness root-cause; native twin #8076.)
+              if [ "$(cat "$case/expect-kind" 2>/dev/null)" != error ]; then
+                touch "$out/cadenza-declined"
+              fi
               printf '%s' "$st" > "$out/compile.status"
             fi
             # (peer) cadenza-hop each provider peer the same way (cadenza → wasm) so the exec composes them via
