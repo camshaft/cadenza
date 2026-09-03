@@ -301,6 +301,49 @@ mod tests {
         assert!(matches!(res.grade, Grade::Fail(_)), "got {:?}", res.grade);
     }
 
+    // A RUNTIME ABORT (signal-killed child — the class a STACK OVERFLOW falls in: SIGSEGV/SIGABRT, no exit
+    // code, no `panicked at` in stderr) must be graded as a TRAP, NOT swallowed as a pass. compile_and_run
+    // keys the outcome on `run.status.success()` (false for a signal death) → `Outcome::Trap`, so an
+    // expect-VALUE case sees Trap≠Value → Fail. Pins that the GRADE path never reports success on an aborted
+    // run (breaker's cdz-run-rust stack-overflow report — the run-rust *verdict command* prints `trap …` +
+    // exit 0 by protocol design, but the GRADE path here is exit-code-independent and cannot be fooled).
+    #[test]
+    fn a_runtime_abort_is_graded_a_trap_not_swallowed_as_a_pass() {
+        let tr = one_trial(
+            Some(GCall {
+                export: "main".into(),
+                args: vec![],
+                second_call: None,
+                drop_handle: false,
+                method: None,
+            }),
+            GExpect::Output("(: 42 Int64)".into()),
+        );
+        let res = grade_to_result(
+            &tr,
+            // Compiles cleanly (status 0), but the RUN aborts by signal before returning — the value is
+            // never produced. The signal kill gives `status.success() == false` with no exit code, exactly
+            // a stack overflow's shape.
+            Some("pub fn main() -> i64 { std::process::abort() }"),
+            &RlibDirs::default(),
+            false,
+            0,
+            "",
+            None,
+            &workdir("abort-trap"),
+        )
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "an aborted run must grade a trap-vs-expected-value Fail, never a swallowed Pass — got {:?}",
+            res.grade
+        );
+        assert!(
+            res.ran_a_trial,
+            "the trial did run (compiled + launched, then aborted)"
+        );
+    }
+
     // A REFUSED compile (status != 0, no module) with an `expect-error <CODE>` grades Pass from the
     // diagnostic alone — no run (and no rustc shell). (The former `(declines)` marker was removed: a
     // rejection must now be coded `(error CDZxxxx)`.)
