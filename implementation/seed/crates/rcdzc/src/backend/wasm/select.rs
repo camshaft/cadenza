@@ -1083,6 +1083,38 @@ fn looped_owned_param_drops(
     drops
 }
 
+/// The EMIT side of [`def_nonlooped_reclaims_param`] (blx1): the param SLOTS a NON-looped def reclaims via
+/// a fn-exit `op_drop`. Mirrors [`looped_owned_param_drops`]'s slot assignment (dense `0..n`, Unit elided)
+/// and gates each heap param on the shared `def_nonlooped_reclaims_param` (SINGLE SOURCE OF TRUTH with the
+/// `call_arg_caller_drops` (6b) yield, so caller-drop XOR this self-drop is exactly complementary). Empty
+/// unless `self_def` is a non-looped def owning a borrow-only scalar-returning heap param (blx1: `classify`).
+fn nonlooped_owned_param_drops(
+    db: &mut Db,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> Vec<u32> {
+    let Some(self_d) = self_def else {
+        return Vec::new();
+    };
+    let mut drops = Vec::new();
+    let mut slot = 0u32;
+    for (param_index, (_binder, ty)) in params.iter().enumerate() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue; // Unit is zero-width — occupies no slot (mirrors the slot assignment).
+        }
+        if valtype_of(ty).is_none() {
+            return Vec::new(); // a param with no machine rep → this def won't select; no drops.
+        }
+        let this_slot = slot;
+        slot += 1;
+        if is_heap_type(ty) && def_nonlooped_reclaims_param(db, self_d, param_index, layout) {
+            drops.push(this_slot);
+        }
+    }
+    drops
+}
+
 /// Select a function body with `params` — each a `(name-occurrence, solved-type)`, in signature order.
 /// The parameters occupy wasm local slots `0..n` in order; a `Core::Param` reference to a parameter
 /// emits `local.get <slot>`. The return type is the body's solved type. A parameter whose type has no
@@ -1690,6 +1722,14 @@ pub fn select_function_of(
     // (b)+(c) together are sound: identity-carried (c) means the exit slot value is the original owned param
     // handle, and dead-at-exit (b) means nothing else reclaims or transfers it — so this is its sole owner.
     for slot in looped_owned_param_drops(db, body, params, self_def) {
+        code.push(Lir::LocalGet(slot));
+        code.push(Lir::CallImport(OP_DROP));
+    }
+    // blx1 (v-mem co-design): the NON-looped analog — a callee-owned borrow-only scalar-returning heap
+    // param with no other reclaim (a bin-match borrow → `classify`) is dropped here, its sole reclaim.
+    // Gated on `def_nonlooped_reclaims_param` (SAME query the `call_arg_caller_drops` (6b) yield uses → no
+    // double-free). Same exit-drop shape as the looped case (result undisturbed beneath on the stack).
+    for slot in nonlooped_owned_param_drops(db, params, self_def, layout) {
         code.push(Lir::LocalGet(slot));
         code.push(Lir::CallImport(OP_DROP));
     }
@@ -8773,6 +8813,168 @@ fn call_arg_caller_drops(
         && def_inc1_reclaims_param(db, body, param_binder)
     {
         return false; // (6)
+    }
+    // (6b) blx1 — YIELD to the callee's NON-LOOPED epilogue self-drop (the non-looped twin of (6), same
+    // single-source-of-truth complementarity): if the callee reclaims THIS param via its fn-exit op_drop,
+    // the caller must not also drop it. `def_nonlooped_reclaims_param` does NOT query `call_arg_caller_drops`,
+    // so there is no cycle.
+    if def_nonlooped_reclaims_param(db, callee, param_index, layout) {
+        return false; // (6b)
+    }
+    true
+}
+
+/// Whether `body`'s funcref is TAKEN as a first-class value — some `Core::Closure { code, .. }` in the
+/// program lifts `body` (its `db.lifted[code].body == body`), so `body` is reachable via `call_indirect`
+/// whose arg-ownership the DIRECT call-site index cannot see. blx1 caveat (a): conservatively EXCLUDE such
+/// a callee from the non-looped self-drop (a `call_indirect` edge could pass a BORROWED arg → a callee
+/// self-drop would free a value it does not own → UAF). A non-inlined named def IS hoisted into `db.lifted`
+/// (e.g. `classify`), so `codes` is non-empty for it; a `Core::Closure` referencing that code means its
+/// funcref escaped as a value. (A named def used first-class is ETA-wrapped — the wrapper is the lifted
+/// body and the wrapper→callee edge is a DIRECT `Core::Call` the every-call-site-Owned gate sees, so that
+/// path is covered there; this catches the direct-funcref-of-`body` case.) Conservative: any hit → true.
+fn def_funcref_taken(db: &mut Db, body: StructId) -> bool {
+    let codes: Vec<usize> = db
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.body == body)
+        .map(|(i, _)| i)
+        .collect();
+    if codes.is_empty() {
+        return false;
+    }
+    fn walk(db: &mut Db, id: StructId, codes: &[usize], seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Closure { code, .. } = core_of(db, id)
+            && codes.contains(&code)
+        {
+            return true;
+        }
+        crate::backend::wasm::select::reclaim::core_child_ids(db, id)
+            .into_iter()
+            .any(|c| walk(db, c, codes, seen))
+    }
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    let mut seen = HashSet::new();
+    bodies.into_iter().any(|b| walk(db, b, &codes, &mut seen))
+}
+
+/// blx1 caveat-(a) COMPLETENESS (v-mem rc-co-read gap): whether `callee` is called from ANY LIFTED body
+/// (`db.lifted`). The every-call-site-Owned gate builds its index from `db.defs` bodies ONLY
+/// (`ensure_call_site_index` scans `db.defs`, NOT `db.lifted`), so a call to `callee` from an ETA-WRAPPER
+/// (`λx. callee x`, a lifted body) is INVISIBLE to that gate — and `def_funcref_taken(callee)` misses it too
+/// (the `Core::Closure` references the WRAPPER's code, not `callee`'s). If such a wrapper is invoked via
+/// `call_indirect` and forwards a BORROWED arg, `callee` self-dropping it is a UAF. Conservatively EXCLUDE
+/// any callee reachable by a `Core::Call` inside a lifted body (leak, never a UAF). This closes the gap
+/// WITHOUT scanning `db.lifted` into the SHARED `ensure_call_site_index` — that index also feeds the
+/// phase-order emit-once runtime-caller COUNT (#8018), and adding lifted-body edges there could de-stabilize
+/// that count's 1-hop idempotence for a def called from a non-idempotent eta-wrapper. So the exclusion is
+/// kept LOCAL to the non-looped self-drop.
+fn callee_called_from_lifted_body(db: &mut Db, callee: usize) -> bool {
+    fn walk(db: &mut Db, id: StructId, callee: usize, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee: c, .. } = core_of(db, id)
+            && c == callee
+        {
+            return true;
+        }
+        crate::backend::wasm::select::reclaim::core_child_ids(db, id)
+            .into_iter()
+            .any(|ch| walk(db, ch, callee, seen))
+    }
+    let lifted_bodies: Vec<StructId> = db.lifted.iter().map(|l| l.body).collect();
+    let mut seen = HashSet::new();
+    lifted_bodies
+        .into_iter()
+        .any(|b| walk(db, b, callee, &mut seen))
+}
+
+/// blx1 (v-mem co-design): whether the NON-looped def `callee` self-reclaims its heap param at
+/// `param_index` via a fn-exit `op_drop` (the non-looped analog of [`looped_owned_param_drops`]). SINGLE
+/// SOURCE OF TRUTH — both the emit ([`nonlooped_owned_param_drops`]) and the `call_arg_caller_drops` (6b)
+/// YIELD query THIS, so caller-drop XOR callee-epilogue-drop is exactly complementary per (edge, param). A
+/// non-inlined non-looped borrow-only-heap-param def (blx1: `classify` reads a `Bytes` via a bin-match and
+/// returns a scalar) has NO other callee-side reclaim (the looped epilogue is empty for it; a bin-match
+/// borrow lowers to `If`/`BinIntRead`, NOT a `MatchSum`, so `nontail_match_reclaim_binders` misses it) →
+/// its shell LEAKS. Reclaim it, DOUBLE-FREE-GATED on BOTH axes (the tr3 lesson):
+///   AXIS A (caller-drop complementarity — the callee must OWN the param on EVERY entry):
+///     - NOT an export entry (the export trampoline owns/drops the boundary param); AND
+///     - NOT funcref-TAKEN ([`def_funcref_taken`] — a `call_indirect` edge is invisible to the direct
+///       call-site index → conservatively exclude); AND
+///     - NOT called from a LIFTED body ([`callee_called_from_lifted_body`] — an eta-wrapper's call edge is
+///       invisible to the `db.defs`-only call-site index; caveat-(a) completeness, v-mem rc-co-read); AND
+///     - EVERY DIRECT call site passes an OWNED arg for `param_index` (`heap_operand_ownership == Owned`);
+///       a BORROWED / unknown / missing arg at ANY site → NOT owned → decline (missed-borrowed = UAF,
+///       missed-owned = leak — default-deny toward the leak).
+///   AXIS B (payload-escape — no heap sub-value of the param escapes into the result):
+///     `count_param_consumes == 0` (borrow-only — never returned/consumed/escaped as the whole value) AND
+///     a SCALAR (non-heap) RETURN (a scalar result cannot embed a heap child of the param nor a view
+///     aliasing into its shell — the exact ctor-embed axis that bit tr3, here discharged by scalar-return).
+///     A heap-RETURNING borrow-only def needs the general escaped-child analysis → left to leak (follow-up).
+/// SOUND-CONSERVATIVE: every gate is default-deny (under-admit = LEAK). v-mem's corpus-wide guarded-all is
+/// the empirical double-free backstop.
+fn def_nonlooped_reclaims_param(
+    db: &mut Db,
+    callee: usize,
+    param_index: usize,
+    layout: &Layout,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    // AXIS A: not an export entry (the trampoline owns the boundary param).
+    if layout.exports.iter().any(|e| e.body == body) {
+        return false;
+    }
+    // NON-looped only — the looped epilogue owns the looping case (this is its complement).
+    if !mutual_loop_group(db, callee).is_empty() {
+        return false;
+    }
+    // AXIS A: funcref-taken exclusion (caveat a — a call_indirect edge is invisible to the direct index).
+    if def_funcref_taken(db, body) {
+        return false;
+    }
+    // AXIS A (caveat-a completeness, v-mem rc-co-read): also exclude a callee CALLED FROM a lifted body —
+    // an eta-wrapper's `callee x` edge is invisible to the db.defs-only call-site index AND misses
+    // def_funcref_taken, so a borrowed forward there would be an unseen UAF. Conservative (leak-safe).
+    if callee_called_from_lifted_body(db, callee) {
+        return false;
+    }
+    let params = crate::layout::def_params(db, callee);
+    let Some((param_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&param_ty) {
+        return false;
+    }
+    // AXIS B: SCALAR (non-heap) return — no heap child of the param can escape into the result.
+    if is_heap_type(&type_of(db, body)) {
+        return false;
+    }
+    // AXIS B: borrow-only — the param is never consumed / returned / escaped as the whole value.
+    let mut seen = HashSet::new();
+    let mut total = 0usize;
+    count_param_consumes(db, body, param_binder, &mut seen, &mut total, true);
+    if total != 0 {
+        return false;
+    }
+    // AXIS A: every DIRECT call site passes an OWNED arg for this param (unknown/borrowed/missing at ANY
+    // site → not all-owned → decline). A callee with NO known call site cannot prove ownership → decline.
+    let sites = crate::infer::callee_call_site_args(db, callee);
+    if sites.is_empty() {
+        return false;
+    }
+    for args in &sites {
+        match args.get(param_index) {
+            Some(&arg) if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) => {
+            }
+            _ => return false,
+        }
     }
     true
 }
