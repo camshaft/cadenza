@@ -1995,11 +1995,21 @@ fn body_has_capturing_helper_binder_collision(
         return false;
     }
     if let Resolved::Match { scrutinee, arms } = resolved_of(db, body) {
-        // Peel a leading annotation / const-block on the scrutinee to reach the call.
-        let call = match resolved_of(db, scrutinee) {
-            Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => expr,
-            _ => scrutinee,
-        };
+        // Peel the scrutinee to the underlying call — following a leading annotation / const-block AND a
+        // `let`-binding REFERENCE (`Resolved::Ref { value }` → the binding's init occurrence). The capturing
+        // shape is a VALUE-FLOW, not a syntactic position: a performing helper let-bound and THEN matched
+        // (`(let ((q (stamp …))) (match q (#tuple(a …) … a …)))`, breaker col4) commutes the same way as a
+        // direct-scrutinee helper — the match's continuation is nested under the inlined helper's arm binder,
+        // capturing a colliding continuation reference — so it must be caught too (a P0 live miscompile the
+        // scrutinee-only check missed: folded 2102 not 2101). Bounded peel; stops at the first non-ref/annot.
+        let mut call = scrutinee;
+        for _ in 0..16 {
+            match resolved_of(db, call) {
+                Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => call = expr,
+                Resolved::Ref { value } => call = value,
+                _ => break,
+            }
+        }
         if let Resolved::Apply { head, .. } = resolved_of(db, call)
             && is_perform(db, head, ctx).is_none()
             && call_reaches_discharged_effect(db, head, ctx)
