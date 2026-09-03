@@ -20,7 +20,7 @@ namespace Oracle
 the T0.1 declining stage; extended (rows, sums, units, effects) as inference lands at T1+. -/
 inductive Ty where
   | int (width : Nat) (signed : Bool)   -- fixed-width integers (I8…I64/U8…U64)
-  | bool | unit | string | char
+  | bool | unit | string | char | bytes   -- `bytes` (T1.39): a param-less leaf like `string` (a heap byte-sequence)
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
   | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
@@ -170,6 +170,7 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .unit, .unit => .ok s
   | .string, .string => .ok s
   | .char, .char => .ok s
+  | .bytes, .bytes => .ok s
   | .fn d1 c1, .fn d2 c2 => do let s ← unify d1 d2 s; unify c1 c2 s
   | .tuple e1, .tuple e2 =>
       if e1.length == e2.length then
@@ -398,6 +399,7 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
               | some "Unit" => some .unit
               | some "String" => some .string
               | some "Char" => some .char
+              | some "Bytes" => some .bytes
               | some "Ordering" => some orderingTy
               | _ => none)
            | _ => none)
@@ -1520,6 +1522,18 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                -- and `scalar-at (s)(i) → (Option Char)` and `slice (s)(a)(b) → (Option String)` are all
                -- TOTAL-FALLIBLE (Option, never trap — collections-and-text.md, same as List.at). The receiver
                -- (children[1]) must be a String; a non-String / non-numeric index is CDZ0203. Other member → declined.
+               -- `to-bytes (s:String) → Bytes` and `from-bytes (b:Bytes) → (Option String)` (T1.39, fallible
+               -- UTF-8 decode) bridge String↔Bytes; from-bytes takes a BYTES receiver so it is handled FIRST,
+               -- before the String-receiver unification below.
+               if op == "from-bytes".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some bId => (match inferE m env st bId with
+                                 | .ok (τb, st1) => (match unifyInfer τb .bytes st1 with
+                                                     | .ok st2 => .ok (optionTy .string, st2)
+                                                     | .error e => .error e)
+                                 | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed String.from-bytes"))
+               else
                (match children[1]? with
                 | none => .error (.unsupported "type oracle: malformed String op (no receiver)")
                 | some sId =>
@@ -1562,7 +1576,65 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                  | .error e => .error e)
                               | .error e => .error e)
                            | _, _ => .error (.unsupported "type oracle: malformed String.slice"))
+                        else if op == "to-bytes".toUTF8 && children.size == 2 then .ok (.bytes, st2)
                         else .error (.unsupported "type oracle: unmodeled String op"))))
+             else if q == "Bytes".toUTF8 then
+               -- T1.39 — Bytes OPS `(Bytes.<op> …)` (sigs from prelude.rs bytes_module): `of (xs:List UInt8)
+               -- → Bytes` (TOTAL — a UInt8 element is in range by TYPE); `len (b) → Int64`; `at (b)(i) →
+               -- (Option Int64)` and `slice (b)(a)(z) → (Option Bytes)` are TOTAL-FALLIBLE; `concat (b)(c) →
+               -- Bytes`; `compact (b) → Bytes`. `of`'s receiver is a LIST (not Bytes) so it is handled first.
+               if op == "of".toUTF8 && children.size == 2 then
+                 (match children[1]? with
+                  | some xsId => (match inferE m env st xsId with
+                                  | .ok (τxs, st1) => (match unifyInfer τxs (.listTy (.int 8 false)) st1 with
+                                                       | .ok st2 => .ok (.bytes, st2)
+                                                       | .error e => .error e)
+                                  | .error e => .error e)
+                  | none => .error (.unsupported "type oracle: malformed Bytes.of"))
+               else
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed Bytes op (no receiver)")
+                | some bId =>
+                  (match inferE m env st bId with
+                   | .error e => .error e
+                   | .ok (τb, st1) =>
+                     (match unifyInfer τb .bytes st1 with
+                      | .error e => .error e
+                      | .ok st2 =>
+                        if op == "len".toUTF8 && children.size == 2 then .ok (.int 64 true, st2)
+                        else if op == "compact".toUTF8 && children.size == 2 then .ok (.bytes, st2)
+                        else if op == "at".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some iId => (match inferE m env st2 iId with
+                                          | .ok (τi, st3) => (match unifyInfer τi (.numVar st3.next) { st3 with next := st3.next + 1 } with
+                                                              | .ok st4 => .ok (optionTy (.int 64 true), st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Bytes.at"))
+                        else if op == "concat".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some cId => (match inferE m env st2 cId with
+                                          | .ok (τc, st3) => (match unifyInfer τc .bytes st3 with
+                                                              | .ok st4 => .ok (.bytes, st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Bytes.concat"))
+                        else if op == "slice".toUTF8 && children.size == 4 then
+                          (match children[2]?, children[3]? with
+                           | some aId, some zId =>
+                             (match inferE m env st2 aId with
+                              | .ok (τa, st3) =>
+                                (match unifyInfer τa (.numVar st3.next) { st3 with next := st3.next + 1 } with
+                                 | .ok st4 =>
+                                   (match inferE m env st4 zId with
+                                    | .ok (τz, st5) => (match unifyInfer τz (.numVar st5.next) { st5 with next := st5.next + 1 } with
+                                                        | .ok st6 => .ok (optionTy .bytes, st6)
+                                                        | .error e => .error e)
+                                    | .error e => .error e)
+                                 | .error e => .error e)
+                              | .error e => .error e)
+                           | _, _ => .error (.unsupported "type oracle: malformed Bytes.slice"))
+                        else .error (.unsupported "type oracle: unmodeled Bytes op"))))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2405,6 +2477,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
                            .list #[13, 9, 12]],
                 root := 14 } == .wellTyped (.int 64 true))
+-- T1.39 (Bytes op + String↔Bytes bridge): `(do (def (main) (Bytes.len (String.to-bytes "hi"))) (export main))`
+-- → WellTyped Int64. `String.to-bytes "hi"` → Bytes; `Bytes.len` on it → Int64 (exercises the new `.bytes` Ty).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Bytes".toUTF8, .name "len".toUTF8, .name "String".toUTF8,
+                            .name "to-bytes".toUTF8, .str "hi".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 3, .atom 6, .atom 7,
+                           .list #[4, 5, 6], .atom 8, .list #[7, 8], .list #[3, 9], .atom 2, .list #[11],
+                           .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
