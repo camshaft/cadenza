@@ -386,8 +386,22 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
           -- (Sets/maps are UNORDERED — they need order-independent containment, tracked as W5.5 Gap 2 —
           -- so no `.set`/`.map`-order arm is added here; those still decline/positional pending that fix.)
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+        | .set e1,    .set e2    =>
+          -- Sets are UNORDERED: CANONICALIZE (sort elements by scalar-key order) then positional-compare via
+          -- the same flat worklist. Elements are scalar (compiler-enforced), so `sortBy id` (via `keyLe`) is a
+          -- total order; equal sets (deduped) sort to identical sequences ⇒ order-INSENSITIVE equality. (W5.5
+          -- Gap 2. Previously two sets fell through to `false` — a false-inequality for a Set-as-elem/key.)
+          e1.size == e2.size &&
+            valueEqWork fuel s ((s.sortBy id e1.toList).zip (s.sortBy id e2.toList) ++ rest)
         | .map e1,    .map e2    =>
-          e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+          -- Maps are UNORDERED too: pair the flat `[k0,v0,…]`, sort by KEY (scalar → total via `keyLe`), then
+          -- compare `(k,v)` pairs POSITIONALLY (keys align; values may be compound → recurse through the
+          -- worklist). Order-insensitive by construction — replaces the old positional (order-sensitive) compare.
+          e1.size == e2.size &&
+            (let p1 := (List.range (e1.size / 2)).map (fun i => (e1[2 * i]!, e1[2 * i + 1]!))
+             let p2 := (List.range (e2.size / 2)).map (fun i => (e2[2 * i]!, e2[2 * i + 1]!))
+             valueEqWork fuel s (((s.sortBy Prod.fst p1).zip (s.sortBy Prod.fst p2)).foldr
+               (fun ab acc => (ab.1.1, ab.2.1) :: (ab.1.2, ab.2.2) :: acc) rest))
         | .sum d1 p1, .sum d2 p2 =>
           d1 == d2 && valueEqWork fuel s ((p1, p2) :: rest)
         | .bigint a,  .bigint b  => a == b && valueEqWork fuel s rest
@@ -938,11 +952,34 @@ def scalarOrdKey (s : HeapState) (h : UInt32) : Nat × Int :=
       | _         => (2, 0)
     | none => (2, 0)
 
-/-- `h1`'s key ≤ `h2`'s key in canonical order (lexicographic on `scalarOrdKey`). -/
+/-- Unsigned byte-wise lexicographic compare of two byte lists: a proper PREFIX is LESS (shorter-first), then
+equal. Matches Core's `Eval.cmpBytes` (compare byte-by-byte as `UInt8`; the one that runs out first is lesser),
+so Str/Bytes scalar keys sort exactly as `cmpValue`/`canonicalizeValue` order them. -/
+def cmpBytesLex : List UInt8 → List UInt8 → Ordering
+  | [],      []      => .eq
+  | [],      _ :: _  => .lt
+  | _ :: _,  []      => .gt
+  | a :: as, b :: bs => if a < b then .lt else if b < a then .gt else cmpBytesLex as bs
+
+/-- The byte list of a handle that names a live heap `.bytes` buffer (a String/Bytes scalar key), else `none`
+(immediates and non-bytes objects). Lets `keyLe` order Str/Bytes keys lexicographically. -/
+def bytesOf? (s : HeapState) (h : UInt32) : Option (List UInt8) :=
+  if isImmediate h then none
+  else match s.getObj? h with
+    | some o => match o.value with | .bytes bs => some bs.toList | _ => none
+    | none => none
+
+/-- `h1`'s key ≤ `h2`'s key in canonical order. Str/Bytes keys compare by unsigned byte-lex (`cmpBytesLex`,
+matching Core's `cmpBytes`); everything else falls back to `scalarOrdKey` (Bool false<true < Int signed). Set
+elements / map keys are HOMOGENEOUS (compiler-enforced), so only same-type compares actually occur — the
+cross-type fallthrough is never hit in practice but keeps `keyLe` a TOTAL order. -/
 def keyLe (s : HeapState) (h1 h2 : UInt32) : Bool :=
-  let (r1, p1) := s.scalarOrdKey h1
-  let (r2, p2) := s.scalarOrdKey h2
-  r1 < r2 || (r1 == r2 && p1 ≤ p2)
+  match s.bytesOf? h1, s.bytesOf? h2 with
+  | some a, some b => match cmpBytesLex a b with | .gt => false | _ => true
+  | _, _ =>
+    let (r1, p1) := s.scalarOrdKey h1
+    let (r2, p2) := s.scalarOrdKey h2
+    r1 < r2 || (r1 == r2 && p1 ≤ p2)
 
 /-- Stable insertion of `x` into a key-sorted list (by `keyLe` on the extracted key handle). -/
 def sortInsBy {α : Type} (s : HeapState) (key : α → UInt32) (x : α) : List α → List α
@@ -1817,6 +1854,115 @@ private def probeVecValueEqOrder : Bool :=
     | _ => false
   | _ => false
 example : probeVecValueEqOrder = true := by native_decide
+
+/-! #### W5.5 Gap 2 — order-INDEPENDENT set/map equality (canonicalize-then-positional via the scalar-key
+order; keys are compiler-enforced scalar so no containment search / no decode / no import cycle). -/
+
+/-- `cmpBytesLex` is unsigned byte-lex with a proper prefix LESS (shorter-first) — matches Core's `cmpBytes`. -/
+example : cmpBytesLex [1, 2] [1, 2, 3] = .lt := by native_decide      -- prefix < longer
+example : cmpBytesLex [1, 3] [1, 2] = .gt := by native_decide
+example : cmpBytesLex [1, 2] [1, 2] = .eq := by native_decide
+
+/-- Two Int-keyed sets built in DIFFERENT insertion orders are EQUAL ({1,2} == {2,1}); a different-membership
+set is unequal ({1,2} ≠ {1,3}). Before the `.set` arm both fell through to `false`. -/
+private def probeSetIntOrderIndep : Bool :=
+  let e1 : UInt32 := match boxInt ({} : HeapState) [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+  let e2 : UInt32 := match boxInt ({} : HeapState) [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+  let e3 : UInt32 := match boxInt ({} : HeapState) [.i64 3] with | .ret [.i32 h] _ => h | _ => 0
+  match setEmpty ({} : HeapState) [] with
+  | .ret [.i32 se] s0 =>
+    match setInsert s0 [.i32 se, .i32 e1] with
+    | .ret [.i32 a1] s1 =>
+      match setInsert s1 [.i32 a1, .i32 e2] with
+      | .ret [.i32 sa] s2 =>                              -- sa = {1,2}
+        match setEmpty s2 [] with
+        | .ret [.i32 se2] s3 =>
+          match setInsert s3 [.i32 se2, .i32 e2] with
+          | .ret [.i32 b1] s4 =>
+            match setInsert s4 [.i32 b1, .i32 e1] with
+            | .ret [.i32 sb] s5 =>                        -- sb = {2,1}
+              match setEmpty s5 [] with
+              | .ret [.i32 se3] s6 =>
+                match setInsert s6 [.i32 se3, .i32 e1] with
+                | .ret [.i32 c1] s7 =>
+                  match setInsert s7 [.i32 c1, .i32 e3] with
+                  | .ret [.i32 sc] s8 =>                  -- sc = {1,3}
+                    (s8.valueEq sa sb == true) && (s8.valueEq sa sc == false)
+                  | _ => false
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetIntOrderIndep = true := by native_decide
+
+/-- Build a 1-byte heap buffer holding byte `b` (a length-1 String/Bytes scalar). -/
+private def mkByte (s : HeapState) (b : UInt32) : Option (UInt32 × HeapState) :=
+  match bytesAlloc s [.i32 1] with
+  | .ret [.i32 buf] s1 =>
+    match bytesSet s1 [.i32 buf, .i32 0, .i32 b] with
+    | .ret [.i32 buf2] s2 => some (buf2, s2)
+    | _ => none
+  | _ => none
+
+/-- Two STRING-keyed sets in different insertion orders are EQUAL ({"a","b"} == {"b","a"}) — exercises the
+bytes-lex key order in `keyLe` (97 < 98). -/
+private def probeSetStrOrderIndep : Bool :=
+  match mkByte ({} : HeapState) 97 with
+  | some (ba, s0) =>
+    match mkByte s0 98 with
+    | some (bb, s1) =>
+      match setEmpty s1 [] with
+      | .ret [.i32 se] s2 =>
+        match setInsert s2 [.i32 se, .i32 ba] with
+        | .ret [.i32 a1] s3 =>
+          match setInsert s3 [.i32 a1, .i32 bb] with
+          | .ret [.i32 sa] s4 =>                          -- sa = {"a","b"}
+            match setEmpty s4 [] with
+            | .ret [.i32 se2] s5 =>
+              match setInsert s5 [.i32 se2, .i32 bb] with
+              | .ret [.i32 b1] s6 =>
+                match setInsert s6 [.i32 b1, .i32 ba] with
+                | .ret [.i32 sb] s7 => s7.valueEq sa sb == true   -- sb = {"b","a"}
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetStrOrderIndep = true := by native_decide
+
+/-- Two Int-keyed maps in different insertion orders are EQUAL ({1:10,2:20} == {2:20,1:10}) — the `.map` arm
+sorts by KEY then compares `(k,v)` positionally (was order-sensitive before). -/
+private def probeMapIntOrderIndep : Bool :=
+  let k1 : UInt32 := match boxInt ({} : HeapState) [.i64 1]  with | .ret [.i32 h] _ => h | _ => 0
+  let k2 : UInt32 := match boxInt ({} : HeapState) [.i64 2]  with | .ret [.i32 h] _ => h | _ => 0
+  let v1 : UInt32 := match boxInt ({} : HeapState) [.i64 10] with | .ret [.i32 h] _ => h | _ => 0
+  let v2 : UInt32 := match boxInt ({} : HeapState) [.i64 20] with | .ret [.i32 h] _ => h | _ => 0
+  match mapEmpty ({} : HeapState) [] with
+  | .ret [.i32 me] s0 =>
+    match mapInsert s0 [.i32 me, .i32 k1, .i32 v1] with
+    | .ret [.i32 a1] s1 =>
+      match mapInsert s1 [.i32 a1, .i32 k2, .i32 v2] with
+      | .ret [.i32 ma] s2 =>                              -- ma = {1:10, 2:20}
+        match mapEmpty s2 [] with
+        | .ret [.i32 me2] s3 =>
+          match mapInsert s3 [.i32 me2, .i32 k2, .i32 v2] with
+          | .ret [.i32 b1] s4 =>
+            match mapInsert s4 [.i32 b1, .i32 k1, .i32 v1] with
+            | .ret [.i32 mb] s5 => s5.valueEq ma mb == true  -- mb = {2:20, 1:10}
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapIntOrderIndep = true := by native_decide
 
 /-! #### Collection CONSUME-op witnesses (map-merge, set-union, set-intersection, set-difference),
 immediate-aware. Re-added after the immediates rework (they were dropped from the focused set). Each op
