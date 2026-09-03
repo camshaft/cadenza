@@ -2499,3 +2499,35 @@
   (output (: 7010002 Int64))
   (call main (: 3 Int64))
   (output (: 7040305 Int64)))
+
+; tcx1: a RUNTIME Tuple.concat — the const concat cases above fold entirely at compile time (the
+; concat never runs); this forces the runtime tuple-build with a RUNTIME first element `n`, then reads
+; Tuple.size of the result AND destructures all four mixed-type elements. Pins that concat EXECUTES at
+; runtime preserving a runtime element's value (not just its static type/arity): concat #tuple(n 20)
+; ++ #tuple(true #"x") = a size-4 #tuple(n 20 true #"x"); size=4, and a=n / b=20 / c=true /
+; d=#"x" flow through. 1000*4 + n + 10*20 + 100*1 + byte-len("x")=1 = 4301 + n. (breaker probe tp1,
+; verified tri-target exact + byte-idempotent — benign hop drift, identical values both generations.)
+(case
+  "a runtime Tuple.concat builds the tuple, reports size, and destructures mixed elements"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((t (Tuple.concat #tuple(n 20) #tuple(true #"x"))))
+          (+
+            (* 1000 (Tuple.size t))
+            (match
+              t
+              (#tuple(a b c d)
+                (+
+                  (Int64.of a)
+                  (+
+                    (* 10 (Int64.of b))
+                    (+ (* 100 (if c 1 0)) (String.byte-len (Symbol.to-string d))))))
+              (_ -1)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 4306 Int64))
+  (call main (: 0 Int64))
+  (output (: 4301 Int64)))
