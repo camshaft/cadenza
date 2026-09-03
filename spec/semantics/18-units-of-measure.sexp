@@ -5440,16 +5440,14 @@
   (call main (: 5 Int8))
   (output (: 13 Int64)))
 
-; qcx1: a const-Qty list element read at a RUNTIME index. The collection-element const-Qty re-emit
-; (trunk) handles a CONST index (the whole access folds through a working path) and a Qty in a
-; SIGNATURE position; a RUNTIME index keeps the #list live and re-emits the buried const-Qty element
-; whose unit surfaces no Qty type in any signature, so the cadenza hop currently grades a graceful
-; DECLINE (todo — CDZ0203 on the re-emitted runtime-indexed-list shape in the units-loaded gate;
-; NOT a board fail, and NOT the CDZ0101 the standalone units-not-loaded recompile shows). Runs on
-; wasm/rust: n=0 -> element 0 = 5.0, n=1 -> element 1 = 7.0. Idealistic values pinned; flips when the
-; runtime-index collection-Qty re-emit lands. (breaker probes qc1/qk4, tick 1515-1516; verified
-; wasm PASS + cadenza todo in the units-loaded gate, isolated to the runtime index across five
-; controls — const-index, single-element, non-collection all re-emit.)
+; qcx1: a const-Qty list element read at a RUNTIME index. NOW RE-EMITS on all three backends (#8250:
+; "preserve a Qty.value peel of a BINDER on re-emit", which was the CDZ0203 arms-differ this case hit).
+; The RUNTIME index keeps the #list live and re-emits the buried const-Qty element whose unit surfaces no
+; Qty type in any signature — the harder collection-element case beyond the CONST index (which always folded
+; through a working path) and the SIGNATURE-position Qty. n=0 -> element 0 = 5.0, n=1 -> element 1 = 7.0,
+; wasm+rust+cadenza. (Was cadenza-todo — CDZ0203 on the re-emitted runtime-indexed-list shape — from tick
+; 1515 until #8250 landed the Qty.value-binder-peel re-emit; the BigInt-inner-Qty list sibling flipped in the
+; same fix. breaker probes qc1/qk4; verified all-3-target PASS in the units-loaded gate.)
 (case
   "a const-Qty list element read at a runtime index re-emits once the runtime-index path lands"
   (input
