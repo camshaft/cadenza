@@ -10900,3 +10900,22 @@
       (def (main (: n Int64)) (let ((f (fn ((: k Int64)) (if (> k 0) (+ 1 (f (- k 1))) 0)))) (f n)))
       (export main)))
   (error CDZ0101))
+
+; urx1: an UNREACHABLE match arm after a catch-all earns a CDZ0213 warning yet the match still runs
+; with first-match semantics intact. `(match n (5 100) (_ 200) (7 300))` — the `_` covers everything,
+; so the trailing `(7 300)` can never fire; the compiler WARNS CDZ0213 (positioned at the dead arm)
+; but compiles, and n=7 falls to the CATCH-ALL (200), NOT the shadowed `7` arm (300) — proving the
+; dead arm is genuinely dead, not silently promoted. n=5 -> the specific arm (100); n=1 -> catch-all
+; (200). Target-independent value (wasm/rust/hop agree; the shadowed 7 arm yields 200 everywhere).
+; Pins that a shadowed arm is a diagnosed-but-non-fatal warning AND that first-match ordering makes
+; the earlier catch-all win over a later specific arm. (breaker probe ur1.)
+(case
+  "an unreachable match arm after a catch-all warns CDZ0213 and falls to the catch-all"
+  (input (do (def (main (: n Int64)) (match n (5 100) (_ 200) (7 300))) (export main)))
+  (call main (: 5 Int64))
+  (output (: 100 Int64))
+  (call main (: 7 Int64))
+  (output (: 200 Int64))
+  (call main (: 1 Int64))
+  (output (: 200 Int64))
+  (warning CDZ0213 (message "unreachable")))
