@@ -1938,9 +1938,14 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
     {
         (snap, n)
     } else {
+        // BUILT-IN (prelude-synthesized) decl: copy it out, normalizing a payloadless variant the synthesis
+        // wrote as a bare name (`None`) into the `(Name)` list form a user type uses — so a built-in reflects
+        // IDENTICALLY to a user type (v-spec-oracle ruling; breaker issue). Fixes BOTH the generic path (which
+        // reflects this node) and the instantiated path (`copy_decl_instantiated` copies it).
         let mut b = crate::ast::Builder::new();
-        let empty: std::collections::HashMap<String, StructId> = std::collections::HashMap::new();
-        let copied = copy_subst_node(&db.ast, decl, &empty, &mut b);
+        let params_set: std::collections::HashSet<&str> =
+            params.iter().map(String::as_str).collect();
+        let copied = copy_prelude_decl_liststyle(&db.ast, decl, &params_set, &mut b);
         let arenas = b.finish(copied);
         (std::rc::Rc::new(arenas), copied)
     };
@@ -2073,6 +2078,21 @@ fn copy_decl_instantiated(
     // Head: `type`, the Name, then param BINDERS (dropped) + variants (copied, params substituted).
     let mut out = Vec::with_capacity(children.len());
     for (i, &child) in children.iter().enumerate() {
+        // Index 1 is the type-HEAD position. A PARENTHESIZED decl writes it as a `(Name param…)` LIST
+        // (`(Box a)`); the INSTANTIATED reflection MUST name the type by its BARE name (`Box`) — the params
+        // collapse into concrete variant payloads, so the reflected decl head names the type's identity,
+        // spelling-INDEPENDENT from a flat `(type Opt a …)` decl whose head is already the bare name
+        // (v-spec-oracle ruling 2026-09-03; consistent w/ landed #7688 `(Type.ast (Box Int64))` → bare
+        // head `(type Box (Mk Int64))`). The applied-head `(Box Int64)` form was the divergence bug.
+        if i == 1
+            && let crate::ast::Struct::List(head) = src.get(child)
+            && let Some(&hname) = head.first()
+            && let crate::ast::Struct::Atom(l) = src.get(hname)
+            && matches!(src.leaf(*l), crate::ast::Leaf::Name(_))
+        {
+            out.push(b.atom_leaf(src.leaf(*l).clone()));
+            continue;
+        }
         // A head-level bare atom whose name is a param is a BINDER → drop it (the params are now concrete).
         // Index 0/1 are the `type` head + the type name — never a binder — so only skip at index >= 2.
         if i >= 2
@@ -2085,6 +2105,44 @@ fn copy_decl_instantiated(
         out.push(copy_subst_node(src, child, param_surface, b));
     }
     Some(b.list(out))
+}
+
+/// Copy a PRELUDE-synthesized `(type …)` decl into `b`, normalizing a PAYLOADLESS variant that the
+/// synthesis wrote as a BARE `Leaf::Name` (e.g. `None` in `(type Option (Some a) None)`) into the `(Name)`
+/// single-element LIST form a user type's source uses (`(Nil)`, `(Red)`). A variant in the `(type …)` decl
+/// syntax is a constructor-headed list — `(C τ…)` payloaded, `(C)` payloadless — so the bare-name spelling
+/// is malformed as a reflected variant; normalizing it makes a BUILT-IN reflect IDENTICALLY to a user type
+/// (inc-5 :243 contract; v-spec-oracle ruling 2026-09-03, breaker issue). A head-position bare Name that is
+/// a type PARAM binder (index ≥ 2, name ∈ `params`) is NOT a variant — copied verbatim (the generic form
+/// keeps its params); only a bare Name that is NOT a param is a payloadless variant → wrapped. List
+/// variants + the `type` head + the type name copy verbatim. Fixes both reflection paths at once: the
+/// generic path reflects this node directly, and the instantiated path (`copy_decl_instantiated`) copies it.
+fn copy_prelude_decl_liststyle(
+    src: &crate::ast::Arenas,
+    decl: StructId,
+    params: &std::collections::HashSet<&str>,
+    b: &mut crate::ast::Builder,
+) -> StructId {
+    let empty: std::collections::HashMap<String, StructId> = std::collections::HashMap::new();
+    let crate::ast::Struct::List(children) = src.get(decl) else {
+        return copy_subst_node(src, decl, &empty, b);
+    };
+    let children = children.clone();
+    let mut out = Vec::with_capacity(children.len());
+    for (i, &child) in children.iter().enumerate() {
+        if i >= 2
+            && let crate::ast::Struct::Atom(l) = src.get(child)
+            && let crate::ast::Leaf::Name(n) = src.leaf(*l)
+            && !params.contains(n.as_ref())
+        {
+            // A payloadless variant written as a bare name → normalize to the `(Name)` list form.
+            let name_atom = b.atom_leaf(src.leaf(*l).clone());
+            out.push(b.list(vec![name_atom]));
+            continue;
+        }
+        out.push(copy_subst_node(src, child, &empty, b));
+    }
+    b.list(out)
 }
 
 /// Recursively copy `node` from `src` into `b`, replacing any bare `Leaf::Name` atom that is a type

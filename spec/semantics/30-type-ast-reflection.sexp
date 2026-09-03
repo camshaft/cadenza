@@ -240,8 +240,8 @@
     "Increment 5 (operator directive) — reflection MUST handle BUILT-IN type definitions, not just
            user-declared ones. `Option` and `Result` are prelude sums with no user source file, but they
            have the same `(type …)` definition shape, so `Type.ast-generic`/`Type.ast` reflect them
-           identically to a user type: generic `Option` → `(type Option (Some a) None)`, its instantiation
-           at `Option Int64` → `(type Option (Some Int64) None)`, and `Result` → `(type Result (Ok a) (Err
+           identically to a user type: generic `Option` → `(type Option (Some a) (None))`, its instantiation
+           at `Option Int64` → `(type Option (Some Int64) (None))`, and `Result` → `(type Result (Ok a) (Err
            e))`. Checked `(= reflected (quote <def>))` weighted 1/2/4 — self-witness 7. (Structural
            built-ins — `List`/`Map`/`Set`/`Tuple`/primitives — already reflect via the type-surface
            fallback, pinned in the structural case above.) A built-in that failed to reflect its definition
@@ -253,9 +253,9 @@
         (+
           (*
             1
-            (if (= (Type.ast-generic (Type.of (Some 1))) (quote (type Option (Some a) None))) 1 0))
+            (if (= (Type.ast-generic (Type.of (Some 1))) (quote (type Option (Some a) (None)))) 1 0))
           (+
-            (* 2 (if (= (Type.ast (Type.of (Some 1))) (quote (type Option (Some Int64) None))) 1 0))
+            (* 2 (if (= (Type.ast (Type.of (Some 1))) (quote (type Option (Some Int64) (None)))) 1 0))
             (*
               4
               (if
@@ -446,3 +446,25 @@
   (output (: 33 Int64))
   (call main (: 5 Int64))
   (output (: 38 Int64)))
+
+; --- Instantiated-reflection head is spelling-independent (bare type name) --------------------------
+; The reflected head of an INSTANTIATED type is the BARE type name regardless of the source decl's binder
+; SPELLING — a parenthesized `(type (Box a) …)` reflects the same as a flat `(type Box a …)` would, since
+; one type MEANING must reflect one Ast (v-spec-oracle ruling; consistent with the flat-decl #7688 case
+; above, whose `(Type.ast (Box Int64))` → `(type Box (Mk Int64))`). The instantiation lives in the variant
+; payloads (`(Mk Int64)`), not an applied head (`(Box Int64)`).
+(case
+  "an instantiated type reflects a BARE type-name head from a PARENTHESIZED (type (Box a) …) decl (spelling-independent)"
+  (doc
+    "A parenthesized generic decl `(type (Box a) (Mk a))` reflected instantiated at `Box Int64` MUST yield
+           a BARE head `(type Box (Mk Int64))` — the same Ast the flat-spelled `(type Box a (Mk a))` yields
+           (pinned via `(Type.ast (Box Int64))` above) — NOT an applied head `(type (Box Int64) …)`. Pins
+           spelling-independence: the reflected Ast depends on the type's meaning, not the decl's binder form.
+           The instantiation is carried in the payload `(Mk Int64)`; the head names the type's identity.")
+  (input
+    (do
+      (type (Box a) (Mk a))
+      (def (main) (if (= (Type.ast (Type.of (Mk 5))) (quote (type Box (Mk Int64)))) 1 0))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
