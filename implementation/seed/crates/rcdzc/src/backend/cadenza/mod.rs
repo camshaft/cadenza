@@ -1751,26 +1751,49 @@ fn emit_expr_viewed(
         // A reference to a function PARAMETER — its surface is the bare name of the parameter's binder
         // occurrence (a `Name`), which re-resolves to the same parameter on recompile.
         Core::Param { binder } => {
+            // A `Ty::Qty` binder consumed as its bare inner magnitude is an erased `Qty.value` PEEL — Qty.value
+            // is representationally a no-op (the magnitude IS the stored value) but TYPE-significant. Emitting
+            // the BARE binder keeps its `Ty::Qty` type on recompile, so `((Some q) (Qty.value q))` re-emitted as
+            // the bare binder mis-types the arm as `(Qty …)` vs a sibling `Rational` arm → CDZ0203 match-arms-
+            // differ (v-inference-pinpointed). RE-INSERT `((. Qty value) <binder>)` so the ref types as the inner
+            // (the binder-analogue of the #8237 if-join peel + the mod.rs value-projected-peel arm).
+            let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
+                && !matches!(&eff_ty, Ty::Qty { .. });
             let nm = db.ast.as_name(binder).ok_or_else(|| {
                 Reject::decline(
                     "the Cadenza backend cannot recover the name of a parameter reference"
                         .to_string(),
                 )
             })?;
-            Ok(b.name(nm))
+            let name = b.name(nm);
+            if peel {
+                let head = member_access(b, "Qty", "value");
+                return Ok(b.list(vec![head, name]));
+            }
+            Ok(name)
         }
         // A reference to a kept `let` binding — its binder is the initializer occurrence (NOT a `Name`),
         // so its surface name comes from the environment the enclosing `Let` populated with the
         // synthesized binding name. A `LocalRef` always lives inside its `Let`'s body, so the binder is
         // in scope; an absent entry would be an emit bug (a `LocalRef` reached without its `Let`).
         Core::LocalRef { binder } => {
+            // Same erased-`Qty.value`-PEEL preservation as the `Core::Param` arm above: a `Ty::Qty` let/match
+            // binder consumed as its bare inner (the `((Some q) (Qty.value q))` collection-read shape) must
+            // RE-INSERT `((. Qty value) <binder>)`, else the bare binder keeps `Ty::Qty` → CDZ0203 arms-differ.
+            let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
+                && !matches!(&eff_ty, Ty::Qty { .. });
             let nm = env.lets.get(&binder).ok_or_else(|| {
                 Reject::decline(
                     "the Cadenza backend reached a `let`-binding reference with no binding in scope"
                         .to_string(),
                 )
             })?;
-            Ok(b.name(nm.clone()))
+            let name = b.name(nm.clone());
+            if peel {
+                let head = member_access(b, "Qty", "value");
+                return Ok(b.list(vec![head, name]));
+            }
+            Ok(name)
         }
         // A runtime binary operator — arithmetic, integer/bool comparison, string ordering, or float
         // comparison. All four carry `{op, lhs, rhs}` (FloatCompare also a width, ignored — the surface
@@ -2524,6 +2547,20 @@ fn emit_expr_viewed(
                             return Ok(peel);
                         }
                     }
+                }
+                // TYPE-AWARE `Qty.value` PEEL (the Qty analogue of the newtype peel above): the payload binder
+                // holds a `Ty::Qty` but THIS read's solved type is the Qty's INNER magnitude — an erased
+                // `Qty.value` peel of a match-arm binder (`((Some q) (Qty.value q))` from a collection read).
+                // Qty.value is representationally a no-op but TYPE-significant; the bare binder recompiles as
+                // `(Qty …)`, mis-typing the arm vs a sibling inner-typed arm → CDZ0203 arms-differ (v-inference-
+                // pinpointed). Re-insert `((. Qty value) <binder>)` so the read types as the inner.
+                if let Some(binder_ty) = env.payload_tys.get(&(scrutinee, path.to_vec())).cloned()
+                    && matches!(&binder_ty, Ty::Qty { .. })
+                    && !matches!(crate::infer::type_of(db, id), Ty::Qty { .. })
+                {
+                    let name = b.name(nm.clone());
+                    let head = member_access(b, "Qty", "value");
+                    return Ok(b.list(vec![head, name]));
                 }
                 return Ok(b.name(nm));
             }
