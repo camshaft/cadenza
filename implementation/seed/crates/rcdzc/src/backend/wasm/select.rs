@@ -7041,6 +7041,32 @@ fn arm_borrows_heap_subvalue_seen(
     if is_heap_borrow && !borrowed {
         return true;
     }
+    // MATERIALIZED-SCRUTINEE stop (trx1, v-mem-safety): a CONTROL-FLOW value reached in BORROWED position —
+    // the operand of a projection reading a sub-value OUT of it (`(. (match … ) k)`, or the inlined
+    // MatchSum a `try` lowers to standing as an enclosing match's scrutinee) — is a value MATERIALIZED
+    // ONCE into the match's scrutinee slot BEFORE the arm runs. Its DEFINITION's internal heap borrows
+    // (its own arms' shell-CONSTRUCTION — e.g. the runtime-`?` failure arm re-wrapping the scrutinee's
+    // Err payload into a fresh Err) are NOT arm escapes: they build the very shell we are matching, they
+    // do not hand a live handle OUT of the enclosing arm. A GENUINE escape — a heap payload projected out
+    // of this value and consumed — trips `is_heap_borrow` at the PROJECTION node ABOVE (in consuming
+    // position), before this, so stopping here misses no escape (sread's `SumPayload(scrut):Map` fed to
+    // `Map.lookup`, the HOL-kernel `term-eq (Comb x y)` payload threaded into a walk — both trip at the
+    // projection, borrowed=false). Leak-safe: this only lets `arm_borrows` say false in MORE cases →
+    // reclaim, never a double-free. Without it, the enclosing shell-reclaim of a COMPOUND-payload sum
+    // (e.g. `Result Int64 String`) built by an inlined `try` was blocked → the fresh Ok/rebuilt-Err husk
+    // LEAKED one cell per match (trx1 + the chapter-16 utf8 Option/Result family).
+    if borrowed
+        && matches!(
+            core_of(db, id),
+            Core::MatchSum { .. }
+                | Core::Match { .. }
+                | Core::MatchList { .. }
+                | Core::If { .. }
+                | Core::Let { .. }
+        )
+    {
+        return false;
+    }
     match core_of(db, id) {
         // A match BORROWS its scrutinee (reads disc / length / payload) and does not transfer it out; its
         // arm bodies are RESULT positions (consuming). So the scrutinee relaxes to `borrowed = true`, every
