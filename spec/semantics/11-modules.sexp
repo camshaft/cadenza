@@ -444,6 +444,37 @@
   (output (: 42 Int64)))
 
 (case
+  "two inline modules each declaring a member type Sh resolve DISTINCTLY (per-module nominal scope)"
+  (doc
+    "The IDENTITY companion of the sibling-visibility case above (v-inference co-verify 2026-09,
+           co-owned with v-module-system). A module-member `(type …)` is MODULE-SCOPED: two inline modules
+           each declaring `(type Sh …)` are DISTINCT nominal types (occ-keyed identity — a type's identity is
+           its synth-record occurrence, NOT its name), and neither `Sh` leaks to the enclosing scope. So both
+           modules' constructors resolve within their OWN scope and do not clash: `a` boxes an Int64, `b`
+           wraps a Bool, and `(a.un (a.mk 7))` reads a's box back → 7. Declines TODAY (CDZ0201): the landed
+           #7946 registration collects the member type into the FLAT global name index, so the second `Sh`
+           collides with the first (entry(name).or_insert keeps one) and one module's ctor stops resolving —
+           an IMPLEMENTATION limitation, NOT a decl-reject. todo→pass when module-SCOPED registration lands
+           (skip module-scoped types from the flat global name index + resolve siblings/self-qualified via
+           module_members_bind): v-module-system scan/registration + v-inference module-scoped type-decl
+           identity. Regression guard for the distinctness half of the co-verify.")
+  (input
+    (do
+      (module a
+        (type Sh (Box Int64))
+        (def (mk (: k Int64)) (Sh.Box k))
+        (def (un (: s Sh)) (match s ((Sh.Box n) n)))
+        (export mk un))
+      (module b
+        (type Sh (Wrap Bool))
+        (def (mk (: p Bool)) (Sh.Wrap p))
+        (def (un (: s Sh)) (match s ((Sh.Wrap p) p)))
+        (export mk un))
+      (def (main) (a.un (a.mk 7)))
+      (export main)))
+  (output (: 7 Int64)))
+
+(case
   "a private sibling defined after its exported caller still resolves"
   (doc
     "The DEFINITION-ORDER companion of the private-sibling case above: there `helper` precedes its
