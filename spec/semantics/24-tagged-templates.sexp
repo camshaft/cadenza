@@ -2,9 +2,16 @@
 ; Compile-Time Macro Over Literal Chunks And Holes, and DESIGN-tagged-template-macros.md. A tagged
 ; template `tag"…{expr}…"` (an identifier glued to a string, ML surface) lexes to the CANONICAL node
 ;   (tagged-template <tag> (chunks <str>…) (holes <expr>…))
-; with the invariant chunks.len() == holes.len() + 1. This file writes that canonical node directly (the
-; s-expr reader accepts it), so the cases are surface-independent: they pin the EXPANSION contract, not the
-; reader. The `tag` is dispatched BY BINDING — resolved to a compile-time function `List String -> List
+; The invariant chunks.len() == holes.len() + 1 is the READER's LEXING guarantee — it holds for a template
+; LEXED FROM SOURCE (`tag"…{e}…"`) so the chunks and holes reconstruct the original text in order — NOT an
+; expander-enforced universal well-formedness rule (a directly-written / macro-constructed node has no
+; original text to reconstruct). The EXPANDER is a permissive THREADER: it threads the chunk list and hole
+; list to the tag (a general `List String -> List Ast -> Ast`) WITHOUT re-checking their counts — a
+; directly-written node whose counts violate the invariant still rewrites (the two "no re-check" cases
+; below pin this), the general tag receiving whatever counts and deciding for itself. So threading is not
+; enforcement, and reject-don't-miscompile is not triggered (the lists are threaded correctly, not
+; mis-expanded). This file writes that canonical node directly (the s-expr reader accepts it), so the cases
+; are surface-independent: they pin the EXPANSION contract, not the reader. The `tag` is dispatched BY BINDING — resolved to a compile-time function `List String -> List
 ; Ast -> Ast` — and evaluated on the one-tier compile-time evaluator over the chunks + holes; its returned
 ; `Ast` is spliced in the template's position and expanded to a fixpoint before type-checking. JSX is then
 ; a library `jsx : List String -> List Ast -> Ast`, not a language feature.
