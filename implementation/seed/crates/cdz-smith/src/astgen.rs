@@ -839,7 +839,7 @@ fn gen_typefuzz_bool<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    let arms = if depth == 0 { 2 } else { 11 };
+    let arms = if depth == 0 { 2 } else { 12 };
     match c.variant(arms) {
         // Bool literal.
         0 => ["true", "false"][c.variant(2)].to_string(),
@@ -944,6 +944,14 @@ fn gen_typefuzz_bool<C: Choice>(
             let dflt = ["true", "false"][c.variant(2)];
             format!("(match (List.at {xs} {idx}) ((Some {v}) {v}) ((None) {dflt}))")
         }
+        // A FLOAT COMPARISON → Bool (T1.40): `(<op> <float-lit> <float-lit>)` over `< > <= >= =`. Both
+        // rcdzc + oracle infer Bool (float arithmetic is deferred/SKIP, so only comparison is generated).
+        10 => {
+            let op = ["<", ">", "<=", ">=", "="][c.variant(5)];
+            let a = typefuzz_float(c);
+            let b = typefuzz_float(c);
+            format!("({op} {a} {b})")
+        }
         // An EXHAUSTIVE `match` over a built-in sum (Option/Ordering) with flat `(Ctor binder)` arms →
         // Bool (Mat rule T1.16).
         _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, true),
@@ -1028,6 +1036,12 @@ fn typefuzz_str<C: Choice>(c: &mut C) -> &'static str {
     ["\"a\"", "\"ab\"", "\"abc\"", "\"hi\"", "\"xyz\""][c.variant(5)]
 }
 
+/// A finite float literal (T1.40 — width-poly, defaults to Float64). Trailing `.0`/`.5` so it parses as
+/// a FLOAT, not an int. (nan/inf are valid but omitted — comparison semantics stay obvious with finites.)
+fn typefuzz_float<C: Choice>(c: &mut C) -> &'static str {
+    ["0.0", "1.5", "2.5", "3.0", "42.0"][c.variant(5)]
+}
+
 fn gen_typefuzz_map<C: Choice>(
     c: &mut C,
     iscope: &mut Vec<String>,
@@ -1098,7 +1112,19 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(21) {
+    match c.variant(22) {
+        // A FLOAT type clash (T1.40 — false-accept hunt): a MIXED int/float comparison `(< <float> <int>)`
+        // (float does not unify with int/numVar) or a float literal ASCRIBED Int64 `(: <float> Int64)` → a
+        // coded type fault. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a hole.
+        20 => {
+            let f = typefuzz_float(c);
+            let n = int(c, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(< {f} {n})") // mixed float/int compare
+            } else {
+                format!("(: {f} Int64)") // float ascribed Int64
+            }
+        }
         // A NON-STRING receiver to a String op (T1.38 — false-accept hunt): `(String.byte-len <int>)` /
         // `(String.concat <str> <int>)` — the receiver/arg must be String → CDZ0203. rcdzc rejects + the
         // oracle unifies the receiver with String, infers IllTyped ⇒ holds; an rcdzc ACCEPT is a hole.
@@ -1297,7 +1323,17 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(11) {
+    match c.variant(12) {
+        // A FLOAT VALUE (T1.40): a bare float literal (→ Float64, width-defaulted) or one ASCRIBED
+        // `(: <lit> Float32)` / `(: <lit> Float64)`. Both rcdzc + oracle infer the Float → agreement.
+        10 => {
+            let f = typefuzz_float(c);
+            match c.variant(3) {
+                0 => f.to_string(),
+                1 => format!("(: {f} Float64)"),
+                _ => format!("(: {f} Float32)"),
+            }
+        }
         // A String VALUE (T1.38): a bare String literal or a `(String.concat a b)`. Both rcdzc + oracle
         // infer String → agreement.
         8 => {
