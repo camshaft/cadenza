@@ -2042,7 +2042,7 @@ fn emit_expr_viewed(
                 .filter(|a| !matches!(a.probe, crate::core::Probe::Wild))
                 .count();
             let effectful_scrut = matches!(core_of(db, scrutinee), Core::HostCall { .. });
-            if effectful_scrut && probe_count >= 2 {
+            let chain = if effectful_scrut && probe_count >= 2 {
                 let name = synth_binding_name(env.next_payload);
                 env.next_payload += 1;
                 // Emit the host call ONCE (scrut_lets does not yet contain it, so this is the real perform).
@@ -2055,9 +2055,25 @@ fn emit_expr_viewed(
                 let binding = b.list(vec![name_atom, sval]);
                 let bindings = b.list(vec![binding]);
                 let let_head = b.name("let");
-                return Ok(b.list(vec![let_head, bindings, chain]));
+                b.list(vec![let_head, bindings, chain])
+            } else {
+                emit_match_chain(db, b, scrutinee, &arms, 0, ctx, env, emitted)?
+            };
+            // A scalar match re-emits as an `if`-chain; on RECOMPILE that chain is a native `Core::If`, whose
+            // emit arm ASCRIBES a non-default-width NUMERIC result `(: <if> <ty>)` (so its arm leaves keep the
+            // narrow width). This arm (`Core::Match`) did NOT, so hop-1 (a `Core::Match` body) omitted the
+            // ascription hop-2 (the re-parsed `Core::If`) adds → a byte-idempotence break (v-syntax-render-ty
+            // #idem, values identical, structure differs). Ascribe here TOO to make the two hops agree — but
+            // ONLY for a non-default INT (`UInt*`/`Int8/16/32`): a match-lowered nested-if ascribed to a narrow
+            // FLOAT recompiles to INVALID WASM (the float exclusion the `Core::If` arm's comment notes), so a
+            // non-default FLOAT match stays un-ascribed here (rare; not the reported class).
+            if matches!(&eff_ty, Ty::Int(it) if !(it.ground_signed() && it.ground_width() == 64)) {
+                let colon = b.name(":");
+                let ty_node = b.name(eff_ty.render_name(&db.name_ctx()).as_str());
+                Ok(b.list(vec![colon, chain, ty_node]))
+            } else {
+                Ok(chain)
             }
-            emit_match_chain(db, b, scrutinee, &arms, 0, ctx, env, emitted)
         }
         // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
         // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
