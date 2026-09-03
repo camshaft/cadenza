@@ -459,7 +459,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 14 };
+    let arms = if depth == 0 { 2 } else { 15 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -688,6 +688,33 @@ fn gen_typefuzz_int<C: Choice>(
                 format!(
                     "(match (List.at (list {a} {b}) {idx}) ((Some {inner}) (List.len {inner})) ((None) 0))"
                 )
+            }
+        },
+        // A COLLECTION-CROSS op — a collection wrapped in a PRODUCT/SUM type, extracted, then consumed to
+        // Int64. A `List` field in a tuple/record projected to `List.len`; a `Map` field likewise; or an
+        // `(Option (List Int))` matched to the inner `List.len`. Exercises the collection-type × tuple /
+        // record / Option feature CROSS (each modeled in isolation elsewhere) — the interaction boundary.
+        13 => match c.variant(4) {
+            0 => {
+                let xs = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let n = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(List.len (. (tuple {xs} {n}) 0))")
+            }
+            1 => {
+                let m = gen_typefuzz_map(c, iscope, bscope, fresh, false);
+                let n = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(Map.len (. (record (= m {m}) (= n {n})) m))")
+            }
+            2 => {
+                let xs = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let inner = format!("i{}", *fresh);
+                *fresh += 1;
+                format!("(match (Some {xs}) ((Some {inner}) (List.len {inner})) ((None) 0))")
+            }
+            _ => {
+                let s = gen_typefuzz_set(c, iscope, bscope, fresh, false);
+                let n = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(Set.len (. (tuple {s} {n}) 0))")
             }
         },
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
