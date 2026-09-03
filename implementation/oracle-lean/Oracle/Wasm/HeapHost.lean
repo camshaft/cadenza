@@ -47,18 +47,19 @@ inductive HeapValue where
   | bool    (b : Bool)
   | array   (elems : Array UInt32)
   | map     (entries : Array UInt32)
+  | set     (elems : Array UInt32)
 deriving Repr, DecidableEq, Inhabited, BEq
 
-/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map) —
+/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set) —
 the child set the free-cascade and `mark-immortal-deep` walk. -/
 def HeapValue.arity : HeapValue → Nat
-  | .array e | .map e => e.size
-  | _                 => 0
+  | .array e | .map e | .set e => e.size
+  | _                          => 0
 
-/-- The owned child handles (array/map slots; `[]` for a scalar). -/
+/-- The owned child handles (array/map/set slots; `[]` for a scalar). -/
 def HeapValue.children : HeapValue → List UInt32
-  | .array e | .map e => e.toList
-  | _                 => []
+  | .array e | .map e | .set e => e.toList
+  | _                          => []
 
 /-- One heap object: its value, refcount, liveness (`false` once freed at rc 0), and immortality flag
 (immortal objects have a sentinel rc — `dup`/`drop` are no-ops — and are excluded from the leak census). -/
@@ -526,6 +527,85 @@ def mapMerge : HeapState → List Value → HeapResult
         | _, _ => .trap s!"map-merge: handle {a} or {b} is not a map"
   | s, _ => .trap "map-merge: expected (i32, i32)"
 
+/-! ### Set — core ops (W5.2d-1). A set mirrors a map with stride 1 (each entry is ONE element handle, no
+value column) over the same value-eq + dup-and-drop machinery. `set-union`/`-intersection`/`-difference` are
+W5.2d-2; `set-iter`/`-to-list` (value-sorted, W5.2c order) are W5.2c. `set-empty`/`-contains`/`-size` are
+read-only; `set-insert`/`-remove` consume (per v-runtime's stride-1 champ.rs contract). -/
+
+/-- `set-empty() → s`: a fresh empty set. -/
+def setEmpty : HeapState → List Value → HeapResult
+  | s, []     => s.box (.set #[])
+  | _, _ :: _ => .trap "set-empty: expected ()"
+
+/-- `set-contains(s, elem) → bool` (i32 0/1): membership by structural value-eq. BORROWS s + elem. -/
+def setContains : HeapState → List Value → HeapResult
+  | s, [.i32 st, .i32 elem] =>
+    match s.getObj? st with
+    | none   => .trap s!"set-contains: unknown handle {st}"
+    | some o =>
+      if !o.live then .trap s!"set-contains: use-after-free (handle {st} freed)"
+      else match o.value with
+        | .set elems =>
+          let present := (elems.toList).any (fun e => s.valueEq e elem)
+          .ret [.i32 (if present then 1 else 0)] s
+        | _ => .trap s!"set-contains: handle {st} is not a set"
+  | s, _ => .trap "set-contains: expected (i32, i32)"
+
+/-- `set-size(s) → count`: the element count. -/
+def setSize : HeapState → List Value → HeapResult
+  | s, [.i32 st] =>
+    match s.getObj? st with
+    | none   => .trap s!"set-size: unknown handle {st}"
+    | some o =>
+      if !o.live then .trap s!"set-size: use-after-free (handle {st} freed)"
+      else match o.value with
+        | .set elems => .ret [.i32 elems.size.toUInt32] s
+        | _          => .trap s!"set-size: handle {st} is not a set"
+  | s, _ => .trap "set-size: expected (i32)"
+
+/-- `set-insert(s, elem) → s'` [consumes s, elem]: add elem unless already present (by value-eq), in which
+case the incoming DUPLICATE elem is dropped (the set keeps its stored element). Dup-and-drop transfer. -/
+def setInsert : HeapState → List Value → HeapResult
+  | s, [.i32 st, .i32 elem] =>
+    match s.getObj? st with
+    | none   => .trap s!"set-insert: unknown handle {st}"
+    | some o =>
+      if !o.live then .trap s!"set-insert: use-after-free (handle {st} freed)"
+      else match o.value with
+        | .set elems =>
+          if (elems.toList).any (fun e => s.valueEq e elem) then
+            -- already present: keep all elements (dup'd), drop the incoming duplicate
+            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.set elems)
+            .ret [.i32 r] ((s2.dropH st).dropH elem)
+          else
+            let s1 := elems.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.set (elems.push elem))
+            .ret [.i32 r] (s2.dropH st)
+        | _ => .trap s!"set-insert: handle {st} is not a set"
+  | s, _ => .trap "set-insert: expected (i32, i32)"
+
+/-- `set-remove(s, elem) → s'` [consumes s, BORROWS elem]: s without the element value-equal to elem (the
+removed stored element is freed by the consumed set's cascade). ABSENT elem = no-op identity. -/
+def setRemove : HeapState → List Value → HeapResult
+  | s, [.i32 st, .i32 elem] =>
+    match s.getObj? st with
+    | none   => .trap s!"set-remove: unknown handle {st}"
+    | some o =>
+      if !o.live then .trap s!"set-remove: use-after-free (handle {st} freed)"
+      else match o.value with
+        | .set elems =>
+          match (List.range elems.size).find? (fun i => s.valueEq (elems[i]!) elem) with
+          | none   => .ret [.i32 st] s
+          | some i =>
+            let keep := (List.range elems.size).filterMap
+              (fun j => if j == i then none else some elems[j]!)
+            let s1 := keep.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.set keep.toArray)
+            .ret [.i32 r] (s2.dropH st)
+        | _ => .trap s!"set-remove: handle {st} is not a set"
+  | s, _ => .trap "set-remove: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -579,6 +659,12 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("map-insert",         toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.mapInsert)
   , ("map-remove",         toHostFn [.i32, .i32]             [.i32]  HeapState.mapRemove)
   , ("map-merge",          toHostFn [.i32, .i32]             [.i32]  HeapState.mapMerge)
+    -- sets, core (union/intersection/difference = W5.2d-2; iter/to-list = W5.2c)
+  , ("set-empty",          toHostFn []                       [.i32]  HeapState.setEmpty)
+  , ("set-insert",         toHostFn [.i32, .i32]             [.i32]  HeapState.setInsert)
+  , ("set-contains",       toHostFn [.i32, .i32]             [.i32]  HeapState.setContains)
+  , ("set-remove",         toHostFn [.i32, .i32]             [.i32]  HeapState.setRemove)
+  , ("set-size",           toHostFn [.i32]                   [.i32]  HeapState.setSize)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -1103,5 +1189,82 @@ private def probeMapMergeConflict : Bool :=
     | none => false
   | none => false
 example : probeMapMergeConflict = true := by native_decide
+
+/-! #### W5.2d-1: set core (empty/insert/contains/remove/size) — value-eq membership + dup-and-drop. -/
+
+/-- set-insert/contains/size: a set {5} contains 5 (by value-eq via a fresh box) but not 7; size 1;
+leak-balances on drop. -/
+private def probeSet : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 e5] s0 =>
+    match setEmpty s0 [] with
+    | .ret [.i32 se] s1 =>
+      match setInsert s1 [.i32 se, .i32 e5] with
+      | .ret [.i32 st] s2 =>
+        match boxInt s2 [.i64 5] with
+        | .ret [.i32 q5] s3 =>
+          match boxInt s3 [.i64 7] with
+          | .ret [.i32 q7] s4 =>
+            (match setContains s4 [.i32 st, .i32 q5] with | .ret [.i32 1] _ => true | _ => false) &&
+            (match setContains s4 [.i32 st, .i32 q7] with | .ret [.i32 0] _ => true | _ => false) &&
+            (match setSize s4 [.i32 st]              with | .ret [.i32 1] _ => true | _ => false) &&
+            (match drop s4 [.i32 st] with
+             | .ret [] s5 => (match drop s5 [.i32 q5] with
+               | .ret [] s6 => (match drop s6 [.i32 q7] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+               | _          => false)
+             | _          => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSet = true := by native_decide
+
+/-- set-insert dedups by value-eq: inserting a value-equal element leaves size 1 and drops the incoming
+duplicate (census balances to 0). -/
+private def probeSetDedup : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 e5] s0 =>
+    match setEmpty s0 [] with
+    | .ret [.i32 se] s1 =>
+      match setInsert s1 [.i32 se, .i32 e5] with
+      | .ret [.i32 st] s2 =>
+        match boxInt s2 [.i64 5] with
+        | .ret [.i32 e5b] s3 =>
+          match setInsert s3 [.i32 st, .i32 e5b] with
+          | .ret [.i32 st2] s4 =>
+            (match setSize s4 [.i32 st2] with | .ret [.i32 1] _ => true | _ => false) &&
+            (match drop s4 [.i32 st2]    with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetDedup = true := by native_decide
+
+/-- set-remove (by value-eq): removes the element (freed via cascade), borrowed query survives; empty after,
+census 0 on drop. -/
+private def probeSetRemove : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 e5] s0 =>
+    match setEmpty s0 [] with
+    | .ret [.i32 se] s1 =>
+      match setInsert s1 [.i32 se, .i32 e5] with
+      | .ret [.i32 st] s2 =>
+        match boxInt s2 [.i64 5] with
+        | .ret [.i32 q] s3 =>
+          match setRemove s3 [.i32 st, .i32 q] with
+          | .ret [.i32 st2] s4 =>
+            (match setSize s4 [.i32 st2]             with | .ret [.i32 0] _ => true | _ => false) &&
+            (match setContains s4 [.i32 st2, .i32 q] with | .ret [.i32 0] _ => true | _ => false) &&
+            (match drop s4 [.i32 st2] with
+             | .ret [] s5 => (match drop s5 [.i32 q] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+             | _          => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetRemove = true := by native_decide
 
 end Oracle.Heap
