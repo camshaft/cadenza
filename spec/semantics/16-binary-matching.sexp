@@ -4449,3 +4449,28 @@
   (output (: 7005 Int64))
   (call main (: 200 Int64))
   (output (: 7200 Int64)))
+
+; bfx5: a NARROWER-than-run sub-byte bit-field MATCH re-emits — the harder frontier bfx4's note flagged as
+; still-declining ("a real (bits n 5) narrower than its run keeps a partial, non-peelable mask") is now
+; CLOSED. `(match b ((bin (bits hi 5) (bits lo 3)) …))` decodes TWO sub-byte fields from ONE byte: hi = the
+; top 5 bits (`byte >> 3`), lo = the low 3 bits (`byte & 7`) — PARTIAL masks, not the full-width peel bfx3/
+; bfx4 relied on. The cadenza re-emit now reconstructs the partial-mask bit-field reads (not just declines),
+; and the hop round-trips exact + byte-idempotent (h1==h2==h3). k=201 = 0b11001001 → hi=25, lo=1 → 2501;
+; k=255 = 0b11111111 → hi=31, lo=7 → 3107; k=0 → 0. (breaker probe sbf, verified tri-target exact + hop
+; value-parity; a peer landed the sub-byte partial-mask re-emit since bfx4 — this fences the flip. wasm-PASS
+; + cadenza-PASS, flipping bfx4's "sub-byte still declines" residue.)
+(case
+  "a narrower-than-run sub-byte bit-field match re-emits (partial-mask reads, not just full-width peels)"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match b ((bin (bits hi 5) (bits lo 3)) (+ (* 100 (Int64.of hi)) (Int64.of lo))) (_ -1)))
+      (def (main (: k Int64)) (parse (Bytes.of #list((UInt8.of k)))))
+      (export main)))
+  (call main (: 201 Int64))
+  (output (: 2501 Int64))
+  (call main (: 255 Int64))
+  (output (: 3107 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64)))
