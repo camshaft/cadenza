@@ -117,7 +117,9 @@ Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the
 
 Each parsed interpolation hole MUST appear in the tagged-template node as one of its holes, so that the tag function receives the hole expressions in source order.
 
-The count of literal chunks in a tagged template MUST be exactly one greater than the count of holes, so that the chunks and holes reconstruct the original text in order.
+When the reader lexes a tagged template, the count of literal chunks it produces MUST be exactly one greater than the count of holes, so that the chunks and holes reconstruct the original text in order.
+
+This count is the reader's guarantee for a lexed tagged template; the expander MUST thread a tagged-template node's chunks and holes to its tag as given, without re-checking their count — the tag, a general function over the two lists, decides how to treat any counts — so a directly constructed or macro-produced tagged-template node is not required to satisfy the count.
 
 The tag of a tagged template MUST be dispatched by binding, not by spelling, so that a program adds an embedded domain-specific syntax by defining or importing a function rather than by extending the reader.
 
