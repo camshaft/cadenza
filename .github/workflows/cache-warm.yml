@@ -132,6 +132,15 @@ jobs:
       - name: warm + push the value-heap runtime components (aarch64 — closes the .#runtime cachix 404)
         if: matrix.arch == 'aarch64'
         run: nix build .#packages.aarch64-linux.runtime .#packages.aarch64-linux.runtime-debug --print-build-logs
+      # Warm + PUSH the wasm corpus-verdicts-COARSE harvest (v-corpus-harness's .gate-baseline source; the
+      # #corpus-verdicts trust lever — v-nix direction). corpus-verdicts-COARSE (~35 file derivations) is
+      # VERDICT-byte-identical to the per-case corpus-verdicts but ~300x fewer realisation queries, so it does NOT
+      # wedge like the per-case aggregate (which times out at 5.5h — DO NOT warm the per-case one). Building+pushing
+      # it here lets NON-trusted fleet lanes (trusted-users=root only) PULL the ~10.9k verdicts instead of
+      # cold-building + deadlocking. AARCH64 ONLY: wasm verdicts are arch-independent + content-addressed, built once.
+      - name: warm + push corpus-verdicts-coarse (wasm baseline source — non-trusted lanes pull, not cold-build)
+        if: matrix.arch == 'aarch64'
+        run: nix build .#packages.aarch64-linux.corpus-verdicts-coarse --print-build-logs
       # Warm the AARCH64 nix CHECK that the store+cargo-artifacts warm DON'T cover — cad-tests builds the
       # SEED COMPILER (cdz-seed-compiler is in its requisites) + runs `cdz test`, and neither packages.store
       # nor cargo-artifacts pulls seedCompiler. After the seedCompiler-src narrowing (#2373) this check became
