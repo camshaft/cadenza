@@ -2746,22 +2746,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // snapshot), so `is_user_node` is false for them. This is exactly what lets a user `(type Option …)`
     // legitimately SHADOW the prelude sum (first-wins in `type_decl_by_name`) WITHOUT reading as a
     // duplicate: the prelude `Option` is filtered out, leaving the single user declaration.
-    // The duplicate check is PER-MODULE (per-file), not global: a type-name set is fixed within ONE
-    // module, but two SEPARATE modules of a linked package may each legitimately declare a type of the
-    // same name (`(type L …)` in a lib AND in the importing entry — each module has its own type
-    // namespace, and structural identity makes the two `L`s the same type). So key the seen-set on
-    // `(file, name)`, using the same per-file identity the resolver scopes name visibility by (`file_of`;
-    // `None` for a single-file program collapses to one bucket — the flat case is unchanged). Without the
-    // file key, a global scan flagged a cross-module same-named type as a spurious duplicate (regressing
-    // the cross-module recursive-sum case — modules-and-namespaces.md #Imports Are Explicit: a sibling
-    // file's type is invisible unless imported, so re-declaring its name is not a redeclaration).
-    let mut seen_types: std::collections::HashSet<(Option<usize>, &str)> =
+    // The duplicate check is PER-MODULE (per-file AND per-inline-module), not global: a type-name set is
+    // fixed within ONE module, but two SEPARATE modules may each legitimately declare a type of the same
+    // name — a linked package's lib AND importing entry each `(type L …)` (distinct FILES), OR two INLINE
+    // `(module a (type Sh …)) (module b (type Sh …))` in ONE file (distinct MODULES). Each module has its
+    // own type namespace, and occ-keyed identity (`module_scoped_type`) makes the two `Sh`s DISTINCT nominal
+    // types. So key the seen-set on `(file, enclosing-inline-module, name)`: `file_of` scopes the linked
+    // cross-FILE case (as before), and `enclosing_module_of` scopes the inline cross-MODULE case (two `Sh`
+    // in one file get distinct module occs → not flagged; a REPEAT within ONE module shares file+module →
+    // still the duplicate). Purely ADDITIVE to the former `(file, name)` key — it only SPLITS the
+    // inline-module collision, never merges a bucket, so the linked-package and same-module-repeat behavior
+    // is unchanged (`None`/`None` for a single top-level program collapses to one bucket — the flat case).
+    // Without the module key, a same-file scan flagged two inline modules' same-named types as a spurious
+    // duplicate (the distinctness half of #7946 — each module constructs+matches its OWN `Sh`, no crossing).
+    let mut seen_types: std::collections::HashSet<(Option<usize>, Option<StructId>, &str)> =
         std::collections::HashSet::new();
     let dup_types: Vec<(String, StructId)> = db
         .type_decls
         .iter()
         .filter(|t| db.is_user_node(t.occ))
-        .filter(|t| !t.name.is_empty() && !seen_types.insert((db.file_of(t.occ), t.name.as_str())))
+        .filter(|t| {
+            !t.name.is_empty()
+                && !seen_types.insert((
+                    db.file_of(t.occ),
+                    db.enclosing_module_of(t.occ),
+                    t.name.as_str(),
+                ))
+        })
         .map(|t| (t.name.clone(), t.occ))
         .collect();
     for (name, occ) in dup_types {
