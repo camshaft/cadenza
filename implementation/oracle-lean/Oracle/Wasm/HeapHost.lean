@@ -279,6 +279,71 @@ def mapLen : HeapState → List Value → HeapResult
         | _            => .trap s!"map-len: handle {m} is not a map"
   | s, _ => .trap "map-len: expected (i32)"
 
+/-! ### Functional map — READ-ONLY / non-consuming ops (`map-empty`/`map-lookup`/`map-size`, W5.2b-1). Key
+matching is structural VALUE-equality (champ_eq), NOT handle identity. The CONSUMING ops (`map-insert`/
+`map-remove`/`map-merge`) with their dup-and-drop ownership transfer are W5.2b-2; iteration/`to-list`
+(canonical order, co-owned with v-lean-oracle) is W5.2c. -/
+
+/-- Structural VALUE-equality over a worklist of handle pairs — the key/elem match for map/set ops. Same
+shape + equal scalar payloads, recursing into array/map children positionally (matches champ_eq's structural
+walk); handle identity short-circuits. Fuel-bounded tail recursion on a decreasing `Nat` (the proven
+`dropCascade` pattern); the caller sizes fuel ≥ the compared structures' total handles. -/
+def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
+  | 0,        _, _        => false
+  | _+1,      _, []       => true
+  | fuel + 1, s, (h1, h2) :: rest =>
+    if h1 == h2 then valueEqWork fuel s rest
+    else match s.getObj? h1, s.getObj? h2 with
+      | some o1, some o2 =>
+        match o1.value, o2.value with
+        | .int a,     .int b     => a == b && valueEqWork fuel s rest
+        | .float a,   .float b   => a == b && valueEqWork fuel s rest
+        | .float32 a, .float32 b => a == b && valueEqWork fuel s rest
+        | .bool a,    .bool b     => a == b && valueEqWork fuel s rest
+        | .array e1,  .array e2  =>
+          e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+        | .map e1,    .map e2    =>
+          e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+        | _,          _          => false
+      | _, _ => false
+
+/-- Structural value-equality of two handles (fuel sized to the pool). -/
+def valueEq (s : HeapState) (h1 h2 : UInt32) : Bool :=
+  s.valueEqWork (s.objects.size + s.edges + 1) [(h1, h2)]
+
+/-- `map-empty() → m`: a fresh empty map. -/
+def mapEmpty : HeapState → List Value → HeapResult
+  | s, []     => s.box (.map #[])
+  | _, _ :: _ => .trap "map-empty: expected ()"
+
+/-- `map-lookup(m, k) → val | 0`: the value for the first key structurally-equal to `k`, else NULL (`0`).
+BORROWS m + k (rc unchanged). -/
+def mapLookup : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 k] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-lookup: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-lookup: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          match (List.range (entries.size / 2)).find? (fun i => s.valueEq (entries[2 * i]!) k) with
+          | some i => .ret [.i32 (entries[2 * i + 1]!)] s
+          | none   => .ret [.i32 0] s
+        | _ => .trap s!"map-lookup: handle {m} is not a map"
+  | s, _ => .trap "map-lookup: expected (i32, i32)"
+
+/-- `map-size(m) → count`: the entry count (= slots / 2), O(1). -/
+def mapSize : HeapState → List Value → HeapResult
+  | s, [.i32 m] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-size: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-size: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries => .ret [.i32 (entries.size / 2).toUInt32] s
+        | _            => .trap s!"map-size: handle {m} is not a map"
+  | s, _ => .trap "map-size: expected (i32)"
+
 /-! ### Refcount / liveness core (+ the free-cascade) -/
 
 /-- `dup(h)`: require live (else UAF); on an immortal node it is a NO-OP (sentinel rc); else rc++. -/
@@ -411,6 +476,10 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("map-key",            toHostFn [.i32, .i32]             [.i32]  HeapState.mapKey)
   , ("map-val",            toHostFn [.i32, .i32]             [.i32]  HeapState.mapVal)
   , ("map-len",            toHostFn [.i32]                   [.i32]  HeapState.mapLen)
+    -- functional map, read-only (consuming insert/remove/merge = W5.2b-2; iter/to-list = W5.2c)
+  , ("map-empty",          toHostFn []                       [.i32]  HeapState.mapEmpty)
+  , ("map-lookup",         toHostFn [.i32, .i32]             [.i32]  HeapState.mapLookup)
+  , ("map-size",           toHostFn [.i32]                   [.i32]  HeapState.mapSize)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -710,5 +779,46 @@ private def probeMapCascade : Bool :=
      | _          => false)
   | none => false
 example : probeMapCascade = true := by native_decide
+
+/-! #### W5.2b-1: functional map read-only (map-empty/lookup/size) + structural value-eq key match. -/
+
+/-- map-lookup matches by structural VALUE-equality, not handle identity: a SECOND key handle boxed with the
+same value (5) as the stored key still finds the entry's value. -/
+private def probeMapLookup : Bool :=
+  match buildMap1 with
+  | some (m, k, v, s) =>
+    match boxInt s [.i64 5] with
+    | .ret [.i32 k2] s2 =>
+      (k2 != k) &&
+      (match mapLookup s2 [.i32 m, .i32 k2] with
+       | .ret [.i32 got] _ => got == v
+       | _                 => false)
+    | _ => false
+  | none => false
+example : probeMapLookup = true := by native_decide
+
+/-- map-lookup of an absent key returns NULL (0). -/
+private def probeMapLookupMiss : Bool :=
+  match buildMap1 with
+  | some (m, _, _, s) =>
+    match boxInt s [.i64 7] with
+    | .ret [.i32 k7] s2 =>
+      (match mapLookup s2 [.i32 m, .i32 k7] with
+       | .ret [.i32 0] _ => true
+       | _               => false)
+    | _ => false
+  | none => false
+example : probeMapLookupMiss = true := by native_decide
+
+/-- map-empty is size 0; a 1-entry map is size 1. -/
+private def probeMapEmptySize : Bool :=
+  match mapEmpty ({} : HeapState) [] with
+  | .ret [.i32 e] s0 =>
+    (match mapSize s0 [.i32 e] with | .ret [.i32 0] _ => true | _ => false) &&
+    (match buildMap1 with
+     | some (m, _, _, s) => (match mapSize s [.i32 m] with | .ret [.i32 1] _ => true | _ => false)
+     | none              => false)
+  | _ => false
+example : probeMapEmptySize = true := by native_decide
 
 end Oracle.Heap
