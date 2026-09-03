@@ -776,10 +776,20 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 let (τa, st) ← inferE m env st aId
                 let (τb, st) ← inferE m env st bId
                 let st ← unifyInfer τa τb st
+                let τ := applySubst st.subst τa
                 -- a FUNCTION is not comparable/equatable (ts) — `(= f g)` / `(< f g)` is a type error.
-                match applySubst st.subst τa with
+                match τ with
                 | .fn _ _ => .error (.illTyped "CDZ0203")
-                | _ => .ok (.bool, st)
+                | _ =>
+                  -- EQUALITY (`=`) works on ANY non-fn value (canonical byte-form equality — floats/sets/maps
+                  -- and compounds containing them are all equatable). ORDERING (`< > <= >=`) needs a TOTAL
+                  -- order: a BARE scalar float is fine (IEEE partial order → Bool), but a SET/MAP, or any
+                  -- COMPOUND containing a float/set/map, has NO total order → CDZ0203 (03-equality:1017 —
+                  -- "a compound is ordered only when EVERY component is"; the float/set/map no-total-order family).
+                  if h == "=".toUTF8 then .ok (.bool, st)
+                  else match τ with
+                       | .float _ | .floatVar _ => .ok (.bool, st)
+                       | _ => if containsSetOrMap τ then .error (.illTyped "CDZ0203") else .ok (.bool, st)
             | _, _ => .error (.unsupported "type oracle: malformed comparison")
           else if children.size == 3 && (String.fromUTF8? h).elim false (fun s => Eval.arithOps.contains s) then
             -- T1.4 — ARITHMETIC (`+ - * / %`): `(OP a b)` unifies the two operands, then requires the result
@@ -940,6 +950,10 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 -- collection escape guard (sound — rcdzc cannot determine a bare empty map's type either).
                 if (Eval.nameOf? m baseId == some "Map".toUTF8) && fld == "empty".toUTF8 then
                   .ok (.mapTy (.var st.next) (.var (st.next + 1)), { st with next := st.next + 2 })
+                -- T1.42 — the float CONSTANT `nan` of a width: `(. Float64 nan)` → Float64, `(. Float32 nan)` →
+                -- Float32 (annotated to THIS width — a cross-width `(= Float32.nan Float64.nan)` still clashes).
+                else if fld == "nan".toUTF8 && Eval.nameOf? m baseId == some "Float64".toUTF8 then .ok (.float 64, st)
+                else if fld == "nan".toUTF8 && Eval.nameOf? m baseId == some "Float32".toUTF8 then .ok (.float 32, st)
                 else
                 -- T1.27 — QUALIFIED nullary variant `(. Q M)` = `Q.M` (a `(type Q … M …)` variant used
                 -- unapplied): if `fld` is a NULLARY variant AND its declaring type name equals the base name
@@ -1669,6 +1683,29 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                               | .error e => .error e)
                            | _, _ => .error (.unsupported "type oracle: malformed Bytes.slice"))
                         else .error (.unsupported "type oracle: unmodeled Bytes op"))))
+             else if q == "Float64".toUTF8 || q == "Float32".toUTF8 then
+               -- T1.42 — width-namespaced APPLIED float OPS `(Float64.<op> …)` / `(Float32.<op> …)` (sigs from
+               -- prelude.rs float_module_record): `neg (Float w) → (Float w)`; `of-int (Int a) → (Float w)`
+               -- (int→float, total); `of (Float a) → (Float w)` (width convert, total). `w` = this module's
+               -- width. (`nan` is the unapplied constant, in the projection rule.) Other member → declined.
+               let w : Nat := if q == "Float64".toUTF8 then 64 else 32
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed float op (no arg)")
+                | some aId =>
+                  (match inferE m env st aId with
+                   | .error e => .error e
+                   | .ok (τa, st1) =>
+                     if op == "neg".toUTF8 && children.size == 2 then
+                       (match unifyInfer τa (.float w) st1 with | .ok st2 => .ok (.float w, st2) | .error e => .error e)
+                     else if op == "of-int".toUTF8 && children.size == 2 then
+                       -- source is any int width → unify with a fresh numVar (accepts int/numVar; a non-int → CDZ0203).
+                       (match unifyInfer τa (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                        | .ok st2 => .ok (.float w, st2) | .error e => .error e)
+                     else if op == "of".toUTF8 && children.size == 2 then
+                       -- source is any float width → unify with a fresh floatVar (a non-float → CDZ0203).
+                       (match unifyInfer τa (.floatVar st1.next) { st1 with next := st1.next + 1 } with
+                        | .ok st2 => .ok (.float w, st2) | .error e => .error e)
+                     else .error (.unsupported "type oracle: unmodeled float op")))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2536,6 +2573,15 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                 nodes := #[.atom 3, .atom 4, .atom 4, .list #[0, 1, 2], .atom 2, .list #[4], .atom 1,
                            .list #[6, 5, 3], .atom 5, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
                 root := 12 } == .wellTyped (.float 64))
+-- T1.42 (Float op): `(do (def (main) (Float64.of-int 5)) (export main))` → WellTyped Float64. `of-int`
+-- converts an int (here the literal 5) to this width's float → Float64. (`Float64.nan` const → Float64 too.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Float64".toUTF8, .name "of-int".toUTF8, .intLit false .dec (ByteArray.mk #[5]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .list #[3, 4], .atom 2,
+                           .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
+                           .list #[13, 9, 12]],
+                root := 14 } == .wellTyped (.float 64))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
