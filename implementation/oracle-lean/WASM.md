@@ -314,9 +314,29 @@ immediate-elem containers (`probeArrImmElems`/`-MapImmKeys`/`-VecImmElems`), lis
 CONSUME-op leak-balance witnesses (`probeMapMerge` b-wins + `probeSet{Union,Intersection,Difference}`, #8134):
 each drops the result and asserts `liveCount == 0` (the Perceus property) alongside result size.
 
-**W5.2c (next, needs the list core now on main):** `map`/`set` `iter` (cursor-only, no list dep) + `to-list`
-(value-SORTED per v-lean-oracle's canonical order — Int signed, Bool false<true, String/Bytes raw-byte
-lexicographic; homogeneous collections so cross-type never arises; floats are CDZ0203, never reach to-list).
+### W5.2c — enumeration (`to-list` implemented; the raw-cursor ruling)
+
+**`to-list` is the ONLY program-observable enumeration** (v-runtime, authoritative from champ.rs / value_codec.rs
+/ prelude): the language has NO `Map.fold`/`iter`/`keys`/`values`/`first` / `Set.fold` — the sole enumeration
+op is `Set.to-list : (Set a) -> (List a)` / `Map.to-list : (Map k v) -> (List (Tuple k v))`. So the enumeration
+order a program can observe is `to-list`'s CANONICAL value-sorted order, NOT the CHAMP hash order.
+
+- **`map-to-list(m, desc)` / `set-to-list(s, desc)` (indices 84/83, IMPLEMENTED — PR #8152):** BORROW the
+  collection (and `desc`, the compiler-baked shape descriptor, which the model IGNORES — for a scalar key/elem
+  the order IS the value order). Return a fresh owned `List`: `set-to-list` → `List a` in canonical element
+  order; `map-to-list` → `List (Tuple k v)` where each entry is a fresh 2-element array `[k, v]` in canonical
+  KEY order, each `k`/`v` dup'd (co-owned alongside the still-live collection, matching `op_map_to_list`).
+  Canonical order = v-lean-oracle's `cmpValue` (Int signed, Bool false<true; String/Bytes raw-byte lexicographic
+  arrive with W5.3). An unorderable (non-scalar) key never reaches the model — the compiler rejects it upstream
+  (CDZ0203). Modeled via `scalarOrdKey`/`keyLe`/`sortBy` (immediate-aware); witnessed sorted + leak-balanced.
+- **🔑 The raw CHAMP cursor (`map-iter`/`-next`/`-key`/`-val` 42–45, `set-iter`/`-next`/`-elem` 51–53) is
+  `lowerable:true` (emittable) but its hash order is NEVER program-observable** — it is only ever consumed by
+  order-INSENSITIVE folds (sum/count/membership/structural-eq) and the runtime's own walk-then-sort `to-list`.
+  ⇒ the oracle models the cursor in CANONICAL SORTED order (agrees regardless of the real hash order) and does
+  NOT skip cursor-importing modules. Cursor semantics: `iter` borrows the collection (dups the root); `-next`
+  CONSUMES the cursor and returns the advanced one (FBIP at rc 1 / path-copy at rc>1); `-key`/`-val`/`-elem`
+  BORROW; a key/elem is NULL only when exhausted. The cursor owns its descent-path frames (reclaimed by the
+  standard cascade). Modeling it is a W5.2c follow-up (after `to-list` lands).
 
 ## Gate coverage
 
