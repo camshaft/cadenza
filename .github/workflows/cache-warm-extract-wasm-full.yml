@@ -62,6 +62,10 @@ jobs:
         with:
           name: camshaft
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # skipPush (v-nix, completes the #8138/#8171 rollout): keep pull+auth, DROP the streaming per-build
+          # post-build-hook (the concurrent mid-build client racing the ca-derivations migration → "SchemaMigrations
+          # UNIQUE"). Push POST-JOB instead (step below).
+          skipPush: true
       # The bundled full-corpus differential (v-wasm-oracle, checks.<sys>.oracle-wasm-diff-full): self-realizes
       # the whole ~10.7k-case extraction closure + runs oracle-wasm-diff over it + tees the agree/diverge/skip
       # tally (report-only, like the daily). --keep-going so one bad case doesn't abort the whole sweep.
@@ -71,3 +75,17 @@ jobs:
       - name: build + run oracle-wasm-diff-full (advisory full-corpus differential)
         continue-on-error: true
         run: nix build .#checks.aarch64-linux.oracle-wasm-diff-full --print-build-logs --keep-going
+      # POST-JOB CACHIX PUSH (v-nix — replaces the streaming post-build-hook skipPush dropped; no concurrent-client
+      # migration race). Push target = corpus-wasm-extract-warm-full, the -full twin of the daily
+      # corpus-wasm-extract-warm: its $out is a manifest whose OUTPUT CLOSURE references the ~10.7k full-corpus
+      # extraction store paths (the same extractions the oracle-wasm-diff-full CHECK above realizes as build-INPUTS
+      # — which is why we push the warm PACKAGE, not the check out-path, to actually seed them). Cache-hit re-eval
+      # (shares the extraction layer with the check). Lets the NEXT weekly PULL the full extractions instead of
+      # cold-realising them. Symmetric with the daily extract push (#8171).
+      - name: push the full extraction closure to cachix (post-job — no concurrent-client migration race)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm-full --no-link --print-out-paths --keep-going)
