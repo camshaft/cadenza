@@ -997,3 +997,36 @@
   (output (: 15 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64)))
+
+; tmx1: the MUTUAL-RECURSION face of the BRICK-3b runtime-operand gap — `try` over a call whose
+; callee is one half of a mutually-recursive pair (ev/od Result-returning accumulators, the operand
+; `(inner (not (= n 3)))` a runtime-variant user fn). Declines today on ALL THREE targets ("lowers
+; only a constant operand" / run-rust declined / cadenza Poison) — the operand is opaque exactly
+; like the stored-closure and do-def faces above, but the flip adds a distinct emit obligation: the
+; Err unwind must break OUT of the mutual pair's CONVERTED LOOP (mtx1 pins the pair is a loop, not
+; frames — so the short-circuit is a loop-exit branch, not a frame unwind). Idealistic values by
+; hand-derivation matching the constructor-visible twin semantics: ev adds 1+try, od adds 2+try,
+; try(inner)=5 while n!=3; main(2) completes ev(2)->od(1)->ev(0) = Ok 13; main(10) counts down into
+; n=3 where inner Errs -> the whole loop short-circuits -> -1. Auto-flips with BRICK 3b (then also
+; pins loop-exit-unwind composition in one case). (breaker probe tm1.)
+(case
+  "a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands"
+  (input
+    (do
+      (def (inner (: b Bool)) (: (if b (Ok 5) (Err "stop")) (Result Int64 String)))
+      (def
+        (ev (: n Int64) (: acc Int64))
+        (:
+          (if (= n 0) (Ok acc) (od (- n 1) (+ acc (+ 1 (try (inner (not (= n 3))))))))
+          (Result Int64 String)))
+      (def
+        (od (: n Int64) (: acc Int64))
+        (:
+          (if (= n 0) (Ok acc) (ev (- n 1) (+ acc (+ 2 (try (inner (not (= n 3))))))))
+          (Result Int64 String)))
+      (def (main (: n Int64)) (match (ev n 0) ((Ok v) v) ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 13 Int64))
+  (call main (: 10 Int64))
+  (output (: -1 Int64)))
