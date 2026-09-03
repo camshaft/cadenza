@@ -50,17 +50,20 @@ inductive HeapValue where
   | set     (elems : Array UInt32)
   | vec     (elems : Array UInt32)
   | bytes   (bs : Array UInt8)
+  | sum     (disc : UInt32) (payload : UInt32)
 deriving Repr, DecidableEq, Inhabited, BEq
 
 /-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set/
 vec) — the child set the free-cascade and `mark-immortal-deep` walk. -/
 def HeapValue.arity : HeapValue → Nat
   | .array e | .map e | .set e | .vec e => e.size
+  | .sum _ _                            => 1
   | _                                   => 0
 
 /-- The owned child handles (array/map/set/vec slots; `[]` for a scalar). -/
 def HeapValue.children : HeapValue → List UInt32
   | .array e | .map e | .set e | .vec e => e.toList
+  | .sum _ p                            => [p]
   | _                                   => []
 
 /-- One heap object: its value, refcount, liveness (`false` once freed at rc 0), and immortality flag
@@ -376,6 +379,8 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
         | .map e1,    .map e2    =>
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+        | .sum d1 p1, .sum d2 p2 =>
+          d1 == d2 && valueEqWork fuel s ((p1, p2) :: rest)
         | _,          _          => false
       | _, _ => false
 
@@ -1066,6 +1071,42 @@ def bytesCompact : HeapState → List Value → HeapResult
         | _        => .trap s!"bytes-compact: handle {buf} is not a byte buffer"
   | s, _ => .trap "bytes-compact: expected (i32)"
 
+/-! ### Sums (tagged variants, indices 10–12) — a discriminant (u32; the compiler's per-sum-type variant index
+0,1,2,… over the variants in declaration order, NOT a universal tag) + a payload handle. A NULLARY variant
+carries the unit value (`arr-alloc(0)` → the unit immediate) as its payload. Constructors consume, accessors
+borrow (value-heap-runtime.md), mirroring arrays: `sum-new` MOVES the payload into the node (the sum owns it;
+drop cascades into it — arity 1); `sum-disc`/`sum-payload` BORROW. -/
+
+/-- `sum-new(disc, payload) → handle` [CONSUMES payload]: a fresh sum node tagged `disc`, owning `payload`. -/
+def sumNew : HeapState → List Value → HeapResult
+  | s, [.i32 disc, .i32 payload] => s.box (.sum disc payload)
+  | s, _ => .trap "sum-new: expected (i32, i32)"
+
+/-- `sum-disc(h) → disc`: the variant discriminant (BORROWS). -/
+def sumDisc : HeapState → List Value → HeapResult
+  | s, [.i32 h] =>
+    match s.getObj? h with
+    | none   => .trap s!"sum-disc: unknown handle {h}"
+    | some o =>
+      if !o.live then .trap s!"sum-disc: use-after-free (handle {h} freed)"
+      else match o.value with
+        | .sum d _ => .ret [.i32 d] s
+        | _        => .trap s!"sum-disc: handle {h} is not a sum"
+  | s, _ => .trap "sum-disc: expected (i32)"
+
+/-- `sum-payload(h) → payload`: the payload handle, BORROWED (rc unchanged; the sum keeps ownership — a caller
+that keeps it gets a compiler-emitted `dup`, like `arr-get`). -/
+def sumPayload : HeapState → List Value → HeapResult
+  | s, [.i32 h] =>
+    match s.getObj? h with
+    | none   => .trap s!"sum-payload: unknown handle {h}"
+    | some o =>
+      if !o.live then .trap s!"sum-payload: use-after-free (handle {h} freed)"
+      else match o.value with
+        | .sum _ p => .ret [.i32 p] s
+        | _        => .trap s!"sum-payload: handle {h} is not a sum"
+  | s, _ => .trap "sum-payload: expected (i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -1142,6 +1183,10 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("bytes-concat",       toHostFn [.i32, .i32]             [.i32]  HeapState.bytesConcat)
   , ("bytes-slice",        toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.bytesSlice)
   , ("bytes-compact",      toHostFn [.i32]                   [.i32]  HeapState.bytesCompact)
+    -- sums (tagged variants): construct (consume payload) + disc/payload accessors (borrow)
+  , ("sum-new",            toHostFn [.i32, .i32]             [.i32]  HeapState.sumNew)
+  , ("sum-disc",           toHostFn [.i32]                   [.i32]  HeapState.sumDisc)
+  , ("sum-payload",        toHostFn [.i32]                   [.i32]  HeapState.sumPayload)
     -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -1718,5 +1763,40 @@ private def probeBytesCompact : Bool :=
     | _ => false
   | _ => false
 example : probeBytesCompact = true := by native_decide
+
+/-! #### Sum (tagged variant) witnesses — heap payload (cascade) + nullary (unit-immediate payload). -/
+
+/-- sum-new(disc 1, heap-float 5): liveCount 2 (sum node + payload); disc reads 1, payload reads back 5;
+dropping the sum cascades into the payload → census 0. -/
+private def probeSumHeapPayload : Bool :=
+  match boxFloat ({} : HeapState) [.f64 5] with
+  | .ret [.i32 pl] s0 =>
+    match sumNew s0 [.i32 1, .i32 pl] with
+    | .ret [.i32 su] s1 =>
+      (s1.liveCount == 2) &&
+      (match sumDisc s1 [.i32 su] with | .ret [.i32 1] _ => true | _ => false) &&
+      (match sumPayload s1 [.i32 su] with
+       | .ret [.i32 p] _ => (match getFloat s1 [.i32 p] with | .ret [.f64 5] _ => true | _ => false)
+       | _               => false) &&
+      (match drop s1 [.i32 su] with | .ret [] s2 => s2.liveCount == 0 | _ => false)
+    | _ => false
+  | _ => false
+example : probeSumHeapPayload = true := by native_decide
+
+/-- A NULLARY variant: sum-new(disc 0, unit-immediate payload from arr-alloc(0)): only the sum node is heap
+(liveCount 1); disc 0, payload IS the unit immediate; dropping the sum frees just the node (unit is
+census-free) → census 0. -/
+private def probeSumNullary : Bool :=
+  match arrAlloc ({} : HeapState) [.i32 0] with
+  | .ret [.i32 u] s0 =>
+    match sumNew s0 [.i32 0, .i32 u] with
+    | .ret [.i32 su] s1 =>
+      (s1.liveCount == 1) &&
+      (match sumDisc s1 [.i32 su]    with | .ret [.i32 0] _ => true | _ => false) &&
+      (match sumPayload s1 [.i32 su] with | .ret [.i32 p] _ => p == immUnit | _ => false) &&
+      (match drop s1 [.i32 su] with | .ret [] s2 => s2.liveCount == 0 | _ => false)
+    | _ => false
+  | _ => false
+example : probeSumNullary = true := by native_decide
 
 end Oracle.Heap
