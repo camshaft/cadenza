@@ -1,0 +1,21 @@
+# xtask-codegen-support — the shared rust-emit tail for the `xtask-codegen-*` bins (v-xtask-decompose).
+#
+# Every codegen bin (declines / wasm-abi / contracts) builds a `proc_macro2::TokenStream` via `quote!`
+# and must render it to BYTE-IDENTICAL committed Rust: parse → prettyplease → rustfmt. That tail was
+# copy-pasted identically into all three; single-sourced here so a fix (e.g. the rustfmt-required
+# hard-error) can't drift between them. Dev-desk only — never enters the shipped compiler.
+[package]
+name = "xtask-codegen-support"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The rust-emit render tail: parse the generated token tree (syn) → pretty-print (prettyplease) → rustfmt.
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }
+proc-macro2 = "1"
+
+[dev-dependencies]
+# Build a token tree in the format_tokens round-trip test the same way the codegen bins do.
+quote = "1"

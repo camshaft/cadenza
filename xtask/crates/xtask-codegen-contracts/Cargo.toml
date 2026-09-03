@@ -24,7 +24,9 @@ path = "src/main.rs"
 [dependencies]
 cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
 cdz-contract = { path = "../../../implementation/seed/crates/cdz-contract" }
-prettyplease = "0.2"
+# syn stays (used for Ident construction throughout the schema emit); the parse→prettyplease→rustfmt render
+# tail is shared via xtask-codegen-support, so prettyplease is ITS dep, not duplicated here.
+xtask-codegen-support = { path = "../xtask-codegen-support" }
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 proc-macro2 = "1"

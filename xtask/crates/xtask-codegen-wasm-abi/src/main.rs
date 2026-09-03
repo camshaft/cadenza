@@ -26,6 +26,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use std::path::{Path, PathBuf};
+use xtask_codegen_support::{format_tokens, rustfmt_stdin};
 
 fn main() {
     let repo = std::env::var_os("CDZ_REPO_ROOT")
@@ -167,41 +168,6 @@ fn sexpr_to_arenas(cdz: &Path, sexpr: &Path) -> cadenza_ast::ast::Arenas {
         );
         std::process::exit(1);
     })
-}
-
-/// Pretty-print a generated token tree to formatted Rust source (prettyplease, then rustfmt if available).
-fn format_tokens(tokens: proc_macro2::TokenStream) -> String {
-    let file = syn::parse2::<syn::File>(tokens)
-        .unwrap_or_else(|e| panic!("xtask codegen: generated tokens did not parse (a bug): {e}"));
-    let pretty = prettyplease::unparse(&file);
-    // rustfmt is REQUIRED for byte-identical output: prettyplease alone diverges from the committed
-    // cargo-fmt'd line-wrapping, so a rustfmt-less run would silently emit MIS-FORMATTED source (v-nix
-    // caught this wiring cdzPlatformContracts — byte-identity holds only with rustfmt on PATH). Hard-error
-    // rather than fall back, so a rustfmt-less caller can never commit/overlay mis-formatted output.
-    rustfmt_stdin(&pretty).unwrap_or_else(|| {
-        eprintln!(
-            "xtask codegen: `rustfmt` is required on PATH (prettyplease alone diverges from the committed \
-             cargo-fmt'd form → mis-formatted output). Install the pinned toolchain's rustfmt."
-        );
-        std::process::exit(1);
-    })
-}
-
-/// Run `src` through the `rustfmt` binary (stdin→stdout). `None` if rustfmt is unavailable or errors.
-fn rustfmt_stdin(src: &str) -> Option<String> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("rustfmt")
-        .args(["--edition", "2024"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(src.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The `//!` banner prepended to `wasm_abi.rs` — the "do-not-edit / regenerate" notice.

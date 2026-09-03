@@ -16,6 +16,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::path::{Path, PathBuf};
+use xtask_codegen_support::format_tokens;
 
 /// One decline catalog entry, read from a `(decline Variant (code Sym) (reason "…") (doc "…")
 /// (blocked-on …))` form. `blocked-on` is sexpr-only tracking metadata — NOT read here.
@@ -231,37 +232,4 @@ fn sexpr_to_arenas(cdz: &Path, sexpr: &Path) -> cadenza_ast::ast::Arenas {
         );
         std::process::exit(1);
     })
-}
-
-/// Pretty-print a generated token tree to formatted Rust (prettyplease, then rustfmt — required for
-/// byte-identical output, matching the wasm-abi codegen).
-fn format_tokens(tokens: TokenStream) -> String {
-    let file = syn::parse2::<syn::File>(tokens).unwrap_or_else(|e| {
-        panic!("xtask-codegen-declines: generated tokens did not parse (a bug): {e}")
-    });
-    let pretty = prettyplease::unparse(&file);
-    rustfmt_stdin(&pretty).unwrap_or_else(|| {
-        eprintln!(
-            "xtask-codegen-declines: `rustfmt` is required on PATH (prettyplease alone diverges from the \
-             committed cargo-fmt'd form). Install the pinned toolchain's rustfmt."
-        );
-        std::process::exit(1);
-    })
-}
-
-/// Run `src` through `rustfmt` (stdin→stdout). `None` if rustfmt is unavailable or errors.
-fn rustfmt_stdin(src: &str) -> Option<String> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("rustfmt")
-        .args(["--edition", "2024"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(src.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
