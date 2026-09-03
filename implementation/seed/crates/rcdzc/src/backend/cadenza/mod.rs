@@ -5561,7 +5561,9 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
                 lhs,
                 rhs,
             } => {
-                // The addend must be a size read over the scrutinee.
+                // The addend must be a size read over the scrutinee (peeling a byte-aligned bit-field's
+                // no-op full-width mask, so `(bits n 8)`'s `BinIntRead & 255` reads as the plain size read).
+                let rhs = peel_full_mask(db, rhs);
                 match core_of(db, rhs) {
                     Core::BinIntRead { bytes, .. } if local_binder(db, bytes) == Some(scrut) => {}
                     _ => return None,
@@ -5602,6 +5604,10 @@ fn parse_bin_len_cond(db: &mut Db, node: StructId) -> Option<BinArmCond> {
             guard.push(c); // a non-`Compare` boolean conjunct (a bool binder, a call) → a user guard
             continue;
         };
+        // Peel a byte-aligned bit-field's no-op full-width mask on the compare LHS, so a `(bits n 8)`'s
+        // non-negativity floor `(BinIntRead & 255) >= 0` (and any literal probe over it) is recognized as the
+        // plain read rather than mis-routed to a spurious user guard. A `BytesLen`/other LHS peels to itself.
+        let lhs = peel_full_mask(db, lhs);
         match core_of(db, lhs) {
             // The length probe: `== total` (whole-scrutinee exact) or `>= total` (a final `(bytes rest)`
             // absorbs the remainder — the fixed prefix `total` need only be present). A dependent-size arm has
@@ -5819,6 +5825,9 @@ fn collect_bin_int_segs(
                     acc.bail = true;
                     return;
                 }
+                // Peel a byte-aligned bit-field size's no-op full-width mask, so `(bytes payload n)` sized by a
+                // `(bits n 8)` reads its `BinIntRead & 255` size as the plain earlier-segment size read.
+                let len = peel_full_mask(db, len);
                 match core_of(db, len) {
                     // DEPENDENT-size `(bytes/utf8 payload n)` — `len` is an earlier int segment's `BinIntRead`.
                     Core::BinIntRead {
@@ -6541,6 +6550,32 @@ fn resolve_pos_ty(own: Option<Ty>, exp: Option<Ty>) -> Option<Ty> {
         Some(t) => Some(t),
         None => exp,
     }
+}
+
+/// Peel a byte-aligned bit-field's NO-OP full-width mask. A `(bits n k)` pattern binder decodes (lower's
+/// `bin_bitfield_read`) as `Arith{BitAnd, BinIntRead{width:w}[>>shift], ConstInt((1<<k)-1)}`. For a BYTE-ALIGNED
+/// single field (`k == w*8`, no shift) the run IS the field and the mask covers the whole `w`-byte read — a
+/// no-op — so the value equals the plain `BinIntRead`. Return the inner read's node-id so the bin-match
+/// size/segment recognition treats `(bits n 8)` as an ordinary `(uN n)` int segment (value-equivalent +
+/// idempotent: `(u8 n)` re-lowers to a plain `BinIntRead`). Any other node — a NON-full-width mask (a real
+/// bit-field narrower than its run, e.g. `(bits n 5)`), a shifted/packed field, or a plain read — is returned
+/// UNCHANGED (those are the harder multi-field-run case, out of this slice; conservative → they still decline).
+fn peel_full_mask(db: &mut Db, node: StructId) -> StructId {
+    if let Core::Arith {
+        op: crate::resolved::Prim::BitAnd,
+        lhs,
+        rhs,
+    } = core_of(db, node)
+        && let Core::BinIntRead { width, .. } = core_of(db, lhs)
+        && let Core::ConstInt(m) = core_of(db, rhs)
+    {
+        let bits = (width as u32) * 8;
+        let full: i64 = if bits >= 64 { -1 } else { (1i64 << bits) - 1 };
+        if m.to_i64() == Some(full) {
+            return lhs;
+        }
+    }
+    node
 }
 
 /// Fill FREE type args in `base` (a `Ty::Sum`) from CONCRETE args in `others` (sibling arm-body types),
