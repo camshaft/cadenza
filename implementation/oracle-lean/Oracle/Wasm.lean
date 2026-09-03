@@ -287,6 +287,36 @@ def stringResult? (bytes : ByteArray) (entry : ByteArray) : Bool :=
   | .ok m => stringResultHeadOfModule? m entry
   | .error _ => false
 
+/-- Does the type node subtree at `i` mention a `String` head anywhere (fuel-bounded walk over list children)?
+Used to DECLINE a driver-decodable heap result type that NESTS a `String` — e.g. `(List String)`, `(Set String)`,
+`(Tuple Int String)`, `(Map K String)`. The structural decoder yields `.bytes` for those nested strings, but
+Core's value is `.str`, so decoding them would FALSE-DIVERGE (the top-level `.toStr` fixup only retags the outer
+value, not nested ones). Declining turns that false alarm into a SOUND SKIP until the recursive type-directed
+fixup lands. -/
+def tyNodeMentionsString? (m : Module) : Nat → Nat → Bool
+  | 0,        _ => false
+  | fuel + 1, i =>
+    match m.nodes[i]? with
+    | some (.atom _)  => nameAtom? m i == some "String".toUTF8
+    | some (.list cs) => cs.any (fun c => tyNodeMentionsString? m fuel c)
+    | _               => false
+
+/-- Whether the entry's (driver-decodable) heap result type NESTS a `String` anywhere in its type children — a
+currently-false-diverging shape (nested `.bytes` vs Core's `.str`) that we route to a sound skip. A BARE
+single-head `String` (`resultHeapDecodable?` is false for it; handled by `stringResult?`) is NOT matched here —
+this only fires for a container/tuple result whose element/key/value type mentions `String`. -/
+def resultNestsString? (bytes : ByteArray) (entry : ByteArray) : Bool :=
+  match Ast.decode bytes with
+  | .ok m =>
+    m.nodes.any (fun node =>
+      match node with
+      | .list cs =>
+        if nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry then
+          (List.range cs.size).any (fun j => j ≥ 2 && tyNodeMentionsString? m (m.nodes.size + 1) cs[j]!)
+        else false
+      | _ => false)
+  | .error _ => false
+
 /-- The result-type HEAD NAME of the entry when the node is PRESENT but its head is not a modeled scalar
 type (`scalarTyOfName? = none`) — i.e. the exact head we skipped on, for diagnostics. `none` if the entry's
 result-type node is absent entirely (a different skip cause) or its head IS modeled. Fuels v-lean-oracle's
@@ -352,7 +382,11 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
     -- handle (the ~heap-valued-result lever). A single-head `String` result decodes the same way but retags
     -- the top-level `.bytes`→`.str` (`.toStr`); everything else needs no fixup (`.asIs`). Else a sound skip.
     if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8 then
-      let o := drive coreWat trial; (toOutcomeHeap .asIs o, wasmLeakOf o)
+      -- A decodable container/tuple that NESTS a `String` would false-diverge (nested `.bytes` vs Core's
+      -- `.str`) — decline it to a sound skip until the recursive type-directed fixup lands.
+      if resultNestsString? resultTypeBytes trial.entry.toUTF8 then
+        (.unsupported "heap result nests a String (decoded structurally as Bytes) — recursive type-directed fixup pending", 0)
+      else let o := drive coreWat trial; (toOutcomeHeap .asIs o, wasmLeakOf o)
     else if stringResult? resultTypeBytes trial.entry.toUTF8 then
       let o := drive coreWat trial; (toOutcomeHeap .toStr o, wasmLeakOf o)
     else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
@@ -488,5 +522,27 @@ example : (toOutcomeHeap .toStr (.ok #[.compound (.bytes "ok".toUTF8)]) == .valu
 example : stringResult? (rtBytes "String") "main".toUTF8 = true := by native_decide
 example : stringResult? (rtBytes "List") "main".toUTF8 = false := by native_decide
 example : stringResult? (rtBytes "Int") "main".toUTF8 = false := by native_decide
+
+/-- A `cdz-result-type` section for a NESTED container type `(result-type main (container elem))` — e.g.
+`(List String)`. -/
+private def rtNestedBytes (container elem : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name container.toUTF8, .name elem.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .list #[2, 3], .list #[0, 1, 4]], root := 5 }
+
+-- `resultNestsString?`: a container nesting `String` is detected; a container of `Int` (or a bare `List`) is not.
+example : resultNestsString? (rtNestedBytes "List" "String") "main".toUTF8 = true := by native_decide
+example : resultNestsString? (rtNestedBytes "Set" "String") "main".toUTF8 = true := by native_decide
+example : resultNestsString? (rtNestedBytes "List" "Int") "main".toUTF8 = false := by native_decide
+example : resultNestsString? (rtBytes "List") "main".toUTF8 = false := by native_decide
+-- end-to-end: a `(List String)` result is DECLINED to a sound skip (NOT decoded/diverged), even though the stub
+-- driver hands back a `.compound` — this is the nested-String false-diverge guard.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.str "hi".toUTF8])]) "(module)"
+    (rtNestedBytes "List" "String") { entry := "main" }
+    == .unsupported "heap result nests a String (decoded structurally as Bytes) — recursive type-directed fixup pending") = true := by native_decide
+-- but a `(List Int)` result still DECODES (the guard does not over-fire on non-String containers).
+example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "(module)"
+    (rtNestedBytes "List" "Int") { entry := "main" }
+    == .value (.list #[.int 1, .int 2])) = true := by native_decide
 
 end Oracle.Wasm
