@@ -558,17 +558,10 @@ pub fn reduce_handle(
     // under a multi-shot arm too. Same β-reduction the inline arm performs, only sequenced earlier; a
     // recursive callee is excluded by `call_reaches_discharged_effect` (specialized, not inlined). Gated on
     // a cheap syntactic check so the common no-such-redex body is untouched.
-    // SAFE-DECLINE FLOOR (eg1 name-collision binder-capture, PR #8015 follow-up). Checked on the PRE-INLINE
-    // body — while performing-helper calls are still CALLS, so the helper-vs-continuation provenance is
-    // visible (post-inline the scopes merge and the capture becomes invisible: every reference resolves to
-    // the nearest binder, so the "wrong" binding looks valid). If any performing cross-fn helper's internal
-    // match-arm binder name collides with a match-arm binder in the handle body, the commute would nest the
-    // continuation under that binder and CAPTURE it → a silent wrong value. DECLINE (CDZ0900) so it
-    // rejects-not-miscompiles. Distinct-name cases (eg1) do not collide and fold. Superseded by the proper
-    // freshening fix (freshen the inlined helper's match-arm binders) once that lands.
-    if body_has_capturing_helper_binder_collision(db, body, &ctx) {
-        return None;
-    }
+    // (eg1 name-collision binder-capture is now fixed at the INLINE point — `reduce_applied_lambdas`
+    // α-renames each inlined helper body's match-arm pattern binders to fresh names, so the commute can no
+    // longer nest a continuation reference under a colliding helper arm binder. The former pre-inline
+    // SAFE-DECLINE floor is thus obsolete and removed; the collision case now FOLDS to its correct value.)
     let body = if body_contains_applied_performing_lambda(db, body, &ctx) {
         reduce_applied_lambdas(db, body, &ctx)
     } else {
@@ -1969,118 +1962,247 @@ fn pattern_binder_names(db: &Db, pat: StructId, out: &mut std::collections::Hash
     }
 }
 
-/// Collect the names of every MATCH-ARM pattern binder anywhere in `node`'s subtree into `out` (recursing
-/// all children). These are exactly the binders `freshen_walk` deliberately leaves un-renamed — the ones that
-/// can CAPTURE a spliced continuation reference in the resumptive-conditional commute (the eg1 collision).
-fn match_arm_binder_names_in(db: &Db, node: StructId, out: &mut std::collections::HashSet<String>) {
-    if let Some(tail) = db.ast.as_form(node, "match").map(<[_]>::to_vec) {
-        // tail = [scrutinee, (pat body)…]; skip the scrutinee, collect each arm PATTERN's binders.
+/// Rename the BINDER ATOMS of a match pattern to their fresh names per `fresh` (old→fresh), returning the
+/// rebuilt pattern (or `None` if nothing changed). Mirrors [`pattern_binder_names`]'s structure: the head of a
+/// compound is not a binder; `_`/`..` are not binders; a record field `(= field sub)` renames only `sub`.
+fn rename_pattern_atoms(
+    db: &mut Db,
+    pat: StructId,
+    fresh: &HashMap<String, String>,
+) -> Option<StructId> {
+    match db.ast.get(pat).clone() {
+        Struct::Atom(_) => {
+            let n = db.ast.as_name(pat)?;
+            fresh.get(n).map(|f| db.push_name(f))
+        }
+        Struct::List(items) if items.len() == 3 && db.ast.as_name(items[0]) == Some("=") => {
+            // record field `(= field sub)` — only the sub-pattern binds.
+            rename_pattern_atoms(db, items[2], fresh)
+                .map(|new_sub| db.push_list(vec![items[0], items[1], new_sub]))
+        }
+        Struct::List(items) => {
+            let mut changed = false;
+            let mut out = Vec::with_capacity(items.len());
+            for (i, &sub) in items.iter().enumerate() {
+                // The head (index 0) is a ctor/alias, never a binder; `..` is inert.
+                if i == 0 || db.ast.as_name(sub) == Some("..") {
+                    out.push(sub);
+                    continue;
+                }
+                // A `(.. operand)` rest node: rename its operand binder.
+                if let Some(args) = db.ast.as_form(sub, "..").map(<[_]>::to_vec) {
+                    // rebuild the (.. operand…) node with renamed operands
+                    let mut inner_changed = false;
+                    let mut new_args = vec![db.push_name("..")];
+                    for &a in &args {
+                        match rename_pattern_atoms(db, a, fresh) {
+                            Some(na) => {
+                                inner_changed = true;
+                                new_args.push(na);
+                            }
+                            None => new_args.push(a),
+                        }
+                    }
+                    if inner_changed {
+                        changed = true;
+                        out.push(db.push_list(new_args));
+                    } else {
+                        out.push(sub);
+                    }
+                    continue;
+                }
+                match rename_pattern_atoms(db, sub, fresh) {
+                    Some(ns) => {
+                        changed = true;
+                        out.push(ns);
+                    }
+                    None => out.push(sub),
+                }
+            }
+            if changed {
+                Some(db.push_list(out))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Capture-avoiding α-rename of MATCH-ARM pattern binders in a SELF-CONTAINED inlined helper body, so an
+/// inlined performing helper's internal arm binder (e.g. `a` in `stamp`'s `(match p (#tuple(a b) …))`) cannot
+/// CAPTURE a foreign continuation reference the resumptive-conditional commute later nests under it (the eg1
+/// name-collision miscompile that the pre-inline safe-decline formerly rejected). Match-arm binder refs
+/// resolve by NAME via `lookup_scope` (a variant/tuple binder yields a `SumPayload`/`Proj`, NOT a single
+/// keyed occurrence — so `freshen_walk`'s StructId-keyed HashMap does not extend here), so this renames by
+/// SPELLING, shadowing-aware: `renames` (old→fresh) threads down; a NAME atom whose spelling is a currently-
+/// in-scope renamed binder is rewritten; a scope that REBINDS a name (a `let`/`do`-def/`fn` param / an inner
+/// arm pattern of the same spelling) drops it from the active `renames` for that sub-scope. Returns `Some`
+/// ONLY when a rename applied — the caller then SHARES the node untouched, keeping every free/pinned ref
+/// (an outer param, the `C.tick` effect-op global) resolve-stable, exactly `freshen_walk`'s sharing
+/// discipline (rebuilding a pinned ref re-resolves it against the not-yet-reparented tree → spurious
+/// CDZ0101). SOUND only on a self-contained body (the `apply_lambda` result): its arm-binder refs are all
+/// internal, so renaming them consistently is a pure α-conversion (byte-identical for a non-colliding body).
+fn freshen_match_arm_binders(
+    db: &mut Db,
+    node: StructId,
+    renames: &HashMap<String, String>,
+) -> Option<StructId> {
+    // A NESTED handle is the inner fold's concern (freshened when IT reduces) — SHARE it whole.
+    if matches!(resolved_of(db, node), Resolved::Handle { .. })
+        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    {
+        return None;
+    }
+    // A NAME atom: rewrite iff its spelling is a currently-in-scope renamed arm binder.
+    if let Some(n) = db.ast.as_name(node) {
+        return renames.get(n).map(|fresh| db.push_name(fresh));
+    }
+    // A `match` — freshen the scrutinee under the CURRENT renames (it is outside the arm scope); each arm
+    // renames its OWN pattern binders to fresh names over its body, SHADOWING any same-named outer rename.
+    if let Some(tail) = db.ast.as_form(node, "match").map(<[_]>::to_vec)
+        && tail.len() >= 2
+    {
+        let scrut = tail[0];
+        let new_scrut = freshen_match_arm_binders(db, scrut, renames);
+        let mut changed = new_scrut.is_some();
+        let mut new_arms = Vec::with_capacity(tail.len() - 1);
         for &arm in tail.iter().skip(1) {
             if let Struct::List(pb) = db.ast.get(arm).clone()
                 && pb.len() == 2
             {
-                pattern_binder_names(db, pb[0], out);
-            }
-        }
-    }
-    if let Struct::List(children) = db.ast.get(node).clone() {
-        for c in children {
-            match_arm_binder_names_in(db, c, out);
-        }
-    }
-}
-
-/// Collect every bare-name atom occurring in `node`'s subtree into `out` (references AND nested binders —
-/// an over-set of "names visible in this material"). Used to test whether an inlined helper's match-arm
-/// binder name could shadow a name that appears in the continuation nested under it.
-fn collect_name_atoms(db: &Db, node: StructId, out: &mut std::collections::HashSet<String>) {
-    match db.ast.get(node) {
-        Struct::Atom(_) => {
-            if let Some(n) = db.ast.as_name(node) {
-                out.insert(n.to_string());
-            }
-        }
-        Struct::List(children) => {
-            let children = children.clone();
-            for c in children {
-                collect_name_atoms(db, c, out);
-            }
-        }
-    }
-}
-
-/// SAFE-DECLINE detector for the eg1 name-collision binder-capture (PR #8015 follow-up, restoring
-/// reject-don't-miscompile per the standing operator directive). Scoped to the CONFIRMED capturing shape: a
-/// `match` whose SCRUTINEE is a performing CROSS-FUNCTION helper call (the inline trigger). The fold inlines
-/// that helper into the scrutinee and the resumptive-conditional commute nests the match's CONTINUATION (its
-/// arm bodies) lexically UNDER the inlined helper's own match-arm binders. If a helper match-arm binder name
-/// also appears in an arm body, that occurrence would be CAPTURED by the helper's binder (a hygiene gap —
-/// `freshen_walk` skips match-arm binders), a silent WRONG value (2-level probe: the outer `a` reads the
-/// inner helper's `a`). DECLINE so it rejects-not-miscompiles. Distinct-name cases (eg1's `s`/`v` destructure
-/// vs the helper's internal `a`/`b`) do not intersect and still fold. Scoped to match-SCRUTINEE helpers (NOT
-/// e.g. a `let`-init helper, whose continuation typically RE-BINDS the colliding name — benign, and
-/// over-declining it broke a passing rust-emit test). Superseded by the proper freshening fix (freshen the
-/// inlined helper's match-arm binders) once it lands, which folds these correctly instead of declining.
-fn body_has_capturing_helper_binder_collision(
-    db: &mut Db,
-    body: StructId,
-    ctx: &HandlerCtx,
-) -> bool {
-    // A NESTED handle is the inner fold's concern (freshened when IT reduces) — opaque.
-    if matches!(resolved_of(db, body), Resolved::Handle { .. })
-        || db.ast.head_name(body) == Some(HANDLE_INTERNAL)
-    {
-        return false;
-    }
-    if let Resolved::Match { scrutinee, arms } = resolved_of(db, body) {
-        // Peel the scrutinee to the underlying call — following a leading annotation / const-block AND a
-        // `let`-binding REFERENCE (`Resolved::Ref { value }` → the binding's init occurrence). The capturing
-        // shape is a VALUE-FLOW, not a syntactic position: a performing helper let-bound and THEN matched
-        // (`(let ((q (stamp …))) (match q (#tuple(a …) … a …)))`, breaker col4) commutes the same way as a
-        // direct-scrutinee helper — the match's continuation is nested under the inlined helper's arm binder,
-        // capturing a colliding continuation reference — so it must be caught too (a P0 live miscompile the
-        // scrutinee-only check missed: folded 2102 not 2101). Bounded peel; stops at the first non-ref/annot.
-        let mut call = scrutinee;
-        for _ in 0..16 {
-            match resolved_of(db, call) {
-                Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => call = expr,
-                Resolved::Ref { value } => call = value,
-                _ => break,
-            }
-        }
-        if let Resolved::Apply { head, .. } = resolved_of(db, call)
-            && is_perform(db, head, ctx).is_none()
-            && call_reaches_discharged_effect(db, head, ctx)
-        {
-            let callee_body = crate::eval::lambda_params_and_body(db, head)
-                .map(|(_, b)| b)
-                .or_else(|| crate::eval::lambda_body_of_nullary(db, head));
-            if let Some(cbody) = callee_body {
-                let mut cnames = std::collections::HashSet::new();
-                match_arm_binder_names_in(db, cbody, &mut cnames);
-                if !cnames.is_empty() {
-                    // Names appearing in this match's ARM BODIES — the continuation the commute nests under
-                    // the inlined helper's match-arm binders. A collision there is a capture hazard.
-                    let mut arm_names = std::collections::HashSet::new();
-                    for &(_pat, arm_body) in arms.iter() {
-                        collect_name_atoms(db, arm_body, &mut arm_names);
-                    }
-                    if cnames.intersection(&arm_names).next().is_some() {
-                        return true;
-                    }
+                let (pat, abody) = (pb[0], pb[1]);
+                let mut pnames = std::collections::HashSet::new();
+                pattern_binder_names(db, pat, &mut pnames);
+                let mut arm_renames = renames.clone();
+                let mut fresh_map = HashMap::default();
+                for pn in &pnames {
+                    let f = format!("#{pn}{}", arm.0);
+                    arm_renames.insert(pn.clone(), f.clone());
+                    fresh_map.insert(pn.clone(), f);
                 }
+                let new_pat = rename_pattern_atoms(db, pat, &fresh_map);
+                let new_body = freshen_match_arm_binders(db, abody, &arm_renames);
+                if new_pat.is_some() || new_body.is_some() {
+                    changed = true;
+                    new_arms.push(
+                        db.push_list(vec![new_pat.unwrap_or(pat), new_body.unwrap_or(abody)]),
+                    );
+                } else {
+                    new_arms.push(arm);
+                }
+            } else if let Some(na) = freshen_match_arm_binders(db, arm, renames) {
+                changed = true;
+                new_arms.push(na);
+            } else {
+                new_arms.push(arm);
             }
         }
+        if !changed {
+            return None;
+        }
+        let mut ch = vec![db.push_name("match"), new_scrut.unwrap_or(scrut)];
+        ch.extend(new_arms);
+        return Some(db.push_list(ch));
     }
-    // Recurse — a capturing match may be nested (the inner match of eg1's two-level shape).
-    if let Struct::List(children) = db.ast.get(body).clone() {
-        for c in children {
-            if body_has_capturing_helper_binder_collision(db, c, ctx) {
-                return true;
+    // A `let` — each binder SHADOWS a same-named outer rename in the body + LATER inits (sequential scope).
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+    {
+        let mut cur = renames.clone();
+        let mut changed = false;
+        let mut new_pairs = Vec::with_capacity(pairs.len());
+        for &p in &pairs {
+            if let Struct::List(kv) = db.ast.get(p).clone()
+                && kv.len() == 2
+            {
+                // Init is in the scope BEFORE this binder — freshen under the running `cur`.
+                let new_init = freshen_match_arm_binders(db, kv[1], &cur);
+                // This binder now SHADOWS a same-named outer rename for the body + later inits.
+                if let Some(nm) = db.ast.as_name(kv[0]) {
+                    cur.remove(nm);
+                }
+                if let Some(ni) = new_init {
+                    changed = true;
+                    new_pairs.push(db.push_list(vec![kv[0], ni]));
+                } else {
+                    new_pairs.push(p);
+                }
+            } else {
+                new_pairs.push(p);
             }
         }
+        let new_body = freshen_match_arm_binders(db, tail[1], &cur);
+        if !changed && new_body.is_none() {
+            return None;
+        }
+        let lh = db.push_name("let");
+        let binds = db.push_list(new_pairs);
+        return Some(db.push_list(vec![lh, binds, new_body.unwrap_or(tail[1])]));
     }
-    false
+    // A `do` — a `(def NAME v)` item SHADOWS a same-named outer rename for the FOLLOWING items.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let mut cur = renames.clone();
+        let mut changed = false;
+        let mut new_items = vec![db.push_name("do")];
+        for &item in &items {
+            let new_item = freshen_match_arm_binders(db, item, &cur);
+            if let Some(dtail) = db.ast.as_form(item, "def").map(<[_]>::to_vec)
+                && dtail.len() == 2
+                && let Some(nm) = db.ast.as_name(dtail[0])
+            {
+                cur.remove(nm);
+            }
+            match new_item {
+                Some(ni) => {
+                    changed = true;
+                    new_items.push(ni);
+                }
+                None => new_items.push(item),
+            }
+        }
+        if !changed {
+            return None;
+        }
+        return Some(db.push_list(new_items));
+    }
+    // A lambda `(fn (params) body)` — the params SHADOW same-named outer renames in the body.
+    if let Some(tail) = db.ast.as_form(node, "fn").map(<[_]>::to_vec)
+        && tail.len() == 2
+    {
+        let mut body_renames = renames.clone();
+        let mut pnames = std::collections::HashSet::new();
+        pattern_binder_names(db, tail[0], &mut pnames);
+        for pn in &pnames {
+            body_renames.remove(pn);
+        }
+        return freshen_match_arm_binders(db, tail[1], &body_renames).map(|nb| {
+            let fn_head = db.push_name("fn");
+            db.push_list(vec![fn_head, tail[0], nb])
+        });
+    }
+    // A generic list — recurse each child under the current renames, sharing unchanged children.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let mut changed = false;
+            let new: Vec<StructId> = children
+                .iter()
+                .map(|&c| match freshen_match_arm_binders(db, c, renames) {
+                    Some(nc) => {
+                        changed = true;
+                        nc
+                    }
+                    None => c,
+                })
+                .collect();
+            if changed {
+                Some(db.push_list(new))
+            } else {
+                None
+            }
+        }
+        Struct::Atom(_) => None,
+    }
 }
 
 pub(crate) fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
@@ -2106,6 +2228,17 @@ pub(crate) fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerC
                 None => return node, // not actually reducible — leave it
             },
         };
+        // eg1 HYGIENE: α-rename the inlined helper body's MATCH-ARM pattern binders to fresh names before
+        // re-walking. The resumptive-conditional commute later nests the enclosing match's CONTINUATION under
+        // this inlined body's arm binders; without freshening, a continuation reference whose spelling
+        // collides with a helper arm binder (e.g. the caller reuses `a`, the helper's internal binder) is
+        // CAPTURED → a silent wrong value (the eg1 name-collision miscompile). Freshening makes the collision
+        // impossible (a `#a{n}` binder shares its name with nothing), so it supersedes the pre-inline
+        // safe-decline. Semantically INERT for a non-colliding body (a pure α-conversion re-resolving
+        // identically), so a byte-identical fold for every existing case; it engages only where a rename
+        // actually applies.
+        let reduced =
+            freshen_match_arm_binders(db, reduced, &HashMap::default()).unwrap_or(reduced);
         return reduce_applied_lambdas(db, reduced, ctx);
     }
     // Otherwise descend structurally, reducing any redex in a child.
