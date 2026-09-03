@@ -4215,6 +4215,7 @@ pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in nu
 pass	a trie of 40 RECORD keys resolves descriptor-ordered field descent at depth
 pass	a trie of 40 TUPLE keys resolves compound-key descent at depth
 pass	a trie of 40 rope-built String keys resolves content descent at depth
+pass	a try early-return unwinds a handle with a list seed and a match-shaped arm
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triply-nested narrow Int8 add computes at the consuming width
 pass	a trivially-true guard does not make its variant arm unconditional

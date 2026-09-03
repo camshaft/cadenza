@@ -1217,7 +1217,45 @@ pub fn reduce_handle(
     for &init in &pending_inits {
         crate::resolve::forget_subtree(db, init);
     }
+    // STALE `#seed` MEMO CLEAR — the try × match-arm × list-seed × pre-perform conjunction (breaker trx1).
+    // The `pending_inits` forget above clears stale `#seed` memos only in the drained `#st` binds; but under
+    // this conjunction, threading DUPLICATES the continuation (a match-shaped arm's tail resume copies it per
+    // arm; a `(let ((v (try …))) cont)` splits it), and some of those `#seed` reference COPIES were resolved
+    // (memoized UNBOUND) at threading time — BEFORE `apply_seed_wrap` minted the `#seed` binder — yet sit
+    // OUTSIDE `pending_inits`, so they stayed memoized unbound → CDZ0101 `unbound #seed`. Forget ONLY the
+    // `#seed{init}` NAME references throughout the wrapped result (not a blanket `forget_subtree`, which
+    // over-forgets a correctly-pinned non-`#seed` node and regressed the il2 handler): each re-resolves
+    // against the FINAL grafted `#seed` let this function just built. Precise + idempotent — a correctly-
+    // resolved `#seed` ref (the common heap-seed case) re-resolves to the same binder, so the seed-wrap
+    // corpus stays byte-identical; it engages only where a stale-memoized `#seed` copy escaped the `#st` set.
+    if let Some((binder, _)) = seed_wrap
+        && let Some(seed_name) = db.ast.as_name(binder).map(str::to_string)
+    {
+        forget_name_refs(db, wrapped, &seed_name);
+    }
     Some(wrapped)
+}
+
+/// Forget the memoized resolution of every NAME atom in `root`'s subtree whose spelling is `name` — a
+/// TARGETED alternative to [`crate::resolve::forget_subtree`] that clears exactly the references of one
+/// synthesized binder (e.g. `#seed{n}`) so they re-resolve against a just-grafted binding, WITHOUT
+/// disturbing any other node's (possibly correctly-pinned) memo. Used to clear the stale-`#seed` memos the
+/// resumptive fold's continuation-duplication leaves outside the drained-`#st` set (breaker trx1).
+fn forget_name_refs(db: &mut Db, root: StructId, name: &str) {
+    match db.ast.get(root).clone() {
+        Struct::Atom(_) => {
+            if db.ast.as_name(root) == Some(name) {
+                db.resolved.forget(root);
+                db.typeval.forget(root);
+                db.resolved_subtrees.remove(&root);
+            }
+        }
+        Struct::List(children) => {
+            for c in children {
+                forget_name_refs(db, c, name);
+            }
+        }
+    }
 }
 
 /// Reduce every NESTED inner `handle` found in `node` to its folded form, IN PLACE (returning a rewritten
