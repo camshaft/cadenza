@@ -1723,6 +1723,7 @@ pass	a bin-extracted Map key in a lookup-insert handler-state cycle counts corre
 pass	a bin-extracted Set element in a contains-insert handler-state cycle reclaims cleanly
 pass	a bin-extracted value stored as a Map value under a constant key reclaims cleanly
 pass	a bin-match arm building an under-determined Result recovers its type once the 2-param SumNew fallback lands
+pass	a bin-match arm with a DISCARDED final rest binder over a runtime scrutinee re-emits and absorbs the tail
 pass	a bin-pattern arm binds a parsed byte and PERFORMS again with it (parse-then-act)
 pass	a binary arithmetic operator with too many operands offers a delete-the-surplus fix
 pass	a binary form whose bit-fields do not close a byte is ill-formed

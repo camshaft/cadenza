@@ -5104,6 +5104,7 @@ fn try_emit_bin_match(
         dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
         post: Vec<(u32, Seg)>, // POST-payload fixed segments (dynamic offset), tiling [payload_off, total) with `(u8 _)` gap fill
         rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== total; dynamic offset via off_plus)
+        rest_discarded: bool, // the rest binder is UNUSED (body reads no `BinRestRead`) → re-emit `(bytes _)`
         guard: Vec<StructId>, // user GUARD conjunct(s) reading the decoded segment binders → `(guard (bin …) (and …))`
         body: StructId,
     }
@@ -5132,16 +5133,25 @@ fn try_emit_bin_match(
             dep,
             const_utf8,
         } = collect_bin_int_segs(db, then_, &guard, scrut_binder)?;
-        // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
-        // `total` (the tail after ALL fixed segments). A mismatch → a shape we don't model.
-        if has_rest != rest_off.is_some() {
-            return None;
-        }
-        if let Some(ro) = rest_off
-            && ro != total
-        {
-            return None;
-        }
+        // The cond's `>=` rest flag and the body's rest read must be consistent, and the rest must begin exactly
+        // at `total` (the tail after ALL fixed segments). Three shapes:
+        //  - body READS the rest (`rest_off` Some): the cond MUST carry the `>=` flag, and the offset must be `total`.
+        //  - body does NOT read the rest but the cond HAS the `>=` flag: the rest binder is UNUSED (a discard
+        //    `(bytes _r)`/`(bytes _)` the body never reads → no `BinRestRead` is emitted, so the body walk finds
+        //    nothing). Synthesize the rest at `total` and re-emit `(bytes _)` — value-equivalent, since the tail
+        //    is absorbed but discarded (a NAMED-but-unused rest lowers to the same nameless `BinRestRead`).
+        //  - body reads a rest with NO `>=` probe: an inconsistent shape we don't model → decline.
+        let (rest_off, rest_discarded) = match (has_rest, rest_off) {
+            (true, Some(ro)) => {
+                if ro != total {
+                    return None;
+                }
+                (Some(ro), false)
+            }
+            (true, None) => (Some(total), true),
+            (false, Some(_)) => return None,
+            (false, None) => (None, false),
+        };
         // The cond's dependent-size flag and the body's dependent read must AGREE — a dependent cond with no
         // reconstructed `BinSizedRead` (e.g. a dependent-size `utf8` segment, a later sub-slice), or a
         // `BinSizedRead` under a non-dependent cond, is a shape we don't model → decline.
@@ -5265,6 +5275,7 @@ fn try_emit_bin_match(
             dep,
             post: post_segs,
             rest: rest_off,
+            rest_discarded,
             guard,
             body: then_,
         });
@@ -5472,11 +5483,18 @@ fn try_emit_bin_match(
         // A final `(bytes rest)` segment — binds the tail after the fixed prefix (+ any dependent payload); the
         // body's `BinRestRead` resolves to this binder via `bin_rest_fields` (keyed by the rest's byte offset).
         if let Some(ro) = arm.rest {
-            let name = synth_payload_name(env.next_payload);
-            env.next_payload += 1;
-            env.bin_rest_fields.insert((scrut_binder, ro), name.clone());
             let bytes_head = b.name("bytes");
-            let rest_binder = b.name(name);
+            // A DISCARDED rest (the body reads no `BinRestRead`) emits the wildcard `(bytes _)` — it absorbs the
+            // tail without binding, with no `bin_rest_fields` entry (nothing in the body resolves to it). A READ
+            // rest mints a deterministic binder + registers it so the body's `BinRestRead` resolves to that name.
+            let rest_binder = if arm.rest_discarded {
+                b.name("_")
+            } else {
+                let name = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                env.bin_rest_fields.insert((scrut_binder, ro), name.clone());
+                b.name(name)
+            };
             pat_children.push(b.list(vec![bytes_head, rest_binder]));
         }
         let bin_pat = b.list(pat_children);

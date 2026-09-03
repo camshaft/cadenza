@@ -635,6 +635,31 @@
   (output (: true Bool)))
 
 (case
+  "a bin-match arm with a DISCARDED final rest binder over a runtime scrutinee re-emits and absorbs the tail"
+  (doc
+    "The rest binder here is UNUSED — the arm reads only the leading `(u8 n)` and never the `(bytes _)` tail.
+           Over a RUNTIME scrutinee (a Bytes param, so the match cannot const-fold) this exercises the cadenza
+           RE-EMIT path, and pins a fix: `parse_bin_len_cond` derives `has_rest` from the arm's `>=` length probe,
+           but the body walk finds NO `Core::BinRestRead` for an unread rest — so the re-emit previously saw
+           `has_rest && rest_off.is_none()`, judged the shape inconsistent, and DECLINED (CDZ0900). It now
+           synthesizes the rest at the tail offset and re-emits `(bytes _)` (a NAMED-but-unread rest lowers to the
+           same nameless rest read, so this is byte-idempotent and value-equivalent — the tail is absorbed but
+           discarded). Contrast the const-scrutinee rest cases above, which const-fold and never reach re-emit.
+           x=5 → bytes `[5, 7, 8, 9]`: `n = 5`, the 3-byte tail `[7, 8, 9]` is absorbed + discarded → 100 + 5 = 105.
+           x=200 → `[200, 7, 8, 9]`: 100 + 200 = 300. The result never depends on the discarded tail.")
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match b ((bin (u8 n) (bytes _)) (+ 100 (Int64.of n))) (_ -1)))
+      (def (main (: x Int64)) (f (Bytes.of #list((UInt8.of x) 7 8 9))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 105 Int64))
+  (call main (: 200 Int64))
+  (output (: 300 Int64)))
+
+(case
   "a dependent-size utf8 segment decodes a length-prefixed string"
   (doc
     "The string-decoding companion of the dependent-size `(bytes body n)` case: `(bin (u8 n) (utf8 s n))`
