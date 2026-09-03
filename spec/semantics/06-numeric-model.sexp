@@ -151,6 +151,53 @@
   (input (>> 1 2.0))
   (error CDZ0301))
 
+; The VALUE semantics of integer `/` and `%` on NEGATIVE operands: division TRUNCATES TOWARD ZERO (not
+; floored toward -infinity) and the remainder takes the sign of the DIVIDEND — the wasm i64.div_s/i64.rem_s
+; contract, matching C and the Rational.truncate toward-zero rule below. This is the axis a floored-division
+; reimplementation (Python `//`/`%`) would silently break: floored would give `/ -7 2` = -4 and `% -7 2` = +1.
+; The const FOLD and the RUNTIME path MUST agree — a fold that used a different rounding than the emitted
+; op is a classic const-vs-runtime divergence. Verified breaker probe dm_const/dm_rt: fold == runtime ==
+; cadenza-hop, exact across both sign combos, byte-idempotent.
+(case
+  "integer division truncates toward zero at compile time"
+  (doc
+    "`(/ -7 2)` const-folds to -3 (toward zero), NOT the floor -4 (toward -infinity). Pins integer `/`
+           is truncating division, the sign axis a floored-division change would trip.")
+  (input (/ -7 2))
+  (output (: -3 Int64)))
+
+(case
+  "integer remainder takes the sign of the dividend at compile time"
+  (doc
+    "`(% -7 2)` const-folds to -1 (the dividend -7 is negative), NOT the floored-modulo +1. Pins the
+           remainder's sign follows the dividend, the companion of truncating `/`.")
+  (input (% -7 2))
+  (output (: -1 Int64)))
+
+(case
+  "runtime integer division truncates toward zero for either operand sign"
+  (doc
+    "The runtime companion: `(/ a b)` over Int64 boundary params (cannot fold) emits i64.div_s, which
+           truncates toward zero. `-7 / 2` = -3 and `7 / -2` = -3 — both toward zero, matching the fold, not
+           a floored -4. Pins the emitted op agrees with the const fold across both sign combos.")
+  (input (do (def (d (: a Int64) (: b Int64)) (/ a b)) (export d)))
+  (call d (: -7 Int64) (: 2 Int64))
+  (output (: -3 Int64))
+  (call d (: 7 Int64) (: -2 Int64))
+  (output (: -3 Int64)))
+
+(case
+  "runtime integer remainder takes the sign of the dividend for either operand sign"
+  (doc
+    "The runtime remainder companion: `(% a b)` emits i64.rem_s, whose result carries the dividend's
+           sign. `-7 % 2` = -1 (dividend negative) and `7 % -2` = +1 (dividend positive) — matching the fold,
+           not the floored +1/-1. Pins runtime `%` sign agrees with the const fold across both sign combos.")
+  (input (do (def (m (: a Int64) (: b Int64)) (% a b)) (export m)))
+  (call m (: -7 Int64) (: 2 Int64))
+  (output (: -1 Int64))
+  (call m (: 7 Int64) (: -2 Int64))
+  (output (: 1 Int64)))
+
 ; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
 ; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
 ; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
