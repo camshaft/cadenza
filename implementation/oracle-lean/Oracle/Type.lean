@@ -28,6 +28,7 @@ inductive Ty where
                                         -- nullary variant (ts:192-204). Option/Result/Ordering + user sums.
   | listTy (elem : Ty)                  -- a homogeneous `List` of `elem` (T1.29 — collection type modeling)
   | setTy (elem : Ty)                   -- a homogeneous `Set` of `elem` (T1.32 — set collection type, mirrors listTy)
+  | mapTy (key val : Ty)                -- a `Map` from `key` to `val` (T1.33 — map collection type, two params)
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
@@ -70,6 +71,7 @@ partial def occurs (i : Nat) : Ty → Bool
   | .tuple es => es.any (occurs i)
   | .listTy e => occurs i e
   | .setTy e => occurs i e
+  | .mapTy k v => occurs i k || occurs i v
   | .record fs => fs.any (fun f => occurs i f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => occurs i t | none => false)
   | _ => false
@@ -84,6 +86,7 @@ partial def hasVar : Ty → Bool
   | .tuple es => es.any hasVar
   | .listTy e => hasVar e
   | .setTy e => hasVar e
+  | .mapTy k v => hasVar k || hasVar v
   | .record fs => fs.any (fun f => hasVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasVar t | none => false)
   | _ => false
@@ -98,6 +101,7 @@ partial def hasGenVar : Ty → Bool
   | .tuple es => es.any hasGenVar
   | .listTy e => hasGenVar e
   | .setTy e => hasGenVar e
+  | .mapTy k v => hasGenVar k || hasGenVar v
   | .record fs => fs.any (fun f => hasGenVar f.2)
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasGenVar t | none => false)
   | _ => false
@@ -118,6 +122,7 @@ partial def applySubst (s : Subst) : Ty → Ty
   | .tuple es => .tuple (es.map (applySubst s))
   | .listTy e => .listTy (applySubst s e)
   | .setTy e => .setTy (applySubst s e)
+  | .mapTy k v => .mapTy (applySubst s k) (applySubst s v)
   | .record fs => .record (fs.map (fun f => (f.1, applySubst s f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map (applySubst s))))
   | t => t
@@ -150,6 +155,7 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
       else .error "CDZ0203"
   | .listTy e1, .listTy e2 => unify e1 e2 s        -- Lists unify iff their element types unify
   | .setTy e1, .setTy e2 => unify e1 e2 s          -- Sets unify iff their element types unify
+  | .mapTy k1 v1, .mapTy k2 v2 => do let s ← unify k1 k2 s; unify v1 v2 s  -- Maps: keys then values
   | .record f1, .record f2 =>
       -- CLOSED records unify iff same field-name SET (stored sorted+unique, so zip-compare keys) and each
       -- field's type unifies (ts:70-74, ts:184-190). A field-set or field-type mismatch is CDZ0203.
@@ -314,6 +320,13 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
          (match cs[1]? with | some p => (parseTy? m p).map Ty.listTy | none => none)
        else if h == "Set".toUTF8 && cs.size == 2 then
          (match cs[1]? with | some p => (parseTy? m p).map Ty.setTy | none => none)
+       else if h == "Map".toUTF8 && cs.size == 3 then
+         (match cs[1]?, cs[2]? with
+          | some kId, some vId =>
+            (match parseTy? m kId, parseTy? m vId with
+             | some kT, some vT => some (.mapTy kT vT)
+             | _, _ => none)
+          | _, _ => none)
        else if h == "->".toUTF8 && cs.size >= 3 then
          -- function type `(-> t1 t2 … tn)` = `t1 → t2 → … → tn` (curried; last element = result). Each
          -- element parsed recursively; an unmodeled element → `none` (decline).
@@ -544,6 +557,7 @@ partial def freeGenVars : Ty → List Nat
   | .tuple es => es.flatMap freeGenVars
   | .listTy e => freeGenVars e
   | .setTy e => freeGenVars e
+  | .mapTy k v => freeGenVars k ++ freeGenVars v
   | .record fs => fs.flatMap (fun f => freeGenVars f.2)
   | .sum vs => vs.flatMap (fun v => match v.2 with | some t => freeGenVars t | none => [])
   | _ => []
@@ -770,6 +784,38 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 (.var st.next, { st with next := st.next + 1 }) with
              | .ok (τelem, st') => .ok (.setTy (applySubst st'.subst τelem), st')
              | .error e => .error e)
+          else if h == "map".toUTF8 then
+            -- T1.33 — MAP construction `(map (= k v)…)`: each entry is a field-pair `(= keyExpr valExpr)`
+            -- (the SAME field-pair form records use, but the KEY is an expression, not a name). Infer every
+            -- key and unify them to one key type K, every value to one value type V → `.mapTy K V`. A key or
+            -- value clash is `IllTyped CDZ0203`; a non-`(= _ _)` entry declines; an EMPTY `(map)` has
+            -- unconstrained K/V → declined (sound, like empty list/set).
+            -- PURE pass first: flatten each `(= keyExpr valExpr)` entry to two `(isKey, nodeId)` slots. A
+            -- malformed / non-field-pair entry → `none` (declines). This keeps the inference fold's closure
+            -- calling `inferE` exactly ONCE per element (a closure that calls `inferE` TWICE defeats the
+            -- compiler's `Array.foldlMUnsafe` specializer → a `uses sorry` codegen failure).
+            let entryIds := children.extract 1 children.size
+            if entryIds.isEmpty then .error (.unsupported "type oracle: empty (map) — key/value types unconstrained, declined")
+            else (match entryIds.foldl (init := (some #[] : Option (Array (Bool × Nat))))
+                (fun acc eid => acc.bind (fun arr =>
+                  match m.nodes[eid]? with
+                  | some (.list fc) =>
+                    if m.headName? (.list fc) == some "=".toUTF8 && fc.size == 3 then
+                      some ((arr.push (true, fc[1]!)).push (false, fc[2]!))
+                    else none
+                  | _ => none)) with
+             | none => .error (.unsupported "type oracle: map entry not a (= key value) field-pair")
+             | some flat =>
+               let K : Ty := .var st.next
+               let V : Ty := .var (st.next + 1)
+               let st0 := { st with next := st.next + 2 }
+               (match flat.foldlM (m := Except InferFail)
+                   (fun (acc : InferState) (p : Bool × Nat) =>
+                     match inferE m env acc p.2 with
+                     | .ok (τ, st1) => unifyInfer τ (if p.1 then K else V) st1
+                     | .error e => .error e) st0 with
+                | .ok st' => .ok (.mapTy (applySubst st'.subst K) (applySubst st'.subst V), st')
+                | .error e => .error e))
           else if h == "record".toUTF8 then
             -- T1.13 — CLOSED RECORD construction (`ts:70-74`): `(record (= k v)…)` infers each field value,
             -- sorts fields by key (canonical form, so `unify` compares field SETs), and yields `.record`.
@@ -1316,6 +1362,90 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                      | .error e => .error e)
                   | _, _ => .error (.unsupported "type oracle: malformed Set binary op"))
                else .error (.unsupported "type oracle: unmodeled Set op")
+             else if q == "Map".toUTF8 then
+               -- T1.33 — Map OPS `(Map.<op> …)` (receiver-first, sigs from prelude.rs map_module): `insert
+               -- (Map k v) k v → Map k v`; `lookup (Map k v) k → (Option v)`; `remove (Map k v) k → Map k v`;
+               -- `merge (Map k v)(Map k v) → Map k v`; `len (Map k v) → Int64`; `to-list (Map k v) →
+               -- (List (Tuple k v))`; `swap (Map k v) k v → (Tuple (Option v)(Map k v))`; `take (Map k v) k →
+               -- (Tuple (Option v)(Map k v))`. Fresh k,v per call; a wrong-shape arg/clash → CDZ0203. `empty`
+               -- (polymorphic undetermined) + any other member → declined (sound; `empty` is a later increment).
+               -- Every modeled op takes the receiver map as children[1]; infer + unify it with `(Map K V)`
+               -- ONCE, then dispatch on `op` for the remaining args (explicit nested matches — the proven
+               -- pattern; no higher-order local helpers, which defeat the compiler's `inferE` specializer).
+               let K : Ty := .var st.next
+               let V : Ty := .var (st.next + 1)
+               let st0 := { st with next := st.next + 2 }
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed Map op (no map arg — e.g. Map.empty, declined)")
+                | some mId =>
+                  (match inferE m env st0 mId with
+                   | .error e => .error e
+                   | .ok (τm, st1) =>
+                     (match unifyInfer τm (.mapTy K V) st1 with
+                      | .error e => .error e
+                      | .ok st2 =>
+                        if op == "len".toUTF8 && children.size == 2 then .ok (.int 64 true, st2)
+                        else if op == "to-list".toUTF8 && children.size == 2 then
+                          .ok (.listTy (.tuple [applySubst st2.subst K, applySubst st2.subst V]), st2)
+                        else if op == "lookup".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some kId => (match inferE m env st2 kId with
+                                          | .ok (τk, st3) => (match unifyInfer τk K st3 with
+                                                              | .ok st4 => .ok (optionTy (applySubst st4.subst V), st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Map.lookup"))
+                        else if op == "remove".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some kId => (match inferE m env st2 kId with
+                                          | .ok (τk, st3) => (match unifyInfer τk K st3 with
+                                                              | .ok st4 => .ok (.mapTy (applySubst st4.subst K) (applySubst st4.subst V), st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Map.remove"))
+                        else if op == "take".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some kId => (match inferE m env st2 kId with
+                                          | .ok (τk, st3) => (match unifyInfer τk K st3 with
+                                                              | .ok st4 => .ok (.tuple [optionTy (applySubst st4.subst V), .mapTy (applySubst st4.subst K) (applySubst st4.subst V)], st4)
+                                                              | .error e => .error e)
+                                          | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Map.take"))
+                        else if op == "merge".toUTF8 && children.size == 3 then
+                          (match children[2]? with
+                           | some m2Id => (match inferE m env st2 m2Id with
+                                           | .ok (τm2, st3) => (match unifyInfer τm2 (.mapTy K V) st3 with
+                                                                | .ok st4 => .ok (.mapTy (applySubst st4.subst K) (applySubst st4.subst V), st4)
+                                                                | .error e => .error e)
+                                           | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: malformed Map.merge"))
+                        else if op == "insert".toUTF8 && children.size == 4 then
+                          (match children[2]?, children[3]? with
+                           | some kId, some vId =>
+                             (match inferE m env st2 kId with
+                              | .ok (τk, st3) => (match unifyInfer τk K st3 with
+                                                  | .ok st4 => (match inferE m env st4 vId with
+                                                                | .ok (τv, st5) => (match unifyInfer τv V st5 with
+                                                                                    | .ok st6 => .ok (.mapTy (applySubst st6.subst K) (applySubst st6.subst V), st6)
+                                                                                    | .error e => .error e)
+                                                                | .error e => .error e)
+                                                  | .error e => .error e)
+                              | .error e => .error e)
+                           | _, _ => .error (.unsupported "type oracle: malformed Map.insert"))
+                        else if op == "swap".toUTF8 && children.size == 4 then
+                          (match children[2]?, children[3]? with
+                           | some kId, some vId =>
+                             (match inferE m env st2 kId with
+                              | .ok (τk, st3) => (match unifyInfer τk K st3 with
+                                                  | .ok st4 => (match inferE m env st4 vId with
+                                                                | .ok (τv, st5) => (match unifyInfer τv V st5 with
+                                                                                    | .ok st6 => .ok (.tuple [optionTy (applySubst st6.subst V), .mapTy (applySubst st6.subst K) (applySubst st6.subst V)], st6)
+                                                                                    | .error e => .error e)
+                                                                | .error e => .error e)
+                                                  | .error e => .error e)
+                              | .error e => .error e)
+                           | _, _ => .error (.unsupported "type oracle: malformed Map.swap"))
+                        else .error (.unsupported "type oracle: unmodeled Map op"))))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -1345,6 +1475,7 @@ partial def defaultNumVars : Ty → Ty
   | .tuple es => .tuple (es.map defaultNumVars)
   | .listTy e => .listTy (defaultNumVars e)
   | .setTy e => .setTy (defaultNumVars e)
+  | .mapTy k v => .mapTy (defaultNumVars k) (defaultNumVars v)
   | .record fs => .record (fs.map (fun f => (f.1, defaultNumVars f.2)))
   | .sum vs => .sum (vs.map (fun v => (v.1, v.2.map defaultNumVars)))
   | t => t
@@ -1360,6 +1491,7 @@ partial def hasUndeterminedSum : Ty → Bool
   | .tuple es => es.any hasUndeterminedSum
   | .listTy e => hasUndeterminedSum e
   | .setTy e => hasUndeterminedSum e
+  | .mapTy k v => hasUndeterminedSum k || hasUndeterminedSum v
   | .record fs => fs.any (fun f => hasUndeterminedSum f.2)
   | _ => false
 
@@ -2074,6 +2206,26 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[12, 11, 9], .atom 10, .atom 2, .list #[14, 15], .atom 0,
                            .list #[17, 13, 16]],
                 root := 18 } == .wellTyped (.int 64 true))
+-- T1.33 (Map construction): `(do (def (main) (map (= 1 2))) (export main))` → WellTyped (Map Int64 Int64).
+-- The single entry's key and value are ints → K,V default to Int64 → `.mapTy Int64 Int64`.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "map".toUTF8,
+                            .name "=".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2], .atom 3, .list #[4, 3], .atom 2,
+                           .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
+                           .list #[13, 9, 12]],
+                root := 14 } == .wellTyped (.mapTy (.int 64 true) (.int 64 true)))
+-- T1.33 (Map op): `(do (def (main) (Map.len (map (= 1 2)))) (export main))` → WellTyped Int64. `Map.len` =
+-- `((. Map len) …)`; the arg unifies with `(Map K V)` → the op yields Int64.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Map".toUTF8, .name "len".toUTF8, .name "map".toUTF8, .name "=".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 7, .atom 8, .atom 9,
+                           .list #[4, 5, 6], .atom 6, .list #[8, 7], .list #[3, 9], .atom 2, .list #[11],
+                           .atom 1, .list #[13, 12, 10], .atom 10, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
