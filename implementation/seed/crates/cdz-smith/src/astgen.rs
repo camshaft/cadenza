@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 20 };
+    let arms = if depth == 0 { 2 } else { 21 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -849,6 +849,23 @@ fn gen_typefuzz_int<C: Choice>(
         // `(Rational.truncate <rat>)` → Int64 (T1.44): the integer part of a Rational. Both rcdzc + oracle
         // infer Int64 → agreement.
         18 => format!("(Rational.truncate {})", typefuzz_rat(c)),
+        // A CHAR op (T1.45) consumed to Int64: a Char (from `String.scalar-at` → `Option Char`, or
+        // `Char.from-int <int>` → `Option Char`) matched, then `Char.to-int` → Int64. (No direct Char
+        // literal — the oracle does not model the `#"…"` node; Chars come from these ops.) Both agree.
+        19 => {
+            let bn = format!("i{}", *fresh);
+            *fresh += 1;
+            if c.variant(2) == 0 {
+                let s = typefuzz_str(c);
+                let i = c.int_bounded(0, 3);
+                format!(
+                    "(match (String.scalar-at {s} {i}) ((Some {bn}) (Char.to-int {bn})) ((None) 0))"
+                )
+            } else {
+                let n = c.int_bounded(65, 122);
+                format!("(match (Char.from-int {n}) ((Some {bn}) (Char.to-int {bn})) ((None) 0))")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -1161,7 +1178,13 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(25) {
+    match c.variant(26) {
+        // A CHAR op with a wrong-typed operand (T1.45 — false-accept hunt): `(Char.to-int <int>)` (a
+        // non-Char receiver) → CDZ0203. rcdzc rejects + the oracle infers IllTyped ⇒ holds.
+        24 => {
+            let n = int(c, iscope, bscope, fresh);
+            format!("(Char.to-int {n})")
+        }
         // A RATIONAL op clash (T1.44 — false-accept hunt): a REMAINDER `(% <rat> <rat>)` (no remainder on
         // exact arithmetic → CDZ0301) or a MIXED rational/int `(+ <rat> <int>)` (numeric types do NOT
         // silently promote → CDZ0301). rcdzc rejects + the oracle infers IllTyped ⇒ holds.
