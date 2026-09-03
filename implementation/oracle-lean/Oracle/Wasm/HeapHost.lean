@@ -898,8 +898,8 @@ def heapHostOps : List (String × HostFn HeapState) :=
 /-! ### Witnesses — compiled every build (a regression fails the oracle-lean build). Immediate-aware after the
 IMMEDIATES rework: box-int(fixnum)/box-bool produce inline immediates (no heap, census-excluded, dup/drop
 no-op); a value that must be a HEAP object for a refcount/cascade test uses box-float (floats never inline).
-This focused set proves the immediates model; the collection consume-op witnesses (map-merge/set-union/vec/…)
-are re-added immediate-aware in a follow-up. -/
+This focused set proves the immediates model; the collection consume-op witnesses are the
+`probeMapMerge`/`probeSet{Union,Intersection,Difference}` witnesses at the bottom of this section. -/
 
 open HeapState
 
@@ -1120,5 +1120,122 @@ private def probeVecUpdate : Bool :=
     | _ => false
   | _ => false
 example : probeVecUpdate = true := by native_decide
+
+/-! #### Collection CONSUME-op witnesses (map-merge, set-union, set-intersection, set-difference),
+immediate-aware. Re-added after the immediates rework (they were dropped from the focused set). Each op
+CONSUMES both inputs by dup-and-drop, so the decisive property is the LEAK balance — dropping the result
+returns the census to 0 with no orphaned heap object — alongside result value correctness (size + b-wins).
+Values are HEAP (box-float, never inlined) so the census tracks them; map keys are IMMEDIATE ints (the
+realistic corpus case, and what surfaced the original false-leak diverge). -/
+
+/-- Insert (int key `k`, float-bits value `v`) into map handle `m`; returns (m', s') or none. -/
+private def mapInsertIF (s : HeapState) (m : UInt32) (k v : UInt64) : Option (UInt32 × HeapState) :=
+  match boxInt s [.i64 k] with
+  | .ret [.i32 kh] s1 =>
+    match boxFloat s1 [.f64 v] with
+    | .ret [.i32 vh] s2 =>
+      match mapInsert s2 [.i32 m, .i32 kh, .i32 vh] with
+      | .ret [.i32 m'] s3 => some (m', s3)
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- Build a set of two distinct heap floats {bits `x`, bits `y`}; returns (setHandle, s') or none. -/
+private def mkFloatSet2 (s : HeapState) (x y : UInt64) : Option (UInt32 × HeapState) :=
+  match boxFloat s [.f64 x] with
+  | .ret [.i32 e1] s1 =>
+    match boxFloat s1 [.f64 y] with
+    | .ret [.i32 e2] s2 =>
+      match setEmpty s2 [] with
+      | .ret [.i32 se] s3 =>
+        match setInsert s3 [.i32 se, .i32 e1] with
+        | .ret [.i32 sh1] s4 =>
+          match setInsert s4 [.i32 sh1, .i32 e2] with
+          | .ret [.i32 sh2] s5 => some (sh2, s5)
+          | _ => none
+        | _ => none
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- map-merge: b WINS on the shared key. a={5 to 1.0}, b={5 to 2.0, 6 to 3.0} merges to {5 to 2.0, 6 to 3.0}:
+size 2, key 5 reads back b's 2.0, and dropping the merged map returns the census to 0 (a's losing value 1.0
+plus both consumed spines freed, no leak). -/
+private def probeMapMerge : Bool :=
+  match mapEmpty ({} : HeapState) [] with
+  | .ret [.i32 ea] s0 =>
+    match mapInsertIF s0 ea 5 1 with
+    | some (ma, s1) =>
+      match mapEmpty s1 [] with
+      | .ret [.i32 eb] s2 =>
+        match mapInsertIF s2 eb 5 2 with
+        | some (mb1, s3) =>
+          match mapInsertIF s3 mb1 6 3 with
+          | some (mb, s4) =>
+            match mapMerge s4 [.i32 ma, .i32 mb] with
+            | .ret [.i32 m] s5 =>
+              (match mapSize s5 [.i32 m] with | .ret [.i32 2] _ => true | _ => false) &&
+              (match boxInt s5 [.i64 5] with
+               | .ret [.i32 qk] sq =>
+                 (match mapLookup sq [.i32 m, .i32 qk] with
+                  | .ret [.i32 g] _ => (match getFloat sq [.i32 g] with | .ret [.f64 2] _ => true | _ => false)
+                  | _               => false)
+               | _ => false) &&
+              (match drop s5 [.i32 m] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapMerge = true := by native_decide
+
+/-- set-union: {1.0,2.0} ∪ {2.0,3.0} = {1.0,2.0,3.0} (dedup drops the incoming duplicate 2.0): size 3, and
+dropping the result returns the census to 0 (both consumed sets freed, no leak). -/
+private def probeSetUnion : Bool :=
+  match mkFloatSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match mkFloatSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setUnion s2 [.i32 a, .i32 b] with
+      | .ret [.i32 u] s3 =>
+        (match setSize s3 [.i32 u] with | .ret [.i32 3] _ => true | _ => false) &&
+        (match drop s3 [.i32 u] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetUnion = true := by native_decide
+
+/-- set-intersection: {1.0,2.0} ∩ {2.0,3.0} = {2.0}: size 1, and dropping the result returns the census to 0
+(a's non-shared 1.0 plus all of b freed, no leak). -/
+private def probeSetIntersection : Bool :=
+  match mkFloatSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match mkFloatSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setIntersection s2 [.i32 a, .i32 b] with
+      | .ret [.i32 r] s3 =>
+        (match setSize s3 [.i32 r] with | .ret [.i32 1] _ => true | _ => false) &&
+        (match drop s3 [.i32 r] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetIntersection = true := by native_decide
+
+/-- set-difference: {1.0,2.0} minus {2.0,3.0} = {1.0}: size 1, and dropping the result returns the census to 0
+(a's shared 2.0 plus all of b freed, no leak). -/
+private def probeSetDifference : Bool :=
+  match mkFloatSet2 ({} : HeapState) 1 2 with
+  | some (a, s1) =>
+    match mkFloatSet2 s1 2 3 with
+    | some (b, s2) =>
+      match setDifference s2 [.i32 a, .i32 b] with
+      | .ret [.i32 r] s3 =>
+        (match setSize s3 [.i32 r] with | .ret [.i32 1] _ => true | _ => false) &&
+        (match drop s3 [.i32 r] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetDifference = true := by native_decide
 
 end Oracle.Heap
