@@ -13734,3 +13734,43 @@
   (call main (: 5 Int64))
   (output (: 21 Int64))
   (live-objects known-leak))
+
+; skx1: the SET counterpart of mkx1's Map-key leak — a bin-match-extracted value used as a SET
+; ELEMENT in a contains+insert handler-state cycle RECLAIMS to 0 (where the Map-key version leaks).
+; A handler op bin-matches its Bytes arg, uses the extracted byte as a Set element, does
+; Set.contains then Set.insert (a seen-set), threading the Set handler-state. Value exact (first mark
+; 0/new, repeat 1/seen): mark(n) mark(n) mark(9) -> 0 + 10*1 + 100*(0 if n!=9 else 1). n=5 -> 10;
+; n=9 -> 110 (all three mark 9: 0,1,1). Pins the mkx1 CONTRAST: Set.insert stores just the element and
+; reclaims the bin-extracted value cleanly, so mkx1's leak is specific to Map's KEY-VALUE pairing
+; (the extra value slot), NOT bin-extracted-value-into-CHAMP generally. (breaker probe sk1, verified
+; tri-target exact + byte-idempotent + live-objects 0 in-gate.)
+(case
+  "a bin-extracted Set element in a contains-insert handler-state cycle reclaims cleanly"
+  (input
+    (do
+      (effect Seen (op mark (-> Bytes Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          Seen
+          (Set.of #list())
+          ((mark
+              (b)
+              s
+              (match
+                b
+                ((bin (u8 k) (u8 _r))
+                  (let
+                    ((key (Int64.of k)))
+                    (if (Set.contains s key) (resume 1 s) (resume 0 (Set.insert s key)))))
+                (_ (resume -1 s)))))
+          (+
+            (Seen.mark (Bytes.of #list((UInt8.of n) 0)))
+            (+
+              (* 10 (Seen.mark (Bytes.of #list((UInt8.of n) 0))))
+              (* 100 (Seen.mark (Bytes.of #list(9 0))))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (call main (: 9 Int64))
+  (output (: 110 Int64)))
