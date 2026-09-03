@@ -1775,9 +1775,25 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     // inc2b clause already names the List.at/Map.lookup/Bytes.slice extraction family). A consumed/escaped
     // element → non-empty sites → declined (leak-safe). (BytesAt/StrSlice/MapLookup widen here later under a
     // corpus-wide guarded-all; ListAt is the it4 case.)
+    // `String.from-bytes` (`Core::StrFromBytes`, the `(utf8 s n)` bin-arm decode) returns a fresh `Some(one
+    // decoded String)` / `None` — single-heap-payload by construction (the Some wraps exactly the one decoded
+    // String) and Owned (a fresh sum-new the SumExpect emit's `reclaim_shell` frees). WITHOUT it the bin-arm
+    // BUILD-CHECK-EXTRACT lowering (`SumExpect{StrFromBytes{BinSizedRead}}->s`) built the transient Option
+    // shell to discriminate valid/invalid utf8, extracted `s`, and NEVER dropped that shell → the shell husk +
+    // its retained String LEAKED (the 7 chapter-16 utf8-decode cases, nix live-objects 2-3; the in-process
+    // gate UNDERCOUNTS this String class so only the nix corpus check witnesses it). SOUND by the SAME fences
+    // as the other producers: the single-consumer (count==1) + view_set/shell_set partition — a `String.concat`
+    // consumer hits SHELL-set, where `compound_dupd`'s dup (+1) compensates the shell-drop cascade (-1) = NET-0
+    // on `s` (concat owns it), only the orphaned shell freed (no double-free); an ESCAPING/multi-use decode
+    // (count!=1 or body-result) is neither set → not reclaimed (leak-safe). `matchsum_view_shell_reclaim_ok`
+    // additionally requires the payload be purely BORROWED (consuming sites empty) — a consuming MatchSum-over-
+    // StrFromBytes there stays a defined leak, never a UAF.
     matches!(
         core_of(db, scrutinee),
-        Core::StrAt { .. } | Core::BytesSlice { .. } | Core::ListAt { .. }
+        Core::StrAt { .. }
+            | Core::BytesSlice { .. }
+            | Core::ListAt { .. }
+            | Core::StrFromBytes { .. }
     )
 }
 
