@@ -653,3 +653,25 @@
   (call main)
   (host-responses (respond Param.size (: 6 Int64)))
   (output (: 66 Int64)))
+
+; prx1: the generated Param effect is a FIRST-CLASS effect — a guest may handle it IN-PROGRAM (no
+; host delegation at all), overriding the runtime parameter the way a test harness would. The
+; sidecar's `(effect Param (op width (-> Unit Int64)))` splice is a plain effect declaration, so
+; `(handle Param 0 ((width (u) s (resume (+ 40 n) s))) …)` discharges `Param.width` intra-program:
+; 42 + n, no host call recorded. Pins that @!param codegen does not privilege the host — the
+; accessor participates in the ordinary handler discipline (interceptable, shadowable), and the
+; host bind is just the outermost handler. (breaker probe pr1, verified tri-target exact +
+; byte-idempotent; the duplicate-name reject is the fenced case above.)
+(case
+  "a guest handles the generated Param effect in-program overriding the runtime parameter"
+  (input
+    (do
+      (pragma param (param (: widget slider)) (: width Int64))
+      (def
+        (main (: n Int64))
+        (handle Param 0 ((width (u) s (resume (+ 40 n) s))) (+ (Param.width) 2)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 42 Int64))
+  (call main (: 5 Int64))
+  (output (: 47 Int64)))
