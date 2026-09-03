@@ -3595,6 +3595,17 @@ pub(super) fn is_nontail_spine_param(
         && !ty_is_enum_disc(db, &scrut_ty)
         && !sum_has_only_scalar_payloads(db, &scrut_ty);
     compound_boxed
+        // A capturing-lifted body stays EXCLUDED from the COMPOUND non-tail-spine reclaim. tr3 CAUTION
+        // (v-mem corpus-wide guarded-all, 2026-09-03): do NOT relax this to admit a self-recursive capturing
+        // body here. A capturing self-recursive fold whose arm REBUILDS a ctor embedding a param-payload CHILD
+        // (subst/rename: `(Term.Abs w body)` — `body` is a payload of the scrutinee) would self-reclaim the
+        // shell and free the still-referenced escaped child → UAF (4 traps caught corpus-wide; the compound
+        // escape gates `sum_cont_payload_in_result`/`arm_returns_scrutinee`/`interior_view` all MISS a
+        // ctor-EMBED escape, and the dup-lockstep does not net for the capturing case). The SCALAR-returning
+        // capturing self-recursive folds (depth/max/balance) are instead reclaimed via the SCALAR path
+        // (`nontail_param_payload_ok`), admitted through `nontail_match_reclaim_binders` by the select.rs
+        // self-recursive relax; that path excludes ctor-rebuild arms (`!sum_cont_arm_constructs_compound`) by
+        // construction, so this compound path needs no capturing relax.
         && !body_is_capturing_lifted(db, top_body)
         && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
             let mut seen2 = HashSet::new();

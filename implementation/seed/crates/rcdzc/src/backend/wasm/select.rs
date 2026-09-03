@@ -1277,8 +1277,22 @@ pub fn select_function_of(
     // the CALLER side — `call_arg_caller_drops` YIELDS to a callee that INC1-reclaims the param, querying the
     // SAME selection (`def_inc1_reclaims_param`) so caller-drop XOR INC1-reclaim is exactly complementary
     // per (edge, param). Only EXPORT entries + genuine CAPTURING closures are wholly boundary-excluded.
-    let inc1_wholly_excluded =
-        layout.exports.iter().any(|e| e.body == body) || body_is_capturing_lifted(db, body);
+    // tr3 REFINEMENT (v-mem G6a sign-off): the `body_is_capturing_lifted` exclusion is gated on
+    // `!body_is_self_recursive` — a SELF-RECURSIVE def whose body carries non-empty captures ONLY as a
+    // nested-let-continuation lambda-lift artifact (e.g. `depth`'s `(let ((a (depth l)) (b (depth r))) …)`)
+    // is still a DIRECT-called combinator, NOT caller-drop'd (`call_arg_caller_drops` gate(5) excludes ALL
+    // looped callees), so its captures are SPURIOUS for the caller-drop question → it must self-reclaim (a
+    // neither-drops LEAK otherwise). The `exports` conjunct stays UNRELAXED: an export-trampoline still owns
+    // its rebuilt param (the 21-host-closures:6896 double-free class), so a self-recursive-AND-exported body
+    // stays wholly excluded.
+    // SCOPE (v-mem corpus-wide guarded-all, 2026-09-03): this relax admits the self-recursive-capturing body
+    // into `nontail_match_reclaim_binders` (this set), reclaimed ONLY via the SCALAR payload path
+    // (`nontail_param_payload_ok`, which excludes ctor-rebuild arms) — depth/max/balance return scalars. The
+    // COMPOUND path (`is_nontail_spine_param` in reclaim.rs) is deliberately NOT relaxed for a capturing body:
+    // a capturing self-recursive arm that rebuilds a ctor embedding a param-payload child (subst/rename:
+    // `(Term.Abs w body)`) would self-reclaim + free the still-referenced escaped child → UAF (4 traps).
+    let inc1_wholly_excluded = layout.exports.iter().any(|e| e.body == body)
+        || (body_is_capturing_lifted(db, body) && !body_is_self_recursive(db, body));
     // INC1 SELF-RECURSION gate: only a self-recursive fold's owned-param shell is safe to reclaim here. A
     // non-self-recursive owned-param match (esp. the boundary-REBUILT compound-Result CLOSURE arg whose
     // export trampoline ALSO drops it) would DOUBLE-FREE — MEASURED on 21-host-closures:6896 (guest func-12
