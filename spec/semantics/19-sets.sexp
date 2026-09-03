@@ -5820,3 +5820,54 @@
       (def (main) (Set.len (dup (Set.of #list(#list(1))))))
       (export main)))
   (output (: 1 Int64)))
+
+; msx1: the MUTATION-op face of float-special key canonicalization — Map.swap keyed by a FRESHLY
+; COMPUTED NaN must find (and replace through) the existing canonical NaN entry, and Map.take by
+; -0.0 must remove exactly the -0.0 entry while +0.0 survives. The lookup face is pinned above (a
+; NaN map key found by a differently-produced NaN; distinct zero keys); this pins that the
+; VALUE-YIELDING mutators route the same canonical key compare — a swap whose key path skipped
+; canonicalization would INSERT a second NaN-bit-pattern entry instead of replacing (digit 2 would
+; read the old 3, not 30). The n=5 leg (ordinary floats: the fresh key -1.0 is ABSENT) also pins
+; swap-on-missing = insert + None. Digits: swap-old | 10*get(qn) | 1000*take-old | 10000*len |
+; 100000*get(pz). (breaker probe ms1, verified tri-target exact + byte-idempotent.)
+(case
+  "Map.swap and Map.take canonicalize float-special keys like lookup"
+  (input
+    (do
+      (def
+        (get (: m (Map Float64 Int64)) (: k Float64))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (unwrap (: o (Option Int64))) (match o ((Some v) v) ((None) -9)))
+      (def
+        (part2
+          (: m2 (Map Float64 Int64))
+          (: qn Float64)
+          (: nz Float64)
+          (: pz Float64)
+          (: old (Option Int64)))
+        (match
+          (Map.take m2 nz)
+          (#tuple(tk m3)
+            (+
+              (unwrap old)
+              (+
+                (* 10 (get m2 qn))
+                (+ (* 1000 (unwrap tk)) (+ (* 10000 (Map.len m3)) (* 100000 (get m3 pz)))))))))
+      (def
+        (main (: n Int64))
+        (let
+          ((pz (Float64.of-int n)))
+          (let
+            ((nz (Float64.neg pz)))
+            (let
+              ((qn (/ pz pz)))
+              (let
+                ((m (Map.insert (Map.insert (Map.insert Map.empty qn 3) nz 1) pz 2)))
+                (match
+                  (Map.swap m (/ (Float64.neg pz) pz) 30)
+                  (#tuple(old m2) (part2 m2 qn nz pz old))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 221303 Int64))
+  (call main (: 5 Int64))
+  (output (: 231021 Int64)))
