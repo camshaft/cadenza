@@ -73,6 +73,13 @@ def outcomeStr : Outcome → String
   | .unsupported r => "unsupported " ++ r
   | .errReturn v => "errReturn " ++ valueStr v
 
+/-- The `"heap"` runtime ops a core module imports, read from the wat text. A wasm import reads
+`(import "heap" "<op>" (func …))`, so every occurrence of the literal `"heap" "` is followed by the op
+name up to the next `"`. Per-case DEDUPED (an op imported twice counts once). This tags which heap ops a
+DIVERGE/LEAK case exercises — the datum that pinpoints a buggy consume-op (v-wasm-oracle triage ask). -/
+def heapOpImportsOf (wat : String) : List String :=
+  (((wat.splitOn "\"heap\" \"").drop 1).filterMap (fun piece => (piece.splitOn "\"").head?)).eraseDups
+
 /-- Tally skip REASONS by frequency (descending) — surfaces where the runnable fraction is lost, and (with
 v-wasm-oracle's head-tagged reason `… (head=<name>)`) which unmodeled result-type heads dominate. -/
 def tallyReasons (rs : List String) : List (String × Nat) :=
@@ -100,6 +107,9 @@ def main (args : List String) : IO UInt32 := do
     -- WHICH side declined and why (wasm .err/.unsupported vs a Core reduce gap), a diverge shows both sides.
     let mut tally : Tally := {}
     let mut skipReasons : List String := []
+    -- Heap ops used by DIVERGE + LEAK cases (per-case deduped, accumulated) → a histogram that pinpoints
+    -- which consume-op a scale-only regression rides on (v-wasm-oracle triage ask).
+    let mut divergeLeakOps : List String := []
     for (id, coreAst, coreWat, rtBytes) in cases.reverse do
       match differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" } with
       | .agree => tally := { tally with agree := tally.agree + 1 }
@@ -108,16 +118,24 @@ def main (args : List String) : IO UInt32 := do
                               -- Print the actual disagreement to STDOUT (survives the CI log; stderr is
                               -- truncated) so a single diverging sub-case is triageable from the log alone:
                               -- the case-dir path (holds program.ast/core.wat/core.ast), the Core reference
-                              -- outcome (reduce core.ast), and the wasm outcome (runWasmWith talosDriver).
-                              IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm}"
+                              -- outcome (reduce core.ast), the wasm outcome, and the heap ops it imports.
+                              let ops := heapOpImportsOf coreWat
+                              divergeLeakOps := divergeLeakOps ++ ops
+                              IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm} | heap-ops: {ops}"
       | .skip r => tally := { tally with skip := tally.skip + 1 }
                    skipReasons := r :: skipReasons
                    IO.println s!"SKIP {id}: {r}"
       | .leak n => tally := { tally with leak := tally.leak + 1 }
                    -- W6: values AGREE but the wasm run left `n` live heap objects at end-of-run — a Perceus
                    -- leak (an alloc never balanced by a drop). A distinct signal from diverge/skip.
-                   IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak)"
+                   let ops := heapOpImportsOf coreWat
+                   divergeLeakOps := divergeLeakOps ++ ops
+                   IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak) | heap-ops: {ops}"
     IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip, {tally.leak} leak (of {cases.length} cases)"
+    -- Heap-op usage histogram over the DIVERGE + LEAK cases — which consume-op dominates the regression.
+    IO.println "oracle-wasm-diff diverge+leak heap-op histogram:"
+    for (op, n) in tallyReasons divergeLeakOps do
+      IO.println s!"  {n}\t{op}"
     -- Skip-reason histogram (descending) — where the runnable fraction is lost; with v-wasm-oracle's
     -- head-tagged reason `… (head=<name>)` it surfaces which unmodeled result-type heads dominate.
     IO.println "oracle-wasm-diff skip-reason histogram:"
