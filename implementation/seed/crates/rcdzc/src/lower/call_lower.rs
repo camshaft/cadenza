@@ -933,24 +933,21 @@ pub(super) fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> 
     if has_const_param {
         return Some(false);
     }
-    // COST GATE: called at ≥ `inline_min_callers()` RUNTIME sites (the effective floor is
-    // `INLINE_MIN_CALLERS_DEFAULT` = 2, env-overridable). The duplication emit-once avoids is only real at
-    // ≥2 sites that SURVIVE const-fold — a fully-closed (all-const-args) call is folded/inlined away before
-    // emit, so it must NOT count toward the duplication. PHASE-ORDER IDEMPOTENCE (v-core-opt): counting ALL
-    // sites (the raw `callee_call_site_count`) made emit not a 1-hop fixpoint — a def just over the inline
-    // threshold with one runtime + one const-foldable caller was emit-once'd on compile-1 (2 callers, when
-    // ALL sites were counted) but inlined on a recompile of the const-folded output (1 caller), so
-    // compile-then-recompile differed in STRUCTURE (values identical). Counting only sites with a
-    // runtime-binding arg — the SAME
-    // `arg_captures_runtime_binding` predicate `should_emit_once_by_cost` already requires per-site — gives
-    // the post-fold caller count, so the emit-once decision is stable across the fold (a 1-hop fixpoint).
-    let mut runtime_callers = 0usize;
-    for args in crate::infer::callee_call_site_args(db, callee) {
-        if args.iter().any(|&a| arg_captures_runtime_binding(db, a)) {
-            runtime_callers += 1;
-        }
-    }
-    Some(runtime_callers >= inline_min_callers())
+    // COST GATE: called at ≥ `inline_min_callers()` sites (the whole-program call-site index) — the
+    // effective floor is `INLINE_MIN_CALLERS_DEFAULT` = 2, env-overridable. The duplication emit-once avoids
+    // is only real at ≥2 sites.
+    //
+    // REVERTED the #8018 phase-order refinement (counting only RUNTIME-binding-arg callers): it made emit
+    // 1-hop-idempotent for the const-fold-caller-count class, BUT its blast radius OVER-INLINED a def whose
+    // body contains a RECURSIVE LOCAL FUNCTION capturing a param — safe as a top-level combinator (the nested
+    // rec captures the def's PARAMS), but once the def INLINES its params become let-bindings and the nested
+    // rec then captures the enclosing scope → CDZ0900 ("recursive local function that captures a binding from
+    // its enclosing scope is not supported"). That GREEN→RED'd `test-shred-exec-music-progression` (the
+    // one-four-five @test failed to emit) — a real compile regression outweighing the structure-only
+    // idempotence win. So count ALL call sites again (pre-#8018, known-good). Re-land the idempotence
+    // refinement gated on INLINE-SAFETY (emit-once a def whose body would hit CDZ0900 if inlined, regardless
+    // of the runtime-caller count) as a careful follow-up. `callee_call_site_args` stays (blx1 uses it).
+    Some(crate::infer::callee_call_site_args(db, callee).len() >= inline_min_callers())
 }
 
 /// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
