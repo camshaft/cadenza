@@ -2520,6 +2520,7 @@ pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let binding shadows a built-in type-module name in value position
 pass	a let binding shadows the record constructor in application-head position
+pass	a let binding shadows the set constructor in application-head position
 pass	a let binding shadows the tuple constructor in application-head position
 pass	a let binding whose value references a parameter compiles under a call
 pass	a let binding with no value expression is rejected, not a crash
@@ -8269,6 +8270,7 @@ pass	the multiply-by-zero annihilator does not discard a trapping runtime operan
 pass	the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the multiply-by-zero annihilator folds to zero when the discarded constant operand is total
 pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow
+pass	the native #set datastructure is not shadowed by a same-named set binding
 pass	the natural invariant construction over a VIOLATING perform result traps through the handler
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
