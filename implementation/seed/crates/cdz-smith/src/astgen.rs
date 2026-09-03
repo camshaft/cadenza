@@ -609,7 +609,17 @@ fn gen_typefuzz_int<C: Choice>(
         // (Int64 keys + values) → both rcdzc + oracle infer Int64 → agreement.
         11 => {
             let m = gen_typefuzz_map(c, iscope, bscope, fresh, false);
-            match c.variant(8) {
+            match c.variant(9) {
+                // Map.empty (T1.35) determined by an insert context → Map Int64 Int64, consumed by Map.len.
+                // A BARE escaping Map.empty stays undetermined (oracle escape-guard SKIP), so it is only
+                // ever generated inside a determining `Map.insert`.
+                8 => {
+                    let (k, v) = (
+                        c.int_bounded(0, 9),
+                        gen_typefuzz_int(c, 0, iscope, bscope, fresh),
+                    );
+                    format!("(Map.len (Map.insert Map.empty {k} {v}))")
+                }
                 0 => format!("(Map.len {m})"),
                 1 => format!("(List.len (Map.to-list {m}))"),
                 2 => {
@@ -985,7 +995,23 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(17) {
+    match c.variant(18) {
+        // A NON-ORDERABLE to-list (T1.35 — false-accept/regression guard): `Set.to-list` over a set whose
+        // ELEMENTS are sets, or `Map.to-list` over a map whose KEY is a set — a set/map leaf carries no
+        // blessed total order, so ordered enumeration is undefined → CDZ0203. rcdzc rejects + the oracle
+        // infers IllTyped ⇒ holds; an rcdzc ACCEPT (or oracle well-typed) would be the regression.
+        16 => {
+            let a = gen_typefuzz_set(c, iscope, bscope, fresh, false);
+            let b = gen_typefuzz_set(c, iscope, bscope, fresh, false);
+            if c.variant(2) == 0 {
+                // set of sets → Set.to-list has no order.
+                format!("(List.len (Set.to-list (set {a} {b})))")
+            } else {
+                // map keyed by a set → Map.to-list has no order.
+                let v = int(c, iscope, bscope, fresh);
+                format!("(List.len (Map.to-list (map (= {a} {v}))))")
+            }
+        }
         // An ILL-TYPED Map op (T1.33 — false-accept hunt): a heterogeneous-VALUE map literal (values fail
         // to unify) or a `Map.lookup` with a key whose type differs from the map's key type → a coded type
         // fault. rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
