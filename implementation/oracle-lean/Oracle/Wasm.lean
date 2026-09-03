@@ -122,20 +122,37 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
       | none => .unsupported s!"wasm result valtype does not match the declared Cadenza scalar type (ty={scalarTyName ty}, wasm={wasmValKind v})"
     | _, _ => .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)"
 
+/-- A result-type-directed fixup applied to the TOP-LEVEL decoded heap value at the Outcome boundary. A
+`String` result decodes structurally to `.bytes b` (a byte buffer); Core's value is `.str b` — the SAME UTF-8
+bytes under a different constructor — so `.toStr` retags the top-level `.bytes` → `.str`. `.asIs` = no fixup
+(BigInt/List/Map/Set/Rational/Bytes/Tuple already decode to Core's exact form). NESTED strings (`(List String)`)
+are NOT retagged here — that needs a recursive type-directed fixup (a follow-up); this covers the single-head
+`String` result. Record (→`.record`) needs the type's field NAMES threaded — also a follow-up. -/
+inductive HeapFixup where
+  | asIs
+  | toStr
+  deriving Repr, DecidableEq, BEq
+
+/-- Apply a `HeapFixup` to a decoded top-level value. `.toStr` retags a `.bytes` buffer as a `.str` (same
+bytes); everything else passes through unchanged. -/
+def applyHeapFixup : HeapFixup → Value → Value
+  | .toStr, .bytes b => .str b
+  | _,      v        => v
+
 /-- Map a wasm run outcome for a HEAP result type onto `Oracle.Outcome`. A heap-valued `main` returns an i32
 handle; the talos driver reads the final `HeapState` at that handle and hands back a decoded `.compound v`
-(see `Oracle.Wasm.HeapDecode`), which this maps to `.value v`. (Canonicalization of set/map/record — to match
-Core's order-sensitive `valueEqSpec` — is applied when those compounds are recognized; the current
-`resultHeapDecodable?` heads either need none or are extended alongside it.) A non-`.compound` `.ok` → a
-sound skip (the result was not a decodable heap object); trap/err/outOfFuel map as in `toOutcome`. -/
-def toOutcomeHeap (o : WasmOutcome) : Outcome :=
+(see `Oracle.Wasm.HeapDecode`), which this maps to `.value (applyHeapFixup fx v)`. (Canonicalization of
+set/map/record — to match Core's order-sensitive `valueEqSpec` — is applied by the driver before this;
+`fx` applies the result-type-directed top-level retag, e.g. `String`'s `.bytes`→`.str`.) A non-`.compound`
+`.ok` → a sound skip (the result was not a decodable heap object); trap/err/outOfFuel map as in `toOutcome`. -/
+def toOutcomeHeap (fx : HeapFixup) (o : WasmOutcome) : Outcome :=
   match o with
   | .trap msg  => .trap msg
   | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
   | .err msg   => .unsupported msg
   | .ok vals _ =>
     match vals.toList with
-    | [.compound v] => .value v
+    | [.compound v] => .value (applyHeapFixup fx v)
     | _             => .unsupported "heap result was not a decodable heap value"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
@@ -219,9 +236,9 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
 
 /-- A single-child heap result-type HEAD the driver decodes structurally to the matching `Oracle.Value` with
 NO result-type fixup: BigInt→`.int`, List→`.list`, Map→`.map`, Set→`.set`, Rational→`.rational`, Bytes→`.bytes`
-(the decoder + `canonicalizeValue` produce exactly Core's form). String (→`.str`) and Record (→`.record`) are
-EXCLUDED — they decode structurally to `.bytes`/`.tuple` and need a result-type fixup (a follow-up); so do
-Nominal / Qty / sums. -/
+(the decoder + `canonicalizeValue` produce exactly Core's form). String is EXCLUDED here because it needs the
+`.toStr` fixup (`.bytes`→`.str`) — it is routed separately via `stringResultHeadOfModule?`. Record (→`.record`,
+needs the type's field names) and Nominal / Qty / sums still decline. -/
 def decodableHeapHead (ty : ByteArray) : Bool :=
   ty == "BigInt".toUTF8 || ty == "List".toUTF8 || ty == "Map".toUTF8
     || ty == "Set".toUTF8 || ty == "Rational".toUTF8 || ty == "Bytes".toUTF8
@@ -230,7 +247,8 @@ def decodableHeapHead (ty : ByteArray) : Bool :=
 result-type fixup. Recognizing it makes `runWasmWithLeak` INVOKE the driver (which structurally decodes the
 heap-object result via `HeapState.decodeValue?`, then `canonicalizeValue`s it) instead of skipping. Covers the
 single-head heap types (`decodableHeapHead`) AND the FLAT multi-value TUPLE form (`(result-type "main" T0 T1 …)`
-→ `.tuple`). String/Record need fixups (later); Nominal/Qty/sums decline. -/
+→ `.tuple`). String is routed separately (`stringResult?` + the `.toStr` fixup); Record needs a fixup (later);
+Nominal/Qty/sums decline. -/
 def resultHeapDecodableOfModule? (m : Module) (entry : ByteArray) : Bool :=
   m.nodes.any (fun node =>
     match node with
@@ -248,6 +266,25 @@ def resultHeapDecodableOfModule? (m : Module) (entry : ByteArray) : Bool :=
 def resultHeapDecodable? (bytes : ByteArray) (entry : ByteArray) : Bool :=
   match Ast.decode bytes with
   | .ok m => resultHeapDecodableOfModule? m entry
+  | .error _ => false
+
+/-- Whether the entry's result type is a single-head `String` — the driver decodes its byte buffer to `.bytes`
+and the `.toStr` fixup retags it to `.str`. Mirrors the `cs.size == 3` single-head shape of
+`resultHeapDecodableOfModule?`. (String is NOT in `decodableHeapHead` precisely because it needs this fixup;
+routing it separately keeps the no-fixup path witnessed as exact.) -/
+def stringResultHeadOfModule? (m : Module) (entry : ByteArray) : Bool :=
+  m.nodes.any (fun node =>
+    match node with
+    | .list cs =>
+      if cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry then
+        headTypeName? m cs[2]! == some "String".toUTF8
+      else false
+    | _ => false)
+
+/-- Whether the entry's result type is a single-head `String` (from the raw section bytes) → decode + `.toStr`. -/
+def stringResult? (bytes : ByteArray) (entry : ByteArray) : Bool :=
+  match Ast.decode bytes with
+  | .ok m => stringResultHeadOfModule? m entry
   | .error _ => false
 
 /-- The result-type HEAD NAME of the entry when the node is PRESENT but its head is not a modeled scalar
@@ -312,9 +349,12 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
   | some ty => let o := drive coreWat trial; (toOutcome o ty, wasmLeakOf o)
   | none =>
     -- Not a scalar result type: if it is a driver-decodable HEAP result type, run + decode the returned
-    -- handle (the ~heap-valued-result lever); else a sound skip.
+    -- handle (the ~heap-valued-result lever). A single-head `String` result decodes the same way but retags
+    -- the top-level `.bytes`→`.str` (`.toStr`); everything else needs no fixup (`.asIs`). Else a sound skip.
     if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8 then
-      let o := drive coreWat trial; (toOutcomeHeap o, wasmLeakOf o)
+      let o := drive coreWat trial; (toOutcomeHeap .asIs o, wasmLeakOf o)
+    else if stringResult? resultTypeBytes trial.entry.toUTF8 then
+      let o := drive coreWat trial; (toOutcomeHeap .toStr o, wasmLeakOf o)
     else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
 
 /-- The pure `run_wasm` boundary: resolve the entry's scalar result type, drive the interpreter on the
@@ -430,8 +470,23 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "
     == .value (.list #[.int 1, .int 2])) = true := by native_decide
 example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.int 1, .int 2])]) "(module)" (rtBytes "Set") { entry := "main" }
     == .value (.set #[.int 1, .int 2])) = true := by native_decide
--- String / Record are NOT heap-decodable yet (need a fixup) → sound skip (driver not invoked).
-example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "String") { entry := "main" }
-    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=String)") = true := by native_decide
+-- A single-head `String` result NOW routes to the heap path with the `.toStr` fixup: the driver decodes the
+-- byte buffer to `.bytes` and the fixup retags the top-level value to `.str` (same UTF-8 bytes) = Core's form.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.bytes "hi".toUTF8)]) "(module)" (rtBytes "String") { entry := "main" }
+    == .value (.str "hi".toUTF8)) = true := by native_decide
+-- Record is still NOT heap-decodable (needs the type's field names threaded) → sound skip (driver not invoked).
+example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "Record") { entry := "main" }
+    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Record)") = true := by native_decide
+
+-- `applyHeapFixup`: `.toStr` retags ONLY a top-level `.bytes`; other shapes (and `.asIs`) pass through.
+example : applyHeapFixup .toStr (.bytes "hi".toUTF8) = .str "hi".toUTF8 := rfl
+example : applyHeapFixup .toStr (.list #[.int 1]) = .list #[.int 1] := rfl
+example : applyHeapFixup .asIs (.bytes "hi".toUTF8) = .bytes "hi".toUTF8 := rfl
+-- `toOutcomeHeap`: the `.toStr` fixup finalizes a decoded `.compound (.bytes …)` to a `.str` value.
+example : (toOutcomeHeap .toStr (.ok #[.compound (.bytes "ok".toUTF8)]) == .value (.str "ok".toUTF8)) = true := by native_decide
+-- String-head recognition: `stringResult?` accepts a `String` result type, rejects a `List`/`Int` one.
+example : stringResult? (rtBytes "String") "main".toUTF8 = true := by native_decide
+example : stringResult? (rtBytes "List") "main".toUTF8 = false := by native_decide
+example : stringResult? (rtBytes "Int") "main".toUTF8 = false := by native_decide
 
 end Oracle.Wasm
