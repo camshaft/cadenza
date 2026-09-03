@@ -160,6 +160,12 @@ jobs:
           name: wasm-verdicts-coarse
           path: ${{ runner.temp }}/wasm-verdicts-coarse.txt
           if-no-files-found: error
+          # SHORT retention: cache-warm runs every 30 min, so without this these accumulate into the GHA
+          # artifact storage limit. Consumers (v-corpus-harness re-harvest / non-trusted-lane baseline pull)
+          # only ever fetch the LATEST snapshot (there is always a <30-min-old one), so a 2-day window is
+          # ample + gap-resilient (survives a brief warm-run outage) while staying bounded (~96 artifacts).
+          # Matches nightly's shared-store artifact retention discipline (retention-days: 1).
+          retention-days: 2
       # Warm the AARCH64 nix CHECK that the store+cargo-artifacts warm DON'T cover — cad-tests builds the
       # SEED COMPILER (cdz-seed-compiler is in its requisites) + runs `cdz test`, and neither packages.store
       # nor cargo-artifacts pulls seedCompiler. After the seedCompiler-src narrowing (#2373) this check became
