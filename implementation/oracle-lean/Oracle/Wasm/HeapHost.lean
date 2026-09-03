@@ -508,4 +508,82 @@ private def probeNullSentinel : Bool :=
   | _               => false
 example : probeNullSentinel = true := by native_decide
 
+/-! #### W5.1b coverage hardening — deeper cascade / sharing / DAG invariants (pinning edges the base
+witnesses do not exercise). -/
+
+/-- Nested-array cascade: array A holds array B holds a boxed int (3 live objects). Dropping A frees
+A → B → the int transitively — the MULTI-LEVEL cascade + traversal-fuel depth. Leak census → 0. -/
+private def probeNestedCascade : Bool :=
+  match boxInt ({} : HeapState) [.i64 7] with
+  | .ret [.i32 h] s0 =>
+    match arrAlloc s0 [.i32 1] with
+    | .ret [.i32 b] s1 =>
+      match arrSet s1 [.i32 b, .i32 0, .i32 h] with
+      | .ret [.i32 _] s2 =>
+        match arrAlloc s2 [.i32 1] with
+        | .ret [.i32 a] s3 =>
+          match arrSet s3 [.i32 a, .i32 0, .i32 b] with
+          | .ret [.i32 _] s4 =>
+            (s4.liveCount == 3) &&
+            (match drop s4 [.i32 a] with
+             | .ret [] s5 => s5.liveCount == 0
+             | _          => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeNestedCascade = true := by native_decide
+
+/-- Shared child: an array owns ONE ref to a child that is ALSO held elsewhere (rc 2). Dropping the array
+decrements the child but does NOT free it (rc 2→1, still live); dropping the remaining ref then frees it.
+Pins the sharing refcount discipline (a single owner's drop must not free a shared node). -/
+private def probeSharedChild : Bool :=
+  match boxInt ({} : HeapState) [.i64 1] with
+  | .ret [.i32 h] s0 =>
+    match dup s0 [.i32 h] with
+    | .ret [] s1 =>
+      match arrAlloc s1 [.i32 1] with
+      | .ret [.i32 a] s2 =>
+        match arrSet s2 [.i32 a, .i32 0, .i32 h] with
+        | .ret [.i32 _] s3 =>
+          (s3.liveCount == 2) &&
+          (match drop s3 [.i32 a] with
+           | .ret [] s4 =>
+             (s4.liveCount == 1) &&
+             (match drop s4 [.i32 h] with
+              | .ret [] s5 => s5.liveCount == 0
+              | _          => false)
+           | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSharedChild = true := by native_decide
+
+/-- DAG-safe mark-immortal-deep: an array with TWO slots pointing to the SAME child. The deep-mark visits
+the shared child ONCE (the already-immortal skip), marking array + child immortal → census 0, no
+double-processing of the shared node. -/
+private def probeDagMarkDeep : Bool :=
+  match boxInt ({} : HeapState) [.i64 2] with
+  | .ret [.i32 h] s0 =>
+    match dup s0 [.i32 h] with
+    | .ret [] s1 =>
+      match arrAlloc s1 [.i32 2] with
+      | .ret [.i32 a] s2 =>
+        match arrSet s2 [.i32 a, .i32 0, .i32 h] with
+        | .ret [.i32 _] s3 =>
+          match arrSet s3 [.i32 a, .i32 1, .i32 h] with
+          | .ret [.i32 _] s4 =>
+            (s4.liveCount == 2) &&
+            (match markImmortalDeep s4 [.i32 a] with
+             | .ret [.i32 _] s5 => s5.liveCount == 0
+             | _                => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeDagMarkDeep = true := by native_decide
+
 end Oracle.Heap
