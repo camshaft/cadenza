@@ -13592,3 +13592,44 @@
   (output (: 50300004 Int64))
   (call main (: 3 Int64))
   (output (: 50300010 Int64)))
+
+; hfx1/hfx2: the adv-62 host-wraps-match fix (Resolved::Let guard descent, #8109) WITHOUT the
+; escaping-closure machinery the pinned adv-62 case couples in — isolating the guard's let-init
+; descent on the plain shape. hfx1: a host block wraps a match over a let-bound host result in a
+; PLAIN tuple scrutinee `(host (E) (match (let ((v (E.op))) #tuple(v (+ v n))) (#tuple(a b) …)))` —
+; the let-init `(E.op)` must be materialized ONCE (the guard descends into the binding init), so the
+; op fires exactly once: 7 + 100*(7+n) = 1207 at n=5. hfx2: TWO let-bound host results in the
+; scrutinee tuple — each init materialized once, exactly two firings in order (no double, no miss):
+; 7 + 100*9 = 907. A guard that missed the let-init (the pre-#8109 bug) re-emitted the host block
+; per binder and trapped on the missing second response. (breaker probes hf1/hf2; wasm exact with
+; single/double host-call traces, cadenza hop benign-stabilizing drift with identical values,
+; census 0.)
+(case
+  "a host block wrapping a match over a plain-tuple let-bound host result fires the op once"
+  (input
+    (do
+      (effect E (op op (-> Int64)))
+      (def
+        (main (: n Int64))
+        (host (E) (match (let ((v (E.op))) #tuple(v (+ v n))) (#tuple(a b) (+ a (* 100 b))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (host-responses (respond e.op (: 7 Int64)))
+  (host-calls (call e.op))
+  (output (: 1207 Int64)))
+
+(case
+  "a host block wrapping a match over two let-bound host results fires each once in order"
+  (input
+    (do
+      (effect E (op op (-> Int64)))
+      (def
+        (main (: n Int64))
+        (host
+          (E)
+          (match (let ((v (E.op))) (let ((w (E.op))) #tuple(v w))) (#tuple(a b) (+ a (* 100 b))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (host-responses (respond e.op (: 7 Int64)) (respond e.op (: 9 Int64)))
+  (host-calls (call e.op) (call e.op))
+  (output (: 907 Int64)))
