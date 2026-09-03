@@ -1013,6 +1013,24 @@ fn emit_def(
             let unit_node = crate::lower::unit_value_ast(b, &unit);
             b.list(vec![head, mag, unit_node])
         }
+        // A CONSTANT-magnitude quantity return `(def (main) (Qty.of 5.0 u))` erases to a bare `ConstInt`/
+        // `ConstFloat` typed `Ty::Qty`; wrap the whole body `(Qty.of <const> <unit>)` from the AUTHORITATIVE
+        // def result unit. GATED to a TRIVIAL-SCALE unit (`scale == 1/1` — a base/reference/dimensionless unit):
+        // `unit_value_ast` reconstructs from the exponent map ALONE and DROPS any prefix/family scale, so a
+        // SCALED const (`5.0 kilometer`, scale 1000/1) would mispair the unscaled const with the reference unit
+        // — `(Qty.of 5.0 meter)` renders 5 m, not 5 km (a verified miscompile; the scaled-const reconstruction
+        // needs `unit_value_ast` to emit the prefix, a separate later slice). A trivial-scale unit reconstructs
+        // faithfully, so the unscaled const pairs correctly. Distinct from the reverted `qty_disposition`
+        // const-Construct — gated on the authoritative def-result Qty type AND scale==1/1.
+        Some(Ty::Qty { inner, unit })
+            if qty_leaf(db, body) == LeafKind::ConstMag && unit.scale() == (1, 1) =>
+        {
+            let head = member_access(b, "Qty", "of");
+            let mag =
+                emit_expr_viewed(db, b, body, Some((*inner).clone()), None, &mut env, emitted)?;
+            let unit_node = crate::lower::unit_value_ast(b, &unit);
+            b.list(vec![head, mag, unit_node])
+        }
         // A partial-bare-inner control-flow tail (a checked-narrow arm mixed with a Param/other arm) can be
         // neither wrapped-whole (the Param arm self-constructs → double-wrap) nor passed through (the bare-inner
         // arm silently drops its wrapper — the #5341 miscompile in an arm position). Decline it (a uniform-arm
@@ -1087,9 +1105,15 @@ enum LeafKind {
     BareInner,
     /// A `Trap` — diverges, produces no value; NEUTRAL when merging sibling arms.
     Diverges,
+    /// A NUMERIC-CONSTANT magnitude leaf (`ConstInt`/`ConstFloat`) — a CONST quantity `(def (main) (Qty.of 5.0
+    /// u))` erases to a bare const typed `Ty::Qty`. Like `BareInner` it emits the bare inner value and the WHOLE
+    /// body wraps `(Qty.of <const> u)`, but [`emit_def`] wraps it ONLY when the def result unit has a TRIVIAL
+    /// scale (`1/1`) — `unit_value_ast` drops any prefix/family scale, so a SCALED const would mispair (see the
+    /// def-tail arm). Kept distinct from `BareInner` so the scale gate applies only to the const case.
+    ConstMag,
     /// A leaf that SELF-constructs or declines — a `Param`/`LocalRef` (wraps via its own `qty_disposition`
-    /// Construct), a const, a `Call`, a compound — keep the body on the normal pass-through/decline path;
-    /// do NOT wrap-whole (wrapping a Param leaf would double-wrap).
+    /// Construct), a non-numeric const, a `Call`, a compound — keep the body on the normal pass-through/decline
+    /// path; do NOT wrap-whole (wrapping a Param leaf would double-wrap).
     Other,
     /// A control-flow body whose leaves MIX `BareInner` and `Other` (`(if c (Qty.of (Int32.of a) u) (Qty.of x
     /// u))` — a checked-narrow arm + a Param arm). Wrap-whole is wrong (the Param arm self-constructs → would
@@ -1111,6 +1135,9 @@ fn qty_leaf(db: &mut Db, id: StructId) -> LeafKind {
         | Core::BigIntBinOp { .. }
         | Core::RationalBinOp { .. }
         | Core::BigIntOfI64 { .. } => LeafKind::BareInner,
+        // A numeric-const magnitude — a bare-inner value like `BareInner`, but classified `ConstMag` so
+        // [`emit_def`]'s wrap gates it on a trivial-scale unit (a scaled const mispairs; see the def-tail arm).
+        Core::ConstInt(_) | Core::ConstFloat(_) => LeafKind::ConstMag,
         Core::Trap => LeafKind::Diverges,
         Core::If { then_, else_, .. } => merge_leaf(qty_leaf(db, then_), qty_leaf(db, else_)),
         Core::Let { body, .. } => qty_leaf(db, body),
@@ -1165,8 +1192,12 @@ fn merge_leaf(a: LeafKind, b: LeafKind) -> LeafKind {
         (LeafKind::Diverges, x) | (x, LeafKind::Diverges) => x,
         (LeafKind::Mixed, _) | (_, LeafKind::Mixed) => LeafKind::Mixed,
         (LeafKind::BareInner, LeafKind::BareInner) => LeafKind::BareInner,
+        // All-const arms stay `ConstMag` (the def-tail scale gate checks the shared def unit once). A ConstMag
+        // mixed with a BareInner/Other arm falls to the `_ => Mixed` decline (conservative — a uniform const+
+        // runtime-magnitude wrap is a later slice; declining never miscompiles).
+        (LeafKind::ConstMag, LeafKind::ConstMag) => LeafKind::ConstMag,
         (LeafKind::Other, LeafKind::Other) => LeafKind::Other,
-        // one BareInner + one Other → a mixed control flow.
+        // one BareInner + one Other (or a ConstMag mixed with either) → a mixed control flow.
         _ => LeafKind::Mixed,
     }
 }
