@@ -217,18 +217,31 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
   | .ok m => resultScalarTyOfModule? m entry
   | .error _ => none
 
+/-- A single-child heap result-type HEAD the driver decodes structurally to the matching `Oracle.Value` with
+NO result-type fixup: BigInt→`.int`, List→`.list`, Map→`.map`, Set→`.set`, Rational→`.rational`, Bytes→`.bytes`
+(the decoder + `canonicalizeValue` produce exactly Core's form). String (→`.str`) and Record (→`.record`) are
+EXCLUDED — they decode structurally to `.bytes`/`.tuple` and need a result-type fixup (a follow-up); so do
+Nominal / Qty / sums. -/
+def decodableHeapHead (ty : ByteArray) : Bool :=
+  ty == "BigInt".toUTF8 || ty == "List".toUTF8 || ty == "Map".toUTF8
+    || ty == "Set".toUTF8 || ty == "Rational".toUTF8 || ty == "Bytes".toUTF8
+
 /-- Whether the entry's result type is a HEAP type the driver can decode + `toOutcomeHeap` finalizes WITHOUT a
 result-type fixup. Recognizing it makes `runWasmWithLeak` INVOKE the driver (which structurally decodes the
-heap-object result via `HeapState.decodeValue?`) instead of skipping. FIRST slice: `BigInt` (a leaf; no
-canonicalize/fixup needed). Extends to List/Tuple/Map/Set/Rational/Bytes (+ canonicalize) next; String/Record
-need bytes→str / tuple→record fixups (later). -/
+heap-object result via `HeapState.decodeValue?`, then `canonicalizeValue`s it) instead of skipping. Covers the
+single-head heap types (`decodableHeapHead`) AND the FLAT multi-value TUPLE form (`(result-type "main" T0 T1 …)`
+→ `.tuple`). String/Record need fixups (later); Nominal/Qty/sums decline. -/
 def resultHeapDecodableOfModule? (m : Module) (entry : ByteArray) : Bool :=
   m.nodes.any (fun node =>
     match node with
     | .list cs =>
-      cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
-        && atomText? m cs[1]! == some entry
-        && (match headTypeName? m cs[2]! with | some ty => ty == "BigInt".toUTF8 | none => false)
+      if nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry then
+        if cs.size == 3 then
+          match headTypeName? m cs[2]! with
+          | some ty => decodableHeapHead ty
+          | none    => false
+        else cs.size ≥ 4   -- ≥ 2 type children = the flat Tuple form → a `.tuple` result
+      else false
     | _ => false)
 
 /-- Whether the entry's result type is a driver-decodable heap type (from the raw section bytes). -/
@@ -411,5 +424,14 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.int 1000000000)]) "(module)
 -- A still-unmodeled heap head (Nominal/Qty/…) is NOT heap-decodable → the driver is NOT invoked → sound skip.
 example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "Widget") { entry := "main" }
     == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Widget)") = true := by native_decide
+-- The extended heap heads route to the heap path too: a List / Set / Map / Rational / Bytes result-type →
+-- driver invoked → the decoded `.compound` → `.value`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "(module)" (rtBytes "List") { entry := "main" }
+    == .value (.list #[.int 1, .int 2])) = true := by native_decide
+example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.int 1, .int 2])]) "(module)" (rtBytes "Set") { entry := "main" }
+    == .value (.set #[.int 1, .int 2])) = true := by native_decide
+-- String / Record are NOT heap-decodable yet (need a fixup) → sound skip (driver not invoked).
+example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "String") { entry := "main" }
+    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=String)") = true := by native_decide
 
 end Oracle.Wasm

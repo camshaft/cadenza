@@ -14,6 +14,7 @@ host increment). Talos value → `WasmVal` uses the SIGNED reading (`toInt32`/`t
 import Oracle.Wasm
 import Oracle.Wasm.HeapHost
 import Oracle.Wasm.HeapDecode
+import Oracle.Eval
 import Interpreter.Wasm.SmallStep
 import Interpreter.Wasm.Decoder.Wat
 import Interpreter.Wasm.Host.Registry
@@ -115,7 +116,10 @@ def talosDriverWithFuel (fuel : Nat) : Driver := fun coreWat trial =>
                 -- The returned handle is the RESULT (legitimately live — the component lift consumes it), so it
                 -- must NOT count as a leak: drop it (cascades into its children) and the REMAINING live count is
                 -- the actual leak census. A clean heap-valued run → 0; anything else still live → a real leak.
-                | some v => .ok #[.compound v] (host.dropH rawh).liveCount
+                -- Canonicalize the decoded value (sort/dedupe set/map/record via cmpValue) so it matches Core's
+                -- order-sensitive `valueEqSpec` (a no-op for scalars/bigint/tuple/list). Eval.canonicalizeValue
+                -- (v-lean-oracle, on main).
+                | some v => .ok #[.compound (Eval.canonicalizeValue v)] (host.dropH rawh).liveCount
                 | none   => scalarMap
               | none => scalarMap
             | _ => scalarMap
@@ -231,5 +235,14 @@ for the census, not a leak). This is the read+driver half of the heap-result lev
 private def watHeapBigIntResult : String :=
   "(module (import \"heap\" \"bigint-of-i64\" (func (param i64) (result i32))) (func (export \"main\") (result i32) i64.const 1000000000 call 0))"
 example : (talosDriver watHeapBigIntResult { entry := "main" } == .ok #[.compound (.int 1000000000)]) = true := by native_decide
+
+/-- End-to-end COMPOUND heap-valued result + CANONICALIZE: `main` builds the set `{2,1}` (inserting 2 THEN 1,
+i.e. out of canonical order) and returns it. The driver decodes the returned set handle → `Value.set` in
+INSERTION order `[2,1]`, then `Eval.canonicalizeValue` sorts it → `[1,2]` = Core's canonical form (so the
+order-sensitive `valueEqSpec` matches). `leakCount 0` (the returned set is the result — dropped for the census;
+immediate elems are census-free). Exercises the decode + canonicalize of a COMPOUND result end-to-end. -/
+private def watHeapSetResult : String :=
+  "(module (import \"heap\" \"set-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"set-insert\" (func (param i32) (param i32) (result i32))) (func (export \"main\") (result i32) call 0 i64.const 2 call 1 call 2 i64.const 1 call 1 call 2))"
+example : (talosDriver watHeapSetResult { entry := "main" } == .ok #[.compound (.set #[.int 1, .int 2])]) = true := by native_decide
 
 end Oracle.Wasm
