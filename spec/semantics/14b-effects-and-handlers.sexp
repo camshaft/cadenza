@@ -13432,3 +13432,41 @@
   (output (: 6 Int64))
   (call main (: 200000 Int64))
   (output (: 5000050000 Int64)))
+
+; clx1: the LET-BOUND VALUE-FLOW face of the eg1 name-collision — each stamp call is let-bound
+; (`q`/`r`) and the bound value THEN matched with the colliding destructure binder `a`. The capture
+; is identical to the direct-scrutinee collision todo above (the commute nests the continuation
+; under the inlined helper's own `a`), but the collision arrives through the let's VALUE FLOW, not
+; the syntactic scrutinee position — the shape #8052's first detector deliberately excluded and
+; which then folded WRONG (2102: the outer `a` read the inner helper's binder) on BOTH backends
+; until #8057 peeled the scrutinee through let-binding refs (Resolved::Ref) before the collision
+; test. Now a safe CDZ0900 decline (reject-don't-miscompile restored); idealistic value identical to
+; the direct twin, 2101 + 110n, hand-derivation confirmed by the effect-free control (stamp2 with t
+; as a parameter: 2101/2431 exact). Flips to PASS with the same match-arm-binder freshening that
+; flips the direct twin. (breaker probe col4, the tick-1476 P0; matrix: direct + 2nd-binder + this
+; shape decline; colliding-but-unused, state-binder-spelling, and distinct-name shapes all fold.)
+(case
+  "eg1 collision through a let-bound value flow declines pending the same freshening"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (stamp p) (match p (#tuple(a b) #tuple(a b (C.tick)))))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (let
+            ((q (stamp #tuple(1 true))))
+            (match
+              q
+              (#tuple(a _b t1)
+                (let
+                  ((r (stamp #tuple(2 true))))
+                  (match r (#tuple(c _d t2) (+ a (+ (* 1000 c) (+ (* 10 t1) (* 100 t2))))))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2101 Int64))
+  (call main (: 3 Int64))
+  (output (: 2431 Int64)))
