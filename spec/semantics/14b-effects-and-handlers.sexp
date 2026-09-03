@@ -3108,23 +3108,22 @@
 ; (`stamp p = match p (#tuple(a b) …)`). The idealistic value is unchanged by the rename: `a` is the first
 ; element of the OUTER stamp's result (1), `c` the inner's (2), `t1`/`t2` the two ticks (n, n+1). So
 ; `a + 1000*c + 10*t1 + 100*t2` = 1 + 2000 + 10n + 100(n+1) = 2101 + 110n (n=0 -> 2101, n=3 -> 2431).
-; CURRENTLY DECLINES (honest todo): the resumptive-conditional commute nests the continuation (which
-; references the outer `a`) lexically UNDER the inlined `stamp`'s own `(#tuple(a b))` match-arm binder, so
-; the outer `a` reference would be CAPTURED by `stamp`'s `a` (a hygiene gap — the fold's `freshen_walk`
-; leaves match-arm binders un-renamed). Rather than fold to the captured wrong value (2 not 1), the fold
-; SAFE-DECLINES this exact collision shape (reject-don't-miscompile). The fix that flips this to a PASS is to
-; freshen the inlined helper's match-arm binders so the collision cannot occur; the value asserted here is
-; the spec-correct one that fix realizes. (Distinct-name eg1 above is unaffected and folds.)
+; FOLDS CORRECTLY: the resumptive-conditional commute nests the continuation (which references the outer
+; `a`) lexically UNDER the inlined `stamp`'s own `(#tuple(a b))` match-arm binder — which WOULD capture the
+; outer `a`, except `reduce_applied_lambdas` now α-renames each inlined helper body's match-arm pattern
+; binders to fresh names (`freshen_match_arm_binders`) at the inline point, so `stamp`'s internal `a`
+; becomes `#a{n}` and cannot capture the caller's `a`. A pure α-conversion (inert for distinct-name cases),
+; so the outer `a`=1 stays 1. (Formerly SAFE-DECLINED; the freshening supersedes that floor.)
 (case
-  "eg1 name-collision variant — caller destructure binder shares the helper's internal match-arm binder name (declines pending the inlined-helper match-binder freshening; idealistic value pins the post-fix fold)"
+  "eg1 name-collision variant — caller destructure binder shares the helper's internal match-arm binder name folds (inlined-helper match-binder freshening)"
   (doc
     "The eg1 nested shape with the caller's OUTER destructure binder named `a`, colliding with `stamp`'s
            INTERNAL binder `a`. The idealistic semantics are identical to eg1 (the rename is inert): outer
-           `a`=1, inner `c`=2, ticks t1=n and t2=n+1, so `a + 1000*c + 10*t1 + 100*t2` = 2101 + 110n. It
-           currently DECLINES because the commute would nest the continuation under the inlined helper's
-           `(#tuple(a b))` arm binder and CAPTURE the outer `a` (freshen_walk skips match-arm binders) — a
-           silent wrong value the fold rejects instead of emitting. Freshening the inlined helper's match-arm
-           binders flips this to a PASS at the asserted value.")
+           `a`=1, inner `c`=2, ticks t1=n and t2=n+1, so `a + 1000*c + 10*t1 + 100*t2` = 2101 + 110n. Folds
+           correctly because `reduce_applied_lambdas` α-renames the inlined helper's `(#tuple(a b))` arm
+           binders to fresh `#a{n}`/`#b{n}` at the inline point (`freshen_match_arm_binders`), so the commute
+           can no longer capture the outer `a` — a capture-avoiding hygiene fix superseding the former
+           safe-decline. Distinct-name eg1 above is unaffected (freshening is a no-op there).")
   (input
     (do
       (effect C (op tick (-> Int64)))
@@ -13503,13 +13502,14 @@
 ; the syntactic scrutinee position — the shape #8052's first detector deliberately excluded and
 ; which then folded WRONG (2102: the outer `a` read the inner helper's binder) on BOTH backends
 ; until #8057 peeled the scrutinee through let-binding refs (Resolved::Ref) before the collision
-; test. Now a safe CDZ0900 decline (reject-don't-miscompile restored); idealistic value identical to
-; the direct twin, 2101 + 110n, hand-derivation confirmed by the effect-free control (stamp2 with t
-; as a parameter: 2101/2431 exact). Flips to PASS with the same match-arm-binder freshening that
-; flips the direct twin. (breaker probe col4, the tick-1476 P0; matrix: direct + 2nd-binder + this
-; shape decline; colliding-but-unused, state-binder-spelling, and distinct-name shapes all fold.)
+; test. Now FOLDS correctly: the match-arm-binder freshening (`reduce_applied_lambdas` α-renames the
+; inlined helper's `(#tuple(a b))` arm binders to fresh names) makes the let-bound value-flow collision
+; impossible, exactly as for the direct twin. Idealistic value identical to the direct twin, 2101 + 110n,
+; hand-derivation confirmed by the effect-free control (stamp2 with t as a parameter: 2101/2431 exact).
+; (breaker probe col4, the tick-1476 P0; matrix: direct + 2nd-binder + this shape now all FOLD via
+; freshening; colliding-but-unused, state-binder-spelling, and distinct-name shapes fold too.)
 (case
-  "eg1 collision through a let-bound value flow declines pending the same freshening"
+  "eg1 collision through a let-bound value flow folds (same inlined-helper match-binder freshening)"
   (input
     (do
       (effect C (op tick (-> Int64)))
