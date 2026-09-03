@@ -1064,6 +1064,14 @@ fn typefuzz_float<C: Choice>(c: &mut C) -> &'static str {
     ["0.0", "1.5", "2.5", "3.0", "42.0"][c.variant(5)]
 }
 
+/// A sized-int width namespace name (T1.43 — Int8/16/32/64 + UInt8/16/32/64, minus the default Int64
+/// which the plain-Int arms already cover). Used for the sized-int module-op value arm.
+fn typefuzz_sized_width<C: Choice>(c: &mut C) -> &'static str {
+    [
+        "Int8", "Int16", "Int32", "UInt8", "UInt16", "UInt32", "UInt64",
+    ][c.variant(7)]
+}
+
 fn gen_typefuzz_map<C: Choice>(
     c: &mut C,
     iscope: &mut Vec<String>,
@@ -1134,7 +1142,11 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(23) {
+    match c.variant(24) {
+        // A MIXED-WIDTH sized-int op (T1.43 — false-accept hunt): `(UInt16.wrapping-add (UInt8.wrap 1)
+        // (UInt16.wrap 2))` — the UInt8 arg does not match the op's UInt16 width → CDZ0301. rcdzc rejects +
+        // the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+        22 => "(UInt16.wrapping-add (UInt8.wrap 1) (UInt16.wrap 2))".to_string(),
         // An INTEGER-MODULE op with a NON-INT operand (T1.43 — false-accept hunt): `(Int64.wrapping-add
         // <float|bool> <int>)` — the op requires int operands → CDZ0203 (no int↔float, non-int rejected).
         // rcdzc rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
@@ -1370,7 +1382,33 @@ fn gen_typefuzz_value<C: Choice>(
     bscope: &mut Vec<String>,
     fresh: &mut usize,
 ) -> String {
-    match c.variant(12) {
+    match c.variant(13) {
+        // A SIZED-INT VALUE (T1.43 — a non-default int width Int8/16/32 + UInt8/16/32/64). `(W.wrap <int>)`
+        // truncating convert → `(Int W)`; `W.max`/`W.min` bound constant; `(W.wrapping-add (W.wrap a)
+        // (W.wrap b))` modular → W; or `(W.checked-add (W.wrap a) (W.wrap b))` → `Option W` matched to W.
+        // Both rcdzc + oracle infer the width → agreement.
+        11 => {
+            let w = typefuzz_sized_width(c);
+            match c.variant(4) {
+                0 => format!("({w}.wrap {})", c.int_bounded(0, 9)),
+                1 => {
+                    let m = if c.variant(2) == 0 { "max" } else { "min" };
+                    format!("{w}.{m}")
+                }
+                2 => {
+                    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+                    format!("({w}.wrapping-add ({w}.wrap {a}) ({w}.wrap {b}))")
+                }
+                _ => {
+                    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+                    let bn = format!("i{}", *fresh);
+                    *fresh += 1;
+                    format!(
+                        "(match ({w}.checked-add ({w}.wrap {a}) ({w}.wrap {b})) ((Some {bn}) {bn}) ((None) ({w}.wrap 0)))"
+                    )
+                }
+            }
+        }
         // A FLOAT VALUE (T1.40 literal/ascription + T1.41 arithmetic + T1.42 ops): a bare float literal
         // (→ Float64, width-defaulted), an ASCRIBED `(: <lit> Float32|Float64)`, float ARITHMETIC
         // `(+/-/* / a b)` → Float (T1.41, width-poly), or a width-namespaced Float OP (T1.42): `FloatW.nan`
