@@ -3000,6 +3000,29 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[19, 18, 16], .atom 12, .atom 2, .list #[21, 22], .atom 0,
                            .list #[24, 20, 23]],
                 root := 25 } == .wellTyped (.record [("x".toUTF8, .int 64 true)]))
+-- T1.50-fault (Record.project ABSENT label): `(Record.project (record (= x 1)) (y))` → IllTyped CDZ0212 —
+-- `y` names no field of `{x}` (the absent-field rejection, `infer/node.rs`). Pins the project fault path.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "project".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "y".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 10, .list #[10], .list #[9, 5, 11],
+                           .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 11, .atom 2,
+                           .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                root := 21 } == .illTyped "CDZ0212")
+-- T1.49-fault (Record.merge OVERLAPPING): `(Record.merge (record (= x 1)) (record (= x 2)))` → IllTyped
+-- CDZ0211 — both records share `x` (merge is disjoint-only, not last-writer-wins). Pins the merge fault path.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "merge".toUTF8, .name "record".toUTF8,
+                            .name "=".toUTF8, .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 6,
+                           .atom 7, .atom 8, .atom 10, .list #[7, 8, 9], .list #[6, 10], .atom 3, .atom 4,
+                           .atom 5, .list #[12, 13, 14], .list #[15, 5, 11], .atom 2, .list #[17], .atom 1,
+                           .list #[19, 18, 16], .atom 11, .atom 2, .list #[21, 22], .atom 0,
+                           .list #[24, 20, 23]],
+                root := 25 } == .illTyped "CDZ0211")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
