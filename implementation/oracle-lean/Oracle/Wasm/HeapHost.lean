@@ -1376,6 +1376,60 @@ def rationalCmp : HeapState → List Value → HeapResult
     | _, _ => .trap "rational-cmp: an operand is not a rational"
   | s, _ => .trap "rational-cmp: expected (i32, i32)"
 
+/-! ### Reuse / FBIP (Perceus, indices 26–28) — the in-place-update contract (v-runtime rc.rs; the W7
+soundness crux). `reset(node)`: if UNIQUE (`rc==1`) drop each direct child (cascades) and return the SAME
+handle as an OPAQUE empty shell (rc 1, 0 children — never read as a value; consumed by exactly one
+`*-reuse` OR dropped); if SHARED (`rc>1`) decrement + return NULL (0); an IMMORTAL (sentinel rc ≠ 1) or a
+null/immediate handle → NULL (no reuse, survives). `arr-alloc-reuse`/`sum-new-reuse`: a non-null token's shell
+is BLINDLY refit (no arity check) to match the plain constructor BYTE-FOR-BYTE (zero alloc — the FBIP win);
+a null/immediate token → the plain non-reuse form; `arr-alloc-reuse(0, token)` drops the token and returns the
+unit immediate (empty array IS unit). Modeling reuse as `rc==1`→in-place / `rc>1`→(decrement, NULL→alloc-fresh)
+makes BOTH dimensions guard reuse soundness: a broken uniqueness gate (in-place mutate a shared/aliased node,
+or reuse a child without the pre-`reset` dup) surfaces as an aliased-read/UAF VALUE divergence, and the census
+stays balanced. -/
+
+/-- `reset(node) → token`: the Perceus drop-to-token. UNIQUE → drop children, retain the emptied shell (SAME
+handle); SHARED → decrement + NULL; immortal/null/immediate → NULL. -/
+def reset : HeapState → List Value → HeapResult
+  | s, [.i32 node] =>
+    if node == 0 || isImmediate node then .ret [.i32 0] s
+    else match s.getObj? node with
+    | none   => .ret [.i32 0] s
+    | some o =>
+      if !o.live then .ret [.i32 0] s
+      else if o.immortal then .ret [.i32 0] s            -- immortal (sentinel rc): treated shared, survives
+      else if o.rc == 1 then                             -- UNIQUE: drop children, keep the shell (same handle)
+        let s1 := o.value.children.foldl (fun acc h => acc.dropH h) s
+        .ret [.i32 node] (s1.setObj node { o with value := .array #[] })
+      else .ret [.i32 0] (s.setObj node { o with rc := o.rc - 1 })   -- SHARED: decrement, NULL token
+  | s, _ => .trap "reset: expected (i32)"
+
+/-- `arr-alloc-reuse(len, token) → arr`: refit a non-null token's shell to `len` NULL slots (no alloc); a
+null/immediate token → the plain `arr-alloc(len)`; `len == 0` → drop the token (if any) and return the unit. -/
+def arrAllocReuse : HeapState → List Value → HeapResult
+  | s, [.i32 len, .i32 token] =>
+    if token == 0 || isImmediate token then
+      if len == 0 then .ret [.i32 immUnit] s
+      else s.box (.array (List.replicate len.toNat (0 : UInt32)).toArray)
+    else match s.getObj? token with
+    | none   =>   -- defensive: a non-null non-heap token falls back to the plain form
+      if len == 0 then .ret [.i32 immUnit] s
+      else s.box (.array (List.replicate len.toNat (0 : UInt32)).toArray)
+    | some o =>
+      if len == 0 then .ret [.i32 immUnit] (s.dropH token)   -- empty array IS unit; the shell isn't reused
+      else .ret [.i32 token] (s.setObj token { o with value := .array (List.replicate len.toNat (0 : UInt32)).toArray })
+  | s, _ => .trap "arr-alloc-reuse: expected (i32, i32)"
+
+/-- `sum-new-reuse(disc, payload, token) → sum`: refit a non-null token's shell to the `(disc, payload)` node
+(payload CONSUMED, moved in — like `sum-new`); a null/immediate token → the plain `sum-new`. -/
+def sumNewReuse : HeapState → List Value → HeapResult
+  | s, [.i32 disc, .i32 payload, .i32 token] =>
+    if token == 0 || isImmediate token then s.box (.sum disc payload)
+    else match s.getObj? token with
+    | none   => s.box (.sum disc payload)
+    | some o => .ret [.i32 token] (s.setObj token { o with value := .sum disc payload })
+  | s, _ => .trap "sum-new-reuse: expected (i32, i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -1486,7 +1540,11 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("vec-drop",           toHostFn [.i32, .i32]             [.i32]  HeapState.vecDrop)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
-  , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
+  , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep)
+    -- reuse / FBIP (Perceus reset + reuse-constructors): the rc==1 in-place gate
+  , ("reset",              toHostFn [.i32]                   [.i32]  HeapState.reset)
+  , ("arr-alloc-reuse",    toHostFn [.i32, .i32]             [.i32]  HeapState.arrAllocReuse)
+  , ("sum-new-reuse",      toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.sumNewReuse) ]
 
 /-! ### Witnesses — compiled every build (a regression fails the oracle-lean build). Immediate-aware after the
 IMMEDIATES rework: box-int(fixnum)/box-bool produce inline immediates (no heap, census-excluded, dup/drop
@@ -2363,5 +2421,79 @@ private def probeRationalDivZero : Bool :=
     | _ => false
   | _ => false
 example : probeRationalDivZero = true := by native_decide
+
+/-! #### Reuse / FBIP witnesses — unique reset→reuse (SAME handle, zero alloc), shared reset→NULL (survives),
+sum-new-reuse refit. -/
+
+/-- UNIQUE reset + arr-alloc-reuse: an array [f1] (rc 1); reset drops f1 and returns the SAME handle as a shell
+(liveCount 1); arr-alloc-reuse refits THAT shell (r == the original handle, NO new alloc, liveCount still 1);
+drop → 0. This is the FBIP zero-alloc in-place path. -/
+private def probeResetReuse : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 f1] s0 =>
+    match arrAlloc s0 [.i32 1] with
+    | .ret [.i32 a] s1 =>
+      match arrSet s1 [.i32 a, .i32 0, .i32 f1] with
+      | .ret [.i32 _] s2 =>
+        match reset s2 [.i32 a] with
+        | .ret [.i32 tok] s3 =>
+          (tok == a) && (s3.liveCount == 1) &&
+          (match arrAllocReuse s3 [.i32 1, .i32 tok] with
+           | .ret [.i32 r] s4 =>
+             (r == a) && (s4.liveCount == 1) &&
+             (match arrLen s4 [.i32 r] with | .ret [.i32 1] _ => true | _ => false) &&
+             (match drop s4 [.i32 r] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+           | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeResetReuse = true := by native_decide
+
+/-- SHARED reset: a dup'd array (rc 2); reset returns NULL (token 0) and the node SURVIVES (rc 1, liveCount 1);
+arr-alloc-reuse with the null token allocates FRESH (distinct handle); drop both → 0. -/
+private def probeResetShared : Bool :=
+  match arrAlloc ({} : HeapState) [.i32 1] with
+  | .ret [.i32 a] s0 =>
+    match dup s0 [.i32 a] with
+    | .ret [] s1 =>
+      match reset s1 [.i32 a] with
+      | .ret [.i32 tok] s2 =>
+        (tok == 0) && (s2.liveCount == 1) &&
+        (match arrAllocReuse s2 [.i32 1, .i32 0] with
+         | .ret [.i32 b] s3 =>
+           (b != a) && (s3.liveCount == 2) &&
+           (match drop s3 [.i32 a] with
+            | .ret [] t1 => (match drop t1 [.i32 b] with | .ret [] t2 => t2.liveCount == 0 | _ => false)
+            | _ => false)
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeResetShared = true := by native_decide
+
+/-- sum-new-reuse: reset a unique sum (drops its payload, yields the shell), then refit the SAME shell to a new
+(disc 7, payload) node; disc reads 7, r == the original handle, drop cascades into the new payload → 0. -/
+private def probeSumNewReuse : Bool :=
+  match boxFloat ({} : HeapState) [.f64 1] with
+  | .ret [.i32 p0] s0 =>
+    match sumNew s0 [.i32 5, .i32 p0] with
+    | .ret [.i32 su] s1 =>
+      match reset s1 [.i32 su] with
+      | .ret [.i32 tok] s2 =>
+        (tok == su) && (s2.liveCount == 1) &&
+        (match boxFloat s2 [.f64 9] with
+         | .ret [.i32 p1] s3 =>
+           match sumNewReuse s3 [.i32 7, .i32 p1, .i32 tok] with
+           | .ret [.i32 r] s4 =>
+             (r == su) && (s4.liveCount == 2) &&
+             (match sumDisc s4 [.i32 r] with | .ret [.i32 7] _ => true | _ => false) &&
+             (match drop s4 [.i32 r] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+           | _ => false
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSumNewReuse = true := by native_decide
 
 end Oracle.Heap
