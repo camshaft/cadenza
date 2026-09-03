@@ -37,25 +37,28 @@ namespace Oracle.Heap
 exact wasm payload they were boxed from so `get` round-trips `box` bit-for-bit (`bool` normalizes: any
 non-zero i32 → `true`). An `array` is the fixed-arity positional product (tuple/record): its slots are
 child handles (`0` = a null / unset slot); the array OWNS one reference per non-null slot, so freeing it
-cascades a `drop` into each. -/
+cascades a `drop` into each. A `map` is the positional key→value collection (the literal-construction form;
+the functional HAMT `insert`/`lookup`/… is a later slice): its slots are the INTERLEAVED
+`[k0,v0,k1,v1,…]` handles (2·len slots), all owned like an array's. -/
 inductive HeapValue where
   | int     (bits : UInt64)
   | float   (bits : UInt64)
   | float32 (bits : UInt32)
   | bool    (b : Bool)
   | array   (elems : Array UInt32)
+  | map     (entries : Array UInt32)
 deriving Repr, DecidableEq, Inhabited, BEq
 
-/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array) — the
-child set the free-cascade and `mark-immortal-deep` walk. -/
+/-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map) —
+the child set the free-cascade and `mark-immortal-deep` walk. -/
 def HeapValue.arity : HeapValue → Nat
-  | .array elems => elems.size
-  | _            => 0
+  | .array e | .map e => e.size
+  | _                 => 0
 
-/-- The owned child handles (array slots; `[]` for a scalar). -/
+/-- The owned child handles (array/map slots; `[]` for a scalar). -/
 def HeapValue.children : HeapValue → List UInt32
-  | .array elems => elems.toList
-  | _            => []
+  | .array e | .map e => e.toList
+  | _                 => []
 
 /-- One heap object: its value, refcount, liveness (`false` once freed at rc 0), and immortality flag
 (immortal objects have a sentinel rc — `dup`/`drop` are no-ops — and are excluded from the leak census). -/
@@ -207,6 +210,75 @@ def arrLen : HeapState → List Value → HeapResult
         | _            => .trap s!"arr-len: handle {arr} is not an array"
   | s, _ => .trap "arr-len: expected (i32)"
 
+/-! ### Maps — the positional literal-construction form (a map node = interleaved `[k0,v0,k1,v1,…]` slots).
+Keys AND values are owned handles, stored VERBATIM (no sort/dedup — ordering is compiler-owned language
+semantics). The functional HAMT form (`map-empty`/`insert`/`lookup`/`remove`/`merge`/`iter`) is a later
+slice and needs value-equality key matching + canonical order. -/
+
+/-- `map-alloc(len) → m`: a fresh map of `len` NULL `(key,value)` pairs (2·len null slots). -/
+def mapAlloc : HeapState → List Value → HeapResult
+  | s, [.i32 len] => s.box (.map (List.replicate (2 * len.toNat) (0 : UInt32)).toArray)
+  | s, _          => .trap "map-alloc: expected (i32)"
+
+/-- `map-set(m, i, key, value) → m`: store the pair at index `i` WITHOUT dup (ownership MOVE of both key
+and value), returning the map handle for threading. OOB traps. -/
+def mapSet : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 i, .i32 key, .i32 value] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-set: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-set: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          if 2 * i.toNat + 1 < entries.size then
+            .ret [.i32 m] (s.setObj m
+              { o with value := .map ((entries.set! (2 * i.toNat) key).set! (2 * i.toNat + 1) value) })
+          else .trap s!"map-set: index {i} out of bounds (len {entries.size / 2})"
+        | _ => .trap s!"map-set: handle {m} is not a map"
+  | s, _ => .trap "map-set: expected (i32, i32, i32, i32)"
+
+/-- `map-key(m, i) → key`: the key handle at pair `i`, BORROWED. OOB traps. -/
+def mapKey : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 i] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-key: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-key: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          match entries[2 * i.toNat]? with
+          | some k => .ret [.i32 k] s
+          | none   => .trap s!"map-key: index {i} out of bounds (len {entries.size / 2})"
+        | _ => .trap s!"map-key: handle {m} is not a map"
+  | s, _ => .trap "map-key: expected (i32, i32)"
+
+/-- `map-val(m, i) → value`: the value handle at pair `i`, BORROWED. OOB traps. -/
+def mapVal : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 i] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-val: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-val: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          match entries[2 * i.toNat + 1]? with
+          | some v => .ret [.i32 v] s
+          | none   => .trap s!"map-val: index {i} out of bounds (len {entries.size / 2})"
+        | _ => .trap s!"map-val: handle {m} is not a map"
+  | s, _ => .trap "map-val: expected (i32, i32)"
+
+/-- `map-len(m) → len`: the pair count (= slots / 2). -/
+def mapLen : HeapState → List Value → HeapResult
+  | s, [.i32 m] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-len: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-len: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries => .ret [.i32 (entries.size / 2).toUInt32] s
+        | _            => .trap s!"map-len: handle {m} is not a map"
+  | s, _ => .trap "map-len: expected (i32)"
+
 /-! ### Refcount / liveness core (+ the free-cascade) -/
 
 /-- `dup(h)`: require live (else UAF); on an immortal node it is a NO-OP (sentinel rc); else rc++. -/
@@ -333,6 +405,12 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("arr-set",            toHostFn [.i32, .i32, .i32] [.i32]  HeapState.arrSet)
   , ("arr-get",            toHostFn [.i32, .i32]       [.i32]  HeapState.arrGet)
   , ("arr-len",            toHostFn [.i32]             [.i32]  HeapState.arrLen)
+    -- maps (positional literal form; functional HAMT insert/lookup/… is a later slice)
+  , ("map-alloc",          toHostFn [.i32]                   [.i32]  HeapState.mapAlloc)
+  , ("map-set",            toHostFn [.i32, .i32, .i32, .i32] [.i32]  HeapState.mapSet)
+  , ("map-key",            toHostFn [.i32, .i32]             [.i32]  HeapState.mapKey)
+  , ("map-val",            toHostFn [.i32, .i32]             [.i32]  HeapState.mapVal)
+  , ("map-len",            toHostFn [.i32]                   [.i32]  HeapState.mapLen)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -585,5 +663,52 @@ private def probeDagMarkDeep : Bool :=
     | _ => false
   | _ => false
 example : probeDagMarkDeep = true := by native_decide
+
+/-! #### W5.2a: positional maps (map-alloc/set/key/val/len). -/
+
+/-- Build a 1-entry map {box 5 ↦ box 9}: box the key + value, map-alloc 1, map-set pair 0. -/
+private def buildMap1 : Option (UInt32 × UInt32 × UInt32 × HeapState) :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 k] s0 =>
+    match boxInt s0 [.i64 9] with
+    | .ret [.i32 v] s1 =>
+      match mapAlloc s1 [.i32 1] with
+      | .ret [.i32 m] s2 =>
+        match mapSet s2 [.i32 m, .i32 0, .i32 k, .i32 v] with
+        | .ret [.i32 _] s3 => some (m, k, v, s3)
+        | _ => none
+      | _ => none
+    | _ => none
+  | _ => none
+
+/-- map-alloc/set/key/val/len round-trip: map-key/val at pair 0 return the boxed key/value; map-len is 1. -/
+private def probeMap : Bool :=
+  match buildMap1 with
+  | some (m, k, v, s) =>
+    (match mapKey s [.i32 m, .i32 0] with | .ret [.i32 g] _ => g == k | _ => false) &&
+    (match mapVal s [.i32 m, .i32 0] with | .ret [.i32 g] _ => g == v | _ => false) &&
+    (match mapLen s [.i32 m]         with | .ret [.i32 1] _ => true   | _ => false)
+  | none => false
+example : probeMap = true := by native_decide
+
+/-- Out-of-bounds map-key / map-set trap. -/
+private def probeMapOob : Bool :=
+  match mapAlloc ({} : HeapState) [.i32 1] with
+  | .ret [.i32 m] s =>
+    (match mapKey s [.i32 m, .i32 5]                 with | .trap _ => true | _ => false) &&
+    (match mapSet s [.i32 m, .i32 5, .i32 0, .i32 0] with | .trap _ => true | _ => false)
+  | _ => false
+example : probeMapOob = true := by native_decide
+
+/-- Cascade-drop a map frees it AND both its key + value handles (leak census → 0). -/
+private def probeMapCascade : Bool :=
+  match buildMap1 with
+  | some (m, _, _, s) =>
+    (s.liveCount == 3) &&
+    (match drop s [.i32 m] with
+     | .ret [] s' => s'.liveCount == 0
+     | _          => false)
+  | none => false
+example : probeMapCascade = true := by native_decide
 
 end Oracle.Heap
