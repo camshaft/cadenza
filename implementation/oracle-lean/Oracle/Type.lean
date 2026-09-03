@@ -1813,6 +1813,22 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                  | .error e => .error e)
                   | none => .error (.unsupported "type oracle: malformed Rational unary op"))
                else .error (.unsupported "type oracle: unmodeled Rational op (e.g. numerator/denominator → BigInt)")
+             else if q == "Char".toUTF8 then
+               -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
+               -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
+               -- range/surrogate code point → None). from-int's arg is an INT, not a Char.
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed Char op (no arg)")
+                | some aId =>
+                  (match inferE m env st aId with
+                   | .error e => .error e
+                   | .ok (τa, st1) =>
+                     if op == "to-int".toUTF8 && children.size == 2 then
+                       (match unifyInfer τa .char st1 with | .ok st2 => .ok (.int 64 true, st2) | .error e => .error e)
+                     else if op == "from-int".toUTF8 && children.size == 2 then
+                       (match unifyInfer τa (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                        | .ok st2 => .ok (optionTy .char, st2) | .error e => .error e)
+                     else .error (.unsupported "type oracle: unmodeled Char op")))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2709,6 +2725,14 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[7], .atom 1, .list #[9, 8, 6], .atom 8, .atom 2, .list #[11, 12],
                            .atom 0, .list #[14, 10, 13]],
                 root := 15 } == .wellTyped .rational)
+-- T1.45 (Char op): `(do (def (main) (Char.to-int #"a")) (export main))` → WellTyped Int64.
+-- `to-int` reads a Char's scalar value → Int64. (`from-int (Int64) → (Option Char)` is the fallible inverse.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Char".toUTF8, .name "to-int".toUTF8, .char "a".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .list #[3, 4], .atom 2,
+                           .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
+                           .list #[13, 9, 12]],
+                root := 14 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
