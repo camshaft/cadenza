@@ -21,6 +21,20 @@ use crate::driver::build_driver_source;
 use crate::run::{Outcome as RunOutcome, RlibDirs, compile_and_run};
 use crate::sig::sole_export_name;
 
+/// Whether a decoded case is driven by a resource protocol the standalone-`.rs` rust exec path cannot
+/// perform: a `(then …)` borrowed-handle TWO-CALL (`second_call`), an explicit resource `(drop)`
+/// (`drop_handle`), or a `(call-method …)` value-resource member reach (`method`). All three live ONLY in
+/// the wasm `cdz-run` closure/escape driver; the rust path would run only the FIRST call and silently
+/// produce the single-call value (a dishonest miscompile). Such a case DECLINES → `Todo`, mirroring the
+/// in-process `xtask gate` guard so the nix coarse-rust gate and the in-process gate agree.
+fn declines_resource_drive(test_run: &cdz_corpus_grade::TestRun) -> bool {
+    test_run.trials.iter().any(|t| {
+        t.call
+            .as_ref()
+            .is_some_and(|c| c.second_call.is_some() || c.drop_handle || c.method.is_some())
+    })
+}
+
 /// Grade `module` (the emitted `--target rust[-async]` source; `None` when the compile was refused) against
 /// `test_run_ast`, printing the verdict and returning the process exit code (`0` pass/todo, `1` on the
 /// first fail). A thin wrapper over [`grade_to_result`] + the shared `print_verdict`.
@@ -58,6 +72,16 @@ pub fn grade(
     peer: Option<&Path>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
+    // A `(then …)` two-call, a `(drop)`, or a `(call-method …)` value-resource case is driven ONLY through
+    // the WASM harness (`cdz-run`'s closure/escape driver: `--call-twice` / `--drop-handle` / `--call-member`).
+    // The standalone-`.rs` rust exec path has NO such resource drive — it runs only the FIRST call — so a
+    // compound-result `(then)` case would SILENTLY produce the single-call value (e.g. `#tuple(5 105)` where the
+    // repeatable double-call expects `#tuple(#tuple(5 105) #tuple(5 105))`), a DISHONEST miscompile the nix
+    // coarse-rust gate catches as a todo→fail. DECLINE it → `Todo`, the EXACT mirror of the in-process
+    // `xtask gate` guard (`xtask/src/main.rs`, non-wasm two-call/drop/method → Declined): without this the two
+    // paths DIVERGE (in-process declines-todo, nix emits-and-mis-runs → fail). The compiler cannot self-decline
+    // — `call`/`then`/`drop`/`method` are corpus sibling clauses it never sees, same as `wit_world`/`peer`.
+    let resource_driven = declines_resource_drive(&test_run);
     let result = if wit_world.is_some() {
         GradeResult {
             grade: Grade::Todo(
@@ -72,6 +96,15 @@ pub fn grade(
             grade: Grade::Todo(
                 "cross-component peer: the rust backend emits a standalone .rs with no component model / \
                  peer boundary — declines by design"
+                    .to_string(),
+            ),
+            ran_a_trial: false,
+        }
+    } else if resource_driven {
+        GradeResult {
+            grade: Grade::Todo(
+                "(then)/drop/method resource drive: the standalone .rs rust exec path has no borrowed-handle \
+                 two-call / resource-drop / value-resource-member drive (wasm-only) — declines by design"
                     .to_string(),
             ),
             ran_a_trial: false,
@@ -287,5 +320,82 @@ mod tests {
         .unwrap();
         assert_eq!(res.grade, Grade::Pass);
         assert!(!res.ran_a_trial, "a coded-error case runs no trial");
+    }
+
+    // The resource-drive DECLINE predicate: a `(then)` two-call / `(drop)` / `(call-method)` case must
+    // decline on the standalone-.rs rust path (the wasm-only resource protocols), so the nix coarse-rust
+    // gate matches the in-process xtask decline instead of mis-running the first call. Pins the exact
+    // divergence v-nix's (C) re-verify caught (21-host-closures compound-result double-call: single-call
+    // #tuple(5 105) vs expected #tuple(#tuple(5 105) #tuple(5 105))).
+    fn call_with(
+        second_call: Option<Vec<String>>,
+        drop_handle: bool,
+        method: Option<String>,
+    ) -> GCall {
+        GCall {
+            export: "pair".into(),
+            args: vec!["100".into()],
+            second_call,
+            drop_handle,
+            method,
+        }
+    }
+
+    #[test]
+    fn a_then_two_call_case_declines_the_resource_drive() {
+        let tr = one_trial(
+            Some(call_with(Some(vec!["5".into()]), false, None)),
+            GExpect::Output("(: (tuple (tuple 5 105) (tuple 5 105)) …)".into()),
+        );
+        assert!(
+            declines_resource_drive(&tr),
+            "a (then) borrowed-handle two-call must decline on the rust exec path (wasm-only drive)"
+        );
+    }
+
+    #[test]
+    fn a_drop_handle_case_declines_the_resource_drive() {
+        let tr = one_trial(
+            Some(call_with(None, true, None)),
+            GExpect::Output("(: unit Unit)".into()),
+        );
+        assert!(
+            declines_resource_drive(&tr),
+            "an explicit (drop) must decline on the rust exec path"
+        );
+    }
+
+    #[test]
+    fn a_call_method_case_declines_the_resource_drive() {
+        let tr = one_trial(
+            Some(call_with(None, false, Some("area".into()))),
+            GExpect::Output("(: 42 Int64)".into()),
+        );
+        assert!(
+            declines_resource_drive(&tr),
+            "a (call-method) value-resource member reach must decline on the rust exec path"
+        );
+    }
+
+    #[test]
+    fn a_plain_single_call_does_not_decline() {
+        // The negative control: an ORDINARY `(call …)` (no then/drop/method) runs on the rust path as usual.
+        let tr = one_trial(
+            Some(call_with(None, false, None)),
+            GExpect::Output("(: 42 Int64)".into()),
+        );
+        assert!(
+            !declines_resource_drive(&tr),
+            "a plain single-call case must NOT decline — it runs on the rust exec path"
+        );
+    }
+
+    #[test]
+    fn a_no_call_case_does_not_decline() {
+        let tr = one_trial(None, GExpect::Output("(: 42 Int64)".into()));
+        assert!(
+            !declines_resource_drive(&tr),
+            "a no-(call) scalar case must not decline"
+        );
     }
 }
