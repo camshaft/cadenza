@@ -375,13 +375,15 @@ lex), same-type-only (cross-type `valRank` unobservable), DECLINES on floats. **
    set/map (mutual containment via `valueEq`; no total order needed) — a real latent bug beyond `value-*`.
    - PARTIAL PROGRESS: the `.vec` (List) arm was MISSING (two lists fell through to `false`); added as a
      POSITIONAL compare (lists ARE ordered, mirrors `.array`/Tuple) — clean, worklist-based, no termination risk.
-   - REMAINING (set/map order-independence): sets are DEDUPED + stored in INSERTION order (`setInsert` appends),
-     so equal ⟺ `size ==` + one-direction containment (`∀x∈e1, ∃y∈e2, valueEq x y`); maps = key-set eq + matching
-     values. CONSTRAINT: the ∃-search recurses inside `List.any`/`all` lambdas, which Lean's STRUCTURAL
-     termination checker does NOT see through (the existing `valueEqWork` deliberately uses a FLAT worklist +
-     `fuel` decrease to stay total). So the fix needs either `termination_by`/well-founded on `fuel`, or a
-     `partial def` (native_decide still evaluates partials — all 42 witnesses are native_decide, zero rfl, so
-     partial is safe here). Pair with v-lean-oracle on the total formulation before building.
+   - DONE (set/map order-independence): CANONICALIZE-then-positional, NOT a containment search — dodges the
+     termination trip AND the decode/import cycle. KEY: set elems + map keys are ALWAYS SCALAR (compiler rejects
+     compound keys, CDZ0203), so a total order over SCALAR keys suffices. `.set` arm = `sortBy id` both element
+     lists then positional; `.map` arm = pair the flat `[k,v,…]`, `sortBy` key, compare `(k,v)` positionally
+     (values recurse). `keyLe` extended with a bytes-lex arm (`cmpBytesLex` == Core's `cmpBytes`: unsigned,
+     prefix<longer) so String/Bytes keys order canonically too (Bool/Int order unchanged; also fixes
+     set-to-list/map-to-list string-key order consistently). Cross-rank never occurs (homogeneous keys), so only
+     same-type order must match cmpValue — confirmed by v-lean-oracle (Str/Bytes=cmpBytes; Char=codepoint/UTF-8
+     lex). Witnesses: Int-set + String-set + Int-map different-insertion-order equality + `cmpBytesLex`.
 
 ## Gate coverage
 
