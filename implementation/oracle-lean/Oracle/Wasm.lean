@@ -97,7 +97,7 @@ def scalarTyName : ScalarTy → String
 
 /-- Short name of a `WasmVal`'s wasm valtype. -/
 def wasmValKind : WasmVal → String
-  | .i32 _ => "i32" | .i64 _ => "i64" | .f32 _ => "f32" | .f64 _ => "f64"
+  | .i32 _ => "i32" | .i64 _ => "i64" | .f32 _ => "f32" | .f64 _ => "f64" | .compound _ => "compound"
 
 /-- Map a wasm run outcome + the entry's Cadenza result type onto the shared `Oracle.Outcome`.
 The mapping is total and interpreter-agnostic (see the module header). -/
@@ -279,7 +279,7 @@ nullary, so `args` is empty; host responses arrive in a later increment). -/
 structure Trial where
   entry : String
   args : Array WasmVal := #[]
-  deriving Inhabited, Repr
+  deriving Inhabited
 
 /-- The interpreter SEAM: run a core-module WAT's entry for a trial, yielding a `WasmOutcome`. talos plugs
 in here (an adapter over `Wasm.Decoder.Wat` + `Wasm.SmallStep`) once the Lean-4.32.2 toolchain lands. -/
