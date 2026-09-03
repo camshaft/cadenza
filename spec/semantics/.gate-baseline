@@ -10964,3 +10964,4 @@ pass	zx4 the caller retains xs and reads it AFTER the zip consumed it (over-rele
 pass	zx5 an exit arm that RETURNS the enclosing binder's tail (escape-gate fence: that drop must stay suppressed)
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
+todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
