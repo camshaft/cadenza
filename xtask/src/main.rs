@@ -1495,13 +1495,13 @@ fn run_program_cadenza(
     // so a world-driven emit fires (typed-WIT-export). A decline here = the cadenza backend cannot yet re-emit
     // this form → Todo (coverage-not-yet), not a disagreement.
     let surface = match emit_cadenza_surface(tools, program, wit_world, component_name) {
-        Some(s) => s,
-        None => {
-            return Ran::Declined {
-                code: None,
-                message: String::new(),
-            };
-        }
+        Ok(s) => s,
+        // hop1 (cadenza re-emit) declined/failed — PROPAGATE the real diagnostic (code + hop-tagged message)
+        // rather than a code-less "can't compile yet". Distinguishes hop1-declined(CODE) from a hop2 recompile
+        // decline (which flows from `run_program_wasm` below, carrying the wasm-compile diagnostic) and from a
+        // genuine coverage-not-yet — so the gate report is actionable ("hop1 cadenza re-emit declined [CDZ0900]
+        // at …") instead of masking WHICH hop + WHICH code (the units-seam misdiagnosis source, concierge #…).
+        Err(e) => return e,
     };
     // hop2: recompile the emitted surface through the normal wasm path and run it, forwarding the SAME world +
     // component-name (the emitted surface still crosses the WIT boundary — mirrors the nix mkCorpusCadenzaBuild,
@@ -1536,14 +1536,18 @@ fn run_program_cadenza(
 
 /// Emit the OPTIMIZED program back to a Cadenza SURFACE as sexpr text: sexpr → binary AST (`cdz-syntax
 /// convert`) → `cdz compile --target cadenza` (the cadenza binary AST) → sexpr (`cdz convert --from binary
-/// --to sexpr`). Returns the surface text, or `None` if any stage fails (hop1 decline / a hang). The sexpr
-/// form is then re-parseable source for the wasm recompile leg — a true round-trip through the same pipeline.
+/// --to sexpr`). `Ok(surface)`, or `Err(Ran)` carrying the REAL hop1 diagnostic on failure — NOT a masked
+/// code-less decline. The failing STAGE is tagged in the message ("hop1 cadenza re-emit declined …") and the
+/// rcdzc rejection CODE is recovered from its stderr (`first_error_diag`), so a caller/report can say
+/// "hop1 declined [CDZ0900]" instead of the anonymous "can't compile yet" that masked which-hop + which-code
+/// (a recurring cadenza-lane misdiagnosis source — concierge). The sexpr form is then re-parseable source for
+/// the wasm recompile leg — a true round-trip through the same pipeline.
 fn emit_cadenza_surface(
     tools: &Tools,
     program: &str,
     wit_world: Option<&str>,
     component_name: Option<&str>,
-) -> Option<String> {
+) -> Result<String, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -1552,7 +1556,15 @@ fn emit_cadenza_surface(
     // type resolves an under-determined value — SHAPE 8); the world is a SEPARATE artifact, so both go via
     // files (`compile_cadenza_with_world`). A plain case pipes the program through stdin.
     let cadenza_bin: Vec<u8> = if let Some(world) = wit_world {
-        compile_cadenza_with_world(tools, program, world, component_name)?
+        // wit-world hop1: (code recovery through the world-aware path is a follow-up — surface the hop + a
+        // code-less decline for now; the plain-stdin path below carries the CODE, which is where the reported
+        // qty_disposition CDZ0900 arose).
+        compile_cadenza_with_world(tools, program, world, component_name).ok_or_else(|| {
+            Ran::Declined {
+                code: None,
+                message: "hop1 cadenza re-emit (wit-world) declined".to_string(),
+            }
+        })?
     } else {
         // Stage 1: sexpr text (stdin) → binary AST (stdout).
         let mut syntax = Command::new(&tools.syntax)
@@ -1568,12 +1580,13 @@ fn emit_cadenza_surface(
             .unwrap()
             .write_all(program.as_bytes())
             .ok();
-        // Stage 2: binary AST → cadenza binary AST (`compile --target cadenza`); capture nothing but bytes.
+        // Stage 2 (HOP1 proper): binary AST → cadenza binary AST (`compile --target cadenza`). CAPTURE stderr
+        // (was `Stdio::null()`, which masked the diagnostic) so a re-emit rejection's CODE is recovered below.
         let compile = Command::new(&tools.rcdzc)
             .args(["compile", "--target", "cadenza", "-", "-o", "-"])
             .stdin(Stdio::from(syntax.stdout.take().unwrap()))
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap_or_else(|e| launch_fail("rcdzc", e));
         let compile_out =
@@ -1581,12 +1594,22 @@ fn emit_cadenza_surface(
                 Some(out) => out,
                 None => {
                     let _ = syntax.wait();
-                    return None;
+                    // A hop1 HANG stays a code-less decline (no diagnostic emitted), but tag the hop.
+                    return Err(Ran::Declined {
+                        code: None,
+                        message: "hop1 cadenza re-emit timeout (hang)".to_string(),
+                    });
                 }
             };
         let _ = syntax.wait();
         if !compile_out.status.success() {
-            return None; // hop1 declined — the cadenza backend cannot re-emit this form yet.
+            // hop1 declined — recover the rcdzc rejection CODE + message from stderr (typed reject → coded;
+            // an unimplemented-construct decline → code-less), hop-tagged so the report shows WHICH hop.
+            let (code, message) = first_error_diag(&compile_out.stderr);
+            return Err(Ran::Declined {
+                code,
+                message: format!("hop1 cadenza re-emit declined: {message}"),
+            });
         }
         compile_out.stdout
     };
@@ -1600,11 +1623,25 @@ fn emit_cadenza_surface(
         .spawn()
         .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
     convert.stdin.take().unwrap().write_all(&cadenza_bin).ok();
-    let convert_out = wait_with_timeout(convert, run_timeout()).expect("wait cdz convert")?;
+    let convert_out = match wait_with_timeout(convert, run_timeout()).expect("wait cdz convert") {
+        Some(out) => out,
+        None => {
+            return Err(Ran::Declined {
+                code: None,
+                message: "hop1 cadenza→sexpr convert timeout (hang)".to_string(),
+            });
+        }
+    };
     if !convert_out.status.success() {
-        return None;
+        return Err(Ran::Declined {
+            code: None,
+            message: "hop1 cadenza→sexpr convert failed".to_string(),
+        });
     }
-    String::from_utf8(convert_out.stdout).ok()
+    String::from_utf8(convert_out.stdout).map_err(|_| Ran::Declined {
+        code: None,
+        message: "hop1 cadenza surface is not valid UTF-8".to_string(),
+    })
 }
 
 /// hop1 of the cadenza round-trip for a `(wit-world …)` case: compile the guest program against the DECLARED
