@@ -83,6 +83,8 @@ pass	Bytes.concat of two runtime SLICES splices window content in order
 pass	Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes
 pass	Bytes.of of a computed (concatenated) runtime list builds a byte sequence of that length
 pass	Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision
+pass	Bytes.slice returns None for any out-of-range length window (total, no trap, no clamp)
+pass	Bytes.slice takes a LENGTH third arg and returns the fitting window
 pass	Bytes.slice third argument is a length and bounds are strict
 fail	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
@@ -289,17 +291,20 @@ pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the
 pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove by a slice-view key drops the flat-keyed entry
 pass	Map.remove drops the owned boxed key temporary it only borrows (large-int key, no leak)
+pass	Map.remove is idempotent on an absent key
 pass	Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry
 pass	Map.remove then len const-folds
 pass	Map.remove then lookup misses
 pass	Map.swap and Map.take canonicalize a runtime COMPOUND (tuple) key on their value-yielding paths
 pass	Map.swap and Map.take canonicalize float-special keys like lookup
 pass	Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body
+pass	Map.swap is an upsert — replace and return the old value on a present key, insert and return None on an absent key
 pass	Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry
 pass	Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds
 pass	Map.take at a RUNTIME key takes the hit and miss arms through one compiled body
 pass	Map.take by a slice-view key yields the flat-keyed value
 pass	Map.take keyed by a runtime Rational removes the arithmetic-built canonical twin
+pass	Map.take returns the value and shrunk map for a present key, None and the unchanged map for an absent key
 pass	Map.to-list canonical key order is independent of insertion order
 pass	Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order
 pass	Map.to-list enumerates the FULL interior key order, not just the smallest
@@ -504,6 +509,8 @@ pass	String.scalar-len of a string selected by a runtime match
 pass	String.scalar-len over an owned-temporary runtime rope leaves no live heap objects
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
 pass	String.slice of a Map-looked-up String with perform-threaded start and end folds
+pass	String.slice returns None for any out-of-range window (total, no trap, no clamp)
+pass	String.slice returns the substring for an in-range half-open window
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
 pass	String.slice with a runtime start is a scalar window and None past the end
 pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
@@ -559,6 +566,7 @@ pass	TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-tr
 pass	TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	Tuple.concat over a non-tuple operand names the op and the non-tuple type
+pass	Tuple.concat threads performing operand elements in program order under a handler
 pass	Tuple.remove over a non-tuple operand names the op and the non-tuple type
 pass	Tuple.size over a non-tuple operand names the op and the non-tuple type
 pass	Tuple.split-at over a non-tuple operand names the op and the non-tuple type
@@ -1132,6 +1140,7 @@ pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp match
 pass	a NORMAL unused let init is elided with NO dead-computation warning
 pass	a NULLARY variant applied to nothing (None) is not under-applied — it constructs its value
 pass	a NaN float leaf in a tuple Map key is found by a differently-computed NaN
+pass	a NaN inside a compound (tuple) map key is canonicalized recursively — found
 pass	a NaN map key is found by a differently-produced NaN
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
@@ -1288,6 +1297,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Result payload numeric mismatch retypes the differing first type param
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-of-Option threads both wrappers through one runtime match
+pass	a Result-returning bin-match nested in a bin-match arm re-emits (composes the nested-bin and Result-recover fixes)
 pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SAME-width Float32 nan comparison compiles and folds true (structural =, not IEEE)
 pass	a SAME-width Float64 nan comparison compiles and folds true (structural =, not IEEE)
@@ -1709,6 +1719,9 @@ pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per
 pass	a bin whose bit-fields do not close to a whole byte is ill-formed
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a bin-decoded frame body drives per-byte performs through a recursive walk
+pass	a bin-extracted Map key in a lookup-insert handler-state cycle counts correctly (leaks pending handler-final-state reclaim)
+pass	a bin-extracted Set element in a contains-insert handler-state cycle reclaims cleanly
+pass	a bin-extracted value stored as a Map value under a constant key reclaims cleanly
 pass	a bin-match arm building an under-determined Result recovers its type once the 2-param SumNew fallback lands
 pass	a bin-pattern arm binds a parsed byte and PERFORMS again with it (parse-then-act)
 pass	a binary arithmetic operator with too many operands offers a delete-the-surplus fix
@@ -1832,6 +1845,7 @@ pass	a byte read back from a runtime-list-built Bytes has the right value
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-aligned bit-field bin segment re-emits as its plain-width read
 pass	a byte-closing bit-field composes with a following byte-aligned integer segment
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
@@ -2212,6 +2226,7 @@ pass	a constant non-integer operand to Int64.of is a coded type mismatch, not a 
 pass	a constant rational with a zero denominator is rejected and names the nonzero-denominator repair
 pass	a constant record is returned as a program result
 pass	a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304
+pass	a constant shift count at or above the bit width is rejected (not masked)
 pass	a constant shift count at or beyond the width over a high UInt64 still rejects
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
@@ -2850,6 +2865,7 @@ pass	a guarded bin-match arm reads its decoded binder and falls through when the
 pass	a guarded binder referenced in NEITHER the guard cond nor the body still warns unused
 pass	a guarded binder used in the guard COND (not the body) is used — no unused-match-binding warning
 pass	a guarded byte-string-literal arm gates a runtime Bytes match on a condition
+pass	a guarded dependent-size arm whose runtime size OVERRUNS the remaining bytes falls through, not a trap
 pass	a guarded list-match arm body reads its element binder
 pass	a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded head
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
@@ -2919,6 +2935,7 @@ pass	a handler distributes into an if whose BOTH branches perform
 pass	a handler distributes into an if whose ELSE branch performs
 pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
+pass	a handler op bin-matches its Bytes argument and accumulates the byte in list-state
 pass	a handler resumes its continuation at most once by default
 pass	a handler state GROWS a list across 100 dispatches — the accumulated spine reads back intact
 pass	a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles
@@ -3055,6 +3072,7 @@ pass	a left shift of a float by a float count rejects on the value operand
 pass	a left shift overflowing a SECOND unusual width (Int 12) is also rejected CDZ0304
 pass	a left shift overflowing an unusual signed width is rejected CDZ0304
 pass	a left shift that overflows Int64 traps like multiplication
+pass	a left shift wraps in two's complement at compile time
 pass	a legitimate wildcard match arm compiles and selects
 pass	a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser
 pass	a length-prefixed frame is built from a size segment and a bytes segment
@@ -3125,6 +3143,7 @@ pass	a linear index-of search returns the POSITION of a runtime key, or -1 past 
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a linear non-tail sum is accumulator-transformed into a constant-stack loop
 pass	a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)
+pass	a list accumulator inspected by length in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
 pass	a list arm with two constructor elements binds both payloads
@@ -3569,6 +3588,7 @@ pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a module-exported recursive performer called from a HANDLER ARM homes under the outer handler
+todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
 pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
@@ -3752,6 +3772,7 @@ pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width unsigned wrapping-add constant folds by wrapping to the masked outcome
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower UInt8 into a u16 segment is not silently widened — a width type error
+pass	a narrower-than-run sub-byte bit-field match re-emits (partial-mask reads, not just full-width peels)
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a narrowing wrap of a wider wrap elides the inner wrap
 pass	a near typo of a real type in a variant payload keeps its did-you-mean
@@ -4060,6 +4081,7 @@ pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
 pass	a package entry's exported def wins over a same-named def in a library file
 pass	a package entry's exported def wins over an alphabetically-later same-named library def
+pass	a pair of byte-aligned bit-fields in one bin pattern re-emits as a wide bit-field run
 pass	a pairwise MAX-GAP walk over an Instant timeline subtracts adjacent newtype payloads
 pass	a param-colliding record key does not corrupt a non-colliding field
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
@@ -4481,6 +4503,7 @@ pass	a recursion that builds a fresh RECORD each step const-folds a field read
 pass	a recursion-driven host-call sequence consumes one response row per iteration in order
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
+pass	a recursive BigInt multiply-accumulate consumed to a scalar reclaims every intermediate (no husk leak)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
 pass	a recursive HOF applies a bare operator passed as its function argument
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
@@ -4709,6 +4732,7 @@ pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through 
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
+pass	a right shift of a negative integer is arithmetic (sign-extending) at compile time
 pass	a rope String nested in a tuple compares equal to its flat twin and reclaims both tuples (no live objects)
 pass	a rope accumulates across perform/resume boundaries and content-checks at the exit
 pass	a rope built before a perform survives the resume and the arm's own heap does not leak into it
@@ -4743,6 +4767,7 @@ pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps i
 pass	a run-sim task's suspension count is DATA-DRIVEN by a list of sleep durations
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
+pass	a runtime (parameter) Char.from-int applies the scalar-validity sweep, agreeing with the fold
 pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
 pass	a runtime = on a NON-recursive sum with a Float payload walks it on both backends
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
@@ -4853,6 +4878,7 @@ pass	a runtime Symbol value dispatches on symbol literals
 pass	a runtime Symbol.of of a different-length rope does not equal the literal
 pass	a runtime Symbol.of of a rope equals a symbol literal by content
 pass	a runtime Symbol.of then Symbol.to-string round-trips the bytes
+pass	a runtime Tuple.concat builds the tuple, reports size, and destructures mixed elements
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime UInt64->Int64 .of range-checks the upper bound (fits passes, > i64::MAX traps)
 pass	a runtime UInt8 left shift range-checks the count and the result
@@ -5018,6 +5044,9 @@ pass	a runtime product's derived dimension is enforced against an incompatible a
 pass	a runtime quantity Map key MISSES when the looked-up magnitude differs
 pass	a runtime quantity stored in a List reads back through List.at and unwraps
 pass	a runtime quantity used as a Map key hits when a separately-built equal key is looked up
+pass	a runtime rational canonicalizes sign onto the numerator and cancels two negatives
+pass	a runtime rational with a zero denominator traps
+pass	a runtime rational with a zero numerator normalizes to 0/1
 pass	a runtime record built behind a recursive call escapes to the host
 pass	a runtime record nested in a tuple compares component-wise
 pass	a runtime record whose field is a runtime tuple escapes to the host
@@ -5035,6 +5064,7 @@ pass	a runtime set reached VIA remove equals the directly-built set and not a de
 pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
+pass	a runtime shift count at or above the bit width traps (a range guard, not a wasm mask)
 pass	a runtime shift with an out-of-range CONSTANT count and a TRAP-FREE lhs still traps unreachable (control)
 pass	a runtime signed division by zero traps as divide-by-zero, not overflow
 pass	a runtime signed little-endian segment lays the low byte first
@@ -5380,6 +5410,7 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
+pass	a signed sub-byte field is decoded by reading the unsigned bits then sign-extending (bit-fields are unsigned)
 pass	a signed wrap of a value the range lattice proves in-range elides its sign-extend
 pass	a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing
 pass	a signed-byte entrypoint returns its runtime argument
@@ -5470,6 +5501,7 @@ pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are UNOBSERVED
+pass	a string accumulator inspected by byte-len in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)
 pass	a string argument crosses to a peer and the doubled result byte-len is read
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
@@ -5491,6 +5523,8 @@ pass	a structural record with a Float64 field is a Map key found by a separately
 pass	a structurally-duplicate tuple arm is unreachable and earns a CDZ0213 warning
 pass	a structurally-mismatched List.push element names the operation and the field-level delta
 pass	a structurally-mismatched perform argument names the operation and the field-level delta
+pass	a sub-byte bit-field straddling a byte boundary re-emits (a read combining bits from two bytes)
+pass	a subnormal float renders its full fractional expansion, not scientific or shortest (small-magnitude companion of f64::MAX)
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
@@ -6277,6 +6311,7 @@ pass	an OPTION payload quantity renders scaled to its reference in the value for
 pass	an OR-guarded dependent-size bin arm over a runtime scrutinee emits a valid module and disjoins correctly
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
+todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
@@ -6385,6 +6420,7 @@ pass	an acceleration dimension renders as a quotient with a squared denominator
 pass	an active unquote lifts a RUNTIME boolean operand, not only a constant
 pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
+pass	an active unquote lifts a RUNTIME string operand, not only a constant
 pass	an active unquote of a BigInt lifts to Ast.Int (the payload type, no widen)
 pass	an active unquote of a RUNTIME BigInt (from arithmetic) lifts to Ast.Int
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
@@ -6717,6 +6753,7 @@ pass	an inline HOF applies a bare operator passed as its function argument
 pass	an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs
 pass	an inline lambda with more than one body is rejected
 pass	an inline-materialized BigInt constant operand is dropped, leaving no live heap objects
+todo	an inline-module member TYPE is visible to a sibling (module-scoped type, no import)
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture
@@ -8003,9 +8040,9 @@ pass	ed2 a handled def CALLED from inside another def's handle — the callee's 
 pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
 pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
 pass	effect state threads across a successful `?`
+pass	eg1 collision through a SHADOWING helper-arm let folds (inlined-helper freshening covers let AND match-arm binders)
 pass	eg1 collision through a let-bound value flow folds (same inlined-helper match-binder freshening)
 pass	eg1 name-collision variant — caller destructure binder shares the helper's internal match-arm binder name folds (inlined-helper match-binder freshening)
-pass	eg1 collision through a SHADOWING helper-arm let folds (inlined-helper freshening covers let AND match-arm binders)
 pass	eg1 shape with the outer destructure binder spelled like the handler state binder folds
 pass	egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (accumulating the doubled multiplicand when odd) answering odd*100 plus the running product's low digits, acc reads the exact product, and the seeds' bit patterns (all-ones versus alternating) fire the accumulation on different steps
 pass	eh1 handler STATE-THREADING across a runtime-count recursion — through the cadenza hop
@@ -8498,9 +8535,12 @@ pass	inserting a value of a different type into a map is a type error
 pass	inserting an element yields a set containing it
 pass	inserting into the empty map then looking a key up yields the value
 pass	int8 wrap truncates and sign-extends the low 8 bits of a runtime value
+pass	integer division and remainder by a runtime zero trap
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
+pass	integer division truncates toward zero at compile time
+pass	integer remainder takes the sign of the dividend at compile time
 pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
 pass	interleaved do-discarded performs at BOTH nest levels thread their own states independently
@@ -8908,6 +8948,7 @@ pass	negative multi-limb BigInt div truncates toward zero and rem takes the divi
 pass	negative zero and zero are distinct map keys
 pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero encodes to bytes distinct from positive zero
+pass	negative zero is a DISTINCT float map key from positive zero (signed zero not normalized)
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
@@ -9215,6 +9256,8 @@ pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	por1 a peer Option result escapes the entrypoint via the fused envelope
+pass	positive and negative zero are distinct set elements — cardinality two
+pass	positive zero is found as its own float map key (canonical-byte control)
 pass	pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently
 pass	pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild
 pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
@@ -9730,6 +9773,8 @@ pass	runtime float inequality compares by canonical byte form
 pass	runtime float multiplication overflows to infinity, not a trap or a wrap
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
+pass	runtime integer division truncates toward zero for either operand sign
+pass	runtime integer remainder takes the sign of the dividend for either operand sign
 pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder
 pass	runtime multiplication computes in range and traps on overflow
 pass	runtime shaped equality of two owned List-Float64 operands reclaims both (no live objects)
@@ -9886,6 +9931,7 @@ pass	sie1 a SIEVE SEGMENT — each sieve dispatch clears every multiple of its p
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	signed div by two is exact at Int64.min
 pass	signed power-of-two div/rem truncates toward zero (Int64 + narrow Int32)
+pass	signed zero inside a compound (tuple) map key stays distinct recursively — not found
 pass	signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)
 pass	signed-wrap at a NARROW width wraps mod 2^width (Int8 127 + 1 = -128)
 pass	signed-wrap does NOT wrap an UNSIGNED overflow — unsigned falls through to the Trap default (CDZ0304)
@@ -9905,6 +9951,7 @@ pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nes
 pass	slc1 a SINGLE-consumed String.slice result leaks its dup (the minimal post-#4425 residue cell)
 pass	slc2 a slice-of-slice (two view layers) multi-consumed leaks both layers' dups
 pass	slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue
+pass	slicing a boundary parameter String retains one husk (param-source slice-retention leak)
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
@@ -10119,6 +10166,7 @@ pass	the DES Duration constructors ms / us / ns each scale to the right nanoseco
 pass	the EMPTY string keys a map — hit by an empty-concat rope, distinct from a 1-char sibling
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the FBIP accumulator (List.push as recursion tail) is unaffected by the owned-operand reclaim
+pass	the FIFO same-time tie-break holds across interleaved time-buckets
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
@@ -10178,10 +10226,12 @@ pass	the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE o
 pass	the bitwise-AND-with-zero annihilator folds to zero when the discarded constant operand is total
 pass	the boolean absorption laws absorb with swapped operand order too
 pass	the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a
+pass	the boolean and short-circuits its right operand (a trapping RHS is skipped when the LHS is false)
 pass	the boolean complement-law fold keeps a trapping operand's trap
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the boolean or short-circuits its right operand (a trapping RHS is skipped when the LHS is true)
 pass	the boolean ordering operator places (Some 3) below None like the three-way compare
 pass	the boolean-literal coercion composes over a runtime Symbol equality
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
@@ -10208,6 +10258,8 @@ pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
+pass	the const fold reaches a boolean operator's right operand when the left does not decide it (and-true traps)
+pass	the const fold short-circuits and-false / or-true past a constant-trapping right operand
 pass	the constructor-built width module carries the same wrap as the named width
 pass	the constructor-built width module projects the same max bound as the named width
 pass	the constructor-built width module projects the same min bound as the named width
@@ -10361,6 +10413,8 @@ pass	the non-exhaustive Bool match arm-insert is symmetric on the missing litera
 pass	the non-fused Some-shell control reads a heap binder twice with the same reclaim (no fusion)
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
+pass	the one overflowing integer division is rejected at compile time
+pass	the one overflowing integer division traps at runtime
 pass	the operator's uniform all-Bytes/String contract descriptor materializes whole at runtime
 pass	the opposite-direction disjoint-and fold keeps a trapping operand's trap
 pass	the other parity of a mutually-recursive pair
@@ -10384,6 +10438,7 @@ pass	the record-perform workaround — `let`-bind then read by `(. r field)` pro
 pass	the recursion DEPTH itself is a draw — the walk runs mod-4-of-state iterations, including the zero-depth face
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the remainder that pairs with the overflowing division is a defined zero (does not overflow)
 pass	the removed `contract` module directive is now an unknown-directive reject
 pass	the removed `input` module directive is now an unknown-directive reject
 pass	the removed `output` module directive is now an unknown-directive reject
@@ -10695,6 +10750,8 @@ pass	two host-seeded SIBLING handlers — each region's seed consumes its respon
 pass	two inclusive bounds at the same point collapse to equality
 pass	two inclusive bounds collapse to equality at a negative point
 pass	two inclusive bounds collapse to equality over an unsigned width
+pass	two independently-computed NaNs are the SAME float map key (NaN payloads canonicalized)
+pass	two independently-computed NaNs dedup to one set element — cardinality one
 pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)
 pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
 todo	two length-prefixed dependent frames chain at runtime
@@ -10965,5 +11022,3 @@ pass	zx4 the caller retains xs and reads it AFTER the zip consumed it (over-rele
 pass	zx5 an exit arm that RETURNS the enclosing binder's tail (escape-gate fence: that drop must stay suppressed)
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
-todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
