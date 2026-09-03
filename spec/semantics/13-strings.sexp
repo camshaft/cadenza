@@ -1933,6 +1933,78 @@
   (output (: 42 Int64))
   (live-objects 0))
 
+; The `String.slice s start end` BOUNDARY contract (third arg is the END, half-open [start,end)): it is
+; TOTAL and FALLIBLE — it returns `(Option String)`, `Some` for an in-range window and `None` for ANY
+; out-of-range request, never a trap and never a silently CLAMPED view (which would let a read run past the
+; string). In range: `end` may equal the length (the full-suffix boundary) and `start == end` is the empty
+; window (Some ""). Out of range → None: an `end` past the length, an inverted `start > end`, or a NEGATIVE
+; start/end. The None arm is the memory-safety pin — a clamp-instead-of-None reimplementation would return a
+; truncated Some and mask an out-of-bounds request. (Source is a LITERAL here so the value semantics are
+; measured without the param-string slice-retention husk fenced separately just below.) Verified breaker
+; probe ss: fold == runtime == hop.
+(case
+  "String.slice returns the substring for an in-range half-open window"
+  (doc
+    "`String.slice \"hello\" a b` over runtime bounds returns Some of the [a,b) window; byte-len of the
+           result witnesses it. `[1,3)` = \"el\" (2); `[0,5)` = the full \"hello\" (5, end==len is in range);
+           `[2,2)` = \"\" the empty window (0). Pins the half-open in-range semantics, end-inclusive-of-length.")
+  (input
+    (do
+      (def (sl (: a Int64) (: b Int64))
+        (match (String.slice "hello" a b) ((Some x) (String.byte-len x)) ((None) -1)))
+      (export sl)))
+  (call sl (: 1 Int64) (: 3 Int64))
+  (output (: 2 Int64))
+  (call sl (: 0 Int64) (: 5 Int64))
+  (output (: 5 Int64))
+  (call sl (: 2 Int64) (: 2 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "String.slice returns None for any out-of-range window (total, no trap, no clamp)"
+  (doc
+    "The totality/safety pin: an out-of-range `String.slice` returns None (rendered -1 here), NOT a
+           trap and NOT a clamped Some. `[0,99)` end past the length → None; `[3,1)` inverted start>end →
+           None; `[-1,3)` negative start → None; `[0,-1)` negative end → None. A clamp-to-bounds reimpl
+           would return a truncated Some and hide the out-of-bounds request — this pins the None instead.")
+  (input
+    (do
+      (def (sl (: a Int64) (: b Int64))
+        (match (String.slice "hello" a b) ((Some x) (String.byte-len x)) ((None) -1)))
+      (export sl)))
+  (call sl (: 0 Int64) (: 99 Int64))
+  (output (: -1 Int64))
+  (call sl (: 3 Int64) (: 1 Int64))
+  (output (: -1 Int64))
+  (call sl (: -1 Int64) (: 3 Int64))
+  (output (: -1 Int64))
+  (call sl (: 0 Int64) (: -1 Int64))
+  (output (: -1 Int64)))
+
+; ssx3 (breaker): slicing a boundary PARAMETER String leaks ONE husk — the slice pins/DUPs its borrowed
+; source string (+1) without a matching drop, so a live-cell remains after the result is consumed. It is
+; exactly 1 regardless of window (interior [1,3) or full [0,5)) or slice COUNT (two slices → still 1), and
+; the SOURCE, not the view, is the husk. Controls prove the trigger is (param-string AND slice) together:
+; a param string consumed by byte-len/at with NO slice reclaims 0 (SCRATCH param bytelen); slicing a
+; LITERAL source (the value cases above) reclaims 0; slicing a runtime CONCAT-built source reclaims 0.
+; Filed to v-memory-safety. Fenced known-leak so a reclaim fix auto-flips it. (An escaping param slice is a
+; separate CDZ0900 decline — not covered here.)
+(case
+  "slicing a boundary parameter String retains one husk (param-source slice-retention leak)"
+  (doc
+    "`String.slice s a b` where `s` is a boundary PARAMETER String leaves 1 live cell after the sliced
+           result is scalar-consumed by byte-len — the slice dups the borrowed source without a drop. The
+           value is correct (`\"hello\"[1,3)` byte-len = 2); only the heap balance leaks. Fenced known-leak
+           pending the v-memory-safety reclaim; the literal-source value cases above stay at 0.")
+  (input
+    (do
+      (def (sl (: s String) (: a Int64) (: b Int64))
+        (match (String.slice s a b) ((Some x) (String.byte-len x)) ((None) -1)))
+      (export sl)))
+  (call sl (: "hello" String) (: 1 Int64) (: 3 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak))
+
 (case
   "a trie of 40 rope-built String keys resolves content descent at depth"
   (doc
