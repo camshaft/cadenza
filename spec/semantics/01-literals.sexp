@@ -686,6 +686,20 @@
       Float64)))
 
 (case
+  "a subnormal float renders its full fractional expansion, not scientific or shortest (small-magnitude companion of f64::MAX)"
+  (doc
+    "The extreme-SMALL companion of the f64::MAX case above: a Float64 in the SUBNORMAL range renders its
+           FULL fractional decimal expansion (a long run of leading zeros then the significant digit), NOT
+           scientific notation and NOT the shortest round-tripping form — the same exact-decimal value-form the
+           large-magnitude integer-expansion cases use, now at the tiny end. `1.0e-300 / 1.0e10` is a subnormal
+           ~1e-310 (below the ~2.2e-308 normal-min). Breaker-verified the render is IDENTICAL across wasm, rust,
+           AND the cadenza hop (differential — a backend emitting scientific/shortest for a subnormal diverges
+           here). Complements ch12's SHORTEST-round-trip Ast.Float metaprogramming path (5e-324): this is the
+           value-form full-expansion escape, not the print/read form.")
+  (input (do (def (main) (/ 1.0e-300 1.0e10)) (export main)))
+  (output (: 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 Float64)))
+
+(case
   "a compound-element float renders the same full expansion as the scalar path"
   (doc
     "The COMPOUND-element companion of the full-expansion case above: the same 3.4028235e38
