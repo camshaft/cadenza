@@ -63,7 +63,7 @@
     { "dir": "0057-data", "file": "src/content/chapters/Data.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0058-data", "file": "src/content/chapters/Data.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0059-data", "file": "src/content/chapters/Data.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
-    { "dir": "0060-designbycontract", "file": "src/content/chapters/DesignByContract.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
+    { "dir": "0060-designbycontract", "file": "src/content/chapters/DesignByContract.tsx", "kind": "runnable", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0061-designbycontract", "file": "src/content/chapters/DesignByContract.tsx", "kind": "runnable", "graded": false, "expectKind": "error", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0062-designbycontract", "file": "src/content/chapters/DesignByContract.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0063-designbycontract", "file": "src/content/chapters/DesignByContract.tsx", "kind": "runnable", "graded": false, "expectKind": "error", "surfaces": ["sexpr", "ml"], "deferred": false },

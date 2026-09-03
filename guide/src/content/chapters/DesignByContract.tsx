@@ -16,6 +16,7 @@ export default function Contracts() {
         source={`(def (main) (f 5))
 
 (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))`}
+        id="requires-pass"
       />
       <P>Feed it a value that breaks the promise and it stops at the boundary, so <C>f(-5)</C> traps, because <C>-5</C> is not <C>{">= 0"}</C>:</P>
       <Runnable
