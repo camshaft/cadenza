@@ -529,6 +529,26 @@
   (output (: "a\\b\"c" String)))
 
 (case
+  "a returned String with a newline and a tab RENDERS them re-escaped (the whitespace escape set)"
+  (doc
+    "The whitespace-control companion of the backslash/quote render case above: the value-render escape
+           set also RE-ESCAPES `\\n` (U+000A) and `\\t` (U+0009) — a returned string containing a literal
+           newline and tab renders `\\n`/`\\t` in the canonical `\"…\"` form, NOT a literal newline/tab byte
+           (which would produce a non-reparseable multi-line literal). Content `a\"b` + newline + tab + `\\z`
+           renders `\"a\\\"b\\n\\t\\\\z\"`. This pins the EXACT boundary of the render escape set: `\\n`/`\\t`
+           ARE escaped (they are in the reader's closed escape set), whereas a NON-set control scalar like
+           U+0007 BEL renders VERBATIM (13-strings, non-printable-scalar case) — so the renderer escapes the
+           named whitespace controls but does not u-escape arbitrary control bytes. Breaker-verified IDENTICAL
+           across wasm, rust, AND the cadenza hop (a renderer that emitted a raw newline, or that over-escaped
+           BEL, would diverge). The runtime rope is built by `String.concat` so nothing folds to a literal.")
+  (input
+    (do
+      (def (main) (String.concat "a\"b" (String.concat "\n" (String.concat "\t" "\\z"))))
+      (export main)))
+  (call main)
+  (output (: "a\"b\n\t\\z" String)))
+
+(case
   "an unrecognized string escape is rejected"
   (doc
     "`\"\\q\"` uses a backslash before `q`, which begins none of the recognized escape sequences,
