@@ -406,17 +406,40 @@
       (export main)))
   (output (: 5 Int64)))
 
-; The BARE-LITERAL-payload ctor face of the module-member type above — the separate still-open gap
-; (v-module-system, co-owned with v-inference). A module-member `(type W (W Int64))` used with a BARE
-; INTEGER LITERAL payload in a sibling — `(match (W 42) ((W n) n))` — SHOULD ground the `42` to the ctor's
-; declared `Int64` field and bind n=42. It declines CDZ0201 TODAY: bare-literal grounding through a
-; module-member-type ctor payload isn't wired (the self-qualified `W.W`/`m.W` and typed-parameter `(W k)`
-; forms already resolve; only the bare-literal-into-member-ctor grounding lags). Idealistic should-cross
-; TODO (grades todo on all three backends, auto-flips when the grounding lands) — NOT a decl-reject.
-; (breaker verified via the gate: CDZ0201 on wasm/rust/cadenza; a standalone `cdz compile` of the same
-; module MIS-succeeds — the gate's module context is authoritative, like the units-prelude recompile trap.)
+; Constructing + matching a module-member-type ctor is fine when consumed LOCALLY in a NON-ENTRY member,
+; but declines CDZ0201 when the value hits a BOUNDARY (the module's exported ENTRY, or crossing a def
+; boundary). The axis is LOCAL-use vs BOUNDARY-use — NOT bare-literal grounding (v-module-system's decisive
+; single-variable gate tests: bare `(W 42)` matched in a non-entry helper PASSES, and #7946 above with a
+; bare `(Sh.Box 99)` payload also passes, so a bare literal is not the trigger). The boundary/entry case
+; fails because the member-type ctor's arrow is unreadable at the entry-lowering — the variant looks
+; NULLARY there. This PASS/FAIL pair pins the contrast. v-module-system owns the boundary-lowering fix.
 (case
-  "a bare-literal payload in a module-member-type ctor grounds to the field type (idealistic)"
+  "a module-member-type ctor constructed and matched LOCALLY in a non-entry member resolves"
+  (doc
+    "The PASSING side of the boundary axis: `(type W (W Int64))` is a module member, and a NON-ENTRY
+           helper `get` constructs + matches `(W 42)` locally (the value never leaves `get`); the external
+           `main` calls `m.get 0` → 42. Constructing/matching a member-type ctor within a non-entry member is
+           supported — contrast the exported-entry case below, which declines because the value crosses a
+           boundary. (breaker single-variable isolation with v-module-system.)")
+  (input
+    (do
+      (module m
+        (type W (W Int64))
+        (def (get (: k Int64)) (match (W 42) ((W n) n)))
+        (export get))
+      (def (main) (m.get 0))
+      (export main)))
+  (output (: 42 Int64)))
+
+; The FAIL side: the SAME `(W 42)` construct+match placed in the module's OWN EXPORTED ENTRY `main` (the
+; value crosses the entry boundary) declines CDZ0201 — the member-type ctor arrow is unreadable at
+; entry-lowering, so the variant reads as nullary. SHOULD return 42 (idealistic should-cross TODO, auto-flips
+; when v-module-system's boundary-lowering lands); grades todo on all three backends. NOT bare-literal
+; grounding (the local case above uses the identical bare `(W 42)` and passes) and NOT a decl-reject. The
+; mk-RETURNS-a-member-value-across-defs shape is the same boundary fault. (Verified via the gate — a
+; standalone `cdz compile` of this module MIS-succeeds; the gate's module context is authoritative.)
+(case
+  "a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)"
   (input (module m (type W (W Int64)) (def (main) (match (W 42) ((W n) n))) (export main)))
   (output (: 42 Int64)))
 
