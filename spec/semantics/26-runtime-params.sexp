@@ -701,3 +701,21 @@
   (host-responses (respond param.width (: 7 Int64)))
   (host-calls (call param.width))
   (output (: 4007 Int64)))
+
+; psx1: a STRING-typed @!param — the accessor generates (op label (-> Unit String)), but a String
+; RESULT has no component boundary form on a bare effect (the detailed CDZ0900 explains the matrix:
+; bare-effect results cross as scalar/unit; a bytes/string-ish result needs the WORLD-DRIVEN path,
+; an imposed (wit-world …) that lifts host bytes into a value-heap handle). Scalar params (Int64/
+; Float64/Bool above) cross today; the string face DECLINES. Idealistic TODO: with the host
+; supplying "hello", byte-len + n = 10 at n=5. Flips when the world-driven result path (or a bare-
+; effect string-result form) reaches @!param accessors. (breaker probe ps1, tick 1508.)
+(case
+  "a String-typed @param accessor crosses once the world-driven result path lands"
+  (input
+    (do
+      (pragma param (param (: widget textbox)) (: label String))
+      (def (main (: n Int64)) (host (Param) (+ (String.byte-len (Param.label)) n)))
+      (export main)))
+  (call main (: 5 Int64))
+  (host-responses (respond param.label (: "hello" String)))
+  (output (: 10 Int64)))
