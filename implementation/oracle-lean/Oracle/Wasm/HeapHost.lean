@@ -1008,6 +1008,64 @@ def strFromBytes : HeapState → List Value → HeapResult
         | _ => .trap s!"str-from-bytes: handle {buf} is not a byte buffer"
   | s, _ => .trap "str-from-bytes: expected (i32)"
 
+/-! ### Bytes rope (W5.3b) — `bytes-concat`/`-slice`/`-compact`. The runtime uses a persistent rope (O(1)
+concat/slice that SHARE leaves — a slice pins its parent alive), but the value form is INDISTINGUISHABLE from a
+flat buffer by `bytes-len`/`-get`/equality (runtime.wit), so a FLAT model (materialize the bytes) is
+value-faithful. It is ALSO leak-VERDICT-faithful: the leak oracle asserts `liveCount == 0` (leak vs no-leak),
+NOT an exact count, and a flat model frees operands eagerly such that its census is 0 EXACTLY when the rope's
+is — a concat/slice result is dropped ⇔ the rope's pinned operand(s) are freed, and the flat buffer is freed on
+that same drop. So the pinned-parent sharing changes only the leak COUNT on an already-leaking run, never the
+0-vs-nonzero VERDICT. `concat`/`slice` CONSUME their operand(s); `compact` is identity here (the flat buffer is
+already storage-independent). -/
+
+/-- `bytes-concat(a, b) → buf` [CONSUMES a, b]: a fresh buffer = a's bytes then b's (empty is the identity). -/
+def bytesConcat : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b] =>
+    match s.getObj? a, s.getObj? b with
+    | none, _ => .trap s!"bytes-concat: unknown handle {a}"
+    | _, none => .trap s!"bytes-concat: unknown handle {b}"
+    | some oa, some ob =>
+      if !oa.live then .trap s!"bytes-concat: use-after-free (handle {a} freed)"
+      else if !ob.live then .trap s!"bytes-concat: use-after-free (handle {b} freed)"
+      else match oa.value, ob.value with
+        | .bytes ba, .bytes bb =>
+          let (r, s1) := s.alloc (.bytes (ba ++ bb))
+          .ret [.i32 r] ((s1.dropH a).dropH b)
+        | _, _ => .trap s!"bytes-concat: handle {a} or {b} is not a byte buffer"
+  | s, _ => .trap "bytes-concat: expected (i32, i32)"
+
+/-- `bytes-slice(buf, start, len) → buf'` [CONSUMES buf]: `len` bytes from `start`; total-or-trap
+(`start + len > bytes-len` traps; `len == 0` is the empty buffer). Flat model — see the section note on why
+this is leak-verdict-equivalent to the runtime's parent-pinning slice. -/
+def bytesSlice : HeapState → List Value → HeapResult
+  | s, [.i32 buf, .i32 start, .i32 len] =>
+    match s.getObj? buf with
+    | none => .trap s!"bytes-slice: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-slice: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          if start.toNat + len.toNat ≤ bs.size then
+            let sub := ((bs.toList.drop start.toNat).take len.toNat).toArray
+            let (r, s1) := s.alloc (.bytes sub)
+            .ret [.i32 r] (s1.dropH buf)
+          else .trap s!"bytes-slice: [{start}, {start}+{len}) out of bounds (len {bs.size})"
+        | _ => .trap s!"bytes-slice: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-slice: expected (i32, i32, i32)"
+
+/-- `bytes-compact(buf) → buf` [CONSUMES buf]: a content-equal, storage-independent buffer. In the flat model
+the buffer is ALREADY an independent leaf, so this is identity — the same handle (ownership moves in→out). -/
+def bytesCompact : HeapState → List Value → HeapResult
+  | s, [.i32 buf] =>
+    match s.getObj? buf with
+    | none => .trap s!"bytes-compact: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-compact: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes _ => .ret [.i32 buf] s
+        | _        => .trap s!"bytes-compact: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-compact: expected (i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -1080,6 +1138,10 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("bytes-len",          toHostFn [.i32]                   [.i32]  HeapState.bytesLen)
   , ("bytes-scalar-at",    toHostFn [.i32, .i32]             [.i32]  HeapState.bytesScalarAt)
   , ("str-from-bytes",     toHostFn [.i32]                   [.i32]  HeapState.strFromBytes)
+    -- bytes rope (W5.3b): concat/slice/compact, flat model
+  , ("bytes-concat",       toHostFn [.i32, .i32]             [.i32]  HeapState.bytesConcat)
+  , ("bytes-slice",        toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.bytesSlice)
+  , ("bytes-compact",      toHostFn [.i32]                   [.i32]  HeapState.bytesCompact)
     -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -1585,5 +1647,76 @@ private def probeBytesScalarAt : Bool :=
     | _ => false
   | _ => false
 example : probeBytesScalarAt = true := by native_decide
+
+/-! #### W5.3b: bytes rope witnesses (flat model) — concat / slice (+ OOB trap) / compact, each leak-balanced. -/
+
+/-- bytes-concat: "Hi" (72,105) ++ "!" (33) = "Hi!" — len 3, bytes read back, consumes both operands, drop → 0. -/
+private def probeBytesConcat : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 a] s0 =>
+    match bytesSet s0 [.i32 a, .i32 0, .i32 72] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 a, .i32 1, .i32 105] with
+      | .ret [.i32 _] s2 =>
+        match bytesAlloc s2 [.i32 1] with
+        | .ret [.i32 b] s3 =>
+          match bytesSet s3 [.i32 b, .i32 0, .i32 33] with
+          | .ret [.i32 _] s4 =>
+            match bytesConcat s4 [.i32 a, .i32 b] with
+            | .ret [.i32 c] s5 =>
+              (match bytesLen s5 [.i32 c]         with | .ret [.i32 3] _  => true | _ => false) &&
+              (match bytesGet s5 [.i32 c, .i32 0] with | .ret [.i32 72] _ => true | _ => false) &&
+              (match bytesGet s5 [.i32 c, .i32 2] with | .ret [.i32 33] _ => true | _ => false) &&
+              (match drop s5 [.i32 c] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBytesConcat = true := by native_decide
+
+/-- bytes-slice: "abc" (97,98,99), slice(1,1) = "b" — len 1, byte 98; an OOB slice traps; drop → 0. -/
+private def probeBytesSlice : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 3] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 97] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 b, .i32 1, .i32 98] with
+      | .ret [.i32 _] s2 =>
+        match bytesSet s2 [.i32 b, .i32 2, .i32 99] with
+        | .ret [.i32 _] s3 =>
+          match bytesSlice s3 [.i32 b, .i32 1, .i32 1] with
+          | .ret [.i32 sl] s4 =>
+            (match bytesLen s4 [.i32 sl]          with | .ret [.i32 1] _  => true | _ => false) &&
+            (match bytesGet s4 [.i32 sl, .i32 0]  with | .ret [.i32 98] _ => true | _ => false) &&
+            (match bytesSlice s4 [.i32 sl, .i32 1, .i32 5] with | .trap _ => true | _ => false) &&
+            (match drop s4 [.i32 sl] with | .ret [] s5 => s5.liveCount == 0 | _ => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBytesSlice = true := by native_decide
+
+/-- bytes-compact: identity in the flat model — same handle, content preserved, drop → 0. -/
+private def probeBytesCompact : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 72] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 b, .i32 1, .i32 105] with
+      | .ret [.i32 _] s2 =>
+        match bytesCompact s2 [.i32 b] with
+        | .ret [.i32 c] s3 =>
+          (c == b) &&
+          (match bytesLen s3 [.i32 c]         with | .ret [.i32 2] _  => true | _ => false) &&
+          (match bytesGet s3 [.i32 c, .i32 1] with | .ret [.i32 105] _ => true | _ => false) &&
+          (match drop s3 [.i32 c] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBytesCompact = true := by native_decide
 
 end Oracle.Heap
