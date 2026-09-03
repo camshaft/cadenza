@@ -1031,11 +1031,60 @@
 ; rejected with CDZ0304 at compile time, not deferred to a runtime trap. The diagnostic must not dead-end at
 ; the bare fault; like the sibling divide-by-zero CDZ0304 it NAMES THE REPAIR ("use a nonzero denominator"):
 ; a rational n/d denotes a number only when d is nonzero. (The runtime zero-denominator trap — a `Rational.of`
-; with a runtime-zero denominator — is pinned separately by the List.len trap-preservation case below.)
+; with a runtime-zero denominator — is pinned by the runtime construction-normalization case below.)
 (case
   "a constant rational with a zero denominator is rejected and names the nonzero-denominator repair"
   (input (Rational.of 1 0))
   (error CDZ0304 (message "use a nonzero denominator")))
+
+; The const cases above pin normalization on the FOLD path (literal operands). These pin the same
+; canonical-normalized-form contract on the RUNTIME `rational-of` construction op (parameter operands, no
+; fold): (1) SIGN canonicalization — a negative operand puts the sign on the NUMERATOR with a positive
+; denominator, and two negatives CANCEL; (2) a ZERO NUMERATOR normalizes to 0/1 (denominator forced to 1
+; whatever the input denominator); (3) a runtime ZERO DENOMINATOR TRAPS (no number — the runtime face of the
+; const CDZ0304 reject; wasm traps `unreachable`, and the rust backend traps with its own message, the same
+; cross-backend-message shape as the truncate-overflow trap, so the rust baseline may record it todo — a trap
+; either way, not a divergence). Verified breaker probe ratn: fold == runtime == cadenza-hop.
+(case
+  "a runtime rational canonicalizes sign onto the numerator and cancels two negatives"
+  (doc
+    "`(Rational.of n -4)` over a runtime `n`: the negative denominator moves its sign to the numerator
+           and the pair reduces. n=6 → 6/-4 → -3/2, so numerator = -3 (sign on top, denominator positive);
+           n=-6 → -6/-4 → 3/2, so numerator = 3 (two negatives cancel). Pins the runtime construction applies
+           the sign rule + reduction, not only the const fold (the const `Rational.of 1 -2` case above).")
+  (input
+    (do (def (main (: n Int64)) (Int64.of (Rational.numerator (Rational.of n -4)))) (export main)))
+  (call main (: 6 Int64))
+  (output (: -3 Int64))
+  (call main (: -6 Int64))
+  (output (: 3 Int64)))
+
+(case
+  "a runtime rational with a zero numerator normalizes to 0/1"
+  (doc
+    "`(Rational.of 0 d)` over a runtime denominator `d` is 0, whose canonical form is 0/1 — the
+           denominator is forced to 1 regardless of `d` (0/5 and 0/99 are ONE value). Reading the
+           denominator yields 1 at d=5 and d=99. Pins the zero-numerator normalization on the runtime op.")
+  (input
+    (do (def (main (: d Int64)) (Int64.of (Rational.denominator (Rational.of 0 d)))) (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64))
+  (call main (: 99 Int64))
+  (output (: 1 Int64)))
+
+(case
+  "a runtime rational with a zero denominator traps"
+  (doc
+    "The runtime face of the const CDZ0304 zero-denominator reject: `(Rational.of n d)` at a runtime
+           d=0 denotes no number, so constructing it TRAPS (wasm `unreachable`). d=2 is the in-range control
+           (5/2 → numerator 5). Pins the runtime construction guards the zero denominator rather than building
+           an ill-formed rational.")
+  (input
+    (do (def (main (: n Int64) (: d Int64)) (Int64.of (Rational.numerator (Rational.of n d)))) (export main)))
+  (call main (: 5 Int64) (: 2 Int64))
+  (output (: 5 Int64))
+  (call main (: 5 Int64) (: 0 Int64))
+  (trap "unreachable"))
 
 (case
   "a rational's numerator and denominator are read as BigInt from the normalized pair"
