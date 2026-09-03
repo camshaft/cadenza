@@ -4532,17 +4532,23 @@ fn ensure_call_site_index(db: &mut Db) {
     db.call_sites_by_callee = Some(index);
 }
 
-/// The number of call sites whose head resolves to `callee`, across the whole program (the call-site
-/// index, built once + cached). The inline COST HEURISTIC (`lower::should_emit_once_by_cost`) uses this to
-/// require ≥ N callers before it prefers emit-once — a def called once gains nothing from a shared
-/// function. Counts every application occurrence (including a self-call, which the index records); the
-/// heuristic only consults this for a NON-recursive callee, so self-calls do not distort the decision.
-pub(crate) fn callee_call_site_count(db: &mut Db, callee: usize) -> usize {
+/// The ARGUMENT-occurrence lists of every call site whose head resolves to `callee` (one `Vec<StructId>`
+/// per site), from the whole-program call-site index (built once + cached). The inline COST HEURISTIC
+/// (`lower::should_emit_once_by_cost`) uses this to count only the RUNTIME-relevant callers: a fully-closed
+/// (all-const-args) call is
+/// const-folded away before emit, so it must NOT count toward the duplication that justifies emit-once.
+/// Counting ALL sites (incl. const-foldable ones) made emit not a 1-hop fixpoint — a def just over the
+/// inline threshold with one runtime + one const caller was emit-once'd on compile-1 (2 callers) but
+/// inlined on a recompile of the const-folded output (1 caller); values identical, structure not (the
+/// phase-order idempotence gap). Returns owned clones so the caller can query `arg_captures_runtime_binding`
+/// (which needs `&mut Db`) without holding an index borrow.
+pub(crate) fn callee_call_site_args(db: &mut Db, callee: usize) -> Vec<Vec<StructId>> {
     ensure_call_site_index(db);
     db.call_sites_by_callee
         .as_ref()
         .and_then(|idx| idx.get(&callee))
-        .map_or(0, |sites| sites.len())
+        .map(|sites| sites.iter().map(|(_caller, args)| args.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
