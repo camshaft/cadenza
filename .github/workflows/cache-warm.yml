@@ -141,6 +141,25 @@ jobs:
       - name: warm + push corpus-verdicts-coarse (wasm baseline source — non-trusted lanes pull, not cold-build)
         if: matrix.arch == 'aarch64'
         run: nix build .#packages.aarch64-linux.corpus-verdicts-coarse --print-build-logs
+      # PATH 2 (v-nix + v-corpus-harness): also EXPORT the coarse verdicts as a downloadable GHA ARTIFACT so a
+      # NON-trusted lane consumes it OFF-NIX (`gh run download -n wasm-verdicts-coarse`) instead of a cachix pull.
+      # WHY not the pull: corpus-verdicts-coarse is a CA/floating-output derivation; a non-trusted lane
+      # (trusted-users=root) can't substitute the CA realisation (the CA taint propagates through any nix wrapper),
+      # so the cachix-pull path is a dead wall. The $out is ALREADY the plain `<verdict>\t<title>` file (flake
+      # corpusVerdictsCoarseAll: `: > $out; cat per-file >> $out`), so we just copy it out (the build above is a
+      # same-job cache-hit). v-corpus-harness downloads it + diff-updates spec/semantics/.gate-baseline. aarch64-only.
+      - name: stage corpus-verdicts-coarse for artifact upload
+        if: matrix.arch == 'aarch64'
+        run: |
+          out=$(nix build .#packages.aarch64-linux.corpus-verdicts-coarse --print-out-paths --print-build-logs)
+          install -m644 "$out" "$RUNNER_TEMP/wasm-verdicts-coarse.txt"
+      - name: upload wasm-verdicts-coarse artifact
+        if: matrix.arch == 'aarch64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wasm-verdicts-coarse
+          path: ${{ runner.temp }}/wasm-verdicts-coarse.txt
+          if-no-files-found: error
       # Warm the AARCH64 nix CHECK that the store+cargo-artifacts warm DON'T cover — cad-tests builds the
       # SEED COMPILER (cdz-seed-compiler is in its requisites) + runs `cdz test`, and neither packages.store
       # nor cargo-artifacts pulls seedCompiler. After the seedCompiler-src narrowing (#2373) this check became
