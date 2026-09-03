@@ -4900,10 +4900,11 @@ fn local_binder(db: &mut Db, node: StructId) -> Option<StructId> {
 /// whose length is an earlier int binder — the cond then carries the reshaped `floor AND Σ(n>=0) AND (bytes-len
 /// {==|>=} total + Σn)` guard, see `parse_bin_len_cond`). The literal + binder segments tile the FIXED prefix
 /// `[0, PREFIX)` contiguously (no unused/`_` gap — gaps fill with `(u8 _)`); the dependent payload + rest begin
-/// exactly at `PREFIX`. Anything else → `None` (fall through to the ordinary `if` emit, which declines on the
-/// unhandled read → a clean todo, no regression). `le`/signed ride each segment. A fixed int at a DYNAMIC
-/// offset (a fixed segment after a dependent size), MULTIPLE dependent sizes, and bit-field / dependent-utf8
-/// matches are later sub-slices (they decline cleanly).
+/// exactly at `PREFIX`. A single dependent payload may also be FOLLOWED by trailing fixed int segments at
+/// DYNAMIC offsets (a length-prefixed frame `(u8 len) (bytes p len) (u8 tail)` — the `post` segments, read via
+/// `BinIntRead` with `off_plus: Some`). Anything else → `None` (fall through to the ordinary `if` emit, which
+/// declines on the unhandled read → a clean todo, no regression). `le`/signed ride each segment. MULTIPLE
+/// dependent sizes, and bit-field / dependent-utf8 matches are later sub-slices (they decline cleanly).
 fn try_emit_bin_match(
     db: &mut Db,
     b: &mut Builder,
@@ -4923,9 +4924,10 @@ fn try_emit_bin_match(
         Wild,                          // one unread byte → `(u8 _)`
     }
     struct BinReArm {
-        segs: Vec<(u32, Seg)>, // (byte_offset, segment) for the FIXED prefix, sorted + contiguous, tiling [0, prefix)
+        segs: Vec<(u32, Seg)>, // (byte_offset, segment) for the PRE-payload fixed prefix, sorted + contiguous, tiling [0, payload/prefix)
         dep: Option<BinDepSeg>, // a single DEPENDENT-SIZE `(bytes payload <size>)` after the fixed prefix
-        rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== the fixed prefix; dynamic offset via off_plus)
+        post: Vec<BinIntSeg>, // POST-payload fixed int segments (dynamic offset after the dependent payload), byte-offset-ordered
+        rest: Option<u32>, // a final `(bytes rest)` at this byte offset (== total; dynamic offset via off_plus)
         body: StructId,
     }
     let mut arms: Vec<BinReArm> = Vec::new();
@@ -4946,11 +4948,12 @@ fn try_emit_bin_match(
         // DEPENDENT-SIZE `(bytes payload n)` read (literal segments are only probed in the cond, never read).
         let BinBodySegs {
             binders,
+            post,
             rest: rest_off,
             dep,
         } = collect_bin_int_segs(db, then_, scrut_binder)?;
         // The cond's `>=` rest flag and the body's rest read must AGREE, and the rest must begin exactly at
-        // the fixed prefix `total` (the tail after the fixed segments). A mismatch → a shape we don't model.
+        // `total` (the tail after ALL fixed segments). A mismatch → a shape we don't model.
         if has_rest != rest_off.is_some() {
             return None;
         }
@@ -4961,16 +4964,29 @@ fn try_emit_bin_match(
         }
         // The cond's dependent-size flag and the body's dependent read must AGREE — a dependent cond with no
         // reconstructed `BinSizedRead` (e.g. a dependent-size `utf8` segment, a later sub-slice), or a
-        // `BinSizedRead` under a non-dependent cond, is a shape we don't model → decline. A dependent payload
-        // begins exactly at the fixed prefix `total` (right after the tiled fixed segments).
+        // `BinSizedRead` under a non-dependent cond, is a shape we don't model → decline.
         if is_dependent != dep.is_some() {
             return None;
         }
-        if let Some(d) = &dep
-            && d.payload_off != total
-        {
+        // POST-payload fixed segments (dynamic offset) only exist AFTER a dependent payload — a `post` seg with
+        // no dependent payload is an inconsistent shape. And the byte accounting must close: the payload begins
+        // right after the PRE-payload fixed prefix (`payload_off`), and `total` (the sum of ALL fixed int
+        // widths, from the length cond) equals that prefix plus the POST-payload fixed widths.
+        if !post.is_empty() && dep.is_none() {
             return None;
         }
+        let post_width_sum: u32 = post.iter().map(|(_, w, _, _)| u32::from(*w)).sum();
+        // The PRE-payload fixed prefix ends at the payload (dependent case) or at `total` (no dependent payload).
+        let prefix_end = match &dep {
+            Some(d) => {
+                // total == payload_off (pre-payload fixed prefix) + Σ post fixed widths.
+                if d.payload_off + post_width_sum != total {
+                    return None;
+                }
+                d.payload_off
+            }
+            None => total,
+        };
         // Merge literal + binder segments by offset; a collision (both at one offset) or a non-contiguous
         // tiling of `[0, total)` means a shape this sub-slice cannot faithfully reconstruct → bail.
         let mut by_off: std::collections::BTreeMap<u32, Seg> = std::collections::BTreeMap::new();
@@ -4984,14 +5000,16 @@ fn try_emit_bin_match(
                 return None;
             }
         }
-        // Tile `[0, total)`: consume the literal/binder segment at each offset, and FILL any gap (an unread
-        // `_`/unused segment the cond doesn't probe + the body doesn't read) with a `(u8 _)` wildcard byte —
-        // value-equivalent (the bytes are unread; only the total length + the probed/read segments matter). A
-        // segment whose offset is skipped (INSIDE a wider preceding segment → an overlap) stays in `by_off`
-        // and is caught as leftover below.
+        // Tile `[0, prefix_end)` (the PRE-payload fixed prefix): consume the literal/binder segment at each
+        // offset, and FILL any gap (an unread `_`/unused segment the cond doesn't probe + the body doesn't
+        // read) with a `(u8 _)` wildcard byte — value-equivalent (the bytes are unread; only the total length
+        // + the probed/read segments matter). A segment whose offset is skipped (INSIDE a wider preceding
+        // segment → an overlap) stays in `by_off` and is caught as leftover below. POST-payload fixed segments
+        // sit at DYNAMIC offsets (`off_plus`), so they are NOT in this static tiling — they are appended after
+        // the dependent payload from `post`.
         let mut expect_off: u32 = 0;
         let mut segs: Vec<(u32, Seg)> = Vec::new();
-        while expect_off < total {
+        while expect_off < prefix_end {
             if let Some(seg) = by_off.remove(&expect_off) {
                 let w = match &seg {
                     Seg::Lit(w, ..) | Seg::Binder(w, ..) => u32::from(*w),
@@ -5005,11 +5023,12 @@ fn try_emit_bin_match(
             }
         }
         if !by_off.is_empty() {
-            return None; // a segment past `total`, or overlapping a wider one → unmodeled
+            return None; // a segment past the prefix, or overlapping a wider one → unmodeled
         }
         arms.push(BinReArm {
             segs,
             dep,
+            post,
             rest: rest_off,
             body: then_,
         });
@@ -5084,6 +5103,23 @@ fn try_emit_bin_match(
             let size_ref = b.name(size_name);
             pat_children.push(b.list(vec![bytes_head, payload_binder, size_ref]));
         }
+        // POST-payload fixed int segments — trailing fixed fields AFTER the dependent payload, at a DYNAMIC
+        // runtime offset (`off_plus` in the body's `BinIntRead`). Emitted in byte-offset order as `(uN xK)`
+        // binders and registered in `bin_fields` keyed by `(byte_offset, width)`; the body's dynamic-offset
+        // `BinIntRead` resolves by that key (the emit arm ignores `off_plus`). Re-lowering recomputes the
+        // dynamic offset from the surface segment order, so the surface carries only the segment kind.
+        for (offset, width, signed, le) in &arm.post {
+            let bits = u32::from(*width) * 8;
+            let ty = b.name(format!("{}{bits}", if *signed { "i" } else { "u" }));
+            let name = synth_payload_name(env.next_payload);
+            env.next_payload += 1;
+            env.bin_fields.insert((*offset, *width), name.clone());
+            let mut seg_children = vec![ty, b.name(name)];
+            if *le {
+                seg_children.push(b.name("le"));
+            }
+            pat_children.push(b.list(seg_children));
+        }
         // A final `(bytes rest)` segment — binds the tail after the fixed prefix (+ any dependent payload); the
         // body's `BinRestRead` resolves to this binder via `bin_rest_fields` (keyed by the rest's byte offset).
         if let Some(ro) = arm.rest {
@@ -5135,10 +5171,13 @@ struct BinDepSeg {
     size_width: u8,
 }
 
-/// An arm body's recovered bin segments: the fixed-width int BINDER reads, an optional final `(bytes rest)`
-/// (its static byte offset — the fixed prefix), and an optional single DEPENDENT-SIZE payload segment.
+/// An arm body's recovered bin segments: the PRE-payload fixed-width int BINDER reads (static offset,
+/// `off_plus: None`), the POST-payload fixed-width int reads (dynamic offset AFTER a dependent-size payload,
+/// `off_plus: Some` — a trailing fixed field in a length-prefixed frame), an optional final `(bytes rest)`
+/// (its static byte offset), and an optional single DEPENDENT-SIZE payload segment.
 struct BinBodySegs {
     binders: Vec<BinIntSeg>,
+    post: Vec<BinIntSeg>,
     rest: Option<u32>,
     dep: Option<BinDepSeg>,
 }
@@ -5298,14 +5337,15 @@ fn parse_bin_len_cond(
     Some((scrut?, total, lits, has_rest, is_dependent))
 }
 
-/// Collect an arm body's segment reads over the scrutinee `scrut_binder`: the BINDER fixed-width int reads
-/// (`Core::BinIntRead`, offset-sorted + deduped `(byte_offset, width, signed, little_endian)`), the FINAL
-/// `(bytes rest)` read (`Core::BinRestRead`, static OR dynamic `off_plus`) as `rest = Some(byte_offset)`, and
-/// a SINGLE DEPENDENT-SIZE `(bytes payload n)` payload read (`Core::BinSizedRead`) as `dep`. Returns `None` if
-/// the body carries a read this sub-slice does not reconstruct — a DYNAMIC-offset FIXED int read (`off_plus`
-/// on a `BinIntRead`, i.e. a fixed segment after a dependent size), MORE THAN ONE `BinRestRead` or
-/// `BinSizedRead`, or a `BinSizedRead` whose `len` is not a plain scrutinee `BinIntRead`. The int result may
-/// be EMPTY (a literal-only arm reads nothing); the caller MERGES with the cond's literal segments + tile-checks.
+/// Collect an arm body's segment reads over the scrutinee `scrut_binder`: the PRE-payload BINDER fixed-width
+/// int reads (`Core::BinIntRead` with `off_plus: None`, offset-sorted + deduped) as `binders`, the POST-payload
+/// fixed-width int reads (`off_plus: Some` — a trailing fixed field after a dependent-size payload) as `post`,
+/// the FINAL `(bytes rest)` read (`Core::BinRestRead`, static OR dynamic `off_plus`) as `rest = Some(byte_offset)`,
+/// and a SINGLE DEPENDENT-SIZE `(bytes payload n)` payload read (`Core::BinSizedRead`) as `dep`. Returns `None`
+/// if the body carries a read this sub-slice does not reconstruct — MORE THAN ONE `BinRestRead` or `BinSizedRead`,
+/// a `BinSizedRead` with a dynamic `off_plus` (a second dependent size precedes), or a `BinSizedRead` whose `len`
+/// is not a plain scrutinee `BinIntRead`. The int results may be EMPTY (a literal-only arm reads nothing); the
+/// caller MERGES with the cond's literal segments + tile-checks the pre-payload prefix.
 fn collect_bin_int_segs(
     db: &mut Db,
     body: StructId,
@@ -5316,6 +5356,7 @@ fn collect_bin_int_segs(
     struct Acc {
         seen: std::collections::HashSet<StructId>,
         out: Vec<BinIntSeg>,
+        post: Vec<BinIntSeg>,
         rest: Option<u32>,
         dep: Option<BinDepSeg>,
         bail: bool,
@@ -5332,14 +5373,22 @@ fn collect_bin_int_segs(
                 width,
                 signed,
                 little_endian,
-            } => {
-                if off_plus.is_some() || local_binder(db, bytes) != Some(scrut) {
-                    // A fixed int at a DYNAMIC offset (a fixed segment after a dependent size), or a read over a
-                    // different value — this sub-slice reconstructs only a fixed prefix + one dependent payload.
-                    acc.bail = true;
-                    return;
+            } if local_binder(db, bytes) == Some(scrut) => {
+                // `off_plus: None` = a PRE-payload fixed int at a static offset (the leading fixed prefix, or
+                // a whole-fixed arm). `off_plus: Some` = a POST-payload fixed int at a DYNAMIC offset — a
+                // trailing fixed field AFTER a dependent-size payload (a length-prefixed frame `(u8 len)
+                // (bytes p len) (u8 tail)`). The surface segment order (pre / payload / post) is reconstructed
+                // from these two buckets; re-lowering recomputes the byte offsets, so we keep only the kinds.
+                if off_plus.is_some() {
+                    acc.post.push((byte_offset, width, signed, little_endian));
+                } else {
+                    acc.out.push((byte_offset, width, signed, little_endian));
                 }
-                acc.out.push((byte_offset, width, signed, little_endian));
+            }
+            // A `BinIntRead` over a DIFFERENT value than the scrutinee — not a shape we model.
+            Core::BinIntRead { .. } => {
+                acc.bail = true;
+                return;
             }
             // A FINAL `(bytes rest)` read — the tail from a static byte offset, with `off_plus: Some(Σn)` when a
             // dependent-size segment precedes it (dynamic runtime offset) or `None` for a purely-fixed prefix.
@@ -5394,6 +5443,7 @@ fn collect_bin_int_segs(
     let mut acc = Acc {
         seen: std::collections::HashSet::new(),
         out: Vec::new(),
+        post: Vec::new(),
         rest: None,
         dep: None,
         bail: false,
@@ -5403,12 +5453,19 @@ fn collect_bin_int_segs(
         return None;
     }
     let Acc {
-        mut out, rest, dep, ..
+        mut out,
+        mut post,
+        rest,
+        dep,
+        ..
     } = acc;
     out.sort_unstable();
     out.dedup();
+    post.sort_unstable();
+    post.dedup();
     Some(BinBodySegs {
         binders: out,
+        post,
         rest,
         dep,
     })
