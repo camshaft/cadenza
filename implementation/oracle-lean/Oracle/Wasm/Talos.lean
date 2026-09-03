@@ -124,10 +124,11 @@ private def watHeapBoxGet : String :=
   "(module (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"get-int\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i64) i64.const 42 call 0 local.set 0 local.get 0 call 1 local.set 1 local.get 0 call 2 local.get 1))"
 example : (talosDriver watHeapBoxGet { entry := "main" } == .ok #[.i64 42]) = true := by native_decide
 
-/-- A module importing an UNMODELED runtime op (`vec-push`, not yet in the host) declines to a sound skip
-(`.err`), NOT a spurious run — the `covers` gate. -/
+/-- A module importing an UNMODELED runtime op (`hash-blake3`, not yet in the host — a W5.5 transport/hash op)
+declines to a sound skip (`.err`), NOT a spurious run — the `covers` gate. (Repoint to a still-unmodeled op if
+this one ever gets modeled; the point is to exercise the decline path.) -/
 private def watHeapUnmodeled : String :=
-  "(module (import \"heap\" \"vec-push\" (func (param i32 i32) (result i32))) (func (export \"main\") (result i64) i64.const 0))"
+  "(module (import \"heap\" \"hash-blake3\" (func (param i32) (result i32))) (func (export \"main\") (result i64) i64.const 0))"
 example : (match talosDriver watHeapUnmodeled { entry := "main" } with | .err _ => true | _ => false) = true := by native_decide
 
 end Oracle.Wasm
