@@ -4286,3 +4286,36 @@
   (output (: 5 Int64))
   (call main (: 200 Int64))
   (output (: 200 Int64)))
+
+; ixx2: an INTEGRATION witness composing #8141 (Result-returning bin-match arm re-emit) with #8024
+; (bin-match nested inside a bin-match arm). A RESULT-returning inner bin-match (`(bin (u8 137) (u8
+; v)) -> (Ok v)`, ascribed `(Result Int64 String)`) is called INSIDE an outer bin-match arm, and its
+; Ok is consumed by yet another match — so the cadenza hop must (a) re-emit the outer nested bin
+; (#8024's segment re-key) AND (b) recover the inner's under-determined Result error param from the
+; sibling Err arm (#8141's fill_free_sum_args), in one program. tag=n from the outer u8, inner reads
+; the tag+1 payload: n + 100*(n+1). n=5 -> 605; n=0 -> 100. Each fix is fenced alone; this pins them
+; composed on the re-emit path. (breaker probe ix2, verified tri-target exact + byte-idempotent.)
+(case
+  "a Result-returning bin-match nested in a bin-match arm re-emits (composes the nested-bin and Result-recover fixes)"
+  (input
+    (do
+      (def
+        (inner (: b Bytes))
+        (:
+          (match b ((bin (u8 137) (u8 v)) (Ok (Int64.of v))) (_ (Err "bad")))
+          (Result Int64 String)))
+      (def
+        (main (: n Int64))
+        (match
+          (Bytes.of #list((UInt8.of n) 7))
+          ((bin (u8 tag) (u8 _y))
+            (match
+              (inner (Bytes.of #list(137 (UInt8.of (+ tag 1)))))
+              ((Ok w) (+ (Int64.of tag) (* 100 w)))
+              ((Err _e) -1)))
+          (_ -2)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 605 Int64))
+  (call main (: 0 Int64))
+  (output (: 100 Int64)))
