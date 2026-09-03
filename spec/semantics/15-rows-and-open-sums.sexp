@@ -2404,3 +2404,33 @@
       (export main)))
   (call main)
   (output (: 1 Int64)))
+
+; rrx1: open-row instantiation x the EFFECT fold — one row-polymorphic projector applied at TWO
+; slot-shifted widths whose `t` fields are PERFORMS. The projector instantiates per call site
+; ((v t) vs (a v t): both projected slots shift), and the effect lowering must thread the handler
+; state left-to-right through the two record LITERALS' field inits: the first record's tick reads n,
+; the second n+1, regardless of layout. 1 + 10n + 1000*(2 + 10*(n+1)) = 12001 + 10010n. A
+; single-layout specialization misreads a slot; a wrong material-ization order swaps the ticks.
+; (breaker probe rr2, verified tri-target exact + byte-idempotent; the record-returning performing
+; HELPER face (let + projection, 2101 + 110n) verified same tick — projections carry no binder, so
+; the eg1-collision capture surface does not exist here.)
+(case
+  "an open-row projector at two widths reads performing field inits in program order"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (get-vt r) (+ r.v (* 10 r.t)))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (+
+            (get-vt #record((= v 1) (= t (C.tick))))
+            (* 1000 (get-vt #record((= a 9) (= v 2) (= t (C.tick))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 12001 Int64))
+  (call main (: 3 Int64))
+  (output (: 42031 Int64)))
