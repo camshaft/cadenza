@@ -6806,3 +6806,23 @@
   (output (: 104 Int64))
   (call main (: 0 Int64) (: 0 Int64))
   (output (: -10 Int64)))
+
+; sgx1: the STRING (rope) instance of the loop-guard-borrow leak class (lgx1 is the List instance) —
+; a recursive worker reading its String accumulator's byte-len in the RECURSION GUARD each iteration
+; leaks (value-correct). `worker acc = if (> (String.byte-len acc) 2) (String.byte-len acc) else
+; worker (String.concat acc "x")` — builds "xxx", returns 3. Leaks 1 rope husk. Confirms the
+; loop-guard re-borrow reclaim gap is TYPE-GENERAL (List/Map/String all leak; a build-then-inspect-
+; ONCE reclaims 0), NOT container-specific — the fix must cover the rope reclaim path too, distinct
+; from lgx1's list path. Pinned known-leak + filed to v-memory-safety. (breaker probe slg.)
+(case
+  "a string accumulator inspected by byte-len in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)"
+  (input
+    (do
+      (def
+        (worker (: acc String))
+        (if (> (String.byte-len acc) 2) (String.byte-len acc) (worker (String.concat acc "x"))))
+      (def (main (: n Int64)) (worker ""))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak))
