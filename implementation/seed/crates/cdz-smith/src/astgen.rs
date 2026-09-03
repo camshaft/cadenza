@@ -459,7 +459,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 15 };
+    let arms = if depth == 0 { 2 } else { 16 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -727,6 +727,22 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(Set.len (. (tuple {s} {n}) 0))")
             }
         },
+        // An ANNOTATED-TUPLE op (T1.36 — `(Tuple T1..Tn)` type-constructor annotation now parses), the
+        // value ASCRIBED to its tuple type, then projected/consumed to Int64. A scalar `(Tuple Int64 Int64)`
+        // projected, or a `(Tuple (List Int64) Int64)` whose List field is consumed by `List.len`. Both
+        // rcdzc + oracle read the `(Tuple …)` annotation → agreement.
+        14 => {
+            if c.variant(2) == 0 {
+                let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                let idx = c.variant(2);
+                format!("(. (: (tuple {a} {b}) (Tuple Int64 Int64)) {idx})")
+            } else {
+                let xs = gen_typefuzz_list(c, iscope, bscope, fresh, false);
+                let n = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(List.len (. (: (tuple {xs} {n}) (Tuple (List Int64) Int64)) 0))")
+            }
+        }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
@@ -995,7 +1011,15 @@ fn gen_typefuzz_illtyped<C: Choice>(
     let boolean = |c: &mut C, is: &mut Vec<String>, bs: &mut Vec<String>, f: &mut usize| {
         gen_typefuzz_bool(c, 1, is, bs, f)
     };
-    match c.variant(18) {
+    match c.variant(19) {
+        // A TUPLE VALUE/ANNOTATION mismatch (T1.36 — `(Tuple …)` annotation guard): a `(tuple <int> <int>)`
+        // ascribed `(Tuple Int64 Bool)` — the 2nd element's Int64 clashes with the annotated Bool → CDZ0203.
+        // rcdzc rejects + the oracle reads the `(Tuple …)` annotation and infers IllTyped ⇒ holds.
+        17 => {
+            let a = int(c, iscope, bscope, fresh);
+            let b = int(c, iscope, bscope, fresh);
+            format!("(. (: (tuple {a} {b}) (Tuple Int64 Bool)) 0)")
+        }
         // A NON-ORDERABLE to-list (T1.35 — false-accept/regression guard): `Set.to-list` over a set whose
         // ELEMENTS are sets, or `Map.to-list` over a map whose KEY is a set — a set/map leaf carries no
         // blessed total order, so ordered enumeration is undefined → CDZ0203. rcdzc rejects + the oracle
