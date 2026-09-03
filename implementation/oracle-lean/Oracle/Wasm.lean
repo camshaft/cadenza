@@ -85,6 +85,16 @@ def decodeScalar (ty : ScalarTy) (v : WasmVal) : Option Value :=
   | .float32, .f32 b => some (.f64 (Float32.ofBits b).toFloat)
   | _, _ => none
 
+/-- Short name of a `ScalarTy` — for tagging the valtype-mismatch skip reason so the histogram shows which
+`(ty, wasm valtype)` pairs `decodeScalar` doesn't handle (data-driven, like the result-type head tag). -/
+def scalarTyName : ScalarTy → String
+  | .int => "int" | .uint => "uint" | .bool => "bool"
+  | .float32 => "float32" | .float64 => "float64" | .unit => "unit"
+
+/-- Short name of a `WasmVal`'s wasm valtype. -/
+def wasmValKind : WasmVal → String
+  | .i32 _ => "i32" | .i64 _ => "i64" | .f32 _ => "f32" | .f64 _ => "f64"
+
 /-- Map a wasm run outcome + the entry's Cadenza result type onto the shared `Oracle.Outcome`.
 The mapping is total and interpreter-agnostic (see the module header). -/
 def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
@@ -105,7 +115,7 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
     | _, [v] =>
       match decodeScalar ty v with
       | some val => .value val
-      | none => .unsupported "wasm result valtype does not match the declared Cadenza scalar type"
+      | none => .unsupported s!"wasm result valtype does not match the declared Cadenza scalar type (ty={scalarTyName ty}, wasm={wasmValKind v})"
     | _, _ => .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
@@ -268,7 +278,7 @@ example : (toOutcome (.ok #[.i32 (-1)]) .uint == .value (.int 4294967295)) = tru
 example : (toOutcome (.ok #[.i64 (-1)]) .uint == .value (.int 18446744073709551615)) = true := by native_decide
 
 -- shape gaps → sound `.unsupported` (never a wrong value / false differential)
-example : toOutcome (.ok #[.i64 5]) .float64 = .unsupported "wasm result valtype does not match the declared Cadenza scalar type" := rfl
+example : toOutcome (.ok #[.i64 5]) .float64 = .unsupported "wasm result valtype does not match the declared Cadenza scalar type (ty=float64, wasm=i64)" := rfl
 example : toOutcome (.ok #[.i64 1, .i64 2]) .int = .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)" := rfl
 
 -- result-type name → ScalarTy (the verified scalar spellings; others decline to none)
