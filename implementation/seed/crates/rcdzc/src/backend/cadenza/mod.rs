@@ -1511,6 +1511,29 @@ fn emit_expr_viewed(
                     return Ok(b.list(vec![head, mag, unit_node]));
                 }
             }
+            // A RUNTIME BARE-INNER magnitude (arith / convert / tower-binop) at a Qty-expected position — a
+            // COLLECTION ELEMENT like `(Qty.of (+ v 1) meter)` in a list/map. The value-position twin of the
+            // def-tail BareInner wrap-whole (#8089); #8101 handled a CONST magnitude here, this handles a
+            // COMPUTED one, gated the SAME way — `expected == Some(Ty::Qty …)` distinguishes a genuine element
+            // from an erased-`Qty.value` peel (a peel's `expected` is the bare inner). TRIVIAL-scale only
+            // (`scale == 1/1`): a SCALED runtime magnitude needs a runtime scale-multiply (a later slice), so a
+            // scaled unit falls through to `qty_disposition` (declines). Emit `(Qty.of <magnitude> <unit>)`.
+            if matches!(&expected, Some(Ty::Qty { .. }))
+                && unit.scale() == (1, 1)
+                && matches!(
+                    core_of(db, id),
+                    Core::Arith { .. }
+                        | Core::Convert { .. }
+                        | Core::BigIntBinOp { .. }
+                        | Core::RationalBinOp { .. }
+                        | Core::BigIntOfI64 { .. }
+                )
+            {
+                let head = member_access(b, "Qty", "of");
+                let mag = emit_expr_viewed(db, b, id, Some(inner.clone()), None, env, emitted)?;
+                let unit_node = crate::lower::unit_value_ast(b, &unit);
+                return Ok(b.list(vec![head, mag, unit_node]));
+            }
             match qty_disposition(db, id) {
                 NominalDisp::Construct => {
                     let head = member_access(b, "Qty", "of");
