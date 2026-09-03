@@ -3955,6 +3955,54 @@
           file = ./spec/semantics + "/${builtins.head corpusFileNames}";
         };
 
+        # LIVE-OBJECTS harvest-vs-GATE drift-guard (v-corpus-harness 2026-09-03): the wasm .gate-baseline is
+        # HARVESTED via the INTERPRETED mkCorpusVerdict, but `--check` grades via the AOT gate (mkCorpusExec).
+        # If the debug-counters live-cell accounting ever GENUINELY diverges between interpreted + AOT exec (the
+        # class a stale-nix-cache phantom hid for ~10 ticks — v-mem #8203, when a cached per-case PASS looked
+        # authoritative), a re-harvested baseline would SILENTLY red the gate. This asserts, for a COUNT-CHECKED
+        # (live-objects 0) sample spanning the suspected husk classes (Map/handler, String, List-in-arm), that the
+        # INTERPRETED harvest verdict == the AOT verdict (same <tag>) → both read the same live-object count.
+        # Bounded to the sample (cranelift only for these few cases — NOT the whole harvest, so none of the
+        # per-case-cranelift warm-cost that made the both-AOT mirror not worth landing).
+        mkLiveObjectsDriftGuardCase = { name, file, title }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            idxNum = pkgs.lib.lists.findFirstIndex (t: t == title)
+              (throw "live-objects-drift-guard: title not found in ${name}: ${title}")
+              (corpusCaseTitles file);
+            idx = pkgs.lib.fixedWidthNumber 4 idxNum;
+            build = mkCorpusBuild { inherit name shred idx; };
+            precompile = mkCorpusPrecompile { inherit name build idx; };
+            interpVerdict = mkCorpusVerdict { inherit name build idx; };
+          in
+          pkgs.runCommand "liveobjects-drift-guard-${name}-${idx}"
+            { nativeBuildInputs = [ cdzRun ]; } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            [ -e ${precompile}/guest.cwasm ] || { echo "live-objects-drift-guard: ${name} '${title}' has no precompiled guest (peer/error case?) — the sample must be a non-peer value case" >&2; exit 1; }
+            status=$(cat ${build}/compile.status)
+            # AOT verdict = the gate's exec mode (mkCorpusExec:3150): precompiled guest + runtimeDebugCwasm + cwasm store.
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --baseline ${./spec/semantics/.gate-baseline})
+            if [ -e ${build}/diagnostics ]; then args+=(--diagnostics ${build}/diagnostics); fi
+            if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            args+=(--emit-verdict "$TMPDIR/aot-verdict")
+            CDZ_STORE="${componentStoreCwasm}" cdz-run ${precompile}/guest.cwasm --precompiled --runtime ${runtimeDebugCwasm} "''${args[@]}"
+            # Interpreted verdict = the harvest exec mode (mkCorpusVerdict $out = `<tag>\t<title>`).
+            if diff <(cat ${interpVerdict}) "$TMPDIR/aot-verdict"; then
+              echo "ok: ${name} '${title}' — interpreted harvest verdict == AOT gate verdict (live-objects count agrees across exec modes)" > "$out"
+            else
+              echo "LIVE-OBJECTS EXEC-MODE DRIFT: ${name} '${title}' — the INTERPRETED harvest verdict != the AOT gate verdict, so a re-harvested baseline would red --check. See flake mkLiveObjectsDriftGuardCase (v-corpus-harness/v-mem #8203 class)." >&2
+              exit 1
+            fi
+          '';
+        liveObjectsDriftGuard = pkgs.runCommand "live-objects-drift-guard" { } ''
+          : > "$out"
+          cat ${mkLiveObjectsDriftGuardCase { name = "14b-effects-and-handlers"; file = ./spec/semantics/14b-effects-and-handlers.sexp; title = "a handler ARM enumerates a 60-key trie op argument and resumes its fold"; }} >> "$out"
+          cat ${mkLiveObjectsDriftGuardCase { name = "13-strings"; file = ./spec/semantics/13-strings.sexp; title = "a String param threaded UNCHANGED to a self-call AND consumed by String.concat each step is retained"; }} >> "$out"
+          cat ${mkLiveObjectsDriftGuardCase { name = "14b-effects-and-handlers"; file = ./spec/semantics/14b-effects-and-handlers.sexp; title = "a runtime LIST argument to an effect op is WALKED by a recursive fold inside the arm"; }} >> "$out"
+        '';
+
         # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
         # For every corpus wasm output that COMPILES, measure the gap between our emit and what Binaryen's
         # `wasm-opt` would produce. If wasm-opt shrinks nothing, our module is OPTIMAL on the metrics we track;
@@ -6775,6 +6823,10 @@
             # `nix flake check` locally still runs them + they stay independently buildable).
             flake-repro-backstop = flakeReproBackstop;
             runtime-hash-parity = runtimeHashParity;
+            # v-corpus-harness harvest-vs-gate live-objects exec-mode drift-guard (advisory): interpreted harvest
+            # verdict == AOT gate verdict on a count-checked (live-objects 0) sample (Map/handler + String + List
+            # husk shapes). Reds if a future genuine interpreted-vs-AOT count divergence would silently red --check.
+            live-objects-drift-guard = liveObjectsDriftGuard;
             runtime-debug-hash-parity = runtimeDebugHashParity;
             nfc-hash-parity = nfcHashParity;
             # `nix build .#checks.<sys>.contract-hashes-valid` — the contract name→hash mapping is well-formed
