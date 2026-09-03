@@ -1283,3 +1283,45 @@
   (call main (: 10 Int64))
   (output (: 55 Int64))
   (live-objects 0))
+
+; pqx1: the FIFO same-time tie-break preserved across INTERLEAVED time-buckets — the N=2/N=3 pins
+; test same-time FIFO within ONE bucket; this inserts A@1s, B@2s, C@1s, D@2s (alternating buckets),
+; so q-insert must splice C AFTER A (same 1s bucket, FIFO) by walking PAST the later B@2s entry, and
+; D after B. Drain order A,C,B,D encoded as digits 1,3,2,4 -> 1324. A tie-break that stopped at the
+; first >= entry (instead of strict before?) would put C before A (wrong FIFO); one that failed to
+; skip past B when placing C would misorder the buckets. Wasm/rust exact (1324; n only feeds a
+; fold-opaque 0 into the 1s Instant, so both args = 1324). Cadenza-todo like the sibling pqueue
+; cases (the DES recursive-Q re-emit is pending — the existing pop-min case is also todo on cadenza).
+; (breaker probe pq1, verified wasm PASS + rust 1324 + cadenza todo.)
+(case
+  "the FIFO same-time tie-break holds across interleaved time-buckets"
+  (input
+    (do
+      (type Instant (Instant UInt64))
+      (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+      (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+      (type Q QNil (QCons (Tuple Instant Int64 Q)))
+      (def
+        (q-insert (: q Q) (: t Instant) (: v Int64))
+        (match
+          q
+          ((Q.QNil _) (Q.QCons #tuple(t v (Q.QNil ()))))
+          ((Q.QCons #tuple(ht hv rest))
+            (if
+              (before? t ht)
+              (Q.QCons #tuple(t v (Q.QCons #tuple(ht hv rest))))
+              (Q.QCons #tuple(ht hv (q-insert rest t v)))))))
+      (def
+        (drain (: q Q) (: acc Int64))
+        (match q ((Q.QNil _) acc) ((Q.QCons #tuple(_ hv rest)) (drain rest (+ (* acc 10) hv)))))
+      (def
+        (main (: n Int64))
+        (let
+          ((one (Instant.Instant (UInt64.of (+ 1000000000 (- n n)))))
+            (two (Instant.Instant 2000000000)))
+          (drain (q-insert (q-insert (q-insert (q-insert (Q.QNil ()) one 1) two 2) one 3) two 4) 0)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1324 Int64))
+  (call main (: 5 Int64))
+  (output (: 1324 Int64)))
