@@ -3103,6 +3103,45 @@
   (call main (: 5 Int64))
   (output (: 60509 Int64)))
 
+; NAME-COLLISION variant of eg1 (the binder-hygiene frontier). Identical nested shape, but the caller's
+; OUTER destructure binder is named `a` — the SAME spelling as `stamp`'s INTERNAL match-arm binder
+; (`stamp p = match p (#tuple(a b) …)`). The idealistic value is unchanged by the rename: `a` is the first
+; element of the OUTER stamp's result (1), `c` the inner's (2), `t1`/`t2` the two ticks (n, n+1). So
+; `a + 1000*c + 10*t1 + 100*t2` = 1 + 2000 + 10n + 100(n+1) = 2101 + 110n (n=0 -> 2101, n=3 -> 2431).
+; CURRENTLY DECLINES (honest todo): the resumptive-conditional commute nests the continuation (which
+; references the outer `a`) lexically UNDER the inlined `stamp`'s own `(#tuple(a b))` match-arm binder, so
+; the outer `a` reference would be CAPTURED by `stamp`'s `a` (a hygiene gap — the fold's `freshen_walk`
+; leaves match-arm binders un-renamed). Rather than fold to the captured wrong value (2 not 1), the fold
+; SAFE-DECLINES this exact collision shape (reject-don't-miscompile). The fix that flips this to a PASS is to
+; freshen the inlined helper's match-arm binders so the collision cannot occur; the value asserted here is
+; the spec-correct one that fix realizes. (Distinct-name eg1 above is unaffected and folds.)
+(case
+  "eg1 name-collision variant — caller destructure binder shares the helper's internal match-arm binder name (declines pending the inlined-helper match-binder freshening; idealistic value pins the post-fix fold)"
+  (doc
+    "The eg1 nested shape with the caller's OUTER destructure binder named `a`, colliding with `stamp`'s
+           INTERNAL binder `a`. The idealistic semantics are identical to eg1 (the rename is inert): outer
+           `a`=1, inner `c`=2, ticks t1=n and t2=n+1, so `a + 1000*c + 10*t1 + 100*t2` = 2101 + 110n. It
+           currently DECLINES because the commute would nest the continuation under the inlined helper's
+           `(#tuple(a b))` arm binder and CAPTURE the outer `a` (freshen_walk skips match-arm binders) — a
+           silent wrong value the fold rejects instead of emitting. Freshening the inlined helper's match-arm
+           binders flips this to a PASS at the asserted value.")
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (stamp p) (match p (#tuple(a b) #tuple(a b (C.tick)))))
+      (def (main (: n Int64))
+        (handle C n ((tick () s (resume s (+ s 1))))
+          (match (stamp #tuple(1 true))
+            (#tuple(a _b t1)
+              (match (stamp #tuple(2 true))
+                (#tuple(c _d t2)
+                  (+ a (+ (* 1000 c) (+ (* 10 t1) (* 100 t2))))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2101 Int64))
+  (call main (: 3 Int64))
+  (output (: 2431 Int64)))
+
 (case
   "a MUTUALLY-recursive effectful group is specialized under a state handler"
   (doc
