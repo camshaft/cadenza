@@ -430,6 +430,74 @@ def liveObjects : HeapState → List Value → HeapResult
   | s, []     => .ret [.i32 s.liveCount.toUInt32] s
   | _, _ :: _ => .trap "live-objects: expected ()"
 
+/-! ### Functional map — CONSUMING ops (`map-insert`/`map-remove`, W5.2b-2). Ownership transfer by
+DUP-AND-DROP (v-runtime's champ.rs contract): a consumed map's KEPT children are dup'd into the fresh result,
+then the map is dropped. On a UNIQUE map the drop's cascade cancels the dups (entries transfer, spine freed)
+AND frees the handles that LEAVE (they weren't dup'd); on a SHARED map (rc>1) the drop does not cascade, so
+the map survives with its own refs and the result holds the dup'd copies — both correct, uniformly. The
+old-value-on-replace / removed key+value are handled by NOT dup'ing them (never an explicit drop — that would
+wrongly free a shared map's still-owned entry). Only the redundant incoming KEY on a replace is explicitly
+dropped (it is the caller's consumed arg, never stored). `map-merge` is W5.2b-3. -/
+
+/-- rc++ on a handle (immortal = no-op) — transfers a kept child into a fresh result map. -/
+def dupH (s : HeapState) (h : UInt32) : HeapState :=
+  match s.getObj? h with
+  | some o => if o.immortal then s else s.setObj h { o with rc := o.rc + 1 }
+  | none   => s
+
+/-- Drop a single handle with the standard cascade (fuel sized to the pool). -/
+def dropH (s : HeapState) (h : UInt32) : HeapState :=
+  s.dropCascade (s.objects.size + s.edges + 1) [h]
+
+/-- `map-insert(m, k, v) → m'` [consumes m, k, v]: key↦val, last-write-wins by structural value-eq. EXISTING
+key → keep the stored key, take v, the old value is freed by the consumed map's cascade + the redundant
+incoming k is dropped. NEW key → append (k, v). -/
+def mapInsert : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 k, .i32 v] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-insert: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-insert: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          match (List.range (entries.size / 2)).find? (fun i => s.valueEq (entries[2 * i]!) k) with
+          | some i =>
+            let result := entries.set! (2 * i + 1) v
+            let keep := (List.range entries.size).filterMap
+              (fun j => if j == 2 * i + 1 then none else some entries[j]!)
+            let s1 := keep.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.map result)
+            .ret [.i32 r] ((s2.dropH m).dropH k)
+          | none =>
+            let result := (entries.push k).push v
+            let s1 := entries.toList.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.map result)
+            .ret [.i32 r] (s2.dropH m)
+        | _ => .trap s!"map-insert: handle {m} is not a map"
+  | s, _ => .trap "map-insert: expected (i32, i32, i32)"
+
+/-- `map-remove(m, k) → m'` [consumes m, BORROWS k]: m without the entry whose key value-equals k; the
+removed key+value are freed by the consumed map's cascade (not kept). An ABSENT key is a NO-OP (identity:
+m returned unchanged, no alloc, no drop). -/
+def mapRemove : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 k] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-remove: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-remove: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          match (List.range (entries.size / 2)).find? (fun i => s.valueEq (entries[2 * i]!) k) with
+          | none   => .ret [.i32 m] s
+          | some i =>
+            let keep := (List.range entries.size).filterMap
+              (fun j => if j == 2 * i || j == 2 * i + 1 then none else some entries[j]!)
+            let s1 := keep.foldl (fun acc h => acc.dupH h) s
+            let (r, s2) := s1.alloc (.map keep.toArray)
+            .ret [.i32 r] (s2.dropH m)
+        | _ => .trap s!"map-remove: handle {m} is not a map"
+  | s, _ => .trap "map-remove: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -480,6 +548,8 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("map-empty",          toHostFn []                       [.i32]  HeapState.mapEmpty)
   , ("map-lookup",         toHostFn [.i32, .i32]             [.i32]  HeapState.mapLookup)
   , ("map-size",           toHostFn [.i32]                   [.i32]  HeapState.mapSize)
+  , ("map-insert",         toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.mapInsert)
+  , ("map-remove",         toHostFn [.i32, .i32]             [.i32]  HeapState.mapRemove)
     -- immortality
   , ("mark-immortal",      toHostFn [.i32] [.i32]  HeapState.markImmortal)
   , ("mark-immortal-deep", toHostFn [.i32] [.i32]  HeapState.markImmortalDeep) ]
@@ -820,5 +890,133 @@ private def probeMapEmptySize : Bool :=
      | none              => false)
   | _ => false
 example : probeMapEmptySize = true := by native_decide
+
+/-! #### W5.2b-2: functional map CONSUMING ops (map-insert/map-remove) — value + leak balance. -/
+
+/-- Insert a NEW key into the empty map: lookup finds it, size 1, and dropping the result frees everything
+(leak census → 0). -/
+private def probeMapInsertNew : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 k] s0 =>
+    match boxInt s0 [.i64 9] with
+    | .ret [.i32 v] s1 =>
+      match mapEmpty s1 [] with
+      | .ret [.i32 e] s2 =>
+        match mapInsert s2 [.i32 e, .i32 k, .i32 v] with
+        | .ret [.i32 m] s3 =>
+          (match mapLookup s3 [.i32 m, .i32 k] with | .ret [.i32 g] _ => g == v | _ => false) &&
+          (match mapSize s3 [.i32 m]         with | .ret [.i32 1] _ => true   | _ => false) &&
+          (match drop s3 [.i32 m]            with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapInsertNew = true := by native_decide
+
+/-- Insert an EXISTING key (matched by value-eq via a distinct key handle) REPLACES the value: lookup returns
+the new value, and dropping the result frees everything (→ 0) — proving the old value + redundant incoming
+key were dropped (else the census would not balance). -/
+private def probeMapInsertReplace : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 k] s0 =>
+    match boxInt s0 [.i64 90] with
+    | .ret [.i32 v0] s1 =>
+      match mapEmpty s1 [] with
+      | .ret [.i32 e] s2 =>
+        match mapInsert s2 [.i32 e, .i32 k, .i32 v0] with
+        | .ret [.i32 m0] s3 =>
+          match boxInt s3 [.i64 5] with
+          | .ret [.i32 k2] s4 =>
+            match boxInt s4 [.i64 91] with
+            | .ret [.i32 v1] s5 =>
+              match mapInsert s5 [.i32 m0, .i32 k2, .i32 v1] with
+              | .ret [.i32 m1] s6 =>
+                (match mapLookup s6 [.i32 m1, .i32 k] with | .ret [.i32 g] _ => g == v1 | _ => false) &&
+                (match drop s6 [.i32 m1] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapInsertReplace = true := by native_decide
+
+/-- Remove an existing key (matched by value-eq) → empty map; the removed key+value are freed (borrowed query
+survives). Dropping the result + the borrowed query → 0. -/
+private def probeMapRemove : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 k] s0 =>
+    match boxInt s0 [.i64 9] with
+    | .ret [.i32 v] s1 =>
+      match mapEmpty s1 [] with
+      | .ret [.i32 e] s2 =>
+        match mapInsert s2 [.i32 e, .i32 k, .i32 v] with
+        | .ret [.i32 m] s3 =>
+          match boxInt s3 [.i64 5] with
+          | .ret [.i32 k2] s4 =>
+            match mapRemove s4 [.i32 m, .i32 k2] with
+            | .ret [.i32 m2] s5 =>
+              (match mapSize s5 [.i32 m2]              with | .ret [.i32 0] _ => true | _ => false) &&
+              (match mapLookup s5 [.i32 m2, .i32 k2]   with | .ret [.i32 0] _ => true | _ => false) &&
+              (match drop s5 [.i32 m2] with
+               | .ret [] s6 => (match drop s6 [.i32 k2] with | .ret [] s7 => s7.liveCount == 0 | _ => false)
+               | _          => false)
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapRemove = true := by native_decide
+
+/-- Remove of an ABSENT key is a no-op identity: the same handle back, size unchanged. -/
+private def probeMapRemoveAbsent : Bool :=
+  match buildMap1 with
+  | some (m, _, _, s) =>
+    match boxInt s [.i64 7] with
+    | .ret [.i32 k7] s2 =>
+      match mapRemove s2 [.i32 m, .i32 k7] with
+      | .ret [.i32 m2] s3 =>
+        (m2 == m) && (match mapSize s3 [.i32 m2] with | .ret [.i32 1] _ => true | _ => false)
+      | _ => false
+    | _ => false
+  | none => false
+example : probeMapRemoveAbsent = true := by native_decide
+
+/-- SHARED-map insert path-copies (the case v-lean-oracle flagged): inserting into a map with rc>1 leaves the
+ORIGINAL unchanged and produces a SEPARATE updated version — both coexist, then both drop to 0 with no leak.
+This exercises the dup-and-drop transfer's shared branch (drop m does NOT cascade; result holds dup'd refs). -/
+private def probeMapInsertShared : Bool :=
+  match boxInt ({} : HeapState) [.i64 5] with
+  | .ret [.i32 k] s0 =>
+    match boxInt s0 [.i64 90] with
+    | .ret [.i32 v0] s1 =>
+      match mapEmpty s1 [] with
+      | .ret [.i32 e] s2 =>
+        match mapInsert s2 [.i32 e, .i32 k, .i32 v0] with
+        | .ret [.i32 m0] s3 =>
+          match dup s3 [.i32 m0] with
+          | .ret [] s4 =>
+            match boxInt s4 [.i64 5] with
+            | .ret [.i32 k2] s5 =>
+              match boxInt s5 [.i64 91] with
+              | .ret [.i32 v1] s6 =>
+                match mapInsert s6 [.i32 m0, .i32 k2, .i32 v1] with
+                | .ret [.i32 m1] s7 =>
+                  (match mapLookup s7 [.i32 m0, .i32 k] with | .ret [.i32 g] _ => g == v0 | _ => false) &&
+                  (match mapLookup s7 [.i32 m1, .i32 k] with | .ret [.i32 g] _ => g == v1 | _ => false) &&
+                  (match drop s7 [.i32 m0] with
+                   | .ret [] s8 => (match drop s8 [.i32 m1] with | .ret [] s9 => s9.liveCount == 0 | _ => false)
+                   | _          => false)
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapInsertShared = true := by native_decide
 
 end Oracle.Heap
