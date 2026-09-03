@@ -137,6 +137,17 @@ partial def eraseNewtypes : Ty → Ty
   | .sum [(_, some τ)] => eraseNewtypes τ
   | t => t
 
+/-- Parse a width-namespaced INTEGER MODULE name (`Int64`/`UInt8`/…) → `(width, signed)`. Only the realized
+fixed widths 8/16/32/64 (bare `Int`/`UInt`/`BigInt` → `none`, no fixed width). Used by the int-module ops
+`(. Int64 max)` / `(UInt8.wrap …)` etc. (T1.43). -/
+def intWidthName? (q : ByteArray) : Option (Nat × Bool) :=
+  match String.fromUTF8? q with
+  | some "Int8"  => some (8, true)   | some "Int16"  => some (16, true)
+  | some "Int32" => some (32, true)  | some "Int64"  => some (64, true)
+  | some "UInt8"  => some (8, false)  | some "UInt16" => some (16, false)
+  | some "UInt32" => some (32, false) | some "UInt64" => some (64, false)
+  | _ => none
+
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
 abbrev Subst := List (Nat × Ty)
 
@@ -954,6 +965,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 -- Float32 (annotated to THIS width — a cross-width `(= Float32.nan Float64.nan)` still clashes).
                 else if fld == "nan".toUTF8 && Eval.nameOf? m baseId == some "Float64".toUTF8 then .ok (.float 64, st)
                 else if fld == "nan".toUTF8 && Eval.nameOf? m baseId == some "Float32".toUTF8 then .ok (.float 32, st)
+                -- T1.43 — int-module bound CONSTANTS `(. Int64 max)` / `(. UInt8 min)` → that width's `.int w s`.
+                else if (fld == "max".toUTF8 || fld == "min".toUTF8) &&
+                        ((Eval.nameOf? m baseId).bind intWidthName?).isSome then
+                  (match (Eval.nameOf? m baseId).bind intWidthName? with
+                   | some (w, s) => .ok (.int w s, st)
+                   | none => .error (.unsupported "type oracle: int bound"))  -- unreachable (guarded above)
                 else
                 -- T1.27 — QUALIFIED nullary variant `(. Q M)` = `Q.M` (a `(type Q … M …)` variant used
                 -- unapplied): if `fld` is a NULLARY variant AND its declaring type name equals the base name
@@ -1706,6 +1723,45 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                        (match unifyInfer τa (.floatVar st1.next) { st1 with next := st1.next + 1 } with
                         | .ok st2 => .ok (.float w, st2) | .error e => .error e)
                      else .error (.unsupported "type oracle: unmodeled float op")))
+             else if ((intWidthName? q).isSome) then
+               -- T1.43 — width-namespaced INTEGER-MODULE ops `(Int64.<op> …)` / `(UInt8.<op> …)` (sigs from
+               -- prelude.rs int_module_record). `w`/`sg` = this module's width/sign. `of`/`wrap : (Int a) → T`
+               -- (checked/truncating convert; both TOTAL type-wise — an out-of-range `of` is a runtime TRAP,
+               -- a value-level concern, not a type error). `wrapping-{add,sub,mul} : T → T → T`.
+               -- `checked-{add,sub,mul} : T → T → (Option T)`. (min/max are the unapplied constants above.)
+               (match intWidthName? q with
+                | none => .error (.unsupported "type oracle: int-module op")  -- unreachable (guarded)
+                | some (w, sg) =>
+                  let T : Ty := .int w sg
+                  if (op == "of".toUTF8 || op == "wrap".toUTF8) && children.size == 2 then
+                    -- source is ANY int width → unify the arg with a fresh numVar; result = THIS width.
+                    (match children[1]? with
+                     | some aId => (match inferE m env st aId with
+                                    | .ok (τa, st1) => (match unifyInfer τa (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                                                        | .ok st2 => .ok (T, st2)
+                                                        | .error e => .error e)
+                                    | .error e => .error e)
+                     | none => .error (.unsupported "type oracle: malformed int-module of/wrap"))
+                  else if (op == "wrapping-add".toUTF8 || op == "wrapping-sub".toUTF8 || op == "wrapping-mul".toUTF8
+                           || op == "checked-add".toUTF8 || op == "checked-sub".toUTF8 || op == "checked-mul".toUTF8)
+                          && children.size == 3 then
+                    -- T → T → (T | Option T): both operands are THIS width; wrapping → T, checked → (Option T).
+                    let isChecked := op == "checked-add".toUTF8 || op == "checked-sub".toUTF8 || op == "checked-mul".toUTF8
+                    (match children[1]?, children[2]? with
+                     | some aId, some bId =>
+                       (match inferE m env st aId with
+                        | .ok (τa, st1) =>
+                          (match unifyInfer τa T st1 with
+                           | .ok st2 =>
+                             (match inferE m env st2 bId with
+                              | .ok (τb, st3) => (match unifyInfer τb T st3 with
+                                                  | .ok st4 => .ok (if isChecked then optionTy T else T, st4)
+                                                  | .error e => .error e)
+                              | .error e => .error e)
+                           | .error e => .error e)
+                        | .error e => .error e)
+                     | _, _ => .error (.unsupported "type oracle: malformed int-module binary op"))
+                  else .error (.unsupported "type oracle: unmodeled int-module op"))
              else
                -- T1.27 — APPLIED QUALIFIED user ctor `((. Q M) arg)` = `(Q.M arg)`: `qualHead?` reads the
                -- `(. Q M)` head; if `M` is a variant whose declaring type name is `Q`, construct its sum
@@ -2582,6 +2638,17 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
                            .list #[13, 9, 12]],
                 root := 14 } == .wellTyped (.float 64))
+-- T1.43 (int-module op): `(do (def (main) (Int64.wrapping-add 1 2)) (export main))` → WellTyped Int64.
+-- Both operands unify with this module's width (Int64) → the wrapping op yields Int64. (min/max constants +
+-- of/wrap/checked-* are the other int-module members.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Int64".toUTF8, .name "wrapping-add".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .atom 7, .list #[3, 4, 5],
+                           .atom 2, .list #[7], .atom 1, .list #[9, 8, 6], .atom 8, .atom 2, .list #[11, 12],
+                           .atom 0, .list #[14, 10, 13]],
+                root := 15 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
