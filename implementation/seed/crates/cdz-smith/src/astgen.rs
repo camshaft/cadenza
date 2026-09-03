@@ -1706,12 +1706,13 @@ fn gen_bin_body<C: Choice>(c: &mut C, out: &mut String) {
         out.push_str(&format!("(Bytes.len (bin {segs}))"));
     } else {
         // MATCH-DESTRUCTURE: build a bin, match it back, combine binders → Int64, with the required
-        // catch-all arm (a bin pattern is never exhaustive). Four shapes exercise distinct decode paths:
+        // catch-all arm (a bin pattern is never exhaustive). Five shapes exercise distinct decode paths:
         // same-width u8 round-trip; a u16 decoded as two u8s (byte-ORDER: `le` flips hi/lo); a
         // DEPENDENT-SIZE `(bytes p n)` whose length `n` is a binder from an earlier segment (#7972/#7980,
-        // the "crown jewel"); and a GUARDED arm `(guard (bin …) <cond>)` that reads its decoded binder and
-        // FALLS THROUGH to the catch-all when the guard fails (#7979).
-        match c.variant(4) {
+        // the "crown jewel"); a GUARDED arm `(guard (bin …) <cond>)` that reads its decoded binder and
+        // FALLS THROUGH to the catch-all when the guard fails (#7979); and a DEPENDENT-UTF8 `(utf8 s n)`
+        // that decodes `n` bytes to a String USED in the body (#8008 — the twice-read payload dedup).
+        match c.variant(5) {
             0 => {
                 let a = c.int_bounded(0, 255);
                 let b = c.int_bounded(0, 255);
@@ -1737,13 +1738,28 @@ fn gen_bin_body<C: Choice>(c: &mut C, out: &mut String) {
                      ((bin (u8 bn) (bytes bp bn)) (Bytes.len bp)) (_ 0))"
                 ));
             }
-            _ => {
+            3 => {
                 // guarded arm: decode `n`, keep it only when `n > t`, else fall through to the catch-all.
                 let v = c.int_bounded(0, 255);
                 let t = c.int_bounded(0, 255);
                 out.push_str(&format!(
                     "(match (bin (u8 (UInt8.of {v}))) \
                      ((guard (bin (u8 bn)) (> bn {t})) bn) (_ 0))"
+                ));
+            }
+            _ => {
+                // dependent-UTF8: a length byte `n` then `n` bytes decoded to a String `s` USED in the body
+                // (String.byte-len, ~half via String.concat) — the twice-read payload the #8008 dedup fixed.
+                // The spliced literal must be EXACTLY `n` bytes so the length prefix is accurate.
+                let (n, lit) = [(2usize, "AB"), (3, "ABC"), (4, "ABCD")][c.variant(3)];
+                let body = if c.variant(2) == 0 {
+                    "(String.byte-len bs)".to_string()
+                } else {
+                    "(String.byte-len (String.concat bs \"!\"))".to_string()
+                };
+                out.push_str(&format!(
+                    "(match (bin (u8 (UInt8.of {n})) (bytes b\"{lit}\")) \
+                     ((bin (u8 bn) (utf8 bs bn)) {body}) (_ 0))"
                 ));
             }
         }
