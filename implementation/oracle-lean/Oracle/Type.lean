@@ -1925,7 +1925,36 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                            | .var _ => .error (.unsupported "type oracle: Record.with/extend on an unresolved record")
                            | _ => .error (.illTyped "CDZ0203"))))
                   | _, _, _ => .error (.unsupported "type oracle: malformed Record.with/extend"))
-               else .error (.unsupported "type oracle: unmodeled Record op (merge/without/project/pop — later)")
+               else if op == "merge".toUTF8 && children.size == 3 then
+                 -- `merge r s` → the UNION of two records. DISJOINT-only (compute.rs): an overlapping key is
+                 -- CDZ0211 (the explicit merge is not last-writer-wins — that is the `#record((..r))` spread).
+                 (match children[1]?, children[2]? with
+                  | some rId, some sId => do
+                    let (τr, st1) ← inferE m env st rId
+                    let (τs, st2) ← inferE m env st1 sId
+                    match applySubst st2.subst τr, applySubst st2.subst τs with
+                    | .record fr, .record fs =>
+                      if fr.any (fun f => fs.any (fun g => Eval.cmpBytes f.1 g.1 == .eq)) then .error (.illTyped "CDZ0211")
+                      else .ok (.record ((fr ++ fs).toArray.qsort (fun a b => Eval.cmpBytes a.1 b.1 == .lt)).toList, st2)
+                    | _, _ => .error (.illTyped "CDZ0203")
+                  | _, _ => .error (.unsupported "type oracle: malformed Record.merge"))
+               else if op == "pop".toUTF8 && children.size == 3 then
+                 -- `pop r #k` → `(tuple (. r k) (r without k))`: the popped field's type paired with the record
+                 -- minus k. An ABSENT key is CDZ0212 (the field access fails).
+                 (match children[1]?, children[2]? with
+                  | some rId, some kId =>
+                    (match symOf? m kId with
+                     | none => .error (.unsupported "type oracle: Record.pop key is not a #symbol")
+                     | some k => do
+                       let (τr, st1) ← inferE m env st rId
+                       match applySubst st1.subst τr with
+                       | .record fields =>
+                         (match fields.find? (fun f => Eval.cmpBytes f.1 k == .eq) with
+                          | some kv => .ok (.tuple [kv.2, .record (fields.filter (fun f => Eval.cmpBytes f.1 k != .eq))], st1)
+                          | none => .error (.illTyped "CDZ0212"))
+                       | _ => .error (.illTyped "CDZ0203"))
+                  | _, _ => .error (.unsupported "type oracle: malformed Record.pop"))
+               else .error (.unsupported "type oracle: unmodeled Record op (without/project — label-list, later)")
              else if q == "Char".toUTF8 then
                -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
                -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
@@ -2878,6 +2907,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[13], .atom 1, .list #[15, 14, 12], .atom 12, .atom 2,
                            .list #[17, 18], .atom 0, .list #[20, 16, 19]],
                 root := 21 } == .wellTyped (.record [("x".toUTF8, .bool)]))
+-- T1.49 (Record.pop): `(do (def (main) (Record.pop (record (= x 1)) #"x")) (export main))` → WellTyped
+-- (Tuple Int64 (Record)) — the popped field's type paired with the record minus x (here empty). (`merge`
+-- unions two disjoint records; an overlapping merge / an absent-key pop is CDZ0211 / CDZ0212.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Record".toUTF8, .name "pop".toUTF8, .name "record".toUTF8, .name "=".toUTF8,
+                            .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[1]), .sym "x".toUTF8,
+                            .name "export".toUTF8],
+                nodes := #[.atom 6, .atom 7, .atom 8, .atom 9, .list #[1, 2, 3], .list #[0, 4], .atom 3,
+                           .atom 4, .atom 5, .list #[6, 7, 8], .atom 10, .list #[9, 5, 10], .atom 2,
+                           .list #[12], .atom 1, .list #[14, 13, 11], .atom 11, .atom 2, .list #[16, 17],
+                           .atom 0, .list #[19, 15, 18]],
+                root := 20 } == .wellTyped (.tuple [.int 64 true, .record []]))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
