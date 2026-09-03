@@ -2465,3 +2465,37 @@
   (output (: 4001 Int64))
   (call main (: 3 Int64))
   (output (: 7004 Int64)))
+
+; rwx1: the row-op CHAIN x the EFFECT fold — merge/with/pop over a base whose fields, merge operand,
+; and with-value each PERFORM against one advancing handler. Program order threads tick1 into the
+; base literal (a = n), tick2 into the MERGE operand's field (c = n+1), tick3 into the WITH value
+; (the b override = n+2); pop #"b" then yields that third draw and the rest keeps a/c/d. The chain
+; pins ordering through OP ARGUMENTS (the literal-init face is rrx1's, the projection-draw face is
+; orp2's): (n+2) + 100n + 10000(n+1) + 7000000. A fold reordering the operand materialization
+; across the chain shifts a digit; Record.merge's disjointness (CDZ0211, pinned above) is respected
+; by construction. (breaker probe rw2, verified tri-target exact — rust differential 30303 — with a
+; benign h1->h2-stabilizing hop drift (values identical both generations) and census TRUE-0 on the
+; fresh debug runtime.)
+(case
+  "a merge-with-pop chain threads three performing operands in program order"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (let
+            ((r #record((= a (C.tick)) (= b 100))))
+            (match
+              (Record.pop
+                (Record.with (Record.merge r #record((= c (C.tick)) (= d 7))) #"b" (C.tick))
+                #"b")
+              (#tuple(v rest) (+ v (+ (* 100 rest.a) (+ (* 10000 rest.c) (* 1000000 rest.d)))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7010002 Int64))
+  (call main (: 3 Int64))
+  (output (: 7040305 Int64)))
