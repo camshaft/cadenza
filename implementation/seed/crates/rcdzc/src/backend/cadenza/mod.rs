@@ -2677,23 +2677,40 @@ fn emit_expr_viewed(
         // `lower`), emitted left-to-right with no expected. `Map.lookup` re-reads to its `Option` result and
         // `Map.len`/`Set.len` to `Int64`, exactly as the surface member does, so the round-trip re-lowers to
         // the same op node. (`Map.empty`/`Set.of`/the constant maps are handled as VALUES above.)
+        // The map's key/value TYPES thread down as `expected` to the key/val args, so a Qty key or value
+        // (`Map.insert m 1 (Qty.of x u)`) recovers its "genuine Qty escape" signal for the value-position wrap
+        // (#8101/#8167 — a collection VALUE position, the map-op analogue of a list element). Recovered from the
+        // insert node's own `Ty::Map(k, v)` (fully determined by the entry). A non-Qty key/val ignores it.
         Core::MapInsert { map, key, val, .. } => {
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                Ty::Map(k, v) => (Some((*k).clone()), Some((*v).clone())),
+                _ => (None, None),
+            };
             let head = member_access(b, "Map", "insert");
             let m = emit_expr(db, b, map, None, env, emitted)?;
-            let k = emit_expr(db, b, key, None, env, emitted)?;
-            let v = emit_expr(db, b, val, None, env, emitted)?;
+            let k = emit_expr(db, b, key, key_ty, env, emitted)?;
+            let v = emit_expr(db, b, val, val_ty, env, emitted)?;
             Ok(b.list(vec![head, m, k, v]))
         }
         Core::MapLookup { map, key, .. } => {
+            // The lookup KEY's `expected` is the map's key type (a Qty key recovers its wrap signal).
+            let key_ty = match crate::infer::type_of(db, map) {
+                Ty::Map(k, _) => Some((*k).clone()),
+                _ => None,
+            };
             let head = member_access(b, "Map", "lookup");
             let m = emit_expr(db, b, map, None, env, emitted)?;
-            let k = emit_expr(db, b, key, None, env, emitted)?;
+            let k = emit_expr(db, b, key, key_ty, env, emitted)?;
             Ok(b.list(vec![head, m, k]))
         }
         Core::MapRemove { map, key, .. } => {
+            let key_ty = match crate::infer::type_of(db, map) {
+                Ty::Map(k, _) => Some((*k).clone()),
+                _ => None,
+            };
             let head = member_access(b, "Map", "remove");
             let m = emit_expr(db, b, map, None, env, emitted)?;
-            let k = emit_expr(db, b, key, None, env, emitted)?;
+            let k = emit_expr(db, b, key, key_ty, env, emitted)?;
             Ok(b.list(vec![head, m, k]))
         }
         // RUNTIME `Ast` reflection ops — `Ast.encode`/`Ast.print`/`Ast.decode` over a RUNTIME `Ast`/`Bytes`
