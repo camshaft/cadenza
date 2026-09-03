@@ -244,6 +244,62 @@
   (call shl (: 1 Int64) (: 64 Int64))
   (trap "unreachable"))
 
+; The two-operand division traps, and the ONE overflowing division. `Int64.min / -1` is the sole integer
+; division whose quotient (2^63) has no Int64 value — an OVERFLOW that is an error on BOTH paths: the const
+; fold rejects it (CDZ0304), the RUNTIME traps "integer overflow" (not a wrap to Int64.min the way a bare
+; i64.div_s on some targets might). Its REMAINDER twin `Int64.min % -1` does NOT overflow — the mathematical
+; remainder is 0, a defined value on both paths (wasm i64.rem_s special-cases it), the sharp asymmetry a
+; "% overflows wherever / does" reimplementation would break. And division/remainder by ZERO traps at
+; runtime ("integer divide by zero"). Verified breaker probes ov_c/rm_c/ov_rt: fold == runtime == cadenza-hop.
+(case
+  "the one overflowing integer division is rejected at compile time"
+  (doc
+    "`(/ Int64.min -1)` is the only integer division that overflows — the quotient 2^63 has no Int64
+           value. The const fold REJECTS it (CDZ0304) rather than wrapping to Int64.min. Pins the overflow is
+           an error, not a silent wrap.")
+  (input (/ Int64.min -1))
+  (error CDZ0304 (message "overflow")))
+
+(case
+  "the one overflowing integer division traps at runtime"
+  (doc
+    "The runtime companion: `(/ a b)` at a=Int64.min, b=-1 traps 'integer overflow' — the emitted
+           i64.div_s overflow guard fires rather than wrapping. `6 / -2` = -3 is the in-range control. Pins
+           the runtime path agrees with the const reject: the sole overflowing division is an error on both.")
+  (input (do (def (d (: a Int64) (: b Int64)) (/ a b)) (export d)))
+  (call d (: 6 Int64) (: -2 Int64))
+  (output (: -3 Int64))
+  (call d (: -9223372036854775808 Int64) (: -1 Int64))
+  (trap "integer overflow"))
+
+(case
+  "the remainder that pairs with the overflowing division is a defined zero (does not overflow)"
+  (doc
+    "`(% Int64.min -1)` does NOT overflow the way `(/ Int64.min -1)` does — the mathematical remainder
+           is 0, a defined value. Const-folds to 0; the runtime i64.rem_s special-cases it to 0 too. Pins the
+           `/`-overflow does NOT imply a `%`-overflow, the asymmetry a shared-guard reimplementation would trip.")
+  (input (% Int64.min -1))
+  (output (: 0 Int64)))
+
+(case
+  "integer division and remainder by a runtime zero trap"
+  (doc
+    "A zero divisor is an error at runtime: `(/ a b)` and `(% a b)` at b=0 both trap 'integer divide by
+           zero' (the emitted zero-divisor guard). `Int64.min % -1` = 0 is the defined (non-trapping) control
+           alongside. Pins both operators guard the zero divisor.")
+  (input
+    (do
+      (def (d (: a Int64) (: b Int64)) (/ a b))
+      (def (m (: a Int64) (: b Int64)) (% a b))
+      (export d)
+      (export m)))
+  (call m (: -9223372036854775808 Int64) (: -1 Int64))
+  (output (: 0 Int64))
+  (call d (: 5 Int64) (: 0 Int64))
+  (trap "divide by zero")
+  (call m (: 5 Int64) (: 0 Int64))
+  (trap "divide by zero"))
+
 ; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
 ; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
 ; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
