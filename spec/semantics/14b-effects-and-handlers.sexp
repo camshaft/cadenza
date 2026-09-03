@@ -13372,3 +13372,39 @@
   (output (: 57 Int64))
   (call main (: 3 Int64))
   (output (: 357 Int64)))
+
+; csx1: the HYGIENIC margin around the eg1 name-collision decline — the identical nested shape with
+; the caller's outer destructure binder named `s`, the handler's own STATE binder spelling. This
+; collision axis is a DIFFERENT pair than the declined one (caller binder vs the inlined helper's
+; internal arm binder): the helper's binders are a/b, so the capture detector must NOT fire, and the
+; state binder must not capture the continuation's `s` reads. Folds correctly to the same idealistic
+; value as the collision todo above (2101 + 110n) — one spelling swap flips decline<->fold, pinning
+; the detector's precision from the hygienic side. Adjacent margins breaker-verified the same tick:
+; try-binder = state binder (15/-1), op-param = continuation binder (201100 + 1103n... exact), and
+; the helper's INTERNAL binder spelled `s` with distinct outer binders (2101 + 110n) — all fold
+; correct; the sole live gap is the let-init value-flow shape (filed, fence held). Guards the coming
+; match-binder freshening fix against over-declining or mis-freshening state-binder spellings.
+; (breaker probe cs2, verified tri-target exact + byte-idempotent.)
+(case
+  "eg1 shape with the outer destructure binder spelled like the handler state binder folds"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (stamp p) (match p (#tuple(a b) #tuple(a b (C.tick)))))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (match
+            (stamp #tuple(1 true))
+            (#tuple(s _b t1)
+              (match
+                (stamp #tuple(2 true))
+                (#tuple(c _d t2) (+ s (+ (* 1000 c) (+ (* 10 t1) (* 100 t2))))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2101 Int64))
+  (call main (: 3 Int64))
+  (output (: 2431 Int64)))
