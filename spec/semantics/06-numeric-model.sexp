@@ -14970,6 +14970,28 @@
   (call f (: 1.5 Float32))
   (output (: 1.5 Float64)))
 
+; f32tx1: the demote's TIE direction — roundTiesToEven at the binary32 integer-precision edge. Above
+; 2^24 the f32 spacing is 2, so odd integers are EXACT HALFWAY ties; IEEE 754 roundTiesToEven picks
+; the EVEN neighbor, so consecutive ties alternate direction: 16777217 (between 2^24 and 2^24+2)
+; rounds DOWN to the even 16777216 (residual -1.0) while 16777219 (between +2 and +4) rounds UP to
+; the even 16777220 (residual +1.0). A round-half-away or round-half-up implementation would pass the
+; 0.1 demote case above but fail one of these two. 33554433 (2^25+1, spacing 4, one QUARTER of the
+; way) is a NON-tie that rounds down — pinning that the tie rule engages only at exact halfway.
+; Witnessed by promote-back subtraction like the demote case. (breaker probe f32t, verified
+; tri-target exact + byte-idempotent, const twin == runtime.)
+(case
+  "Float32.of demote ties round to even at the binary32 integer edge"
+  (input
+    (do
+      (def (main (: n Int64)) (- (Float64.of (Float32.of (Float64.of-int n))) (Float64.of-int n)))
+      (export main)))
+  (call main (: 16777217 Int64))
+  (output (: -1.0 Float64))
+  (call main (: 16777219 Int64))
+  (output (: 1.0 Float64))
+  (call main (: 33554433 Int64))
+  (output (: -1.0 Float64)))
+
 (case
   "a nested checked op computes over runtime args after dest-threading"
   (doc
