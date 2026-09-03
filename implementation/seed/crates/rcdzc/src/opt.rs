@@ -1275,4 +1275,36 @@ mod tests {
             "the slot initializer holds a copy of shared_id's ORIGINAL core"
         );
     }
+
+    #[test]
+    fn b2_excludes_a_single_bare_export_with_a_nonscalar_entry_param() {
+        // The (A) BARE-ENTRY-PARAM EXPORT GATE (`b2_excluded_bare_entry_export`, consumed by
+        // `run_sharing_aware_emit`). B2's `Core::Let`-wrap of a shared node reshapes a body so
+        // `try_bare_entry_param_component` returns None on the wrapped body (its param-escape/shape analysis
+        // wants the RAW body) → main falls through to the "non-scalar entry parameter not emitted" decline at
+        // O2 where O0/O1 (no B2) compile — an O2 LEVEL-EQUIVALENCE VIOLATION. So the gate must SKIP B2 for a
+        // SINGLE bare export whose entry param has no scalar boundary form. Two directions:
+        // (1) EXCLUDE — a single bare export with a `(List Int64)` entry param (no scalar boundary valtype).
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: xs (List Int64))) xs) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        assert_eq!(layout.exports.len(), 1, "one bare export");
+        assert!(
+            b2_excluded_bare_entry_export(&mut db, &layout, d),
+            "a single bare export with a non-scalar (List) entry param must be EXCLUDED from B2 — else B2's \
+             Let-wrap breaks try_bare_entry_param_component → an O2-only decline (level-equivalence violation)"
+        );
+        // (2) DO NOT exclude — a scalar `Int64` entry param has a boundary valtype, so B2 applies normally.
+        let mut db2 = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) x) (export main))",
+        ));
+        let d2 = db2.def_by_name("main").expect("def main");
+        let layout2 = crate::layout::compute(&mut db2).expect("layout2");
+        assert!(
+            !b2_excluded_bare_entry_export(&mut db2, &layout2, d2),
+            "a scalar-param export has a boundary valtype (Ok(Some(_))) → NOT excluded; B2 stays enabled for it"
+        );
+    }
 }
