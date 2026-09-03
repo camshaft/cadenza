@@ -823,6 +823,92 @@ def vecUpdate : HeapState → List Value → HeapResult
         | _ => .trap s!"vec-update: handle {v} is not a list"
   | s, _ => .trap "vec-update: expected (i32, i32, i32)"
 
+/-! ### Map/Set → List (`map-to-list`/`set-to-list`, W5.2c) — the program-observable enumeration, and the
+ONLY one: the language has no fold/iter/keys, and the raw CHAMP cursor's hash order is NEVER program-observable
+(v-runtime, from champ.rs/prelude). Both BORROW their collection (and the shape `desc`, which we ignore — for
+a scalar key/elem the order IS the value order) and return a fresh owned `List`. `set-to-list` → `List a` of
+the elements in canonical VALUE order; `map-to-list` → `List (Tuple k v)` where each entry is a fresh
+2-element array `[key, value]` in canonical KEY order, each component dup'd from the map (co-owned alongside
+it, matching value_codec.rs `op_map_to_list`). Canonical order = v-lean-oracle's `cmpValue` (Int signed,
+Bool false<true; String/Bytes lexicographic arrive with W5.3). An unorderable (non-scalar) key never reaches
+here — the compiler rejects it upstream (CDZ0203) — so we order scalar keys and sort any non-scalar last. -/
+
+/-- The canonical sort key of a scalar handle: `(rank, payload)` lexicographic — Bool (rank 0, false<true) <
+Int (rank 1, signed value); a non-scalar sorts last (rank 2). Immediate-aware. -/
+def scalarOrdKey (s : HeapState) (h : UInt32) : Nat × Int :=
+  if isImmediate h then
+    if immIsBool h then (0, if immAsBool h then 1 else 0)
+    else if immIsInt h then (1, u64Signed (immAsIntBits h))
+    else (2, 0)
+  else match s.getObj? h with
+    | some o => match o.value with
+      | .bool b   => (0, if b then 1 else 0)
+      | .int bits => (1, u64Signed bits)
+      | _         => (2, 0)
+    | none => (2, 0)
+
+/-- `h1`'s key ≤ `h2`'s key in canonical order (lexicographic on `scalarOrdKey`). -/
+def keyLe (s : HeapState) (h1 h2 : UInt32) : Bool :=
+  let (r1, p1) := s.scalarOrdKey h1
+  let (r2, p2) := s.scalarOrdKey h2
+  r1 < r2 || (r1 == r2 && p1 ≤ p2)
+
+/-- Stable insertion of `x` into a key-sorted list (by `keyLe` on the extracted key handle). -/
+def sortInsBy {α : Type} (s : HeapState) (key : α → UInt32) (x : α) : List α → List α
+  | []      => [x]
+  | y :: ys => if s.keyLe (key x) (key y) then x :: y :: ys else y :: s.sortInsBy key x ys
+
+/-- Sort by canonical key order (stable insertion sort; the keys are unique so stability is moot). -/
+def sortBy {α : Type} (s : HeapState) (key : α → UInt32) (l : List α) : List α :=
+  l.foldr (fun x acc => s.sortInsBy key x acc) []
+
+/-- `map-to-list(m, desc) → List (Tuple k v)` [BORROWS m + desc]: the entries as fresh 2-element `[k, v]`
+arrays in canonical KEY order, wrapped as a list. Each `k`/`v` is dup'd (the tuple co-owns alongside the
+still-live map). Empty map → empty list. -/
+def mapToList : HeapState → List Value → HeapResult
+  | s, [.i32 m, .i32 _desc] =>
+    match s.getObj? m with
+    | none   => .trap s!"map-to-list: unknown handle {m}"
+    | some o =>
+      if !o.live then .trap s!"map-to-list: use-after-free (handle {m} freed)"
+      else match o.value with
+        | .map entries =>
+          let pairs := (List.range (entries.size / 2)).map
+            (fun i => (entries[2 * i]!, entries[2 * i + 1]!))
+          let sorted := s.sortBy Prod.fst pairs
+          let (tuples, s') := sorted.foldl
+            (fun (acc : Array UInt32 × HeapState) (kv : UInt32 × UInt32) =>
+              let (arr, st) := acc
+              let st1 := (st.dupH kv.1).dupH kv.2
+              let (tup, st2) := st1.alloc (.array #[kv.1, kv.2])
+              (arr.push tup, st2))
+            (#[], s)
+          let (listH, s'') := s'.alloc (.vec tuples)
+          .ret [.i32 listH] s''
+        | _ => .trap s!"map-to-list: handle {m} is not a map"
+  | s, _ => .trap "map-to-list: expected (i32, i32)"
+
+/-- `set-to-list(s, desc) → List a` [BORROWS s + desc]: the elements in canonical VALUE order, each dup'd into
+a fresh list (co-owned alongside the still-live set). Empty set → empty list. -/
+def setToList : HeapState → List Value → HeapResult
+  | s, [.i32 st0, .i32 _desc] =>
+    match s.getObj? st0 with
+    | none   => .trap s!"set-to-list: unknown handle {st0}"
+    | some o =>
+      if !o.live then .trap s!"set-to-list: use-after-free (handle {st0} freed)"
+      else match o.value with
+        | .set elems =>
+          let sorted := s.sortBy id elems.toList
+          let (arr, s') := sorted.foldl
+            (fun (acc : Array UInt32 × HeapState) (e : UInt32) =>
+              let (a, stt) := acc
+              (a.push e, stt.dupH e))
+            (#[], s)
+          let (listH, s'') := s'.alloc (.vec arr)
+          .ret [.i32 listH] s''
+        | _ => .trap s!"set-to-list: handle {st0} is not a set"
+  | s, _ => .trap "set-to-list: expected (i32, i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -885,6 +971,9 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("set-union",          toHostFn [.i32, .i32]             [.i32]  HeapState.setUnion)
   , ("set-intersection",   toHostFn [.i32, .i32]             [.i32]  HeapState.setIntersection)
   , ("set-difference",     toHostFn [.i32, .i32]             [.i32]  HeapState.setDifference)
+    -- map/set enumeration (W5.2c): the program-observable, canonical value-sorted `to-list`
+  , ("map-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.mapToList)
+  , ("set-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.setToList)
     -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -1237,5 +1326,87 @@ private def probeSetDifference : Bool :=
     | _ => false
   | _ => false
 example : probeSetDifference = true := by native_decide
+
+/-! #### W5.2c: `to-list` witnesses — canonical value-SORTED enumeration + leak balance. Insert keys/elements
+OUT of order and assert the list comes back SORTED (the whole point), then drop the list AND the collection
+and assert the census returns to 0 (the list co-owns dup'd copies; dropping it + the collection frees all). -/
+
+/-- map-to-list: insert keys 3,1,2 (immediate) with heap-float values 30,10,20; the list is sorted by KEY:
+tuple 0 = (1, 10.0), tuple 2 has key 3. Then drop the list + the map → census 0. -/
+private def probeMapToList : Bool :=
+  match mapEmpty ({} : HeapState) [] with
+  | .ret [.i32 e0] s0 =>
+    match mapInsertIF s0 e0 3 30 with
+    | some (m1, s1) =>
+      match mapInsertIF s1 m1 1 10 with
+      | some (m2, s2) =>
+        match mapInsertIF s2 m2 2 20 with
+        | some (m, s3) =>
+          match mapToList s3 [.i32 m, .i32 0] with
+          | .ret [.i32 lst] s4 =>
+            (match vecLen s4 [.i32 lst] with | .ret [.i32 3] _ => true | _ => false) &&
+            (match vecGet s4 [.i32 lst, .i32 0] with
+             | .ret [.i32 t0] _ =>
+               (match arrGet s4 [.i32 t0, .i32 0] with
+                | .ret [.i32 k0] _ => (match getInt s4 [.i32 k0] with | .ret [.i64 1] _ => true | _ => false)
+                | _ => false) &&
+               (match arrGet s4 [.i32 t0, .i32 1] with
+                | .ret [.i32 v0] _ => (match getFloat s4 [.i32 v0] with | .ret [.f64 10] _ => true | _ => false)
+                | _ => false)
+             | _ => false) &&
+            (match vecGet s4 [.i32 lst, .i32 2] with
+             | .ret [.i32 t2] _ =>
+               (match arrGet s4 [.i32 t2, .i32 0] with
+                | .ret [.i32 k2] _ => (match getInt s4 [.i32 k2] with | .ret [.i64 3] _ => true | _ => false)
+                | _ => false)
+             | _ => false) &&
+            (match drop s4 [.i32 lst] with
+             | .ret [] s5 => (match drop s5 [.i32 m] with | .ret [] s6 => s6.liveCount == 0 | _ => false)
+             | _ => false)
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapToList = true := by native_decide
+
+/-- set-to-list: insert 3,1,2 (immediate ints); the list comes back sorted [1,2,3] (elem 0 reads 1, elem 2
+reads 3). Then drop the list + the set → census 0 (only the set node was heap; immediates are census-free). -/
+private def probeSetToList : Bool :=
+  match setEmpty ({} : HeapState) [] with
+  | .ret [.i32 se0] s0 =>
+    match boxInt s0 [.i64 3] with
+    | .ret [.i32 e3] s1 =>
+      match setInsert s1 [.i32 se0, .i32 e3] with
+      | .ret [.i32 s1h] s2 =>
+        match boxInt s2 [.i64 1] with
+        | .ret [.i32 e1] s3 =>
+          match setInsert s3 [.i32 s1h, .i32 e1] with
+          | .ret [.i32 s2h] s4 =>
+            match boxInt s4 [.i64 2] with
+            | .ret [.i32 e2] s5 =>
+              match setInsert s5 [.i32 s2h, .i32 e2] with
+              | .ret [.i32 st] s6 =>
+                match setToList s6 [.i32 st, .i32 0] with
+                | .ret [.i32 lst] s7 =>
+                  (match vecLen s7 [.i32 lst] with | .ret [.i32 3] _ => true | _ => false) &&
+                  (match vecGet s7 [.i32 lst, .i32 0] with
+                   | .ret [.i32 g0] _ => (match getInt s7 [.i32 g0] with | .ret [.i64 1] _ => true | _ => false)
+                   | _ => false) &&
+                  (match vecGet s7 [.i32 lst, .i32 2] with
+                   | .ret [.i32 g2] _ => (match getInt s7 [.i32 g2] with | .ret [.i64 3] _ => true | _ => false)
+                   | _ => false) &&
+                  (match drop s7 [.i32 lst] with
+                   | .ret [] s8 => (match drop s8 [.i32 st] with | .ret [] s9 => s9.liveCount == 0 | _ => false)
+                   | _ => false)
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetToList = true := by native_decide
 
 end Oracle.Heap
