@@ -36,7 +36,11 @@ inductive WasmVal where
   | i64 (v : Int)
   | f32 (bits : UInt32)
   | f64 (bits : UInt64)
-  deriving Inhabited, BEq, Repr
+  -- A heap-valued result already decoded to an `Oracle.Value` (the talos driver reads the final `HeapState`
+  -- at the returned handle → structural value; see `Oracle.Wasm.HeapDecode`). Carries the compound directly so
+  -- `toOutcomeHeap` can finalize it (Repr is dropped — `Value` has no `Repr`, and it was unused here).
+  | compound (v : Value)
+  deriving Inhabited, BEq
 
 /-- The Cadenza RESULT TYPE of the entry, resolved from the emitted component's `@custom "cdz-result-type"`
 binary-AST section. It tells `toOutcome` how to INTERPRET the raw wasm result (a bare `i64` is an `Int`, a
@@ -59,7 +63,7 @@ inductive WasmOutcome where
   | trap (msg : String)
   | outOfFuel
   | err (msg : String)
-  deriving Inhabited, BEq, Repr
+  deriving Inhabited, BEq
 
 /-- Decode a single raw wasm result value under its Cadenza scalar type into an `Oracle.Value`.
 `none` = the raw valtype does not match the declared scalar type (a harness/model gap, surfaced as
@@ -117,6 +121,22 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
       | some val => .value val
       | none => .unsupported s!"wasm result valtype does not match the declared Cadenza scalar type (ty={scalarTyName ty}, wasm={wasmValKind v})"
     | _, _ => .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)"
+
+/-- Map a wasm run outcome for a HEAP result type onto `Oracle.Outcome`. A heap-valued `main` returns an i32
+handle; the talos driver reads the final `HeapState` at that handle and hands back a decoded `.compound v`
+(see `Oracle.Wasm.HeapDecode`), which this maps to `.value v`. (Canonicalization of set/map/record — to match
+Core's order-sensitive `valueEqSpec` — is applied when those compounds are recognized; the current
+`resultHeapDecodable?` heads either need none or are extended alongside it.) A non-`.compound` `.ok` → a
+sound skip (the result was not a decodable heap object); trap/err/outOfFuel map as in `toOutcome`. -/
+def toOutcomeHeap (o : WasmOutcome) : Outcome :=
+  match o with
+  | .trap msg  => .trap msg
+  | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
+  | .err msg   => .unsupported msg
+  | .ok vals _ =>
+    match vals.toList with
+    | [.compound v] => .value v
+    | _             => .unsupported "heap result was not a decodable heap value"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
 
@@ -197,6 +217,26 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
   | .ok m => resultScalarTyOfModule? m entry
   | .error _ => none
 
+/-- Whether the entry's result type is a HEAP type the driver can decode + `toOutcomeHeap` finalizes WITHOUT a
+result-type fixup. Recognizing it makes `runWasmWithLeak` INVOKE the driver (which structurally decodes the
+heap-object result via `HeapState.decodeValue?`) instead of skipping. FIRST slice: `BigInt` (a leaf; no
+canonicalize/fixup needed). Extends to List/Tuple/Map/Set/Rational/Bytes (+ canonicalize) next; String/Record
+need bytes→str / tuple→record fixups (later). -/
+def resultHeapDecodableOfModule? (m : Module) (entry : ByteArray) : Bool :=
+  m.nodes.any (fun node =>
+    match node with
+    | .list cs =>
+      cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+        && atomText? m cs[1]! == some entry
+        && (match headTypeName? m cs[2]! with | some ty => ty == "BigInt".toUTF8 | none => false)
+    | _ => false)
+
+/-- Whether the entry's result type is a driver-decodable heap type (from the raw section bytes). -/
+def resultHeapDecodable? (bytes : ByteArray) (entry : ByteArray) : Bool :=
+  match Ast.decode bytes with
+  | .ok m => resultHeapDecodableOfModule? m entry
+  | .error _ => false
+
 /-- The result-type HEAD NAME of the entry when the node is PRESENT but its head is not a modeled scalar
 type (`scalarTyOfName? = none`) — i.e. the exact head we skipped on, for diagnostics. `none` if the entry's
 result-type node is absent entirely (a different skip cause) or its head IS modeled. Fuels v-lean-oracle's
@@ -257,7 +297,12 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
     (trial : Trial) : Outcome × Nat :=
   match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
   | some ty => let o := drive coreWat trial; (toOutcome o ty, wasmLeakOf o)
-  | none => (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
+  | none =>
+    -- Not a scalar result type: if it is a driver-decodable HEAP result type, run + decode the returned
+    -- handle (the ~heap-valued-result lever); else a sound skip.
+    if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8 then
+      let o := drive coreWat trial; (toOutcomeHeap o, wasmLeakOf o)
+    else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
 
 /-- The pure `run_wasm` boundary: resolve the entry's scalar result type, drive the interpreter on the
 core-module WAT, and map the result to an `Oracle.Outcome` — the leak-agnostic projection of
@@ -356,6 +401,15 @@ example : (runWasmWith (fun _ _ => .trap "unreachable") "(module)" (rtBytes "Int
     == .trap "unreachable") = true := by native_decide
 -- an unmodeled result-type spelling short-circuits to `.unsupported` (driver never consulted)
 example : (runWasmWith (fun _ _ => .ok #[.i64 5]) "(module)" (rtBytes "Widget") { entry := "main" }
+    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Widget)") = true := by native_decide
+
+-- A HEAP result type ("BigInt") routes to the heap path: `resultHeapDecodable?` recognizes it → the driver is
+-- INVOKED (not skipped), and `toOutcomeHeap` finalizes the driver's decoded `.compound` to `.value`. (Here a
+-- stub driver returns the `.compound`; the driver's actual HeapState decode is witnessed in `Oracle.Wasm.Talos`.)
+example : (runWasmWith (fun _ _ => .ok #[.compound (.int 1000000000)]) "(module)" (rtBytes "BigInt") { entry := "main" }
+    == .value (.int 1000000000)) = true := by native_decide
+-- A still-unmodeled heap head (Nominal/Qty/…) is NOT heap-decodable → the driver is NOT invoked → sound skip.
+example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "Widget") { entry := "main" }
     == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Widget)") = true := by native_decide
 
 end Oracle.Wasm
