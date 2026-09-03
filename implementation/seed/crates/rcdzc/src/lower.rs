@@ -4554,7 +4554,7 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         // args — `(T.Mk 10)` → `(fn (__eta0) (T.Mk 10 __eta0))`, the shape a hand-written lambda already
         // lowers+runs correctly. The supplied args become free vars captured into the closure env; the
         // lifted func reads them back, so no bare scalar lands in a handle slot (the erstwhile miscompile).
-        if let Some(c) = partial_ctor_eta_closure(db, head, args) {
+        if let Some(c) = partial_head_eta_closure(db, head, args) {
             trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value → eta-closure over the remaining payloads");
             return c;
         }
