@@ -13470,3 +13470,34 @@
   (output (: 2101 Int64))
   (call main (: 3 Int64))
   (output (: 2431 Int64)))
+
+; mhx1: the PRECISION face of the CDZ0408 multi-shot boundary reject — the host call is LET-BOUND in
+; a strict prefix BEFORE the multi-shot perform, so the flip's delimited continuation
+; `(+ h (* [] 10))` is PURE over the already-bound response: re-running it per resume re-issues NO
+; boundary op (the host fires exactly once; §4.4's 'must not span a host call' is satisfied). Today
+; it still rejects CDZ0408 (v-effects ruling 2026-09-03: PRECISION GAP — the detector
+; one_handle_multishot_reaches_foreign scans the WHOLE handle body for a foreign perform, not
+; whether the perform sits inside the reified continuation). Idealistic value: log answers 100, the
+; two resumes see (100 + 1*10) + (100 + 2*10) = 230 at any n. Flips to PASS when the detector tests
+; the actual continuation; the four reject pins above (host IN the continuation) are unaffected and
+; must stay rejects. (breaker probe mh3.)
+(case
+  "a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation"
+  (input
+    (do
+      (effect A (op flip (-> Int64)))
+      (effect H (op log (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (host
+          (H)
+          (handle
+            A
+            0
+            ((flip () s (+ (resume 1 s) (resume 2 s))))
+            (let ((h (H.log (+ n 1)))) (+ h (* (A.flip) 10))))))
+      (export main)))
+  (call main (: 7 Int64))
+  (host-responses (respond h.log (: 100 Int64)))
+  (host-calls (call h.log (: 8 Int64)))
+  (output (: 230 Int64)))
