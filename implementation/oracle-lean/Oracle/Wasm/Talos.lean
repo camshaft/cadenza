@@ -129,6 +129,24 @@ declines to a sound skip (`.err`), NOT a spurious run — the `covers` gate. (Re
 if this one ever gets modeled.) -/
 private def watHeapUnmodeled : String :=
   "(module (import \"heap\" \"hash-blake3\" (func (param i32) (result i32))) (func (export \"main\") (result i64) i64.const 0))"
-example : (match talosDriver watHeapUnmodeled { entry := "main" } with | .err _ => true | _ => false) = true := by native_decide
+/-! ### End-to-end HEAP-ALLOC + LEAK-CENSUS witnesses — a module that actually ALLOCATES a heap object
+(`map-empty` boxes a real map node) run through the full talos pipeline, proving the W6 leak dimension
+end-to-end (not just at the pure `HeapState` layer). `watHeapBoxGet` above never allocates (box-int 42 is a
+FIXNUM IMMEDIATE), so these are the first witnesses exercising alloc + the `leakCount` surfaced on `.ok`. Both
+build the map `{7 to 99}` with immediate int key+value (census-excluded), read 99 back, and return it; they
+differ only in whether the map node is dropped. -/
+
+/-- BALANCED: build `{7 to 99}`, look up key 7, read 99, then DROP the map → `main() = 99` with `leakCount 0`
+(the map node freed; immediates never allocated). Proves alloc+drop nets to a clean census through talos. -/
+private def watHeapMap : String :=
+  "(module (import \"heap\" \"map-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"map-insert\" (func (param i32) (param i32) (param i32) (result i32))) (import \"heap\" \"map-lookup\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"get-int\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i32) (local i32) (local i32) (local i64) call 0 local.set 0 i64.const 7 call 1 local.set 1 i64.const 99 call 1 local.set 2 local.get 0 local.get 1 local.get 2 call 2 local.set 0 i64.const 7 call 1 local.set 1 local.get 0 local.get 1 call 3 local.set 3 local.get 3 call 4 local.set 4 local.get 0 call 5 local.get 4))"
+example : (talosDriver watHeapMap { entry := "main" } == .ok #[.i64 99]) = true := by native_decide
+
+/-- LEAKED: identical but the map node is NEVER dropped → `main() = 99` with `leakCount 1` (the map node
+leaks). Proves the end-to-end leak census actually FIRES through talos — the dynamic Perceus witness that a
+missing drop is caught (a real emit that leaks would surface here as `leakCount > 0` on a value-agreeing run). -/
+private def watHeapMapLeak : String :=
+  "(module (import \"heap\" \"map-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"map-insert\" (func (param i32) (param i32) (param i32) (result i32))) (import \"heap\" \"map-lookup\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"get-int\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i32) (local i32) (local i32) (local i64) call 0 local.set 0 i64.const 7 call 1 local.set 1 i64.const 99 call 1 local.set 2 local.get 0 local.get 1 local.get 2 call 2 local.set 0 i64.const 7 call 1 local.set 1 local.get 0 local.get 1 call 3 local.set 3 local.get 3 call 4 local.set 4 local.get 4))"
+example : (talosDriver watHeapMapLeak { entry := "main" } == .ok #[.i64 99] 1) = true := by native_decide
 
 end Oracle.Wasm
