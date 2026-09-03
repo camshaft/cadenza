@@ -35910,10 +35910,13 @@
   (output (: 99910701510 Int64))
   (call main (: 0 Int64))
   (output (: 99910201010 Int64))
-  ; TODO(v-memory-safety): the nested list-in-list match projecting into inner lists currently leaks
-  ; the discriminated sub-lists; value-correct (no UAF) but not reclaimed to 0 — tracked known-leak,
-  ; tighten to 0 once the nested-list-pattern interior reclaim lands. (breaker lpn1 #7923, added unpinned.)
-  (live-objects known-leak))
+  ; PINNED 0: the nested list-in-list match now reclaims the discriminated sub-lists. The heads are
+  ; borrow-then-dead inner-match scrutinees (scalar-extracted, no handle escapes), so their child-retain
+  ; escape-dup was SPURIOUS — the #5833 nested-compound-projection false-positive, previously suppressed
+  ; only for MatchSum. Extending the payload-safe-match classifier to MatchList (+ the mark_binder_dups
+  ; MatchList-scrutinee borrow-classification) suppresses the over-dup, so the owner's rc-aware deep-drop
+  ; reclaims the heads (rc 1→0). (breaker lpn1 #7923; v-core-opt + v-memory-safety co-design.)
+  (live-objects 0))
 
 ; gtx1: a GENERIC recursive multi-variant sum — (Tree a) instantiated at String — built literally
 ; and folded by a recursive traversal. Round-trips on the cadenza hop since #7940 (the instantiated
