@@ -4429,6 +4429,39 @@
   (input (match (Char.from-int 57344) ((Some _) 1) ((None _) 0)))
   (output (: 1 Int64)))
 
+; The boundary cases above feed LITERAL integers, so from-int const-FOLDS the scalar-validity check before
+; the runtime emitter is reached. This case makes the very same sweep RUNTIME: the code point arrives as a
+; parameter `n` (which cannot fold), so the seed must EMIT the surrogate/range check, and it must agree with
+; the fold at every off-by-one edge — the runtime `Char.from-int` sweep the from-int family doc promises.
+; Some → Char.to-int round-trips the scalar; None → -1 (no valid scalar is negative, so the sentinel never
+; aliases a real code point). Verified breaker probe ch: fold == runtime == cadenza-hop across all edges.
+(case
+  "a runtime (parameter) Char.from-int applies the scalar-validity sweep, agreeing with the fold"
+  (doc
+    "The runtime companion of the whole from-int boundary family: `n` is a parameter so the check is
+           emitted, not folded. U+10FFFF (1114111, max) → Some → 1114111; U+110000 (1114112, one past) → None
+           → -1; U+D800 (55296, first surrogate) and U+DFFF (57343, last surrogate) → None → -1; U+E000
+           (57344, first scalar after the block) → Some → 57344; U+0000 (NUL) → Some → 0; -1 (negative) →
+           None → -1. Pins the emitted surrogate/range check matches the const fold at every edge.")
+  (input
+    (do
+      (def (f (: n Int64)) (match (Char.from-int n) ((Some c) (Char.to-int c)) ((None) -1)))
+      (export f)))
+  (call f (: 1114111 Int64))
+  (output (: 1114111 Int64))
+  (call f (: 1114112 Int64))
+  (output (: -1 Int64))
+  (call f (: 55296 Int64))
+  (output (: -1 Int64))
+  (call f (: 57343 Int64))
+  (output (: -1 Int64))
+  (call f (: 57344 Int64))
+  (output (: 57344 Int64))
+  (call f (: 0 Int64))
+  (output (: 0 Int64))
+  (call f (: -1 Int64))
+  (output (: -1 Int64)))
+
 (case
   "the maximum valid scalar U+10FFFF round-trips through to-int"
   (doc
