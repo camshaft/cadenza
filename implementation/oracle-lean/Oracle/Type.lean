@@ -106,6 +106,20 @@ partial def hasGenVar : Ty → Bool
   | .sum vs => vs.any (fun v => match v.2 with | some t => hasGenVar t | none => false)
   | _ => false
 
+/-- Does the type contain a `.setTy` or `.mapTy` anywhere (recursively through compounds)? A set/map value
+carries NO blessed total order (19-sets:4340-4351, the all-leaf sibling of the float case), so `Set.to-list`
+over a set whose ELEMENT contains a set/map is a coded CDZ0203 — ordered enumeration is undefined. (Set
+CONSTRUCTION / contains / insert / union still work; only the ORDER-based to-list declines.) -/
+partial def containsSetOrMap : Ty → Bool
+  | .setTy _ => true
+  | .mapTy _ _ => true
+  | .listTy e => containsSetOrMap e
+  | .tuple es => es.any containsSetOrMap
+  | .fn d c => containsSetOrMap d || containsSetOrMap c
+  | .record fs => fs.any (fun f => containsSetOrMap f.2)
+  | .sum vs => vs.any (fun v => match v.2 with | some t => containsSetOrMap t | none => false)
+  | _ => false
+
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
 abbrev Subst := List (Nat × Ty)
 
@@ -850,6 +864,13 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             | some baseId, some idxId =>
               match (m.nodes[idxId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
               | some (Ast.Leaf.name fld) =>
+                -- T1.35 — `Map.empty` (`(. Map empty)`): the polymorphic empty map → `.mapTy (fresh)(fresh)`.
+                -- Used in context (`(Map.insert Map.empty k v)`) its k/v unify to the surrounding types; a
+                -- BARE escaping empty map stays undetermined and is declined by inferBody's undetermined-
+                -- collection escape guard (sound — rcdzc cannot determine a bare empty map's type either).
+                if (Eval.nameOf? m baseId == some "Map".toUTF8) && fld == "empty".toUTF8 then
+                  .ok (.mapTy (.var st.next) (.var (st.next + 1)), { st with next := st.next + 2 })
+                else
                 -- T1.27 — QUALIFIED nullary variant `(. Q M)` = `Q.M` (a `(type Q … M …)` variant used
                 -- unapplied): if `fld` is a NULLARY variant AND its declaring type name equals the base name
                 -- `Q`, construct that type's sum. (A payload-bearing `Q.M` unapplied is a partial ctor →
@@ -1309,7 +1330,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                  (match children[1]? with
                   | some sId => (match inferE m env st0 sId with
                                  | .ok (τs, st1) => (match unifyInfer τs (.setTy β) st1 with
-                                                     | .ok st2 => .ok (.listTy (applySubst st2.subst β), st2)
+                                                     | .ok st2 =>
+                                                       let elemT := applySubst st2.subst β
+                                                       -- Set.to-list ORDERS the elements; a set/map-leaf element
+                                                       -- has no blessed total order → coded CDZ0203 (19-sets:4340).
+                                                       if containsSetOrMap elemT then .error (.illTyped "CDZ0203")
+                                                       else .ok (.listTy elemT, st2)
                                                      | .error e => .error e)
                                  | .error e => .error e)
                   | none => .error (.unsupported "type oracle: malformed Set.to-list"))
@@ -1386,7 +1412,11 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                       | .ok st2 =>
                         if op == "len".toUTF8 && children.size == 2 then .ok (.int 64 true, st2)
                         else if op == "to-list".toUTF8 && children.size == 2 then
-                          .ok (.listTy (.tuple [applySubst st2.subst K, applySubst st2.subst V]), st2)
+                          -- orders by KEY (values ride along, 19-sets:4354); a set/map-leaf KEY has no
+                          -- blessed total order → coded CDZ0203. The value type is unconstrained.
+                          let kT := applySubst st2.subst K
+                          if containsSetOrMap kT then .error (.illTyped "CDZ0203")
+                          else .ok (.listTy (.tuple [kT, applySubst st2.subst V]), st2)
                         else if op == "lookup".toUTF8 && children.size == 3 then
                           (match children[2]? with
                            | some kId => (match inferE m env st2 kId with
@@ -1495,6 +1525,21 @@ partial def hasUndeterminedSum : Ty → Bool
   | .record fs => fs.any (fun f => hasUndeterminedSum f.2)
   | _ => false
 
+/-- Does the type contain a COLLECTION (`.listTy`/`.setTy`/`.mapTy`) whose element/key/value carries an
+UNDETERMINED (free general-var) type — e.g. a bare escaping `Map.empty` (`.mapTy var var`)? Such a value at
+the program escape has no resolvable type (rcdzc cannot determine it either), so the oracle DECLINES (a
+sound skip, mirroring `hasUndeterminedSum`). Runs AFTER `defaultNumVars`, so `numVar`s are already `Int64`
+— only genuine general vars remain. Deliberately NO `.fn` arm: a polymorphic FN result is not flagged
+(matches `hasUndeterminedSum`'s intent; a fn's collection cod is resolved at its call site, not at escape). -/
+partial def hasUndeterminedCollection : Ty → Bool
+  | .listTy e => hasGenVar e || hasUndeterminedCollection e
+  | .setTy e => hasGenVar e || hasUndeterminedCollection e
+  | .mapTy k v => hasGenVar k || hasGenVar v || hasUndeterminedCollection k || hasUndeterminedCollection v
+  | .tuple es => es.any hasUndeterminedCollection
+  | .record fs => fs.any (fun f => hasUndeterminedCollection f.2)
+  | .sum vs => vs.any (fun v => match v.2 with | some t => hasUndeterminedCollection t | none => false)
+  | _ => false
+
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
 the verdict algebra. A resolved type (with the final substitution applied, unresolved numeric literals
 defaulted to `Int64`) is `WellTyped`; a modeled fault is `IllTyped`; a coverage gap is `Unsupported`. -/
@@ -1504,6 +1549,8 @@ def inferBody (m : Ast.Module) (env : List (ByteArray × Scheme)) (st0 : InferSt
     let final := defaultNumVars (applySubst st.subst τ)
     if hasUndeterminedSum final then
       .unsupported "type oracle: undetermined sum result at escape (ts:34) — declined"
+    else if hasUndeterminedCollection final then
+      .unsupported "type oracle: undetermined collection result at escape (e.g. bare Map.empty) — declined"
     else .wellTyped final
   | .error (.illTyped c) => .illTyped c
   | .error (.unsupported r) => .unsupported r
@@ -2226,6 +2273,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 1, .list #[13, 12, 10], .atom 10, .atom 2, .list #[15, 16], .atom 0,
                            .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.int 64 true))
+-- T1.35 (Map.empty in context): `(do (def (main) (Map.insert Map.empty 1 2)) (export main))` → WellTyped
+-- (Map Int64 Int64). `Map.empty` = `(. Map empty)` → `.mapTy (var)(var)`; `insert` unifies its k/v with the
+-- int args → determined `.mapTy Int64 Int64` (a BARE `Map.empty` escape would instead decline, undetermined).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Map".toUTF8, .name "insert".toUTF8, .name "empty".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 3, .atom 4, .atom 6,
+                           .list #[4, 5, 6], .atom 7, .atom 8, .list #[3, 7, 8, 9], .atom 2, .list #[11],
+                           .atom 1, .list #[13, 12, 10], .atom 9, .atom 2, .list #[15, 16], .atom 0,
+                           .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.mapTy (.int 64 true) (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
