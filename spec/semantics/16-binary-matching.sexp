@@ -4328,8 +4328,9 @@
 ; alongside a `(u8 y)` sibling: n + 1000*y = k + 9000. k=5 -> 9005; k=200 -> 9200. (breaker probe
 ; bf8v, verified tri-target exact + byte-idempotent. A sub-byte / packed field keeps a non-full-width
 ; mask and still declines — the harder slice, unchanged. NOTE: two byte-aligned bit-fields in ONE
-; pattern, `(bits n 8)(bits m 16)`, is a separate frontier — each alone re-emits, the combination
-; grades cadenza-todo; filed to v-cadenza-backend.)
+; pattern, `(bits n 8)(bits m 16)`, was a separate frontier — the pair packs into ONE 24-bit run,
+; whose non-standard run width the re-emit wrongly spelled `u24`; #8158 re-emits such runs as a WIDE
+; `(bits v k)` bit-field. That frontier is now CLOSED and fenced below as bfx4.)
 (case
   "a byte-aligned bit-field bin segment re-emits as its plain-width read"
   (input
@@ -4343,3 +4344,28 @@
   (output (: 9005 Int64))
   (call main (: 200 Int64))
   (output (: 9200 Int64)))
+
+; bfx4: a PAIR of byte-aligned bit-fields in ONE bin pattern, `(bits n 8)(bits m 16)`, re-emits. The
+; matcher packs the pair into a SINGLE 24-bit run (one BinIntRead{width:3}, body shift/masks peeling
+; each field), so the re-emit had to spell the run width — and 24 is not a standard byte-run width
+; (u8/u16/u32/u64), so naming it `u24` tripped CDZ0201. #8158 (merge 44d5906a6a) re-emits a
+; non-standard int-run width (24/40/48/56) as a WIDE `(bits v k)` bit-field segment, whose full-width
+; mask peel_full_mask (from #8153) unwinds back to the run. Here byte0 = n (8b), bytes1..2 = m (16b,
+; big-endian); the fixture feeds (k, 0, 7) so m = 7 and value = n + 1000*m = k + 7000. k=5 -> 7005,
+; k=200 -> 7200. (breaker probe bfpair; verified tri-target exact + hop value-parity; the re-emit
+; carries a benign phase-ordering byte-drift h1!=h2 that stabilizes at h2==h3 with identical values.
+; Was cadenza-todo pre-#8158; now full wasm-PASS + cadenza-PASS. A sub-byte field narrower than its
+; run keeps a partial, non-peelable mask and is still the harder frontier — unchanged.)
+(case
+  "a pair of byte-aligned bit-fields in one bin pattern re-emits as a wide bit-field run"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match b ((bin (bits n 8) (bits m 16)) (+ (Int64.of n) (* 1000 (Int64.of m)))) (_ -1)))
+      (def (main (: k Int64)) (parse (Bytes.of #list((UInt8.of k) (UInt8.of 0) (UInt8.of 7)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 7005 Int64))
+  (call main (: 200 Int64))
+  (output (: 7200 Int64)))
