@@ -4319,3 +4319,27 @@
   (output (: 605 Int64))
   (call main (: 0 Int64))
   (output (: 100 Int64)))
+
+; bfx3: a BYTE-ALIGNED single bit-field bin segment re-emits (was CDZ0900). #8153: a `(bits n k)`
+; binder decodes as `BitAnd(BinIntRead[>>shift], (1<<k)-1)`; for a byte-aligned single field (k ==
+; width*8, no shift) the mask is a NO-OP, so `(bits n 8)` ≡ `(u8 n)`. The re-emit recognition matched
+; only a bare BinIntRead, so the mask-wrapped read DECLINED the whole cadenza re-emit; #8153's
+; peel_full_mask returns the inner read for a full-width mask, re-emitting `(u8 n)`. Here `(bits n 8)`
+; alongside a `(u8 y)` sibling: n + 1000*y = k + 9000. k=5 -> 9005; k=200 -> 9200. (breaker probe
+; bf8v, verified tri-target exact + byte-idempotent. A sub-byte / packed field keeps a non-full-width
+; mask and still declines — the harder slice, unchanged. NOTE: two byte-aligned bit-fields in ONE
+; pattern, `(bits n 8)(bits m 16)`, is a separate frontier — each alone re-emits, the combination
+; grades cadenza-todo; filed to v-cadenza-backend.)
+(case
+  "a byte-aligned bit-field bin segment re-emits as its plain-width read"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match b ((bin (bits n 8) (u8 y)) (+ (Int64.of n) (* 1000 (Int64.of y)))) (_ -1)))
+      (def (main (: k Int64)) (parse (Bytes.of #list((UInt8.of k) 9))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 9005 Int64))
+  (call main (: 200 Int64))
+  (output (: 9200 Int64)))
