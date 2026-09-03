@@ -13251,6 +13251,29 @@
   (output (: 9 Int64)))
 
 (case
+  "ilc1 an internal (non-exported) recursive-local-param-capture helper, called once, still compiles + runs"
+  (doc
+    "Inline-path regression fence for the recursive-local-capture decline. Every companion above
+           `(export f)`s the def, which forces STANDALONE emission and hides the inline path; this pins the
+           INLINE-eligible face. `helper` is NOT exported and has a single caller (`main`), so it is an
+           inline candidate. Its body holds a recursive local `rec` that captures the enclosing param `n` —
+           safe standalone (lambda-lifted, cf. the case above), but if the def were INLINED `n` would become
+           an enclosing let-binding and `rec` would capture enclosing SCOPE, tripping the coded CDZ0900
+           do-local-binding decline (the `llb1` gap face below). The invariant this fence locks in: INLINING
+           MUST PRESERVE COMPILABILITY — it may never turn a runnable program into a decline. `rec` counts
+           `x` down from 5 to -1 then returns the captured `n`, so `(main 7)` = 7. (Guards the #8018->#8058
+           emit-once revert cycle in the corpus, not just a shred @test.)")
+  (input
+    (do
+      (def
+        (helper (: n Int64))
+        (do (def (rec (: x Int64)) (if (< x 0) n (rec (- x 1)))) (rec 5)))
+      (def (main (: seed Int64)) (helper seed))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case
   "llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)"
   (doc
     "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0900 'a recursive local
