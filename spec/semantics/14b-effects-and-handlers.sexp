@@ -13408,3 +13408,27 @@
   (output (: 2101 Int64))
   (call main (: 3 Int64))
   (output (: 2431 Int64)))
+
+; mtx1: the DEPTH face of the mutually-recursive effectful specialization — the existing mutual-group
+; case pins the specialization KNOT at toy depth; this pins that the specialized pair stays
+; LOOP-CONVERTED (O(1) stack) with a perform on every other step: depth 200,000 through the ev/od
+; cycle under a state handler computes exactly (od adds 1, ev adds the tick draw k = 0..99,999;
+; 100000 + 4999950000 = 5000050000). A specialization that breaks the mutual-loop conversion (each
+; partner's recursive call must resolve to the other's specialized copy AS A LOOP EDGE, not a call)
+; traps on stack exhaustion around 1e4-1e5 frames instead. Also a regression smoke for the
+; tail-call/mutual-loop analysis cluster (extracted to select/tailcall.rs in #8063). (breaker probe
+; mt3, verified tri-target exact + byte-idempotent; pure mutual pairs and a TRIPLE a->b->c cycle
+; verified to 1e7 same tick.)
+(case
+  "a specialized mutual effectful pair stays loop-converted at depth 200000"
+  (input
+    (do
+      (effect Ctr (op tick (-> Int64)))
+      (def (ev (: n Int64) (: acc Int64)) (if (= n 0) acc (od (- n 1) (+ acc (Ctr.tick)))))
+      (def (od (: n Int64) (: acc Int64)) (if (= n 0) acc (ev (- n 1) (+ acc 1))))
+      (def (main (: n Int64)) (handle Ctr 0 ((tick () s (resume s (+ s 1)))) (ev n 0)))
+      (export main)))
+  (call main (: 6 Int64))
+  (output (: 6 Int64))
+  (call main (: 200000 Int64))
+  (output (: 5000050000 Int64)))
