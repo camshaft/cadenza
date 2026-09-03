@@ -5595,15 +5595,19 @@
 ; E0308 (a differential: wasm cleanly declines, rust FAILED to build). Fixed in the rust gate harness
 ; (`rust_call_arg` now wraps a string-literal arg `.to_string()` so it crosses as an owned String). A String
 ; param on a HELPER already built on both backends; this pins the exported-entry surface (breaker-found,
-; corpus-bugfix). On wasm this DECLINES (a String across the component entry boundary is unrealized) — a
-; sound todo; on rust it now runs → 3, matching the recorded value.
+; corpus-bugfix). UPDATE: a READ-ONLY String entry param now CROSSES on wasm too — a String param that is
+; only read (byte-len / `=` / scalar-len) is realized at the component entry boundary (these cases now grade
+; pass on both backends), so the earlier "wasm declines the String entry arg" note is superseded for them.
+; What still declines on wasm (sound todo): a recursive `String.at` walk over an entry-arg String (the walk
+; case below), and a consumer that must OWN the entry String (e.g. `String.concat s …` needs an owned copy of
+; the borrowed param) — the read-only boundary lift hands out a borrow, not an owned String.
 (case
   "an exported entry with a String parameter is called with a string argument"
   (doc
     "`(def (main (: s String)) (String.byte-len s))` exported and called with `\"abc\"` → the UTF-8
            byte length 3. The rust DRIVER now marshals the string arg as an owned `String` (`\"abc\".to_string()`),
-           matching the emitted `fn main(s: String)` signature — no more E0308. (wasm declines the String
-           entry arg — a sound todo; rust computes it.)")
+           matching the emitted `fn main(s: String)` signature — no more E0308. (wasm now CROSSES this
+           read-only String entry arg too — byte-len reads the borrowed param; rust computes it as well.)")
   (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call main (: "abc" String))
   (output (: 3 Int64)))
@@ -5614,7 +5618,7 @@
     "The multibyte + empty edges of the String entry arg (the ascii case above measures 3): `aéz` is
            4 BYTES (é is 2 in UTF-8) though 3 characters — byte-len reads the encoding, not the char count —
            and the empty string is 0. Three calls through ONE export exercise the driver's owned-String
-           marshaling at ascii/multibyte/empty. (wasm declines the String entry arg — the same sound todo as
+           marshaling at ascii/multibyte/empty. (wasm now crosses this read-only String entry arg too, like
            the ascii case; rust computes.)")
   (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call main (: "abc" String))
@@ -5630,8 +5634,8 @@
     "TWO String entry parameters compared with `=`: `café` = `café` → 1 (equal content, including the
            2-byte é), `café` ≠ `cafe` → 0 (the accented vs bare e differ). Pins that two independently-
            marshaled owned Strings compare by CONTENT at the boundary (not by handle/pointer) and that the
-           compare reads the full byte sequence. (wasm declines the String entry args — sound todo; rust
-           computes.)")
+           compare reads the full byte sequence. (wasm now crosses these read-only String entry args too —
+           both borrowed params are read by `=`; rust computes.)")
   (input (do (def (main (: a String) (: b String)) (if (= a b) 1 0)) (export main)))
   (call main (: "café" String) (: "café" String))
   (output (: 1 Int64))
@@ -5644,8 +5648,9 @@
     "The LEXER idiom over an entry arg: a recursive `String.at` walk over `String.scalar-len`
            counts 'a' scalars — \"banana\" → 3, \"bén-ané\" → 1 (the accented scalars must not desync the
            index). The guest-rope walk twin passes on wasm; here the CONTENT arrives at the boundary, so
-           the walk runs over marshaled entry bytes. (wasm declines the String entry arg — the family's
-           sound todo; rust and rust-async compute.)")
+           the walk runs over marshaled entry bytes. (Unlike the read-only byte-len/=/scalar-len entry args
+           above — which now cross on wasm — this recursive `String.at` walk over an entry-arg String STILL
+           declines on wasm, a sound todo; rust and rust-async compute.)")
   (input
     (do
       (def
@@ -5671,7 +5676,8 @@
     "The two length notions side by side on one entry arg: `byte-len - scalar-len` = the total
            extra encoding bytes — \"café\" → 1 (one 2-byte scalar), \"日本語\" → 6 (three 3-byte
            scalars). A marshal that re-measured in UTF-16 units, or a scalar-len that counted bytes,
-           breaks one input. (wasm declines the entry arg — sound todo; rust computes.)")
+           breaks one input. (wasm now crosses this read-only String entry arg too — both lengths read the
+           borrowed param; rust computes.)")
   (input (do (def (main (: s String)) (- (String.byte-len s) (String.scalar-len s))) (export main)))
   (call main (: "café" String))
   (output (: 1 Int64))
