@@ -1,8 +1,15 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 fail	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
 fail	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
+fail	a constant-size utf8 segment decodes inside a nested bin arm
+fail	a constant-size utf8 segment over a runtime scrutinee decodes and both binders are used
+fail	a dependent-size utf8 segment decodes inside a nested bin arm and invalid bytes fall through
+fail	a dependent-utf8 segment decodes and the string is used, invalid bytes fall through
 fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
+fail	a post-payload literal mismatch at the dynamic offset falls through
 fail	a select between a base map and its derived generation frees the loser but not shared nodes
+fail	a shadowed utf8 string binder reads the inner decode
+fail	a u16 literal segment matches at the dynamic offset after a dependent payload
 fail	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
 fail	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 fail	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
