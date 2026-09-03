@@ -4474,3 +4474,32 @@
   (output (: 3107 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64)))
+
+; bfx6: a RUNTIME sub-byte bit-field field that STRADDLES a byte boundary re-emits — the step past bfx5
+; (which stays within one byte). `(match b ((bin (bits a 5) (bits mid 6) (bits c 5)) …))` over TWO runtime
+; bytes: `a` = top 5 bits of byte0, `mid` = the low 3 bits of byte0 PLUS the top 3 bits of byte1 (it spans
+; the byte boundary), `c` = the low 5 bits of byte1 — a read that must COMBINE bits from two source bytes,
+; not just mask within one (bfx5) or peel a full-width run (bfx3/bfx4). The cadenza re-emit reconstructs the
+; cross-byte combine and the hop round-trips exact + byte-idempotent. [0xB5,0x69] → a=22, mid=43, c=9 →
+; 224309; [0xFF,0xFF] → 31/63/31 → 316331; [0,0] → 0. (breaker probe xbf, verified tri-target exact + hop
+; value-parity; the runtime cross-byte-straddle sub-byte re-emit, distinct from the const cross-byte READ at
+; ~491 and bfx5's single-byte case. wasm-PASS + cadenza-PASS.)
+(case
+  "a sub-byte bit-field straddling a byte boundary re-emits (a read combining bits from two bytes)"
+  (input
+    (do
+      (def
+        (parse (: b Bytes))
+        (match
+          b
+          ((bin (bits a 5) (bits mid 6) (bits c 5))
+            (+ (* 10000 (Int64.of a)) (+ (* 100 (Int64.of mid)) (Int64.of c))))
+          (_ -1)))
+      (def (main (: hi Int64) (: lo Int64)) (parse (Bytes.of #list((UInt8.of hi) (UInt8.of lo)))))
+      (export main)))
+  (call main (: 181 Int64) (: 105 Int64))
+  (output (: 224309 Int64))
+  (call main (: 255 Int64) (: 255 Int64))
+  (output (: 316331 Int64))
+  (call main (: 0 Int64) (: 0 Int64))
+  (output (: 0 Int64)))
