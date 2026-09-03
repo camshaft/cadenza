@@ -3819,13 +3819,12 @@
 ; cux1: a CONST-SIZE utf8 segment over a RUNTIME scrutinee — (bin (u8 t) (utf8 s 2)) where the bytes
 ; carry a runtime first byte, so nothing folds and the decode must run. The existing const-size utf8
 ; cases above use fully-CONST scrutinees that fold at compile time, so they never exercise the runtime
-; re-emit path. Computes on wasm/rust ("hi!"/"hi?" keyed off the runtime tag byte t, both binders live);
-; the cadenza target currently DECLINES CDZ0900 ("does not support a dependent-size binary read outside
-; a recognized bin-match" — the const-size read rides the same lowering) — idealistic TODO per corpus
-; policy, auto-flips when the (utf8 s C) re-emit lands (v-cadenza-backend: needs a
+; re-emit path. Computes tri-target ("hi!"/"hi?" keyed off the runtime tag byte t, both binders live).
+; Was a cadenza CDZ0900 decline until #8031 landed the (utf8 s C) re-emit (the
 ; SumExpect{StrFromBytes{BinSizedRead}}->s arm; the (bytes p C) literal-size path is not lowerable, so
-; #8008's bytes+guard rewrite cannot apply). (v-cadenza-backend candidate, breaker-verified: wasm+rust
-; exact x2 args with a fold-opaque rust leg, live-objects 0/0.)
+; #8008's bytes+guard rewrite could not apply). (v-cadenza-backend candidate, breaker-verified two-sided
+; pre- and post-fix: wasm+rust exact x2 args with a fold-opaque rust leg, hop byte-idempotent,
+; live-objects 0/0.)
 (case
   "a constant-size utf8 segment over a runtime scrutinee decodes and both binders are used"
   (input
@@ -3939,3 +3938,55 @@
   (output (: 263007001 Int64))
   (call main (: 5 Int64))
   (output (: 1287007005 Int64)))
+
+; cux2: the #8031 x #8024 COMPOSITION — a const-size utf8 segment inside a NESTED bin arm. The outer
+; (bin (u8 t) (utf8 s 2)) arm's body bin-matches a SECOND helper-returned Bytes with its own
+; (u8 v) (utf8 r 2) segmentation, the inner scrutinee derived from the outer tag (t+1). Both decoded
+; strings and both tag binders are live: "hi" ++ "hi" ++ ("?" if v>9 else "!"). Exercises the
+; const-size utf8 re-emit (#8031) under the (scrutinee-binder, offset, width) segment keying (#8024)
+; — both scrutinees carry a u8@0 and a utf8@1x2, the pre-#8024 collision shape. (breaker probe cu3,
+; verified tri-target exact + byte-idempotent, live-objects 0/0.)
+(case
+  "a constant-size utf8 segment decodes inside a nested bin arm"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list((UInt8.of a) 104 105)))
+      (def
+        (main (: n Int64))
+        (match
+          (mk n)
+          ((bin (u8 t) (utf8 s 2))
+            (match
+              (mk (+ t 1))
+              ((bin (u8 v) (utf8 r 2))
+                (String.concat s (String.concat r (if (> (Int64.of v) 9) "?" "!"))))
+              (_ "inner-x")))
+          (_ "x")))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "hihi!" String))
+  (call main (: 42 Int64))
+  (output (: "hihi?" String)))
+
+; cux3: DEPENDENT-size utf8 nested — the #8008 x #8024 composition. Both the outer and the inner arm
+; use (u8 c) (utf8 s c) length-prefixed segmentation (identical offsets AND widths across the two
+; scrutinees); the outer's runtime last byte makes the outer decode run, the inner re-parses a fresh
+; helper-built frame. Invalid UTF-8 in the outer's sized window (255) is a non-match falling to the
+; OUTER wildcard. (breaker probe cu4, verified tri-target exact + byte-idempotent, live-objects 0/0.)
+(case
+  "a dependent-size utf8 segment decodes inside a nested bin arm and invalid bytes fall through"
+  (input
+    (do
+      (def (mk (: a Int64)) (Bytes.of #list(2 104 (UInt8.of a))))
+      (def
+        (main (: n Int64))
+        (match
+          (mk n)
+          ((bin (u8 c) (utf8 s c))
+            (match (mk 106) ((bin (u8 d) (utf8 r d)) (String.concat s r)) (_ "inner-x")))
+          (_ "x")))
+      (export main)))
+  (call main (: 105 Int64))
+  (output (: "hihj" String))
+  (call main (: 255 Int64))
+  (output (: "x" String)))
