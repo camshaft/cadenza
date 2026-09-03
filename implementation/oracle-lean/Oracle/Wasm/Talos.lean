@@ -149,4 +149,13 @@ private def watHeapMapLeak : String :=
   "(module (import \"heap\" \"map-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"map-insert\" (func (param i32) (param i32) (param i32) (result i32))) (import \"heap\" \"map-lookup\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"get-int\" (func (param i32) (result i64))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i64) (local i32) (local i32) (local i32) (local i32) (local i64) call 0 local.set 0 i64.const 7 call 1 local.set 1 i64.const 99 call 1 local.set 2 local.get 0 local.get 1 local.get 2 call 2 local.set 0 i64.const 7 call 1 local.set 1 local.get 0 local.get 1 call 3 local.set 3 local.get 3 call 4 local.set 4 local.get 4))"
 example : (talosDriver watHeapMapLeak { entry := "main" } == .ok #[.i64 99] 1) = true := by native_decide
 
+/-- End-to-end SET CONSUME path: build `{1,2}` and `{2,3}` (immediate int elems), `set-union` them (CONSUMES
+both) into `{1,2,3}`, return `set-size` = 3, then DROP the union → `main() = 3` with `leakCount 0` (all three
+set nodes freed — the two inputs by the union's consume, the result by the drop; immediate elems are census-
+free). Complements `watHeapMap` (the map path): proves the set consume ops + the leak census balance through
+talos, not just the pure `HeapState` layer. -/
+private def watHeapSetUnion : String :=
+  "(module (import \"heap\" \"set-empty\" (func (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"set-insert\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"set-union\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"set-size\" (func (param i32) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i32) (local i32) (local i32) (local i32) call 0 i64.const 1 call 1 call 2 i64.const 2 call 1 call 2 local.set 0 call 0 i64.const 2 call 1 call 2 i64.const 3 call 1 call 2 local.set 1 local.get 0 local.get 1 call 3 local.set 0 local.get 0 call 4 local.set 2 local.get 0 call 5 local.get 2))"
+example : (talosDriver watHeapSetUnion { entry := "main" } == .ok #[.i32 3]) = true := by native_decide
+
 end Oracle.Wasm
