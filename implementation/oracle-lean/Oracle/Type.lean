@@ -797,6 +797,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 match applySubst st.subst τa with
                 | .int w sg => .ok (.int w sg, st)
                 | .numVar _ => .ok (.int 64 true, st)     -- unconstrained int literal(s) → numeric, default Int
+                -- T1.41 — FLOAT arithmetic: `+ - * /` on floats → the float type (kept width-POLY: return the
+                -- resolved operand, so `(: (+ 1.0 2.0) Float32)` still resolves; a lingering floatVar defaults
+                -- to Float64 at escape). `%` (remainder) on a float is CDZ0301 — floats have NO remainder
+                -- (18-units-of-measure:2456 "no float remainder"; exact/float division is total). Matches rcdzc.
+                | .float w => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.float w, st)
+                | .floatVar i => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.floatVar i, st)
                 | .never => .ok (.never, st)
                 | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
                 | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
@@ -2523,6 +2529,13 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                 nodes := #[.atom 3, .atom 2, .list #[1], .atom 1, .list #[3, 2, 0], .atom 4, .atom 2,
                            .list #[5, 6], .atom 0, .list #[8, 4, 7]],
                 root := 9 } == .wellTyped (.float 64))
+-- T1.41 (Float arithmetic): `(do (def (main) (+ nan nan)) (export main))` → WellTyped Float64. `+` on two
+-- float literals stays width-poly (floatVar), defaulting to Float64 at escape. (`%` on a float → CDZ0301.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "+".toUTF8,
+                            .floatNan, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 4, .list #[0, 1, 2], .atom 2, .list #[4], .atom 1,
+                           .list #[6, 5, 3], .atom 5, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped (.float 64))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
