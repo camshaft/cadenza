@@ -244,12 +244,14 @@
     "`(String.slice s 0)` is slice partially applied (start given, end missing) — it SHOULD curry to a
            closure awaiting the end index (core-semantics L73/L295), completing to a substring. Declines today
            only until the built-in-as-value closure synth is realized (declined(PrimAsValueNeedsClosure)). f holds
-           the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4) = \"abcd\" (end EXCLUSIVE),
-           byte-len 4.")
+           the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4). `String.slice` is TOTAL —
+           collections-and-text.md §134 MUSTs a sub-sequence slice yield an OPTIONAL value (present in bounds,
+           absent out of bounds), so the result is `(Option String)` (the sibling of `String.at`), not a bare
+           String — the in-bounds slice is `Some \"abcd\"` (end EXCLUSIVE), unwrapped to byte-len 4.")
   (input
     (do
       (def (f (: s String)) (String.slice s 0))
-      (def (main) (String.byte-len ((f "abcdef") 4)))
+      (def (main) (match ((f "abcdef") 4) ((Some sub) (String.byte-len sub)) ((None _u) -1)))
       (export main)))
   (call main)
   (output (: 4 Int64)))
@@ -275,12 +277,13 @@
     "`((String.slice s) 0)` is the same application as the flat `(String.slice s 0)` (`(f a b)` desugars
            to `((f a) b)`), so it curries identically — the spine is flattened to its bottom head, so the nested
            and flat surfaces are treated the same. Completing `((f \"abcdef\") 4)` = slice(\"abcdef\",0,4) =
-           \"abcd\", byte-len 4 — same value as the flat form. Declines today only until the built-in-as-value
-           closure synth is realized (declined(PrimAsValueNeedsClosure)).")
+           `Some \"abcd\"` — `String.slice` is TOTAL, returning `(Option String)` (collections-and-text.md §134),
+           so it is unwrapped like the flat form; byte-len 4, same value. Declines today only until the
+           built-in-as-value closure synth is realized (declined(PrimAsValueNeedsClosure)).")
   (input
     (do
       (def (f (: s String)) ((String.slice s) 0))
-      (def (main) (String.byte-len ((f "abcdef") 4)))
+      (def (main) (match ((f "abcdef") 4) ((Some sub) (String.byte-len sub)) ((None _u) -1)))
       (export main)))
   (call main)
   (output (: 4 Int64)))
