@@ -2179,7 +2179,31 @@ fn param_only_borrowed_or_backedge_rec(
             recur(db, scrutinee, true) && arms.iter().all(|a| recur(db, a.body, false))
         }
         Core::MatchSum { scrutinee, root } => {
-            recur(db, scrutinee, true)
+            // (it4 gap-a) A fallible interior-view scrutinee (`(List.at xs i)` etc.) BORROWS its container:
+            // it reads the container, returning a fresh Option that ALIASES into it (the index/bounds/key are
+            // scalars). So a match on such a view over `binder` is a BORROW of binder — but ONLY if the view
+            // RESULT is borrow-clean in the arms: if the Option's payload is consumed-into-a-builder / Call /
+            // returned-as-result, a live alias into binder ESCAPES the frame and dropping binder at the
+            // epilogue would UAF. The F1 fence = `collect_consuming_payload_sites_cont(root, scrutinee)` EMPTY
+            // (its "consuming site" contract counts move-into-builder/Call AND escape-as-result), reusing the
+            // SAME proven classifier the view_reclaim / owned-scrutinee dup paths use (v-memory-safety
+            // co-design; NOT the dead-code G5, which has the wrong polarity). Borrow-clean → recur the
+            // container borrowed (binder READ); else fall through to `recur(scrutinee, true)` which denies an
+            // unwhitelisted view node (leak-safe). it4: the Some arm get-int-copies the scalar element → no
+            // consuming site → empty → xs recognized borrow-only → dropped at the loop epilogue.
+            let scrut_ok = match fallible_view_container_of(db, scrutinee) {
+                Some(container) if occurs_in(db, container, binder) => {
+                    let mut sites = HashSet::new();
+                    collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
+                    if sites.is_empty() {
+                        recur(db, container, true)
+                    } else {
+                        recur(db, scrutinee, true)
+                    }
+                }
+                _ => recur(db, scrutinee, true),
+            };
+            scrut_ok
                 && cont_only_borrowed_or_backedge(
                     db,
                     &root,
@@ -5462,6 +5486,22 @@ fn scrutinee_is_fallible_extraction(db: &mut Db, id: StructId) -> bool {
             | Core::BytesSlice { .. }
             | Core::MapLookup { .. }
     )
+}
+
+/// The CONTAINER operand a fallible interior-view op READS (borrows) — the list/bytes/string/map whose
+/// element/slice/value the view returns. `None` for a non-view node. Used by `param_only_borrowed_or_backedge`
+/// to recognize `(List.at xs i)` etc. as a BORROW of the container (the it4 loop-frame invariant-param
+/// reclaim): the container is read, not consumed; the index/bounds/key are scalars carrying no binder.
+fn fallible_view_container_of(db: &mut Db, id: StructId) -> Option<StructId> {
+    match core_of(db, id) {
+        Core::ListAt { list, .. } => Some(list),
+        Core::BytesAt { bytes, .. } => Some(bytes),
+        Core::StrAt { string, .. } => Some(string),
+        Core::StrSlice { string, .. } => Some(string),
+        Core::BytesSlice { bytes, .. } => Some(bytes),
+        Core::MapLookup { map, .. } => Some(map),
+        _ => None,
+    }
 }
 
 /// The allowlist of PURE PERSISTENT BUILDER ops for the inc2b Stage-B extraction-consume reclaim: each
