@@ -381,6 +381,11 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
         | .bytes a,   .bytes b   => a == b && valueEqWork fuel s rest
         | .array e1,  .array e2  =>
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
+        | .vec e1,    .vec e2    =>
+          -- A List is an ORDERED sequence ([1,2] ≠ [2,1]), so compare POSITIONALLY like a Tuple/`.array`.
+          -- (Sets/maps are UNORDERED — they need order-independent containment, tracked as W5.5 Gap 2 —
+          -- so no `.set`/`.map`-order arm is added here; those still decline/positional pending that fix.)
+          e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
         | .map e1,    .map e2    =>
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
         | .sum d1 p1, .sum d2 p2 =>
@@ -1771,6 +1776,47 @@ private def probeVecUpdate : Bool :=
     | _ => false
   | _ => false
 example : probeVecUpdate = true := by native_decide
+
+/-- `valueEq` on Lists (`.vec`) is POSITIONAL: two lists `[1,2]` are equal, but `[1,2]` ≠ `[2,1]` (order
+matters for a List). Pins the newly-added `.vec` arm (previously two lists fell through to `false`, a latent
+false-inequality when a List is a map-key / set-element). Elements are immediate ints (`box-int` is canonical,
+so `1`/`2` are stable handles), exercising the `h1 == h2` short-circuit for the equal case. -/
+private def probeVecValueEqOrder : Bool :=
+  match boxInt ({} : HeapState) [.i64 1] with
+  | .ret [.i32 e1] s0 =>
+    match boxInt s0 [.i64 2] with
+    | .ret [.i32 e2] s1 =>
+      match vecEmpty s1 [] with
+      | .ret [.i32 ea] s2 =>
+        match vecPush s2 [.i32 ea, .i32 e1] with
+        | .ret [.i32 a1] s3 =>
+          match vecPush s3 [.i32 a1, .i32 e2] with
+          | .ret [.i32 va] s4 =>                       -- va = [1,2]
+            match vecEmpty s4 [] with
+            | .ret [.i32 eb] s5 =>
+              match vecPush s5 [.i32 eb, .i32 e1] with
+              | .ret [.i32 b1] s6 =>
+                match vecPush s6 [.i32 b1, .i32 e2] with
+                | .ret [.i32 vb] s7 =>                 -- vb = [1,2]
+                  match vecEmpty s7 [] with
+                  | .ret [.i32 ec] s8 =>
+                    match vecPush s8 [.i32 ec, .i32 e2] with
+                    | .ret [.i32 c1] s9 =>
+                      match vecPush s9 [.i32 c1, .i32 e1] with
+                      | .ret [.i32 vc] s10 =>          -- vc = [2,1]
+                        (s10.valueEq va vb == true) && (s10.valueEq va vc == false)
+                      | _ => false
+                    | _ => false
+                  | _ => false
+                | _ => false
+              | _ => false
+            | _ => false
+          | _ => false
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeVecValueEqOrder = true := by native_decide
 
 /-! #### Collection CONSUME-op witnesses (map-merge, set-union, set-intersection, set-difference),
 immediate-aware. Re-added after the immediates rework (they were dropped from the focused set). Each op
