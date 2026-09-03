@@ -871,3 +871,82 @@ mod qty_display_scale_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod set_map_float_key_tests {
+    //! Pin the `__CdzF{N}` ord-key UNWRAP in the Set-element / Map-key value-doc arms. A direct float
+    //! Set element or Map KEY is stored as the `__CdzF{N}` ord-key wrapper (a bare `f{N}` is not `Ord`,
+    //! so a `BTreeSet`/`BTreeMap` cannot hold it), and the value walk must read the float back via
+    //! `.get()` before the Float value-node renders it. The subtle invariant is the ASYMMETRY: only the
+    //! KEY/element position wraps — a Map VALUE float stays a bare `f{N}` and must NOT be `.get()`-unwrapped.
+    //! A refactor that dropped the `.get()` on a key would emit `__CdzF64` where an `f64` is expected (a
+    //! rustc type error caught only in pr-sync's full battery); one that ADDED `.get()` to a value would
+    //! not compile either. Pin both directions at the ms level. (An Ord non-float element/key reads bare.)
+    use super::*;
+    use crate::ty::{FloatTy, IntTy};
+
+    fn db() -> Db {
+        Db::load(crate::testkit::parse("(do (def (main) 0) (export main))"))
+    }
+    fn f64() -> Ty {
+        Ty::Float(FloatTy::f64())
+    }
+    fn int() -> Ty {
+        Ty::Int(IntTy::i64())
+    }
+
+    #[test]
+    fn a_set_of_direct_floats_reads_each_element_via_get() {
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Set(Box::new(f64())), "main()")
+            .expect("a Set<f64> value-doc must render (direct-float element covered)");
+        assert!(
+            body.contains(".get()"),
+            "a direct-float Set element must be read out of its __CdzF ord-key wrapper via `.get()`, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_set_of_ord_scalars_reads_each_element_bare() {
+        let mut db = db();
+        let body = emit_result_doc(&mut db, &Ty::Set(Box::new(int())), "main()")
+            .expect("a Set<i64> value-doc must render");
+        assert!(
+            !body.contains(".get()"),
+            "an Ord (non-float) Set element is the bare value — no __CdzF unwrap, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_map_with_a_direct_float_key_unwraps_the_key_via_get() {
+        let mut db = db();
+        let body = emit_result_doc(
+            &mut db,
+            &Ty::Map(Box::new(f64()), Box::new(int())),
+            "main()",
+        )
+        .expect("a Map<f64,i64> value-doc must render (direct-float key covered)");
+        assert!(
+            body.contains(".0.get()"),
+            "a direct-float Map KEY must unwrap its __CdzF ord-key wrapper via `.0.get()`, got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn a_map_float_value_stays_bare_only_the_key_wraps() {
+        // The ASYMMETRY: key i64 (Ord) reads `.0` bare; value f64 stays a bare `f{N}` and walks `.1`
+        // directly — NEITHER position unwraps, so no `.get()` appears. Guards against a refactor that
+        // wrongly treats a float VALUE like a float key.
+        let mut db = db();
+        let body = emit_result_doc(
+            &mut db,
+            &Ty::Map(Box::new(int()), Box::new(f64())),
+            "main()",
+        )
+        .expect("a Map<i64,f64> value-doc must render");
+        assert!(
+            !body.contains(".get()"),
+            "a Map float VALUE stays a bare f{{N}} (only the KEY position wraps) — no `.get()` unwrap, got:\n{body}"
+        );
+    }
+}
