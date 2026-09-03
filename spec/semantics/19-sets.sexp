@@ -935,7 +935,7 @@
               (Map.insert
                 (Map.insert
                   (Map.insert
-                    (Map.insert (Map.insert Map.empty 1 #list(2 3)) 2 #list(4))
+                    #map((= 1 #list(2 3)) (= 2 #list(4)))
                     3
                     #list(4))
                   4
