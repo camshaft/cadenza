@@ -1641,6 +1641,31 @@
   (output (: 7 Int64)))
 
 (case
+  "a let binding shadows the set constructor in application-head position"
+  (doc
+    "The `set` sibling of the recorded list/tuple/record head-position shadows (OPERATOR RULING 2026-09:
+           `set` is a shadowable CONSTRUCTOR — `Apply{SetNew}` — while `#set` is the non-shadowable native
+           datastructure; verbatim: `set is just a constructor in the compiler. #set is a syntax-native set
+           datastructure`, and `the constructor should be shadowable`). `(let ((set (fn (a b) (+ a b)))) (set
+           3 4))` binds `set` to a function and applies it in head position, so `set` resolves to the nearest
+           binding = 7, NOT the built-in set `(set 3 4)`. Pins that the `set` alias is an ordinary shadowable
+           name, looked up like `list`/`tuple`/`record` (core-semantics.md #Binding Is Lexical).")
+  (input (do (def (main) (let ((set (fn (a b) (+ a b)))) (set 3 4))) (export main)))
+  (output (: 7 Int64)))
+
+(case
+  "the native #set datastructure is not shadowed by a same-named set binding"
+  (doc
+    "The set converse of the `#tuple` primitive case (OPERATOR RULING 2026-09: `#set` is the
+           syntax-native datastructure, NOT shadowable; `the data structure is not [shadowable]`). Even when
+           the NAME `set` is shadowed by a binding, `#set(…)` still builds a real set: `(let ((set (fn (a b)
+           (+ a b)))) (if (Set.contains #set(1 2) 2) 7 0))` = 7 (membership on the native set), NOT the bound
+           function. `#set(…)` is reader/syntax-level (a distinct leaf kind), so a `set` binding never touches
+           it — the set analog of the `#tuple`/`\"tuple\"` primitive-not-shadowed case.")
+  (input (do (def (main) (let ((set (fn (a b) (+ a b)))) (if (Set.contains #set(1 2) 2) 7 0))) (export main)))
+  (output (: 7 Int64)))
+
+(case
   "a parameter named tuple is applied as the bound function"
   (doc
     "The parameter companion: `(def (f tuple) (tuple 3 4))` — the formal `tuple` is the nearest
