@@ -185,4 +185,13 @@ private def watHeapUseAfterFree : String :=
   "(module (import \"heap\" \"box-float\" (func (param f64) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (import \"heap\" \"get-float\" (func (param i32) (result f64))) (func (export \"main\") (result f64) (local i32) f64.const 1 call 0 local.set 0 local.get 0 call 1 local.get 0 call 2))"
 example : (match talosDriver watHeapUseAfterFree { entry := "main" } with | .trap _ => true | _ => false) = true := by native_decide
 
+/-- End-to-end PERCEUS REUSE (FBIP): build `[5]` (an array with an immediate int elem), `reset` it (UNIQUE
+rc==1 → same-handle empty shell — the reuse token), `arr-alloc-reuse(2, token)` refits THAT shell to a 2-slot
+array (zero alloc), read `arr-len` = 2, drop → `main() = 2` with `leakCount 0`. Proves the rc==1 in-place
+reuse path (reset + arr-alloc-reuse) runs end-to-end through talos and leak-balances — the W7-crux ops are not
+in the in-progress full-corpus run (which predates them), so this is their first end-to-end validation. -/
+private def watHeapReuse : String :=
+  "(module (import \"heap\" \"arr-alloc\" (func (param i32) (result i32))) (import \"heap\" \"box-int\" (func (param i64) (result i32))) (import \"heap\" \"arr-set\" (func (param i32) (param i32) (param i32) (result i32))) (import \"heap\" \"reset\" (func (param i32) (result i32))) (import \"heap\" \"arr-alloc-reuse\" (func (param i32) (param i32) (result i32))) (import \"heap\" \"arr-len\" (func (param i32) (result i32))) (import \"heap\" \"drop\" (func (param i32))) (func (export \"main\") (result i32) (local i32) (local i32) (local i32) i32.const 1 call 0 local.set 0 i64.const 5 call 1 local.set 1 local.get 0 i32.const 0 local.get 1 call 2 local.set 0 local.get 0 call 3 local.set 0 i32.const 2 local.get 0 call 4 local.set 0 local.get 0 call 5 local.set 2 local.get 0 call 6 local.get 2))"
+example : (talosDriver watHeapReuse { entry := "main" } == .ok #[.i32 2]) = true := by native_decide
+
 end Oracle.Wasm
