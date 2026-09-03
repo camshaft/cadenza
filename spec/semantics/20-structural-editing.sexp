@@ -1093,3 +1093,56 @@
   (call main (: 10 Int64))
   (output (: 40 Int64))
   (live-objects known-leak))
+
+; sex1: a peephole REWRITE over the built-in Ast that RETURNS an Ast — the rewrite companion of the
+; built-in-Ast walk above (which only reads a depth). `simp` maps Ast->Ast, stripping `(+ e 0)` to
+; `e` bottom-up (children simplified first) while leaving every other head untouched. Distinct from
+; the `simp` over the user `Exp` sum in the CORE section: this is the SAME transformation over the
+; language's own `Ast` value, the shape a real refactor/agent script takes. Witnessed structurally
+; via the rewritten tree's DEPTH (a value the fold can compare): `(+ (+ a 0) 0)` collapses to the
+; bare `a` (Ast.Name, depth 0), while `(+ (* a 0) 0)` collapses only the outer `+0` — the inner
+; `(* a 0)` is a different head, preserved (depth 1). A rewrite that folded the wrong head, or failed
+; to recurse, diffs the depth. VALUE is correct on every backend; the wasm live-objects census shows
+; the rebuilt Ast.List intermediates LEAK (missing-Perceus-drop in the Ast-rewrite path — the same
+; class as the chapter-16 utf8-decode baselines), so pinned `(live-objects known-leak)` until the
+; drop lands. (breaker probe se1/se2, tick 1514; verified tri-target VALUE-exact + byte-idempotent;
+; leak filed to v-memory-safety.)
+(case
+  "a peephole rewrite over the built-in Ast returns a simplified Ast"
+  (input
+    (do
+      (def
+        (simp (: a Ast))
+        (match
+          a
+          ((Ast.List es)
+            (match
+              es
+              (#list(op l r)
+                (match
+                  r
+                  ((Ast.Int z)
+                    (if
+                      (= z (BigInt.of 0))
+                      (match
+                        op
+                        ((Ast.Name n)
+                          (if (= n "+") (simp l) (Ast.List #list(op (simp l) (simp r)))))
+                        (_ (Ast.List #list(op (simp l) (simp r)))))
+                      (Ast.List #list(op (simp l) (simp r)))))
+                  (_ (Ast.List #list(op (simp l) (simp r))))))
+              (_ a)))
+          (_ a)))
+      (def
+        (depth (: a Ast))
+        (match a ((Ast.List es) (match es (#list(h (.. t)) (+ 1 (fold-max t))) (_ 1))) (_ 0)))
+      (def
+        (fold-max (: xs (List Ast)))
+        (match xs (#list(h (.. t)) (let ((d (depth h)) (r (fold-max t))) (if (> d r) d r))) (_ 0)))
+      (def
+        (main (: n Int64))
+        (+ (depth (simp (quote (+ (+ a 0) 0)))) (* 10 (depth (simp (quote (+ (* a 0) 0)))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 10 Int64))
+  (live-objects known-leak))
