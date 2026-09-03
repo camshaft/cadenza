@@ -5239,6 +5239,16 @@ fn try_emit_bin_match(
         None => return None, // scrutinee not a let-bound name → outside the recognized shape
     };
     let match_head = b.name("match");
+    // The bin-match's ARM BODIES (and catchall) all produce the match's RESULT type. When the caller supplied
+    // no `expected` — a SCRUTINEE position, common when this bin-match feeds an OUTER match — fall back to the
+    // match's OWN solved result type, so a body constructing an under-determined sum (`(Some (P a b))` whose
+    // own type reads `Option<?>`) recovers the resolved sum type via the `Core::SumNew` `expected` fallback
+    // (the `own_ty` vs `expected` reconciliation upstream) instead of declining "under-determined sum type".
+    // An inbound `expected` (a world/context type) is more authoritative, so it wins; the own-type fallback is
+    // used only when absent, and an under-determined own type is harmlessly ignored by the SumNew fallback.
+    let body_expected: Option<Ty> = expected
+        .clone()
+        .or_else(|| Some(crate::infer::type_of(db, body)));
     let mut children = vec![match_head, scrut_node];
     for arm in &arms {
         // Build `(bin <seg>…)` — a LITERAL segment `(uN <lit>)` (a magic-number / tag probe), a BINDER segment
@@ -5388,7 +5398,7 @@ fn try_emit_bin_match(
                 }
             }
         }
-        let body_res = emit_expr(db, b, arm.body, expected.clone(), env, emitted);
+        let body_res = emit_expr(db, b, arm.body, body_expected.clone(), env, emitted);
         env.bin_fields = saved;
         env.bin_rest_fields = saved_rest;
         env.bin_sized_fields = saved_sized;
@@ -5428,7 +5438,7 @@ fn try_emit_bin_match(
     // the wildcard keeps the emitted match exhaustive. Its body reads the whole scrutinee (if at all) through
     // the `env.lets` name, so a bare `_` pattern suffices.
     let wild = b.name("_");
-    let catchall_node = match emit_expr(db, b, catchall, expected.clone(), env, emitted) {
+    let catchall_node = match emit_expr(db, b, catchall, body_expected.clone(), env, emitted) {
         Ok(n) => n,
         Err(e) => return Some(Err(e)),
     };
