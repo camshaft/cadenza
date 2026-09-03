@@ -1194,6 +1194,54 @@
   (call main)
   (output (: false Bool)))
 
+; The two IEEE anomalies sharpen what "canonical byte form" means for a Float64 COLLECTION KEY, and the
+; runtime treats them ASYMMETRICALLY — verified breaker probes fkey/fkey2, tri-target exact + hop
+; value-parity + byte-idempotent. (1) SIGNED ZERO is NOT normalized: +0.0 and -0.0 keep distinct byte
+; forms, so a key inserted under +0.0 is NOT found by a -0.0 query — they are DISTINCT map keys (IEEE `=`
+; would merge them; canonical-byte-form keeps them apart). (2) NaN PAYLOADS ARE collapsed: two
+; independently-computed NaNs (`0.0/0.0` vs `-0.0/0.0`) canonicalize to ONE NaN byte form, so a key
+; inserted under one NaN IS found by the other — NaN keys-equal NaN (the OPPOSITE of IEEE `=`, where
+; NaN != NaN). Together they pin the exact canonicalization contract of champ_hash/champ_eq: canonicalize
+; NaN, preserve signed zero. A refactor to raw IEEE key-equality would silently break BOTH (merge the
+; zeros, split the NaNs) — these fences catch that.
+(case
+  "positive zero is found as its own float map key (canonical-byte control)"
+  (input
+    (do
+      (def (get (: m (Map Float64 Int64)) (: k Float64))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (main (: n Int64)) (let ((z (Float64.of-int n))) (get (Map.insert Map.empty z 7) z)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case
+  "negative zero is a DISTINCT float map key from positive zero (signed zero not normalized)"
+  (input
+    (do
+      (def (get (: m (Map Float64 Int64)) (: k Float64))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((nz (Float64.neg z))) (get (Map.insert Map.empty z 7) nz))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case
+  "two independently-computed NaNs are the SAME float map key (NaN payloads canonicalized)"
+  (input
+    (do
+      (def (get (: m (Map Float64 Int64)) (: k Float64))
+        (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((q1 (/ z z)))
+            (let ((q2 (/ (Float64.neg z) z))) (get (Map.insert Map.empty q1 7) q2)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7 Int64)))
+
 ; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
 ; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
 ; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric
