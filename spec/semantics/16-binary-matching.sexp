@@ -4263,14 +4263,14 @@
   (output (: -1 Int64)))
 
 ; usx1: the RESULT sibling of the #8129 under-determined-sum bin-arm re-emit — #8129 threads a
-; bin-match's own solved result type as the arm-body `expected`, so `(Some …)` recovers Option, but
-; a `(Ok …)` arm body still DECLINES CDZ0900 ("lowering a variant of an under-determined sum type")
-; on the cadenza hop. Isolated: `(Some (Int64.of a))` HOPS (us4 control), `(Ok (Int64.of a))` with an
-; explicit `(Result Int64 String)` ascription DECLINES — the two-type-parameter Result's
-; under-determination is not recovered from the own result type where the one-parameter Option is.
-; Computes on wasm/rust (n=5 -> 5, n=200 -> 200, the Ok payload = the first byte). Idealistic TODO;
-; auto-flips when the SumNew own-result-type recovery covers a 2-param sum (Result). (breaker probe
-; us3, tick 1531; filed to v-cadenza-backend.)
+; bin-match's own solved result type as the arm-body `expected`, recovering `(Some …)` (Option, one
+; param resolved by the Some payload); a `(Ok …)` arm body was a distinct harder case — the two-param
+; Result's ERROR param stays a free `Var` because the `(: … (Result Int64 String))` ascription is
+; ERASED in Core (no Core::Ascribe survives) and the Ok payload never touches the error param, so it
+; DECLINED CDZ0900. FIXED #8141: the free error Var is resolved from the SIBLING arm bodies (the
+; `(Err "bad")` arm supplies `Result(?, String)`, filling the Ok arm's `Result(Int64, Var)` →
+; `Result(Int64, String)`) via `fill_free_sum_args`. Now re-emits: n=5 → 5, n=200 → 200 (the Ok
+; payload = the first byte). (breaker probe us3, tick 1531; #8129-adjacent; my filing → #8141 fix.)
 (case
   "a bin-match arm building an under-determined Result recovers its type once the 2-param SumNew fallback lands"
   (input
