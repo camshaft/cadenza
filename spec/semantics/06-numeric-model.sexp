@@ -198,6 +198,52 @@
   (call m (: 7 Int64) (: -2 Int64))
   (output (: 1 Int64)))
 
+; SHIFT value semantics on a signed Int64: `>>` is ARITHMETIC (sign-extending, i64.shr_s) so a negative
+; value keeps its sign, and `<<` wraps in two's complement. The SHIFT COUNT is bounded 0..=63 (the bit
+; width) and an OUT-OF-RANGE count is an ERROR on BOTH paths — NOT silently masked mod 64 the way a bare
+; wasm i64.shl/shr would be. A const out-of-range count is a compile-time reject (CDZ0304); a RUNTIME
+; out-of-range count TRAPS via an emitted range guard, rather than deferring to wasm's mask-mod-64. That
+; guard is the soundness pin: dropping it would silently mask (`<< 1 64` → 1 instead of trapping), a
+; divergence from the const path. Verified breaker probes sh_c/sh_rt: fold == runtime == cadenza-hop.
+(case
+  "a right shift of a negative integer is arithmetic (sign-extending) at compile time"
+  (doc
+    "`(>> -8 1)` const-folds to -4 — an ARITHMETIC (sign-extending) shift, NOT a logical shift that
+           would inject a 0 into the top bit and yield a large positive. `(>> -1 63)` = -1 likewise. Pins
+           signed `>>` is i64.shr_s, the sign-preserving form.")
+  (input (>> -8 1))
+  (output (: -4 Int64)))
+
+(case
+  "a left shift wraps in two's complement at compile time"
+  (doc
+    "`(<< -1 1)` const-folds to -2: shifting the all-ones -1 left by one drops the top bit and lands a
+           trailing zero → -2 in two's complement. Pins `<<` is the modular two's-complement shift.")
+  (input (<< -1 1))
+  (output (: -2 Int64)))
+
+(case
+  "a constant shift count at or above the bit width is rejected (not masked)"
+  (doc
+    "`(<< 1 64)` has a shift count equal to the Int64 bit width — out of the valid 0..=63 range. The
+           fold REJECTS it (CDZ0304) rather than masking mod 64 to `<< 1 0` = 1 the way a bare wasm i64.shl
+           would. Pins the const path treats an out-of-range shift count as an error, not a wrap.")
+  (input (<< 1 64))
+  (error CDZ0304 (message "shift count") (message "out of range")))
+
+(case
+  "a runtime shift count at or above the bit width traps (a range guard, not a wasm mask)"
+  (doc
+    "The runtime companion of the const reject: `(<< v n)` over Int64 params emits a shift-count range
+           guard, so an out-of-range count TRAPS rather than deferring to wasm's silent mask-mod-64. `<< 1 3`
+           = 8 (in range, control); `<< 1 64` traps (would be 1 under a mask). Pins the runtime path agrees
+           with the const path — out of range is an error on both, the soundness-critical guard.")
+  (input (do (def (shl (: v Int64) (: n Int64)) (<< v n)) (export shl)))
+  (call shl (: 1 Int64) (: 3 Int64))
+  (output (: 8 Int64))
+  (call shl (: 1 Int64) (: 64 Int64))
+  (trap "unreachable"))
+
 ; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
 ; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
 ; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
