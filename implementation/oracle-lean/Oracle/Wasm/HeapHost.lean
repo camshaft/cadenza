@@ -466,9 +466,14 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
         | _,          _          => false
       | _, _ => false
 
-/-- Structural value-equality of two handles (fuel sized to the pool). -/
+/-- Structural value-equality of two handles (fuel sized to the pool). The worklist processes ≤ `1 + edges`
+pairs (one initial pair + at most one child-pair per heap edge on a full structural match), and needs ONE more
+step for the `[] → true` base case — so `edges + 2` is the tight bound. Using `objects.size + edges + 2`
+over-approximates that safely; the `+2` (not `+1`) matters when `objects.size + edges` is small — e.g.
+comparing two IMMEDIATES on a near-empty heap (0 objects, 0 edges) needs fuel 2, not 1 (the old `+1` spuriously
+returned `false` there, masked elsewhere by non-empty `objects.size` slack). -/
 def valueEq (s : HeapState) (h1 h2 : UInt32) : Bool :=
-  s.valueEqWork (s.objects.size + s.edges + 1) [(h1, h2)]
+  s.valueEqWork (s.objects.size + s.edges + 2) [(h1, h2)]
 
 /-- `value-eq(a, b) → bool` (i32 0/1) [BORROWS both, like `set-contains`]: the runtime's structural value
 equality. Wraps `valueEq` — now order-INDEPENDENT for set/map and total (W5.5 Gap 2 closed), so it matches
