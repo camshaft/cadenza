@@ -604,11 +604,12 @@ fn gen_typefuzz_int<C: Choice>(
         }
         // An Int64-producing Map op (T1.33), always CONSUMING a map to a scalar. `(Map.len <map>)`;
         // `(List.len (Map.to-list <map>))`; `(Map.len (<Map-producing-op> …))` over insert/remove/merge
-        // (each → `Map k v`); or `Map.lookup` (→ `Option v`) matched to Int64. Well-typed (Int64 keys +
-        // values) → both rcdzc + oracle infer Int64 → agreement.
+        // (each → `Map k v`); `swap`/`take` (→ `(Tuple (Option v) (Map k v))`) projected to the Map (.1 →
+        // Map.len) or the Option (.0 → match); or `Map.lookup` (→ `Option v`) matched to Int64. Well-typed
+        // (Int64 keys + values) → both rcdzc + oracle infer Int64 → agreement.
         11 => {
             let m = gen_typefuzz_map(c, iscope, bscope, fresh, false);
-            match c.variant(6) {
+            match c.variant(8) {
                 0 => format!("(Map.len {m})"),
                 1 => format!("(List.len (Map.to-list {m}))"),
                 2 => {
@@ -625,6 +626,27 @@ fn gen_typefuzz_int<C: Choice>(
                 4 => {
                     let m2 = gen_typefuzz_map(c, iscope, bscope, fresh, false);
                     format!("(Map.len (Map.merge {m} {m2}))")
+                }
+                5 => {
+                    // swap/take → `(Tuple (Option v) (Map k v))`; project .1 (the Map) → Map.len.
+                    let k = c.int_bounded(0, 2);
+                    if c.variant(2) == 0 {
+                        let v = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                        format!("(Map.len (. (Map.swap {m} {k} {v}) 1))")
+                    } else {
+                        format!("(Map.len (. (Map.take {m} {k}) 1))")
+                    }
+                }
+                6 => {
+                    // swap → project .0 (the `Option v`) → match to Int64.
+                    let k = c.int_bounded(0, 2);
+                    let bn = format!("i{}", *fresh);
+                    *fresh += 1;
+                    let dflt = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                    let v = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                    format!(
+                        "(match (. (Map.swap {m} {k} {v}) 0) ((Some {bn}) {bn}) ((None) {dflt}))"
+                    )
                 }
                 _ => {
                     // lookup → Option v, matched to Int64.
