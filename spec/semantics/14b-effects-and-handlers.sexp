@@ -3141,6 +3141,38 @@
   (call main (: 3 Int64))
   (output (: 2431 Int64)))
 
+; eg1 collision through a SHADOWING helper-arm let: the same name-collision family, but the inlined helper's
+; match arm has a nested `(let ((a (+ a 100))) …)` that REBINDS the colliding binder `a`. The inlined-helper
+; freshening must rename BOTH binder classes — the match-arm pattern binder AND the let binder — else the
+; continuation captures through the un-freshened LET binder (probe: folded 102202 not 102201). `stamp`'s arm
+; is `#tuple(a b) -> (let ((a (+ a 100))) #tuple(a b (C.tick)))`, so `stamp #tuple(1 _)` = `#tuple(101 _ n)`
+; and `stamp #tuple(2 _)` = `#tuple(102 _ (n+1))`; outer a=101, c=102, t1=n, t2=n+1 ->
+; a + 1000*c + 10*t1 + 100*t2 = 101 + 102000 + 10n + 100(n+1) = 102201 + 110n (n=0 -> 102201, n=3 -> 102531).
+; Pins that `reduce_applied_lambdas` runs BOTH `freshen_local_binders` (let/do/fn) and
+; `freshen_match_arm_binders` (match-arm) on the inlined body. (v-effects hardening probe of the #8222 fix.)
+(case
+  "eg1 collision through a SHADOWING helper-arm let folds (inlined-helper freshening covers let AND match-arm binders)"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def (stamp p) (match p (#tuple(a b) (let ((a (+ a 100))) #tuple(a b (C.tick))))))
+      (def
+        (main (: n Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (match (stamp #tuple(1 true))
+            (#tuple(a _b t1)
+              (match (stamp #tuple(2 true))
+                (#tuple(c _d t2)
+                  (+ a (+ (* 1000 c) (+ (* 10 t1) (* 100 t2))))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 102201 Int64))
+  (call main (: 3 Int64))
+  (output (: 102531 Int64)))
+
 (case
   "a MUTUALLY-recursive effectful group is specialized under a state handler"
   (doc

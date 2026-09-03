@@ -8005,6 +8005,7 @@ pass	ed4 one shared performing helper called under TWO different live handlers �
 pass	effect state threads across a successful `?`
 pass	eg1 collision through a let-bound value flow folds (same inlined-helper match-binder freshening)
 pass	eg1 name-collision variant — caller destructure binder shares the helper's internal match-arm binder name folds (inlined-helper match-binder freshening)
+pass	eg1 collision through a SHADOWING helper-arm let folds (inlined-helper freshening covers let AND match-arm binders)
 pass	eg1 shape with the outer destructure binder spelled like the handler state binder folds
 pass	egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (accumulating the doubled multiplicand when odd) answering odd*100 plus the running product's low digits, acc reads the exact product, and the seeds' bit patterns (all-ones versus alternating) fire the accumulation on different steps
 pass	eh1 handler STATE-THREADING across a runtime-count recursion — through the cadenza hop
