@@ -35982,3 +35982,25 @@
   (output (: 25 Int64))
   (call main (: 0 Int64))
   (output (: 20 Int64)))
+
+; lgx1: a recursive function that reads its List accumulator's length in the RECURSION GUARD each
+; iteration leaks the accumulator (value-correct). `worker acc = if (> (List.len acc) 2) (List.len
+; acc) else worker (List.push acc 1)` — building [1,1,1] then returning its length 3. VALUE exact,
+; but leaks 2 List husks. ISOLATED: build-the-list-THEN-len-once (`List.len (build 3 #list())`)
+; reclaims 0; the leak is the per-iteration `(List.len acc)` BORROW in the loop GUARD — each guard
+; re-borrow of the heap accumulator inflates its rc so the base-case deep-drop leaves husks (the
+; loop-guard-borrow analogue of the stacked-guard re-borrow reclaim). A common accumulate-until-size
+; idiom; distinct from the utf8-decode-husk / Ast-construction / Map-key-slot leak loci. Pinned
+; known-leak + filed to v-memory-safety. (breaker probe lb2.)
+(case
+  "a list accumulator inspected by length in the recursion guard reclaims (leaks pending loop-guard-borrow reclaim)"
+  (input
+    (do
+      (def
+        (worker (: acc (List Int64)))
+        (if (> (List.len acc) 2) (List.len acc) (worker (List.push acc 1))))
+      (def (main (: n Int64)) (worker #list()))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak))
