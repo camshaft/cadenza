@@ -1292,6 +1292,39 @@
   (output (: -1 Int64)))
 
 (case
+  "an AND-of-OR compound guard on a dependent-size bin arm re-emits and evaluates correctly"
+  (doc
+    "The compound companion of the OR-guarded case above: the guard is `(and (or (> (Bytes.len p) 5)
+           (= (Int64.of k) 2)) (< (Int64.of k) 10))` — a top-level `and` whose LEFT conjunct is itself a
+           disjunction. This pins the cadenza RE-EMIT's multi-conjunct guard handling: the guard is a
+           short-circuit AND-chain, so `parse_bin_len_cond`'s `flatten` splits the top-level `and` into TWO
+           conjuncts — `[(or (> …) (= …)), (< (Int64.of k) 10)]` — neither of which is a recognized
+           length/literal/non-negativity probe, so both are routed to the arm's user-guard list and then
+           RE-COMBINED into one `(and …)` surface guard. Before the multi-conjunct recombination this shape
+           exceeded the single-guard cap and declined CDZ0900; it now re-emits `(guard (bin (u8 k) (bytes p k))
+           (and (or …) (< …)))` idempotently (re-lowering re-flattens to the same ordered conjunct list). On
+           wasm this exercises nested short-circuit `Core::And` emit (the inner `or` is `is_and = false`). n=2 →
+           `[2, 65, 66]`: k=2, `p` = `[65, 66]` (len 2, exact), guard `(and (or (2>5) (2=2)) (2<10))` =
+           `(and (or F T) T)` = TRUE → 100 + 2 = 102. n=1 → `[1, 65, 66]`: k=1, `p` = `[65]`, byte 66 left
+           unconsumed → the sizeless arm cannot match the whole input → -1.")
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k))
+             (and (or (> (Bytes.len p) 5) (= (Int64.of k) 2)) (< (Int64.of k) 10)))
+            (+ 100 (Bytes.len p)))
+          (_ -1)))
+      (def (main (: n Int64)) (f (bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 102 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))
+
+(case
   "NESTED guarded dependent-size bin arms over a runtime scrutinee emit a valid module"
   (doc
     "Two guarded dependent-size bin matches nested INSIDE one another, the outer's dependent payload `p`
