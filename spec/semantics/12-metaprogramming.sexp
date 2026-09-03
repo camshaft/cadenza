@@ -4587,10 +4587,11 @@ c")))
 ; macro use. These pin the lift over a value that arrives at RUN TIME through the export boundary: the
 ; scalar reaches `ast-lift` as a live operand, is wrapped, reconstructed by eval, and computed on.
 ; `lower_ast_lift` has a per-type arm (Int64→Ast.Int, Bool→Ast.Bool, Float64→Ast.Float, String→Ast.Str);
-; the Int/Bool/Float arms are pinned over a genuine runtime scalar here. The STRING arm is NOT pinned at
-; run time because a `String` parameter can't cross the export boundary this harness calls through (a
-; plain `String`-param export declines identically, so the decline is the boundary, not the lift) — its
-; runtime lift stays witnessed by the literal/String-op cases above.
+; ALL FOUR are pinned over a genuine runtime scalar here — Int/Bool/Float below, and the STRING arm via
+; the String-param case at the end (a read-only `String` parameter DOES cross the export boundary now — a
+; plain `(String.byte-len s)`-style export compiles — so the earlier "a String parameter can't cross this
+; harness's boundary" justification is stale; the lift wraps a runtime String into Ast.Str and eval reads
+; it back).
 (case
   "an active unquote lifts a RUNTIME integer operand, not only a constant"
   (doc
@@ -4626,6 +4627,23 @@ c")))
   (input (do (def (main (: x Float64)) (eval (quasiquote (+ (unquote x) 1.5)))) (export main)))
   (call main (: 2.5 Float64))
   (output (: 4.0 Float64)))
+
+(case
+  "an active unquote lifts a RUNTIME string operand, not only a constant"
+  (doc
+    "The String arm of the runtime lift, completing the four `lower_ast_lift` arms: `(main s) =
+           (eval `(String.byte-len ,s))` called with s=\"hello\" → 5, s=\"hi\" → 2. `s` is a runtime String
+           parameter (arrives via the `(call)`, not compile-time-constant), so the active unquote wraps its
+           live value with the `String→Ast.Str` arm and eval reconstructs the string to measure it. A
+           read-only String parameter crosses the export boundary (a plain `String.byte-len s` export
+           compiles), so the arm is witnessable at run time — the boundary is not the obstruction the older
+           doc assumed. A const-only reify declines this; a lift that mis-wraps the String payload measures
+           the wrong length.")
+  (input (do (def (main (: s String)) (eval (quasiquote (String.byte-len (unquote s))))) (export main)))
+  (call main (: "hello" String))
+  (output (: 5 Int64))
+  (call main (: "hi" String))
+  (output (: 2 Int64)))
 
 ; --- `quote` is a grammar head in EXPRESSION position, not a reserved DEFINITION name -------------
 ; `quote`/`quasiquote` are grammar forms the resolver dispatches STRUCTURALLY only when they head an
