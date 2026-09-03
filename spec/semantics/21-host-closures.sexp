@@ -27,8 +27,9 @@
            closure crosses to the host as a callable resource.")
   (input (do (def (main) (fn ((: x Int64)) (+ x 1))) (export main)))
   (call main (: 5 Int64))
+  (drop)
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The SAME exported closure invoked with a different argument — the host mints a fresh handle (`make`) and
 ; calls it, showing the resource + its `call` dispatch are reusable, and that the result tracks the input.
@@ -60,8 +61,9 @@
            a handle → `call(handle, 5)` = 105. Pins the borrow<t> repeatable-callback `call` end-to-end.")
   (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
   (call adder (: 100 Int64) (: 5 Int64))
+  (drop)
   (output (: 105 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The repeatable `borrow<t>` `call` extends to the VALUE-FORM result closures too (byte-rope / compound /
 ; collection — all cross `call` as `list<u8>`): the cell is kept across calls, the transient result handle is
@@ -78,8 +80,9 @@
            borrow<t> repeatable `call` on a value-form (compound) result end-to-end.")
   (input (do (def (pair (: k Int64)) (fn ((: x Int64)) #tuple(x (+ x k)))) (export pair)))
   (call pair (: 100 Int64) (: 5 Int64))
+  (drop)
   (output (: (tuple 5 105) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A closure whose body MULTIPLIES rather than adds — a different lifted code selected through the same
 ; call_indirect boundary, proving the resource carries the RIGHT closure code (its funcref-table slot).
