@@ -373,6 +373,15 @@ lex), same-type-only (cross-type `valRank` unobservable), DECLINES on floats. **
 2. **`valueEq` compares set/map POSITIONALLY** (order-sensitive), but sets/maps are UNORDERED — two equal
    sets/maps built in different insertion orders would false-unequal. Fix `valueEq` to be order-independent for
    set/map (mutual containment via `valueEq`; no total order needed) — a real latent bug beyond `value-*`.
+   - PARTIAL PROGRESS: the `.vec` (List) arm was MISSING (two lists fell through to `false`); added as a
+     POSITIONAL compare (lists ARE ordered, mirrors `.array`/Tuple) — clean, worklist-based, no termination risk.
+   - REMAINING (set/map order-independence): sets are DEDUPED + stored in INSERTION order (`setInsert` appends),
+     so equal ⟺ `size ==` + one-direction containment (`∀x∈e1, ∃y∈e2, valueEq x y`); maps = key-set eq + matching
+     values. CONSTRAINT: the ∃-search recurses inside `List.any`/`all` lambdas, which Lean's STRUCTURAL
+     termination checker does NOT see through (the existing `valueEqWork` deliberately uses a FLAT worklist +
+     `fuel` decrease to stay total). So the fix needs either `termination_by`/well-founded on `fuel`, or a
+     `partial def` (native_decide still evaluates partials — all 42 witnesses are native_decide, zero rfl, so
+     partial is safe here). Pair with v-lean-oracle on the total formulation before building.
 
 ## Gate coverage
 
