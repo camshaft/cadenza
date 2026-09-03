@@ -1222,3 +1222,87 @@ pub(super) fn mentions_decl(ty: &crate::ty::Ty, decl: crate::ast::StructId) -> b
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod mentions_decl_tests {
+    //! Pin the CONTAINER-FOLLOWING behavior of `mentions_decl` — the subtle half that distinguishes it
+    //! from the by-value Box-sizing detectors (`reaches_decl`/`variant_is_recursive`, which deliberately
+    //! SKIP List/Map/Set because a heap pointer breaks the Rust SIZE cycle). `mentions_decl` MUST follow
+    //! List/Set/Map/Qty because `types::rust_type` erases a newtype THROUGH a container element and emits
+    //! the bare undeclared decl name at the self-reference. This is the guard both #7913 (newtype-erasure
+    //! representability, breaker rose-tree rt9) and #7931 (value-doc recursive-sum HANG) rest on — a
+    //! future refactor that "unified" it with `reaches_decl` would silently re-open a `cannot find type
+    //! Rose` miscompile / an infinite compile loop, so pin the follow-through here at the ms level.
+    use super::mentions_decl;
+    use crate::ast::StructId;
+    use crate::ty::{IntTy, Ty, Unit};
+
+    const D: StructId = StructId(7); // the target decl
+    const OTHER: StructId = StructId(8); // an unrelated decl (negative control)
+
+    fn sum(decl: StructId) -> Ty {
+        Ty::Sum {
+            decl,
+            args: std::rc::Rc::from([] as [Ty; 0]),
+        }
+    }
+    fn int() -> Ty {
+        Ty::Int(IntTy::i64())
+    }
+    fn boxed(t: Ty) -> Box<Ty> {
+        Box::new(t)
+    }
+
+    #[test]
+    fn a_direct_sum_mention_is_found() {
+        assert!(mentions_decl(&sum(D), D));
+    }
+
+    #[test]
+    fn a_list_element_self_reference_is_followed() {
+        // `(type Rose (Node Int64 (List Rose)))` — the μ back-edge rides the LIST element; the by-value
+        // detectors skip it, so `mentions_decl` following the element is what stops the dangling emit.
+        assert!(mentions_decl(&Ty::List(boxed(sum(D))), D));
+    }
+
+    #[test]
+    fn a_set_element_self_reference_is_followed() {
+        assert!(mentions_decl(&Ty::Set(boxed(sum(D))), D));
+    }
+
+    #[test]
+    fn a_map_key_or_value_self_reference_is_followed() {
+        assert!(mentions_decl(&Ty::Map(boxed(sum(D)), boxed(int())), D));
+        assert!(mentions_decl(&Ty::Map(boxed(int()), boxed(sum(D))), D));
+    }
+
+    #[test]
+    fn a_qty_inner_self_reference_is_followed() {
+        assert!(mentions_decl(
+            &Ty::Qty {
+                inner: boxed(sum(D)),
+                unit: Unit::base("meter"),
+            },
+            D
+        ));
+    }
+
+    #[test]
+    fn a_mention_nested_through_a_tuple_then_a_list_is_found() {
+        let ty = Ty::Tuple(std::rc::Rc::from([int(), Ty::List(boxed(sum(D)))]));
+        assert!(mentions_decl(&ty, D));
+    }
+
+    #[test]
+    fn a_container_of_an_unrelated_decl_is_not_a_mention() {
+        // Negative control: following containers must not over-report — a List of a DIFFERENT sum decl
+        // is not a self-reference (or a finite recursive sum's unrelated field would wrongly decline).
+        assert!(!mentions_decl(&Ty::List(boxed(sum(OTHER))), D));
+    }
+
+    #[test]
+    fn a_container_of_a_plain_scalar_is_not_a_mention() {
+        assert!(!mentions_decl(&Ty::List(boxed(int())), D));
+        assert!(!mentions_decl(&Ty::Map(boxed(int()), boxed(int())), D));
+    }
+}
