@@ -989,7 +989,7 @@ pub(super) fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Co
 /// single time, read by two occurrences (the `__` prefix cannot collide with a source name). The operand
 /// node `r` is spliced verbatim into the binding (it is already resolved/typed in this scope; the original
 /// `Rational.truncate` apply node is fully replaced by this subtree's core, so the splice reparents cleanly
-/// exactly as `partial_ctor_eta_closure` splices its supplied args). `resolve_subtree` classifies the synth
+/// exactly as `partial_head_eta_closure` splices its supplied args). `resolve_subtree` classifies the synth
 /// nodes; `core_of` on the root produces the derivation's Core (the same shape a hand-written source
 /// expression lowers to — verified to compile + run: `7/2 → 3`, `-7/2 → -3`).
 pub(super) fn lower_rational_truncate(db: &mut Db, r: StructId) -> Core {

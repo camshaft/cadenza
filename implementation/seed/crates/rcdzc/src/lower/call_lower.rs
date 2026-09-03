@@ -203,20 +203,24 @@ pub(crate) fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core>
     }
 }
 
-/// A PARTIALLY-applied constructor `(T.Mk 10)` as a runtime value: synthesize the equivalent
-/// explicit lambda over the REMAINING payloads, splicing the already-supplied args into the body so they
-/// are CAPTURED by the closure — `(fn (__eta0 …__eta{r-1}) (ctor <supplied…> __eta0 …))`. This is exactly
-/// the shape a source `(fn (y) (T.Mk 10 y))` takes, which lowers+runs correctly today. The supplied args
+/// A PARTIALLY-applied CURRYABLE HEAD — a constructor `(T.Mk 10)` OR a built-in operation `(String.slice s
+/// 0)` / `(List.at l)` — as a runtime value: synthesize the equivalent explicit lambda over the REMAINING
+/// params, splicing the already-supplied args into the body so they are CAPTURED by the closure — `(fn
+/// (__eta0 …__eta{r-1}) (head <supplied…> __eta0 …))`. This is exactly the shape a source `(fn (y) (T.Mk 10
+/// y))` / `(fn (b) (String.slice s 0 b))` takes, which lowers+runs correctly today. The supplied args
 /// become free variables in the lambda body → the lambda-lift captures them into the closure env, and the
 /// lifted func reads them back — no bare-scalar-in-a-handle-slot (the miscompile). `supplied` are the args
-/// already applied (`< arity`); the lambda binds the `arity - supplied.len()` remaining payloads.
-pub(super) fn partial_ctor_eta_closure(
+/// already applied (`< arity`); the lambda binds the `arity - supplied.len()` remaining params, whose types
+/// come from the head's own `scheme_of` arrow chain (works uniformly for a ctor and an operation prim — the
+/// same scheme `infer::is_builtin_partial_application` walks to decide the partial). `None` on a bare
+/// (`m == 0`) or full/over (`m >= arity`) application — the caller keeps its existing handling for those.
+pub(super) fn partial_head_eta_closure(
     db: &mut Db,
-    ctor_head: StructId,
+    head: StructId,
     supplied: &[StructId],
 ) -> Option<Core> {
     let mut fresh = crate::unify::Fresh::new();
-    let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;
+    let scheme = crate::eval::scheme_of(db, head, &mut fresh)?;
     let inst = crate::unify::instantiate(&scheme, &mut fresh);
     let mut payload_tys: Vec<crate::ty::Ty> = Vec::new();
     let mut cur = inst;
@@ -226,15 +230,15 @@ pub(super) fn partial_ctor_eta_closure(
     }
     let m = supplied.len();
     if m == 0 || m >= payload_tys.len() {
-        return None; // not a genuine partial (bare ctor → eta_ctor_closure; full/over → the build path)
+        return None; // not a genuine partial (bare head → eta_ctor_closure; full/over → the build path)
     }
     let r = payload_tys.len() - m; // remaining params to eta-abstract
-    // Body: `(ctor supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The supplied occurrences are the
+    // Body: `(head supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The supplied occurrences are the
     // caller's own arg nodes (already lowered/typed in this scope), spliced verbatim so they capture.
     let remaining_occs: Vec<StructId> =
         (0..r).map(|k| db.push_name(&format!("__eta{k}"))).collect();
     let mut body_children = Vec::with_capacity(1 + m + r);
-    body_children.push(ctor_head);
+    body_children.push(head);
     for &a in supplied {
         body_children.push(a);
     }
@@ -270,7 +274,7 @@ pub(super) fn partial_ctor_eta_closure(
 /// which lowers+runs correctly today: the synthesized body is a FULL application of `g` (→ `Core::CallClosure`),
 /// and the lambda-lift captures `g` + the supplied args into the residual closure's env (no bare-scalar-in-a-
 /// handle-slot — the miscompile the old under-arity `CallClosure` produced). The runtime-closure twin of
-/// [`partial_ctor_eta_closure`]; `supplied` are the args already applied (`< arity`), the lambda binds the
+/// [`partial_head_eta_closure`]; `supplied` are the args already applied (`< arity`), the lambda binds the
 /// `arity - supplied.len()` remaining params, whose types come from the closure's curried arrow type.
 pub(super) fn partial_closure_eta_closure(
     db: &mut Db,
@@ -1060,11 +1064,11 @@ pub(super) fn synth_operator_eta(
 /// A PARTIALLY-applied binary OPERATOR `(+ 1)` / `(< 3)` as a first-class curried value: synthesize the
 /// equivalent explicit lambda over the REMAINING operand, splicing the already-supplied operand into the
 /// body so it is CAPTURED — `(fn (__eta0) (<op> <supplied> __eta0))`. This is exactly the shape a source
-/// `(fn (b) (+ 1 b))` takes, which lowers+runs today (the binop twin of [`partial_ctor_eta_closure`]).
+/// `(fn (b) (+ 1 b))` takes, which lowers+runs today (the binop twin of [`partial_head_eta_closure`]).
 /// Operators curry (operator ruling), so `(+ 1)` is `\b. 1 + b`: the supplied operand is the FIRST, the
 /// eta binds the SECOND. `head`/`supplied` are the caller's own occurrences, spliced verbatim (the original
 /// `(op supplied)` apply this replaces is discarded, so the single-parent invariant holds — as in
-/// `partial_ctor_eta_closure`). The eta param types as the SUPPLIED operand's type (a binop's two operands
+/// `partial_head_eta_closure`). The eta param types as the SUPPLIED operand's type (a binop's two operands
 /// share one type), with an unground Int width defaulted, so `lower_lambda_value` types it without needing
 /// the operator's own polymorphic scheme (whose params are quantified vars). `(- e)` is UNARY NEGATION, a
 /// distinct construct handled before this — Sub never reaches here.
@@ -1081,7 +1085,7 @@ pub(super) fn partial_binop_eta(db: &mut Db, head: StructId, supplied: StructId)
     let eta_binder = db.push_name("__eta0");
     let eta_ref = db.push_name("__eta0");
     // `(head supplied __eta0)` — reuse the caller's operator head + supplied operand verbatim (spliced,
-    // like `partial_ctor_eta_closure`), the eta the fresh second operand.
+    // like `partial_head_eta_closure`), the eta the fresh second operand.
     let body = db.push_list(vec![head, supplied, eta_ref]);
     let params_list = db.push_list(vec![eta_binder]);
     let fn_head = db.push_name("fn");
