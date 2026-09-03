@@ -22,6 +22,7 @@ inductive Ty where
   | int (width : Nat) (signed : Bool)   -- fixed-width integers (I8…I64/U8…U64)
   | bool | unit | string | char | bytes   -- `bytes` (T1.39): a param-less leaf like `string` (a heap byte-sequence)
   | rational                               -- `rational` (T1.44): a param-less leaf — exact rational, totally ordered
+  | bigint                                 -- `bigint` (T1.46): a param-less leaf — arbitrary-precision integer
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
   | record (fields : List (ByteArray × Ty))  -- CLOSED record, fields sorted by key + unique (ts:70-74)
@@ -197,12 +198,19 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .floatVar i, .float w => .ok ((i, .float w) :: s)
   | .float w, .floatVar i => .ok ((i, .float w) :: s)
   | .float w1, .float w2 => if w1 == w2 then .ok s else .error "CDZ0203"
+  -- an int LITERAL grounds to BigInt (BigInt is an INTEGER type, so a `.numVar` unifies with it exactly as
+  -- with a fixed width — 06-numeric-model:1233-1235: a bare literal adopts its bigint peer / an i64-
+  -- overflowing literal grounds to bigint; and `Int64.of`/`UInt8.of` narrowing a bigint source works because
+  -- their fresh-numVar arg absorbs it). This is UNLIKE Rational (a distinct numeric kind → ascription-only).
+  | .numVar i, .bigint => .ok ((i, .bigint) :: s)
+  | .bigint, .numVar i => .ok ((i, .bigint) :: s)
   | .bool, .bool => .ok s
   | .unit, .unit => .ok s
   | .string, .string => .ok s
   | .char, .char => .ok s
   | .bytes, .bytes => .ok s
   | .rational, .rational => .ok s
+  | .bigint, .bigint => .ok s
   | .fn d1 c1, .fn d2 c2 => do let s ← unify d1 d2 s; unify c1 c2 s
   | .tuple e1, .tuple e2 =>
       if e1.length == e2.length then
@@ -440,6 +448,7 @@ partial def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
               | some "Float64" => some (.float 64)
               | some "Float32" => some (.float 32)
               | some "Rational" => some .rational
+              | some "BigInt" => some .bigint
               | some "Ordering" => some orderingTy
               | _ => none)
            | _ => none)
@@ -817,22 +826,31 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
             | some aId, some bId => do
                 let (τa, st) ← inferE m env st aId
                 let (τb, st) ← inferE m env st bId
-                let st ← unifyInfer τa τb st
-                match applySubst st.subst τa with
-                | .int w sg => .ok (.int w sg, st)
-                | .numVar _ => .ok (.int 64 true, st)     -- unconstrained int literal(s) → numeric, default Int
-                -- T1.41 — FLOAT arithmetic: `+ - * /` on floats → the float type (kept width-POLY: return the
-                -- resolved operand, so `(: (+ 1.0 2.0) Float32)` still resolves; a lingering floatVar defaults
-                -- to Float64 at escape). `%` (remainder) on a float is CDZ0301 — floats have NO remainder
-                -- (18-units-of-measure:2456 "no float remainder"; exact/float division is total). Matches rcdzc.
-                | .float w => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.float w, st)
-                | .floatVar i => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.floatVar i, st)
-                -- T1.44 — RATIONAL arithmetic: `+ - * /` → Rational (exact). `%` → CDZ0301 (no remainder on
-                -- exact/floating arithmetic — 18-units-of-measure:2429, same carve-out as float).
-                | .rational => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.rational, st)
-                | .never => .ok (.never, st)
-                | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
-                | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
+                -- T1.46 — BigInt does NOT silently promote a bare literal in ARITHMETIC (06-numeric:0394): a
+                -- (bigint, numVar-literal) mix is CDZ0301 — EVEN THOUGH comparison/ascription/`of` DO ground
+                -- a literal to bigint (via the numVar↔bigint unify arm). Guard it BEFORE unify grounds it.
+                match applySubst st.subst τa, applySubst st.subst τb with
+                | .bigint, .numVar _ | .numVar _, .bigint => .error (.illTyped "CDZ0301")
+                | _, _ => do
+                  let st ← unifyInfer τa τb st
+                  match applySubst st.subst τa with
+                  | .int w sg => .ok (.int w sg, st)
+                  | .numVar _ => .ok (.int 64 true, st)     -- unconstrained int literal(s) → numeric, default Int
+                  -- T1.41 — FLOAT arithmetic: `+ - * /` on floats → the float type (kept width-POLY: return the
+                  -- resolved operand, so `(: (+ 1.0 2.0) Float32)` still resolves; a lingering floatVar defaults
+                  -- to Float64 at escape). `%` (remainder) on a float is CDZ0301 — floats have NO remainder
+                  -- (18-units-of-measure:2456 "no float remainder"; exact/float division is total). Matches rcdzc.
+                  | .float w => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.float w, st)
+                  | .floatVar i => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.floatVar i, st)
+                  -- T1.44 — RATIONAL arithmetic: `+ - * /` → Rational (exact). `%` → CDZ0301 (no remainder on
+                  -- exact/floating arithmetic — 18-units-of-measure:2429, same carve-out as float).
+                  | .rational => if h == "%".toUTF8 then .error (.illTyped "CDZ0301") else .ok (.rational, st)
+                  -- T1.46 — BIGINT arithmetic: `+ - * / %` ALL yield BigInt (it is an INTEGER — remainder IS
+                  -- defined, unlike float/rational — and arbitrary precision never traps/overflows).
+                  | .bigint => .ok (.bigint, st)
+                  | .never => .ok (.never, st)
+                  | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
+                  | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
             | _, _ => .error (.unsupported "type oracle: malformed arithmetic (unary or partial)")
           else if (h == "not".toUTF8 && children.size == 2)
                || ((h == "and".toUTF8 || h == "or".toUTF8) && children.size == 3) then
@@ -1803,16 +1821,39 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                                                      | .error e => .error e)
                                  | .error e => .error e)
                   | none => .error (.unsupported "type oracle: malformed Rational.of-int"))
-               else if (op == "value".toUTF8 || op == "neg".toUTF8 || op == "truncate".toUTF8) && children.size == 2 then
-                 -- receiver is a Rational; value/neg → Rational, truncate → Int64.
+               else if (op == "value".toUTF8 || op == "neg".toUTF8 || op == "truncate".toUTF8
+                        || op == "numerator".toUTF8 || op == "denominator".toUTF8) && children.size == 2 then
+                 -- receiver is a Rational; value/neg → Rational, truncate → Int64, numerator/denominator →
+                 -- BigInt (either component can exceed i64 — T1.46 modeled BigInt).
                  (match children[1]? with
                   | some rId => (match inferE m env st rId with
                                  | .ok (τr, st1) => (match unifyInfer τr .rational st1 with
-                                                     | .ok st2 => .ok (if op == "truncate".toUTF8 then .int 64 true else .rational, st2)
+                                                     | .ok st2 =>
+                                                       let res : Ty :=
+                                                         if op == "truncate".toUTF8 then .int 64 true
+                                                         else if op == "numerator".toUTF8 || op == "denominator".toUTF8 then .bigint
+                                                         else .rational
+                                                       .ok (res, st2)
                                                      | .error e => .error e)
                                  | .error e => .error e)
                   | none => .error (.unsupported "type oracle: malformed Rational unary op"))
-               else .error (.unsupported "type oracle: unmodeled Rational op (e.g. numerator/denominator → BigInt)")
+               else .error (.unsupported "type oracle: unmodeled Rational op")
+             else if q == "BigInt".toUTF8 then
+               -- T1.46 — BigInt OPS `(BigInt.<op> …)` (sigs from prelude.rs bigint_module): `of (Int a) →
+               -- BigInt` (exact widening, total); `neg (BigInt) → BigInt`. A non-int/non-bigint arg → CDZ0203.
+               (match children[1]? with
+                | none => .error (.unsupported "type oracle: malformed BigInt op (no arg)")
+                | some aId =>
+                  (match inferE m env st aId with
+                   | .error e => .error e
+                   | .ok (τa, st1) =>
+                     if op == "of".toUTF8 && children.size == 2 then
+                       -- source is any fixed-width int → unify with a fresh numVar.
+                       (match unifyInfer τa (.numVar st1.next) { st1 with next := st1.next + 1 } with
+                        | .ok st2 => .ok (.bigint, st2) | .error e => .error e)
+                     else if op == "neg".toUTF8 && children.size == 2 then
+                       (match unifyInfer τa .bigint st1 with | .ok st2 => .ok (.bigint, st2) | .error e => .error e)
+                     else .error (.unsupported "type oracle: unmodeled BigInt op")))
              else if q == "Char".toUTF8 then
                -- T1.45 — Char OPS `(Char.<op> …)` (sigs from prelude.rs char_module): `to-int (Char) → Int64`
                -- (total scalar-value read); `from-int (Int64) → (Option Char)` (fallible int→char — an out-of-
@@ -2733,6 +2774,16 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
                            .list #[13, 9, 12]],
                 root := 14 } == .wellTyped (.int 64 true))
+-- T1.46 (BigInt op): `(do (def (main) (BigInt.of 5)) (export main))` → WellTyped BigInt.
+-- `of` widens a fixed-width int to arbitrary precision. (BigInt arith incl. `%` → BigInt; a numeric literal
+-- annotated BigInt grounds; Rational.numerator/denominator now → BigInt.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "BigInt".toUTF8, .name "of".toUTF8, .intLit false .dec (ByteArray.mk #[5]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .list #[3, 4], .atom 2,
+                           .list #[6], .atom 1, .list #[8, 7, 5], .atom 7, .atom 2, .list #[10, 11], .atom 0,
+                           .list #[13, 9, 12]],
+                root := 14 } == .wellTyped .bigint)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
