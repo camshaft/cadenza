@@ -362,6 +362,62 @@ matching is structural VALUE-equality (champ_eq), NOT handle identity. The CONSU
 `map-remove`/`map-merge`) with their dup-and-drop ownership transfer are W5.2b-2; iteration/`to-list`
 (canonical order, co-owned with v-lean-oracle) is W5.2c. -/
 
+/-! ### Canonical scalar-key ordering (`scalarOrdKey`/`keyLe`/`sortBy`) — hoisted ABOVE `valueEqWork` because
+the order-independent set/map equality arms sort by it (Lean can't forward-reference a `def`). Used by both
+`valueEqWork`'s `.set`/`.map` arms AND `map-to-list`/`set-to-list`. -/
+
+/-- The canonical sort key of a scalar handle: `(rank, payload)` lexicographic — Bool (rank 0, false<true) <
+Int (rank 1, signed value); a non-scalar sorts last (rank 2). Immediate-aware. -/
+def scalarOrdKey (s : HeapState) (h : UInt32) : Nat × Int :=
+  if isImmediate h then
+    if immIsBool h then (0, if immAsBool h then 1 else 0)
+    else if immIsInt h then (1, u64Signed (immAsIntBits h))
+    else (2, 0)
+  else match s.getObj? h with
+    | some o => match o.value with
+      | .bool b   => (0, if b then 1 else 0)
+      | .int bits => (1, u64Signed bits)
+      | _         => (2, 0)
+    | none => (2, 0)
+
+/-- Unsigned byte-wise lexicographic compare of two byte lists: a proper PREFIX is LESS (shorter-first), then
+equal. Matches Core's `Eval.cmpBytes` (compare byte-by-byte as `UInt8`; the one that runs out first is lesser),
+so Str/Bytes scalar keys sort exactly as `cmpValue`/`canonicalizeValue` order them. -/
+def cmpBytesLex : List UInt8 → List UInt8 → Ordering
+  | [],      []      => .eq
+  | [],      _ :: _  => .lt
+  | _ :: _,  []      => .gt
+  | a :: as, b :: bs => if a < b then .lt else if b < a then .gt else cmpBytesLex as bs
+
+/-- The byte list of a handle that names a live heap `.bytes` buffer (a String/Bytes scalar key), else `none`
+(immediates and non-bytes objects). Lets `keyLe` order Str/Bytes keys lexicographically. -/
+def bytesOf? (s : HeapState) (h : UInt32) : Option (List UInt8) :=
+  if isImmediate h then none
+  else match s.getObj? h with
+    | some o => match o.value with | .bytes bs => some bs.toList | _ => none
+    | none => none
+
+/-- `h1`'s key ≤ `h2`'s key in canonical order. Str/Bytes keys compare by unsigned byte-lex (`cmpBytesLex`,
+matching Core's `cmpBytes`); everything else falls back to `scalarOrdKey` (Bool false<true < Int signed). Set
+elements / map keys are HOMOGENEOUS (compiler-enforced), so only same-type compares actually occur — the
+cross-type fallthrough is never hit in practice but keeps `keyLe` a TOTAL order. -/
+def keyLe (s : HeapState) (h1 h2 : UInt32) : Bool :=
+  match s.bytesOf? h1, s.bytesOf? h2 with
+  | some a, some b => match cmpBytesLex a b with | .gt => false | _ => true
+  | _, _ =>
+    let (r1, p1) := s.scalarOrdKey h1
+    let (r2, p2) := s.scalarOrdKey h2
+    r1 < r2 || (r1 == r2 && p1 ≤ p2)
+
+/-- Stable insertion of `x` into a key-sorted list (by `keyLe` on the extracted key handle). -/
+def sortInsBy {α : Type} (s : HeapState) (key : α → UInt32) (x : α) : List α → List α
+  | []      => [x]
+  | y :: ys => if s.keyLe (key x) (key y) then x :: y :: ys else y :: s.sortInsBy key x ys
+
+/-- Sort by canonical key order (stable insertion sort; the keys are unique so stability is moot). -/
+def sortBy {α : Type} (s : HeapState) (key : α → UInt32) (l : List α) : List α :=
+  l.foldr (fun x acc => s.sortInsBy key x acc) []
+
 /-- Structural VALUE-equality over a worklist of handle pairs — the key/elem match for map/set ops. Same
 shape + equal scalar payloads, recursing into array/map children positionally (matches champ_eq's structural
 walk); handle identity short-circuits. Fuel-bounded tail recursion on a decreasing `Nat` (the proven
@@ -936,59 +992,9 @@ the elements in canonical VALUE order; `map-to-list` → `List (Tuple k v)` wher
 2-element array `[key, value]` in canonical KEY order, each component dup'd from the map (co-owned alongside
 it, matching value_codec.rs `op_map_to_list`). Canonical order = v-lean-oracle's `cmpValue` (Int signed,
 Bool false<true; String/Bytes lexicographic arrive with W5.3). An unorderable (non-scalar) key never reaches
-here — the compiler rejects it upstream (CDZ0203) — so we order scalar keys and sort any non-scalar last. -/
-
-/-- The canonical sort key of a scalar handle: `(rank, payload)` lexicographic — Bool (rank 0, false<true) <
-Int (rank 1, signed value); a non-scalar sorts last (rank 2). Immediate-aware. -/
-def scalarOrdKey (s : HeapState) (h : UInt32) : Nat × Int :=
-  if isImmediate h then
-    if immIsBool h then (0, if immAsBool h then 1 else 0)
-    else if immIsInt h then (1, u64Signed (immAsIntBits h))
-    else (2, 0)
-  else match s.getObj? h with
-    | some o => match o.value with
-      | .bool b   => (0, if b then 1 else 0)
-      | .int bits => (1, u64Signed bits)
-      | _         => (2, 0)
-    | none => (2, 0)
-
-/-- Unsigned byte-wise lexicographic compare of two byte lists: a proper PREFIX is LESS (shorter-first), then
-equal. Matches Core's `Eval.cmpBytes` (compare byte-by-byte as `UInt8`; the one that runs out first is lesser),
-so Str/Bytes scalar keys sort exactly as `cmpValue`/`canonicalizeValue` order them. -/
-def cmpBytesLex : List UInt8 → List UInt8 → Ordering
-  | [],      []      => .eq
-  | [],      _ :: _  => .lt
-  | _ :: _,  []      => .gt
-  | a :: as, b :: bs => if a < b then .lt else if b < a then .gt else cmpBytesLex as bs
-
-/-- The byte list of a handle that names a live heap `.bytes` buffer (a String/Bytes scalar key), else `none`
-(immediates and non-bytes objects). Lets `keyLe` order Str/Bytes keys lexicographically. -/
-def bytesOf? (s : HeapState) (h : UInt32) : Option (List UInt8) :=
-  if isImmediate h then none
-  else match s.getObj? h with
-    | some o => match o.value with | .bytes bs => some bs.toList | _ => none
-    | none => none
-
-/-- `h1`'s key ≤ `h2`'s key in canonical order. Str/Bytes keys compare by unsigned byte-lex (`cmpBytesLex`,
-matching Core's `cmpBytes`); everything else falls back to `scalarOrdKey` (Bool false<true < Int signed). Set
-elements / map keys are HOMOGENEOUS (compiler-enforced), so only same-type compares actually occur — the
-cross-type fallthrough is never hit in practice but keeps `keyLe` a TOTAL order. -/
-def keyLe (s : HeapState) (h1 h2 : UInt32) : Bool :=
-  match s.bytesOf? h1, s.bytesOf? h2 with
-  | some a, some b => match cmpBytesLex a b with | .gt => false | _ => true
-  | _, _ =>
-    let (r1, p1) := s.scalarOrdKey h1
-    let (r2, p2) := s.scalarOrdKey h2
-    r1 < r2 || (r1 == r2 && p1 ≤ p2)
-
-/-- Stable insertion of `x` into a key-sorted list (by `keyLe` on the extracted key handle). -/
-def sortInsBy {α : Type} (s : HeapState) (key : α → UInt32) (x : α) : List α → List α
-  | []      => [x]
-  | y :: ys => if s.keyLe (key x) (key y) then x :: y :: ys else y :: s.sortInsBy key x ys
-
-/-- Sort by canonical key order (stable insertion sort; the keys are unique so stability is moot). -/
-def sortBy {α : Type} (s : HeapState) (key : α → UInt32) (l : List α) : List α :=
-  l.foldr (fun x acc => s.sortInsBy key x acc) []
+here — the compiler rejects it upstream (CDZ0203) — so we order scalar keys and sort any non-scalar last. The
+canonical-order helpers themselves (`scalarOrdKey`/`keyLe`/`cmpBytesLex`/`sortBy`) are hoisted up near
+`valueEqWork` — which also sorts by them for its order-independent set/map arms. -/
 
 /-- `map-to-list(m, desc) → List (Tuple k v)` [BORROWS m + desc]: the entries as fresh 2-element `[k, v]`
 arrays in canonical KEY order, wrapped as a list. Each `k`/`v` is dup'd (the tuple co-owns alongside the
