@@ -1269,3 +1269,30 @@
   (call main (: 7 Int64))
   (output (: #tuple((Symbol.of "alpha") 7) (Tuple Symbol Int64)))
   (live-objects known-leak))
+
+; syx1: the full Symbol ROUND-TRIP identity on a RUNTIME symbol — Symbol.of (Symbol.to-string s) = s.
+; The pins above cover the two half-trips: to-string(of("lit")) = "lit" (content round-trip) and
+; of(concat…) = #"lit" (a from-parts symbol equals the literal, interning identity). syx1 closes
+; the loop the OTHER direction over a runtime-selected symbol: take s (chosen at run time), project
+; its string, re-intern it, and the result is EQUAL to the original — reconstructing a symbol from
+; its own text lands on the SAME interned value (O(1) content equality). Also reads its byte-len and
+; a string-content compare. s=#"alpha" (n>0): 5 + 100 + 1000 = 1105; s=#"beta": 4 + 0 + 1000 = 1004.
+; A re-intern that produced a fresh non-equal symbol (interning-by-allocation-order) breaks the 1000
+; digit. (breaker probe sy4, verified tri-target exact + byte-idempotent, scalar.)
+(case
+  "a runtime symbol round-trips through to-string and of back to an equal symbol"
+  (input
+    (do
+      (def (mk (: b Bool)) (if b #"alpha" #"beta"))
+      (def
+        (main (: n Int64))
+        (let
+          ((s (mk (> n 0))))
+          (+ (String.byte-len (Symbol.to-string s))
+             (+ (* 100 (if (= (Symbol.to-string s) "alpha") 1 0))
+                (* 1000 (if (= s (Symbol.of (Symbol.to-string s))) 1 0))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1105 Int64))
+  (call main (: 0 Int64))
+  (output (: 1004 Int64)))
