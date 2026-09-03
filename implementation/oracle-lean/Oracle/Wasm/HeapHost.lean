@@ -641,16 +641,25 @@ def mapInsert : HeapState → List Value → HeapResult
           match (List.range (entries.size / 2)).find? (fun i => s.valueEq (entries[2 * i]!) k) with
           | some i =>
             let result := entries.set! (2 * i + 1) v
-            let keep := (List.range entries.size).filterMap
-              (fun j => if j == 2 * i + 1 then none else some entries[j]!)
-            let s1 := keep.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.map result)
-            .ret [.i32 r] ((s2.dropH m).dropH k)
+            if o.rc == 1 && !o.immortal then
+              -- UNIQUE: reuse `m` in place; replace the value slot with `v`, free the OLD value + the incoming
+              -- duplicate key `k` (the map keeps its existing key). No dup of survivors, no drop of `m`.
+              .ret [.i32 m] (((s.dropH (entries[2 * i + 1]!)).dropH k).setObj m { o with value := .map result })
+            else
+              let keep := (List.range entries.size).filterMap
+                (fun j => if j == 2 * i + 1 then none else some entries[j]!)
+              let s1 := keep.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.map result)
+              .ret [.i32 r] ((s2.dropH m).dropH k)
           | none =>
             let result := (entries.push k).push v
-            let s1 := entries.toList.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.map result)
-            .ret [.i32 r] (s2.dropH m)
+            if o.rc == 1 && !o.immortal then
+              -- UNIQUE: reuse `m` in place; absorb `(k, v)` (ownership moved in). No dup, no drop.
+              .ret [.i32 m] (s.setObj m { o with value := .map result })
+            else
+              let s1 := entries.toList.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.map result)
+              .ret [.i32 r] (s2.dropH m)
         | _ => .trap s!"map-insert: handle {m} is not a map"
   | s, _ => .trap "map-insert: expected (i32, i32, i32)"
 
@@ -670,9 +679,15 @@ def mapRemove : HeapState → List Value → HeapResult
           | some i =>
             let keep := (List.range entries.size).filterMap
               (fun j => if j == 2 * i || j == 2 * i + 1 then none else some entries[j]!)
-            let s1 := keep.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.map keep.toArray)
-            .ret [.i32 r] (s2.dropH m)
+            if o.rc == 1 && !o.immortal then
+              -- UNIQUE: reuse `m` in place; free ONLY the removed key+value (m drops its refs), no dup, no drop
+              -- of `m`. (BORROWS the query key `k` — never dropped.)
+              .ret [.i32 m] (((s.dropH (entries[2 * i]!)).dropH (entries[2 * i + 1]!)).setObj m
+                { o with value := .map keep.toArray })
+            else
+              let s1 := keep.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.map keep.toArray)
+              .ret [.i32 r] (s2.dropH m)
         | _ => .trap s!"map-remove: handle {m} is not a map"
   | s, _ => .trap "map-remove: expected (i32, i32)"
 
@@ -777,7 +792,8 @@ def setInsert : HeapState → List Value → HeapResult
   | s, _ => .trap "set-insert: expected (i32, i32)"
 
 /-- `set-remove(s, elem) → s'` [consumes s, BORROWS elem]: s without the element value-equal to elem (the
-removed stored element is freed by the consumed set's cascade). ABSENT elem = no-op identity. -/
+removed stored element is freed). ABSENT elem = no-op identity. FBIP: at `rc == 1` reuse `s`'s node in place +
+return the SAME handle (free only the removed element); `rc > 1`/immortal keeps copy-then-drop. See `setInsert`. -/
 def setRemove : HeapState → List Value → HeapResult
   | s, [.i32 st, .i32 elem] =>
     match s.getObj? st with
@@ -791,9 +807,13 @@ def setRemove : HeapState → List Value → HeapResult
           | some i =>
             let keep := (List.range elems.size).filterMap
               (fun j => if j == i then none else some elems[j]!)
-            let s1 := keep.foldl (fun acc h => acc.dupH h) s
-            let (r, s2) := s1.alloc (.set keep.toArray)
-            .ret [.i32 r] (s2.dropH st)
+            if o.rc == 1 && !o.immortal then
+              -- UNIQUE: reuse `st` in place; free ONLY the removed element (st drops its ref), no dup, no drop of st.
+              .ret [.i32 st] ((s.dropH (elems[i]!)).setObj st { o with value := .set keep.toArray })
+            else
+              let s1 := keep.foldl (fun acc h => acc.dupH h) s
+              let (r, s2) := s1.alloc (.set keep.toArray)
+              .ret [.i32 r] (s2.dropH st)
         | _ => .trap s!"set-remove: handle {st} is not a set"
   | s, _ => .trap "set-remove: expected (i32, i32)"
 
@@ -2132,6 +2152,54 @@ private def probeSetInsertRc1Reuse : Bool :=
     | _ => false
   | _ => false
 example : probeSetInsertRc1Reuse = true := by native_decide
+
+/-- FBIP rc==1 reuse for set-remove: `set-remove({1,2}, 1)` on a UNIQUE set reuses in place (SAME handle),
+yields `{2}`, and a single drop of that handle balances to 0 (no double-free). -/
+private def probeSetRemoveRc1Reuse : Bool :=
+  match setEmpty ({} : HeapState) [] with
+  | .ret [.i32 se] s0 =>
+    let e1 : UInt32 := match boxInt s0 [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+    let e2 : UInt32 := match boxInt s0 [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+    match setInsert s0 [.i32 se, .i32 e1] with
+    | .ret [.i32 a1] s1 =>
+      match setInsert s1 [.i32 a1, .i32 e2] with
+      | .ret [.i32 sh] s2 =>                        -- s = {1,2} (rc==1)
+        match setRemove s2 [.i32 sh, .i32 e1] with
+        | .ret [.i32 rh] s3 =>                       -- remove 1 → {2}
+          (rh == sh) &&
+          (match setSize s3 [.i32 rh] with | .ret [.i32 1] _ => true | _ => false) &&
+          (match drop s3 [.i32 rh] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeSetRemoveRc1Reuse = true := by native_decide
+
+/-- FBIP rc==1 reuse for map-insert (absent key) + map-remove: build `{1:10}` (rc==1), insert `2:20` (reuse →
+SAME handle, 2 entries), then remove key 1 (reuse → SAME handle, 1 entry); a single drop balances to 0. -/
+private def probeMapRc1Reuse : Bool :=
+  let k1 : UInt32 := match boxInt ({} : HeapState) [.i64 1]  with | .ret [.i32 h] _ => h | _ => 0
+  let k2 : UInt32 := match boxInt ({} : HeapState) [.i64 2]  with | .ret [.i32 h] _ => h | _ => 0
+  let v1 : UInt32 := match boxInt ({} : HeapState) [.i64 10] with | .ret [.i32 h] _ => h | _ => 0
+  let v2 : UInt32 := match boxInt ({} : HeapState) [.i64 20] with | .ret [.i32 h] _ => h | _ => 0
+  match mapEmpty ({} : HeapState) [] with
+  | .ret [.i32 me] s0 =>
+    match mapInsert s0 [.i32 me, .i32 k1, .i32 v1] with
+    | .ret [.i32 m1] s1 =>                           -- {1:10} (rc==1)
+      match mapInsert s1 [.i32 m1, .i32 k2, .i32 v2] with
+      | .ret [.i32 m2] s2 =>                         -- insert 2:20 → reuse
+        (m2 == m1) &&
+        (match mapSize s2 [.i32 m2] with | .ret [.i32 2] _ => true | _ => false) &&
+        (match mapRemove s2 [.i32 m2, .i32 k1] with
+         | .ret [.i32 m3] s3 =>                       -- remove key 1 → reuse
+           (m3 == m2) &&
+           (match mapSize s3 [.i32 m3] with | .ret [.i32 1] _ => true | _ => false) &&
+           (match drop s3 [.i32 m3] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+         | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeMapRc1Reuse = true := by native_decide
 
 /-- set-intersection: {1.0,2.0} ∩ {2.0,3.0} = {2.0}: size 1, and dropping the result returns the census to 0
 (a's non-shared 1.0 plus all of b freed, no leak). -/
