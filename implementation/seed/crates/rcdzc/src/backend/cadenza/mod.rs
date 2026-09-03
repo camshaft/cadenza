@@ -1609,9 +1609,18 @@ fn emit_expr_viewed(
         // range re-reads as out-of-range for Int64 (CDZ0201, "it fits `UInt64`; annotate it (: … UInt64)") —
         // a round-trip break the bare literal caused (breaker-confirmed: `(: 18446744073709551615 UInt64)`).
         // Emit the DIRECT ascription `(: <v> <IntTy>)` (mirrors the `BigInt` arm just below + the `ConstFloat`
-        // non-64-width ascription). Scoped to the VERIFIED classes — unsigned OR value out of i64 range; an
-        // in-range signed value keeps the bare literal via the next arm (default Int64 needs no ascription).
-        Core::ConstInt(v) if matches!(&eff_ty, Ty::Int(it) if !it.ground_signed() || v.to_i64().is_none()) =>
+        // non-64-width ascription). Ascribe whenever the literal would NOT re-ground to its own type as a bare
+        // literal: an UNSIGNED value, a value beyond the i64 range, OR a NON-DEFAULT WIDTH (Int8/Int16/Int32/…).
+        // A bare integer literal re-grounds to the DEFAULT signed `Int64` on recompile, so a fixed narrow width
+        // is LOST — harmless at a position whose context re-recovers the type (a signature/param/arith sibling),
+        // but a CONTAINER ELEMENT (a `#tuple`/`#list`/`#set`/`#map` element, a Map key/value) has no such
+        // recovery, so the element widens to Int64 (v-cdz-smith: `(tuple (: 6 Int8) (: 7 Int32))` re-emitted
+        // `#tuple(6 7)` → `(Tuple Int64 Int64)`). Ascribing the width preserves it uniformly across every
+        // container + position; the redundant ascription where context already fixes the width is value-correct
+        // and byte-idempotent. A DEFERRED width grounds to 64 (`ground_width`), so a default `Int64` still emits
+        // bare via the next arm — only a FIXED non-64 width is ascribed.
+        Core::ConstInt(v)
+            if matches!(&eff_ty, Ty::Int(it) if !it.ground_signed() || it.ground_width() != 64 || v.to_i64().is_none()) =>
         {
             // The ascription type is built by `int_module_ast` (NOT `render_name`): it yields the RECOMPILABLE
             // surface — a bare `UInt64`/`Int32` for a standard width, but the CTOR form `(UInt 48)` for a
