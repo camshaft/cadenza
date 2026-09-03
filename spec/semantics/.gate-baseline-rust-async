@@ -9007,4 +9007,4 @@ todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environmen
 pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 pass	splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly
-todo	a bare-literal payload in a module-member-type ctor grounds to the field type (idealistic)
+todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
