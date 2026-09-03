@@ -1199,6 +1199,41 @@
   (call main (: 258 Int64) (: 300 Int64))
   (output (: 200300 Int64)))
 
+(case
+  "a GUARDED dependent-size arm over a runtime scrutinee reads the dependent payload in both the guard and body"
+  (doc
+    "The runtime companion of the constant-scrutinee guarded dependent-read cases: `f` matches
+           `(guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1))` — the leading `(u8 k)` sizes the
+           dependent `(bytes p k)`, and the guard AND the body both read `p`'s length. `main` builds the
+           bytes at RUN TIME (`(bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))`) so the match runs through the
+           wasm backend (a constant scrutinee would fold the whole arm away, never exercising emit).
+           n=2 → bytes `[2, 65, 66]`: k=2, `p` = the two trailing bytes `[65, 66]` (len 2, exactly
+           consuming the input), guard `2 > 1` holds → body `1000 + 2` = 1002. n=1 → `[1, 65, 66]`:
+           k=1, `p` = `[65]` but byte 66 is left unconsumed, so the sizeless arm cannot match the whole
+           input and falls to `_` → -1.
+           Pins that a guarded dependent-size arm emits a VALID module over a runtime scrutinee. Before,
+           the arm predicate's length probe (`bytes-len == byte_offset + k`, a checked `off + k` add over
+           the i64 `(u8 k)` read) stashed `k` in an i64 scratch slot, and the guard's `(bytes p k)`
+           `BinSizedRead` — emitted at the SAME base as the predicate rather than above its high-water —
+           reused that slot index for its i32 bytes handle, declaring one wasm local at two widths →
+           `type mismatch: expected i32, found i64` at validation (breaker cg3c). The `Core::And` that
+           joins the predicate and the guard now floats the guard's scratch above the predicate's
+           high-water, the same disjoint-slot discipline the `if`-branch and checked-arith paths apply.")
+  (input
+    (do
+      (def
+        (f (: b Bytes))
+        (match
+          b
+          ((guard (bin (u8 k) (bytes p k)) (> (Bytes.len p) 1)) (+ 1000 (Bytes.len p)))
+          (_ -1)))
+      (def (main (: n Int64)) (f (bin (u8 (UInt8.wrap n)) (u8 65) (u8 66))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 1002 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))
+
 ; A runtime `(bin …)` construction result IS a Bytes value (this file's opening: "expression position
 ; `(bin …)` CONSTRUCTS a Bytes value"), so it must be `=`-comparable like any Bytes. It builds a FRESH
 ; owned Bytes on the rope heap — exactly as `Bytes.of` does — so as an operand of the borrowing `=` it is
