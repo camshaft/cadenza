@@ -49,6 +49,7 @@ inductive HeapValue where
   | map     (entries : Array UInt32)
   | set     (elems : Array UInt32)
   | vec     (elems : Array UInt32)
+  | bytes   (bs : Array UInt8)
 deriving Repr, DecidableEq, Inhabited, BEq
 
 /-- The number of owned child handles a value carries (0 for a scalar; the slot count for an array/map/set/
@@ -370,6 +371,7 @@ def valueEqWork : Nat → HeapState → List (UInt32 × UInt32) → Bool
         | .float a,   .float b   => a == b && valueEqWork fuel s rest
         | .float32 a, .float32 b => a == b && valueEqWork fuel s rest
         | .bool a,    .bool b     => a == b && valueEqWork fuel s rest
+        | .bytes a,   .bytes b   => a == b && valueEqWork fuel s rest
         | .array e1,  .array e2  =>
           e1.size == e2.size && valueEqWork fuel s (e1.toList.zip e2.toList ++ rest)
         | .map e1,    .map e2    =>
@@ -909,6 +911,103 @@ def setToList : HeapState → List Value → HeapResult
         | _ => .trap s!"set-to-list: handle {st0} is not a set"
   | s, _ => .trap "set-to-list: expected (i32, i32)"
 
+/-! ### Bytes + strings (W5.3a) — a packed immutable byte buffer (runtime.wit 13–16 + `bytes-scalar-at` +
+`str-from-bytes` 85). A `bytes` value is a flat `Array UInt8` with NO child handles (drop frees just the
+buffer). String and Bytes SHARE this ONE heap representation (per v-runtime: the Str-vs-Bytes distinction is a
+value-encode DESCRIPTOR, never a heap-node variant, and no raw op distinguishes them — `str-get` reads the same
+buffer as `bytes-get`). `str-from-bytes` UTF-8-validates + re-tags (same handle) or yields NULL; `bytes-scalar-
+at` UTF-8-walks to a scalar. The rope ops (`bytes-concat`/`-slice`/`-compact`, with slice-pins-parent sharing)
+are W5.3b. `str-new`/`str-get` are NOT emitted (lowerable:false → String is built from bytes);
+`str-nfc-normalize` stays unmodeled (a module using it skips, sound). -/
+
+/-- `bytes-alloc(len) → buf`: a fresh byte buffer of `len` zero bytes (rc 1; heap even when empty). -/
+def bytesAlloc : HeapState → List Value → HeapResult
+  | s, [.i32 len] => s.box (.bytes ((List.replicate len.toNat (0 : UInt8)).toArray))
+  | s, _          => .trap "bytes-alloc: expected (i32)"
+
+/-- `bytes-set(buf, i, val) → buf`: store byte `val` (low 8 bits; the compiler guarantees 0–255) at index `i`,
+threading the buffer handle back. OOB traps. -/
+def bytesSet : HeapState → List Value → HeapResult
+  | s, [.i32 buf, .i32 i, .i32 val] =>
+    match s.getObj? buf with
+    | none   => .trap s!"bytes-set: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-set: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          if i.toNat < bs.size then
+            .ret [.i32 buf] (s.setObj buf { o with value := .bytes (bs.set! i.toNat val.toUInt8) })
+          else .trap s!"bytes-set: index {i} out of bounds (len {bs.size})"
+        | _ => .trap s!"bytes-set: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-set: expected (i32, i32, i32)"
+
+/-- `bytes-get(buf, i) → val`: the byte at index `i` as a u32 (BORROWS). OOB traps. -/
+def bytesGet : HeapState → List Value → HeapResult
+  | s, [.i32 buf, .i32 i] =>
+    match s.getObj? buf with
+    | none   => .trap s!"bytes-get: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-get: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          match bs[i.toNat]? with
+          | some b => .ret [.i32 b.toUInt32] s
+          | none   => .trap s!"bytes-get: index {i} out of bounds (len {bs.size})"
+        | _ => .trap s!"bytes-get: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-get: expected (i32, i32)"
+
+/-- `bytes-len(buf) → len`: the byte count. -/
+def bytesLen : HeapState → List Value → HeapResult
+  | s, [.i32 buf] =>
+    match s.getObj? buf with
+    | none   => .trap s!"bytes-len: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-len: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs => .ret [.i32 bs.size.toUInt32] s
+        | _         => .trap s!"bytes-len: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-len: expected (i32)"
+
+/-- The UTF-8 scalars (codepoints) of a byte buffer, or `none` if ill-formed — via the stdlib validator. -/
+def utf8Scalars? (bs : Array UInt8) : Option (List UInt32) :=
+  (String.fromUTF8? (ByteArray.mk bs)).map (fun str => str.toList.map (fun c => c.val))
+
+/-- `bytes-scalar-at(buf, i) → codepoint`: the `i`-th Unicode SCALAR of the buffer's UTF-8; an out-of-range or
+ill-formed index returns `0xFFFFFFFF` (the compiler maps that to `None` in `(Option Char)`). BORROWS. -/
+def bytesScalarAt : HeapState → List Value → HeapResult
+  | s, [.i32 buf, .i32 i] =>
+    if isImmediate buf then .ret [.i32 0xFFFFFFFF] s
+    else match s.getObj? buf with
+    | none   => .trap s!"bytes-scalar-at: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bytes-scalar-at: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          match utf8Scalars? bs with
+          | some cps => .ret [.i32 ((cps[i.toNat]?).getD 0xFFFFFFFF)] s
+          | none     => .ret [.i32 0xFFFFFFFF] s
+        | _ => .trap s!"bytes-scalar-at: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bytes-scalar-at: expected (i32, i32)"
+
+/-- `str-from-bytes(buf) → str | NULL` [CONSUMES buf]: STRICT UTF-8 validate. VALID → the SAME handle re-tagged
+String (String and Bytes are one heap rep, so this is identity; ownership moves buf→result, rc unchanged).
+INVALID → drop buf, return NULL (`0`); the compiler wraps the result into `Option` (NULL→None). An immediate
+buf is a fine empty string → returned as-is. -/
+def strFromBytes : HeapState → List Value → HeapResult
+  | s, [.i32 buf] =>
+    if isImmediate buf then .ret [.i32 buf] s
+    else match s.getObj? buf with
+    | none   => .trap s!"str-from-bytes: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"str-from-bytes: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          match String.fromUTF8? (ByteArray.mk bs) with
+          | some _ => .ret [.i32 buf] s            -- valid: same handle becomes the String (consumed→returned)
+          | none   => .ret [.i32 0] (s.dropH buf)  -- invalid UTF-8: drop the buffer, return NULL
+        | _ => .trap s!"str-from-bytes: handle {buf} is not a byte buffer"
+  | s, _ => .trap "str-from-bytes: expected (i32)"
+
 end HeapState
 
 /-! ### HostFn wrappers + the name-keyed table W5.1c turns into a `HostRegistry`. -/
@@ -974,6 +1073,13 @@ def heapHostOps : List (String × HostFn HeapState) :=
     -- map/set enumeration (W5.2c): the program-observable, canonical value-sorted `to-list`
   , ("map-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.mapToList)
   , ("set-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.setToList)
+    -- bytes + strings (W5.3a): packed byte buffer + UTF-8; concat/slice/compact rope = W5.3b
+  , ("bytes-alloc",        toHostFn [.i32]                   [.i32]  HeapState.bytesAlloc)
+  , ("bytes-set",          toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.bytesSet)
+  , ("bytes-get",          toHostFn [.i32, .i32]             [.i32]  HeapState.bytesGet)
+  , ("bytes-len",          toHostFn [.i32]                   [.i32]  HeapState.bytesLen)
+  , ("bytes-scalar-at",    toHostFn [.i32, .i32]             [.i32]  HeapState.bytesScalarAt)
+  , ("str-from-bytes",     toHostFn [.i32]                   [.i32]  HeapState.strFromBytes)
     -- lists (vec-*, growable sequence); concat/prepend/of-arr = a later slice
   , ("vec-empty",          toHostFn []                       [.i32]  HeapState.vecEmpty)
   , ("vec-len",            toHostFn [.i32]                   [.i32]  HeapState.vecLen)
@@ -1408,5 +1514,76 @@ private def probeSetToList : Bool :=
     | _ => false
   | _ => false
 example : probeSetToList = true := by native_decide
+
+/-! #### W5.3a: bytes + strings witnesses — round-trip, UTF-8 validate/reject, scalar walk, leak balance. -/
+
+/-- bytes round-trip: alloc 3, set bytes "Hi!" (72,105,33), read them back, len 3, OOB traps, drop → 0. -/
+private def probeBytesRoundtrip : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 3] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 72] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 b, .i32 1, .i32 105] with
+      | .ret [.i32 _] s2 =>
+        match bytesSet s2 [.i32 b, .i32 2, .i32 33] with
+        | .ret [.i32 _] s3 =>
+          (match bytesLen s3 [.i32 b]         with | .ret [.i32 3] _  => true | _ => false) &&
+          (match bytesGet s3 [.i32 b, .i32 0] with | .ret [.i32 72] _ => true | _ => false) &&
+          (match bytesGet s3 [.i32 b, .i32 2] with | .ret [.i32 33] _ => true | _ => false) &&
+          (match bytesGet s3 [.i32 b, .i32 3] with | .trap _ => true | _ => false) &&
+          (match drop s3 [.i32 b] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBytesRoundtrip = true := by native_decide
+
+/-- str-from-bytes on VALID UTF-8 ("Hi"): returns the SAME handle (non-NULL, == buf), dropping it → 0. -/
+private def probeStrFromBytesValid : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 72] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 b, .i32 1, .i32 105] with
+      | .ret [.i32 _] s2 =>
+        match strFromBytes s2 [.i32 b] with
+        | .ret [.i32 str] s3 =>
+          (str != 0) && (str == b) &&
+          (match drop s3 [.i32 str] with | .ret [] s4 => s4.liveCount == 0 | _ => false)
+        | _ => false
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeStrFromBytesValid = true := by native_decide
+
+/-- str-from-bytes on INVALID UTF-8 (lone 0xFF): returns NULL and CONSUMES (drops) the buffer → census 0. -/
+private def probeStrFromBytesInvalid : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 1] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 0xFF] with
+    | .ret [.i32 _] s1 =>
+      match strFromBytes s1 [.i32 b] with
+      | .ret [.i32 str] s2 => (str == 0) && (s2.liveCount == 0)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeStrFromBytesInvalid = true := by native_decide
+
+/-- bytes-scalar-at over a 2-byte UTF-8 scalar "é" (0xC3 0xA9 → U+00E9 = 233): scalar 0 = 233, scalar 1 is
+out-of-range → 0xFFFFFFFF; drop → 0. Proves the UTF-8 walk (not a raw byte read). -/
+private def probeBytesScalarAt : Bool :=
+  match bytesAlloc ({} : HeapState) [.i32 2] with
+  | .ret [.i32 b] s0 =>
+    match bytesSet s0 [.i32 b, .i32 0, .i32 0xC3] with
+    | .ret [.i32 _] s1 =>
+      match bytesSet s1 [.i32 b, .i32 1, .i32 0xA9] with
+      | .ret [.i32 _] s2 =>
+        (match bytesScalarAt s2 [.i32 b, .i32 0] with | .ret [.i32 233] _ => true | _ => false) &&
+        (match bytesScalarAt s2 [.i32 b, .i32 1] with | .ret [.i32 0xFFFFFFFF] _ => true | _ => false) &&
+        (match drop s2 [.i32 b] with | .ret [] s3 => s3.liveCount == 0 | _ => false)
+      | _ => false
+    | _ => false
+  | _ => false
+example : probeBytesScalarAt = true := by native_decide
 
 end Oracle.Heap
