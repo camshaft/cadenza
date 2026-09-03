@@ -1030,3 +1030,69 @@
   (output (: 13 Int64))
   (call main (: 10 Int64))
   (output (: -1 Int64)))
+
+; tbx1/tbx2: the try x BIN-MATCH x EFFECTS conjunction, pinned as a twin pair. tbx1 (PASS) is the
+; MATCH-spelled control: a performing bin-parse helper ((bin (u8 137) (u8 x)) whose Ok payload adds
+; a tick) matched under the handler, the Ok arm performing a second tick — folds exact
+; (-99579 + 11n: Ok leg (42+n)*10 + (n+1), Err leg -1). tbx2 (TODO) is the SAME program with the
+; match spelled as `try` + boundary re-wrap: it declines CDZ0900 today (the try distribution over
+; the performing helper exceeds the tail-resumptive fold), even though try x bin WITHOUT effects
+; folds (verified) and the match twin folds — the gap is precisely try x performing-operand under a
+; handler. Idealistic values identical to the twin by construction. Flips with the try-under-effects
+; fold increment; the twin guards the match spelling meanwhile. (breaker probes tb1-tb3, tick 1502;
+; twin verified tri-target exact + byte-idempotent + census TRUE-0 on the fresh debug runtime.)
+(case
+  "a performing bin-parse matched under its handler folds with both ticks threaded"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (parse (: b Bytes))
+        (:
+          (match b ((bin (u8 137) (u8 x)) (Ok (+ (Int64.of x) (C.tick)))) (_ (Err "bad")))
+          (Result Int64 String)))
+      (def
+        (run (: n Int64) (: k Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (match
+            (parse (Bytes.of #list((UInt8.of k) 42)))
+            ((Ok v) (+ (* v 10) (C.tick)))
+            ((Err _e) -1))))
+      (def (main (: n Int64)) (+ (run n 137) (* 100000 (run n 1))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -99579 Int64))
+  (call main (: 3 Int64))
+  (output (: -99546 Int64)))
+
+(case
+  "the try spelling of the performing bin-parse folds once try-under-effects lands"
+  (input
+    (do
+      (effect C (op tick (-> Int64)))
+      (def
+        (parse (: b Bytes))
+        (:
+          (match b ((bin (u8 137) (u8 x)) (Ok (+ (Int64.of x) (C.tick)))) (_ (Err "bad")))
+          (Result Int64 String)))
+      (def
+        (run (: n Int64) (: k Int64))
+        (handle
+          C
+          n
+          ((tick () s (resume s (+ s 1))))
+          (match
+            (:
+              (let ((v (try (parse (Bytes.of #list((UInt8.of k) 42)))))) (Ok (+ (* v 10) (C.tick))))
+              (Result Int64 String))
+            ((Ok v) v)
+            ((Err _e) -1))))
+      (def (main (: n Int64)) (+ (run n 137) (* 100000 (run n 1))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -99579 Int64))
+  (call main (: 3 Int64))
+  (output (: -99546 Int64)))
