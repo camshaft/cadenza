@@ -5249,6 +5249,29 @@ fn try_emit_bin_match(
     let body_expected: Option<Ty> = expected
         .clone()
         .or_else(|| Some(crate::infer::type_of(db, body)));
+    // A 2-param sum (`Result`) whose arm builds only ONE variant leaves the OTHER type param a free `Var` in
+    // the match's own result type — an `Ok` arm cannot fix `Result`'s ERROR param, so `body_expected` reads
+    // `Result(Int64, ?)` and the `(Ok …)` SumNew still declines "under-determined sum type" (where the
+    // one-param `Option` recovers fully from its `Some` payload — #8129). Fill the free arg(s) from the SIBLING
+    // arm bodies' types: the `(Err "bad")` arm supplies `Result(?, String)`, resolving the pair to
+    // `Result(Int64, String)`. Only fires when `body_expected` still has a free arg; a residual unfillable arg
+    // keeps the existing decline (never a miscompile).
+    let body_expected: Option<Ty> = body_expected.map(|be| {
+        if ty_has_free_arg(&be) {
+            let sib_bodies: Vec<StructId> = arms
+                .iter()
+                .map(|a| a.body)
+                .chain(std::iter::once(catchall))
+                .collect();
+            let sibs: Vec<Ty> = sib_bodies
+                .iter()
+                .map(|&s| crate::infer::type_of(db, s))
+                .collect();
+            fill_free_sum_args(&be, &sibs)
+        } else {
+            be
+        }
+    });
     let mut children = vec![match_head, scrut_node];
     for arm in &arms {
         // Build `(bin <seg>…)` — a LITERAL segment `(uN <lit>)` (a magic-number / tag probe), a BINDER segment
@@ -6518,6 +6541,49 @@ fn resolve_pos_ty(own: Option<Ty>, exp: Option<Ty>) -> Option<Ty> {
         Some(t) => Some(t),
         None => exp,
     }
+}
+
+/// Fill FREE type args in `base` (a `Ty::Sum`) from CONCRETE args in `others` (sibling arm-body types),
+/// position-wise for the SAME sum decl. A bin-match's arm bodies all produce the match's result type, but a
+/// variant that does NOT use a type param leaves that param free in the match's own type — e.g. an `Ok`
+/// arm leaves `Result`'s ERROR param a free `Var` (the `Ok` value can't fix it), so the whole re-emit
+/// declines "under-determined sum type". A sibling arm (`(Err "bad")` → `Result(?, String)`) supplies the
+/// missing param. Only `Ty::Sum` is filled (Option/Result are sums); any other shape or an unfillable
+/// position is returned as-is (conservative — a residual free arg simply keeps the existing decline path,
+/// never a miscompile). Not recursive: the corpus case is a single-level Result/Option.
+fn fill_free_sum_args(base: &Ty, others: &[Ty]) -> Ty {
+    if let Ty::Sum { decl, args } = base
+        && ty_has_free_arg(base)
+    {
+        let filled: Vec<Ty> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                if ty_has_free_arg(a) {
+                    others
+                        .iter()
+                        .find_map(|o| match o {
+                            Ty::Sum { decl: d2, args: a2 }
+                                if d2 == decl
+                                    && a2.len() == args.len()
+                                    && !ty_has_free_arg(&a2[i]) =>
+                            {
+                                Some(a2[i].clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| a.clone())
+                } else {
+                    a.clone()
+                }
+            })
+            .collect();
+        return Ty::Sum {
+            decl: *decl,
+            args: filled.into(),
+        };
+    }
+    base.clone()
 }
 
 fn ty_has_free_arg(ty: &Ty) -> bool {
