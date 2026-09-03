@@ -1534,6 +1534,33 @@ fn emit_expr_viewed(
                 let unit_node = crate::lower::unit_value_ast(b, &unit);
                 return Ok(b.list(vec![head, mag, unit_node]));
             }
+            // The PEEL complement of the `expected == Some(Ty::Qty …)` genuine-element arms above (#8089/#8091):
+            // a magnitude typed `Ty::Qty` but at a position expecting a NON-Qty type is an erased `Qty.value`
+            // PEEL — the value escapes AS its bare magnitude. This is the IF-JOIN quantity gap (v-inference /
+            // concierge units-seam): `(Qty.value (if b (Qty.of 1000 m) (Qty.of 500 m)))` re-emits its `if` arms
+            // with the peeled bare-inner `expected` (an `Int`, not `Qty`), so a const/computed arm magnitude
+            // reached `qty_disposition` and DECLINED CDZ0900 ("ambiguous magnitude-vs-quantity"). A Qty value can
+            // only reach a non-Qty numeric slot THROUGH `Qty.value`, so a non-Qty `expected` is an authoritative
+            // peel signal → emit the bare magnitude (viewed as the inner), matching the direct non-if-join peel
+            // `(Qty.value (Qty.of 1000 m))` → `1000`. Scale-INDEPENDENT (unlike the `Qty.of`-reconstructing arms
+            // above): `Qty.value` returns the quantity's stored magnitude — exactly the erased Core value — so a
+            // scaled unit (e.g. `Qty.of 1 kilometer` → `1`) peels correctly with no scale-multiply. Same const +
+            // runtime-magnitude core shapes as the two Qty-expected arms above.
+            if matches!(&expected, Some(t) if !matches!(t, Ty::Qty { .. }))
+                && matches!(
+                    core_of(db, id),
+                    Core::ConstInt(_)
+                        | Core::ConstFloat(_)
+                        | Core::ConstRational(..)
+                        | Core::Arith { .. }
+                        | Core::Convert { .. }
+                        | Core::BigIntBinOp { .. }
+                        | Core::RationalBinOp { .. }
+                        | Core::BigIntOfI64 { .. }
+                )
+            {
+                return emit_expr_viewed(db, b, id, Some(inner.clone()), None, env, emitted);
+            }
             match qty_disposition(db, id) {
                 NominalDisp::Construct => {
                     let head = member_access(b, "Qty", "of");
