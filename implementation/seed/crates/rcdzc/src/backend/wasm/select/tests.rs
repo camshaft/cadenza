@@ -3484,3 +3484,47 @@ fn map_to_list_drops_its_baked_descriptor_after_the_borrowing_op() {
         f.code
     );
 }
+
+// ── lgx1-fix part-2 fence narrowing (`result_reaches_binder_or_heapchild`) — the UAF-guard coverage the
+//    corpus does NOT pin. PAIRWISE/PASCAL corpus cases protect the LEAK-FIX side (fence does NOT fire for a
+//    fresh construction); these two pin the UAF-GUARD side (fence FIRES for a heap-child extraction of the
+//    accumulator) + the extraction-set coverage. A future removal of an op from the extraction set would drop
+//    the first test to false → under-cover → reintroduce the epilogue-deep-drop UAF, uncaught by the corpus. ──
+
+#[test]
+fn result_reaches_binder_fires_for_a_heap_child_extraction_of_the_param() {
+    // A terminal that EXTRACTS a heap CHILD of the accumulator and returns it — `(. acc 0)` (a tuple
+    // projection) over a `Tuple (List Int64) Int64` (the projected first element is a heap child of `acc`) — MUST fire the
+    // predicate so the part-2 epilogue-drop fence FIRES; else the deep-drop of `acc`'s slot frees the escaped
+    // child → UAF (the sread/tr3 axis-B; v-mem rc-trace control (a)). Pins ListAt/SumExpect-reaching-binder
+    // coverage: removing an extraction op from `result_reaches_binder_or_heapchild` would flip this to false.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (g (: acc (Tuple (List Int64) Int64))) (. acc 0)) (def (main) 0) (export main))",
+    ));
+    let (params, body) = function_of(&mut db, "g");
+    let acc = params[0].0;
+    assert!(
+        result_reaches_binder_or_heapchild(&mut db, body, acc),
+        "a terminal extracting + returning a heap child of the param (. acc 0) MUST \
+         fire the fence — else the epilogue deep-drop of acc frees the escaped child (UAF)"
+    );
+}
+
+#[test]
+fn result_reaches_binder_does_not_fire_for_a_fresh_construction_consuming_the_param() {
+    // The other side of the narrowing: a FRESH construction that merely CONSUMES the accumulator —
+    // `(List.push acc 9)` — is NOT an extraction (it builds a fresh owned list, not a live view into `acc`),
+    // so the predicate must NOT fire → the fence does NOT suppress → the fresh owned result is reclaimed (the
+    // PAIRWISE/PASCAL leak-fix). Pins that the fence stays narrow: a change making a fresh construction fire
+    // the predicate would re-introduce the over-suppress leak the fix removed.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (h (: acc (List Int64))) (List.push acc 9)) (def (main) 0) (export main))",
+    ));
+    let (params, body) = function_of(&mut db, "h");
+    let acc = params[0].0;
+    assert!(
+        !result_reaches_binder_or_heapchild(&mut db, body, acc),
+        "a fresh construction consuming the param (List.push acc 9) is NOT an extraction → must NOT fire the \
+         fence (else the fresh owned result over-suppresses = the PAIRWISE/PASCAL leak)"
+    );
+}
