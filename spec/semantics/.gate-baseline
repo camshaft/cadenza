@@ -5528,6 +5528,7 @@ pass	a structurally-mismatched perform argument names the operation and the fiel
 pass	a sub-byte bit-field straddling a byte boundary re-emits (a read combining bits from two bytes)
 pass	a byte-aligned data segment following sub-byte bit-fields reads both binders
 todo	a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes
+todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
 pass	a subnormal float renders its full fractional expansion, not scientific or shortest (small-magnitude companion of f64::MAX)
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
