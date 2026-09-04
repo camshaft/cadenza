@@ -90,7 +90,11 @@ jobs:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       - uses: ./.github/actions/nix-store-cache
       - name: corpus-rust-gate-coarse (via nix — full corpus through the rust backend)
-        run: nix build .#checks.aarch64-linux.corpus-rust-gate-coarse --print-build-logs
+        # --option eval-cache false: force a FRESH flake eval so the verdict-grading gate always resolves the
+        # CURRENT-HEAD source-built compiler (cdzCompile is mkPhaseBin/crateClosure — source-pinned — so the
+        # drv already tracks source; this closes the stale-eval-cache footgun on a required verdict gate, same
+        # determinism gate-local forces, fleet.rs 2026-08-29). GATE-INTEGRITY (v-gha-green/v-effects fpr3).
+        run: nix build .#checks.aarch64-linux.corpus-rust-gate-coarse --print-build-logs --option eval-cache false
 
   # (The FULL wasm coarse gate is NOT a separate nightly job: checks.yml's `gate` job — called by the
   # `checks` job above — was repointed (FOLD B) to `nix build .#checks.<sys>.corpus-gate-coarse`, so
