@@ -1331,6 +1331,26 @@ fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
 }
 
 #[test]
+fn a_unit_arg_eta_peeled_closure_export_declines_not_e0061() {
+    // A zero-arg module-member call `(m.get)` where the module-member convention makes the export a
+    // `Unit -> T` closure — `(def (main) (m.get))` — eta-peels to `pub fn main(u: ())`. The gate driver
+    // calls the export with ZERO args (`prog::main()`), so a `()` parameter is an UN-BUILDABLE artifact
+    // (rustc E0061 "takes 1 argument but 0 were supplied"). A case the backend can't honestly cross MUST
+    // DECLINE, never emit source that fails to compile — matching wasm's Unit-closure-arg decline (breaker
+    // zmz1/#8317). The ARG twin of the Unit-RESULT export decline. (Independent of the module-member nullary
+    // convention ruling: a Unit arg has no host-boundary form regardless.)
+    let d = try_compile_rust(
+        "(do (module m (def (get) 42) (export get)) (def (main) (m.get)) (export main))",
+    )
+    .expect_err("a Unit-arg eta-peeled closure export must DECLINE, not emit an un-buildable E0061 artifact");
+    assert!(
+        d.iter()
+            .any(|m| m.contains("Unit argument does not cross the Rust export boundary")),
+        "the decline cites the Unit-argument export boundary (not an emitted E0061 artifact): {d:?}"
+    );
+}
+
+#[test]
 fn a_top_level_immediate_capture_free_lambda_export_eta_peels_to_a_plain_fn() {
     // ETA-PEEL: `(def (mk) (fn (p…) body))` — a nullary def whose whole body is an immediate, capture-free
     // lambda — is NOT a closure-resource export on the Rust target (which has no resource ABI). The gate
