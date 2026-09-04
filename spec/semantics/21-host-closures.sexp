@@ -8314,8 +8314,9 @@
       (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (fn ((: y Int64)) (g (* y 2)))))
       (export f)))
   (call f (: 100 Int64) (: 5 Int64))
+  (drop)
   (output (: 110 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "hcn2 a closure capturing a runtime-built MAP looks up by the call argument"
