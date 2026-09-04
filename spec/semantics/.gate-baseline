@@ -8405,6 +8405,8 @@ pass	hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mo
 pass	hce1 tuple-index projection of a captured tuple in a closure body folds and runs (dqe leg-1 through closure conversion)
 todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
 pass	hcn1 a closure CAPTURING another closure crosses and dispatches through it
+pass	hcn4 a borrowed captured closure applied TWICE in one body reclaims
+pass	hcn5 a borrowed captured closure applied in ONE if-arm reclaims
 pass	hcn2 a closure capturing a runtime-built MAP looks up by the call argument
 pass	hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero
 pass	hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)
