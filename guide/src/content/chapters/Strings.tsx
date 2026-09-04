@@ -62,10 +62,12 @@ export default function Strings() {
       <P>A string is a sequence of <em>characters</em> (Unicode scalar values), and <C>Char</C> is the type of a single one. A character literal is written <C>#\a</C>: a <C>#\</C> followed by the scalar. Its Unicode scalar value (its code point) is read with <C>Char.to-int</C>, so <C>#\a</C> is <C>97</C>:</P>
       <Runnable
         source={`(Char.to-int #\\a)`}
+        id="string-char-code"
       />
       <P><C>String.scalar-at</C> reads the character at a scalar position, the single-character companion of <C>slice</C>. Like <C>at</C> and <C>slice</C> it's fallible, returning an <C>Option Char</C>, so an out-of-range position is <C>None</C> rather than a trap. The character at position <C>1</C> of <C>"hello"</C> is <C>#\e</C>, whose scalar value is <C>101</C>:</P>
       <Runnable
         source={`(def (main) (Char.to-int (Option.expect (String.scalar-at "hello" 1) "in range")))`}
+        id="string-scalar-at"
       />
       <P><C>Char.to-int</C> reads a character's Unicode scalar value (its code point) as an <C>Int64</C>. It's <em>total</em>: every character has a code point, so it never fails. Going the other way, <C>Char.from-int</C> is <em>fallible</em>, since not every integer is a valid scalar, so it returns an <C>Option Char</C>. Code point <C>97</C> is <C>#\a</C>:</P>
       <Runnable
@@ -74,11 +76,13 @@ export default function Strings() {
       <P>Because <C>from-int</C> is fallible, the invalid cases are data, not crashes. Code point <C>55296</C> is <C>U+D800</C>, a surrogate that is never a standalone scalar, so <C>from-int</C> gives <C>None</C>, and this match takes the <C>None</C> arm to return <C>0</C>:</P>
       <Runnable
         source={`(def (main) (match (Char.from-int 55296) ((Some c) (Char.to-int c)) ((None) 0)))`}
+        id="string-surrogate"
       />
       <Why tenet="A character converts to and from an integer, honestly">Every character has an integer code point, so <C>Char.to-int</C> is total. But the reverse isn't, because the surrogate range and everything past <C>U+10FFFF</C> aren't scalar values, so <C>Char.from-int</C> returns an <C>Option</C> instead of inventing an ill-formed character. The type tells you which direction can fail.</Why>
       <P>Characters compare by their code point. <C>=</C> tests two characters for equality, and <C>&lt;</C>, <C>&gt;</C>, <C>&lt;=</C>, and <C>&gt;=</C> order them by scalar value, so <C>#\a</C> (code point 97) sorts before <C>#\z</C> (122) and this comparison is <C>true</C>:</P>
       <Runnable
         source={`(< #\\a #\\z)`}
+        id="string-char-cmp"
       />
       <P>Characters are one view of text. Underneath sits the raw encoding, the octets a file or a protocol actually carries. That's <em>bytes</em>, next.</P>
       <H2>Your turn</H2>

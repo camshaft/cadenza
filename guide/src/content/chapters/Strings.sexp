@@ -50,11 +50,13 @@
     (Option.expect (String.slice "hello world" 0 5) "in range")))))
   (p "The bounds count " (em "characters") ", the same as " (c "at") ", so slicing " (c "\"café\"") " from " (c "0") " to " (c "3") " gives the three characters " (c "\"caf\"") ", never splitting the two-byte " (c "é") " down the middle. A range where " (c "start") " equals " (c "end") " is a valid, empty slice (" (c "Some \"\"") "); one that runs off the end is " (c "None") ", not a trap.")
   (h2 "Characters")
-  (p "A string is a sequence of " (em "characters") " (Unicode scalar values), and " (c "Char") " is the type of a single one. A character literal is written " (c "#\\a") ": a " (c "#\\") " followed by the scalar. Its Unicode scalar value (its code point) is read with " (c "Char.to-int") ", so " (c "#\\a") " is " (c "97") ":")
+  (p "A string is a sequence of " (em "characters") " (Unicode scalar values), and " (c "Char") " is the type of a single one. A character literal is written " (c "#\\a") ": a " (c "#\\") " followed by the scalar. Its Unicode scalar value (its code point) is read with " (c "Char.to-int") ", so " (c "#\\a") " is " (result (of "string-char-code") 97) ":")
   (runnable
+    (id "string-char-code")
     (source (Char.to-int #\a)))
-  (p (c "String.scalar-at") " reads the character at a scalar position, the single-character companion of " (c "slice") ". Like " (c "at") " and " (c "slice") " it's fallible, returning an " (c "Option Char") ", so an out-of-range position is " (c "None") " rather than a trap. The character at position " (c "1") " of " (c "\"hello\"") " is " (c "#\\e") ", whose scalar value is " (c "101") ":")
+  (p (c "String.scalar-at") " reads the character at a scalar position, the single-character companion of " (c "slice") ". Like " (c "at") " and " (c "slice") " it's fallible, returning an " (c "Option Char") ", so an out-of-range position is " (c "None") " rather than a trap. The character at position " (c "1") " of " (c "\"hello\"") " is " (c "#\\e") ", whose scalar value is " (result (of "string-scalar-at") 101) ":")
   (runnable
+    (id "string-scalar-at")
     (source (def (main)
   (Char.to-int
     (Option.expect (String.scalar-at "hello" 1) "in range")))))
@@ -63,15 +65,17 @@
     (source (def (main)
   (Char.to-int
     (Option.expect (Char.from-int 97) "valid scalar")))))
-  (p "Because " (c "from-int") " is fallible, the invalid cases are data, not crashes. Code point " (c "55296") " is " (c "U+D800") ", a surrogate that is never a standalone scalar, so " (c "from-int") " gives " (c "None") ", and this match takes the " (c "None") " arm to return " (c "0") ":")
+  (p "Because " (c "from-int") " is fallible, the invalid cases are data, not crashes. Code point " (c "55296") " is " (c "U+D800") ", a surrogate that is never a standalone scalar, so " (c "from-int") " gives " (c "None") ", and this match takes the " (c "None") " arm to return " (result (of "string-surrogate") 0) ":")
   (runnable
+    (id "string-surrogate")
     (source (def (main)
   (match (Char.from-int 55296)
     ((Some c) (Char.to-int c))
     ((None) 0)))))
   (why (tenet "A character converts to and from an integer, honestly") "Every character has an integer code point, so " (c "Char.to-int") " is total. But the reverse isn't, because the surrogate range and everything past " (c "U+10FFFF") " aren't scalar values, so " (c "Char.from-int") " returns an " (c "Option") " instead of inventing an ill-formed character. The type tells you which direction can fail.")
-  (p "Characters compare by their code point. " (c "=") " tests two characters for equality, and " (c "&lt;") ", " (c "&gt;") ", " (c "&lt;=") ", and " (c "&gt;=") " order them by scalar value, so " (c "#\\a") " (code point 97) sorts before " (c "#\\z") " (122) and this comparison is " (c "true") ":")
+  (p "Characters compare by their code point. " (c "=") " tests two characters for equality, and " (c "&lt;") ", " (c "&gt;") ", " (c "&lt;=") ", and " (c "&gt;=") " order them by scalar value, so " (c "#\\a") " (code point 97) sorts before " (c "#\\z") " (122) and this comparison is " (result (of "string-char-cmp") true) ":")
   (runnable
+    (id "string-char-cmp")
     (source (< #\a #\z)))
   (p "Characters are one view of text. Underneath sits the raw encoding, the octets a file or a protocol actually carries. That's " (em "bytes") ", next.")
   (h2 "Your turn")
