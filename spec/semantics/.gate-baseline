@@ -8,7 +8,7 @@ fail	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
 fail	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 fail	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 fail	String.at and String.scalar-at at a runtime index are scalar-indexed across an astral char
-fail	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
+pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
 fail	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 fail	a constant-size utf8 segment decodes inside a nested bin arm
 fail	a constant-size utf8 segment over a runtime scrutinee decodes and both binders are used

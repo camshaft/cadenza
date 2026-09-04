@@ -3178,7 +3178,13 @@
            `expected i32, found i64`. The child slot must float ABOVE `*high` (past the record producer's
            own scratch, incl. the let). Driven in a loop so the projection actually emits (a single folded
            projection would collapse). `sum over i∈{0,1,2} of Map.len({i:i}) = 1+1+1 = 3`. Companion to the
-           SumPayload retain-child pin above; both faces of the `func[27]` slot-width collision fix.")
+           SumPayload retain-child pin above; both faces of the `func[27]` slot-width collision fix.
+           RECLAIM (v-memory-safety): the Proj emit `dup`s the extracted child Map into a standalone owned
+           handle so it survives the record drop, and the BORROWING `Map.len` (a scalar-read) then `drop`s
+           that dup'd child after its read — `heap_operand_ownership(Proj)` is Borrowed, so `Map.len`'s
+           owned-operand reclaim recognises the dup'd child via `owned_proj_child_dupd` (drop-iff-dup'd). So
+           each iteration's fresh record + its Map fully reclaim → `live-objects 0` (was a tracked leak-3
+           #4547 before the dup'd-child drop landed).")
   (input
     (do
       (def (mk (: n Int64)) (let ((x (+ n 1))) #record((= a (Map.insert (Map.empty) x x)) (= b x))))
