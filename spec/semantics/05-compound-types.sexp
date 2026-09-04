@@ -9154,6 +9154,24 @@
       (export main)))
   (output (: 5 Int64)))
 
+; nlp-lit (breaker, GAP in the Inc-14 nested-list desugar): a nested list pattern whose INNER list has a
+; LITERAL element leaks the internal synthesized name — CDZ0101 'unbound name `__ne0`'. The desugar (above)
+; replaces the nested-list element with a fresh `__ne` binder + an inner re-match; the LITERAL-element case
+; (`#list(#list(1 b)) …`) generates `__ne0` but fails to bind it, so the body's `b` re-match never binds and
+; `__ne0` surfaces unbound. ISOLATION: a FLAT list-with-literal `(#list(1 b))` compiles; nested-list
+; BINDERS-only `(#list(#list(c b)))` compiles; nested-list-with-GUARD compiles (the case above) — ONLY a
+; literal INSIDE a nested list pattern trips it. Consistent CDZ0101 across wasm+rust+cadenza (front-end
+; desugar). SHOULD compile + match: scrutinee `[[1 5]]`, pattern `[[1 b]]` binds b=5 → 5. Idealistic todo;
+; auto-flips when the __ne re-match handles a literal inner element. Routed to the Inc-14 desugar owner.
+(case
+  "a nested list pattern with a LITERAL inner element binds and matches (currently leaks __ne0)"
+  (input
+    (do
+      (def (main (: n Int64)) (match #list(#list(1 n)) (#list(#list(1 b)) b) (_ -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case
   "a nullary variant list element dispatches by its discriminant"
   (doc
