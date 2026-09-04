@@ -2803,6 +2803,186 @@ pub(super) fn desugar_refutable_map_list_elements(
     Some(core_of(db, rewritten))
 }
 
+/// Whether `elem_pat` is a REFUTABLE TUPLE list-element pattern — a `(tuple c0 c1 …)` with ≥1 REFUTABLE
+/// component (a literal / constructor / nested compound — anything NOT a bare binder or `_`). A binder-only
+/// tuple `(tuple a b)` is IRREFUTABLE (it matches any tuple of that arity, bound inline by
+/// `check_binding_pattern`), so it returns `false` and is left alone; only a literal-bearing tuple like
+/// `(tuple 1 b)` needs the value-refinement desugar (the tuple twin of `is_map_element_pattern` /
+/// `refutable_ctor_element_head`). A non-tuple element returns `false`.
+pub(super) fn is_refutable_tuple_element(db: &Db, elem_pat: StructId) -> bool {
+    let Some(comps) = db.ast.compound_form_of(elem_pat, CompoundCtor::Tuple) else {
+        return false;
+    };
+    // A component is refutable iff it is NOT a bare name (a binder) and NOT `_` — i.e. a literal atom or a
+    // compound sub-pattern. `as_name` is `Some` for both a binder and `_`, `None` for a literal/compound.
+    comps.iter().any(|&c| db.ast.as_name(c).is_none())
+}
+
+/// PRE-PASS for `lower_match_list` (the TUPLE twin of `desugar_refutable_map_list_elements` /
+/// `desugar_refutable_nested_list_elements`): rewrite an arm whose list pattern has a refutable TUPLE leading
+/// element `(list (tuple 1 b) rest… .. r)` into an equivalent guarded arm the length-dispatch matcher + the
+/// (direct) tuple matcher already handle. A tuple has FIXED arity (no length dispatch needed — the type
+/// fixes it), so the ONLY refutation is its literal/ctor components; it needs a value-test guard for
+/// fall-through AND value binding for the body:
+///   `((list (tuple 1 b) rest… .. r) body)`  ≡
+///   `((guard (list __lt rest… .. r) (match __lt ((tuple 1 _) true) (_ false)))
+///       (match __lt ((tuple 1 b) body) (_ (trap …))))`
+/// The GUARD's value test (a wildcard-BINDER tuple pattern via `ctor_pattern_with_wildcard_payloads` — keeps
+/// the literal `1`, wildcards the binder `b`) gates the arm so a non-matching literal FALLS THROUGH; the BODY
+/// re-matches the SAME element binder to bind `b` for the original body. One refutable-tuple element per arm
+/// (the common shape); ≥2 declines. NO new IR. Returns `Some(Core)` iff the rewrite fired. (Completes the
+/// refutable-list-element-refinement arc — the last element kind after ctor/map/nested-list; #8364.)
+pub(super) fn desugar_refutable_tuple_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .compound_form_of(inner, CompoundCtor::List)
+            .map(<[_]>::to_vec)?;
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    let mut any_tuple = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat)
+            && leading.iter().any(|&e| is_refutable_tuple_element(db, e))
+        {
+            any_tuple = true;
+        }
+    }
+    if !any_tuple {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .compound_form_of(inner, CompoundCtor::List)
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
+            .unwrap_or(es.len());
+        let tuple_positions: Vec<usize> = (0..lead)
+            .filter(|&p| is_refutable_tuple_element(db, es[p]))
+            .collect();
+        if tuple_positions.is_empty() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if tuple_positions.len() > 1 {
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one refutable tuple element is not supported (match one \
+                 refutable tuple element per arm)",
+            )));
+        }
+        let tpos = tuple_positions[0];
+        let tuple_pat = es[tpos]; // the original `(tuple 1 b)` element pattern
+        let list_head = match db.ast.get(inner) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__lt{ai}");
+        // Rebuild the list pattern with the tuple element replaced by a fresh bare binder.
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == tpos {
+                new_es.push(db.push_name(&name));
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The VALUE-test guard: `(match __lt ((tuple 1 _) true) (_ false))` — a wildcard-BINDER tuple pattern
+        // (keeps the literal `1`, wildcards the binder `b`) tests ONLY the refutable components, no value
+        // binding in the guard, so a non-matching literal FALLS THROUGH.
+        let test_scrut = db.push_name(&name);
+        let test_pat = ctor_pattern_with_wildcard_payloads(db, tuple_pat);
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let test_true_arm = db.push_list(vec![test_pat, true_node]);
+        let wild = db.push_name("_");
+        let test_false_arm = db.push_list(vec![wild, false_node]);
+        let test_match_head = db.push_name("match");
+        let value_test = db.push_list(vec![
+            test_match_head,
+            test_scrut,
+            test_true_arm,
+            test_false_arm,
+        ]);
+        let guard_cond = match existing_guard {
+            None => value_test,
+            Some(g) => {
+                // The user guard cond `g` may read the tuple's COMPONENT binders (`(guard (list (tuple 1 b))
+                // (> b 3))` reads `b`). Those bind only in the BODY re-match (below), NOT at the outer guard
+                // level — so ANDing `g` with the value_test left `b` unbound (a false CDZ0101). Mirror the
+                // nested-list desugar: evaluate `g` INSIDE a match on `__lt` that binds the FULL tuple pattern
+                // — `(match __lt ((tuple 1 b) g) (_ false))` — so `b` is in scope for `g`, and the literal `1`
+                // is tested by the same match (subsuming value_test: a non-matching literal → `_ → false` →
+                // fall through). A FULL clone of the tuple pattern (the body re-match reuses the original; a
+                // node has one parent).
+                let g_scrut = db.push_name(&name);
+                let g_clone = clone_refutable_payload(db, tuple_pat);
+                let g_true_arm = db.push_list(vec![g_clone, g]);
+                let g_wild = db.push_name("_");
+                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                let g_match_head = db.push_name("match");
+                db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __lt ((tuple 1 b) <body>) (_ (trap …)))` — the DIRECT tuple matcher binds
+        // the component sub-patterns for the original body; the `_` arm is dead (the guard proved the value
+        // match) but keeps the inner match exhaustive.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![tuple_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg = db.push_str("unreachable: list-tuple-element value already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable tuple element → fresh-binder + value-test guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
 pub(super) fn lower_match_list(
     db: &mut Db,
     scrutinee: StructId,
@@ -2867,6 +3047,14 @@ pub(super) fn lower_match_list(
     // binding the values (the direct map matcher). Run alongside the ctor pass (a map element is neither a
     // ctor nor a literal, so the other passes skip it); it rebuilds the match and recurses through `core_of`.
     if let Some(core) = desugar_refutable_map_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS (tuple): a refutable TUPLE leading element (`(list (tuple 1 b) .. r)`) — a literal/ctor in a
+    // tuple component — desugars to a fresh binder + a value-test guard + a body re-match binding the
+    // components (the direct tuple matcher). A tuple is fixed-arity, so it needs only the value test (no
+    // length dispatch). The last refutable-element kind after ctor/map/nested-list (#8364); a tuple element
+    // is none of those, so the other passes skip it. Rebuilds the match and recurses through `core_of`.
+    if let Some(core) = desugar_refutable_tuple_list_elements(db, scrutinee, arms) {
         return core;
     }
     // PRE-PASS (ctor saturation): `(list) + (list (Some x) .. r) + (list (None) .. r)` covers every length —
