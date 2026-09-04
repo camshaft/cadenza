@@ -4634,9 +4634,22 @@
 ; `(bytes payload len)` -> `Bytes.len` (NO StrFromBytes) is CLEAN 0. So the leak is the DEPENDENT-SIZE UTF8
 ; DECODE husk itself, shared across BOTH size-sources — NOT bit-field-specific. (An earlier "byte-binder
 ; analog is CLEAN" reading was an IN-PROCESS gate UNDER-COUNT of the utf8/String husk class; rc-trace, which
-; matches nix, shows the byte analog also leaks 2.) OWNED by v-memory-safety's utf8-decode `StrFromBytes`
-; shell-reclaim family (their lane, not the bin-match lowering side, which is verified sound). cadenza
-; re-emit of this shape is a separate slice (still todo).
+; matches nix, shows the byte analog also leaks 2.) MECHANISM (v-memory-safety, precise): the range is
+; decoded to `Option String` TWICE — once in the ARM PREDICATE (`bin_option_is_some` builds a `MatchSum` over
+; a fresh `StrFromBytes` to AND UTF-8 well-formedness into the guard, lower.rs) and once in the ARM BODY (a
+; `SumExpect` over ANOTHER fresh `StrFromBytes` unwraps the binder `s`, lower/bin_match.rs). The source flags
+; these as "two independent reads of the same range." Each decode allocates one owned Option `Sum` (sum-new)
+; that is never reclaimed → node#3 (predicate, shell+payload dead) + node#4 (body, payload `s` escapes, shell
+; dead). NEITHER the bool-predicate `MatchSum` nor the escaping-payload `SumExpect` currently drops its owned
+; `StrFromBytes` scrutinee shell. FIX LEVER (the load-bearing soundness fact): a `StrFromBytes` payload is a
+; FRESH, INDEPENDENT owned String (str-from-bytes transfers the buffer out — emit.rs "the handle is OWNED"),
+; NOT a view aliasing the shell. So — UNLIKE the `String.at`/`Bytes.slice` VIEW producers the #4917
+; escape-stays-leaking control protects (their payload may alias the shell, so dropping it on escape would
+; UAF) — a `StrFromBytes` Option shell is SAFELY reclaimable even when its payload escapes (dup-payload +
+; drop-shell). Two candidate fixes: (a) LOWERING decode-once-reuse (one shell + a perf win; touches
+; bin_match.rs, peer-owned) or (b) RECLAIM-side (my lane): extend the SumExpect shell-reclaim to fresh-payload
+; producers on escape + reclaim the bool-`MatchSum`'s owned `StrFromBytes` scrutinee. Both UAF-critical; hold
+; for a focused whole-corpus guarded-all pass. cadenza re-emit of this shape is a separate slice (still todo).
 (case
   "a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes"
   (input
