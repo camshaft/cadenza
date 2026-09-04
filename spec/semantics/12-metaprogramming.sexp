@@ -4385,6 +4385,16 @@ c")))
   (input (List.len (eval (quote #list(1 2 3)))))
   (output (: 3 Int64)))
 
+; eval × SET-dedup (breaker): the SET companion of the list/tuple eval-construction cases — and it also
+; pins that eval folds SET DEDUP semantics, not just construction. `(eval (quote (Set.len (Set.of (list 1
+; 2 2 3)))))` reconstructs the Set.of construction over a 4-element list with a REPEAT (the two `2`s),
+; dedups to {1,2,3}, and Set.len reads 3 (not 4). Distinct from the list case (which has no dedup): eval's
+; const-evaluator applies Set uniqueness during the fold.
+(case
+  "eval of a quoted Set.of construction folds the dedup (Set.len reads the unique count)"
+  (input (eval (quote (Set.len (Set.of (list 1 2 2 3))))))
+  (output (: 3 Int64)))
+
 (case
   "eval of a quoted tuple-construction form folds to the runtime tuple"
   (doc
