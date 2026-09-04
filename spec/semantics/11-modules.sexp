@@ -1963,17 +1963,16 @@
   (input (do (import "lib" c) (def (main) (c.to-int c.Color.Green)) (export main)))
   (output (: 2 Int64)))
 
-; alias-privacy-leak (breaker, SOUNDNESS wrong-acceptance found by v-module-system): a whole-module alias
-; projects a NON-exported (private) def — `(c.secret)` where `secret` is NOT in lib's `(export …)` — MUST reject
-; (modules-and-namespaces.md #Visibility Is Explicit: a whole-module alias projects only EXPORTED members). It
-; WRONG-ACCEPTS today → 99: resolve_member's alias projection (resolve.rs) consults build_file_scope, which
-; holds EVERY def of the file with NO export filter, so a private def leaks through the alias. An UNSOUND
-; acceptance (privacy leak), NOT a value bug — same class as the inline module-member no-leak bug fixed in
-; #8264. It asserts an error but gets a value, so it grades FAIL today → baselined `fail` (expected-fail =
-; known unsound-acceptance); it FLIPS fail→pass when v-module-system's export-filter fix lands (their lane;
-; they flip the baseline with the fix). The exported control `(c.pub)` → 7 works (the alias DEF-face above).
+; alias-privacy (breaker soundness fence, FIXED by #8441 — was a wrong-acceptance found by v-module-system): a
+; whole-module alias projecting a NON-exported (private) def — `(c.secret)` where `secret` is NOT in lib's
+; `(export …)` — is REJECTED CDZ0101 (modules-and-namespaces.md #Visibility Is Explicit: a whole-module alias
+; projects only EXPORTED members). It USED to WRONG-ACCEPT → 99 (resolve_member's alias projection consulted
+; build_file_scope, which held EVERY def with NO export filter, leaking private defs — same class as the inline
+; module-member no-leak bug #8264). #8441 (90c457e35b) export-gated the projection (export_def_in_file filters on
+; the aliased file's export surface). Regression-guard on the privacy fix; the exported control `(c.pub)` → 7
+; works (the alias DEF-face above). Fenced fail (breaker #8440) → flipped pass by #8441.
 (case
-  "a whole-module alias projecting a NON-exported private def is rejected (privacy; wrong-accepts today)"
+  "a whole-module alias projecting a NON-exported private def is rejected (privacy)"
   (module "lib"
     (do
       (def (secret) 99)
