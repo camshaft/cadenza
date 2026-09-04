@@ -6146,7 +6146,7 @@ pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup re
 pass	abstract-type values live in an importer's map and round-trip through module ops
 pass	abx1 two-op effect, BOTH arms resuming (control)
 pass	abx2 two-op effect, one resuming one ABORTIVE (scalar state)
-todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
+pass	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state folds (strict-op-abort #st-drain)
 pass	abx4 mixed arms, list state, abort arm IGNORES the state
 pass	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
 pass	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances

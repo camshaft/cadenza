@@ -8863,7 +8863,7 @@ todo	a string result chained through two peers escapes the entrypoint via the me
 todo	a symbol argument crosses to and from a peer as a runtime handle like a string
 todo	a type-value flows through nested let bindings and crosses as its own type-of-types
 todo	a versioned interface name agrees across both sides and runs
-todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
+pass	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state folds (strict-op-abort #st-drain)
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
