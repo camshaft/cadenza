@@ -97,6 +97,7 @@ export default function Iterators() {
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it (Iter.Double (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000)))))))`}
+        id="iter-double"
       />
       <P>Each layer only asks its inner iterator for the next element and transforms it, so the whole pipeline stays lazy, and you assemble complex sequences from small, independent pieces.</P>
       <Note>This <em>reified</em> encoding, an iterator as a sum of step-shapes with <C>next</C> a plain recursive function, is what the standard iterator library uses today, and it's why: the more obvious "an iterator is a function returning the next element and a new function" needs a recursive function <em>type</em> the inference won't tie without a nominal constructor to break the cycle. The sum form <em>is</em> that constructor, so it sidesteps the problem and reads just as clearly. A real library adds <C>map</C>, <C>filter</C>, <C>zip</C>, and friends the same way, one more variant each.</Note>

@@ -80,13 +80,14 @@
   (h2 "Matching a map by key")
   (p "A " (c "match") " can also look " (em "inside a collection") ". A map pattern, " (cdz #map((= key binder) (.. rest))) ", fires when the map contains that key, binding the associated value to " (c "binder") " (and the leftover entries to " (c "rest") "). It's the pattern-matching counterpart to a " (c "Map.lookup") ": here " (c "setting") " reads the " (c "\"width\"") " from a config map, returning " (cdz (Some v)) " when the key is present and " (cdz (None unit)) " when it's absent, because a missing key is an absence, not a magic number:")
   (runnable
+    (id "pat-map")
     (source (def (setting m)
   (match m
     (#map((= "width" v) (.. rest)) (Some v))
     (_ (None unit))))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))))
-  (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (cdz (Some 80)) ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (cdz (None unit)) ". The " (strong "Maps &amp; sets") " chapter later builds out maps as values.")
+  (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (result (of "pat-map") (: (Some 80) (Option Int64))) ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (cdz (None unit)) ". The " (strong "Maps &amp; sets") " chapter later builds out maps as values.")
   (h2 "Matching a tuple's shape")
   (p "A tuple pattern takes a value apart by " (em "position") ", and a trailing rest marker " (c "(.. rest)") " gathers the elements you didn't name into a smaller tuple, the positional twin of a list's " (c ".. rest") ". Here " (cdz #tuple(a b (.. rest))) " binds " (c "a") " and " (c "b") " to the first two elements and " (c "rest") " to a tuple of whatever trails, so reading " (c "rest") " back with " (c ".0") " recovers the third element:")
   (runnable
@@ -106,10 +107,11 @@
   (h2 "Matching a set's members")
   (p "A set has no fields or positions, so a set pattern asks a different question: " (em "containment") ". " (cdz #set(1 (.. rest))) " names the members that must be " (em "present") " and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing " (c "(.. rest)") " then binds " (c "rest") " to the " (em "residual set") ", the scrutinee's members minus the ones you named. Here the set contains " (c "1") ", so the arm fires and " (c "rest") " is what's left:")
   (runnable
+    (id "pat-set")
     (source (match #set(1 2 3)
   (#set(1 (.. rest)) (Some rest))
   (_ (None unit)))))
-  (p "The scrutinee " (cdz #set(1 2 3)) " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (cdz #set(2 3)) ", making the whole expression " (cdz (Some #set(2 3))) ", the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (cdz #set(1)) " matches " (cdz #set(1 2 3)) "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
+  (p "The scrutinee " (cdz #set(1 2 3)) " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (cdz #set(2 3)) ", making the whole expression " (result (of "pat-set") (: (Some #set(2 3)) (Option (Set Int64)))) ", the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (cdz #set(1)) " matches " (cdz #set(1 2 3)) "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")

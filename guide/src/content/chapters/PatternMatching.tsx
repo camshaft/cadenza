@@ -74,6 +74,7 @@ export default function PatternMatching() {
         source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 
 (def (main) (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
+        id="pat-map"
       />
       <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAFQAwAAAAEBAgABAg==" kind="expr">(Some 80)</Cadenza>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza>. The <strong>Maps &amp; sets</strong> chapter later builds out maps as values.</P>
       <H2>Matching a tuple's shape</H2>
@@ -94,6 +95,7 @@ export default function PatternMatching() {
       <P>A set has no fields or positions, so a set pattern asks a different question: <em>containment</em>. <Cadenza ast="Y2R6YXN0AAEEGAABAQoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#set(1 (.. rest))</Cadenza> names the members that must be <em>present</em> and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing <C>(.. rest)</C> then binds <C>rest</C> to the <em>residual set</em>, the scrutinee's members minus the ones you named. Here the set contains <C>1</C>, so the arm fires and <C>rest</C> is what's left:</P>
       <Runnable
         source={`(match #set(1 2 3) (#set(1 (.. rest)) (Some rest)) (_ (None unit)))`}
+        id="pat-set"
       />
       <P>The scrutinee <Cadenza ast="Y2R6YXN0AAEEGAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#set(1 2 3)</Cadenza> contains the named <C>1</C>, so the arm matches and <C>rest</C> binds the residual <Cadenza ast="Y2R6YXN0AAEDGAABAgABAwQAAAABAAIBAwABAgM=" kind="expr">#set(2 3)</Cadenza>, making the whole expression <Cadenza ast="Y2R6YXN0AAEECgRTb21lGAABAgABAwYAAAABAAIAAwEDAQIDAQIABAU=" kind="expr">(Some #set(2 3))</Cadenza>, the leftover set, returned as an <C>Option</C> since a set that lacks the named member takes the <C>None</C> arm instead. Three things follow from its being a containment test: it matches a <em>superset</em> too (<Cadenza ast="Y2R6YXN0AAECGAABAQMAAAABAQIAAQI=" kind="expr">#set(1)</Cadenza> matches <Cadenza ast="Y2R6YXN0AAEEGAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#set(1 2 3)</Cadenza>), naming a member the set <em>lacks</em> refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same <C>(.. rest)</C> residual, asking "is this present?" instead of "what's at this field?".</P>
       <H2>Your turn</H2>

@@ -47,8 +47,9 @@
   (sum-it (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000))))))))
   (p "The " (c "Take") " stops asking after three, so " (c "Range") " is only ever stepped three times. Nothing forces the whole sequence into existence, since each element is computed exactly when the consumer pulls it.")
   (h2 "Transformers compose")
-  (p "Because each iterator kind wraps another, they stack. Add a " (c "Double") " that doubles whatever its inner iterator yields, and you can layer " (c "Double") " over " (c "Take") " over " (c "Range") ", a pipeline that doubles the first three of a huge range: " (c "0, 2, 4") ", summing to " (c "6") ":")
+  (p "Because each iterator kind wraps another, they stack. Add a " (c "Double") " that doubles whatever its inner iterator yields, and you can layer " (c "Double") " over " (c "Take") " over " (c "Range") ", a pipeline that doubles the first three of a huge range: " (c "0, 2, 4") ", summing to " (result (of "iter-double") 6) ":")
   (runnable
+    (id "iter-double")
     (source (type Iter
   (Range (Tuple Int64 Int64))
   (Take (Tuple Int64 Iter))
