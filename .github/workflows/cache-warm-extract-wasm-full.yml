@@ -5,19 +5,18 @@
 # extraction layer (1478 → ~10.7k) and mostly SKIPs (heap-importing W5+ / compound non-scalar), so its extra
 # AGREE yield is modest. Its real value is BROAD MISCOMPILE HUNTING — does compilation stay 0-diverge across
 # strings/collections/effects/metaprog, not just numerics. That's worth a WEEKLY sweep, not a 7x DAILY cost.
-# It is content-addressed: the FIRST run is cold-expensive (~10.7k extractions), every run after mostly
-# cache-HITS (only re-keys on a compiler-rev bump), and the cachix post-step pushes the realized full closure
-# so the next weekly PULLS warm. The daily Step-A stays the cheap day-to-day 0-diverge regression alarm.
 #
-# 8-WAY SHARDED (v-gha-green, 2026-09-04 — v-lean-oracle #8404 + v-wasm-oracle): the single full-corpus job
-# now EXCEEDS GitHub Actions' HARD 6h per-JOB cap (github-hosted, not raisable) — v-wasm-oracle's heap-result
-# decode work (#8240..#8268) moved hundreds of cases from fast-SKIP to decode+EXECUTE-through-talos, so the
-# whole-corpus differential does >6h of real work and auto-cancels at start+6h (run 33839598697 died at
-# 6h0m). #8404 gave oracle-wasm-diff `--shard I N` (round-robin index%N==I, spreading the fuel-heavy ~8M-step
-# tail so shards finish together); the flake exposes checks.<sys>.oracle-wasm-diff-full-shard-<i>-of-8. This
-# workflow runs them as an 8-way MATRIX (each shard ≈ total/8 ≈ well under 6h + growth headroom) and a final
-# `aggregate` job SUMS the 8 partial tallies (A agree / D diverge / S skip / L leak) + concatenates the
-# per-shard DIVERGE/LEAK lines → the full-corpus breakdown. N=8 chosen for margin under the cap + headroom.
+# BUILD-ONCE-THEN-FAN-OUT (v-gha-green + v-wasm-oracle, 2026-09-04): the full-corpus diff exceeds GHA's HARD
+# 6h per-JOB cap (heap-result decode #8240..#8268 moved hundreds of cases skip→decode+EXECUTE → >6h). A naive
+# 8-way shard matrix (first attempt, #8417) did NOT fix a COLD run: sharding splits the DIFF but each of the 8
+# parallel shard runners independently COLD-REALIZES the shared full ~10.7k-case extraction closure
+# (oracleWasmCaseDirsFull) → 8× concurrent heavy nix builds THRASH the runner + still blow the cap (run
+# 33874881616 sat >4h, 0/8 done). Fix = DECOUPLE the build from the fan-out: a serial `seed` job realizes +
+# cachix-PUSHES the full extraction closure ONCE (warm), then the 8 `full-diff` shard jobs `needs: seed` and
+# PULL it warm (no per-shard realize) — each shard is then just its bounded 1/8 diff slice (round-robin
+# index%8==i via #8404's `oracle-wasm-diff --shard I N`), comfortably under 6h. A final `aggregate` job SUMS
+# the 8 partial tallies (A agree / D diverge / S skip / L leak) + concatenates per-shard DIVERGE/LEAK lines.
+# Bumping N is the WRONG lever (more parallel cold realizes = worse thrash); the seed decouples it. N=8.
 #
 # SCHEDULED Sunday 04:00 UTC — a low-traffic off-peak slot well clear of the daily emit-warm (08:00), extract-
 # warm (10:00) and the nightly (07:00), so the heavy full warm never contends with them for the shared nix
@@ -45,12 +44,46 @@ env:
   RUSTUP_MAX_RETRIES: "10"
 
 jobs:
+  seed:
+    # BUILD-ONCE: realize + cachix-PUSH the full ~10.7k-case extraction closure ONCE, serially, BEFORE the
+    # diff fan-out — so the 8 diff shards PULL it warm instead of each cold-realizing it in parallel (the 8×
+    # build-contention thrash that blew the 6h cap). corpus-wasm-extract-warm-full's $out manifest OUTPUT
+    # CLOSURE references the ~10.7k extraction store paths, so pushing it warms exactly what the shards consume.
+    # This one job's realize is the extraction layer only (NOT the >6h differential) → well under the cap.
+    name: seed the full extraction closure (build-once, warm cachix)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix #7874).
+      - name: warm the nix daemon (serialize the ca-derivations migration before the cachix post-build-hook)
+        run: nix store ping
+      - uses: cachix/cachix-action@v16
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          name: camshaft
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true # keep pull+auth; push POST-JOB (below) to avoid the concurrent-client migration race
+      # Realize the full extraction closure + push it to cachix so the diff shards PULL warm. On a cold first
+      # run this is the heavy step (~10.7k extractions) but it is the extraction layer, NOT the >6h diff, so
+      # it fits under the cap; every run after mostly cache-HITS (only re-keys on a compiler-rev bump).
+      - name: build + push the full extraction closure to cachix (post-job — no concurrent-client migration race)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm-full --no-link --print-out-paths --keep-going)
+
   full-diff:
-    # 8-way matrix — each shard runs oracle-wasm-diff over 1/8 of the full corpus (round-robin index%8==shard),
-    # comfortably under the 6h per-job cap. fail-fast:false so one shard's DIVERGE/timeout never cancels the
-    # others (we want ALL shards' tallies). aarch64 only: the full-corpus extraction the shard consumes is
-    # produced on the aarch64 corpus path (matching the runtime-hash arch the gate + oracle build against).
+    # FAN-OUT: 8-way matrix, each shard runs oracle-wasm-diff over 1/8 of the corpus (round-robin index%8==shard).
+    # needs: seed → the full extraction closure is already warm in cachix, so each shard PULLS it (no cold
+    # realize, no 8× thrash) and runs only its bounded 1/8 diff — comfortably under the 6h per-job cap.
+    # fail-fast:false so one shard's DIVERGE/timeout never cancels the others (we want ALL shards' tallies).
     name: full-corpus Core↔wasm differential (aarch64, shard ${{ matrix.shard }}/8)
+    needs: seed
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
@@ -60,31 +93,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
-          # ca-derivations so the per-case content-addressed extraction cache is built + reused (#3363); the
-          # cachix substituter so an already-warm extraction (+ the emit.wasm/oracle-lean layers) cache-HITS.
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
-      # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix root-cause,
-      # #7874): the Determinate daemon applies the 20220326-ca-derivations migration on first db open; without this
-      # the cachix push-hook's concurrent nix op races to apply the SAME migration → duplicate INSERT → intermittent
-      # "SchemaMigrations UNIQUE" red (self-heals on re-dispatch). One serial `nix store ping` opens the db + applies
-      # the migration ONCE up front, so the later push-hook sees it present and skips re-applying.
-      - name: warm the nix daemon (serialize the ca-derivations migration before the cachix post-build-hook)
-        run: nix store ping
       - uses: cachix/cachix-action@v16
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           name: camshaft
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          # skipPush (v-nix, completes the #8138/#8171 rollout): keep pull+auth, DROP the streaming per-build
-          # post-build-hook (the concurrent mid-build client racing the ca-derivations migration → "SchemaMigrations
-          # UNIQUE"). Push POST-JOB instead (shard-0 step below).
-          skipPush: true
-      # One shard of the full-corpus differential (checks.<sys>.oracle-wasm-diff-full-shard-<i>-of-8, #8404):
-      # realizes the shared full extraction closure + runs oracle-wasm-diff over its 1/8 slice + tees its PARTIAL
-      # tally (report-only, like the daily). --keep-going so one bad case doesn't abort the shard. continue-on-error:
-      # a real Core↔wasm DIVERGE reds only this advisory step, not the warm's cachix-push purpose. The tally +
-      # DIVERGE/LEAK lines are printed to the build log whether the shard succeeds or a diverge fails it, so we
-      # capture them from stdout (not from $out) for the aggregate.
+          skipPush: true # pull-only here; the seed job already pushed the closure
+      # One shard of the full-corpus differential (#8404 --shard I N). The extraction closure is warm (seed
+      # pushed it) → this PULLS it + runs only its 1/8 slice. --keep-going so one bad case doesn't abort the
+      # shard; continue-on-error so a real DIVERGE reds only this advisory step. The tally + DIVERGE/LEAK lines
+      # print to the build log whether the shard succeeds or a diverge fails it → captured from stdout.
       - name: build + run oracle-wasm-diff-full shard ${{ matrix.shard }}/8 (advisory)
         continue-on-error: true
         run: |
@@ -92,9 +111,8 @@ jobs:
           mkdir -p tally
           nix build .#checks.aarch64-linux.oracle-wasm-diff-full-shard-${{ matrix.shard }}-of-8 \
             --print-build-logs --keep-going 2>&1 | tee /tmp/shard.log || true
-          # partial tally line (the aggregate sums these) + this shard's DIVERGE/LEAK case lines
           grep -E 'oracle-wasm-diff:.*agree' /tmp/shard.log | tail -1 > tally/shard-${{ matrix.shard }}.txt || true
-          { echo "--- shard ${{ matrix.shard }}/8 DIVERGE/LEAK lines:"; grep -iE 'DIVERGE|LEAK' /tmp/shard.log || true; } >> tally/shard-${{ matrix.shard }}.txt
+          { echo "--- shard ${{ matrix.shard }}/8 DIVERGE/LEAK lines:"; grep -E '^(DIVERGE|LEAK) ' /tmp/shard.log || true; } >> tally/shard-${{ matrix.shard }}.txt
       - name: upload shard ${{ matrix.shard }} tally
         if: always()
         uses: actions/upload-artifact@v7
@@ -102,18 +120,6 @@ jobs:
           name: wasm-diff-tally-${{ matrix.shard }}
           path: tally/shard-${{ matrix.shard }}.txt
           if-no-files-found: warn
-      # POST-JOB CACHIX PUSH — shard 0 ONLY (v-nix push model; replaces the streaming post-build-hook skipPush
-      # dropped, no concurrent-client migration race). Every shard's build realizes the SHARED full extraction
-      # closure (oracleWasmCaseDirsFull is a common build input), so shard 0's runner already holds it — one push
-      # of corpus-wasm-extract-warm-full (the manifest whose OUTPUT CLOSURE references the ~10.7k extractions;
-      # cache-hit re-eval) warms the full closure so the NEXT weekly PULLS it. No need to push from all 8.
-      - name: push the full extraction closure to cachix (shard 0 only; post-job — no concurrent-client migration race)
-        if: matrix.shard == 0 && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm-full --no-link --print-out-paths --keep-going)
 
   aggregate:
     # SUM the 8 partial tallies into the full-corpus breakdown. Pure text-processing (no nix), so ubuntu-latest.
@@ -150,7 +156,7 @@ jobs:
           echo "FULL CORPUS TOTAL: $A agree, $D diverge, $S skip, $L leak (summed across 8 shards; $missing shard(s) missing a tally)"
           echo ""
           echo "=== all DIVERGE/LEAK lines across shards ==="
-          grep -ihE 'DIVERGE|LEAK' tallies/shard-*.txt 2>/dev/null | grep -vE '^--- shard' || echo "(none)"
+          grep -hE '^(DIVERGE|LEAK) ' tallies/shard-*.txt 2>/dev/null || echo "(none)"
           if [ "$D" -gt 0 ]; then
             echo "::warning::full-corpus oracle-wasm-diff: $D DIVERGE(s) across the corpus — advisory miscompile signal for v-wasm-oracle → v-cadenza-backend (see lines above)"
           fi
