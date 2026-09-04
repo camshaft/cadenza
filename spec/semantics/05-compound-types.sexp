@@ -8482,7 +8482,7 @@
   "a refutable record list element with a literal field refines by value (#8380)"
   (input
     (do
-      (def (f (: xs (List (Record (v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
+      (def (f (: xs (List (Record (: v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
       (def (main) (f #list(#record((= v 1)))))
       (export main)))
   (output (: 100 Int64)))
@@ -8497,7 +8497,7 @@
   (input
     (do
       (def
-        (f (: xs (List (Record (v Int64) (w Int64)))))
+        (f (: xs (List (Record (: v Int64) (: w Int64)))))
         (match xs
           (#list(#record((= v 1) (= w b))) (+ 100 b))
           (#list(#record((= v 2) (= w b))) (+ 200 b))
