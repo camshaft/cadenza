@@ -451,13 +451,14 @@
            each declaring `(type Sh …)` are DISTINCT nominal types (occ-keyed identity — a type's identity is
            its synth-record occurrence, NOT its name), and neither `Sh` leaks to the enclosing scope. So both
            modules' constructors resolve within their OWN scope and do not clash: `a` boxes an Int64, `b`
-           wraps a Bool, and `(a.un (a.mk 7))` reads a's box back → 7. Declines TODAY (CDZ0201): the landed
-           #7946 registration collects the member type into the FLAT global name index, so the second `Sh`
-           collides with the first (entry(name).or_insert keeps one) and one module's ctor stops resolving —
-           an IMPLEMENTATION limitation, NOT a decl-reject. todo→pass when module-SCOPED registration lands
-           (skip module-scoped types from the flat global name index + resolve siblings/self-qualified via
-           module_members_bind): v-module-system scan/registration + v-inference module-scoped type-decl
-           identity. Regression guard for the distinctness half of the co-verify.")
+           wraps a Bool, and `(a.un (a.mk 7))` reads a's box back → 7. NOW RESOLVES on wasm+rust (#8264:
+           module-scoped member-type registration — the member types are kept OUT of the flat global name
+           index and resolved per-module via module_members_bind, so the two `Sh` no longer collide and each
+           module's ctor resolves in its own occ-keyed nominal scope). Was CDZ0201 until #8264 (the #7946
+           registration had collected the member type into the FLAT global name index, so the second `Sh`
+           clobbered the first — an implementation limitation, never a decl-reject). The CADENZA HOP still
+           declines (todo): re-emitting two distinct same-named inline-module-member types is a separate
+           re-emit edge, unchanged by #8264. Regression guard for the distinctness half of the co-verify.")
   (input
     (do
       (module a
