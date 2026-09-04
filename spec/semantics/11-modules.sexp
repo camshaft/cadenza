@@ -498,9 +498,14 @@
            index and resolved per-module via module_members_bind, so the two `Sh` no longer collide and each
            module's ctor resolves in its own occ-keyed nominal scope). Was CDZ0201 until #8264 (the #7946
            registration had collected the member type into the FLAT global name index, so the second `Sh`
-           clobbered the first — an implementation limitation, never a decl-reject). The CADENZA HOP still
-           declines (todo): re-emitting two distinct same-named inline-module-member types is a separate
-           re-emit edge, unchanged by #8264. Regression guard for the distinctness half of the co-verify.")
+           clobbered the first — an implementation limitation, never a decl-reject). The CADENZA HOP now
+           PASSES too: `(a.un (a.mk 7))` folds to 7 (const-fold), leaving both `(type Sh …)` DEAD; the
+           cadenza re-emit's dead-type-decl prune drops the two unreferenced orphan decls (they would
+           otherwise re-emit as two top-level `(type Sh …)` and collide CDZ0201 on the hop2 recompile,
+           since two distinct occ-keyed types can't share a flattened surface name), so the hop round-trips
+           to 7. (A LIVE distinct-same-named-type re-emit — types that survive to the output — still needs
+           module-scope preservation, a separate slice.) Regression guard for the distinctness half of the
+           co-verify.")
   (input
     (do
       (module a
