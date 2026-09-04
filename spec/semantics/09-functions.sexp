@@ -350,6 +350,22 @@
   (input (do (def (main) (Map.len #map((= 1 2)) 99)) (export main)))
   (error CDZ0203 (fix (kind delete)) (count 1)))
 
+; The USER-FUNCTION twin of the built-in over-application above (breaker): over-applying a plain user `def`
+; — `(f 1 2)` where `f` is arity 1 — is ALSO a permanent CDZ0203, but with a DISTINCT diagnostic from the
+; built-in-operation case: "applied 2 arguments to a function of arity 1 — it is not a function after its
+; arguments are consumed" (a VALUE-application-over-arity — after f consumes its 1 arg the result is an Int64,
+; which is not applicable — vs the built-in's delete-surplus wrong-arity). Consistent CDZ0203 across
+; wasm+rust+cadenza (a front-end arity error, backend-independent). Contrast the LEGITIMATE user-function
+; UNDER-application (partial/curry) above (~321) — under-applying curries, over-applying rejects. Pins the
+; user-fn over-application diagnostic (v-corpus-harness diagnostic-quality) — distinct from the built-in path.
+(case
+  "an over-applied USER function is CDZ0203 — applying past its arity hits a non-function result"
+  (input (do (def (f (: x Int64)) x) (def (main) (f 1 2)) (export main)))
+  (error
+    CDZ0203
+    (message "applied 2 arguments to a function of arity 1")
+    (message "not a function after its arguments are consumed")))
+
 (case
   "an under-applied built-in operation curries — completing it yields a value (should-work)"
   (doc

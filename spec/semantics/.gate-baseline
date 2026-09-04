@@ -11047,3 +11047,4 @@ todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the b
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
 pass	lcap4 an ESCAPING curried closure captures a def-param AND an intermediate lambda param (params escape; bounds lcap2 to locals)
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
+pass	an over-applied USER function is CDZ0203 — applying past its arity hits a non-function result
