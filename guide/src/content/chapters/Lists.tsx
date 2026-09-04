@@ -33,6 +33,7 @@ export default function Lists() {
       <P><C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than crash, <C>List.at</C> returns an <C>Option</C>, either <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF4AwAAAAEBAgABAg==" kind="expr">(Some x)</Cadenza> when the element exists or <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when it doesn't, which you take apart with <C>match</C>. Here index 1 exists, so you get its value, <C>20</C>:</P>
       <Runnable
         source={`(def (main) (match (List.at #list(10 20 30) 1) ((Some x) x) ((None _) -1)))`}
+        id="list-at-val"
       />
       <P>Change the index <C>1</C> to <C>9</C> and Run: the lookup misses, the <C>None</C> arm fires, and you get <C>-1</C>, no crash, just a value that says "nothing there".</P>
       <Why tenet="Partiality is data, not a trap">Reading past the end of a list, looking up a missing key, decoding bad text: in Cadenza these yield an <C>Option</C> (or a result), never a crash or a garbage value. Absence is an ordinary value your program <em>handles</em>. If you ever do want "crash on missing", that's a single, explicit operation that demands a message, so the one place a program turns absence into a halt is visible right where it happens, not hidden inside every accessor.</Why>
@@ -57,6 +58,7 @@ export default function Lists() {
         source={`(def (count xs) (List.len xs))
 
 (def (main) (count #list(10 20 30 40)))`}
+        id="list-count"
       />
       <P>Four elements in, so <C>4</C> out, and you never wrote the element type: <C>count</C> works on a list of anything, because <C>List.len</C> doesn't care what the elements are.</P>
       <P>To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two cases: the empty list <Cadenza ast="Y2R6YXN0AAEBFAIAAAEBAAE=" kind="expr">#list()</Cadenza>, and a non-empty one <Cadenza ast="Y2R6YXN0AAEEFAoBeAoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#list(x (.. rest))</Cadenza>, which binds the first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C> and you fold over the whole list. Here <C>sum</C> adds the elements:</P>
@@ -64,6 +66,7 @@ export default function Lists() {
         source={`(def (sum xs) (match xs (#list() 0) (#list(x (.. rest)) (+ x (sum rest)))))
 
 (def (main) (sum #list(10 20 30)))`}
+        id="list-sum"
       />
       <P>The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one element and sums the rest, so <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>. You didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over a list of <C>Int64</C>.</P>
       <P>The <C>rest</C> after <C>..</C> is special: it binds the <em>whole tail</em> as one sublist, so it must be a plain name (or <C>_</C>), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:</P>
