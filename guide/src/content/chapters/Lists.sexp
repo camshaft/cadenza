@@ -22,8 +22,9 @@
     (id "list-concat")
     (source (List.concat #list(1 2) #list(3 4 5))))
   (h2 "Reaching in safely")
-  (p (c "List.at") " gets the element at an index. But what if the index is out of range? Rather than crash, " (c "List.at") " returns an " (c "Option") ", either " (cdz (Some x)) " when the element exists or " (cdz (None unit)) " when it doesn't, which you take apart with " (c "match") ". Here index 1 exists, so you get its value, " (c "20") ":")
+  (p (c "List.at") " gets the element at an index. But what if the index is out of range? Rather than crash, " (c "List.at") " returns an " (c "Option") ", either " (cdz (Some x)) " when the element exists or " (cdz (None unit)) " when it doesn't, which you take apart with " (c "match") ". Here index 1 exists, so you get its value, " (result (of "list-at-val") 20) ":")
   (runnable
+    (id "list-at-val")
     (source (def (main)
   (match (List.at #list(10 20 30) 1)
     ((Some x) x)
@@ -48,17 +49,19 @@
   (h2 "Lists through functions")
   (p "A function can take a list and compute over it, and the element type rides along, so " (c "count") " works on a list of any element type:")
   (runnable
+    (id "list-count")
     (source (def (count xs) (List.len xs))
 (def (main) (count #list(10 20 30 40)))))
-  (p "Four elements in, so " (c "4") " out, and you never wrote the element type: " (c "count") " works on a list of anything, because " (c "List.len") " doesn't care what the elements are.")
+  (p "Four elements in, so " (result (of "list-count") 4) " out, and you never wrote the element type: " (c "count") " works on a list of anything, because " (c "List.len") " doesn't care what the elements are.")
   (p "To visit " (em "every") " element, match the list by shape. A " (c "match") " on a list has two cases: the empty list " (cdz #list()) ", and a non-empty one " (cdz #list(x .. rest)) ", which binds the first element to " (c "x") " and the " (em "rest") " of the list to " (c "rest") ". Recurse on " (c "rest") " and you fold over the whole list. Here " (c "sum") " adds the elements:")
   (runnable
+    (id "list-sum")
     (source (def (sum xs)
   (match xs
     (#list() 0)
     (#list(x .. rest) (+ x (sum rest)))))
 (def (main) (sum #list(10 20 30)))))
-  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (cdz #list(10 20 30)) " is " (c "10 + (20 + (30 + 0))") " = " (c "60") ". You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
+  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (cdz #list(10 20 30)) " is " (c "10 + (20 + (30 + 0))") " = " (result (of "list-sum") 60) ". You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
   (p "The " (c "rest") " after " (c "..") " is special: it binds the " (em "whole tail") " as one sublist, so it must be a plain name (or " (c "_") "), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:")
   (note "This one is " (strong "meant to be rejected") ": " (cdz #list(b .. r)) " in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.")
   (runnable
