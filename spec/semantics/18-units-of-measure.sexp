@@ -104,7 +104,7 @@
           (+ (Qty.of ((fn (v1) 8) 3) (Unit.base #"meter"))
              (Qty.of (: 3 Int8) (Unit.base #"meter")))))
       (export main)))
-  (output (: 11 Int64)))
+  (output (: 11 Int8)))
 
 ; COMMUTATIVITY of the Qty.+ width join (breaker; fixed by #8292): the #8278 widen (a bare-default
 ; call-result Qty magnitude widens to Int64) used to fire ONLY when the call-result was the FIRST `Qty.+`
