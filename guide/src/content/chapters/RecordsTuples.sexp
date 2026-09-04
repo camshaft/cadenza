@@ -13,15 +13,17 @@
 (def (main) (area #record((= w 4) (= h 5))))))
   (p "Reaching in with " (c ".") " repeatedly gets noisy when a function wants several fields. You can instead name them up front with a " (em "record pattern") " that binds each field in one move, right in the parameter, which " (link (slug "irrefutable-patterns") "Irrefutable patterns") " covers in full alongside tuple destructuring.")
   (h2 "Updating a field")
-  (p "Records are immutable, so you never " (em "change") " a field but instead produce a new record that differs in one place. " (c "Record.with") " does exactly that: give it a record, a " (c "#field") " selector naming which field, and the new value, and it hands back a copy with that field replaced. Here a price of " (c "2") " becomes " (c "9") ":")
+  (p "Records are immutable, so you never " (em "change") " a field but instead produce a new record that differs in one place. " (c "Record.with") " does exactly that: give it a record, a " (c "#field") " selector naming which field, and the new value, and it hands back a copy with that field replaced. Here a price of " (c "2") " becomes " (result (of "record-with") 9) ":")
   (runnable
+    (id "record-with")
     (source (. (Record.with #record((= item 1) (= price 2)) #"price" 9) price)))
   (note "The field is named with a " (c "#") " selector, written " (c "#\"price\"") " in the s-expr surface and " (c "#price") " in the ML surface (flip the syntax toggle to see it). It's a symbol picking the field by name, not a value; the record and the new value are the other two operands.")
   (p "\"Hands back a copy\" is the important part, because the original is untouched. Bind a record, make an updated version, then read the " (em "original") " back and you'll see it never moved:")
   (runnable
+    (id "record-with-immut")
     (source (let ((base #record((= hp 5) (= mp 3))))
   (. (Record.with base #"hp" 99) hp))))
-  (p "That reads " (c "99") ", but swap " (c "Record.with base #\"hp\" 99") " for plain " (c "base") " and Run again to get " (c "5") ", the original, still there. Two records, sharing everything but the one field.")
+  (p "That reads " (result (of "record-with-immut") 99) ", but swap " (c "Record.with base #\"hp\" 99") " for plain " (c "base") " and Run again to get " (c "5") ", the original, still there. Two records, sharing everything but the one field.")
   (p (c "Record.with") " is for a field that already exists; to " (em "add") " a new one, use " (c "Record.extend") ". Keeping them separate is deliberate, because it means a typo'd field name can't silently create a new field where you meant to update an old one:")
   (runnable
     (source (. (Record.extend #record((= x 1) (= y 2)) #"z" 3) z)))
@@ -32,8 +34,9 @@
   (h2 "Combining two records")
   (p "Where " (c "extend") " adds one field, " (c "Record.merge") " combines two whole records into one whose fields are the " (em "union") " of both. Merge a record of sizes with a record of colours and you can reach any field of either side:")
   (runnable
+    (id "record-merge")
     (source (. (Record.merge #record((= w 4) (= h 5)) #record((= r 255))) r)))
-  (p "The result has all three fields " (c "w") ", " (c "h") ", and " (c "r") ", so " (c ".r") " reads " (c "255") ". And the same no-clobber discipline applies: the two records must have " (em "disjoint") " fields. Ask to merge two records that both define " (c "x") " and the compiler refuses rather than silently pick a winner:")
+  (p "The result has all three fields " (c "w") ", " (c "h") ", and " (c "r") ", so " (c ".r") " reads " (result (of "record-merge") 255) ". And the same no-clobber discipline applies: the two records must have " (em "disjoint") " fields. Ask to merge two records that both define " (c "x") " and the compiler refuses rather than silently pick a winner:")
   (runnable
     (source (. (Record.merge #record((= x 1)) #record((= x 2))) x))
     (expect "error"))
@@ -47,8 +50,9 @@
     (source (def (swap p) #tuple((. p 1) (. p 0)))
 (def (main) (swap #tuple(3 7)))))
   (p "The result is " (cdz #tuple(7 3)) ", both elements in their new positions, returned as one value you could pass along or reach into further.")
-  (p "And just as " (c "Record.merge") " combined two records, " (c "Tuple.concat") " joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index " (c "3") " of the result is the first element of the second tuple, " (c "4") ":")
+  (p "And just as " (c "Record.merge") " combined two records, " (c "Tuple.concat") " joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index " (c "3") " of the result is the first element of the second tuple, " (result (of "tuple-concat") 4) ":")
   (runnable
+    (id "tuple-concat")
     (source (. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 3)))
   (why (tenet "Records are named, tuples are positional") "Why have both? A tuple is a fixed " (em "positional") " product you reach into by index, and it reads best when the pieces are obvious from context (a coordinate pair, a swap). A record has fixed " (em "named") " fields you reach into by name, and it reads best when the pieces deserve labels (a rectangle's " (c "w") " and " (c "h") "). Both are just values with a fixed shape the compiler knows, so it can check every field access against the actual structure, with no \"field not found\" surprises at run time.")
   (h2 "Putting it together")
