@@ -745,7 +745,7 @@
            ctor-arm case above now matches this clean behavior, rather than masking it with the pattern-
            support decline.")
   (input (do (def (main) (match undefined_subject (_ 0))) (export main)))
-  (error CDZ0101 (message "undefined_subject")))
+  (error CDZ0101 (message "undefined_subject") (exact-code)))
 
 (case
   "an unresolved-member match subject surfaces CDZ0201 under a ctor pattern (not masked)"
