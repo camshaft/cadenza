@@ -13241,6 +13241,32 @@
   (output (: 102 Int64))
   (live-objects 0))
 
+; -- abx6 (breaker, #8272-adjacent): the MULTI-bind stress of abx3's now-guardless general drain. TWO
+; sequential `(E.step)` ops each grow the list state and thread a SEPARATE pending FINDING-24 `#st{node}_{slot}`
+; bind, THEN a strict-op abort `(E.bail 100)` whose arm READS the doubly-grown state. If the drain/wrap that
+; #8272 now relies on (`drain_and_wrap` + `apply_seed_wrap`) only handled a SINGLE pending #st bind, the
+; abort value's `(List.len #st…)` would resolve against the wrong (or a dropped) graft and mis-fold. It
+; folds: both grows are drained, len reads the fully-grown [0,0,5]=3. n=5: step1 resumes len([5])=1 (state
+; [0,5]); step2 resumes len([0,5])=2 (state [0,0,5]); bail = 100 + len([0,0,5])=3 → 103; the abort discards
+; the pending `(+ 1 (+ 2 _))` context and both dead resume values (1,2) reclaim (live-objects 0 under
+; --guarded-all). Guards the exact multi-#st drain path the removed strict-op-abort decline guard exposed.
+(case
+  "abx6 multi-#st-drain strict-op abort whose arm reads the doubly-grown LIST state folds"
+  (input
+    (do
+      (effect E (op step (-> Int64)) (op bail (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (if (> n 0) #list(n) #list(9 9))
+          ((step () s (resume (List.len s) (List.prepend s 0))) (bail (k) s (+ k (List.len s))))
+          (+ (E.step) (+ (E.step) (E.bail 100)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 103 Int64))
+  (live-objects 0))
+
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
 ; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427
