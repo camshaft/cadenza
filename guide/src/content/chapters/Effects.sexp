@@ -28,12 +28,13 @@
   (h2 "A handler with state")
   (p "That " (c "s") " is the handler's own state, threaded from one performance to the next. A " (c "handle") " seeds it (here " (c "0") "), each arm receives it, and " (c "resume") " takes both the value to hand back " (em "and") " the next state. So a counter that hands out " (c "0") ", then " (c "1") ", then " (c "2") "… is a three-line handler:")
   (runnable
+    (id "counter")
     (source (effect Counter (op next (-> Unit Int64)))
 (def (main)
   (handle Counter 0
     ((next (u) s (resume s (+ s 1))))
     (+ (Counter.next) (* 10 (Counter.next)))))))
-  (p "The first " (c "next") " resumes with the state " (c "0") " and bumps it to " (c "1") "; the second resumes with " (c "1") ". So the body computes " (c "0 + 10 * 1") " = " (c "10") ". The state never leaks out of the handler; the performing code just sees a sequence of numbers.")
+  (p "The first " (c "next") " resumes with the state " (c "0") " and bumps it to " (c "1") "; the second resumes with " (c "1") ". So the body computes " (c "0 + 10 * 1") " = " (result (of "counter") 10) ". The state never leaks out of the handler; the performing code just sees a sequence of numbers.")
   (h2 "The performer and the handler can be far apart")
   (p "So far the " (c "handle") " has wrapped the performance directly. But nothing says they have to sit in the same function, and this is where effects earn their keep. A function can perform an operation it never handles; the handler is supplied by whoever " (em "calls") " it. Here " (c "gen") " just performs " (c "Bump.by") " (it has no handler at all) and " (c "main") " decides what performing means, wrapped around its " (em "call") " to " (c "gen") ":")
   (runnable
@@ -48,6 +49,7 @@
   (h2 "A getter/setter, shared across functions")
   (p "Give an effect " (em "two") " operations and let the handler's state be real mutable state (a " (c "get") " and a " (c "set") ") and you have a store that any function can read and write, without a single one of them holding the data. Here " (c "deposit") " and " (c "balance") " are ordinary helpers; neither owns the balance. The " (c "State") " handler in " (c "main") " is the only thing that does, and it threads it through " (c "s") ":")
   (runnable
+    (id "state")
     (source (effect State
   (op get (-> Unit Int64))
   (op set (-> Int64 Unit)))
@@ -59,7 +61,7 @@
     ((get (u) s (resume s s))
      (set (v) s (resume unit v)))
     (do (deposit 20) (deposit 5) (balance))))))
-  (p "The account starts at " (c "100") "; two deposits push it to " (c "125") ". Read the arms as the store's implementation: " (c "get") " resumes with the current state and leaves it unchanged; " (c "set") " resumes with " (c "unit") " and makes its argument the new state. " (c "deposit") " and " (c "balance") " talk to that store through " (c "State.get") " / " (c "State.set") " as if it were ambient, but it isn't ambient at all. Swap in a handler that logs every " (c "set") ", or seeds a different opening balance, and not one line of " (c "deposit") " changes.")
+  (p "The account starts at " (c "100") "; two deposits push it to " (result (of "state") 125) ". Read the arms as the store's implementation: " (c "get") " resumes with the current state and leaves it unchanged; " (c "set") " resumes with " (c "unit") " and makes its argument the new state. " (c "deposit") " and " (c "balance") " talk to that store through " (c "State.get") " / " (c "State.set") " as if it were ambient, but it isn't ambient at all. Swap in a handler that logs every " (c "set") ", or seeds a different opening balance, and not one line of " (c "deposit") " changes.")
   (h2 "Doing work after resume")
   (p "Every handler so far has " (c "resume") "d as its " (em "last") " act: it hands a value back and steps aside, and whatever the performing code computes flows straight out. But an arm can do work " (em "after") " the resumption returns. " (c "resume") " is an ordinary expression, so its result, the value the rest of the body eventually produces, is something the arm can keep computing with:")
   (runnable
@@ -78,29 +80,32 @@
     (+ 100 (Amb.flip))))))
   (p "The result is " (c "111") ": " (c "100 + 10") " from re-reducing the body, then " (c "+ 1") " from the arm on the way out. This is what lets a handler " (em "post-process") " or " (em "aggregate") " a whole computation, logging a total, accumulating, transforming a result, rather than only feeding a value in. And it composes with state: each performance resumes with the advanced state, and the arm's surrounding work wraps every re-reduction:")
   (runnable
+    (id "st-tick")
     (source (effect St (op tick (-> Unit Int64)))
 (def (main)
   (handle St 0
     ((tick (u) s (+ 100 (resume s (+ s 1)))))
     (+ (St.tick) (St.tick))))))
-  (p "The first " (c "tick") " reads the initial state " (c "0") " and the second reads the advanced " (c "1") "; each is wrapped by the arm's " (c "+ 100") ", so they add up to " (c "201") ". Tail resume answers and steps aside; non-tail resume answers, then acts on what came back.")
+  (p "The first " (c "tick") " reads the initial state " (c "0") " and the second reads the advanced " (c "1") "; each is wrapped by the arm's " (c "+ 100") ", so they add up to " (result (of "st-tick") 201) ". Tail resume answers and steps aside; non-tail resume answers, then acts on what came back.")
   (h2 "A handler that doesn't resume: bailing out")
   (p "A handler can also " (em "not") " resume at all. If an arm just returns a value, the whole " (c "handle") " expression becomes that value and the rest of the body is abandoned: an early exit, no exceptions required. Here " (c "Bail.bail") " hands its argument straight out, so the " (c "+ 100") " never runs:")
   (runnable
+    (id "bail")
     (source (effect Bail (op bail (-> Int64 Int64)))
 (def (main)
   (handle Bail 0
     ((bail (n) s n))
     (+ (Bail.bail 7) 100)))))
-  (p "The result is " (c "7") ", not " (c "107") ": performing " (c "bail") " jumped out of the addition entirely. This is how you'd write \"stop and return this now\": the same shape as an exception, but it's just a handler choosing not to resume.")
+  (p "The result is " (result (of "bail") 7) ", not " (c "107") ": performing " (c "bail") " jumped out of the addition entirely. This is how you'd write \"stop and return this now\": the same shape as an exception, but it's just a handler choosing not to resume.")
   (p "The bail works even right beside another effect, not just a plain value. Here the body adds a resumptive " (cdz (E.other)) " and an abortive " (cdz (E.bail 5)) ", and performing " (c "bail") " still exits the whole " (c "handle") ":")
   (runnable
+    (id "e-bail")
     (source (effect E (op other (-> Int64)) (op bail (-> Int64 Int64)))
 (def (main)
   (handle E 0
     ((other () s (resume s (+ s 1))) (bail (v) s v))
     (+ (E.other) (E.bail 5))))))
-  (p "The result is " (c "5") ". " (cdz (E.other)) " ran first and drew the seed " (c "0") ", then " (cdz (E.bail 5)) " bailed, so the pending " (c "+") " never finishes. The effect " (cdz (E.other)) " already performed isn't undone, though: a bail-out abandons the work still " (em "pending") ", not what already happened. And the bail need not sit at the top of the body; it exits from wherever it runs, even from inside a conditional like " (cdz (if c (E.bail 5) 0)) " that only some runs reach.")
+  (p "The result is " (result (of "e-bail") 5) ". " (cdz (E.other)) " ran first and drew the seed " (c "0") ", then " (cdz (E.bail 5)) " bailed, so the pending " (c "+") " never finishes. The effect " (cdz (E.other)) " already performed isn't undone, though: a bail-out abandons the work still " (em "pending") ", not what already happened. And the bail need not sit at the top of the body; it exits from wherever it runs, even from inside a conditional like " (cdz (if c (E.bail 5) 0)) " that only some runs reach.")
   (note "These handlers are " (em "one-shot") ": each performance resumes at most once, so they compile down to ordinary control flow: no captured continuations, no runtime machinery. Handling something the program can't discharge itself (real input, the clock) is delegated to the host at the program's edge, and shows up in its manifest. That's how effects stay honest about what a program actually does.")
   (h2 "A guard must be side-effect-free")
   (p "There's one place a perform is " (em "not") " allowed: a " (link (slug "pattern-matching") " match-arm ") " " (em "guard") ". A guard is a boolean decision the pattern engine may evaluate " (em "speculatively or repeatedly") ", or skip entirely when an earlier arm wins, so it has no well-defined \"run exactly once, in this order\" the way an arm body does. Performing an effect there would mean an effect with no defined schedule, so the compiler rejects it outright. Here a guard performs " (c "Ask.ask") ", and the program declines:")
@@ -127,12 +132,13 @@
   (h2 "Why this matters: mock now, real later")
   (p "This is what makes effects useful in real programs. Because the performer doesn't know who answers, the " (em "same") " code runs against a test mock or a real external service just by choosing a different handler. Picture a step of an agent loop: " (c "turn") " performs " (c "Model.converse") ", a call to a language model. It names what it needs; it doesn't reach out itself. Run it under a " (em "mock") " handler that echoes the query back, and under a " (em "different") " handler that answers differently, and you get two behaviours from the same " (c "turn") ":")
   (runnable
+    (id "model")
     (source (effect Model (op converse (-> Int64 Int64)))
 (def (turn) (Model.converse 5))
 (def (main)
   (+ (handle Model 0 ((converse (q) s (resume q s))) (turn))
      (handle Model 0 ((converse (q) s (resume (* q 10) s))) (turn))))))
-  (p "The first handler resumes with the query unchanged (" (c "5") "), the second with ten times it (" (c "50") "), so the sum is " (c "55") ", from one unchanged " (c "turn") ". In a real program the mock is your unit test and the \"different\" handler is the one wired to the actual model at the edge; the loop's logic never mentions either. That's effects as an I/O " (em "boundary") ": the body performs, and swapping the handler swaps the whole outside world, with no dependency injection, no mocking framework, just a different " (c "handle") ".")
+  (p "The first handler resumes with the query unchanged (" (c "5") "), the second with ten times it (" (c "50") "), so the sum is " (result (of "model") 55) ", from one unchanged " (c "turn") ". In a real program the mock is your unit test and the \"different\" handler is the one wired to the actual model at the edge; the loop's logic never mentions either. That's effects as an I/O " (em "boundary") ": the body performs, and swapping the handler swaps the whole outside world, with no dependency injection, no mocking framework, just a different " (c "handle") ".")
   (p "And the whole " (em "loop") " is just this. A real agent runs turns until it's done: each turn asks the model (" (c "Model.converse") ") and dispatches a tool (" (c "Tools.dispatch") "), accumulating a result, bounded by a fuel counter so it terminates. Every one of those is a performed operation; the loop itself is ordinary recursion, and the handlers supply the outside world. Here a three-step run against mock handlers accumulates " (c "3 + 2 + 1 = 6") ":")
   (runnable
     (source (effect Model (op converse (-> Int64 Int64)))
