@@ -20,24 +20,27 @@
   (h2 "Nesting choices")
   (p "An " (c "if") " selects among more than two outcomes by nesting in the else position:")
   (runnable
+    (id "sign-of-n")
     (source (let ((n 0))
   (if (< n 0) -1
       (if (= n 0) 0 1)))))
-  (p "This is the sign of " (c "n") ", giving " (c "-1") " if negative, " (c "0") " if zero, and " (c "1") " if positive. With " (c "n = 0") " the first test fails and the inner " (cdz (= n 0)) " fires, so the answer is " (c "0") ". Change " (c "n") " to " (c "-4") " or " (c "7") " and Run to take a different branch.")
+  (p "This is the sign of " (c "n") ", giving " (c "-1") " if negative, " (c "0") " if zero, and " (c "1") " if positive. With " (c "n = 0") " the first test fails and the inner " (cdz (= n 0)) " fires, so the answer is " (result (of "sign-of-n") 0) ". Change " (c "n") " to " (c "-4") " or " (c "7") " and Run to take a different branch.")
   (h2 "Booleans compose and short-circuit")
   (p "Comparisons produce " (c "Bool") " values, and " (c "and") ", " (c "or") ", " (c "not") " combine them. They " (em "short-circuit") ", so a false " (c "and") " never evaluates its right side. That's what makes a guard-then-use pattern safe, because here " (c "safe") " checks " (c "n") " isn't zero " (em "before") " dividing by it, so the division never runs when it would trap:")
   (runnable
+    (id "short-circuit")
     (source (def (safe n)
   (and (not (= n 0)) (> (/ 100 n) 5)))
 (def (main) (safe 0))))
-  (p "With " (c "n = 0") " the first test is false, so " (cdz (/ 100 0)) " is skipped entirely and the whole thing renders " (c "false") ". Were " (c "and") " not short-circuiting, that division would trap.")
+  (p "With " (c "n = 0") " the first test is false, so " (cdz (/ 100 0)) " is skipped entirely and the whole thing renders " (result (of "short-circuit") false) ". Were " (c "and") " not short-circuiting, that division would trap.")
   (h2 "Recursion")
   (p "A function can call itself, and that's how you loop in Cadenza. A base case stops the recursion, and each step reduces toward it. Here " (c "sm") " sums the integers from " (c "n") " down to 0:")
   (runnable
+    (id "recursion-sum")
     (source (def (sm n)
   (if (= n 0) 0 (+ n (sm (- n 1)))))
 (def (main) (sm 5))))
-  (p (cdz (sm 5)) " adds " (c "5 + 4 + 3 + 2 + 1") " down to the base case, giving " (c "15") ". Each call peels off " (c "n") " and recurses on " (c "n - 1") " until it reaches " (c "0") ".")
+  (p (cdz (sm 5)) " adds " (c "5 + 4 + 3 + 2 + 1") " down to the base case, giving " (result (of "recursion-sum") 15) ". Each call peels off " (c "n") " and recurses on " (c "n - 1") " until it reaches " (c "0") ".")
   (h2 "Your turn")
   (exercise
     (id "control-flow:1")
