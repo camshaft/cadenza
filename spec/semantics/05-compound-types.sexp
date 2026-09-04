@@ -8487,6 +8487,27 @@
       (export main)))
   (output (: 8 Int64)))
 
+; multi-rec-elem (breaker, the RECORD sibling of multi-tup-elem #8418): TWO refutable RECORD elements in ONE
+; arm `(list (record (= v 1)) (record (= v 2)))` — each refines on its literal field. #8418's doc notes the
+; ctor desugar ALREADY loops N-per-arm while the tuple AND RECORD value-refinement desugars decline `>= 2`; it
+; fences the tuple leg. This pins the RECORD leg: the record value-refinement is a DISTINCT desugar from the
+; tuple one (cf. #8393 record-element vs #8367 tuple-element), so it needs its own flip-guard — a fix that
+; generalizes only the tuple pass to N-per-arm would still leave records declining. Consistent decline
+; ("a list arm with more than one refutable record element is not supported") across wasm+rust+cadenza.
+; SHOULD refine both like the ctor N-per-arm loop: `xs = [{v:1},{v:2}]` → element 0 `(record (= v 1))` matches,
+; element 1 `(record (= v 2))` matches → 100. Idealistic-todo; auto-flips with #8418 when the record desugar
+; gains N-per-arm support (owner: v-inference, the #8367/#8371/#8380 element-refinement arc).
+(case
+  "two refutable record list elements in one arm each refine (currently declines >1-per-arm)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v Int64)))))
+        (match xs (#list(#record((= v 1)) #record((= v 2))) 100) (_ -1)))
+      (def (main) (f #list(#record((= v 1)) #record((= v 2)))))
+      (export main)))
+  (output (: 100 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).

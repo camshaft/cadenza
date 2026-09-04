@@ -8602,6 +8602,7 @@ pass	two rationals denoting the same number are equal regardless of how they wer
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 todo	two refutable tuple list elements in one arm each refine and bind (currently declines >1-per-arm)
+todo	two refutable record list elements in one arm each refine (currently declines >1-per-arm)
 pass	two residuals from ONE curry source hold distinct first-stage captures
 pass	two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
