@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # baseline-drift-monitor.sh — DETECT-only cron for `.gate-baseline` drift (concierge-greenlit 2026-08-31,
 # v-fleet-tooling gate-baseline automation). WHY: the committed `.gate-baseline` drifts behind the corpus
-# when new cases land without a periodic `gate --save` — it went 911 titles behind SILENTLY because nothing
+# when new cases land without a periodic re-baseline (`nix run .#save-baseline`) — it went 911 titles behind SILENTLY because nothing
 # watched the count, so those cases lacked regression protection. This is the CHEAP DETECT half of the split
 # design (my lane): a text-only scan (NO gate) that NOTIFIES v-corpus-harness when new-cases-lacking-a-baseline
 # exceeds a threshold, so a trusted-store agent can run the heavy re-baseline + review + land. The heavy save
@@ -111,7 +111,7 @@ fi
 # safe, per the fleet-send discipline). Best-effort; touch the cooldown state regardless so a send hiccup
 # doesn't spam. Run from the picked worktree (any worktree resolves the same hub inbox).
 subj="baseline-drift: ~$missing corpus titles have no .gate-baseline line ($growth NEW above the coverage floor $floor, threshold $THRESHOLD) — new cases lacking regression protection; a whole-corpus re-baseline is due"
-body="Automated fleet-health detect (baseline-drift-monitor cron, v-fleet-tooling). Authoritative count via 'cdz corpus baseline-drift': $missing corpus titles have NO line in spec/semantics/.gate-baseline (missing-from-baseline). Of those, $growth are NEW growth above the lowest-seen coverage floor ($floor) — newly-added cases with no regression protection (a gate has no pass/fail expectation for them). ACTION: a trusted-store agent should run the whole-corpus re-baseline (nix run .#save-baseline, or cargo xtask gate --save) to regenerate the 3 baselines, then review + land. DETECT-only cron; the heavy save stays triggered (never cron'd). Re-notify cooldown ${COOLDOWN}s. Tune the threshold via CDZ_BASELINE_DRIFT_THRESHOLD."
+body="Automated fleet-health detect (baseline-drift-monitor cron, v-fleet-tooling). Authoritative count via 'cdz corpus baseline-drift': $missing corpus titles have NO line in spec/semantics/.gate-baseline (missing-from-baseline). Of those, $growth are NEW growth above the lowest-seen coverage floor ($floor) — newly-added cases with no regression protection (a gate has no pass/fail expectation for them). ACTION: a trusted-store agent should run the whole-corpus re-baseline (nix run .#save-baseline; the old 'cargo xtask gate --save' was deleted in #8318) to regenerate the 3 baselines, then review + land. DETECT-only cron; the heavy save stays triggered (never cron'd). Re-notify cooldown ${COOLDOWN}s. Tune the threshold via CDZ_BASELINE_DRIFT_THRESHOLD."
 if (cd "$wt" && cargo xtask fleet send --to v-corpus-harness --from v-fleet-tooling --kind note --subject "$subj" --body "$body" >/dev/null 2>&1); then
   echo "baseline-drift-monitor: NOTIFIED v-corpus-harness (growth=$growth > $THRESHOLD, missing=$missing floor=$floor)."
 else

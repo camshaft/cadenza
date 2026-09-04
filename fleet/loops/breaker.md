@@ -24,7 +24,9 @@ reasoning job in the fleet, so it gets the strongest reasoner.
 3. **Attack.** Pick an angle (rotate so you don't re-plough one furrow) and try to produce a program
    whose behavior is WRONG:
    - **Differential**: compile+run a program on the wasm backend vs the Rust backend
-     (`cargo xtask gate --target rust` vs `wasm`) — a disagreement is a miscompile. Or against a
+     (`cdz compile -t wasm` vs `-t rust` then run each, or the per-file `nix build
+     .#checks.<sys>.corpus-gate-coarse-<stem>` vs `corpus-rust-gate-coarse-<stem>` once migrated —
+     the in-process `cargo xtask gate --target` was deleted #8318) — a disagreement is a miscompile. Or against a
      hand-computed / exact-integer reference.
    - **Const-vs-runtime divergence**: a value that folds at compile time vs the same value threaded
      through a `def` so it runs — they must agree.

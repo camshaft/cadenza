@@ -133,9 +133,11 @@ returning to the tick-top check):
    checks; pr-sync is the sole full-gater + the authoritative backstop:
    - **`cargo xtask dev-gate`** (your primary self-check every iteration — auto-detects touched crates
      from `git diff`, runs only their test+clippy+fmt, warm ≈ 4s; `cargo xtask dev-gate rcdzc` to scope).
-   - a **scoped corpus spot-check** when your slice changes behavior: `cargo xtask gate --files
-     spec/semantics/<your-file>.sexp --target wasm` (YOUR corpus file, one backend; add `--target rust`
-     only if your slice touches backend-specific emit — the nightly full-rust gate + pr-sync cover the rest).
+   - a **scoped corpus spot-check** when your slice changes behavior: `nix build
+     .#checks.<sys>.corpus-gate-coarse-<your-file-stem>` (YOUR corpus file, wasm, fail-on-regression vs
+     `.gate-baseline`; add the `corpus-rust-gate-coarse-<stem>` twin only if your slice touches
+     backend-specific emit — the nightly full-rust gate + pr-sync cover the rest). The in-process
+     `cargo xtask gate --files` was deleted #8318; per-file coarse gates (#8321) cover every corpus stem.
    - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
    Verify runtime slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away +
    imports no runtime). Diff the corpus FAIL SET against the baseline (ADDITIVE only; a `Todo→Fail` flip is
