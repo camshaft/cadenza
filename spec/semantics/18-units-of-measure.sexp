@@ -106,18 +106,17 @@
       (export main)))
   (output (: 11 Int64)))
 
-; COMMUTATIVITY GAP (breaker, adjacent to the #8278 widen fix above): the #8278 fix widens a bare-default
-; call-result Qty magnitude to Int64 — but ONLY when the call-result is the FIRST `Qty.+` operand. COMMUTED
-; (the narrow Int8 magnitude first), the result width is taken as Int8 instead, so the call-result narrows
-; and a sum that overflows Int8 SPURIOUSLY rejects CDZ0304 — even though the identical sum with operands
-; SWAPPED compiles to an Int64 150 (the #8278 path). `+` is commutative, so this order-dependent
-; accept/reject is a defect regardless of the eventual resolution. (Triangulation: with a non-overflowing
-; sum the commuted result still renders narrower — Int8 vs the Int64 of the swapped twin — the overflow
-; just makes the narrowing OBSERVABLE as a reject. The PLAIN-int analog `(+ (: 50 Int8) ((fn () 100) 3))`
-; rejects CDZ0304 in BOTH orders, so the asymmetric widening is Qty-specific, seated in the Qty
-; magnitude-width reconciliation, not the general integer width rule.) Idealistic: SHOULD fold to 150 Int64
-; to match its swapped twin; grades todo (CDZ0304) until the reconciliation is made order-independent.
-; Routed to v-cadenza-backend (#8278 owner). SHOULD auto-flip todo->pass when the widen is symmetrized.
+; COMMUTATIVITY of the Qty.+ width join (breaker; fixed by #8292): the #8278 widen (a bare-default
+; call-result Qty magnitude widens to Int64) used to fire ONLY when the call-result was the FIRST `Qty.+`
+; operand — COMMUTED (narrow Int8 magnitude first), the result width was taken as Int8, so the call-result
+; narrowed and a sum overflowing Int8 SPURIOUSLY rejected CDZ0304 while the operand-swapped twin compiled to
+; 150. #8292 made the join symmetric: the additive Qty arm now takes the WIDER effective width (ground_width,
+; deferred→Int64 default) regardless of operand order, so this folds to 150 Int64 both ways. (Triangulation
+; that pinned it as Qty-specific: the PLAIN-int analog `(+ (: 50 Int8) ((fn () 100) 3))` rejects CDZ0304 in
+; BOTH orders — the asymmetry lived in the Qty magnitude-width reconciliation, not the general integer width
+; rule.) Soundness preserved by #8292: a genuine both-Int8 sum overflow + a mixed-scale overflow still
+; CDZ0304, and two-fixed-DIFFERENT widths still CDZ0301 in both orders. Regression guard for the join
+; symmetry.
 (case
   "a Qty.+ narrow Int8 magnitude FIRST widens the call-result sibling commutatively (not a spurious overflow reject)"
   (input
