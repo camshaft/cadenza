@@ -22,6 +22,7 @@ export default function OpaqueTypes() {
 (def (rate (: p Percent)) (let (((Percent.Pct v) p)) v))
 
 (def (main) (rate (percent 150)))`}
+        id="percent-clamp"
       />
       <P>What this buys you isn't the clamping itself but what every <em>downstream</em> function can now assume. Because a <C>Percent</C> can only come from <C>percent</C>, any code that receives one <em>knows</em> it's in range, with no re-checking. Here <C>apply-discount</C> takes a price and a <C>Percent</C> and subtracts that fraction, so a 25% discount off 200 is 150:</P>
       <Runnable
@@ -50,6 +51,7 @@ export default function OpaqueTypes() {
 (def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
 
 (def (main) (apply-discount 200 (percent 150)))`}
+        id="discount-clamped"
       />
       <P><C>apply-discount</C> never validates its <C>Percent</C> because it doesn't have to. The type is a <em>proof</em> the value was checked once, at the only place it could be made. That's the difference between a bare <C>Int64</C> (which every consumer must defensively re-check) and an opaque <C>Percent</C> (checked once, trusted everywhere).</P>
       <H2>The boundary is what enforces it</H2>
