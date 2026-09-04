@@ -4392,7 +4392,7 @@ c")))
 ; const-evaluator applies Set uniqueness during the fold.
 (case
   "eval of a quoted Set.of construction folds the dedup (Set.len reads the unique count)"
-  (input (eval (quote (Set.len (Set.of (list 1 2 2 3))))))
+  (input (eval (quote (Set.len (Set.of #list(1 2 2 3))))))
   (output (: 3 Int64)))
 
 (case
