@@ -625,6 +625,17 @@ pub struct TypeDecl {
     /// most prelude sums; only a sum with prelude-declared associated ops (currently the built-in `Ast`)
     /// carries any. Nothing is privileged BY NAME in `sum_record` — it just appends the decl's list.
     pub associated: Vec<StructId>,
+    /// The enclosing inline `(module …)` form if this type is a module MEMBER, else `None` (top-level or
+    /// `do`-nested). A member type IS synthesized (it stays in `type_decls` so `sums::synthesize` builds its
+    /// record) but is kept OUT of the FLAT global name maps (`type_decl_index` / `variant_ctor_index` /
+    /// `same_name_newtype_ctor_index`). It resolves MODULE-SCOPED via `Db::module_scoped_type` /
+    /// `module_scoped_variant_ctor(_qualified)` — the inline-module analogue of the `file_scoped_*` scheme,
+    /// consulted first at the type/ctor resolver sites. FAIL-CLOSED: a resolver path that has not yet learned
+    /// the module-scoped consult DECLINES (a member type absent from the flat index is unbound) rather than
+    /// LEAKING it globally. Distinctness is occ-keyed + free (the scoped resolver returns the ref's OWN
+    /// enclosing module's occ), and no-leak is free (a bare `Sh` OUTSIDE any module → scoped None + not in the
+    /// flat index → naturally unbound).
+    pub module_scope: Option<StructId>,
 }
 
 /// One operation of an effect declaration — a `(op NAME (-> Param Result))` clause. Its position in
@@ -2856,6 +2867,15 @@ impl Db {
         let first_prelude_sum = type_decls.len() - prelude_sum_count;
         for (di, decl) in type_decls.iter().enumerate() {
             let is_user_decl = di < first_prelude_sum;
+            // A module-MEMBER type is MODULE-SCOPED: keep it OUT of these flat NAME-keyed global maps. A
+            // global entry would (a) LEAK the member type's name + ctors to the global bare scope (external
+            // `(Sh.Box …)` would resolve — a module-privacy hole) and (b) COLLIDE two modules' same-named
+            // member types (`entry(name).or_insert` first-wins → breaks distinctness). A sibling reaches it
+            // MODULE-SCOPED via `Db::module_scoped_type` / `module_scoped_variant_ctor(_qualified)`; its record
+            // is still synthesized (`decl.synth` set) and `type_decl_by_occ`-reachable. (`TypeDecl::module_scope`.)
+            if decl.module_scope.is_some() {
+                continue;
+            }
             for v in &decl.variants {
                 // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
                 // a variant whose name COLLIDES with a built-in prelude TYPE-CONSTRUCTOR / MODULE name
@@ -4554,6 +4574,125 @@ impl Db {
         )
     }
 
+    /// MODULE-SCOPED member TYPE lookup — the inline-`(module …)` analogue of [`Db::file_scoped_type`].
+    /// Return the SYNTHESIZED record of a `(type NAME …)` member of the inline `(module …)` that lexically
+    /// encloses reference node `at`, when `NAME == name`. `None` if `at` is not inside a module declaring
+    /// `name`. OCC-KEYED: the ref's OWN enclosing module → two modules' same-named `Sh` are DISTINCT and
+    /// never collide (a member type is absent from the flat global index — `TypeDecl::module_scope`). NO-LEAK
+    /// is free: a bare `Sh` OUTSIDE any module → `None` + not in the flat index → naturally unbound. A module
+    /// body referencing a TOP-LEVEL type still resolves: `None` → the caller's flat-global fallthrough. Consulted
+    /// FIRST (ungated by `is_linked_package` — inline modules occur in single-file programs) at the type sites,
+    /// exactly as the file scheme consults `file_scoped_type`.
+    pub(crate) fn module_scoped_type(&self, at: StructId, name: &str) -> Option<StructId> {
+        self.walk_enclosing_module(at, |db, mf| db.module_member_type_synth(mf, name))
+    }
+
+    /// MODULE-SCOPED variant-CONSTRUCTOR lookup — the ctor analogue of [`Db::module_scoped_type`] and the
+    /// inline-module counterpart of [`Db::file_scoped_variant_ctor`]. Return the ctor occurrence of a MEMBER
+    /// type's VARIANT named `name` in the module enclosing `at` (bare `Box` for `(type Sh (Box Int64) …)`, or
+    /// the same-name-newtype `W` for `(type W (W Int64))` — the module-scoped face of step 3c and the #8218
+    /// bare-in-module-ctor gap). `None` outside a declaring module → flat-global fallthrough then unbound
+    /// (no leak). Occ-keyed to the ref's own module, so no cross-module ctor collision.
+    pub(crate) fn module_scoped_variant_ctor(&self, at: StructId, name: &str) -> Option<StructId> {
+        self.walk_enclosing_module(at, |db, mf| db.module_member_variant_ctor(mf, name))
+    }
+
+    /// Walk from reference node `at` up its parent chain and apply `f` at each enclosing inline `(module …)`
+    /// form (or the module recovered from a synth RECORD an exported member's body was reparented under, via
+    /// [`Db::enclosing_module_form`]), returning the first `Some`. A node COPIED by reduction / match-desugar
+    /// (a β-copy whose short chain no longer reaches its module) is handled by a `source_of_synth` fallback:
+    /// if the direct walk finds nothing, retry from the copy's SOURCE occurrence, which sits in the original
+    /// module subtree — the same provenance recovery the file scheme uses for an indeterminate β-copied node.
+    fn walk_enclosing_module<T>(
+        &self,
+        at: StructId,
+        f: impl Fn(&Db, StructId) -> Option<T> + Copy,
+    ) -> Option<T> {
+        let walk = |start: StructId| -> Option<T> {
+            let mut cur = Some(start);
+            while let Some(node) = cur {
+                if let Some(mf) = self.enclosing_module_form(node)
+                    && let Some(hit) = f(self, mf)
+                {
+                    return Some(hit);
+                }
+                cur = self.parent_of(node);
+            }
+            None
+        };
+        walk(at).or_else(|| self.source_of_synth(at).and_then(walk))
+    }
+
+    /// The synth record of a `(type NAME …)` member of module form `mf`, when `NAME == name`. Shared scan
+    /// behind [`Db::module_scoped_type`].
+    fn module_member_type_synth(&self, mf: StructId, name: &str) -> Option<StructId> {
+        let members = self.ast.as_form(mf, "module").and_then(|t| t.get(1..))?;
+        for &m in members {
+            if self
+                .ast
+                .as_form(m, "type")
+                .and_then(|t| t.first())
+                .and_then(|&n| self.ast.as_name(n))
+                == Some(name)
+                && let Some(td) = self.type_decl_by_occ(m)
+                && let Some(synth) = td.synth
+            {
+                return Some(synth);
+            }
+        }
+        None
+    }
+
+    /// The ctor occurrence of a MEMBER type's VARIANT named `name` in module form `mf`. Shared scan behind
+    /// [`Db::module_scoped_variant_ctor`].
+    fn module_member_variant_ctor(&self, mf: StructId, name: &str) -> Option<StructId> {
+        let members = self.ast.as_form(mf, "module").and_then(|t| t.get(1..))?;
+        for &m in members {
+            if self.ast.as_form(m, "type").is_some()
+                && let Some(td) = self.type_decl_by_occ(m)
+                && let Some(ctor) = td
+                    .variants
+                    .iter()
+                    .find(|v| v.name == name)
+                    .and_then(|v| v.ctor)
+            {
+                return Some(ctor);
+            }
+        }
+        None
+    }
+
+    /// The `(module …)` declaration form `node` belongs to, for the module-scoped resolvers' walk: `node`
+    /// itself when it is a `(module …)` form (a PRIVATE member's body ascends through the form), OR the module
+    /// recovered when `node` is the module's synth RECORD (an EXPORTED member's body is reparented under the
+    /// record — `module_by_synth_record`, the same recovery `module_sibling_binds` Case R uses). `None`
+    /// otherwise.
+    fn enclosing_module_form(&self, node: StructId) -> Option<StructId> {
+        if self.ast.as_form(node, "module").is_some() {
+            Some(node)
+        } else {
+            self.module_by_synth_record(node)
+        }
+    }
+
+    /// The nearest enclosing inline `(module …)` form of a DECLARATION occurrence `occ` (walking parents),
+    /// or `None` for a top-level / file-level declaration. Scopes the per-module fixed-name-set checks so
+    /// two DIFFERENT inline modules may each declare a member type of the same name (occ-keyed distinct
+    /// types — the module-scoped identity of `module_scoped_type`), while a repeat within ONE module stays
+    /// the duplicate-declaration ill-formedness. Distinct from `enclosing_module_form`, which only
+    /// recognizes a module form itself or a synth record — a `(type …)` member's occ is neither, so its
+    /// module is found by ascending to the containing `(module …)`.
+    pub(crate) fn enclosing_module_of(&self, occ: StructId) -> Option<StructId> {
+        let mut cur = self.parent_of(occ);
+        while let Some(n) = cur {
+            if self.ast.as_form(n, "module").is_some() {
+                return Some(n);
+            }
+            cur = self.parent_of(n);
+        }
+        None
+    }
+
     /// Whether the sum type whose DECLARATION OCCURRENCE is `decl` is ABSTRACT in the file containing
     /// node `at` — its handle is visible there but NONE of its constructors are (imported handle-only).
     /// A value of such a type may be named and held but not constructed, matched, stripped, or compared
@@ -6146,6 +6285,8 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         // A scanned decl (user OR prelude) declares no associated members here; the built-in `Ast`'s are
         // attached in `sums::prelude_decls` (prelude-defined), consumed generically by `sum_record`.
         associated: Vec::new(),
+        // Set by `collect_module_decl` for a module-MEMBER type; a top-level / `do`-nested scan leaves None.
+        module_scope: None,
     })
 }
 
@@ -6408,17 +6549,16 @@ fn collect_module_decl(
             // A MODULE-IN-MODULE member — register + descend it (a nested record field of this module).
             collect_module_decl(ast, member, top, types, effects, modules);
         } else if ast.as_form(member, "type").is_some() {
-            // A module-MEMBER `(type Sh …)` — collect it so it is SYNTHESIZED and resolvable, exactly as
-            // `collect_nested_decls` collects a `do`-nested type into `types`. Without this a member type
-            // was NEVER registered (this loop descended only nested modules + def bodies), so a sibling
-            // member's reference to `Sh` / `Sh.Box` was unbound (CDZ0101) — the #7946 gap. A sibling resolves
-            // it through the ordinary type path (`resolve_name` step 3, the occurrence-keyed `type_decls`),
-            // and its variant constructors through the variant/ctor index, like any top-level or `do`-nested
-            // sum. Identity stays OCC-KEYED (the declaration occurrence, not the name), so two modules that
-            // each declare a same-named `(type Sh …)` are DISTINCT — the name index is a first-wins
-            // accelerator, never identity. A member type is NOT a record field (it is a legitimate
-            // non-export), so this does not change closed-record projection (`m.Sh` stays CDZ0201).
-            if let Some(decl) = scan_type_decl(ast, member) {
+            // A module-MEMBER `(type Sh …)` — collect it so it is SYNTHESIZED (record built by
+            // `sums::synthesize`) and TAG it with its enclosing module (`module_scope = form`). The tag keeps
+            // it OUT of the flat global name maps (name-index loop skips it), so it resolves ONLY
+            // MODULE-SCOPED via `Db::module_scoped_type` / `module_scoped_variant_ctor(_qualified)` (the
+            // inline-module analogue of `file_scoped_*`, consulted first at the type/ctor resolver sites): a
+            // sibling sees `Sh` / `Sh.Box` / bare `Box`, but the name does NOT leak to the global bare scope
+            // and does NOT collide with another module's same-named member type. Without collection a member
+            // type was never registered (this loop descended only nested modules + def bodies) → the #7946 gap.
+            if let Some(mut decl) = scan_type_decl(ast, member) {
+                decl.module_scope = Some(form);
                 types.push(decl);
             }
         } else if let Some(def_tail) = ast.as_form(member, "def")

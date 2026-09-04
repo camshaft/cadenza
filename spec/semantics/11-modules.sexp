@@ -475,6 +475,29 @@
   (output (: 7 Int64)))
 
 (case
+  "a module-member type does NOT leak to the enclosing scope (no-import privacy)"
+  (doc
+    "The NO-LEAK companion of the sibling-visibility + distinctness cases (v-inference co-verify 2026-09,
+           co-owned with v-module-system). A module-member `(type Sh …)` is MODULE-SCOPED: it is visible to the
+           module's OWN members (see the sibling case above) but does NOT leak to the enclosing scope — a
+           reference to `Sh` / a construct `(Sh.Box …)` OUTSIDE the module is UNBOUND (CDZ0101), exactly as a
+           FILE-module's type is invisible without an explicit import (`modules-and-namespaces.md` §Visibility
+           Is Explicit / §Imports Are Explicit — the escape hatch to a nominal type is available only where the
+           type is in scope). Here `m` exports the FUNCTION `get` but not the TYPE `Sh`; the top-level `main`
+           references `(Sh.Box 3)` and MUST NOT resolve it. Regression guard for the no-leak half of the
+           co-verify: before module-scoped registration (skip the member type from the flat global name index)
+           this WRONG-ACCEPTED — `Sh` leaked globally and `(Sh.Box 3)` ran → 3, a module-privacy hole.")
+  (input
+    (do
+      (module m
+        (type Sh (Box Int64))
+        (def (get (: k Int64)) (match (Sh.Box k) ((Sh.Box n) n)))
+        (export get))
+      (def (main) (match (Sh.Box 3) ((Sh.Box n) n)))
+      (export main)))
+  (error CDZ0101))
+
+(case
   "a private sibling defined after its exported caller still resolves"
   (doc
     "The DEFINITION-ORDER companion of the private-sibling case above: there `helper` precedes its

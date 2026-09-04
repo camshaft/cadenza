@@ -2222,6 +2222,7 @@ mod tests {
             open_tail: None,
             synth: None,
             associated: vec![],
+            module_scope: None,
         }];
         let ncx = NameCtx::new(&decls);
         let mk = |args: Rc<[Ty]>| Ty::Nominal {

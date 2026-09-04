@@ -822,6 +822,23 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // single-file compile (`file_scoped_type` → `None`) falls straight through to the flat path,
     // byte-identical to before. `Some(Err(()))` — file known, type not visible there — falls through to
     // the effect/variant/prelude steps and then unbound, so a private sibling type is genuinely invisible.
+    // MODULE-SCOPED member type FIRST — the inline-`(module …)` analogue of `file_scoped_type`, ungated by
+    // `is_linked_package` (inline modules occur in single-file programs). A member type is kept out of the
+    // flat global index, so this is its only type-face path; occ-keyed → the ref's OWN module (distinct), and
+    // `None` outside a declaring module falls through to the flat global below (a top-level type still
+    // resolves; a bare member-type name outside its module ends unbound = no leak). In application/pattern
+    // HEAD position a SAME-NAME-newtype resolves to the CONSTRUCTOR (mirroring the flat/file head rule): here
+    // `name` IS a module-member type, so a module-scoped variant ALSO named `name` = a same-name newtype.
+    if let Some(synth) = db.module_scoped_type(id, name) {
+        if db.child_ix_of(id) == 0
+            && db.is_user_node(id)
+            && let Some(ctor) = db.module_scoped_variant_ctor(id, name)
+        {
+            return Resolved::Ref { value: ctor };
+        }
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = synth.0, "name → module-scoped member type");
+        return Resolved::Ref { value: synth };
+    }
     let scoped_type = if db.is_linked_package() {
         db.file_scoped_type(id, name)
     } else {
@@ -936,6 +953,15 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // private ctor. `Some(Err(()))` — file known, ctor not visible — falls through so a same-named
     // PRELUDE ctor (`Some`/`None`/`Ok`/`Err`) can still apply. `None` (indeterminate node) falls to the
     // flat path.
+    // MODULE-SCOPED member variant ctor FIRST — the inline-module analogue of `file_scoped_variant_ctor`
+    // (ungated by `is_linked_package`). A bare `Box`/`W` inside the module resolves to the enclosing member
+    // type's variant ctor (occ-keyed → the ref's own module); `None` outside falls through to the flat
+    // `variant_ctor_by_name` below (a top-level sum's bare ctor still resolves). This is the module-scoped
+    // face of step 3c AND the #8218 bare-in-module-ctor gap.
+    if let Some(value) = db.module_scoped_variant_ctor(id, name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → module-scoped member variant ctor");
+        return Resolved::Ref { value };
+    }
     let scoped_ctor = if db.is_linked_package() {
         db.file_scoped_variant_ctor(id, name)
     } else {
