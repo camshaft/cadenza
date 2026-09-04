@@ -9233,6 +9233,29 @@
       (export main)))
   (output (: -1 Int64)))
 
+; nlp-lit-rest (breaker, RESIDUAL of #8348): a nested-list arm with a LITERAL inner element AND an OUTER rest
+; binder `(list (list 1 b) (.. r))` DROPS the outer rest binder — reading `r` in the body is CDZ0101 'unbound
+; name `r`', yet if `r` is NOT read the compiler still fires the CDZ0306 'unused binding `r`' warning. That
+; warn-then-unbound split is the tell: the pattern-checker binds `r` (so it can warn it unused) but the
+; LITERAL-element re-match desugar's forget_subtree then drops the sibling outer-rest binder. #8348 fixed the
+; same desugar to preserve the pinned `__ne` SCRUTINEE, but a sibling `(.. r)` in the SAME arm is still lost.
+; ISOLATION (bounds it to the literal path): a BINDER inner element `(list (c b) (.. r))` with the same outer
+; rest binds `r` fine → `(+ b (List.len r))` folds; only a LITERAL inner element trips it. Consistent CDZ0101
+; across wasm+rust+cadenza (front-end desugar). SHOULD compile + bind: `xs = [[1 5] [9 9]]`, inner `(1 5)`
+; matches `(1 b)` → b=5, outer rest `r = [[9 9]]` (len 1) → `(+ 5 1)` = 6. Idealistic todo; auto-flips when the
+; literal-element re-match preserves the sibling rest binder. Routed to the Inc-14 desugar owner (the #8348 arc).
+(case
+  "a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest (currently unbound r)"
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 b) (.. r)) (+ b (List.len r))) (_ -2)))
+      (def (mk (: k Int64)) #list(#list(1 k) #list(9 9)))
+      (def (main) (f (mk 5)))
+      (export main)))
+  (output (: 6 Int64)))
+
 (case
   "a nullary variant list element dispatches by its discriminant"
   (doc
