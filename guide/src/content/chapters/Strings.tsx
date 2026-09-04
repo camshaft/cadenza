@@ -19,6 +19,7 @@ export default function Strings() {
         source={`(def (greet name) (String.concat "Hello, " name))
 
 (def (main) (greet "Cadenza"))`}
+        id="str-greet"
       />
       <P><C>(greet "Cadenza")</C> joins the two pieces into <C>"Hello, Cadenza"</C>, a brand-new string, with the two inputs left untouched.</P>
       <H2>How long is a string?</H2>

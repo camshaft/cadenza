@@ -27,12 +27,13 @@
     (#list(x .. rest) (sum-list rest (+ acc x)))))))
   (p "The empty list is the base case (return the accumulator); the non-empty case adds the head to the accumulator and recurses on the tail. Building a value instead of a number is the identical move. Here it reverses a list by taking each element off the front and putting it on the " (em "front") " of the accumulator, so the first element read ends up deepest and the last read ends up first:")
   (runnable
+    (id "iter-reverse")
     (source (def (main) (rev #list(1 2 3) #list()))
 (def (rev xs acc)
   (match xs
     (#list() acc)
     (#list(x .. rest) (rev rest (List.prepend acc x)))))))
-  (p "Prepending is what does the reversing: element " (c "1") " is placed first, then " (c "2") " goes in front of it, then " (c "3") " in front of that, so " (cdz #list(1 2 3)) " comes back as " (cdz #list(3 2 1)) ". " (link (slug "lists") " " (c "List.prepend")) " adds an element to the front, which is what flips the order; appending each element to the end with " (c "List.push") " would instead copy the list unchanged. A quick " (c "@test") " pins it, reading the three positions of the result back and checking they spell " (c "3") ", " (c "2") ", " (c "1") " (as the single number " (c "321") "):")
+  (p "Prepending is what does the reversing: element " (c "1") " is placed first, then " (c "2") " goes in front of it, then " (c "3") " in front of that, so " (cdz #list(1 2 3)) " comes back as " (result (of "iter-reverse") (: #list(3 2 1) (List Int64))) ". " (link (slug "lists") " " (c "List.prepend")) " adds an element to the front, which is what flips the order; appending each element to the end with " (c "List.push") " would instead copy the list unchanged. A quick " (c "@test") " pins it, reading the three positions of the result back and checking they spell " (c "3") ", " (c "2") ", " (c "1") " (as the single number " (c "321") "):")
   (runnable
     (source (def (rev xs acc)
   (match xs
