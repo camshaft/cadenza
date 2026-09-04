@@ -395,6 +395,42 @@ fn collect_result_assertions(
     out
 }
 
+/// SPAN-SLICE a chapter's `(result (of "slug") <value>)` assertions VERBATIM from its AUTHORED `.sexp` —
+/// `slug -> the value's exact source text`. This preserves a value's PER-TYPE member surface, which the
+/// spanless [`collect_result_assertions`] cannot: the decoded binary AST is spanless, so its `print_from`
+/// renders every `Leaf::Member` STRUCTURAL (`(. Qty of)`), but the RUNTIME value-render sugars Qty/Unit keys
+/// to bare dotted names (`Qty.of`), so a Qty/Unit `(result …)` pin would diverge from the runtime `got` and
+/// RED the gate (the #7804 playground bug class, here in the chapter path). Since `Qty.of` and `(. Ast List)`
+/// parse to the SAME `Leaf::Member`, NO re-render printer can reproduce the per-type surface — only the
+/// author's own source text does. Mirrors `playground::expected_value`'s verbatim slice. For every OTHER type
+/// (scalars, tuple/list/record/Some/Rational/BigInt/String, and structural-authored Ast) the sliced text
+/// equals what `print_from` produced, so this is a no-op for the already-gated pins and a fix only for the
+/// sugared-member types. Returns `None` when the sibling `.sexp` is absent (a native/test invocation), so the
+/// caller falls back to the spanless collection.
+fn collect_result_assertions_spanned(
+    sexp_path: &std::path::Path,
+) -> Option<std::collections::HashMap<String, String>> {
+    let text = std::fs::read_to_string(sexp_path).ok()?;
+    let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(&text).ok()?;
+    let mut out = std::collections::HashMap::new();
+    let mut stack = vec![a.root];
+    while let Some(n) = stack.pop() {
+        if a.head_name(n) == Some("result")
+            && let (Some(slug), Some(v)) = (
+                super::result_of_slug(&a, n),
+                super::result_value_node(&a, n),
+            )
+            && let Some(sp) = spans.get(v)
+        {
+            out.insert(slug.to_string(), text[sp.start..sp.end].to_string());
+        }
+        for &c in super::children(&a, n) {
+            stack.push(c);
+        }
+    }
+    Some(out)
+}
+
 /// `--shred <out-dir> <cdz-bin> <ordered .cdzb list>`: decode each chapter binary AST, shred its
 /// runnable/exercise cases into `<out-dir>/<NNNN>-<slug>/`, and write manifest.json. Case order = the .cdzb
 /// argument order (the caller passes chapters in a stable order).
@@ -417,7 +453,14 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
         if let Some(chapter) = super::locate_chapter(&a) {
             // Prose-value gate: gather the chapter's (result (of "slug") …) assertions once, so each named
             // runnable can be graded against its in-text asserted value (derive_case injects it as `expected`).
-            let results = collect_result_assertions(&a, chapter);
+            // Prefer the VERBATIM span-slice from the sibling authored `.sexp` (preserves a Qty/Unit value's
+            // sugared member surface, matching the runtime; the spanless print_from would render it structural
+            // and RED the gate — #7804 class). The sibling sits at the shred's cwd (guideShred runs from the
+            // guide src root; the `.cdzb` stem is exactly its `src/content/chapters/<stem>.sexp` basename).
+            // Fall back to the spanless collection when the sibling is absent (a native/test invocation).
+            let sibling = std::path::Path::new("src/content/chapters").join(format!("{stem}.sexp"));
+            let results = collect_result_assertions_spanned(&sibling)
+                .unwrap_or_else(|| collect_result_assertions(&a, chapter));
             for &f in super::children(&a, chapter) {
                 let kind = match a.head_name(f) {
                     Some("runnable") => "runnable",
@@ -608,6 +651,37 @@ fn die(msg: &str) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chapter-path Qty fix (#7804 class): the span-slice preserves a Qty/Unit value's SUGARED member
+    /// surface (`Qty.of`, matching the runtime value-render), where the spanless `print_from` structuralizes
+    /// it (`(. Qty of)`) and would RED the gate. Guards the verbatim-slice against a future "simplify back to
+    /// print_from" regression, exactly like `playground::read_one_example_file`'s baked-in guard.
+    #[test]
+    fn spanned_result_preserves_sugared_qty_member_surface() {
+        let text = r##"(chapter (slug "x") (title "T") (pillar "p") (section "s") (blurb "b") (lede "l")
+  (p "len " (result (of "q") (: (Qty.of 5.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))) ":")
+  (runnable (id "q") (source (Qty.of 5.0 (Unit.of #"meter")))))"##;
+        let dir = std::env::temp_dir().join(format!("cdz-shred-spantest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("QtyChap.sexp");
+        std::fs::write(&p, text).unwrap();
+        // SPAN-SLICE preserves the authored sugared surface verbatim.
+        let spanned = collect_result_assertions_spanned(&p).unwrap();
+        assert_eq!(
+            spanned.get("q").map(String::as_str),
+            Some(r##"(: (Qty.of 5.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))"##)
+        );
+        // CONTRAST: the spanless print_from STRUCTURALIZES the members — the divergence the slice fixes.
+        let a = cadenza_syntax_sexpr::read_all(text).unwrap();
+        let ch = super::super::locate_chapter(&a).unwrap();
+        let spanless = collect_result_assertions(&a, ch);
+        assert!(
+            spanless.get("q").is_some_and(|s| s.contains("(. Qty of)")),
+            "spanless print_from should structuralize the Qty member: {:?}",
+            spanless.get("q")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn slugify_matches_node() {
