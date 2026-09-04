@@ -28,6 +28,7 @@ export default function ControlFlow() {
       <P>An <C>if</C> selects among more than two outcomes by nesting in the else position:</P>
       <Runnable
         source={`(let ((n 0)) (if (< n 0) -1 (if (= n 0) 0 1)))`}
+        id="sign-of-n"
       />
       <P>This is the sign of <C>n</C>, giving <C>-1</C> if negative, <C>0</C> if zero, and <C>1</C> if positive. With <C>n = 0</C> the first test fails and the inner <Cadenza ast="Y2R6YXN0AAEDCgE9CgFuAAAEAAAAAQACAQMAAQID" kind="expr">(= n 0)</Cadenza> fires, so the answer is <C>0</C>. Change <C>n</C> to <C>-4</C> or <C>7</C> and Run to take a different branch.</P>
       <H2>Booleans compose and short-circuit</H2>
@@ -36,6 +37,7 @@ export default function ControlFlow() {
         source={`(def (safe n) (and (not (= n 0)) (> (/ 100 n) 5)))
 
 (def (main) (safe 0))`}
+        id="short-circuit"
       />
       <P>With <C>n = 0</C> the first test is false, so <Cadenza ast="Y2R6YXN0AAEDCgEvAAFkAAAEAAAAAQACAQMAAQID" kind="expr">(/ 100 0)</Cadenza> is skipped entirely and the whole thing renders <C>false</C>. Were <C>and</C> not short-circuiting, that division would trap.</P>
       <H2>Recursion</H2>
@@ -44,6 +46,7 @@ export default function ControlFlow() {
         source={`(def (sm n) (if (= n 0) 0 (+ n (sm (- n 1)))))
 
 (def (main) (sm 5))`}
+        id="recursion-sum"
       />
       <P><Cadenza ast="Y2R6YXN0AAECCgJzbQABBQMAAAABAQIAAQI=" kind="expr">(sm 5)</Cadenza> adds <C>5 + 4 + 3 + 2 + 1</C> down to the base case, giving <C>15</C>. Each call peels off <C>n</C> and recurses on <C>n - 1</C> until it reaches <C>0</C>.</P>
       <H2>Your turn</H2>
