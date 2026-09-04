@@ -421,10 +421,13 @@ pub(super) fn emit(
             // borrowing `vec-len`, then `drop` it — the count is already a scalar on the stack. A BORROWED
             // operand is left to its owner (declines to Owned only on a proven-fresh producer, else Borrowed
             // — leak-safe: an unproven ownership just leaves it un-dropped, never double-frees).
+            // ALSO reclaim an OWNED nested-compound `Core::Proj` child (`List.len (. (mk i) a)`): the Proj
+            // emit dup'd the child into a standalone owned handle, which this borrowing read must drop
+            // (drop-iff-dup'd — `owned_proj_child_dupd`; same as `Core::MapSize`, the Proj-child leak family).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            );
+            ) || owned_proj_child_dupd(db, operand, slots);
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -844,10 +847,12 @@ pub(super) fn emit(
             // RECLAMATION (same as `Core::ListLen`): `bytes-len` BORROWS the bytes and returns a scalar
             // count, so an OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell.
             // A BORROWED param/local is left to its owner (leak-safe: Owned only on a proven-fresh producer).
+            // ALSO reclaim an OWNED nested-compound `Core::Proj` child (`Bytes.len (. (mk i) a)`), the
+            // Proj-child dup'd-then-dead leak family (drop-iff-dup'd — `owned_proj_child_dupd`, cf `MapSize`).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            );
+            ) || owned_proj_child_dupd(db, operand, slots);
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);
@@ -1515,7 +1520,8 @@ pub(super) fn emit(
             // RECLAMATION (same as `Core::MapSize`/`Core::ListLen`): `set-size` BORROWS the set, so an
             // OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell. A borrowed
             // param/local is left to its owner.
-            let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
+            let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned))
+                || owned_proj_child_dupd(db, set, slots);
             if reclaim {
                 let set_slot = base;
                 *high = (*high).max(set_slot + 1);

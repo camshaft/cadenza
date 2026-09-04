@@ -911,6 +911,9 @@ pass	a Map-returning closure alongside a parameterized plain export — the clos
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a Map-stated handler threads 50 recursive puts and reads the accumulated size
 pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
+pass	a List.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
+pass	a Bytes.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
+pass	a Set.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
 pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)

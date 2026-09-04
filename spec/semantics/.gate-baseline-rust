@@ -8664,8 +8664,6 @@ pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two refutable record list elements in one arm each refine (#8418)
 pass	two refutable tuple list elements in one arm each refine and bind (#8418)
-todo	two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)
-todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
 pass	two residuals from ONE curry source hold distinct first-stage captures
 pass	two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
@@ -9030,6 +9028,8 @@ todo	two adapter records with different state types drive a take-while fold in o
 todo	two compound arguments each cross as their own handle in one peer call
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two effects bound to the same interface share one peer instance (both ops run)
+todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
+todo	two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
