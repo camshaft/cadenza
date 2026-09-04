@@ -9032,3 +9032,4 @@ todo	a zero-arg module member called the natural way (m.get) folds (consistency 
 pass	a refutable record list element with a literal field refines by value (#8380)
 pass	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest
 pass	a refutable tuple list element with a literal component refines by value
+pass	a refutable tuple list element with a nested constructor component refines by discriminant and binds its payload

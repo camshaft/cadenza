@@ -8442,6 +8442,30 @@
       (export main)))
   (output (: 5 Int64)))
 
+; tup-nested-ctor (COMPOSITION coverage): a refutable tuple list element whose refutable component is itself a
+; nested CONSTRUCTOR `(tuple (Option.Some a) b)` — the tuple-element value-refinement (#8367/#8371) composes
+; with a nested-ctor discriminant test inside the guard's value-test match, refining on the `Some` variant AND
+; binding its payload `a` plus the sibling `b`. Pins that the value-test guard is not literal-only: a nested
+; refutable ctor component gates + binds through the same `(match __lt ((tuple (Option.Some a) b) …))` path.
+; `[( Some 2, 3 )]` → 2+3 = 5; a `None` first component falls through the arm → -1.
+(case
+  "a refutable tuple list element with a nested constructor component refines by discriminant and binds its payload"
+  (input
+    (do
+      (def
+        (f (: xs (List (Tuple (Option Int64) Int64))))
+        (match xs (#list(#tuple((Option.Some a) b)) (+ a b)) (_ -1)))
+      (def
+        (main (: mode Int64))
+        (if (> mode 0)
+          (f #list(#tuple((Option.Some mode) 3)))
+          (f #list(#tuple(Option.None 3)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 5 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
