@@ -13122,6 +13122,23 @@
 ;    splice would re-issue that boundary/outer op per resume — so the fold declines cleanly rather than
 ;    double it (host-composition invariant, §4.4). The decline is CLEAN: it never leaks an internal `#eff`
 ;    specialization name or a `$s` state-param name (the message-pin below witnesses the clean text).
+; The POSITIVE side these rejects are the complement of (breaker): a PURE multi-shot — the continuation C
+; performs NO op that escapes this handler (no host call, no outer effect) — is SOUND and FOLDS. The arm
+; `(+ (resume 10 s) (resume 20 s))` splices C = `(+ 100 [])` TWICE with distinct resume values: resume 10 →
+; (+ 100 10) = 110, resume 20 → (+ 100 20) = 120, summed → 230. Pins that multi-shot continuations ARE
+; supported when self-discharged (the sound case §4.4), so the rejects below are a boundary restriction, not
+; a blanket "multi-shot unsupported". Distinct from the host-completed-before-perform admit (~13584): this is
+; the plain no-host pure multi-shot.
+(case
+  "a PURE multi-shot continuation (no host/outer op) splices twice with distinct resume values and folds"
+  (input
+    (do
+      (effect E (op ask (-> Int64)))
+      (def (main (: n Int64)) (handle E n ((ask () s (+ (resume 10 s) (resume 20 s)))) (+ 100 (E.ask))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 230 Int64)))
+
 (case
   "a multi-shot continuation spanning a host call is rejected, never doubling the host call"
   (doc
