@@ -13267,15 +13267,15 @@
   (output (: 103 Int64))
   (live-objects 0))
 
-; -- breaker batch 429 (adversarial backstop for v-effects's conditional-resume-fold): a PARTIAL-RESUME
-; arm — `(op (a) s (if C ABORT-VALUE (resume V S')))` — where ONE branch aborts-with-a-value and the other
-; resumes. These SHOULD FOLD once the `arm_partially_resumes` decline guard is removed (v-effects
-; conditional-resume-fold). Until then they grade `todo` (rejected CDZ0900 — the clean guard-decline; the
-; guard originally masked a mis-splice where the reify rewrote ONLY the resuming branch, orphaning a
-; seed/param free name → CDZ0101 at lowering). All four VERIFIED to fold to the pinned value with
-; live-objects 0 (guarded-all), tri-target (wasm+rust+cadenza), against the guard-removed build — so they
-; auto-flip todo->pass when the removal lands and pin the mis-splice class as a regression guard. The four
-; probe the free-name-splice surface v-effects flagged: pr1 abort reads the GROWING #st STATE (the abx3
+; -- breaker batch 429 (adversarial backstop for v-effects's conditional-resume-fold, #8277): a
+; PARTIAL-RESUME arm — `(op (a) s (if C ABORT-VALUE (resume V S')))` — where ONE branch aborts-with-a-value
+; and the other resumes. #8277 removed the `arm_partially_resumes` decline guard, so these now FOLD (they
+; graded `todo` — rejected CDZ0900, the clean guard-decline — before it landed). The guard originally
+; masked a mis-splice where the reify rewrote ONLY the resuming branch, orphaning a seed/param free name →
+; CDZ0101 at lowering; these pin the mis-splice class as a regression guard (breaker-verified against the
+; guard-removed build BEFORE the land, flipped todo->pass on #8277). All four fold to the pinned value with
+; live-objects 0 (guarded-all), tri-target (wasm+rust+cadenza). The four probe the free-name-splice surface
+; v-effects flagged: pr1 abort reads the GROWING #st STATE (the abx3
 ; neighborhood, both branches exercised across two dispatches); pr2 abort value is a HEAP list (reclaim on
 ; the abort splice); pr3 abort spliced from a NESTED conditional (if-in-if at depth); pr4 abort reads the
 ; op PARAM `k` (not the state). No counterexample found: the reify handles both branches, no wrong value,
