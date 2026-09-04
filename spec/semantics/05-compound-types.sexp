@@ -9256,6 +9256,26 @@
       (export main)))
   (output (: 6 Int64)))
 
+; nlp-lit-sib (breaker, regression-guard on #8359 — GENERALIZATION of the rest case above): #8359 fixed the
+; literal-element re-match to preserve NOT just an outer rest binder (the titular #8358 case) but ANY sibling
+; binding in the arm. This pins the general leg the rest case does not: a PLAIN sibling binder `c` in
+; `(list (list 1 b) c)` — no `(.. r)` — now binds (it formerly leaked CDZ0101 'unbound `c`' exactly like the
+; rest binder did). POSITION-INDEPENDENT: `c` binds whether it sits AFTER the literal-nested element
+; `(list (list 1 b) c)` OR BEFORE it `(list c (list 1 b))` (both verified). So a future regression that
+; re-broke a plain sibling binder while sparing the rest leg (or vice-versa) is caught by having BOTH guards.
+; `xs = [[1 5] [9 9]]`: inner `(1 5)` matches `(1 b)` → b=5, sibling `c = [9 9]` (len 2) → `(+ 5 2)` = 7.
+(case
+  "a nested-list arm with a LITERAL inner element AND a plain sibling binder binds the sibling"
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 b) c) (+ b (List.len c))) (_ -2)))
+      (def (mk (: k Int64)) #list(#list(1 k) #list(9 9)))
+      (def (main) (f (mk 5)))
+      (export main)))
+  (output (: 7 Int64)))
+
 (case
   "a nullary variant list element dispatches by its discriminant"
   (doc
