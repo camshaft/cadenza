@@ -20,6 +20,7 @@ export default function PatternMatching() {
         source={`(def (known-op name) (match name ("add" true) ("sub" true) (_ false)))
 
 (def (main) (known-op "sub"))`}
+        id="known-op"
       />
       <P><C>"sub"</C> takes the second arm, <C>true</C>. Change it to <C>"add"</C> or something unknown like <C>"mul"</C> and Run again. Note the answer is an honest <C>Bool</C>, not a stand-in number: a recognised name is <C>true</C>, anything else is <C>false</C>. (When a lookup needs to hand back a <em>result</em> that might not exist, you reach for <C>Option</C> rather than a magic value like <C>-1</C>, which is exactly what the next section builds.) The <C>_</C> arm isn't optional here: <C>String</C> (like <C>Int64</C>) has infinitely many values, so the compiler can't see that you've covered them all: leave the wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with sums below.</P>
       <P>The same shape works for characters. A <C>Char</C> literal is written <C>#\a</C> (the <strong>Strings &amp; text</strong> chapter covers characters), and a <C>match</C> dispatches on one by its Unicode code point. Here <C>is-vowel</C> answers whether a character is a lowercase vowel:</P>
@@ -27,6 +28,7 @@ export default function PatternMatching() {
         source={`(def (is-vowel c) (match c (#\\a true) (#\\e true) (#\\i true) (#\\o true) (#\\u true) (_ false)))
 
 (def (main) (is-vowel #\\e))`}
+        id="is-vowel"
       />
       <P><C>#\e</C> takes its arm, so the answer is <C>true</C>. Change it to a consonant like <C>#\z</C> and the wildcard arm answers <C>false</C>. As with numbers and strings, the <C>_</C> arm is required, since <C>Char</C> has far too many values for the compiler to see them all listed.</P>
       <H2>Sum types</H2>
@@ -53,6 +55,7 @@ export default function PatternMatching() {
         source={`(def (sign n) (match n ((guard x (< x 0)) -1) (0 0) (_ 1)))
 
 (def (main) (sign -8))`}
+        id="sign"
       />
       <P><Cadenza ast="Y2R6YXN0AAEECgVndWFyZAoBeAoBPAAABwAAAAEAAgABAAMBAwIDBAEDAAEFBg==" kind="expr">{"(guard x (< x 0))"}</Cadenza> binds the value to <C>x</C> and fires only when <Cadenza ast="Y2R6YXN0AAEDCgE8CgF4AAAEAAAAAQACAQMAAQID" kind="expr">{"(< x 0)"}</Cadenza>, so <C>-8</C> returns <C>-1</C>; <C>0</C> takes the literal arm, and everything else the wildcard. A guard is the bridge between "match on shape" and "decide on value", without turning the whole arm back into an arbitrary predicate.</P>
       <H2>More than two variants</H2>

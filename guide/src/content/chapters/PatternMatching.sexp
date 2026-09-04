@@ -15,15 +15,17 @@
   (p "Change the " (c "2") " being matched to " (c "1") " or " (c "7") " and Run to see a different arm fire.")
   (p "Literals aren't just numbers, since you can match a " (c "String") " the same way, and this is the everyday shape for dispatching on a keyword or command name. Here " (c "known-op") " reports whether a name is one of the operations it recognises, answering " (c "false") " for everything else:")
   (runnable
+    (id "known-op")
     (source (def (known-op name)
   (match name
     ("add" true)
     ("sub" true)
     (_ false)))
 (def (main) (known-op "sub"))))
-  (p (c "\"sub\"") " takes the second arm, " (c "true") ". Change it to " (c "\"add\"") " or something unknown like " (c "\"mul\"") " and Run again. Note the answer is an honest " (c "Bool") ", not a stand-in number: a recognised name is " (c "true") ", anything else is " (c "false") ". (When a lookup needs to hand back a " (em "result") " that might not exist, you reach for " (c "Option") " rather than a magic value like " (c "-1") ", which is exactly what the next section builds.) The " (c "_") " arm isn't optional here: " (c "String") " (like " (c "Int64") ") has infinitely many values, so the compiler can't see that you've covered them all: leave the wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with sums below.")
+  (p (c "\"sub\"") " takes the second arm, " (result (of "known-op") true) ". Change it to " (c "\"add\"") " or something unknown like " (c "\"mul\"") " and Run again. Note the answer is an honest " (c "Bool") ", not a stand-in number: a recognised name is " (c "true") ", anything else is " (c "false") ". (When a lookup needs to hand back a " (em "result") " that might not exist, you reach for " (c "Option") " rather than a magic value like " (c "-1") ", which is exactly what the next section builds.) The " (c "_") " arm isn't optional here: " (c "String") " (like " (c "Int64") ") has infinitely many values, so the compiler can't see that you've covered them all: leave the wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with sums below.")
   (p "The same shape works for characters. A " (c "Char") " literal is written " (c "#\\a") " (the " (strong "Strings &amp; text") " chapter covers characters), and a " (c "match") " dispatches on one by its Unicode code point. Here " (c "is-vowel") " answers whether a character is a lowercase vowel:")
   (runnable
+    (id "is-vowel")
     (source (def (is-vowel c)
   (match c
     (#\a true)
@@ -33,7 +35,7 @@
     (#\u true)
     (_ false)))
 (def (main) (is-vowel #\e))))
-  (p (c "#\\e") " takes its arm, so the answer is " (c "true") ". Change it to a consonant like " (c "#\\z") " and the wildcard arm answers " (c "false") ". As with numbers and strings, the " (c "_") " arm is required, since " (c "Char") " has far too many values for the compiler to see them all listed.")
+  (p (c "#\\e") " takes its arm, so the answer is " (result (of "is-vowel") true) ". Change it to a consonant like " (c "#\\z") " and the wildcard arm answers " (c "false") ". As with numbers and strings, the " (c "_") " arm is required, since " (c "Char") " has far too many values for the compiler to see them all listed.")
   (h2 "Sum types")
   (p "A sum type is a set of tagged variants. You declare it with " (c "type") ", build a value with one of its constructors, and take it apart by matching each variant. Here " (c "Opt") " is either " (c "Some") " carrying an " (c "Int64") ", or " (c "None") ". The " (cdz (Some x)) " arm " (em "binds") " the payload to " (c "x") ":")
   (runnable
@@ -56,13 +58,14 @@
   (h2 "Guards: a pattern plus a condition")
   (p "When you do want to test a value, not just its shape, an arm can carry a " (em "guard") ": a pattern with an " (c "if") " condition. The arm fires only when the pattern matches " (em "and") " the guard holds. Here a number is classified by sign:")
   (runnable
+    (id "sign")
     (source (def (sign n)
   (match n
     ((guard x (< x 0)) -1)
     (0 0)
     (_ 1)))
 (def (main) (sign -8))))
-  (p (cdz (guard x (< x 0))) " binds the value to " (c "x") " and fires only when " (cdz (< x 0)) ", so " (c "-8") " returns " (c "-1") "; " (c "0") " takes the literal arm, and everything else the wildcard. A guard is the bridge between \"match on shape\" and \"decide on value\", without turning the whole arm back into an arbitrary predicate.")
+  (p (cdz (guard x (< x 0))) " binds the value to " (c "x") " and fires only when " (cdz (< x 0)) ", so " (c "-8") " returns " (result (of "sign") -1) "; " (c "0") " takes the literal arm, and everything else the wildcard. A guard is the bridge between \"match on shape\" and \"decide on value\", without turning the whole arm back into an arbitrary predicate.")
   (h2 "More than two variants")
   (p "Sums aren't limited to " (c "Some") "/" (c "None") ". A traffic light is a three-variant sum, and a " (c "match") " over it must cover all three (or the compiler complains):")
   (runnable
