@@ -5902,6 +5902,18 @@
           oracle-wasm-diff --manifest "$caseDirs" | tee result
           echo "ok: oracle-wasm Core->wasm differential (full corpus) — $(tail -1 result)" > "$out"
         '';
+        # SHARDED full-corpus diff (8-way, #8404): the single-job full run now exceeds GitHub Actions' HARD 6h
+        # per-JOB cap — heap-result decode (#8240..#8268) moved hundreds of cases from skip→decode+EXECUTE, so
+        # the whole-corpus differential does >6h of real work. Run it as 8 parallel <6h jobs via round-robin
+        # `--shard i 8` (spreads the fuel-heavy near-8M-step tail so shards finish together). Each shard prints
+        # its PARTIAL tally (`… A agree, D diverge, S skip, L leak`) + its DIVERGE/LEAK/SKIP lines; the weekly
+        # workflow (v-gha-green) runs the 8-way matrix + SUMS the tallies for the full breakdown.
+        oracleWasmDiffFullShard = i: pkgs.runCommand "oracle-wasm-diff-full-shard-${toString i}-of-8"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleWasmCaseDirsFull; } ''
+          echo "oracle-wasm-diff-full shard ${toString i}/8: $(wc -l < "$caseDirs") total cases (round-robin)"
+          oracle-wasm-diff --manifest "$caseDirs" --shard ${toString i} 8 | tee result
+          echo "ok: oracle-wasm Core->wasm differential (full corpus, shard ${toString i}/8) — $(tail -1 result)" > "$out"
+        '';
         # Cross-shell PATH wrapper-scripts for the all-nix entrypoints (v-nix 2026-08-28). Hoisted here so
         # BOTH devShells.default (packages) AND packages.cdz-shell-wrappers use the SAME wrappers (no drift).
         # NOT shell functions: agents' claude Bash-tool subshells are ZSH + the shell snapshot HARD-RESETS
@@ -6912,6 +6924,16 @@
             # a DIVERGE (0 required) = a front-end→backend miscompile. Standalone/advisory. Pulls warm.
             oracle-wasm-diff = oracleWasmDiff;
             oracle-wasm-diff-full = oracleWasmDiffFull;
+            # 8-way SHARDED full-corpus diff (#8404) — the single-job full run exceeds GHA's 6h per-job cap;
+            # v-gha-green runs these as an 8-way matrix + aggregates the partial tallies. See oracleWasmDiffFullShard.
+            oracle-wasm-diff-full-shard-0-of-8 = oracleWasmDiffFullShard 0;
+            oracle-wasm-diff-full-shard-1-of-8 = oracleWasmDiffFullShard 1;
+            oracle-wasm-diff-full-shard-2-of-8 = oracleWasmDiffFullShard 2;
+            oracle-wasm-diff-full-shard-3-of-8 = oracleWasmDiffFullShard 3;
+            oracle-wasm-diff-full-shard-4-of-8 = oracleWasmDiffFullShard 4;
+            oracle-wasm-diff-full-shard-5-of-8 = oracleWasmDiffFullShard 5;
+            oracle-wasm-diff-full-shard-6-of-8 = oracleWasmDiffFullShard 6;
+            oracle-wasm-diff-full-shard-7-of-8 = oracleWasmDiffFullShard 7;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
