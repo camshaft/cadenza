@@ -1483,6 +1483,96 @@ fn pr_body_secret_findings(title: &str, body: &str) -> Vec<String> {
 }
 
 /// `fleet pr` — the sanitized PR wrapper (operator P0 seq-198). See [`PrAction`].
+/// The set of files edited BOTH by this branch and by the upstream commits that landed since the branch
+/// forked — the SILENT-REVERT hot set. A stale-base squash-merge of a branch touching one of these can
+/// DROP the concurrent upstream landing with no conflict + no alert (the #8393 → #8391 `lower_match` class:
+/// a squash from a branch based pre-#8391 reverted #8391's landed guard). PURE (sorted/deduped intersection)
+/// so the overlap policy is unit-tested without git.
+fn hot_overlap_files(branch_files: &[String], upstream_files: &[String]) -> Vec<String> {
+    let up: std::collections::HashSet<&str> = upstream_files.iter().map(|s| s.as_str()).collect();
+    let mut out: Vec<String> = branch_files
+        .iter()
+        .filter(|f| up.contains(f.as_str()))
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The pre-merge rebase-freshness WARNING text, or `None` when there is no silent-revert risk. Fires ONLY
+/// when the branch base is stale (`stale_by > 0`) AND the branch overlaps an upstream landing (`!overlap
+/// .is_empty()`) — a stale base with NO file overlap can't silently revert anything, so it stays quiet
+/// (no cry-wolf on the common purely-behind case). PURE so the warn/quiet decision is unit-tested.
+fn rebase_freshness_warning(stale_by: usize, overlap: &[String]) -> Option<String> {
+    if stale_by == 0 || overlap.is_empty() {
+        return None;
+    }
+    let list = overlap
+        .iter()
+        .map(|f| format!("    • {f}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "⚠ fleet pr create: REBASE-FRESHNESS — your branch base is {stale_by} commit(s) behind origin/main, \
+         and it edits {n} file(s) ALSO changed by those concurrent landings:\n{list}\n\
+         A squash-merge NOW can SILENTLY REVERT that concurrent work (no conflict, no alert — the #8393→#8391 \
+         lower_match clobber class). REBASE before you merge:\n\
+         \x20   git fetch origin && git rebase origin/main   (then re-gate, then merge)\n\
+         (Advisory, vs last-fetched origin/main. Editing a known clobber-hotspot ⇒ rebasing is mandatory discipline.)",
+        n = overlap.len(),
+    ))
+}
+
+/// Gather the git facts + emit the rebase-freshness advisory (FAIL-OPEN) for a `fleet pr create`. Compares
+/// the head branch (HEAD) against `origin/<base>` using the LOCAL (last-fetched) ref — no network, so a git
+/// hiccup or an unresolvable ref just SKIPS the advisory (never blocks the PR). Advisory-only: a warning to
+/// stderr, then `pr create` proceeds — the agent's remediation is to rebase before the separate `gh pr
+/// merge`. See [`rebase_freshness_warning`] / [`hot_overlap_files`]. (#8393 merge-discipline hazard.)
+fn pr_rebase_freshness_advisory(base: &str) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .current_dir(&cwd)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let upstream = format!("origin/{base}");
+    // merge-base(HEAD, origin/<base>): the point the branch forked off the base line.
+    let mb = match git(&["merge-base", "HEAD", &upstream]) {
+        Some(m) if !m.is_empty() => m,
+        _ => return,
+    };
+    // How many commits origin/<base> is ahead of the fork point = the staleness gap.
+    let stale_by: usize = git(&["rev-list", "--count", &format!("{mb}..{upstream}")])
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if stale_by == 0 {
+        return;
+    }
+    let names = |range: String| -> Vec<String> {
+        git(&["diff", "--name-only", &range])
+            .map(|s| {
+                s.lines()
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let branch_files = names(format!("{mb}..HEAD"));
+    let upstream_files = names(format!("{mb}..{upstream}"));
+    let overlap = hot_overlap_files(&branch_files, &upstream_files);
+    if let Some(w) = rebase_freshness_warning(stale_by, &overlap) {
+        eprintln!("{w}");
+    }
+}
+
 fn fleet_pr(_fleet: &Fleet, action: PrAction) {
     match action {
         PrAction::Create {
@@ -1517,6 +1607,10 @@ fn fleet_pr(_fleet: &Fleet, action: PrAction) {
                 );
                 std::process::exit(1);
             }
+            // Pre-merge REBASE-FRESHNESS advisory (#8393): warn (fail-open) when this branch is based on a
+            // stale origin/<base> AND edits a file a concurrent landing also touched — a squash-merge would
+            // silently revert that landing. Advisory only; `pr create` proceeds so a false positive can't wedge.
+            pr_rebase_freshness_advisory(&base);
             // SAFE: the body goes to `gh` as a FILE (gh reads it) + the title as a single literal argv arg
             // via Command — NO shell, so no `$(…)`/backtick/apostrophe mishap can splice command output in.
             let mut args: Vec<String> = vec![
@@ -16173,6 +16267,40 @@ fn batch_commit_inner(repo: &Path, execute: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hot_overlap_is_the_sorted_deduped_intersection_of_branch_and_upstream_files() {
+        let branch = vec![
+            "src/lower_match.rs".to_string(),
+            "flake.nix".to_string(),
+            "src/lower_match.rs".to_string(), // dup — must collapse
+        ];
+        let upstream = vec!["src/lower_match.rs".to_string(), "README.md".to_string()];
+        // Only the file BOTH sides touched is the silent-revert risk; sorted + deduped.
+        assert_eq!(
+            hot_overlap_files(&branch, &upstream),
+            vec!["src/lower_match.rs".to_string()]
+        );
+        // Disjoint edits → no overlap → no risk.
+        assert!(hot_overlap_files(&["a.rs".to_string()], &["b.rs".to_string()]).is_empty());
+        // Empty upstream (branch fully fresh region) → no overlap.
+        assert!(hot_overlap_files(&["a.rs".to_string()], &[]).is_empty());
+    }
+
+    #[test]
+    fn rebase_freshness_warns_only_on_stale_base_and_file_overlap() {
+        // The dangerous case: stale base AND an overlapping file → WARN (message names the file + rebase).
+        let w = rebase_freshness_warning(3, &["src/lower_match.rs".to_string()])
+            .expect("stale + overlap must warn");
+        assert!(w.contains("REBASE-FRESHNESS"));
+        assert!(w.contains("3 commit"));
+        assert!(w.contains("src/lower_match.rs"));
+        assert!(w.contains("git rebase origin/main"));
+        // Stale base but NO overlap → quiet (a purely-behind branch can't silently revert anything).
+        assert!(rebase_freshness_warning(9, &[]).is_none());
+        // Fresh base (0 behind) → quiet even if the file list is non-empty (nothing to have reverted).
+        assert!(rebase_freshness_warning(0, &["src/lower_match.rs".to_string()]).is_none());
+    }
 
     #[test]
     fn batch_ff_is_safe_only_when_trunk_still_equals_the_staged_base() {
