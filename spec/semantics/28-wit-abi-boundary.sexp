@@ -115,6 +115,31 @@
   (live-objects known-leak))
 
 (case
+  "a bare Result<s64,String> RESULT round-trips DIRECTLY (unwrapped) via the run/encode envelope both arms"
+  (doc
+    "The bare-DIRECT sum RESULT: the guest returns a `Result Int64 String` UNWRAPPED (not the
+           record-wrapped twin above, not a param — a top-level sum RESULT crossing via the run/encode
+           envelope). Ok(x) carries an s64 payload, Err(msg) a String payload, exercising BOTH the
+           discriminant and BOTH payload lanes (scalar + heap-String). A broken result lift (wrong disc,
+           dropped/misplaced payload) yields a different value. This is the UNTYPED-envelope route and is
+           DISTINCT from the still-open typed-WIT-export gap noted on the record-wrapped case above (those
+           cases carry no wit-world clause either, but a DECLARED typed record/sum EXPORT interface remains
+           a separate gap). Motivated by #8268: the differential wasm oracle (oracle-lean) now DECODES
+           built-in Option/Result heap `.sum` results at the boundary — this fences the corpus-gate
+           value-render side (which, unlike the oracle, already handles built-in AND user sums) so the two
+           observation paths cannot silently drift on the bare-sum-result shape. No census pin: the
+           in-process live-objects count is non-discriminating here (both 0 and 1 grade PASS)."
+    "tri-target: wasm + rust + cadenza-hop all PASS.")
+  (input
+    (do
+      (def (mk (: x Int64)) (if (= x 0) (Err "z") (Ok x)))
+      (export mk)))
+  (call mk (: 5 Int64))
+  (output (: (Ok 5) (Result Int64 String)))
+  (call mk (: 0 Int64))
+  (output (: (Err "z") (Result Int64 String))))
+
+(case
   "a named variant-with-payload field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc
     "SHAPE 2 — the general named-VARIANT RESULT lift (a discriminated union, distinct from a bare
