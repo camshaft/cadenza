@@ -11050,4 +11050,3 @@ todo	a zero-arg module member called the natural way (m.get) folds (consistency 
 pass	an over-applied USER function is CDZ0203 — applying past its arity hits a non-function result
 pass	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest
 todo	a refutable tuple list element with a literal component should refine by value (currently CDZ0900)
-todo	nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)
