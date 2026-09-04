@@ -13349,6 +13349,53 @@
   (output (: 509 Int64))
   (live-objects 0))
 
+; -- batch 429 follow-up (breaker, probing the surface v-effects flagged as uncovered after #8277):
+; pr6 folds — the partial-resume abort branch reads a CAPTURED let-bound closure var `cap` (free-name
+; capture into the reified arm, distinct from the op-param of pr4 and the #st state of pr1); folds to
+; 1005 = (+ n 1000), live-objects 0.
+; pr5 is a GAP (idealistic todo): a partial-resume op as a MEMBER of a MULTI-op handler still declines
+; CDZ0900, even though (a) a SINGLE-op partial-resume folds (#8277/pr1-4) and (b) a multi-op handler whose
+; members are pure-tail-resume OR pure-abortive folds (controls verified: isoA both-tail=8, isoB
+; abortive+tail=1 both PASS). So #8277 extended the fold only to the single-op path; the multi-op reify
+; retains the arm_partially_resumes decline for a partial-resume sibling. SHOULD fold to 2 (the ping tail
+; result + the two step results are all abandoned by step's abort, which reads the grown state len=2).
+; Sound reject today (completeness gap, not a miscompile) — auto-flips todo->pass when the fold reaches
+; multi-op. Routed to v-effects.
+(case
+  "pr6 partial-resume abort branch reads a captured let-bound closure var"
+  (input
+    (do
+      (effect E (op step (-> Int64)))
+      (def
+        (main (: n Int64))
+        (let ((cap (+ n 1000)))
+          (handle
+            E
+            (if (> n 0) #list(n) #list(9 9))
+            ((step () s (if (> (List.len s) 1) cap (resume (List.len s) (List.prepend s 0)))))
+            (+ (E.step) (E.step)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 1005 Int64))
+  (live-objects 0))
+
+(case
+  "pr5 partial-resume op aborts alongside a tail-resume SIBLING op in a MULTI-op handler folds"
+  (input
+    (do
+      (effect E (op step (-> Int64)) (op ping (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (if (> n 0) #list(n) #list(9 9))
+          ((step () s (if (> (List.len s) 1) (List.len s) (resume (List.len s) (List.prepend s 0)))) (ping () s (resume 7 s)))
+          (+ (E.ping) (+ (E.step) (E.step)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
 ; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427

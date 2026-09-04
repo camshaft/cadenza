@@ -8869,6 +8869,8 @@ pass	pr1 partial-resume arm whose ABORT branch reads the growing #st state folds
 pass	pr2 partial-resume arm whose ABORT branch yields a HEAP list value reclaims
 pass	pr3 partial-resume arm whose ABORT is spliced from a NESTED conditional folds
 pass	pr4 partial-resume arm whose ABORT branch reads the op PARAM folds
+pass	pr6 partial-resume abort branch reads a captured let-bound closure var
+todo	pr5 partial-resume op aborts alongside a tail-resume SIBLING op in a MULTI-op handler folds
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
