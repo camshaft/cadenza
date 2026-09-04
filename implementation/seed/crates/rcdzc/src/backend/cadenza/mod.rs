@@ -1972,6 +1972,29 @@ fn emit_expr_viewed(
                         return emit_expr_viewed(db, b, n, Some(result_ty.clone()), None, env, emitted);
                     }
                 }
+                // PEEL a NEWTYPE-typed operand of a bare-numeric arith to its inner (the newtype twin of the
+                // Qty peel above). An optimizer inlining unwraps a newtype accumulator's `(match acc ((M x) x))`
+                // asymmetrically, so `(+ acc h)` re-emits `acc` typed the nominal `Meters` and `(+ acc <int>)`
+                // fails CDZ0201 "a Meters and an Int64 are different types". Two shapes, both wrap the UNWRAP peel
+                // `(match acc ((Meters x) x))` (value-equivalent — arith over the erased inner — recompiling to the
+                // same bare op), gated to an emitted single-payload newtype whose inner IS the numeric result:
+                //  - the binder's DECLARED type is the newtype but its SOLVED type is the inner (a FOLDED unwrap):
+                //    the consumer-driven peel handles it (`emit_binder_newtype_inner_peel`).
+                //  - the operand node's OWN solved type is still the nominal: peel it directly.
+                if numeric_result {
+                    if let Some(peel) = emit_binder_newtype_inner_peel(db, b, n, env, emitted)? {
+                        return Ok(peel);
+                    }
+                    if let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, n)
+                        && *inner == result_ty
+                        && is_emitted_single_payload_newtype(db, decl, emitted)
+                    {
+                        let scrut = emit_expr(db, b, n, None, env, emitted)?;
+                        if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env) {
+                            return Ok(peel);
+                        }
+                    }
+                }
                 emit_expr(db, b, n, None, env, emitted)
             };
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
