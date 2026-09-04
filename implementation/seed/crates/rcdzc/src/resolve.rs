@@ -830,8 +830,19 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // HEAD position a SAME-NAME-newtype resolves to the CONSTRUCTOR (mirroring the flat/file head rule): here
     // `name` IS a module-member type, so a module-scoped variant ALSO named `name` = a same-name newtype.
     if let Some(synth) = db.module_scoped_type(id, name) {
+        // HEAD-position SAME-NAME-newtype → the CONSTRUCTOR, mirroring the flat step-3/3d head rule. Fire on a
+        // real user node `(W 42)` OR a β-COPIED value construct — a match-desugar / inlined scrutinee whose
+        // `source_of_synth` traces to a user occurrence OUTSIDE a type-expression (the same `inlined_value_
+        // construct` discriminator the flat same-name-ctor step uses). Without the copy branch a same-name
+        // newtype `(match (W 42) ((W n) n))` — whose scrutinee `W` is a desugar copy (a synth node, so
+        // `is_user_node` is false) — kept resolving to the TYPE record and rejected CDZ0203. Exclude a
+        // TYPE-expression node (`(: x W)` / a `(W a)` in type position must stay the type).
+        let inlined_value_construct = db
+            .source_of_synth(id)
+            .is_some_and(|src| !db.is_type_expr_node(src));
         if db.child_ix_of(id) == 0
-            && db.is_user_node(id)
+            && (db.is_user_node(id) || inlined_value_construct)
+            && !db.is_type_expr_node(id)
             && let Some(ctor) = db.module_scoped_variant_ctor(id, name)
         {
             return Resolved::Ref { value: ctor };
