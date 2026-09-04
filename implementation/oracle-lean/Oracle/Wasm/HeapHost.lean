@@ -1316,7 +1316,7 @@ compiler emits its drop). A null/missing handle READS as canonical zero (a defen
 never a trap), but construction never produces null; two zeros are DISTINCT leaves, equal by structural
 byte-eq. Ownership is BORROW-heavy (the OPPOSITE of the CHAMP collection ops): every arith/cmp/convert BORROWS
 its operand(s) and boxes a FRESH owned result — the caller drops the operands. `bigint-div`/`-rem` truncate
-toward zero and TRAP on a zero divisor. `bigint-of-bytes` (constant materialization) + Rational are a follow-up. -/
+toward zero and TRAP on a zero divisor. `bigint-of-bytes` (constant materialization) is modeled below; Rational follows. -/
 
 /-- Allocate a heap BigInt leaf — ALWAYS heap, even for zero (no null canonicalization). -/
 def mkBigInt (s : HeapState) (v : Int) : UInt32 × HeapState := s.alloc (.bigint v)
@@ -1333,6 +1333,28 @@ def bigintVal? (s : HeapState) (h : UInt32) : Option Int :=
 def bigintOfI64 : HeapState → List Value → HeapResult
   | s, [.i64 n] => let (r, s') := s.mkBigInt (u64Signed n); .ret [.i32 r] s'
   | s, _        => .trap "bigint-of-i64: expected (i64)"
+
+/-- `bigint-of-bytes(buf) → BigInt` (index 82) [CONSUMES buf]: read `buf`'s canonical sign-magnitude bytes
+`[sign][LE magnitude, trailing-zeros-stripped]` — byte 0 is the sign (0 = non-negative, nonzero = negative),
+bytes 1.. are the LITTLE-endian magnitude — into an arbitrary-precision `Int`, box it as an always-heap BigInt
+leaf, and DROP the transient `buf`. `Int` has no i128 cap, so ANY magnitude length decodes exactly (matches the
+runtime's `bigint::Big` for beyond-i64 constants). A zero/empty magnitude → 0. The compiler's beyond-i64
+constant materialization (per `cdz-runtime/wit/runtime.wit` index 82 + `bigint::i128_from_sign_magnitude_bytes`). -/
+def bigintOfBytes : HeapState → List Value → HeapResult
+  | s, [.i32 buf] =>
+    match s.getObj? buf with
+    | none   => .trap s!"bigint-of-bytes: unknown handle {buf}"
+    | some o =>
+      if !o.live then .trap s!"bigint-of-bytes: use-after-free (handle {buf} freed)"
+      else match o.value with
+        | .bytes bs =>
+          let neg := (bs[0]?.getD 0) != 0
+          let mag := bs.toList.drop 1                                       -- LE magnitude bytes
+          let m : Int := mag.foldr (fun b acc => acc * 256 + (b.toNat : Int)) 0
+          let (r, s') := s.mkBigInt (if neg then -m else m)
+          .ret [.i32 r] (s'.dropH buf)
+        | _ => .trap s!"bigint-of-bytes: handle {buf} is not a byte buffer"
+  | s, _ => .trap "bigint-of-bytes: expected (i32)"
 
 /-- `bigint-to-i64-checked(h) → i64`: narrow back (BORROWS); TRAPS if out of signed-i64 range. -/
 def bigintToI64Checked : HeapState → List Value → HeapResult
@@ -1638,6 +1660,7 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("sum-payload",        toHostFn [.i32]                   [.i32]  HeapState.sumPayload)
     -- arbitrary-precision integer (BigInt): borrow-heavy — arith/cmp/convert BORROW + fresh owned result
   , ("bigint-of-i64",         toHostFn [.i64]                [.i32]  HeapState.bigintOfI64)
+  , ("bigint-of-bytes",       toHostFn [.i32]                [.i32]  HeapState.bigintOfBytes)
   , ("bigint-to-i64-checked", toHostFn [.i32]                [.i64]  HeapState.bigintToI64Checked)
   , ("bigint-add",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintAdd)
   , ("bigint-sub",            toHostFn [.i32, .i32]          [.i32]  HeapState.bigintSub)
@@ -2764,6 +2787,51 @@ private def probeBigIntDivRem : Bool :=
     | _ => false
   | _ => false
 example : probeBigIntDivRem = true := by native_decide
+
+/-- `bigint-of-bytes`: sign-magnitude `[sign][LE magnitude]` → the right `Int`. `[0, 2, 1]` = +258
+(LE magnitude 2 + 1·256); `[1, 2, 1]` = -258 (sign byte nonzero); and a BEYOND-i64 value `2^64` from
+`[0, 0×8, 1]` (magnitude byte index 8 = 1 → 256^8) proves arbitrary precision. Consumes the buffer. -/
+private def probeBigintOfBytes : Bool :=
+  -- +258 from [0, 2, 1]
+  (match bytesAlloc ({} : HeapState) [.i32 3] with
+   | .ret [.i32 buf] s0 =>
+     match bytesSet s0 [.i32 buf, .i32 1, .i32 2] with
+     | .ret [.i32 _] s1 =>
+       match bytesSet s1 [.i32 buf, .i32 2, .i32 1] with
+       | .ret [.i32 _] s2 =>
+         match bigintOfBytes s2 [.i32 buf] with
+         | .ret [.i32 h] s3 => bigintVal? s3 h == some 258
+         | _ => false
+       | _ => false
+     | _ => false
+   | _ => false) &&
+  -- -258 from [1, 2, 1]
+  (match bytesAlloc ({} : HeapState) [.i32 3] with
+   | .ret [.i32 buf] s0 =>
+     match bytesSet s0 [.i32 buf, .i32 0, .i32 1] with
+     | .ret [.i32 _] s1 =>
+       match bytesSet s1 [.i32 buf, .i32 1, .i32 2] with
+       | .ret [.i32 _] s2 =>
+         match bytesSet s2 [.i32 buf, .i32 2, .i32 1] with
+         | .ret [.i32 _] s3 =>
+           match bigintOfBytes s3 [.i32 buf] with
+           | .ret [.i32 h] s4 => bigintVal? s4 h == some (-258)
+           | _ => false
+         | _ => false
+       | _ => false
+     | _ => false
+   | _ => false) &&
+  -- 2^64 (beyond i64) from [0, 0,0,0,0,0,0,0,0, 1] (magnitude index 8 = 1)
+  (match bytesAlloc ({} : HeapState) [.i32 10] with
+   | .ret [.i32 buf] s0 =>
+     match bytesSet s0 [.i32 buf, .i32 9, .i32 1] with
+     | .ret [.i32 _] s1 =>
+       match bigintOfBytes s1 [.i32 buf] with
+       | .ret [.i32 h] s2 => bigintVal? s2 h == some 18446744073709551616
+       | _ => false
+     | _ => false
+   | _ => false)
+example : probeBigintOfBytes = true := by native_decide
 
 /-! #### Rational witnesses — normalization (2/4 = 1/2), borrow-heavy arith (1/2 + 1/3 = 5/6), div-by-zero trap. -/
 
