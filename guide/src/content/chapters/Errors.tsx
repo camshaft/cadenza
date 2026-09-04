@@ -53,6 +53,7 @@ export default function Errors() {
   (let
     ((x (try (Int64.checked-add 20 22))))
     (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))`}
+        id="try-some"
       />
       <P>No match arms, no nesting, just the happy path, top to bottom. And when a step <em>does</em> fail, the short-circuit takes over: make the first add overflow and its <C>None</C> becomes the function's answer immediately, so the second <C>try</C> and the body never run:</P>
       <Runnable
@@ -61,6 +62,7 @@ export default function Errors() {
   (let
     ((x (try (Int64.checked-add Int64.max 1))))
     (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))`}
+        id="try-none"
       />
       <P>The overflowing add is <C>None</C>, so <C>main</C> is <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza>. The enclosing function must itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>): <C>?</C> needs a fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and <C>Result</C>: the kinds have to line up.</P>
       <H2>Matching on the value inside</H2>

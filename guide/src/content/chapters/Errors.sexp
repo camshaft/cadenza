@@ -46,19 +46,21 @@
     ((None _) -1)))))
   (p "That's " (c "Int64") "'s largest value times 2, which can't fit, so you get the " (c "None") " arm.")
   (h2 "Chaining fallible steps: the " (c "?") " operator")
-  (p "Match on one " (c "Option") " and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The " (c "?") " operator (written " (c "(try …)") ") collapses that: on a " (c "Some") " it unwraps the value and carries on; on a " (c "None") " it " (em "short-circuits") ", making the whole function's result that " (c "None") ". Here two checked-adds both succeed, so " (c "x") " and " (c "y") " unwrap and the function returns " (cdz (Some 84)) ":")
+  (p "Match on one " (c "Option") " and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The " (c "?") " operator (written " (c "(try …)") ") collapses that: on a " (c "Some") " it unwraps the value and carries on; on a " (c "None") " it " (em "short-circuits") ", making the whole function's result that " (c "None") ". Here two checked-adds both succeed, so " (c "x") " and " (c "y") " unwrap and the function returns " (result (of "try-some") (: (Some 84) (Option Int64))) ":")
   (runnable
+    (id "try-some")
     (source (def (main)
   (let ((x (try (Int64.checked-add 20 22))))
     (let ((y (try (Int64.checked-add 40 2))))
       (Some (+ x y)))))))
   (p "No match arms, no nesting, just the happy path, top to bottom. And when a step " (em "does") " fail, the short-circuit takes over: make the first add overflow and its " (c "None") " becomes the function's answer immediately, so the second " (c "try") " and the body never run:")
   (runnable
+    (id "try-none")
     (source (def (main)
   (let ((x (try (Int64.checked-add Int64.max 1))))
     (let ((y (try (Int64.checked-add 40 2))))
       (Some (+ x y)))))))
-  (p "The overflowing add is " (c "None") ", so " (c "main") " is " (cdz (None unit)) ". The enclosing function must itself return the matching kind (an " (c "Option") " here, or a " (c "Result") "): " (c "?") " needs a fallible boundary to short-circuit " (em "to") ", and it doesn't convert between " (c "Option") " and " (c "Result") ": the kinds have to line up.")
+  (p "The overflowing add is " (c "None") ", so " (c "main") " is " (result (of "try-none") (: (None unit) (Option Int64))) ". The enclosing function must itself return the matching kind (an " (c "Option") " here, or a " (c "Result") "): " (c "?") " needs a fallible boundary to short-circuit " (em "to") ", and it doesn't convert between " (c "Option") " and " (c "Result") ": the kinds have to line up.")
   (h2 "Matching on the value inside")
   (p "A pattern can look " (em "inside") " a variant, not just name it. Here the first arm only fires for exactly " (cdz (Some 0)) "; a different " (c "Some") " falls through to the binding arm.")
   (runnable

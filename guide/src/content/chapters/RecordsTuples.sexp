@@ -47,9 +47,10 @@
   (h2 "Tuples as lightweight pairs")
   (p "When you just need to carry a couple of values together without naming a record type, a tuple is the tool. Access elements by position with " (c ".") " and an index. Here " (c "swap") " flips a pair, and since a tuple is an ordinary value it can hand the whole flipped pair straight back:")
   (runnable
+    (id "swap-tuple")
     (source (def (swap p) #tuple((. p 1) (. p 0)))
 (def (main) (swap #tuple(3 7)))))
-  (p "The result is " (cdz #tuple(7 3)) ", both elements in their new positions, returned as one value you could pass along or reach into further.")
+  (p "The result is " (result (of "swap-tuple") (: #tuple(7 3) (Tuple Int64 Int64))) ", both elements in their new positions, returned as one value you could pass along or reach into further.")
   (p "And just as " (c "Record.merge") " combined two records, " (c "Tuple.concat") " joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index " (c "3") " of the result is the first element of the second tuple, " (result (of "tuple-concat") 4) ":")
   (runnable
     (id "tuple-concat")
