@@ -13396,6 +13396,63 @@
   (output (: 2 Int64))
   (live-objects 0))
 
+; -- batch 430 (breaker, partial-resume × FOREIGN-perform, second surface v-effects flagged): the body of a
+; SINGLE-op local partial-resume handler ALSO performs a FOREIGN (host-delegated) op FIRST, then the local
+; op aborts. Question: does the abort abandon the continuation while PRESERVING the foreign advance (the host
+; call already happened)? fpr1/fpr2 answer YES for the pure paths (host-calls records ask.ask on both,
+; regardless of the abort discarding its result). fpr3 is the GAP: with a PARTIAL-resume local op the whole
+; program declines CDZ0900 — distinct from pr5's multi-op trigger (this local handler is SINGLE-op; the
+; decline is caused by the FOREIGN perform sitting in a partial-resume body). Controls prove the decline is a
+; completeness gap, not a soundness necessity: fpr2 (pure-abortive) ALREADY discards a foreign result across
+; an abort and folds (2, advance preserved), so partial-resume SHOULD too. Routed to v-effects.
+(case
+  "fpr1 a foreign perform in a pure-tail-resume local handler body preserves the foreign advance"
+  (input
+    (do
+      (effect ask (op ask (-> Unit Int64)))
+      (effect E (op step (-> Int64)))
+      (def (main)
+        (host (ask)
+          (handle E #list(1 2)
+            ((step () s (resume (List.len s) (List.prepend s 0))))
+            (+ (ask.ask) (E.step)))))
+      (export main)))
+  (host-responses (respond ask.ask (: 42 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 44 Int64)))
+
+(case
+  "fpr2 a pure-abortive local op discards a foreign-perform result across the abort yet the foreign advance is preserved"
+  (input
+    (do
+      (effect ask (op ask (-> Unit Int64)))
+      (effect E (op step (-> Int64)))
+      (def (main)
+        (host (ask)
+          (handle E #list(1 2)
+            ((step () s (List.len s)))
+            (+ (ask.ask) (E.step)))))
+      (export main)))
+  (host-responses (respond ask.ask (: 42 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 2 Int64)))
+
+(case
+  "fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)"
+  (input
+    (do
+      (effect ask (op ask (-> Unit Int64)))
+      (effect E (op step (-> Int64)))
+      (def (main)
+        (host (ask)
+          (handle E #list(1 2)
+            ((step () s (if (> (List.len s) 1) (List.len s) (resume (List.len s) (List.prepend s 0)))))
+            (+ (ask.ask) (E.step)))))
+      (export main)))
+  (host-responses (respond ask.ask (: 42 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 2 Int64)))
+
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
 ; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427
