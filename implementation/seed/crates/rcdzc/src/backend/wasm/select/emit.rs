@@ -1,5 +1,28 @@
 use super::*;
 
+/// Whether `id` is a NESTED-COMPOUND `Core::Proj` whose emit DUP'd the extracted child into a standalone
+/// OWNED handle — i.e. the SAME gate the `Core::Proj` emit (this file) uses to `dup`-child + `drop`-record:
+/// operand is OWNED (a fresh producer, e.g. `(mk i)`) + NOT slot-materialized + the projected element is a
+/// NESTED-COMPOUND heap child (`get_op` `None`, not a scalar copy, not `Unit`). When true, the extracted
+/// child is a fresh standalone-owned handle (rc1) that a BORROWING scalar-read consumer
+/// (`Map.len`/`List.len`/`Bytes.len`/`Set.len`) must `drop` after its borrow — else it leaks (the Map.len-
+/// over-a-projected-fresh-record disjoint-slot leak, corpus-05 #4547). DROP-IFF-DUP'D: this MUST mirror the
+/// `Core::Proj` emit's dup gate EXACTLY — a mismatch is a double-free (drop with no dup) or a leak (dup with
+/// no drop). Scalar elements (`get_op` `Some`) copy out and are NEVER dup'd here (so this returns false).
+fn owned_proj_child_dupd(db: &mut Db, id: StructId, slots: &HashMap<StructId, u32>) -> bool {
+    if let Core::Proj { operand, .. } = core_of(db, id) {
+        !slots.contains_key(&operand)
+            && matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            )
+            && matches!(get_op(db, id), Ok(None))
+            && !matches!(type_of(db, id).strip_nominal(), Ty::Unit)
+    } else {
+        false
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit(
     db: &mut Db,
@@ -1368,8 +1391,13 @@ pub(super) fn emit(
             // RECLAMATION (same as `Core::ListLen`/`Core::BytesLen`): `map-size` BORROWS the map and returns
             // a scalar count, so an OWNED-TEMPORARY operand (`Map.len (build …)`) must be dropped after the
             // borrow or it leaks a heap cell. A BORROWED param/local is left to its owner (Owned only on a
-            // proven-fresh producer, else Borrowed — leak-safe).
-            let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
+            // proven-fresh producer, else Borrowed — leak-safe). ALSO reclaim an OWNED nested-compound
+            // `Core::Proj` child (`Map.len (. (mk i) a)`): `heap_operand_ownership(Proj)` is (deliberately)
+            // Borrowed, but the `Proj` emit DUP'd the extracted child into a standalone owned handle, which
+            // this borrowing read must then drop (drop-iff-dup'd — see `owned_proj_child_dupd`). Fixes the
+            // Map.len-over-a-projected-fresh-record disjoint-slot leak (corpus-05 #4547).
+            let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned))
+                || owned_proj_child_dupd(db, map, slots);
             if reclaim {
                 let map_slot = base;
                 *high = (*high).max(map_slot + 1);
