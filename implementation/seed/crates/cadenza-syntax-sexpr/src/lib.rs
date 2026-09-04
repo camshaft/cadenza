@@ -1530,6 +1530,12 @@ impl<'a, 'b> Reader<'a, 'b> {
                                 // an explicit `(. obj key)` list reads to a native `Member` head.
                                 let span = Span::new(start, self.pos);
                                 self.alias_field_pairify(&mut items);
+                                // Canonicalize a POSITIONAL record-TYPE field `(name Type)` -> the colon
+                                // ascription `(: name Type)` inside a `(Record …)` type, so lenient input
+                                // ROUND-TRIPS through the ML printer (a bare `(name Type)` prints as the
+                                // application `name(Type)`, which the ML parser rejects — the reader/printer
+                                // asymmetry #8387). Non-breaking; the canonical form reads to itself.
+                                self.colonize_record_type_fields(&mut items);
                                 // Wrap a collection rest/spread `..` (list/map/set/record/tuple alias +
                                 // patterns) to the canonical `(.. v)` node — but NOT the open-sum row
                                 // variable `(type … .. r)`, a distinct construct the ML surface keeps flat
@@ -1838,6 +1844,47 @@ impl<'a, 'b> Reader<'a, 'b> {
     /// as is a trailing bare `..` with no operand (malformed — left for the existing shape validation).
     /// The wrapped node spans the `..` head through its operand; built here (after both children exist)
     /// so the SpanTable stays 1:1 and in structure-id order (children before parent).
+    /// Canonicalize a POSITIONAL record-TYPE field to the colon-ascription form. Inside a `(Record …)`
+    /// type, a field written `(name Type)` — a 2-element list headed by a plain field NAME — DENOTES the
+    /// field `name : Type`, but its bare application shape prints as `name(Type)` on the ML surface (which
+    /// the ML parser then rejects), so the lenient positional input fails ml->binary->ml round-trip (the
+    /// asymmetry v-parser-corpus surfaced behind #8387). Rewriting it to the canonical `(: name Type)`
+    /// ascription — the same shape `render_name`/`render_ty` emit for a record field — on READ makes it
+    /// round-trip while keeping currently-accepted input working (non-breaking; the canonical `(: name
+    /// Type)` form reads to itself). Only a DIRECT 2-element `(name Type)` whose head is a plain name that
+    /// is neither the ascription `:` (already colon) nor a `..` spread is rewritten; an already-colon
+    /// field, a spread, a non-list field, or any other arity is left untouched. Gated to a `Record`-headed
+    /// list, so a genuine application elsewhere is unaffected. (The stricter alternative — REJECT the
+    /// positional form outright — is a spec-tightening call deferred to v-syntax/an operator ruling.)
+    fn colonize_record_type_fields(&mut self, items: &mut [StructId]) {
+        let Some(&head) = items.first() else {
+            return;
+        };
+        if self.b.as_name(head) != Some("Record") {
+            return;
+        }
+        for slot in items.iter_mut().skip(1) {
+            let Struct::List(field) = self.b.get(*slot) else {
+                continue;
+            };
+            if field.len() != 2 {
+                continue;
+            }
+            let field = field.clone();
+            let Some(fname) = self.b.as_name(field[0]) else {
+                continue;
+            };
+            if fname == ":" || fname == ".." {
+                continue;
+            }
+            // `(name Type)` -> `(: name Type)`; span the synthetic colon + rebuilt field over the original
+            // field's extent so the SpanTable stays 1:1 with the arena (children before parent).
+            let span = self.span_of(*slot);
+            let colon = self.mk_atom_leaf(Leaf::Name(":".into()), span);
+            *slot = self.mk_list(vec![colon, field[0], field[1]], span);
+        }
+    }
+
     fn normalize_rest_markers(&mut self, items: &mut Vec<StructId>) {
         let mut i = 0;
         while i < items.len() {
@@ -3968,6 +4015,51 @@ mod tests {
             let c = read(&printed).unwrap();
             assert!(a.structurally_eq(&c), "printer round-trip changed {src}");
         }
+    }
+
+    #[test]
+    fn positional_record_type_field_canonicalizes_to_the_colon_ascription() {
+        // #8387 asymmetry: the reader leniently accepted a POSITIONAL record-TYPE field `(Record (v Int64))`
+        // but the ML printer rendered it as the application `v(Int64)` (ml-parser-rejected) → ml->binary->ml
+        // round-trip break. The reader now canonicalizes the positional field to the colon ascription
+        // `(: v Int64)` ON READ, so it matches render_name/render_ty's field shape and round-trips.
+        // Positional -> colon.
+        assert_eq!(
+            print(&read("(Record (v Int64))").unwrap()),
+            "(Record (: v Int64))",
+            "a positional record-type field canonicalizes to the colon ascription"
+        );
+        // Multiple positional fields each canonicalize; an ALREADY-colon field is left untouched (idempotent
+        // on the canonical form — it reads to itself).
+        assert_eq!(
+            print(&read("(Record (a Int64) (b Bool))").unwrap()),
+            "(Record (: a Int64) (: b Bool))"
+        );
+        let canonical = "(Record (: a Int64) (: b Bool))";
+        assert_eq!(
+            print(&read(canonical).unwrap()),
+            canonical,
+            "the canonical colon form reads to itself (canonicalize-on-read is idempotent)"
+        );
+        // A compound field TYPE is preserved under the ascription.
+        assert_eq!(
+            print(&read("(Record (xs (List Int64)))").unwrap()),
+            "(Record (: xs (List Int64)))"
+        );
+        // NOT gated in: a non-`Record` head keeps a bare `(name Type)` as a genuine application/list, and a
+        // `..` spread / already-colon field inside a Record is untouched.
+        assert_eq!(
+            print(&read("(foo (v Int64))").unwrap()),
+            "(foo (v Int64))",
+            "a non-Record head is unaffected — no spurious colon"
+        );
+        assert_eq!(
+            print(&read("(Record (.. r))").unwrap()),
+            "(Record (.. r))",
+            "a spread field is left untouched"
+        );
+        // The canonicalized read is a spanned-read fixpoint too (span table stays 1:1 — no panic/desync).
+        let (_, _spans) = read_spanned("(Record (v Int64))").unwrap();
     }
 
     /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
