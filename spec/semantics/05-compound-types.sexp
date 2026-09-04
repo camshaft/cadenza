@@ -8451,7 +8451,7 @@
   "a refutable record list element with a literal field should refine by value (currently CDZ0900)"
   (input
     (do
-      (def (f (: xs (List (Record (v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
+      (def (f (: xs (List (Record (: v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
       (def (main) (f #list(#record((= v 1)))))
       (export main)))
   (output (: 100 Int64)))
