@@ -1384,6 +1384,26 @@
   (output (: 120 Int64))
   (live-objects 0))
 
+; lcap4 (breaker): the POSITIVE BOUND that pins lcap2's gap to LET/MATCH locals specifically — NOT all
+; non-def-param captures. A curried 3-level closure: `(fn (j) (fn (y) (+ (+ k j) y)))` — the innermost
+; closure captures the def-param `k` AND the INTERMEDIATE LAMBDA PARAM `j`, then ESCAPES (returned through
+; `(mk n) 3`, applied by the host). This WORKS on wasm (`((mk 5) 3) 10` = (5+3)+10 = 18) — so the
+; escape-capture scan DOES see binder-list PARAMS at every lambda level, it only misses `let`-bound and
+; match-arm-bound LOCALS (lcap2/its match-arm twin). So the lcap2 fix is narrow: add let/match binders to the
+; capture scan; params already work. (rust/cadenza decline via the known value-heap escaping-closure gap — a
+; separate non-blocking lane, same as the hcn family; wasm is the pinned bar here.)
+(case
+  "lcap4 an ESCAPING curried closure captures a def-param AND an intermediate lambda param (params escape; bounds lcap2 to locals)"
+  (input
+    (do
+      (def (mk (: k Int64)) (fn ((: j Int64)) (fn ((: y Int64)) (+ (+ k j) y))))
+      (def (main (: n Int64)) ((mk n) 3))
+      (export main)))
+  (call main (: 5 Int64) (: 10 Int64))
+  (drop)
+  (output (: 18 Int64))
+  (live-objects 0))
+
 ; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
 ; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
 ; resource types — yet both lower to the SAME core functype `(i32 env, i64) -> i64`. Each must still
