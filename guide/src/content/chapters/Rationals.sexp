@@ -41,14 +41,17 @@
     (source (Rational.of 2 4)))
   (p "Because two rationals that denote the same number normalize identically, " (c "=") " compares them by " (em "value") ": " (c "2/4") " and " (c "1/2") " are equal, however you wrote them.")
   (h2 "Taking a rational apart")
-  (p "Sometimes you want the two integers back out, to display a fraction or to feed its parts on somewhere. " (c "Rational.numerator") " and " (c "Rational.denominator") " hand them over, and because a rational is always stored in lowest terms, they give you the " (em "reduced") " pair, not whatever you happened to type. Ask " (c "2/4") " for its numerator and it's " (c "1") ", since the value is really " (c "1/2") ":")
+  (p "Sometimes you want the two integers back out, to display a fraction or to feed its parts on somewhere. " (c "Rational.numerator") " and " (c "Rational.denominator") " hand them over, and because a rational is always stored in lowest terms, they give you the " (em "reduced") " pair, not whatever you happened to type. Ask " (c "2/4") " for its numerator and it's " (result (of "rat-num") (: 1 BigInt)) ", since the value is really " (c "1/2") ":")
   (runnable
+    (id "rat-num")
     (source (Rational.numerator (Rational.of 2 4))))
-  (p "The denominator of that same " (c "2/4") " is " (c "2") ", completing the reduced " (c "1/2") ". Both come back as a " (c "BigInt") ", so a numerator or denominator that outgrows 64 bits is carried exactly like any other exact integer:")
+  (p "The denominator of that same " (c "2/4") " is " (result (of "rat-den") (: 2 BigInt)) ", completing the reduced " (c "1/2") ". Both come back as a " (c "BigInt") ", so a numerator or denominator that outgrows 64 bits is carried exactly like any other exact integer:")
   (runnable
+    (id "rat-den")
     (source (Rational.denominator (Rational.of 2 4))))
-  (p "This is a clean way to " (em "see") " that arithmetic really did stay exact. Add a third three times and ask the result for its denominator: it's " (c "1") ", because the sum is exactly " (c "1/1") ", not a fraction a hair away from one.")
+  (p "This is a clean way to " (em "see") " that arithmetic really did stay exact. Add a third three times and ask the result for its denominator: it's " (result (of "rat-den-sum") (: 1 BigInt)) ", because the sum is exactly " (c "1/1") ", not a fraction a hair away from one.")
   (runnable
+    (id "rat-den-sum")
     (source (Rational.denominator (+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3)))))
   (h2 "Rational to a whole number")
   (p "The numerator and denominator hand back the exact integer " (em "parts") ", each an unbounded " (c "BigInt") ". Sometimes you instead want the whole value " (em "as") " one integer at a boundary, a MIDI tick, an array index, a pixel, and that's a projection to a fixed " (c "Int64") ". There are four, differing only in how they handle a fraction: " (c "truncate") " drops toward zero, " (c "floor") " rounds toward negative infinity, " (c "ceil") " toward positive infinity, and " (c "round") " to the nearest (ties going away from zero). They agree on positive whole-ish values and diverge on negatives:")
@@ -64,9 +67,11 @@
   (h2 "Arithmetic stays exact")
   (p (c "+") ", " (c "-") ", " (c "*") ", and " (c "/") " over rationals compute the exact result and renormalize. Here's the sum floats can't get right, a third plus a third plus a third, and with rationals it is " (em "exactly") " one:")
   (runnable
+    (id "rat-sum")
     (source (+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3))))
-  (p (c "1/1") ", not " (c "0.9999999999999999") ". Division is exact too, and unlike integer division it stays total for any nonzero divisor, so " (c "(3/4) / (2/1)") " is " (c "3/8") " with no remainder and no rounding. You can try exact fractions yourself in the " (app-link (route "/calculator") " calculator ") " by typing " (c "1 / 3 + 1 / 3 + 1 / 3") " and watching it come back " (c "1") ".")
+  (p (result (of "rat-sum") (: 1/1 Rational)) ", not " (c "0.9999999999999999") ". Division is exact too, and unlike integer division it stays total for any nonzero divisor, so " (c "(3/4) / (2/1)") " is " (result (of "rat-div") (: 3/8 Rational)) " with no remainder and no rounding. You can try exact fractions yourself in the " (app-link (route "/calculator") " calculator ") " by typing " (c "1 / 3 + 1 / 3 + 1 / 3") " and watching it come back " (c "1") ".")
   (runnable
+    (id "rat-div")
     (source (/ (Rational.of 3 4) (Rational.of 2 1))))
   (why (tenet "Exactness is a choice you can make") "Cadenza doesn't pick one number type and make its weaknesses your problem. A " (c "Float64") " is the right tool when you want speed and can tolerate rounding, as in measurements, graphics, and physics. A " (c "Rational") " is the right tool when a rounding error would be a " (em "bug") ", as in money, exact ratios, and anything that must add up. They're different types with different operators, so you say which guarantee you want, and the compiler never silently swaps one for the other. Same instinct as keeping " (c "Int64") " and " (c "Float64") " apart: one type per kind of number, no surprises.")
   (note "A zero denominator has no value to denote, so " (cdz (Rational.of 1 0)) " is a compile-time error (" (c "CDZ0304") "), the same \"no correct answer, so refuse\" rule as dividing an integer by zero.")

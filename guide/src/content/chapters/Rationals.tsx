@@ -58,14 +58,17 @@ export default function Rationals() {
       <P>Sometimes you want the two integers back out, to display a fraction or to feed its parts on somewhere. <C>Rational.numerator</C> and <C>Rational.denominator</C> hand them over, and because a rational is always stored in lowest terms, they give you the <em>reduced</em> pair, not whatever you happened to type. Ask <C>2/4</C> for its numerator and it's <C>1</C>, since the value is really <C>1/2</C>:</P>
       <Runnable
         source={`(Rational.numerator (Rational.of 2 4))`}
+        id="rat-num"
       />
       <P>The denominator of that same <C>2/4</C> is <C>2</C>, completing the reduced <C>1/2</C>. Both come back as a <C>BigInt</C>, so a numerator or denominator that outgrows 64 bits is carried exactly like any other exact integer:</P>
       <Runnable
         source={`(Rational.denominator (Rational.of 2 4))`}
+        id="rat-den"
       />
       <P>This is a clean way to <em>see</em> that arithmetic really did stay exact. Add a third three times and ask the result for its denominator: it's <C>1</C>, because the sum is exactly <C>1/1</C>, not a fraction a hair away from one.</P>
       <Runnable
         source={`(Rational.denominator (+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3)))`}
+        id="rat-den-sum"
       />
       <H2>Rational to a whole number</H2>
       <P>The numerator and denominator hand back the exact integer <em>parts</em>, each an unbounded <C>BigInt</C>. Sometimes you instead want the whole value <em>as</em> one integer at a boundary, a MIDI tick, an array index, a pixel, and that's a projection to a fixed <C>Int64</C>. There are four, differing only in how they handle a fraction: <C>truncate</C> drops toward zero, <C>floor</C> rounds toward negative infinity, <C>ceil</C> toward positive infinity, and <C>round</C> to the nearest (ties going away from zero). They agree on positive whole-ish values and diverge on negatives:</P>
@@ -84,10 +87,12 @@ export default function Rationals() {
       <P><C>+</C>, <C>-</C>, <C>*</C>, and <C>/</C> over rationals compute the exact result and renormalize. Here's the sum floats can't get right, a third plus a third plus a third, and with rationals it is <em>exactly</em> one:</P>
       <Runnable
         source={`(+ (+ (Rational.of 1 3) (Rational.of 1 3)) (Rational.of 1 3))`}
+        id="rat-sum"
       />
       <P><C>1/1</C>, not <C>0.9999999999999999</C>. Division is exact too, and unlike integer division it stays total for any nonzero divisor, so <C>(3/4) / (2/1)</C> is <C>3/8</C> with no remainder and no rounding. You can try exact fractions yourself in the <AppLink to="/calculator"> calculator </AppLink> by typing <C>1 / 3 + 1 / 3 + 1 / 3</C> and watching it come back <C>1</C>.</P>
       <Runnable
         source={`(/ (Rational.of 3 4) (Rational.of 2 1))`}
+        id="rat-div"
       />
       <Why tenet="Exactness is a choice you can make">Cadenza doesn't pick one number type and make its weaknesses your problem. A <C>Float64</C> is the right tool when you want speed and can tolerate rounding, as in measurements, graphics, and physics. A <C>Rational</C> is the right tool when a rounding error would be a <em>bug</em>, as in money, exact ratios, and anything that must add up. They're different types with different operators, so you say which guarantee you want, and the compiler never silently swaps one for the other. Same instinct as keeping <C>Int64</C> and <C>Float64</C> apart: one type per kind of number, no surprises.</Why>
       <Note>A zero denominator has no value to denote, so <Cadenza ast="Y2R6YXN0AAEFGgoIUmF0aW9uYWwKAm9mAAEBAAAHAAAAAQACAQMAAQIAAwAEAQMDBAUG" kind="expr">(Rational.of 1 0)</Cadenza> is a compile-time error (<C>CDZ0304</C>), the same "no correct answer, so refuse" rule as dividing an integer by zero.</Note>
