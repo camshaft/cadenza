@@ -4591,3 +4591,44 @@
   (output (: 15 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64)))
+
+; bfx8 (breaker): a byte-aligned data segment AFTER sub-byte bit-fields — the step that bounds bfx9's gap.
+; Two 4-bit fields consume exactly one byte, leaving the cursor byte-aligned; a following `(u8 x)` reads the
+; next whole byte. Both the bit-field binder `len` and the byte binder `x` are read in the body. This
+; COMPOSES the sub-byte bit-field family (bfx5-7) with a plain byte segment (a mixed bit+byte pattern), which
+; folds. b0=0x32 -> pad=3, len=2, x=104 -> 100*2+104 = 304.
+(case
+  "a byte-aligned data segment following sub-byte bit-fields reads both binders"
+  (input
+    (do
+      (def (parse (: b Bytes))
+        (match b ((bin (bits pad 4) (bits len 4) (u8 x)) (+ (* 100 (Int64.of len)) (Int64.of x))) (_ -1)))
+      (def (main (: b0 Int64)) (parse (Bytes.of #list((UInt8.of b0) 104))))
+      (export main)))
+  (call main (: 50 Int64))
+  (output (: 304 Int64)))
+
+; bfx9 (breaker, GAP): a sub-byte bit-field value used as a DEPENDENT SIZE declines CDZ0900 — even though
+; (a) a byte segment after bit-fields folds (bfx8 above) and (b) a dependent size from a BYTE binder folds
+; (the length-prefixed frames at ~4305, `(u8 c)(utf8 s c)`). The specific unsupported edge is the bit-field
+; binder AS the size: `(bits len 4)(utf8 s len)`. A bit-field value (0-15) is a valid size — there is no
+; alignment obstacle (two 4-bit fields leave the cursor byte-aligned before the utf8), so this is a
+; completeness gap in the dependent-size resolution (it recognizes byte/int binders but not sub-byte
+; bit-field binders), not a soundness reject. Consistent CDZ0900 across wasm+rust+cadenza. Idealistic:
+; SHOULD decode — b0=0x32 (pad3,len2) over [104,105] -> "hi"; len=5 with only 2 bytes -> fall-through "x";
+; len=0 -> "". Grades todo until the dependent-size resolution accepts a bit-field binder. Routed to
+; concierge for the bin-match owner.
+(case
+  "a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes"
+  (input
+    (do
+      (def (parse (: b Bytes))
+        (match b ((bin (bits pad 4) (bits len 4) (utf8 s len)) s) (_ "x")))
+      (def (main (: b0 Int64)) (parse (Bytes.of #list((UInt8.of b0) 104 105))))
+      (export main)))
+  (call main (: 50 Int64))
+  (output (: "hi" String))
+  (call main (: 53 Int64))
+  (output (: "x" String))
+  (call main (: 48 Int64))
+  (output (: "" String)))
