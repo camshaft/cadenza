@@ -7,15 +7,12 @@ fail	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
 fail	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
 fail	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 fail	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
-pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 fail	String.at and String.scalar-at at a runtime index are scalar-indexed across an astral char
-fail	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 fail	a constant-size utf8 segment decodes inside a nested bin arm
 fail	a constant-size utf8 segment over a runtime scrutinee decodes and both binders are used
 fail	a dependent-size utf8 segment decodes inside a nested bin arm and invalid bytes fall through
 fail	a dependent-utf8 segment decodes and the string is used, invalid bytes fall through
 fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
-fail	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
 fail	a post-payload literal mismatch at the dynamic offset falls through
 fail	a shadowed utf8 string binder reads the inner decode
 fail	a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes
@@ -405,6 +402,7 @@ pass	Ordering values order Less below Equal below Greater
 pass	Ordering.of orders strings lexicographically in the three-way comparison
 pass	Ordering.of yields the three-way ordering of two Int64 operands
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
+pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
@@ -822,6 +820,7 @@ pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
 pass	a Bytes-to-Bytes transformer op — the arm frames the payload it received and the body re-reads
+pass	a Bytes.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
 pass	a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed
 pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
@@ -1023,6 +1022,7 @@ pass	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted
+pass	a List.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
 pass	a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest
@@ -1096,9 +1096,6 @@ pass	a Map-returning closure alongside a parameterized plain export — the plai
 pass	a Map-stated handler threads 50 recursive puts and reads the accumulated size
 pass	a Map.insert replacing an existing key does not grow the constant map
 pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
-pass	a List.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
-pass	a Bytes.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
-pass	a Set.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
 pass	a Map.lookup of an absent key over a constant map folds to None
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
@@ -1207,6 +1204,7 @@ pass	a PRIME LIST accumulates by testing each candidate against earlier primes u
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a PURE dead binding beside a perform is harmless (the eliminable control)
+pass	a PURE multi-shot continuation (no host/outer op) splices twice with distinct resume values and folds
 pass	a QUASIQUOTED #map-rest pattern reflects through reify_active and splices an unquote
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a Qty STATE threads via a def-bound arm computation — the workaround shape runs end to end
@@ -1391,6 +1389,7 @@ pass	a Set of tuples with an f32 NaN element dedups by the canonical quiet NaN
 pass	a Set of tuples-containing-a-quantity dedups equal members and keeps distinct ones
 pass	a Set taken out of a map grows independently of the original binding
 pass	a Set.contains over a concrete Int64-keyed Set param stays legal (the read-side gate does not over-reject a concrete element)
+pass	a Set.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over RECURSIVE-sum elements dedups by spine content
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
@@ -1603,6 +1602,7 @@ pass	a bare Eval.in-caller perform in NON-macro code has no home — the compile
 pass	a bare Float width-constructor names the sized default with a replace fix
 pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion
 pass	a bare Int width-constructor names the sized default with a replace fix
+pass	a bare LIST of String RESULT round-trips via the run/encode envelope (recursive String decode in a list container)
 pass	a bare List constructor in a parameter type names the missing element argument
 pass	a bare MONOMORPHIC type in a variant payload is valid (not a missing-argument ctor)
 pass	a bare Map constructor in a parameter type names its two missing arguments
@@ -2353,6 +2353,7 @@ pass	a ctl-style arm that LET-BINDS its continuation result then reads the state
 pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
 pass	a ctl-style arm that reads the STATE binder AROUND its continuation application folds
 pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
+pass	a ctor pattern over an unbound-name subject surfaces the subject CDZ0101 (subject error not masked by the pattern check)
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a ctor-lead list match missing a variant still rejects (that first-element value is uncovered)
 pass	a ctor-lead-saturating list match is exhaustive without a wildcard and binds the moved payload
@@ -3405,6 +3406,7 @@ pass	a map pattern nested in a tuple binds its value binder
 pass	a map pattern over a non-map scrutinee is a type error
 pass	a map pattern over an Int64 scrutinee (definite) is a type error
 pass	a map pattern over its matching Map scrutinee kind is valid and matches (no over-rejection)
+pass	a map pattern refines an entry VALUE against a literal (matches only when the value equals it)
 pass	a map pattern value sub-pattern may be a literal that refines the match
 pass	a map pattern value sub-pattern may be an irrefutable compound that binds
 pass	a map pattern with TWO `..` rest markers names the shape, not an unbound binder (CDZ0201)
@@ -3600,6 +3602,8 @@ pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a module-exported recursive performer called from a HANDLER ARM homes under the outer handler
+pass	a module-member type does NOT leak to the enclosing scope (no-import privacy)
+pass	a module-member-type ctor constructed and matched LOCALLY in a non-entry member resolves
 pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
@@ -3877,6 +3881,7 @@ pass	a nested inner handler that re-threads its own state folds (merged-context 
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested let shadows an outer let of a different type and both resolve, outer surviving
 pass	a nested list element composes over a runtime list of lists
+pass	a nested list pattern with a LITERAL inner element binds and matches (inline-literal scrutinee)
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
 pass	a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
@@ -3937,7 +3942,10 @@ pass	a nested-handler ctl arm whose continuation-consuming body ALSO performs an
 pass	a nested-if tower sharing an arm flattens and preserves the truth table
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
+pass	a nested-list arm with a LITERAL inner element AND a plain sibling binder binds the sibling
 pass	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest
+pass	a nested-list arm with a LITERAL inner element FALLS THROUGH when the literal differs (no spurious trap)
+pass	a nested-list arm with a LITERAL inner element binds and matches (no user guard)
 pass	a nested-list-rest arm reads BOTH the inner rest and the outer rest binders
 pass	a nested-map BUMP (lookup-inner, insert-inner, reinsert-outer) builds a multimap
 pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop
@@ -4679,6 +4687,12 @@ pass	a refutable map value sub-pattern binds the ctor payload on a matching valu
 pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a refutable map value sub-pattern falls through on a non-matching variant
 pass	a refutable map value sub-pattern folds the same over a constant map
+pass	a refutable record element inside a nested-list element FALLS THROUGH when the field differs
+pass	a refutable record element inside a nested-list element refines through both layers
+pass	a refutable record list element with a literal field refines by value (#8380)
+pass	a refutable record list element with two literal fields refines on both (#8380)
+pass	a refutable tuple element inside a nested-list element FALLS THROUGH when the tuple literal differs
+pass	a refutable tuple element inside a nested-list element refines through both layers
 pass	a refutable tuple list element with a literal component refines by value
 pass	a refutable tuple list element with a nested constructor component refines by discriminant and binds its payload
 pass	a refutable-ctor list element still requires a catch-all covering every length
@@ -4721,6 +4735,7 @@ pass	a resuming observer of a recursive same-effect advance reads the advanced s
 pass	a resuming perform in an if-condition threads its state advance to the taken branch
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned String with a backslash and a quote RENDERS re-escaped (canonical value form)
+pass	a returned String with a newline and a tab RENDERS them re-escaped (the whitespace escape set)
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned capturing closure bound with let and applied twice folds each application independently
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
@@ -5036,6 +5051,7 @@ pass	a runtime negative dividend mod a constant power of two takes the dividend'
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
 pass	a runtime nibble truncation keeps the low four bits
+pass	a runtime nominal sum reached only via bare constructors keeps its decl through the cadenza re-emit
 pass	a runtime non-String operand to String.at is the same CDZ0203 as its constant twin
 pass	a runtime non-String operand to String.byte-len is the same CDZ0203 as its constant twin
 pass	a runtime non-String operand to String.concat is the same CDZ0203 as its constant twin
@@ -6054,6 +6070,7 @@ pass	a well-typed same-shape tuple ordering compiles and runs the lexicographic 
 pass	a whole LIST of quantities renders every element scaled to reference in the value form
 pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
 pass	a whole rational carries a denominator of one
+pass	a whole-module alias projecting a NON-exported private def is rejected (privacy)
 pass	a whole-module alias projects an exported FUNCTION and applies it
 pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
 pass	a wide UInt64 constant add overflows Int64 but fits UInt64 and folds
@@ -6745,6 +6762,7 @@ pass	an inline HOF applies a bare operator passed as its function argument
 pass	an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs
 pass	an inline lambda with more than one body is rejected
 pass	an inline-materialized BigInt constant operand is dropped, leaving no live heap objects
+pass	an inline-module member TYPE is visible to a sibling (module-scoped type, no import)
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture
@@ -6968,6 +6986,7 @@ pass	an unbound export BEFORE a valid main export is rejected
 pass	an unbound export after a valid HELPER export is rejected
 pass	an unbound handle head keeps its own unbound-name error
 pass	an unbound match arm head over a recursive body is a coded CDZ0101, not silently accepted
+pass	an unbound match subject under a wildcard arm still reports CDZ0101 (the always-clean control for the ctor case)
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name as an ARGUMENT to a known ctor in an uncalled def is rejected
 pass	an unbound name close to a let binding suggests the binding with a replace fix
@@ -7046,6 +7065,7 @@ pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
 pass	an unrelated-payload Option mismatch gets no match-it hint
 pass	an unrepresentable closure export is one coded boundary error, not a shadowing decline
+pass	an unresolved-member match subject surfaces CDZ0201 under a ctor pattern (not masked)
 pass	an unsatisfiable equality still traps on a divide-by-zero operand
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
@@ -7101,6 +7121,7 @@ pass	ap1 an arm destructures an Option-of-list op ARGUMENT through the nested pa
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a generic type constructor to a value names the type-argument position
+pass	applying a module NAME names the module category, not the internal export Record
 pass	applying a monomorphic sum in value position says it takes no type parameters
 pass	applying a non-function is a type error
 pass	applying a non-generic prelude type to a value names it a type, not a function
@@ -7810,6 +7831,7 @@ pass	dd3 two inner effects FAN IN to one shared outer counter in body order
 pass	dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread
 pass	ddp1 a FIRST-TIME dedup stream over a Map of seen-counts — a first observation echoes the value, a repeat answers the negated repeat count, and the seed COLLIDES a computed key with a literal so the two runs disagree on which draws are repeats at all
 pass	declaring a unit with a conversion conflicting with a built-in is an error
+pass	declaring the same member-type name twice in one inline module is a type error (CDZ0201)
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a List tag whose element count exceeds the bytes present yields the error case
 pass	decode of a List tag with an enormous element count does not attempt a giant build — yields the error case
@@ -8093,8 +8115,11 @@ pass	eval of a constructor-built Ast.List with a valid operator head computes it
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
+pass	eval of a quasiquote performing an effect TWICE threads the handler state in order (both performs bind the enclosing handler)
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
+pass	eval of a quasiquote that PERFORMS a handled effect reconstructs the perform to bind the enclosing handler
+pass	eval of a quasiquote whose form BIN-MATCHES an unquoted Bytes reads the segment
 pass	eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form
 pass	eval of a quasiquote-built form with a byte-string unquote folds
 pass	eval of a quasiquote-built form with a float unquote folds
@@ -8104,6 +8129,7 @@ pass	eval of a quoted HUGE integer literal declines CDZ0201 — BigInt storage d
 pass	eval of a quoted List.at folds the indexing operation to its Option result
 pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
 pass	eval of a quoted RECURSIVE-sum construction builds the heap spine
+pass	eval of a quoted Set.of construction folds the dedup (Set.len reads the unique count)
 pass	eval of a quoted String.byte-len folds the string operation
 pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
@@ -8239,6 +8265,7 @@ pass	fse3e cancel arm alone — (- s s) self-subtraction in the answer
 pass	fse3f FINITE computed seed (+ 1.0 0.5)
 pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
 pass	ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)
+pass	ftp1 a fn-typed param NESTED in a tuple re-emits its (-> Int64 Int64) annotation through the cadenza hop
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	fx1 a Float64 state with a REGIME SWITCH in the arm — doubling below the threshold, halving above, three draws sum the trajectory
@@ -8910,6 +8937,7 @@ pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
 pass	negative zero stays distinct from zero through the hoisted float compare
 pass	nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws
+pass	nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)
 pass	nested MIXED-direction shifts do not combine — left-then-right is two operations
 pass	nested SAME-effect handlers isolate STATE — inner performs never advance the outer counter
 pass	nested bin matches with identically-spelled binders shadow correctly
@@ -9041,6 +9069,7 @@ pass	one entrypoint's host authority is not reachable by another that does not d
 pass	one generic identity instantiated at a scalar, a heap string, and a compound in one program
 pass	one generic sum instantiated at two different types in one program
 pass	one host effect with TWO ops interleaves its calls in program order
+pass	one inline module's member-type value is NOT interchangeable with another's same-named type (CDZ0203)
 pass	one macro splices a TYPE and a fn over it via a wrapping (do …) — the type splice-flattens alongside the def
 pass	one module's export clause does not affect a same-named member of another module
 pass	one of several same-signature closure exports is made and called by the host
@@ -10687,6 +10716,7 @@ pass	two inclusive bounds collapse to equality at a negative point
 pass	two inclusive bounds collapse to equality over an unsigned width
 pass	two independently-computed NaNs are the SAME float map key (NaN payloads canonicalized)
 pass	two independently-computed NaNs dedup to one set element — cardinality one
+pass	two inline modules each declaring a member type Sh resolve DISTINCTLY (per-module nominal scope)
 pass	two invocations of a macro each draw a FRESH internal helper def — per-expansion hygiene gives gensym-like freshness (no explicit gensym needed)
 pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
 pass	two let-sequenced sibling self-calls thread out-state via multi-value return
@@ -10713,9 +10743,14 @@ pass	two performs as the two ARGUMENTS of a pure USER function thread the state 
 pass	two performs bound by nested lets thread the handler state in order
 pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them
 pass	two rationals denoting the same number are equal regardless of how they were written
+pass	two record list elements each refine on a nested tuple-literal field (N-per-arm x nested-field)
+pass	two record list elements each with two literal fields all refine (N-per-arm x multi-field)
+pass	two record list elements with nested fields FALL THROUGH when the second element's field differs
+pass	two record list elements with two fields each FALL THROUGH when a second-element field differs
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two refutable literal fields in one record arm compose (both must match)
+pass	two refutable record list elements in one arm each refine (#8418)
 pass	two refutable tuple list elements in one arm each refine and bind (#8418)
 pass	two residuals from ONE curry source hold distinct first-stage captures
 pass	two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live
@@ -10966,6 +11001,7 @@ todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines clea
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
+todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a String-typed @param accessor crosses once the world-driven result path lands
 todo	a Symbol entry parameter compares to an interned constant
 todo	a `..` spread in a MAP construction entry names the pattern-only rule, not a malformed key-value entry
@@ -10985,6 +11021,7 @@ todo	a do-def-bound perform inside a recursive fn called under a handle declines
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
+todo	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
@@ -10999,13 +11036,13 @@ todo	a self-call gated behind a nested if IN an if-condition declines cleanly, n
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands
 todo	a tuple splat inside an effect-handler body spreads its elements
+todo	a whole-module alias projects a qualified TYPE constructor (idealistic; declines today, DEF face works)
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an effectful-operand splat inside a handle body performs exactly once (should-work; today the specializer declines)
 todo	an escaping captured continuation is refused, not miscompiled
-todo	an inline-module member TYPE is visible to a sibling (module-scoped type, no import)
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
@@ -11057,6 +11094,8 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err (should-work; today declines the runtime operand — try-operator lane)
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
+todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
+todo	two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
