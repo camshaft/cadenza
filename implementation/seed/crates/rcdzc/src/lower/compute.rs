@@ -3032,22 +3032,37 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         // CDZ0203 "applied N arguments to a function of arity M"; this decline is the weaker
                         // sibling (a Todo), so the coded reject remains the primary "no".
                         Err(msg) if msg == crate::eval::NOT_A_CTOR_PRIM => {
-                            let named = op_member_name(db, head)
-                                .map(|n| format!("`{n}`"))
-                                .unwrap_or_else(|| "a built-in operation".to_string());
-                            trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: operation applied at the wrong arity → honest decline");
-                            // Arity-neutral wording: this fires on BOTH an under-application (`(List.at l)`,
-                            // missing the index — the common case, which would need a runtime closure) and an
-                            // over-application (`(Map.size m x)` — already the coded CDZ0203, this is its
-                            // weaker Todo sibling). Both are "applied at the wrong arity".
-                            Core::Poison(Reject::declined(
-                                crate::diag::DeclineId::PrimAsValueNeedsClosure,
-                                format!(
-                                    "{named} is applied at the wrong arity — a built-in operation must be \
-                                     applied to exactly its arguments (a partial application, which would \
-                                     require a synthesized runtime closure, is not supported)"
-                                ),
-                            ))
+                            // A built-in OPERATION applied at the WRONG arity. An UNDER-application
+                            // (`(String.slice s 0)`, `(List.at l)` — fewer args than the op's arity) is a
+                            // first-class PARTIAL that SHOULD curry to a runtime closure awaiting the rest
+                            // (core-semantics L73/L295) — synthesize the eta-closure over the remaining args,
+                            // exactly as a source `(fn (b) (String.slice s 0 b))` lowers (the ctor/binop
+                            // twins). `partial_head_eta_closure` reuses the SAME lambda-lift + capture/reclaim
+                            // as a user-fn partial, so a captured compound (a List) is reclaimed like any
+                            // residual-closure capture. It returns `None` on an OVER-application (supplied
+                            // `>=` arity), which falls through to the decline below — over-application is
+                            // already the coded CDZ0203 from `infer`, so this decline stays its weaker Todo
+                            // sibling and the primary "no" is unchanged.
+                            if let Some(c) = partial_head_eta_closure(db, head, &args) {
+                                trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: under-applied built-in operation → eta-closure over the remaining args");
+                                c
+                            } else {
+                                let named = op_member_name(db, head)
+                                    .map(|n| format!("`{n}`"))
+                                    .unwrap_or_else(|| "a built-in operation".to_string());
+                                trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: operation applied at the wrong arity → honest decline");
+                                // Reaches here only for an OVER-application now (the under-application
+                                // curries above): `(Map.size m x)` — already the coded CDZ0203, this is its
+                                // weaker Todo sibling.
+                                Core::Poison(Reject::declined(
+                                    crate::diag::DeclineId::PrimAsValueNeedsClosure,
+                                    format!(
+                                        "{named} is applied at the wrong arity — a built-in operation must \
+                                         be applied to exactly its arguments (a partial application, which \
+                                         would require a synthesized runtime closure, is not supported)"
+                                    ),
+                                ))
+                            }
                         }
                         Err(msg) => {
                             trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");

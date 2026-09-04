@@ -231,32 +231,15 @@ pub(crate) fn check_application(
     // flat `(String.slice s 0)` does. A pre-gate on the immediate head would skip the nested form (the
     // PR#491 hole). The predicate returns fast-false for a non-op bottom head, so this is not costly.
     if is_builtin_partial_application(db, app, head, args) {
-        // Name the operation off the spine's bottom `(. Module member)` head — the flat `(String.slice s
-        // 0)` has that head directly; the nested `((String.slice s) 0)` reaches it by peeling the AST head
-        // children. Peel on the RAW AST (a `List` whose first child is the deeper head), NOT the resolved
-        // form (whose bottom is the op-prim value, not the `(. …)` node `member_op_head_name` reads).
-        let mut name_head = app;
-        while let crate::ast::Struct::List(kids) = db.ast.get(name_head) {
-            match kids.first() {
-                Some(&h) if matches!(db.ast.get(h), crate::ast::Struct::List(_)) => name_head = h,
-                _ => break,
-            }
-        }
-        let named = member_op_head_name(db, name_head)
-            .map(|(m, k)| format!("`{m}.{k}`"))
-            .unwrap_or_else(|| "a built-in operation".to_string());
-        trace!(target: "rcdzc::infer", app = app.0, head = head.0, "fault: built-in operation partially applied as an unconsumed value (surfaced in check)");
-        out.push(
-            Reject::declined(
-                crate::diag::DeclineId::PrimAsValueNeedsClosure,
-                format!(
-                    "{named} is applied at the wrong arity — a built-in operation must be applied to \
-                     exactly its arguments; a partial application, which would require a synthesized \
-                     runtime closure, is not supported"
-                ),
-            )
-            .at(app),
-        );
+        // A SPINE-TOP partial built-in operation is a legitimate first-class CURRIED CLOSURE — it types as
+        // the arity-remaining arrow (`apply_type` peels the given args and returns the residual `Ty::Fn`
+        // chain), and `lower` synthesizes a `Core::Lambda` capturing the prim + given args (the same proven
+        // capture+reclaim the user-fn partials 09-functions/150/189 use). So this is NOT a fault — do not
+        // decline it (was `declined(PrimAsValueNeedsClosure)`). Consistent with operators currying (`(+ 1)`)
+        // and constructors eta-lifting, and mandated by the 09-functions should-work TODOs. Co-landed with
+        // v-compiler-primitives (Layer 2 = lower/compute.rs `Core::Lambda` synth). Over-application stays the
+        // permanent CDZ0203 elsewhere; the arity-1 curryable-binop / ctor-complete / eta exclusions in the
+        // predicate keep those on their own paths. Still recurse the args for THEIR own faults.
         for &arg in args {
             collect(db, arg, out);
         }
