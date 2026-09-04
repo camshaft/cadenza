@@ -3958,6 +3958,24 @@
           echo "ok: corpus-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model graded vs .gate-baseline (localGate gateCheck swap; full corpusGateCoarse in nightly)" >> "$out"
         '';
 
+        # PER-FILE coarse WASM gate aggs: `corpus-gate-coarse-<stem>` for EVERY corpus stem, generated over
+        # corpusFileNames (auto-covers new files — no hand-enumeration drift) and spread into checks.<sys>
+        # (v-fleet-tooling + v-corpus-harness policy GO, post-#8318). The fast per-file pre-check that replaced
+        # the in-process gate --check loop: an author edits one .sexp, `nix build .#checks.<sys>.corpus-gate-
+        # coarse-<stem>`, and sees a pass→not-pass regression BEFORE landing (the exact catch that would have
+        # flagged #8311's bfx9 todo→fail baseline red). Lazy attrs → zero eval/build cost unless invoked. The
+        # curated localGate hot-path subset (corpusGateCoarseSubset) is UNCHANGED — this only adds on-demand
+        # per-file surface. (packages.* can't take a generated spread here — eachDefaultSystem packages are 88
+        # dotted bindings with no merge point — so these live in checks alongside corpusFileAggs, same mechanism.)
+        corpusGateCoarseFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-gate-coarse-${stem}";
+              value = mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+
         # PARITY SPIKE — the coarse per-file harvest MUST be byte-identical to the per-case verdictsFileAgg for
         # the SAME file (the v-corpus-harness acceptance test, one file). Sorts both before diffing because the
         # coarse loop walks the shred dirs in glob (numeric) order while verdictsFileAgg walks eval-time idxs —
@@ -4682,6 +4700,19 @@
               [ "01-literals" "05-compound-types" "06-numeric-model" ]}
           echo "ok: corpus-rust-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model graded vs .gate-baseline-rust (membership-only; localGate gateCheckRust swap; full set in nightly)" >> "$out"
         '';
+        # PER-FILE coarse RUST gate aggs: `corpus-rust-gate-coarse-<stem>` for EVERY corpus stem (the rust twin
+        # of corpusGateCoarseFileAggs), generated over corpusFileNames + spread into checks.<sys>. Keeps the
+        # ESTABLISHED corpus-rust-gate-coarse-<stem> naming (rust in the middle — the 01/06/29 hand entries used
+        # it) so we don't fork rust naming. membership_only #7706 applies per-file. Same on-demand pre-check use
+        # as the wasm twin (rustc-per-case, so an author checks the one rust file they touched). Lazy → free unless built.
+        corpusRustGateCoarseFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-rust-gate-coarse-${stem}";
+              value = mkCorpusRustGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
         corpusRustAsyncVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-rust-async-coarse" { } ''
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
@@ -6045,21 +6076,13 @@
         # source once v-corpus-harness signs off parity. `.#corpus-verdicts-coarse-parity` is the per-file
         # byte-identity spike (coarse == per-case verdictsFileAgg). See mkCorpusVerdictsFileCoarse's def note.
         packages.corpus-verdicts-coarse = corpusVerdictsCoarseAll;
-        # COARSE WASM GATE (gateCheckNix swap) test packages — build a file to VERIFY green against the
-        # committed .gate-baseline (== the #7692 coarse harvest by construction). 05-compound-types carries the
-        # tuple cases (the bare-(tuple)-vs-#tuple render); a green here confirms the wasm baseline is
-        # self-consistent (the harvest graded them, the gate re-grades identically). Full-aggregate wasm swap
-        # into localGate follows once the corpus nativization settles.
-        packages.corpus-gate-coarse-01-literals = mkCorpusGateFileCoarse { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; };
-        packages.corpus-gate-coarse-05-compound-types = mkCorpusGateFileCoarse { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; };
         packages.corpus-verdicts-coarse-parity = corpusVerdictsCoarseParity;
-        # COARSE per-file RUST GATE (concierge (C)) test packages — build one file to VERIFY green + MEASURE
-        # per-file cost + empirically test the #3984 absent-case behavior (06-numeric has incremental rust
-        # cases some absent from .gate-baseline-rust). Full-aggregate `.#corpus-rust-gate-coarse` follows once
-        # the per-file cost + #3984 behavior are confirmed. NOT yet wired into localGate.
-        packages.corpus-rust-gate-coarse-01-literals = mkCorpusRustGateFileCoarse { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; };
-        packages.corpus-rust-gate-coarse-06-numeric-model = mkCorpusRustGateFileCoarse { name = "06-numeric-model"; file = ./spec/semantics/06-numeric-model.sexp; };
-        packages.corpus-rust-gate-coarse-29-cross-component-peers = mkCorpusRustGateFileCoarse { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; };
+        # The hand-listed per-file coarse gate test packages (corpus-gate-coarse-{01-literals,05-compound-types}
+        # + corpus-rust-gate-coarse-{01-literals,06-numeric-model,29-cross-component-peers}) were REMOVED
+        # (v-fleet-tooling + v-corpus-harness GO): the generated corpusGateCoarseFileAggs /
+        # corpusRustGateCoarseFileAggs (spread into checks.<sys> above, one per corpus stem) subsume them and
+        # auto-cover new files. Build a single file's coarse gate via
+        # `nix build .#checks.<sys>.corpus-gate-coarse-<stem>` / `.corpus-rust-gate-coarse-<stem>`.
         # DIVERSE-SAMPLE per-file parity packages (v-corpus-harness acceptance step 2): distinct case shapes —
         # 05-compound-types (value-heavy #record/#tuple), 11-modules (multi-module → --entry main),
         # 25-verification (big, cross-module type-import), 26-program-conditions (traps/@invariant/diagnostics),
@@ -7048,7 +7071,15 @@
           # PER-FILE wasm-opt-gap aggregates: `wasm-opt-gaps-<file>` for every corpus file, so a slice
           # (01-literals + 10-bytes) builds in isolation while the top-level `wasm-opt-gaps` forces the whole
           # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.
-          // optGapFileAggs;
+          // optGapFileAggs
+          # PER-FILE coarse gate aggs (v-fleet-tooling + v-corpus-harness GO, post-#8318): the fast per-file
+          # fail-on-regression pre-check for EVERY corpus stem, generated over corpusFileNames (auto-covers new
+          # files). `checks.<sys>.corpus-gate-coarse-<stem>` (wasm) + `corpus-rust-gate-coarse-<stem>` (rust) —
+          # an author edits one .sexp + builds just its coarse gate to catch a baseline regression pre-land
+          # (the #8311 bfx9 catch). Lazy → free unless invoked. Subsumes the old hand-listed 01/05/06/29
+          # packages.* entries (removed). localGate hot-path subset (corpusGateCoarse*Subset) unchanged.
+          // corpusGateCoarseFileAggs
+          // corpusRustGateCoarseFileAggs;
 
         # devShell packages include cdzShellWrappers (the hoisted PATH wrapper-scripts, defined in the let
         # above + shared with packages.cdz-shell-wrappers). Cross-shell (agent Bash-tool subshells are zsh),
