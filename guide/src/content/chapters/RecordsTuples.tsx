@@ -23,11 +23,13 @@ export default function RecordsTuples() {
       <P>Records are immutable, so you never <em>change</em> a field but instead produce a new record that differs in one place. <C>Record.with</C> does exactly that: give it a record, a <C>#field</C> selector naming which field, and the new value, and it hands back a copy with that field replaced. Here a price of <C>2</C> becomes <C>9</C>:</P>
       <Runnable
         source={`(. (Record.with #record((= item 1) (= price 2)) #"price" 9) price)`}
+        id="record-with"
       />
       <Note>The field is named with a <C>#</C> selector, written <C>#"price"</C> in the s-expr surface and <C>#price</C> in the ML surface (flip the syntax toggle to see it). It's a symbol picking the field by name, not a value; the record and the new value are the other two operands.</Note>
       <P>"Hands back a copy" is the important part, because the original is untouched. Bind a record, make an updated version, then read the <em>original</em> back and you'll see it never moved:</P>
       <Runnable
         source={`(let ((base #record((= hp 5) (= mp 3)))) (. (Record.with base #"hp" 99) hp))`}
+        id="record-with-immut"
       />
       <P>That reads <C>99</C>, but swap <C>Record.with base #"hp" 99</C> for plain <C>base</C> and Run again to get <C>5</C>, the original, still there. Two records, sharing everything but the one field.</P>
       <P><C>Record.with</C> is for a field that already exists; to <em>add</em> a new one, use <C>Record.extend</C>. Keeping them separate is deliberate, because it means a typo'd field name can't silently create a new field where you meant to update an old one:</P>
@@ -43,6 +45,7 @@ export default function RecordsTuples() {
       <P>Where <C>extend</C> adds one field, <C>Record.merge</C> combines two whole records into one whose fields are the <em>union</em> of both. Merge a record of sizes with a record of colours and you can reach any field of either side:</P>
       <Runnable
         source={`(. (Record.merge #record((= w 4) (= h 5)) #record((= r 255))) r)`}
+        id="record-merge"
       />
       <P>The result has all three fields <C>w</C>, <C>h</C>, and <C>r</C>, so <C>.r</C> reads <C>255</C>. And the same no-clobber discipline applies: the two records must have <em>disjoint</em> fields. Ask to merge two records that both define <C>x</C> and the compiler refuses rather than silently pick a winner:</P>
       <Runnable
@@ -65,6 +68,7 @@ export default function RecordsTuples() {
       <P>And just as <C>Record.merge</C> combined two records, <C>Tuple.concat</C> joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:</P>
       <Runnable
         source={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 3)`}
+        id="tuple-concat"
       />
       <Why tenet="Records are named, tuples are positional">Why have both? A tuple is a fixed <em>positional</em> product you reach into by index, and it reads best when the pieces are obvious from context (a coordinate pair, a swap). A record has fixed <em>named</em> fields you reach into by name, and it reads best when the pieces deserve labels (a rectangle's <C>w</C> and <C>h</C>). Both are just values with a fixed shape the compiler knows, so it can check every field access against the actual structure, with no "field not found" surprises at run time.</Why>
       <H2>Putting it together</H2>
