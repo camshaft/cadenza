@@ -6359,6 +6359,7 @@ pass	ds2 the DISCARDED statement is itself an op-result chain — both hops adva
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
 pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard
 pass	dsc1 a DISCARDED DIVISION NEVER TRAPS — the do-interior quotient is computed for no one and the zero divisor that would trap in value position is ELIDED with the rest of the dead expression, both seeds returning the constant tail unchanged, pinning that a pure trapping form in discard position is droppable (the CDZ0307 contract: a valueless pure form has no effect and a trap is not an effect)
+pass	dt3 two IRREFUTABLE nested-tuple list elements (list of tuples of tuples, no records) refine and bind — pins the >1-nested-compound-element refutability classifier (#8371)
 pass	dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing
 pass	du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps
 pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged
