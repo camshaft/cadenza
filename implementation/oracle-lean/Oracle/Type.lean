@@ -1809,23 +1809,38 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                      | none => .error (.unsupported "type oracle: malformed int-module of/wrap"))
                   else if (op == "wrapping-add".toUTF8 || op == "wrapping-sub".toUTF8 || op == "wrapping-mul".toUTF8
                            || op == "checked-add".toUTF8 || op == "checked-sub".toUTF8 || op == "checked-mul".toUTF8)
-                          && children.size == 3 then
+                          && (children.size == 2 || children.size == 3) then
                     -- T → T → (T | Option T): both operands are THIS width; wrapping → T, checked → (Option T).
+                    -- T1.51 — PARTIAL APPLICATION (#8313 currying): applied to ONE arg (children.size == 2) yields
+                    -- a CLOSURE `T → R` of the remaining param (rcdzc curries a built-in op to a closure). Full
+                    -- application (size 3) → `R` as before. `((Int64.wrapping-add 3) 4)` / a bound partial then
+                    -- apply the closure via the ordinary fn-application rule.
                     let isChecked := op == "checked-add".toUTF8 || op == "checked-sub".toUTF8 || op == "checked-mul".toUTF8
-                    (match children[1]?, children[2]? with
-                     | some aId, some bId =>
-                       (match inferE m env st aId with
-                        | .ok (τa, st1) =>
-                          (match unifyInfer τa T st1 with
-                           | .ok st2 =>
-                             (match inferE m env st2 bId with
-                              | .ok (τb, st3) => (match unifyInfer τb T st3 with
-                                                  | .ok st4 => .ok (if isChecked then optionTy T else T, st4)
-                                                  | .error e => .error e)
-                              | .error e => .error e)
-                           | .error e => .error e)
-                        | .error e => .error e)
-                     | _, _ => .error (.unsupported "type oracle: malformed int-module binary op"))
+                    let R : Ty := if isChecked then optionTy T else T
+                    if children.size == 2 then
+                      -- PARTIAL: unify the one supplied arg with T, result is the closure `T → R`.
+                      (match children[1]? with
+                       | some aId => (match inferE m env st aId with
+                                      | .ok (τa, st1) => (match unifyInfer τa T st1 with
+                                                          | .ok st2 => .ok (.fn T R, st2)
+                                                          | .error e => .error e)
+                                      | .error e => .error e)
+                       | none => .error (.unsupported "type oracle: malformed int-module partial op"))
+                    else
+                      (match children[1]?, children[2]? with
+                       | some aId, some bId =>
+                         (match inferE m env st aId with
+                          | .ok (τa, st1) =>
+                            (match unifyInfer τa T st1 with
+                             | .ok st2 =>
+                               (match inferE m env st2 bId with
+                                | .ok (τb, st3) => (match unifyInfer τb T st3 with
+                                                    | .ok st4 => .ok (R, st4)
+                                                    | .error e => .error e)
+                                | .error e => .error e)
+                             | .error e => .error e)
+                          | .error e => .error e)
+                       | _, _ => .error (.unsupported "type oracle: malformed int-module binary op"))
                   else .error (.unsupported "type oracle: unmodeled int-module op"))
              else if q == "Rational".toUTF8 then
                -- T1.44 — Rational OPS `(Rational.<op> …)` (sigs from prelude.rs rational_module): `of (Int a)
@@ -2057,7 +2072,31 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                 | some (_, (_, sumTy, none)) =>
                   if children.size > 2 then .error (.illTyped "CDZ0203") else .ok (sumTy, st)
                 | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
-           | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
+           | none =>
+             -- T1.51 — APPLY A NON-NAME EXPRESSION HEAD `((<expr>) args…)` where `<expr>` infers to a `.fn`
+             -- (e.g. a built-in PARTIAL application: `((Int64.wrapping-add 3) 4)`). Infer the head; if it's a
+             -- function type, fold-apply the args (unify each arg with the domain, take the codomain), mirroring
+             -- the name-headed fn-application rule. A non-`.fn` head → decline (unmodeled, sound skip).
+             (match children[0]? with
+              | some hId =>
+                (match inferE m env st hId with
+                 | .ok (τh, stH) =>
+                   (match applySubst stH.subst τh with
+                    | .fn _ _ =>
+                      ((children.extract 1 children.size).foldlM (m := Except InferFail)
+                        (fun (acc : Ty × InferState) aid =>
+                          match inferE m env acc.2 aid with
+                          | .ok (τa, st1) =>
+                            let β : Ty := .var st1.next
+                            let st2 := { st1 with next := st1.next + 1 }
+                            let headTy := applySubst st2.subst acc.1
+                            (match unifyInfer headTy (.fn τa β) st2 with
+                             | .ok st3 => .ok (applySubst st3.subst β, st3)
+                             | .error e => .error e)
+                          | .error e => .error e) (applySubst stH.subst τh, stH))
+                    | _ => .error (.unsupported "type oracle: non-name-headed construct not yet modeled"))
+                 | .error e => .error e)
+              | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")))
       | _ => .error (.unsupported "type oracle: node not modeled")
 
 /-- Default any still-unresolved numeric var (an int literal never constrained to a concrete width) to the
@@ -3071,6 +3110,18 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .list #[9, 5, 12], .atom 2, .list #[14], .atom 1, .list #[16, 15, 13], .atom 10,
                            .atom 2, .list #[18, 19], .atom 0, .list #[21, 17, 20]],
                 root := 22 } == .illTyped "CDZ0201")
+-- T1.51 (built-in op PARTIAL APPLICATION, #8313): `(do (def (main) ((Int64.wrapping-add 3) 4)) (export main))`
+-- → WellTyped Int64. `(Int64.wrapping-add 3)` curries to a closure `Int64→Int64` (partial), then applying it
+-- to `4` (a non-name expression head) yields Int64. Exercises both the partial-→.fn arm AND the apply-a-
+-- fn-typed-expression-head rule. (rcdzc accepts partial application; this widens the oracle to match + feeds
+-- a --typegen arm for the closure-currying path.)
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ".".toUTF8,
+                            .name "Int64".toUTF8, .name "wrapping-add".toUTF8, .intLit false .dec (ByteArray.mk #[3]),
+                            .intLit false .dec (ByteArray.mk #[4]), .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2], .atom 6, .list #[3, 4], .atom 7,
+                           .list #[5, 6], .atom 2, .list #[8], .atom 1, .list #[10, 9, 7], .atom 8, .atom 2,
+                           .list #[12, 13], .atom 0, .list #[15, 11, 14]],
+                root := 16 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
