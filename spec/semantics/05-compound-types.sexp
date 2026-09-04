@@ -8067,6 +8067,26 @@
       (export main)))
   (output (: 7 Int64)))
 
+; the GUARDED sibling of the case above (v-inference #8452 follow-up, breaker): a `(guard (Mk (record (= a v)))
+; <cond>)` arm hits the SAME wasm-trap/rust-decline under recursion — the cond `(> v 0)` reads the field binder
+; `v` through the same un-wireable composite path. The ctor-record-payload pre-pass now routes guarded arms too:
+; it lifts to `(guard (Mk __cr) (match __cr ((record (= a v)) <cond>) (_ false)))` (the cond evaluated INSIDE
+; the record re-match, `v` in scope) + the body re-match. `loop 3 (Mk {a:7})`: `(> 7 0)` holds → 7; a false cond
+; would fall the arm through to the wildcard.
+(case
+  "a GUARDED newtype-over-record inline destructure under recursion binds the field for the cond on both backends (#8452)"
+  (input
+    (do
+      (type Wrap (Mk (Record (: a Int64))))
+      (def
+        (loop (: n Int64) (: w Wrap))
+        (if (< n 1)
+          (match w ((guard (Mk (record (= a v))) (> v 0)) v) (_ -1))
+          (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk (record (= a 7)))))
+      (export main)))
+  (output (: 7 Int64)))
+
 (case
   "a sum-match recursion that accumulates a built-in list returns a list"
   (doc
