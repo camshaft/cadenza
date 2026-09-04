@@ -66,12 +66,14 @@ export default function Metaprogramming() {
       <P>An AST is inert data until you <C>eval</C> it, which executes the tree as code. Evaluating the quoted <Cadenza ast="Y2R6YXN0AAEDCgErAAEBAAECBAAAAAEAAgEDAAECAw==" kind="expr">(+ 1 2)</Cadenza> finally gives <C>3</C>:</P>
       <Runnable
         source={`(def (main) (eval (quote (+ 1 2))))`}
+        id="eval-quote"
       />
       <P>And a tree you <em>built</em> runs the same way. Assemble a call to <C>double</C> on the argument <C>21</C> and eval it: the reconstructed <Cadenza ast="Y2R6YXN0AAECCgZkb3VibGUAARUDAAAAAQECAAEC" kind="expr">(double 21)</Cadenza> folds to <C>42</C>. That's the shape of a macro: build a form, then run it.</P>
       <Runnable
         source={`(def (double x) (* 2 x))
 
 (def (main) (eval (Ast.List #list((Ast.Name "double") (Ast.Int 21)))))`}
+        id="eval-built"
       />
       <P>A quoted <em>value</em> literal evals back to itself. Unlike a quoted name (which <C>eval</C> resolves) or a quoted call (which it runs), a bare value literal such as an integer, float, boolean, string, or byte string is already its own value, so evaluating its node just hands it back. A quoted byte string reifies to an <C>Ast.Bytes</C>, and <C>(eval (quote b"hi"))</C> is the original <C>b"hi"</C>, closing the loop from source to node to value:</P>
       <Runnable
@@ -111,6 +113,7 @@ export default function Metaprogramming() {
       <P>The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a <em>computed</em> value (<Cadenza ast="Y2R6YXN0AAEDCgEqAAEDAAEHBAAAAAEAAgEDAAECAw==" kind="expr">(* 3 7)</Cadenza> = 21) spliced into the tree, which is then evaluated. The built <Cadenza ast="Y2R6YXN0AAEDCgErAAEVAAEEBAAAAAEAAgEDAAECAw==" kind="expr">(+ 21 4)</Cadenza> runs to <C>25</C>:</P>
       <Runnable
         source={`(def (main) (let ((x (* 3 7))) (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
+        id="interpolate"
       />
       <P>The <Cadenza ast="Y2R6YXN0AAEEGgoDQXN0CgNJbnQKAXgGAAAAAQACAQMAAQIAAwECAwQF" kind="expr">(Ast.Int x)</Cadenza> lifts the runtime value <C>x</C> into a leaf of the tree. This is interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes exactly this with a quasiquote and an unquote, <C>{"`{ ,x + 4 }"}</C>, the comma marking the spot the value <C>x</C> drops into. Template with holes, holes filled by values.</P>
       <H2>Splicing a whole list of elements</H2>
