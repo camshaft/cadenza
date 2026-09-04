@@ -2803,19 +2803,36 @@ pub(super) fn desugar_refutable_map_list_elements(
     Some(core_of(db, rewritten))
 }
 
-/// Whether `elem_pat` is a REFUTABLE TUPLE list-element pattern — a `(tuple c0 c1 …)` with ≥1 REFUTABLE
-/// component (a literal / constructor / nested compound — anything NOT a bare binder or `_`). A binder-only
-/// tuple `(tuple a b)` is IRREFUTABLE (it matches any tuple of that arity, bound inline by
-/// `check_binding_pattern`), so it returns `false` and is left alone; only a literal-bearing tuple like
-/// `(tuple 1 b)` needs the value-refinement desugar (the tuple twin of `is_map_element_pattern` /
-/// `refutable_ctor_element_head`). A non-tuple element returns `false`.
-pub(super) fn is_refutable_tuple_element(db: &Db, elem_pat: StructId) -> bool {
-    let Some(comps) = db.ast.compound_form_of(elem_pat, CompoundCtor::Tuple) else {
+/// Whether `elem_pat` is a REFUTABLE TUPLE list-element pattern — a `(tuple c0 c1 …)` with ≥1 component
+/// that `check_binding_pattern` flags NON-EXHAUSTIVE (a literal atom or a multi-variant constructor: the
+/// only sub-patterns that can fail to match a well-typed value). A binder-only tuple `(tuple a b)`, and any
+/// tuple whose non-name components are themselves IRREFUTABLE destructures — a record `(record (= f x))`, a
+/// nested tuple, a single-variant ctor — is irrefutable (it matches any value of that shape, bound inline by
+/// `check_binding_pattern`), so it returns `false` and is left on the pre-existing irrefutable path; only a
+/// genuinely refutable component like the `1` in `(tuple 1 b)` needs the value-refinement desugar (the tuple
+/// twin of `is_map_element_pattern` / `refutable_ctor_element_head`). A non-tuple element returns `false`.
+///
+/// Refutability is the AUTHORITATIVE `check_binding_pattern` `Err(NonExhaustive)` signal (the same predicate
+/// `list_element_irrefutable_or_decline` / `map_value_irrefutable_or_decline` use), NOT a coarse
+/// `as_name().is_none()` structural test: the structural test mis-flagged an irrefutable `(record (= v a))`
+/// component as refutable and wrongly routed it through the value-refinement desugar (→ CDZ0900 decline),
+/// regressing `dst2` (an irrefutable list-of-tuples-of-records arm) from pass in #8367. Any OTHER
+/// `check_binding_pattern` error (a shape mismatch, non-linearity) is not a refutability signal → not routed
+/// here (it surfaces on the pre-existing irrefutable path with its true code).
+pub(super) fn is_refutable_tuple_element(db: &mut Db, elem_pat: StructId) -> bool {
+    let Some(comps) = db
+        .ast
+        .compound_form_of(elem_pat, CompoundCtor::Tuple)
+        .map(<[_]>::to_vec)
+    else {
         return false;
     };
-    // A component is refutable iff it is NOT a bare name (a binder) and NOT `_` — i.e. a literal atom or a
-    // compound sub-pattern. `as_name` is `Some` for both a binder and `_`, `None` for a literal/compound.
-    comps.iter().any(|&c| db.ast.as_name(c).is_none())
+    comps.iter().any(|&c| {
+        matches!(
+            check_binding_pattern(db, c, &crate::ty::Ty::Any),
+            Err(ref r) if r.code == Some(Code::NonExhaustive)
+        )
+    })
 }
 
 /// PRE-PASS for `lower_match_list` (the TUPLE twin of `desugar_refutable_map_list_elements` /
