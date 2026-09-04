@@ -87,11 +87,16 @@ pub(crate) fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashS
 /// `(eval `(eval (quote …)))` — outer arg is a QUOTE-FAMILY value, folds compositionally — from `(eval
 /// (eval …))` — outer arg is an eval APPLICATION, a correct reject (v-spec-oracle nested-eval ruling +
 /// re-adjudication; corpus 12-metaprogramming "eval does not execute the result of a nested eval").
+/// Returns the number of `(eval …)` forms FOLDED this pass — the caller's nested-eval fixpoint (`Db::load`)
+/// terminates when a round folds ZERO (a sound signal: every eval folds at most once — each folded node is
+/// recorded in `eval_result_nodes` and overwritten — and the total eval count across all nesting is finite,
+/// unlike an arena-length signal which `reify_quotes` can grow without folding progress on a non-reifiable
+/// quote).
 pub fn desugar_eval(
     ast: &mut Arenas,
     boundary: u32,
     eval_result_nodes: &mut std::collections::HashSet<u32>,
-) {
+) -> usize {
     // Scan the CURRENT arena: a source `(eval …)` may live in an ORIGINAL node OR (on a fixpoint re-run)
     // in reconstructed source appended by an earlier round. Reconstruction in THIS pass appends only
     // during apply (after the scan), so `entry_len` bounds the scan to nodes present now.
@@ -109,7 +114,7 @@ pub fn desugar_eval(
         .iter()
         .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "eval"))
     {
-        return;
+        return 0;
     }
     #[cfg(test)]
     crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.set(c.get() + entry_len as u64));
@@ -141,6 +146,7 @@ pub fn desugar_eval(
             });
         }
     }
+    let folded = plans.len();
     for EvalPlan {
         eval,
         arg,
@@ -187,6 +193,7 @@ pub fn desugar_eval(
             ast.structure[replacement.0 as usize] = Struct::List(Vec::new());
         }
     }
+    folded
 }
 
 /// Hygiene pass over a reconstructed source subtree `root`: rename any TEMPLATE-introduced binder that
