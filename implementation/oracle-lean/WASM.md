@@ -340,8 +340,10 @@ order a program can observe is `to-list`'s CANONICAL value-sorted order, NOT the
 
 ### W5.3 / W5.4 landed — the heap-op CORE is complete
 
-All remaining emitted (`lowerable`) heap ops except `value-*` / `bigint-of-bytes` / `ast-*` are now modeled
-(each clean-room from the WIT + v-runtime's rc.rs/scalars.rs/champ.rs contracts, witnessed, leak-balanced):
+All emitted (`lowerable`) heap ops except the `ast-*` binary-AST codec are now modeled (each clean-room from
+the WIT + v-runtime's rc.rs/scalars.rs/champ.rs contracts, witnessed, leak-balanced) — incl. `bigint-of-bytes`
+(index 82, sign-magnitude `[sign][LE mag]` → `Int` leaf, consumes buf) and `value-eq`/`value-eq-shaped` (W5.5).
+`value-cmp`/`value-canonicalize` are parked (Core doesn't model them as ops yet → Core-side skips). Summary:
 
 - **Bytes + strings (W5.3):** `bytes-alloc/set/get/len/scalar-at`, `str-from-bytes` (a flat `Array UInt8` leaf;
   String == Bytes share one heap rep — the Str/Bytes split is only a value-encode descriptor), and the rope
@@ -385,6 +387,36 @@ lex), same-type-only (cross-type `valRank` unobservable), DECLINES on floats. **
      set-to-list/map-to-list string-key order consistently). Cross-rank never occurs (homogeneous keys), so only
      same-type order must match cmpValue — confirmed by v-lean-oracle (Str/Bytes=cmpBytes; Char=codepoint/UTF-8
      lex). Witnesses: Int-set + String-set + Int-map different-insertion-order equality + `cmpBytesLex`.
+
+### W5.6 — heap-VALUED RESULT decode (COMPLETE for built-ins)
+
+A heap-valued `main` returns an i32 HANDLE, not a scalar; the final `HeapState` at that handle lets us
+RECONSTRUCT the value instead of skipping the case. Two stages:
+
+1. **Structural decode** (`Oracle.Wasm.HeapDecode.decodeValue?`, type-AGNOSTIC): `handle + HeapState → raw
+   Oracle.Value`. Immediates → `.int`/`.bool`/`.unit`; heap leaves → `.int`(int/bigint) / `.f64` / `.bytes` /
+   `.rational`; `.array`→`.tuple`, `.vec`→`.list`, `.set`→`.set`, `.map`→`.map` (children recursed, RAW order);
+   a `.sum (disc,payload)` → an INTERMEDIATE `.variant "<decimal-disc>" payload` (the disc→name map needs the
+   type, so the fixup finishes it). `partial mutual` with EXPLICIT list helpers — never `List.mapM` over `Option`
+   (that trips the `native_decide` "uses sorry" codegen).
+
+2. **Result-type-directed fixup** (`resultTyFixup` → `fixupTy`, in `Oracle.Wasm`), applied at the Outcome
+   boundary (`toOutcomeHeap : (Value → Option Value) → WasmOutcome → Outcome`). The decoder is type-agnostic, so
+   `fixupTy` walks the entry's `cdz-result-type` node in parallel with the decoded value and retags where the
+   type demands: **String** `.bytes`→`.str` (Str/Bytes share the byte rep); nested String recursively through
+   **List/Set** (element), **Tuple** (positional), **Map** (key/value); **Record** `.tuple`→`.record` via the
+   type's KEY-SORTED `(: name type)` fields; **Option/Result** intermediate `.variant`→Core's dedicated
+   `.some/.none/.ok/.err` by discriminant (Some=0/None=1, Ok=0/Err=1 declaration order; Option's payload-type
+   list is SPARSE = Some only, Result's dense = [Ok,Err]). A String/variant in a position the fixup can't
+   reconstruct → `none` = SOUND SKIP (never a false-diverge).
+
+`decodableHeapHead` = the recognized single-head heads (BigInt/List/Map/Set/Rational/Bytes/Record/Sum; String
+via `stringResult?`; the flat multi-value TUPLE form too) that route a result to the driver + `resultTyFixup`.
+
+**Decoded now:** scalars, BigInt, Bytes, String (+ arbitrarily nested), List, Set, Tuple, Map, Rational, Record,
+Option, Result. **Still declines (sound skip):** USER sums (variant names are NOT in the emitted
+`cdz-result-type` — they live behind the type's `declId`; decoding them needs a COMPILER EMIT EXTENSION to carry
+variant names, route to the emit owner), Ordering/Sign (own Value repr), Nominal/Qty, and the `ast-*` codec.
 
 ## Gate coverage
 
