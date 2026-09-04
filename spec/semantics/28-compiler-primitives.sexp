@@ -2872,7 +2872,7 @@
         former const-demand CDZ0201). A tuple of orderable scalars still folds — see the tuple-order cases above;
         this pins the LONE-non-orderable soundness face still declines, now with the no-total-order code.")
   (input (do (def (main) (const (List.len (Set.to-list #set(#tuple(1.5 2)))))) (export main)))
-  (error CDZ0203 (message "no total order")))
+  (error CDZ0203 (message "no total order") (exact-code)))
 
 (case
   "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
@@ -2883,7 +2883,7 @@
     (do
       (def (main) (const (List.len (Map.to-list (Map.insert #map() #tuple(1.5 2) 10)))))
       (export main)))
-  (error CDZ0203 (message "no total order")))
+  (error CDZ0203 (message "no total order") (exact-code)))
 
 (case
   "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
@@ -3468,16 +3468,16 @@
 (case
   "a constant non-Set operand to Set.contains is a coded type mismatch, not an uncoded decline"
   (input (do (def (main) (Set.contains 5 0)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 (case
   "a constant non-Set operand to Set.insert is a coded type mismatch, not an uncoded decline"
   (input (do (def (main) (Set.insert 5 0)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 (case
   "a constant non-Map operand to Map.lookup is a coded type mismatch, not an uncoded decline"
   (input (do (def (main) (Map.lookup 5 0)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 (case
   "a constant non-integer operand to Int64.of is a coded type mismatch, not a misleading conversion decline"
   (input (do (def (main) (Int64.of "x")) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
