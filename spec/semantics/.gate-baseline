@@ -3591,7 +3591,7 @@ pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a module-exported recursive performer called from a HANDLER ARM homes under the outer handler
-todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
+todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
