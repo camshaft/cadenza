@@ -495,7 +495,10 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                                 inner: ia,
                                 unit: ua,
                             },
-                            Ty::Qty { unit: ub, .. },
+                            Ty::Qty {
+                                inner: ib,
+                                unit: ub,
+                            },
                         ) = (&a, &b)
                         {
                             let unit = if ua == ub {
@@ -503,8 +506,31 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                             } else {
                                 ua.at_reference()
                             };
+                            // The result magnitude type takes the WIDER of the two operand inners — the
+                            // effective machine width (`ground_width`: a fixed width is itself, a DEFERRED
+                            // width is the default Int64) — so `+` is COMMUTATIVE in the magnitude width.
+                            // Taking the lhs inner raw reconciled ASYMMETRICALLY: a DEFERRED call-result
+                            // magnitude (default Int64) + a fixed NARROW sibling, narrow-FIRST, forced the
+                            // result to the narrow width → a sum that overflows it SPURIOUSLY rejected CDZ0304,
+                            // while the swapped order kept the wider default and compiled (breaker #8287).
+                            // Picking the wider effective width is order-independent → the deferred magnitude
+                            // keeps its default rather than narrowing to the fixed sibling, both orders. The
+                            // widen emit is already realized (the call-result-first order compiles today). Two
+                            // DIFFERENT FIXED widths still disagree and are rejected CDZ0301 by the
+                            // operand-agreement fault check (no silent promotion), symmetric in both orders —
+                            // this arm only chooses the RESULT type, which is moot for a rejected program.
+                            let result_inner = match (ia.as_ref(), ib.as_ref()) {
+                                (Ty::Int(x), Ty::Int(y)) => {
+                                    if x.ground_width() >= y.ground_width() {
+                                        (**ia).clone()
+                                    } else {
+                                        (**ib).clone()
+                                    }
+                                }
+                                _ => ia.join(ib),
+                            };
                             return Ty::Qty {
-                                inner: Box::new((**ia).clone()),
+                                inner: Box::new(result_inner),
                                 unit,
                             };
                         }
