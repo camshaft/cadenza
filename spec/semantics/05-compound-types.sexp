@@ -731,6 +731,43 @@
   (call main)
   (output (: 10 Int64)))
 
+; --- An ERRORING subject reports its OWN resolution error ahead of the arm pattern-support check ---------
+; When the match SUBJECT itself fails to resolve — an unbound NAME (CDZ0101) or an unresolved MODULE MEMBER
+; (CDZ0201) — that real error MUST surface regardless of the arm patterns. A poison subject's type is `Any`
+; (unresolved), so it matches NONE of the kind-dispatches above; without propagating the subject's poison
+; first, an arm with a STRUCTURAL/ctor pattern fell through to the scalar-probe path and MASKED the subject
+; error with the misleading uncoded "a match pattern that is not a scalar literal or `_` is not supported".
+; The erroring-SUBJECT sibling of the wrong-KIND CDZ0203 cases above (breaker-found, concierge-routed).
+; CONTRAST: a WILDCARD/scalar arm ALWAYS surfaced the subject error (that path lowers the scrutinee + prop-
+; agates its poison), so the fix aligns the structural-arm case with the wildcard one — every arm shape now
+; reports the real cause.
+(case
+  "an unbound match subject reports CDZ0101 even under a structural arm pattern (not masked)"
+  (doc
+    "`(match undefined_subject ((Some v) v) (_ 0))` — the subject `undefined_subject` is unbound (a
+           CDZ0101). The `(Some v)` structural arm must NOT mask it with the generic pattern-support decline;
+           the subject's own unbound-name error surfaces ahead of the arm check.")
+  (input (do (def (main) (match undefined_subject ((Some v) v) (_ 0))) (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
+  "an unbound match subject under a wildcard arm reports CDZ0101 (the always-clean control)"
+  (doc
+    "The contrast that isolates the fix: the SAME unbound subject under a WILDCARD arm always surfaced
+           CDZ0101 (the scalar/wildcard path lowers the scrutinee + propagates its poison). Pins that the
+           structural-arm case (above) now matches this clean behavior.")
+  (input (do (def (main) (match undefined_subject (_ 0))) (export main)))
+  (error CDZ0101 (message "unbound name")))
+
+(case
+  "an unresolved-member match subject reports CDZ0201 even under a structural arm pattern (not masked)"
+  (doc
+    "`(match (Map.of #list(1)) ((Some x) x) (_ 0))` — `Map.of` is not a member of the `Map` module (a
+           CDZ0201). The structural `(Some x)` arm must not mask the unresolved-member error; it surfaces
+           ahead of the arm pattern-support check — the CDZ0201 twin of the unbound-name case.")
+  (input (do (def (main) (match (Map.of #list(1)) ((Some x) x) (_ 0))) (export main)))
+  (error CDZ0201 (message "has no member")))
+
 ; A map pattern can refine an entry's VALUE against a LITERAL (breaker): every map-pattern case above binds
 ; the value to a BINDER `(= 1 v)`; this refines it against a LITERAL `(= 1 5)` — the arm matches ONLY when
 ; entry 1's value equals 5. n=5: `{1:5}` matches `(= 1 5)` → 100; n=3: `{1:3}` fails the value refinement →
