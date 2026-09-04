@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 26 };
+    let arms = if depth == 0 { 2 } else { 27 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -917,6 +917,38 @@ fn gen_typefuzz_int<C: Choice>(
                 format!("(. (Record.project (record (= x {a}) (= y {b})) (x)) x)")
             } else {
                 format!("(. (Record.without (record (= x {a}) (= y {b})) (y)) x)")
+            }
+        }
+        // A built-in int-module op PARTIAL APPLICATION → Int64 (T1.51 — #8313 currying): a binary
+        // int-module op applied to ONE arg yields a closure of the remaining param, then applied.
+        // `(Int64.wrapping-{add,sub,mul} a) : Int64 -> Int64` — partial-then-apply `((op a) b)` (direct
+        // apply-fn-typed-head) or bound `(let ((gN (op a))) (gN b))` (name-headed fn-app). `checked-*`
+        // partial is `Int64 -> (Option Int64)`, applied then matched to Int64. Both rcdzc + oracle infer
+        // Int64 → agreement (all HOLD; over-arity is a sound oracle-skip so it is NOT generated here).
+        25 => {
+            let a = c.int_bounded(0, 9);
+            let b = c.int_bounded(0, 9);
+            match c.variant(3) {
+                0 => {
+                    // partial-then-apply, wrapping (→ Int64).
+                    let op = ["wrapping-add", "wrapping-sub", "wrapping-mul"][c.variant(3)];
+                    format!("((Int64.{op} {a}) {b})")
+                }
+                1 => {
+                    // bound partial closure, applied by name (→ Int64).
+                    let op = ["wrapping-add", "wrapping-sub", "wrapping-mul"][c.variant(3)];
+                    let g = format!("f{}", *fresh);
+                    *fresh += 1;
+                    format!("(let (({g} (Int64.{op} {a}))) ({g} {b}))")
+                }
+                _ => {
+                    // checked-* partial applied → (Option Int64), matched to Int64.
+                    let op = ["checked-add", "checked-sub", "checked-mul"][c.variant(3)];
+                    let bn = format!("i{}", *fresh);
+                    *fresh += 1;
+                    let dflt = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                    format!("(match ((Int64.{op} {a}) {b}) ((Some {bn}) {bn}) ((None) {dflt}))")
+                }
             }
         }
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
