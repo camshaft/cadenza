@@ -8382,6 +8382,27 @@
       (export main)))
   (output (: 7 Int64)))
 
+; tup-lit-elem (breaker, the LAST unrefined refutable-element kind): every OTHER refutable list-element kind
+; now refines by value — a multi-variant sum ctor by discriminant, a single-variant NEWTYPE ctor by its
+; literal payload (the three cases just above), and a nested-LIST element by its literal (#8347/#8348). But a
+; refutable TUPLE element — a literal in a tuple component, `(list (tuple 1 b))` — still DECLINES CDZ0900 'a
+; refutable list element sub-pattern needs element-value refinement, which the length-dispatch list matcher
+; does not support'. So the tuple element is the odd one out: the value-refinement desugar was taught ctor
+; payloads + nested-list literals but not tuple components. ISOLATION: a BINDER tuple element `(list (tuple a
+; b))` is IRREFUTABLE and works (`(+ a b)` folds), exactly like the `(Wrap x)` binder-payload control above —
+; only a LITERAL tuple component trips it. Consistent CDZ0900 across wasm+rust+cadenza (front-end desugar).
+; SHOULD refine by the component value like its newtype/sum/nested-list siblings: `xs = [(1 5)]`, tuple `(1
+; 5)` matches `(1 b)` → b=5. Idealistic todo; auto-flips when tuple-element value-refinement lands. Routed to
+; the list-matcher element-refinement owner (the newtype/#8348 arc).
+(case
+  "a refutable tuple list element with a literal component should refine by value (currently CDZ0900)"
+  (input
+    (do
+      (def (f (: xs (List (Tuple Int64 Int64)))) (match xs (#list(#tuple(1 b)) b) (_ -1)))
+      (def (main) (f #list(#tuple(1 5))))
+      (export main)))
+  (output (: 5 Int64)))
+
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
   (doc
