@@ -2849,6 +2849,7 @@ pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling el
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a dependent-size bin pattern gates on the length field
 pass	a guard over a variant pattern gates on the payload
+pass	a guard over two refutable tuple list elements reads both elements' binders (#8418)
 pass	a guard reading the dependent-payload binder gates the arm
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard reads payload binders from two ctor list elements
@@ -10712,6 +10713,7 @@ pass	two rationals denoting the same number are equal regardless of how they wer
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two refutable literal fields in one record arm compose (both must match)
+pass	two refutable tuple list elements in one arm each refine and bind (#8418)
 pass	two residuals from ONE curry source hold distinct first-stage captures
 pass	two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)

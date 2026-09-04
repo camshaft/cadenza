@@ -8466,39 +8466,60 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
-; multi-tup-elem (v-inference, IDEALISTIC-TODO gap fence): TWO refutable tuple elements in ONE arm
-; `(list (tuple 1 a) (tuple 2 b))` — each refines on its literal component and binds its payload. The
-; refutable-CTOR desugar ALREADY supports N-per-arm (it loops over every ctor position, nesting one
-; discriminant-test guard + one body re-match per element — verified: `(list (Op.Add a) (Op.Mul b))` -> a+b),
-; but the tuple (and record) value-refinement desugars handle only ONE refutable element per arm and DECLINE
-; `>= 2` ("a list arm with more than one refutable tuple element is not supported"). This is an inconsistency,
-; not a fundamental limit: the tuple/record passes SHOULD generalize to the same N-position loop as the ctor
-; pass. `xs = [(1,5),(2,3)]`: element 0 `(tuple 1 a)` -> a=5, element 1 `(tuple 2 b)` -> b=3 -> 5+3 = 8.
-; Idealistic-todo; auto-flips when the tuple/record desugars gain N-per-arm support (owner: v-inference, the
-; #8367/#8371/#8380 element-refinement arc).
+; multi-tup-elem (v-inference #8418): TWO refutable tuple elements in ONE arm `(list (tuple 1 a) (tuple 2 b))`
+; — each refines on its literal component and binds its payload. The tuple (and record) value-refinement
+; desugars now support N-per-arm (each refutable position gets a fresh binder + one nested value-test in the
+; guard + one nested body re-match), matching the refutable-CTOR desugar's existing N-loop; the old ≥2 decline
+; is lifted. `[(1,5),(2,3)]`: element 0 `(tuple 1 a)` -> a=5, element 1 `(tuple 2 b)` -> b=3 -> 8; a
+; non-matching second literal (element 1 `(9 …)` vs `(2 b)`) makes the WHOLE arm fall through -> -1.
 (case
-  "two refutable tuple list elements in one arm each refine and bind (currently declines >1-per-arm)"
+  "two refutable tuple list elements in one arm each refine and bind (#8418)"
   (input
     (do
       (def
         (f (: xs (List (Tuple Int64 Int64))))
         (match xs (#list(#tuple(1 a) #tuple(2 b)) (+ a b)) (_ -1)))
-      (def (main) (f #list(#tuple(1 5) #tuple(2 3))))
+      (def
+        (main (: mode Int64))
+        (if (> mode 0)
+          (f #list(#tuple(1 mode) #tuple(2 3)))
+          (f #list(#tuple(1 mode) #tuple(9 3)))))
       (export main)))
-  (output (: 8 Int64)))
+  (call main (: 5 Int64))
+  (output (: 8 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
+; multi-tup-elem-guard (v-inference #8418): a USER guard over an arm with TWO refutable tuple elements reads
+; BOTH elements' payload binders — `(guard (list (tuple 1 a) (tuple 2 b)) (> (+ a b) 5))`. The N-loop nests
+; the value-tests inside-out with the REAL patterns, so `a` (element 0) AND `b` (element 1) are BOTH in scope
+; for the cond. `[(1,5),(2,3)]`: a=5,b=3, sum 8 > 5 -> 8; `[(1,1),(2,3)]`: a=1,b=3, sum 4 <= 5 -> guard fails -> -1.
+(case
+  "a guard over two refutable tuple list elements reads both elements' binders (#8418)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Tuple Int64 Int64))))
+        (match xs
+          ((guard #list(#tuple(1 a) #tuple(2 b)) (> (+ a b) 5)) (+ a b))
+          (_ -1)))
+      (def (main (: mode Int64)) (f #list(#tuple(1 mode) #tuple(2 3))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 8 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))
 
 ; multi-rec-elem (breaker, the RECORD sibling of multi-tup-elem #8418): TWO refutable RECORD elements in ONE
 ; arm `(list (record (= v 1)) (record (= v 2)))` — each refines on its literal field. #8418's doc notes the
 ; ctor desugar ALREADY loops N-per-arm while the tuple AND RECORD value-refinement desugars decline `>= 2`; it
 ; fences the tuple leg. This pins the RECORD leg: the record value-refinement is a DISTINCT desugar from the
-; tuple one (cf. #8393 record-element vs #8367 tuple-element), so it needs its own flip-guard — a fix that
-; generalizes only the tuple pass to N-per-arm would still leave records declining. Consistent decline
-; ("a list arm with more than one refutable record element is not supported") across wasm+rust+cadenza.
-; SHOULD refine both like the ctor N-per-arm loop: `xs = [{v:1},{v:2}]` → element 0 `(record (= v 1))` matches,
-; element 1 `(record (= v 2))` matches → 100. Idealistic-todo; auto-flips with #8418 when the record desugar
-; gains N-per-arm support (owner: v-inference, the #8367/#8371/#8380 element-refinement arc).
+; tuple one (cf. #8393 record-element vs #8367 tuple-element), so it needed its own flip-guard — generalizing
+; only the tuple pass would have left records declining. #8418 generalized BOTH the tuple and record passes to
+; the ctor's N-per-arm loop, so this now refines like the ctor loop: `xs = [{v:1},{v:2}]` → element 0
+; `(record (= v 1))` matches, element 1 `(record (= v 2))` matches → 100.
 (case
-  "two refutable record list elements in one arm each refine (currently declines >1-per-arm)"
+  "two refutable record list elements in one arm each refine (#8418)"
   (input
     (do
       (def
