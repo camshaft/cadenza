@@ -1757,20 +1757,39 @@ fn emit_expr_viewed(
             // the bare binder mis-types the arm as `(Qty …)` vs a sibling `Rational` arm → CDZ0203 match-arms-
             // differ (v-inference-pinpointed). RE-INSERT `((. Qty value) <binder>)` so the ref types as the inner
             // (the binder-analogue of the #8237 if-join peel + the mod.rs value-projected-peel arm).
-            let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
-                && !matches!(&eff_ty, Ty::Qty { .. });
-            let nm = db.ast.as_name(binder).ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend cannot recover the name of a parameter reference"
-                        .to_string(),
-                )
-            })?;
-            let name = b.name(nm);
-            if peel {
+            let binder_ty = crate::infer::type_of(db, binder);
+            let nm = db
+                .ast
+                .as_name(binder)
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend cannot recover the name of a parameter reference"
+                            .to_string(),
+                    )
+                })?
+                .to_string();
+            if matches!(&binder_ty, Ty::Qty { .. }) && !matches!(&eff_ty, Ty::Qty { .. }) {
+                let name = b.name(nm);
                 let head = member_access(b, "Qty", "value");
                 return Ok(b.list(vec![head, name]));
             }
-            Ok(name)
+            // WIP (DES nominal-unwrap peel, reverted from main pending v-memory-safety's reclaim-gap fix): a
+            // single-payload nominal binder consumed as its INNER (folded newtype-unwrap) re-emits bare, keeping
+            // the nominal type → `<` on a compound → CDZ0203. Re-inserting `(match <binder> ((<Ctor> x) x))` is
+            // value+type-correct but LEAKS the per-iteration shell in a queue-drain (nix live-objects regression on
+            // 27-DES "FIFO same-time tie-break") — v-memory-safety's reclaim lane. Kept on this WIP branch for their rc-trace.
+            if let Ty::Nominal { decl, inner, .. } = &binder_ty
+                && is_emitted_single_payload_newtype(db, *decl, emitted)
+                && **inner == eff_ty
+                && eff_ty != binder_ty
+            {
+                let decl = *decl;
+                let name = b.name(nm.clone());
+                if let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env) {
+                    return Ok(peel);
+                }
+            }
+            Ok(b.name(nm))
         }
         // A reference to a kept `let` binding — its binder is the initializer occurrence (NOT a `Name`),
         // so its surface name comes from the environment the enclosing `Let` populated with the
@@ -1780,20 +1799,35 @@ fn emit_expr_viewed(
             // Same erased-`Qty.value`-PEEL preservation as the `Core::Param` arm above: a `Ty::Qty` let/match
             // binder consumed as its bare inner (the `((Some q) (Qty.value q))` collection-read shape) must
             // RE-INSERT `((. Qty value) <binder>)`, else the bare binder keeps `Ty::Qty` → CDZ0203 arms-differ.
-            let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
-                && !matches!(&eff_ty, Ty::Qty { .. });
-            let nm = env.lets.get(&binder).ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend reached a `let`-binding reference with no binding in scope"
-                        .to_string(),
-                )
-            })?;
-            let name = b.name(nm.clone());
-            if peel {
+            let binder_ty = crate::infer::type_of(db, binder);
+            let nm = env
+                .lets
+                .get(&binder)
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend reached a `let`-binding reference with no binding in scope"
+                            .to_string(),
+                    )
+                })?
+                .clone();
+            if matches!(&binder_ty, Ty::Qty { .. }) && !matches!(&eff_ty, Ty::Qty { .. }) {
+                let name = b.name(nm);
                 let head = member_access(b, "Qty", "value");
                 return Ok(b.list(vec![head, name]));
             }
-            Ok(name)
+            // WIP DES nominal-unwrap peel (see the Core::Param arm) — same reclaim caveat, v-memory-safety's lane.
+            if let Ty::Nominal { decl, inner, .. } = &binder_ty
+                && is_emitted_single_payload_newtype(db, *decl, emitted)
+                && **inner == eff_ty
+                && eff_ty != binder_ty
+            {
+                let decl = *decl;
+                let name = b.name(nm.clone());
+                if let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env) {
+                    return Ok(peel);
+                }
+            }
+            Ok(b.name(nm))
         }
         // A runtime binary operator — arithmetic, integer/bool comparison, string ordering, or float
         // comparison. All four carry `{op, lhs, rhs}` (FloatCompare also a width, ignored — the surface
@@ -2756,6 +2790,19 @@ fn emit_expr_viewed(
                              does not support"
                         )));
                     }
+                }
+            }
+            // WIP DES nominal-unwrap peel on the PROJECTED element (see the Core::Param arm; same reclaim caveat,
+            // v-memory-safety's lane): a nested tuple/record element whose type is a single-payload newtype but
+            // this read's solved type is the inner must re-insert `(match (. tuple i) ((<Ctor> x) x))`.
+            if let Ty::Nominal { decl, inner, .. } = &cur_ty
+                && is_emitted_single_payload_newtype(db, *decl, emitted)
+                && **inner == eff_ty
+                && eff_ty != cur_ty
+            {
+                let decl = *decl;
+                if let Some(peel) = emit_newtype_unwrap_peel(db, b, node, decl, env) {
+                    return Ok(peel);
                 }
             }
             Ok(node)
