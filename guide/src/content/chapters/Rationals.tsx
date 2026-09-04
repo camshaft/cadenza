@@ -13,6 +13,7 @@ export default function Rationals() {
       <P>You saw in <strong>Floating-point numbers</strong> that <Cadenza ast="Y2R6YXN0AAEDCgErBgD//////////wEBBgD//////////wECBAAAAAEAAgEDAAECAw==" kind="expr">(+ 0.1 0.2)</Cadenza> isn't quite <C>0.3</C>, because floats trade exactness for speed. A <C>Rational</C> makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with <C>Rational.of</C>, giving a numerator and a denominator:</P>
       <Runnable
         source={`(Rational.of 1 2)`}
+        id="rational-half"
       />
       <P>The value comes back as <C>1/2</C> tagged with its type, which reads <C>1/2 : Rational</C> in the conventional surface and <C>(: 1/2 Rational)</C> in s-expressions. Since a whole number is just a denominator of one, <C>Rational.of-int</C> makes that explicit:</P>
       <Runnable

@@ -7,8 +7,9 @@
   (lede "A " (c "Float64") " is fast but approximate, so when you need an exact fraction like a third that really is a third, reach for a " (c "Rational") ".")
   (p "You saw in " (strong "Floating-point numbers") " that " (cdz (+ 0.1 0.2)) " isn't quite " (c "0.3") ", because floats trade exactness for speed. A " (c "Rational") " makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with " (c "Rational.of") ", giving a numerator and a denominator:")
   (runnable
+    (id "rational-half")
     (source (Rational.of 1 2)))
-  (p "The value comes back as " (c "1/2") " tagged with its type, which reads " (c "1/2 : Rational") " in the conventional surface and " (c "(: 1/2 Rational)") " in s-expressions. Since a whole number is just a denominator of one, " (c "Rational.of-int") " makes that explicit:")
+  (p "The value comes back as " (result (of "rational-half") (: 1/2 Rational)) " tagged with its type, which reads " (c "1/2 : Rational") " in the conventional surface and " (c "(: 1/2 Rational)") " in s-expressions. Since a whole number is just a denominator of one, " (c "Rational.of-int") " makes that explicit:")
   (runnable
     (source (Rational.of-int 5)))
   (h2 "Writing one directly: the " (c "R") " suffix")

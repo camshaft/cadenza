@@ -255,7 +255,7 @@
     { "dir": "0249-propertytesting", "file": "src/content/chapters/PropertyTesting.tsx", "kind": "test-mode", "graded": false, "expectKind": "value", "surfaces": [], "deferred": true },
     { "dir": "0250-propertytesting", "file": "src/content/chapters/PropertyTesting.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0251-propertytesting", "file": "src/content/chapters/PropertyTesting.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
-    { "dir": "0252-rationals", "file": "src/content/chapters/Rationals.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
+    { "dir": "0252-rationals", "file": "src/content/chapters/Rationals.tsx", "kind": "runnable", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0253-rationals", "file": "src/content/chapters/Rationals.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0254-rationals", "file": "src/content/chapters/Rationals.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0255-rationals", "file": "src/content/chapters/Rationals.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },

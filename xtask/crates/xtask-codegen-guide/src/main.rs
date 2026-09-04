@@ -960,6 +960,20 @@ pub fn result_value_node(a: &Arenas, i: StructId) -> Option<StructId> {
         .find(|&c| a.head_name(c) != Some("of"))
 }
 
+/// The VALUE part of an ascription `(: value type)` node — its first child, when the node is exactly a
+/// two-argument `:` form. `None` for any other node (a bare scalar, a non-`:` form), so the caller renders
+/// the node whole. A COMPOUND result renders at runtime in the ascribed `(: value type)` form (a tuple as
+/// `(: #tuple(1 2 3) (Tuple …))`, a rational as `(: 5/4 Rational)`) — which the shred gate needs WHOLE to
+/// byte-match `cdz run`'s output — but prose reads cleanest showing just the VALUE, so `(result …)` DISPLAY
+/// strips the ascription while the shred keeps the full node (`collect_result_assertions` prints it whole).
+pub fn ascription_value_part(a: &Arenas, node: StructId) -> Option<StructId> {
+    if a.head_name(node) != Some(":") {
+        return None;
+    }
+    let kids = children(a, node);
+    (kids.len() == 2).then(|| kids[0])
+}
+
 fn render_inline(a: &Arenas, i: StructId) -> String {
     if matches!(a.get(i), Struct::Atom(_))
         && let Some(t) = a.as_str(i)
@@ -996,10 +1010,15 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
         // these and injects the value as the matching runnable's `expected`, reusing the expected= grade path
         // — so a wrong assertion reds guideExamplesShredded). Coexists with an inline (expected …) (q6).
         Some("result") => match result_value_node(a, i) {
-            Some(v) => format!(
-                "<C>{}</C>",
-                escape_text(&cadenza_syntax_sexpr::print_from(a, v))
-            ),
+            // Strip a `(: value type)` ascription to its VALUE for display (compound-result readability);
+            // a bare scalar has no ascription and renders whole. The shred gate keeps the full node.
+            Some(v) => {
+                let shown = ascription_value_part(a, v).unwrap_or(v);
+                format!(
+                    "<C>{}</C>",
+                    escape_text(&cadenza_syntax_sexpr::print_from(a, shown))
+                )
+            }
             None => "<C></C>".to_string(),
         },
         Some("br") => "<br />".to_string(),
@@ -1344,5 +1363,37 @@ mod tests {
         let mut fb = Vec::new();
         collect_head_forms(&ab, ab.root, "cdz", &mut fb);
         assert_eq!(fb.len(), 2, "still two cdz spans after the round-trip");
+    }
+
+    /// The prose-value gate's `(result …)` render: a BARE scalar renders whole (unchanged), while a COMPOUND
+    /// result authored in the runtime's ascribed `(: value type)` form renders just the VALUE part inline
+    /// (readability) — so a `(c "1/2")` claim swapped to `(result (of "r") (: 1/2 Rational))` stays
+    /// byte-identical prose, yet the shred gate (which prints the WHOLE value node) still grades against the
+    /// full `(: 1/2 Rational)` that `cdz run` emits.
+    #[test]
+    fn result_renders_scalar_whole_and_strips_compound_ascription() {
+        let render = |value: &str| {
+            let text = format!("(chapter (slug \"x\") (p (result (of \"r\") {value})))");
+            let a = parse(&text).0;
+            let p = first(&a, locate_chapter(&a).unwrap(), "p");
+            render_inlines(&a, children(&a, p))
+        };
+        // bare scalar → whole (no ascription to strip)
+        assert_eq!(render("6"), "<C>6</C>");
+        assert_eq!(render("-3"), "<C>-3</C>");
+        assert_eq!(render("true"), "<C>true</C>");
+        // compound ascription → VALUE part only, in prose
+        assert_eq!(render("(: 1/2 Rational)"), "<C>1/2</C>");
+        assert_eq!(
+            render("(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))"),
+            "<C>#tuple(1 2 3)</C>"
+        );
+        // the shred gate side sees the WHOLE value node (full ascribed form), matching `cdz run`
+        let text = "(chapter (slug \"x\") (p (result (of \"r\") (: 1/2 Rational))))";
+        let a = parse(text).0;
+        let p = first(&a, locate_chapter(&a).unwrap(), "p");
+        let result = first(&a, p, "result");
+        let whole = cadenza_syntax_sexpr::print_from(&a, result_value_node(&a, result).unwrap());
+        assert_eq!(whole, "(: 1/2 Rational)");
     }
 }
