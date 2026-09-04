@@ -448,6 +448,23 @@
   (input (module m (type W (W Int64)) (def (main) (match (W 42) ((W n) n))) (export main)))
   (output (: 42 Int64)))
 
+; zmz1 (breaker): a ZERO-ARG module member called the NATURAL way `(m.get)` is broken — an arity-lowering
+; INCONSISTENCY between module members and top-level defs. Isolated: a TOP-LEVEL zero-arg `(def (get) 42)`
+; called `(get)` WORKS (no unit arg); calling it `(get unit)` is REJECTED CDZ0201 (so the top-level convention
+; is: zero-arg = call with NO args). But a module member `(def (get) 42)` called `(m.get)` FAILS — on rust an
+; E0061 arity mismatch (the member lowers to a fn taking an implicit Unit param, but the call supplies 0 →
+; "takes 1 argument but 0 were supplied", a broken artifact), on wasm/cadenza a decline ("a closure argument
+; of type Unit has no scalar host-boundary representation"). And `(m.get unit)` (explicit unit) WORKS — the
+; exact INVERSE of the top-level convention. So the natural `(m.get)` SHOULD fold to 42 (consistency with
+; top-level `(get)`); the module-member call-lowering supplies/expects the implicit unit inconsistently.
+; Idealistic todo → 42; wasm/cadenza grade todo (decline), rust grades FAIL (E0061 build break — caught, not
+; a silent miscompile). Routed to v-module-system / the backend call-arity lane. (Distinct from the bare-
+; module FORM gap above and from member-type resolution, which is complete.)
+(case
+  "a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))"
+  (input (do (module m (def (get) 42) (export get)) (def (main) (m.get)) (export main)))
+  (output (: 42 Int64)))
+
 (case
   "two inline modules each declaring a member type Sh resolve DISTINCTLY (per-module nominal scope)"
   (doc
