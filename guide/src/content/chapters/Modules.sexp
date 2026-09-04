@@ -17,6 +17,7 @@
   (h2 "A module keeps its own pieces together")
   (p "The real value shows once a module has more than one piece. Here " (c "Circle") " holds a constant " (c "pi") " and an " (c "area") " that uses it. The caller only deals with " (c "Circle.area") ", since the " (c "pi") " is an internal detail the module manages for itself:")
   (runnable
+    (id "circle-area")
     (source (do
   (module Circle
     (def pi 3)
@@ -24,19 +25,21 @@
     (export area))
   (def (main) (Circle.area 10))
   (export main))))
-  (p (c "area 10") " is " (c "3 × 10 × 10") " = " (c "300") ". The function reads " (c "pi") " directly, because inside the module they're siblings; from outside you just call " (c "area") " and don't think about how it's computed.")
+  (p (c "area 10") " is " (c "3 × 10 × 10") " = " (result (of "circle-area") 300) ". The function reads " (c "pi") " directly, because inside the module they're siblings; from outside you just call " (c "area") " and don't think about how it's computed.")
   (h2 "Composing across modules")
   (p "Two modules, each with its own job, combine cleanly, since a qualified name says exactly which piece you mean, so there's never a question of whose " (c "f") " is whose:")
   (runnable
+    (id "compose")
     (source (do
   (module Inc (def (f x) (+ x 1)) (export f))
   (module Scale (def (g x) (* x 10)) (export g))
   (def (main) (Scale.g (Inc.f 4)))
   (export main))))
-  (p (c "Inc.f 4") " is 5, then " (c "Scale.g 5") " is " (c "50") ". Swap the order to " (cdz (Inc.f (Scale.g 4))) " and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.")
+  (p (c "Inc.f 4") " is 5, then " (c "Scale.g 5") " is " (result (of "compose") 50) ". Swap the order to " (cdz (Inc.f (Scale.g 4))) " and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.")
   (h2 "Modules nest")
   (p "A module can hold another module, so one file can carry a whole tree of scopes, much like a module tree in Rust. You reach through the layers with the same dotted access, one name per level. Here a " (c "Geometry") " module contains a " (c "Square") " module with an " (c "area") ":")
   (runnable
+    (id "nested-module")
     (source (do
   (module Geometry
     (module Square
@@ -45,7 +48,7 @@
     (export Square))
   (def (main) (Geometry.Square.area 5))
   (export main))))
-  (p (c "Geometry.Square.area 5") " reads left to right, into " (c "Geometry") ", then " (c "Square") ", then " (c "area") ", and gives " (c "25") ". It's the same field access as a record inside a record; nesting modules is nothing new, because a module was a record all along.")
+  (p (c "Geometry.Square.area 5") " reads left to right, into " (c "Geometry") ", then " (c "Square") ", then " (c "area") ", and gives " (result (of "nested-module") 25) ". It's the same field access as a record inside a record; nesting modules is nothing new, because a module was a record all along.")
   (h2 "Declaring the world a module targets")
   (p "A module that compiles to a WebAssembly component targets a " (em "WIT world") ": the set of interfaces it " (c "import") "s from its host and " (c "export") "s back, each with typed members. You can name that world inline, right in the source, with a " (c "world") " declaration, so the compile target is self-contained and reads the same as the WIT world it corresponds to. Here a " (c "Reducer") " world exports a " (c "fold") " interface (the guest provides " (c "apply") ") and imports a " (c "kv") " interface (the host provides " (c "get") " and " (c "put") "):")
   (note "world Reducer = " (br) " &nbsp;&nbsp;| export fold = " (br) " &nbsp;&nbsp;&nbsp;&nbsp;| apply : (event : Bytes) -&gt; Bytes " (br) " &nbsp;&nbsp;| import kv = " (br) " &nbsp;&nbsp;&nbsp;&nbsp;| get : (key : String) -&gt; Bytes " (br) " &nbsp;&nbsp;&nbsp;&nbsp;| put : (key : String, value : Bytes) -&gt; Unit")

@@ -37,6 +37,7 @@ export default function Modules() {
   (def (main) (Circle.area 10))
 
   (export main))`}
+        id="circle-area"
       />
       <P><C>area 10</C> is <C>3 × 10 × 10</C> = <C>300</C>. The function reads <C>pi</C> directly, because inside the module they're siblings; from outside you just call <C>area</C> and don't think about how it's computed.</P>
       <H2>Composing across modules</H2>
@@ -56,6 +57,7 @@ export default function Modules() {
   (def (main) (Scale.g (Inc.f 4)))
 
   (export main))`}
+        id="compose"
       />
       <P><C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order to <Cadenza ast="Y2R6YXN0AAEGGgoDSW5jCgFmCgVTY2FsZQoBZwABBAsAAAABAAIBAwABAgAAAAMABAEDBAUGAAUBAgcIAQIDCQo=" kind="expr">(Inc.f (Scale.g 4))</Cadenza> and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.</P>
       <H2>Modules nest</H2>
@@ -73,6 +75,7 @@ export default function Modules() {
   (def (main) (Geometry.Square.area 5))
 
   (export main))`}
+        id="nested-module"
       />
       <P><C>Geometry.Square.area 5</C> reads left to right, into <C>Geometry</C>, then <C>Square</C>, then <C>area</C>, and gives <C>25</C>. It's the same field access as a record inside a record; nesting modules is nothing new, because a module was a record all along.</P>
       <H2>Declaring the world a module targets</H2>
