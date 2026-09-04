@@ -25,6 +25,7 @@ export default function TypesAsValues() {
       <P>Two type-values compare with <C>Type.eq</C>, which folds to a constant <C>Bool</C> at compile time. Same type, <C>true</C>:</P>
       <Runnable
         source={`(Type.eq (Type.of 5) (Type.of 6))`}
+        id="types-eq-same"
       />
       <P>Different types, <C>false</C>, because <C>Int64</C> is not <C>Bool</C>:</P>
       <Runnable
@@ -38,6 +39,7 @@ export default function TypesAsValues() {
       <P>Because <C>Type.eq</C> produces a compile-time constant, an <C>if</C> over it selects a branch <em>at compile time</em>, so the program branches on types, with no runtime test emitted. Here the condition is <C>true</C>, so the whole expression is <C>100</C>:</P>
       <Runnable
         source={`(if (Type.eq (Type.of 5) Int64) 100 200)`}
+        id="types-if"
       />
       <P>A written type (<C>Int64</C>) and a reflected one (<Cadenza ast="Y2R6YXN0AAEEGgoEVHlwZQoCb2YAAQUGAAAAAQACAQMAAQIAAwECAwQF" kind="expr">(Type.of 5)</Cadenza>) are the same kind of value, so they compare freely. This is the point where inference and first-class types meet: the compiler computes a type, you compare it, and the answer picks the code, all before the program runs.</P>
       <Note>This is the surface the compiler's own generic machinery is built on: a type passed as a value drives <em>ad-hoc polymorphism</em> (one name, a per-type implementation chosen at compile time), and a <C>const</C> parameter lets a caller fix a compile-time-known argument that's then erased. Both compile to specialized, type-free code, and the observable <em>value</em> is identical to the hand-written monomorphic version, so the abstraction costs nothing at runtime.</Note>
