@@ -2363,6 +2363,12 @@ pub(super) fn refutable_nested_list_element(db: &Db, elem_pat: StructId) -> Opti
 /// matcher's own length dispatch is satisfied (the `_ → trap` arm is dead). A guarded arm is EXCLUDED from
 /// length-coverage exhaustiveness, so the outer match still needs a `_`/rest catch-all. Scope: ONE
 /// refutable nested-list element per arm (the common shape); ≥2 declines honestly. NO new IR.
+/// TODO(N-per-arm): #8428 generalized the CTOR / TUPLE / RECORD value-refinement desugars to N refutable
+/// elements per arm (fresh binder per position; guard + body re-matches nested INSIDE-OUT so every position's
+/// binders are in scope for a user cond). This nested-list pass (and the map pass below) still decline ≥2;
+/// generalizing them the same way is a deferred consistency follow-up (marginal — ≥2 nested-list/map elements
+/// per arm is rare — and gnarlier here: the guard is `(and <len_test> <content_match>)` per position, so the
+/// N-loop must conjoin all len_tests AND nest the content-matches inside-out with the user cond innermost).
 pub(super) fn desugar_refutable_nested_list_elements(
     db: &mut Db,
     scrutinee: StructId,
@@ -2683,6 +2689,9 @@ pub(super) fn is_map_element_pattern(db: &Db, elem_pat: StructId) -> bool {
 /// The GUARD's key-presence test (a wildcard-VALUE map pattern) gates the arm; the BODY re-matches the SAME
 /// element binder to bind the values `v…` (the DIRECT map matcher — `lower_match_map` / the `MapField`
 /// resolution — binds them). One refutable-map element per arm (the common shape); ≥2 declines. NO new IR.
+/// TODO(N-per-arm): like the nested-list pass above, this still declines ≥2 while #8428 gave CTOR / TUPLE /
+/// RECORD N-per-arm support — a deferred consistency follow-up (marginal; the map guard is key-presence, so
+/// the N-loop would conjoin per-position presence tests + nest the value-binding body re-matches inside-out).
 /// Returns `Some(Core)` iff the rewrite fired.
 pub(super) fn desugar_refutable_map_list_elements(
     db: &mut Db,
