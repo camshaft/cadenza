@@ -361,22 +361,21 @@ the WIT + v-runtime's rc.rs/scalars.rs/champ.rs contracts, witnessed, leak-balan
   rc>1/immortal→NULL), `arr-alloc-reuse`/`sum-new-reuse` (refit the token or alloc fresh). The `rc==1` gate +
   dup-before-drop makes BOTH dimensions catch a broken uniqueness gate (aliased-read/UAF value divergence).
 
-### W5.5 — `value-*` (the last cluster): plan + two divergence-risk gaps
+### W5.5 — `value-*` (landed / parked)
 
-`value-eq` (61) is DONE — `valueEqOp` wraps `valueEq` (BORROWS both, like `set-contains`), now that `valueEq`
-is order-independent + total (Gap 2 closed). `value-eq-shaped` (88) also wraps structural `valueEq`; `value-canonicalize`
-(87) is identity/dup for canonical values; `value-encode`/`-decode` (the binary-AST byte codec, `cdzast\x00\x01`
-header) are DEFERRED (a `value-encode` result is non-scalar Bytes → low coverage). `value-cmp` (86) is the
-blessed three-way order = v-lean-oracle's `cmpValue` STRUCTURE (Int signed / Bool false<true / Str-Char-Bytes
-`cmpBytes` lex / Rational `a·d` vs `c·b` / Tuple-List-Set lex-over-children / Record + Map sorted-by-key then
-lex), same-type-only (cross-type `valRank` unobservable), DECLINES on floats. **TWO GAPS to resolve first:**
-1. **Sum ordering is NOT the numeric disc.** Option/Result have fixed ranks (Some<None, Ok<Err); user variants
-   order by TAG-NAME bytes. `HeapValue.sum` stores only a numeric disc (declaration order) → `value-cmp` on sums
-   needs the `desc` (variant names) or a confirmed disc convention. Defer `value-cmp`-on-sums.
-2. **`valueEq` compares set/map POSITIONALLY** (order-sensitive), but sets/maps are UNORDERED — two equal
-   sets/maps built in different insertion orders would false-unequal. Fix `valueEq` to be order-independent for
-   set/map (mutual containment via `valueEq`; no total order needed) — a real latent bug beyond `value-*`.
-   - PARTIAL PROGRESS: the `.vec` (List) arm was MISSING (two lists fell through to `false`); added as a
+`value-eq` (61) + `value-eq-shaped` (88) are DONE — both wrap the structural `valueEq` (now order-independent +
+total, Gap 2 below); `value-eq-shaped` IGNORES its shape descriptor (no type pair it distinguishes compares
+differently). `value-cmp` (86) + `value-canonicalize` (87) are PARKED: contracts gathered but Core does NOT
+model them as reduce ops yet → the differential SKIPS them Core-side, so modeling them buys no coverage today.
+For the record (from v-lean-oracle + spec): `value-cmp` = `cmpValue` STRUCTURE (Int signed / Bool false<true /
+String-Char `cmpBytes` lex / Rational `a·d` vs `c·b` / Tuple-List lex / Record-Map sorted-by-key; **SUMS by
+DISCRIMINANT** — spec `core-semantics.md:397`, disc-then-payload, NOT by name — the earlier "not the disc" note
+was WRONG); DECLINES Float/Float32/**Bytes**/Set/Map, unordered sentinel `2`. `value-canonicalize` = BORROW +
+return a canonical copy (dup-as-is for canonical values). `value-encode`/`-decode` (the `ast-*` binary-AST byte
+codec, `cdzast\x00\x01` header) are DEFERRED (a `value-encode` result is non-scalar Bytes → low coverage).
+
+**Gap 2 (RESOLVED) — `valueEq` was order-sensitive on maps + missing `.vec`/`.set` arms; now order-INDEPENDENT + total:**
+   - the `.vec` (List) arm was MISSING (two lists fell through to `false`); added as a
      POSITIONAL compare (lists ARE ordered, mirrors `.array`/Tuple) — clean, worklist-based, no termination risk.
    - DONE (set/map order-independence): CANONICALIZE-then-positional, NOT a containment search — dodges the
      termination trip AND the decode/import cycle. KEY: set elems + map keys are ALWAYS SCALAR (compiler rejects
