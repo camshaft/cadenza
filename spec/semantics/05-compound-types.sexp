@@ -731,6 +731,24 @@
   (call main)
   (output (: 10 Int64)))
 
+; A map pattern can refine an entry's VALUE against a LITERAL (breaker): every map-pattern case above binds
+; the value to a BINDER `(= 1 v)`; this refines it against a LITERAL `(= 1 5)` — the arm matches ONLY when
+; entry 1's value equals 5. n=5: `{1:5}` matches `(= 1 5)` → 100; n=3: `{1:3}` fails the value refinement →
+; the `_` arm → 0. Pins that the map matcher does VALUE refinement (a refutable entry-value sub-pattern),
+; NOT only key-presence + value-binding. (Contrast the length-dispatch LIST matcher, which does NOT support a
+; refutable list-ELEMENT sub-pattern — CDZ0900 for a tuple element, the __ne0 bug for a list element, #8347;
+; the key-indexed map matcher refines cleanly where the length-dispatch list matcher cannot.)
+(case
+  "a map pattern refines an entry VALUE against a literal (matches only when the value equals it)"
+  (input
+    (do
+      (def (main (: n Int64)) (match #map((= 1 n)) (#map((= 1 5)) 100) (_ 0)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 100 Int64))
+  (call main (: 3 Int64))
+  (output (: 0 Int64)))
+
 (case
   "a tuple pattern over its matching Tuple scrutinee kind is valid and matches (no over-rejection)"
   (input (do (def (main) (match #tuple(3 4) (#tuple(a b) (+ a b)))) (export main)))
