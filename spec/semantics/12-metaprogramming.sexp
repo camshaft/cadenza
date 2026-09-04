@@ -4370,14 +4370,17 @@ c")))
   (input (eval (quote ((fn (x) (* x x)) 5))))
   (output (: 25 Int64)))
 
-; NESTED (multi-stage) eval (breaker; v-spec-oracle SHOULD-FOLD ruling): `(eval (quasiquote (eval (quote
-; (+ 1 2)))))` — the outer eval's form is ITSELF an eval. It SHOULD fold to 3: eval evaluates an AST value as
-; code (metaprogramming.md:72), compositionally, with no principled eval-refuses-eval special-case ("optional"
-; :76 means a generation may provide NO eval, not that a provided eval is single-level). Today it declines
-; CDZ0101 'unbound name `eval`' — the eval-reconstruction doesn't re-recognize the inner `eval` special-form in
-; the reconstructed source (a should-work GAP, not a spec reject; v-spec-oracle + v-metaprogramming ruled).
-; Grades todo until the reconstruct-recognition impl lands (v-metaprogramming owns it), then auto-flips ->
-; PASS (3). Reported+held-then-fenced-on-ruling: the correct verdict is idealistic-todo, NOT a correct-reject.
+; NESTED (multi-stage) eval (breaker; v-spec-oracle SHOULD-FOLD ruling, FIXED by #8365): `(eval (quasiquote
+; (eval (quote (+ 1 2)))))` — the outer eval's form is ITSELF an eval. It FOLDS to 3: eval evaluates an AST
+; value as code (metaprogramming.md:72), compositionally, with no principled eval-refuses-eval special-case
+; ("optional" :76 means a generation may provide NO eval, not that a provided eval is single-level). It USED to
+; decline CDZ0101 'unbound name `eval`' (the eval-reconstruction didn't re-recognize the inner `eval`
+; special-form in the reconstructed source); #8365 (08e5feda52) landed the narrow fix. The DISTINCTION it draws
+; (and the reason 0109 below stays a correct-reject): FOLD when the outer eval's arg is a QUOTE-FAMILY value
+; (quote/quasiquote — a compile-time-visible AST, here), REJECT when it is another eval's dynamically-produced
+; RESULT (0109's `(eval (eval (quote (quote …))))`, :78 — no runtime AST interpreter). Regression-guard on the
+; #8365 fold; triple-nested → 42 also verified by v-metaprogramming. Reported → held-on-0109-catch → fenced →
+; flipped: the correct verdict was idealistic-todo, and the 0109 catch confirmed the narrowing was needed.
 (case
   "nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)"
   (input (eval (quasiquote (eval (quote (+ 1 2))))))
