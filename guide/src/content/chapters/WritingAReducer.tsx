@@ -48,6 +48,7 @@ export default function WritingAReducer() {
   (: #list() (List EffectRequest)))
 
 (def (main) (apply #record((= family "message") (= version 1)) (None) (None)))`}
+        id="reducer-empty"
       />
       <P>The result is <Cadenza ast="Y2R6YXN0AAEBFAIAAAEBAAE=" kind="expr">#list()</Cadenza>, the empty list: no effects, for any event. To turn this program into something the kernel can run, you compile it as a <em>component</em> bound to the reducer interface, naming that interface on the command line:</P>
       <Note>cdz compile reducer.cdz --target wasm --component-name cadenza:agent-kernel/fold</Note>

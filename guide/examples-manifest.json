@@ -354,7 +354,7 @@
     { "dir": "0348-welcome", "file": "src/content/chapters/Welcome.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0349-whatsnext", "file": "src/content/chapters/WhatsNext.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0350-writingareducer", "file": "src/content/chapters/WritingAReducer.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
-    { "dir": "0351-writingareducer", "file": "src/content/chapters/WritingAReducer.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
+    { "dir": "0351-writingareducer", "file": "src/content/chapters/WritingAReducer.tsx", "kind": "runnable", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0352-writingareducer", "file": "src/content/chapters/WritingAReducer.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0353-writingareducer", "file": "src/content/chapters/WritingAReducer.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0354-homepage", "file": "src/components/HomePage.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
