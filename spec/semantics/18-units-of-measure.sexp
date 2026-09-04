@@ -106,6 +106,29 @@
       (export main)))
   (output (: 11 Int64)))
 
+; COMMUTATIVITY GAP (breaker, adjacent to the #8278 widen fix above): the #8278 fix widens a bare-default
+; call-result Qty magnitude to Int64 — but ONLY when the call-result is the FIRST `Qty.+` operand. COMMUTED
+; (the narrow Int8 magnitude first), the result width is taken as Int8 instead, so the call-result narrows
+; and a sum that overflows Int8 SPURIOUSLY rejects CDZ0304 — even though the identical sum with operands
+; SWAPPED compiles to an Int64 150 (the #8278 path). `+` is commutative, so this order-dependent
+; accept/reject is a defect regardless of the eventual resolution. (Triangulation: with a non-overflowing
+; sum the commuted result still renders narrower — Int8 vs the Int64 of the swapped twin — the overflow
+; just makes the narrowing OBSERVABLE as a reject. The PLAIN-int analog `(+ (: 50 Int8) ((fn () 100) 3))`
+; rejects CDZ0304 in BOTH orders, so the asymmetric widening is Qty-specific, seated in the Qty
+; magnitude-width reconciliation, not the general integer width rule.) Idealistic: SHOULD fold to 150 Int64
+; to match its swapped twin; grades todo (CDZ0304) until the reconciliation is made order-independent.
+; Routed to v-cadenza-backend (#8278 owner). SHOULD auto-flip todo->pass when the widen is symmetrized.
+(case
+  "a Qty.+ narrow Int8 magnitude FIRST widens the call-result sibling commutatively (not a spurious overflow reject)"
+  (input
+    (do
+      (def (main)
+        (Qty.value
+          (+ (Qty.of (: 50 Int8) (Unit.base #"meter"))
+             (Qty.of ((fn (v1) 100) 3) (Unit.base #"meter")))))
+      (export main)))
+  (output (: 150 Int64)))
+
 ; `Qty`'s SECOND argument is a UNIT, not a type. A bare unbound name there — `(Qty Int64 meter)` — used to
 ; draw the type-oriented guidance (lowercase → "not a type variable"; uppercase → "unknown type, declare it
 ; with `(type …)`"), both NONSENSE for a unit position. It now NAMES the unit misuse ("`Qty`'s second argument
