@@ -1364,6 +1364,26 @@
   (output (: 16 Int64))
   (live-objects 0))
 
+; lcap3 (breaker): the SOUNDNESS-GUARD companion of lcap2. An escaping closure capturing BOTH a def-param
+; `k` AND a let-local `v = (+ k 100)` — the shape most at risk if lcap2's fix is a PARTIAL capture that
+; grabs the param but drops the let-local. Verified TODAY it SOUNDLY DECLINES CDZ0900 (no silent drop of
+; `v` — the reject is total, not a wrong-value miscompile). When lcap2's escape-capture scan is fixed to see
+; through the let, this must fold using BOTH captures: main(5)(10) = (k + (k+100)) + y = (5 + 105) + 10 = 120.
+; A fix that captures only `k` and drops `v` would yield 15 here — this fence catches that regression. Same
+; root as lcap2; flips todo->pass together, but pins the both-captures VALUE so the fix can't silently
+; half-capture.
+(case
+  "lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)"
+  (input
+    (do
+      (def (mk (: k Int64)) (let ((v (+ k 100))) (fn ((: y Int64)) (+ (+ k v) y))))
+      (def (main (: n Int64)) (mk n))
+      (export main)))
+  (call main (: 5 Int64) (: 10 Int64))
+  (drop)
+  (output (: 120 Int64))
+  (live-objects 0))
+
 ; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
 ; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
 ; resource types — yet both lower to the SAME core functype `(i32 env, i64) -> i64`. Each must still
