@@ -7113,44 +7113,6 @@ pub(crate) fn arm_has_resume(db: &mut Db, node: StructId) -> bool {
     }
 }
 
-/// Whether the arm body CONDITIONALLY resumes — its top-level shape is an `if`/`match` in which SOME branch
-/// (transitively, through nested `if`/`match`/`do`/`let` tails) resumes and SOME branch returns a bare
-/// NON-resuming value (a per-arm conditional abort, `(if cond ABORT-VALUE (resume …))`). Such an arm is
-/// neither cleanly abortive (it HAS a resume) nor uniformly tail-resumptive (a branch aborts), so the E5
-/// pure-one-hole / two-hole reify folds mis-handle it: they rewrite only the resuming branch and leave the
-/// aborting branch a bare value, mis-splicing the continuation and orphaning a synthesized copy of a
-/// seed/param free name → a relocated CDZ0101 at lowering (check passes, emit diverges; corpus-bugfix/breaker
-/// 2026-07-28). Both reify blocks DECLINE when this holds, so the shape reports the honest "not yet reducible"
-/// todo (the conditional-abort/continuation machinery is a later increment) rather than a mis-fold. Only the
-/// TOP-LEVEL conditional shapes are inspected (an `if`/`match` whose branches split resume-vs-abort); a bare
-/// resume, a `do`/`let`-tail resume, or a fully-resuming match are NOT flagged (every branch resumes).
-fn arm_partially_resumes(db: &mut Db, node: StructId) -> bool {
-    // Only meaningful when the arm resumes at all AND cannot be uniformly peeled to a resume — a uniformly
-    // peelable arm (`peel_resume_from_arm_body` Some) resumes in every branch, so it is NOT partial.
-    if !arm_has_resume(db, node) {
-        return false;
-    }
-    // Descend the top-level conditional/sequencing shape; a branch that neither peels to a resume nor is
-    // itself a conditional-with-a-resume is a bare non-resuming value → the arm is partial.
-    fn branch_resumes(db: &mut Db, n: StructId) -> bool {
-        peel_resume_from_arm_body(db, n).is_some() || arm_has_resume(db, n)
-    }
-    match resolved_of(db, node) {
-        Resolved::If { then_, else_, .. } => {
-            // Partial iff the two branches DISAGREE on whether they resume.
-            branch_resumes(db, then_) != branch_resumes(db, else_)
-                || arm_partially_resumes(db, then_)
-                || arm_partially_resumes(db, else_)
-        }
-        Resolved::Match { arms, .. } => {
-            let flags: Vec<bool> = arms.iter().map(|&(_, b)| branch_resumes(db, b)).collect();
-            flags.iter().any(|&f| f) && flags.iter().any(|&f| !f)
-                || arms.iter().any(|&(_, b)| arm_partially_resumes(db, b))
-        }
-        _ => false,
-    }
-}
-
 /// The number of `resume` occurrences in the arm body at `node` (structural walk). ONE = a one-shot arm
 /// (the resume value flows into the continuation exactly once, so splicing the continuation duplicates
 /// NOTHING); >1 = multi-shot. The nested-continuation refold (a continuation that itself performs — the

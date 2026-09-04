@@ -6665,18 +6665,21 @@
   (output (: 20 Int64)))
 
 (case
-  "a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)"
+  "a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param folds (conditional-abort/resume-branch lowering)"
   (doc
-    "SAFE FLOOR (v-effects, 94581e5f1). A handler arm that CONDITIONALLY resumes — `(if cond -999
-           (resume ...))`, one branch aborts with a value, the other resumes — reading the enclosing fn's
-           param `k` through the handler seed `(tuple 0 k)`. The E5 reify folds used to mis-handle this
-           partially-resuming arm (rewrote only the resuming branch, orphaning a synthesized copy of the
-           seed's `k`), relocating a CDZ0101 `unbound name k` at lowering — check passed, emit diverged.
-           A new `arm_partially_resumes` gate now makes both reify blocks DECLINE cleanly (codeless
-           not-yet-reducible) when the branches disagree on resume-vs-abort, rather than emit through the
-           broken fold. Computing the -999/3 value needs a later increment that lowers a conditionally-
-           resuming arm; the floor is decline-rather-than-miscompile. Distinct from the straight-line
-           do-def and F1 mixed-width seams — this is the abort/resume-branch-disagreement path.")
+    "A handler arm that CONDITIONALLY resumes — `(if cond -999 (resume ...))`, one branch aborts with a
+           value, the other resumes — reading the enclosing fn's param `k` through the handler seed
+           `(tuple 0 k)`. This FOLDS: the E5 reify handles the partially-resuming arm correctly (the abort
+           branch yields its value + abandons, the resume branch threads state), and the seed's `k` resolves
+           against the grafted chain — no orphaned copy. (Formerly an over-conservative `arm_partially_resumes`
+           gate DECLINED this, from an era when the reify rewrote only the resuming branch and orphaned `k` →
+           a relocated CDZ0101 at lowering; the reify machinery now lowers a conditional-abort/resume arm, so
+           the guard was removed.) n=3: each step reads state via `(. st 0)`/`(. st 1)`; at k=3 the first step
+           has `(. st 0)=0 >= (. st 1)=3`? no (0<3) — resumes 0, then 1, then 2 aborts at `2>=3`? no... the
+           three steps resume 0,1,2 → `(+ 0 (+ 1 2))=3`; at k=0 the first step `0>=0` aborts -999, abandoning
+           the pending `+`. Reclaims clean (live-objects 0 under --guarded-all). Verified reject-safe: were the
+           reify ever incomplete, an orphaned free name resolves UNBOUND → Poison → an honest reject, not a
+           silent wrong value.")
   (input
     (do
       (effect Sim (op step (-> Unit Int64)))
@@ -6694,7 +6697,8 @@
   (call main (: 3 Int64))
   (output (: 3 Int64))
   (call main (: 0 Int64))
-  (output (: -999 Int64)))
+  (output (: -999 Int64))
+  (live-objects 0))
 
 (case
   "handler op-param and state binders stay hygienic when colliding with perform-site names"
