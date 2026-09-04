@@ -357,9 +357,11 @@
   "a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)"
   (doc
     "The no-false-reject control: a `(bin …)` pattern over a genuine Bytes scrutinee is well-typed — no
-           CDZ0203. Here `b : Bytes` is an EXPORTED parameter, and a non-scalar entry parameter has no scalar
-           boundary representation yet, so the program DECLINES at emit (not a type reject) — confirming the
-           bin/Bytes match itself is accepted, distinct from the wrong-kind rejects above.")
+           CDZ0203 — confirming the bin/Bytes match itself is accepted, distinct from the wrong-kind rejects
+           above. Here `b : Bytes` is an EXPORTED parameter. On the WASM boundary a non-scalar entry parameter
+           has no scalar boundary representation yet, so the program DECLINES at emit there (a capability limit,
+           not a type reject → todo on the wasm baseline). On the RUST target the Bytes entry parameter now
+           materializes as `Vec<u8>` (the b\"…\" entry-arg marshal, #8302), so it compiles and runs: f(b\"\\x2a\") = 42.")
   (input (do (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f)))
   (call f (: b"\x2a" Bytes))
   (output (: 42 Int64)))
