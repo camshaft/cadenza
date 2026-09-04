@@ -283,7 +283,14 @@ jobs:
       # the top-level → EVERY regressed file is reported in one run → the baseline owner batch-re-pins instead of
       # one-per-cycle. Semantics UNCHANGED: the job still reds (nix exits non-zero) iff any file regresses.
       - name: Run the corpus gate (via nix — full-corpus wasm coarse, fail-on-regression)
-        run: nix build .#checks.aarch64-linux.corpus-gate-coarse --print-build-logs --keep-going
+        # --option eval-cache false (v-nix 2026-09-04, defensive determinism — matches gate-local's contract + the
+        # nightly rust-coarse #8360): the required verdict gate must NEVER serve a STALE flake evaluation. On a
+        # fresh CI runner there is no warm ~/.cache/nix eval-cache so this is ZERO-COST today, but it hard-guarantees
+        # the gate grades the CURRENT-HEAD source-pinned compiler (mkPhaseBin cdz-compile) even if a future
+        # store-cache change ever warms an eval-cache — closing the local-eval-cache footgun (the stale-verdict trap
+        # that bit v-effects' local fpr3 check). The gate is already current-HEAD-correct on CI (source-pinned
+        # compiler re-keys the drv on any source change); this is belt-and-suspenders on a load-bearing gate.
+        run: nix build .#checks.aarch64-linux.corpus-gate-coarse --print-build-logs --keep-going --option eval-cache false
 
   cad-tests:
     # The Cadenza-SOURCE @test suites — libraries written IN Cadenza, run via `cdz test` (compile a
