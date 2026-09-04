@@ -8154,6 +8154,7 @@ pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form
 pass	eval of a quasiquote-built form with a byte-string unquote folds
+pass	eval of a quasiquote-built form with a runtime LIST unquote lifts the compound and folds
 pass	eval of a quasiquote-built form with a float unquote folds
 pass	eval of a quote carrying a symbol literal is rejected CDZ0101 — the reify bail as a perf-bound tripwire
 pass	eval of a quoted HUGE integer literal declines CDZ0201 — BigInt storage does not widen eval
