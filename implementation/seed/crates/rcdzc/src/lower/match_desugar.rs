@@ -325,17 +325,21 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
     }
     // A SUBJECT that fails to RESOLVE — an unbound name (CDZ0101) or an unresolved module member
     // (CDZ0201) — is a real error that must report AS ITSELF, ahead of any arm-pattern-support check.
-    // Its lowered core is a `Core::Poison` carrying that coded reject; propagate it here. Without this,
-    // a poison subject's TYPE is `Any` (unresolved), so it matches NONE of the Sum/Tuple/Bytes/List/Map
-    // dispatches below and the definite-kind CDZ0203 check, falling through to the scalar-probe path —
-    // which, when an arm carries a STRUCTURAL/ctor pattern the scalar path can't handle, declines with the
-    // misleading uncoded "a match pattern that is not a scalar literal or `_` is not supported", MASKING
-    // the subject's own CDZ0101/CDZ0201. (A wildcard/scalar arm already surfaced the subject error, because
-    // that path lowers the scrutinee and propagates its poison — so this only fixes the structural-arm case,
-    // aligning every arm shape on the real cause.) This is the erroring-SUBJECT sibling of the wrong-KIND
-    // CDZ0203 scrutinee check below (breaker-found, concierge-routed; #8391 — re-applied after #8393's
-    // stale-branch merge silently dropped it, which the error-code-lenient coarse gate could not catch).
-    if let Core::Poison(r) = core_of(db, scrutinee) {
+    // Detect it at the RESOLVE stage (`resolved_of` → `Resolved::Poison` carries the coded reject), NOT by
+    // LOWERING (`core_of`). This is the narrowing over #8391/#8399: firing on `core_of(scrutinee)` being a
+    // `Core::Poison` was too broad — merely CALLING `core_of` on a VALID scrutinee here lowers it EARLY, in
+    // a bare context/order, and that side-effect (a memoized wrong-context core) corrupted a runtime `?`
+    // subject (a value MISCOMPILE — corpus-23 `tdd1`, got 0 not -1) and a Map-accumulator subject
+    // (corpus-28, regressed to a decline), even though the guard did not even fire on them. `resolved_of` is
+    // the resolution query (runs anyway, no lowering), so a VALID subject (a `?`, a Map-accum, any runtime
+    // value) is NOT `Resolved::Poison` and is left ENTIRELY to the normal path below — no early lowering, no
+    // corruption. An unbound/unresolved subject IS `Resolved::Poison`, so its coded CDZ0101/CDZ0201 still
+    // surfaces here (the masking fix — and the C1 exact-code guards — preserved). Without this, a poison
+    // subject's TYPE is `Any`, matching none of the kind-dispatches below, so a STRUCTURAL/ctor arm falls to
+    // the scalar-probe path and MASKS the subject error with the uncoded "not a scalar literal or `_`"
+    // decline. The erroring-SUBJECT sibling of the wrong-KIND CDZ0203 scrutinee check below (breaker-found,
+    // concierge-routed; #8391 → clobbered by #8393 → re-applied #8399 → narrowed here after #8399 over-fired).
+    if let crate::resolved::Resolved::Poison(r) = resolved_of(db, scrutinee) {
         return Core::Poison(r);
     }
     // A FUNCTION-VALUED scrutinee — `(match g …)` where `g` is a closure/def — is not matchable: a match
