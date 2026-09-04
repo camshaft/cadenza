@@ -13267,6 +13267,88 @@
   (output (: 103 Int64))
   (live-objects 0))
 
+; -- breaker batch 429 (adversarial backstop for v-effects's conditional-resume-fold): a PARTIAL-RESUME
+; arm — `(op (a) s (if C ABORT-VALUE (resume V S')))` — where ONE branch aborts-with-a-value and the other
+; resumes. These SHOULD FOLD once the `arm_partially_resumes` decline guard is removed (v-effects
+; conditional-resume-fold). Until then they grade `todo` (rejected CDZ0900 — the clean guard-decline; the
+; guard originally masked a mis-splice where the reify rewrote ONLY the resuming branch, orphaning a
+; seed/param free name → CDZ0101 at lowering). All four VERIFIED to fold to the pinned value with
+; live-objects 0 (guarded-all), tri-target (wasm+rust+cadenza), against the guard-removed build — so they
+; auto-flip todo->pass when the removal lands and pin the mis-splice class as a regression guard. The four
+; probe the free-name-splice surface v-effects flagged: pr1 abort reads the GROWING #st STATE (the abx3
+; neighborhood, both branches exercised across two dispatches); pr2 abort value is a HEAP list (reclaim on
+; the abort splice); pr3 abort spliced from a NESTED conditional (if-in-if at depth); pr4 abort reads the
+; op PARAM `k` (not the state). No counterexample found: the reify handles both branches, no wrong value,
+; no leak/UAF.
+(case
+  "pr1 partial-resume arm whose ABORT branch reads the growing #st state folds"
+  (input
+    (do
+      (effect E (op step (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (if (> n 0) #list(n) #list(9 9))
+          ((step () s (if (> (List.len s) 1) (List.len s) (resume (List.len s) (List.prepend s 0)))))
+          (+ (E.step) (E.step))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "pr2 partial-resume arm whose ABORT branch yields a HEAP list value reclaims"
+  (input
+    (do
+      (effect E (op step (-> (List Int64))))
+      (def
+        (main (: n Int64))
+        (List.len
+          (handle
+            E
+            (if (> n 0) #list(n) #list(9 9))
+            ((step () s (if (> (List.len s) 0) (List.prepend s 42) (resume s s))))
+            (E.step))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "pr3 partial-resume arm whose ABORT is spliced from a NESTED conditional folds"
+  (input
+    (do
+      (effect E (op step (-> Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (if (> n 0) #list(n) #list(9 9))
+          ((step () s (if (> (List.len s) 1) (if (> n 100) 0 (List.len s)) (resume (List.len s) (List.prepend s 0)))))
+          (+ (E.step) (E.step))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "pr4 partial-resume arm whose ABORT branch reads the op PARAM folds"
+  (input
+    (do
+      (effect E (op step (-> Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (if (> n 0) #list(n) #list(9 9))
+          ((step (k) s (if (> (List.len s) 1) (+ k 500) (resume (List.len s) (List.prepend s 0)))))
+          (+ (E.step 7) (E.step 9))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 509 Int64))
+  (live-objects 0))
+
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
 ; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427
