@@ -188,6 +188,8 @@ fn slugify(stem: &str) -> String {
 /// Derive one runnable/exercise case from its node. `cdz` renders the ml surface. mode="test" runnables are
 /// marked deferred (no program) — they need the @test-export driver. `stem` is the dir-slug source; `file`
 /// is the `meta.file` path (a chapter's `src/content/chapters/<Stem>.tsx`, or HomePage's component path).
+#[allow(clippy::too_many_arguments)] // the case-derivation context (arena, node, kind, stem, file, idx,
+// cdz, prose-value assertions) is inherent; bundling would obscure more than it clarifies.
 fn derive_case(
     a: &Arenas,
     node: StructId,
@@ -196,6 +198,7 @@ fn derive_case(
     file: &str,
     idx: usize,
     cdz: &str,
+    results: &std::collections::HashMap<String, String>,
 ) -> Result<Case, String> {
     let dir = format!("{idx:04}-{}", slugify(stem));
     let file = file.to_string();
@@ -223,7 +226,14 @@ fn derive_case(
         });
     }
 
-    let expected = super::named_attr(a, node, "expected").map(str::to_string);
+    // Prose-value gate (operator greenlit 2026-09-03): if this runnable is NAMED `(id "slug")` and the
+    // chapter's prose carries a `(result (of "slug") <value>)` assertion, GRADE the runnable against that
+    // asserted value — reusing the existing `expected=` path (no new manifest field). An inline `(expected
+    // …)` takes precedence when both are present (q6 coexist: the pin the author wrote on the runnable wins);
+    // otherwise the prose assertion supplies `expected`, so a value-shifting change reds guideExamplesShredded.
+    let expected = super::named_attr(a, node, "expected")
+        .map(str::to_string)
+        .or_else(|| super::named_attr(a, node, "id").and_then(|id| results.get(id).cloned()));
     let expect_kind = if super::named_attr(a, node, "expect") == Some("error") {
         "error"
     } else {
@@ -360,6 +370,31 @@ fn peers_json(peers: &[(String, String)]) -> String {
     format!("[{}]", items.join(", "))
 }
 
+/// Collect a chapter/doc's inline `(result (of "slug") <value>)` prose assertions → `slug -> asserted-value
+/// text`. Walks ALL descendants (the tags live inside prose `(p …)`/`(note …)` blocks the case-derivation
+/// loop doesn't otherwise visit). The value is printed canonically (`print_from`) so a bare scalar `6` →
+/// `"6"`, matching a runnable's rendered scalar run output. The prose-value gate linkage (operator greenlit
+/// 2026-09-03): `derive_case` injects this as the runnable id'd `slug`'s `expected`.
+fn collect_result_assertions(
+    a: &Arenas,
+    root: StructId,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if a.head_name(n) == Some("result")
+            && let (Some(slug), Some(v)) =
+                (super::result_of_slug(a, n), super::result_value_node(a, n))
+        {
+            out.insert(slug.to_string(), cadenza_syntax_sexpr::print_from(a, v));
+        }
+        for &c in super::children(a, n) {
+            stack.push(c);
+        }
+    }
+    out
+}
+
 /// `--shred <out-dir> <cdz-bin> <ordered .cdzb list>`: decode each chapter binary AST, shred its
 /// runnable/exercise cases into `<out-dir>/<NNNN>-<slug>/`, and write manifest.json. Case order = the .cdzb
 /// argument order (the caller passes chapters in a stable order).
@@ -380,6 +415,9 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
             .unwrap_or_else(|| die(&format!("decode {path}: invalid binary AST")));
         // A .cdzb is either a chapter doc (runnable/exercise) or the playground doc (examples).
         if let Some(chapter) = super::locate_chapter(&a) {
+            // Prose-value gate: gather the chapter's (result (of "slug") …) assertions once, so each named
+            // runnable can be graded against its in-text asserted value (derive_case injects it as `expected`).
+            let results = collect_result_assertions(&a, chapter);
             for &f in super::children(&a, chapter) {
                 let kind = match a.head_name(f) {
                     Some("runnable") => "runnable",
@@ -388,7 +426,7 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
                 };
                 idx += 1;
                 let file = format!("src/content/chapters/{stem}.tsx");
-                let case = derive_case(&a, f, kind, &stem, &file, idx, cdz)
+                let case = derive_case(&a, f, kind, &stem, &file, idx, cdz, &results)
                     .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
                 write_case(out_dir, &case);
                 cases.push(case);
@@ -396,6 +434,7 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
         } else if let Some(homepage) = super::locate_homepage(&a) {
             // HomePage landing page: its `(runnable …)` are chapter-style runnables (bare expr, both
             // surfaces), attributed to the component file. (fork1b — the last of the 60-case gap.)
+            let results = collect_result_assertions(&a, homepage);
             for &f in super::children(&a, homepage) {
                 if a.head_name(f) != Some("runnable") {
                     continue;
@@ -409,6 +448,7 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
                     "src/components/HomePage.tsx",
                     idx,
                     cdz,
+                    &results,
                 )
                 .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
                 write_case(out_dir, &case);
@@ -681,6 +721,7 @@ mod tests {
             "src/content/chapters/PlatformExecution.tsx",
             7,
             "cdz",
+            &std::collections::HashMap::new(),
         )
         .unwrap();
         assert_eq!(case.kind, "multi-file");

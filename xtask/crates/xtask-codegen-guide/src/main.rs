@@ -826,6 +826,10 @@ fn scan_inline(
                 // <Cadenza> is re-exported from Prose.tsx, so it rides the same prose import line as C.
                 prose.insert("Cadenza");
             }
+            // (result …) renders its value as <C>…</C> (prose-value gate) → needs the C import.
+            Some("result") => {
+                prose.insert("C");
+            }
             Some("link") => {
                 *uses_ch = true;
                 scan_inline(
@@ -937,6 +941,25 @@ fn cdz_payload_ast(a: &Arenas, cdz_form: StructId) -> Option<(String, String)> {
     Some((base64_encode(&codec::encode(&frag)), canonical))
 }
 
+/// The runnable `(id "slug")` an inline `(result (of "slug") <value>)` prose assertion references — the
+/// prose-value gate linkage (operator greenlit 2026-09-03): a named runnable's result asserted IN the text,
+/// co-extracted so the shred grades the named runnable against the asserted value (reusing `expected=`).
+pub fn result_of_slug(a: &Arenas, i: StructId) -> Option<&str> {
+    children(a, i)
+        .iter()
+        .find(|&&c| a.head_name(c) == Some("of"))
+        .and_then(|&c| attr_str(a, c))
+}
+
+/// The asserted `<value>` node of a `(result (of "slug") <value>)` — the first child that is NOT the
+/// `(of …)` holder (a bare atom or a value form). `None` if absent (malformed tag).
+pub fn result_value_node(a: &Arenas, i: StructId) -> Option<StructId> {
+    children(a, i)
+        .iter()
+        .copied()
+        .find(|&c| a.head_name(c) != Some("of"))
+}
+
 fn render_inline(a: &Arenas, i: StructId) -> String {
     if matches!(a.get(i), Struct::Atom(_))
         && let Some(t) = a.as_str(i)
@@ -966,6 +989,18 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
                 "<Cadenza>{}</Cadenza>",
                 escape_text(attr_str(a, i).unwrap_or(""))
             ),
+        },
+        // (result (of "slug") <value>) — the prose-value gate: render the asserted <value> inline as code
+        // (visually identical to the (c "<value>") it replaces, per q4=plain-inline), while the ASSERTION
+        // that the runnable id'd "slug" runs to <value> is resolved + GATED in the shred (shred.rs collects
+        // these and injects the value as the matching runnable's `expected`, reusing the expected= grade path
+        // — so a wrong assertion reds guideExamplesShredded). Coexists with an inline (expected …) (q6).
+        Some("result") => match result_value_node(a, i) {
+            Some(v) => format!(
+                "<C>{}</C>",
+                escape_text(&cadenza_syntax_sexpr::print_from(a, v))
+            ),
+            None => "<C></C>".to_string(),
         },
         Some("br") => "<br />".to_string(),
         Some("link") => {

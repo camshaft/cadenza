@@ -7,8 +7,9 @@
   (lede "A function usually carries assumptions, like \"this count is never negative\" or \"I always return something in range\". Cadenza lets you write those assumptions down as " (em "contracts") ", and turns them into checks it enforces every time the function runs.")
   (p "Two annotations do it. " (c "@requires") " states a " (em "precondition") ", what must hold when the function is called, while " (c "@ensures") " states a " (em "postcondition") ", what must hold about its result. Each becomes a check the compiler injects at the function's boundary: violate it and the program " (em "traps") " right there, instead of quietly computing on bad data.")
   (h2 "@requires: a precondition")
-  (p "Here " (c "f") " promises to work only for non-negative inputs. Called with " (c "5") ", it returns " (c "6") ", so the check passes and doesn't change the value:")
+  (p "Here " (c "f") " promises to work only for non-negative inputs. Called with " (c "5") ", it returns " (result (of "requires-pass") 6) ", so the check passes and doesn't change the value:")
   (runnable
+    (id "requires-pass")
     (source (def (main) (f 5))
 (@ (requires (>= x 0))
   (def (f (: x Int64)) (+ x 1)))))
