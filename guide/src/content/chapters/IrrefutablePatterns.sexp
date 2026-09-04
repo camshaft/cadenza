@@ -7,14 +7,16 @@
   (lede "Destructuring that always matches, so it can bind directly in a let or in a function's arguments, no match needed.")
   (p "In " (strong "Pattern matching") " a " (c "match") " arm might or might not fire, so the compiler makes you cover every case. But some patterns can never fail: a tuple is always a tuple, and a type with a single constructor has only one shape. A pattern that always matches is " (em "irrefutable") ", and because it can't fail there's nothing to decide, so you can use it to bind a value directly, with no " (c "match") " at all.")
   (h2 "Destructuring in a let")
-  (p "A " (c "let") " binder doesn't have to be a plain name. Give it a tuple pattern and it takes the pair apart in place, binding each part to its own name. Here " (c "a") " is " (c "3") " and " (c "b") " is " (c "4") ", so the sum is " (c "7") ", with no " (c ".0") " or " (c ".1") " indexing:")
+  (p "A " (c "let") " binder doesn't have to be a plain name. Give it a tuple pattern and it takes the pair apart in place, binding each part to its own name. Here " (c "a") " is " (c "3") " and " (c "b") " is " (c "4") ", so the sum is " (result (of "irref-tuple") 7) ", with no " (c ".0") " or " (c ".1") " indexing:")
   (runnable
+    (id "irref-tuple")
     (source (def (main) (let ((#tuple(a b) #tuple(3 4))) (+ a b)))))
   (p "Patterns nest, so one binder can reach several layers deep in a single step. Here the inner tuple is destructured at the same time as the outer one, binding " (c "a") ", " (c "b") ", and " (c "c") " at once:")
   (runnable
     (source (def (main) (let ((#tuple(a #tuple(b c)) #tuple(1 #tuple(2 3)))) (+ a (+ b c))))))
-  (p "A record binder works the same way, naming fields instead of positions. This one binds " (c "a") " to the " (c "x") " field and " (c "b") " to the " (c "y") " field, so the sum is " (c "7") ":")
+  (p "A record binder works the same way, naming fields instead of positions. This one binds " (c "a") " to the " (c "x") " field and " (c "b") " to the " (c "y") " field, so the sum is " (result (of "irref-record") 7) ":")
   (runnable
+    (id "irref-record")
     (source (def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))))
   (p "And a record pattern needn't name every field: bind just the one you want and leave the rest. Since a record is keyed by name, the fields you skip simply don't appear, and the order you write them in doesn't matter. Here only " (c "x") " is bound, reading back " (c "3") ":")
   (runnable
@@ -26,10 +28,11 @@
 (def (main) (add-pair #tuple(3 4)))))
   (p "A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like " (cdz (C c)) " on a one-constructor type unwraps its payload directly in the parameter, with no " (c "match") ". Here " (c "Celsius") " wraps an " (c "Int64") ", and " (c "to-f") " names the wrapped value " (c "c") " right in its parameter list:")
   (runnable
+    (id "irref-newtype")
     (source (type Celsius (C Int64))
 (def (to-f (C c)) (+ (/ (* c 9) 5) 32))
 (def (main) (to-f (C 100)))))
-  (p (cdz (to-f (C 100))) " is " (c "212") ", unwrapping the " (c "100") " and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.")
+  (p (cdz (to-f (C 100))) " is " (result (of "irref-newtype") 212) ", unwrapping the " (c "100") " and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.")
   (p "Records destructure in a parameter too. " (c "mag") " takes one point record and names its " (c "x") " and " (c "y") " fields directly in the parameter list, so the body reads " (c "a") " and " (c "b") " with no accessor. The squared magnitude of " (c "(3, 4)") " is " (c "3² + 4² = 25") ":")
   (runnable
     (source (def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))

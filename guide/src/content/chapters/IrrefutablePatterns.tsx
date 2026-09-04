@@ -14,6 +14,7 @@ export default function IrrefutablePatterns() {
       <P>A <C>let</C> binder doesn't have to be a plain name. Give it a tuple pattern and it takes the pair apart in place, binding each part to its own name. Here <C>a</C> is <C>3</C> and <C>b</C> is <C>4</C>, so the sum is <C>7</C>, with no <C>.0</C> or <C>.1</C> indexing:</P>
       <Runnable
         source={`(def (main) (let ((#tuple(a b) #tuple(3 4))) (+ a b)))`}
+        id="irref-tuple"
       />
       <P>Patterns nest, so one binder can reach several layers deep in a single step. Here the inner tuple is destructured at the same time as the outer one, binding <C>a</C>, <C>b</C>, and <C>c</C> at once:</P>
       <Runnable
@@ -22,6 +23,7 @@ export default function IrrefutablePatterns() {
       <P>A record binder works the same way, naming fields instead of positions. This one binds <C>a</C> to the <C>x</C> field and <C>b</C> to the <C>y</C> field, so the sum is <C>7</C>:</P>
       <Runnable
         source={`(def (main) (let ((#record((= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))`}
+        id="irref-record"
       />
       <P>And a record pattern needn't name every field: bind just the one you want and leave the rest. Since a record is keyed by name, the fields you skip simply don't appear, and the order you write them in doesn't matter. Here only <C>x</C> is bound, reading back <C>3</C>:</P>
       <Runnable
@@ -41,6 +43,7 @@ export default function IrrefutablePatterns() {
 (def (to-f (C c)) (+ (/ (* c 9) 5) 32))
 
 (def (main) (to-f (C 100)))`}
+        id="irref-newtype"
       />
       <P><Cadenza ast="Y2R6YXN0AAEDCgR0by1mCgFDAAFkBQAAAAEAAgECAQIBAgADBA==" kind="expr">(to-f (C 100))</Cadenza> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.</P>
       <P>Records destructure in a parameter too. <C>mag</C> takes one point record and names its <C>x</C> and <C>y</C> fields directly in the parameter list, so the body reads <C>a</C> and <C>b</C> with no accessor. The squared magnitude of <C>(3, 4)</C> is <C>3² + 4² = 25</C>:</P>

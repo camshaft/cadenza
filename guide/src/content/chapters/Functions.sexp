@@ -47,8 +47,9 @@
 (def (main)
   (map-sum (fn (x) (+ x 1)) 0 #list(5 7 30)))))
   (p "Each element is incremented and the results summed: " (c "6 + 8 + 31 = 45") ". You write the lambda with no type ceremony and the compiler figures out the types from how the argument is used.")
-  (p "The same holds for a " (em "multi-argument") " callback, as in the classic accumulator fold. Here " (c "fold-list") " takes a two-argument " (c "f") " and threads an accumulator through the list, and the lambda " (cdz (fn (x a) (+ a x))) " is again fully unannotated on both sides. Folding " (cdz #list(5 7 30)) " from " (c "0") " sums them to " (c "42") ":")
+  (p "The same holds for a " (em "multi-argument") " callback, as in the classic accumulator fold. Here " (c "fold-list") " takes a two-argument " (c "f") " and threads an accumulator through the list, and the lambda " (cdz (fn (x a) (+ a x))) " is again fully unannotated on both sides. Folding " (cdz #list(5 7 30)) " from " (c "0") " sums them to " (result (of "fold-list") 42) ":")
   (runnable
+    (id "fold-list")
     (source (def (fold-list f acc xs)
   (match xs
     (#list() acc)
