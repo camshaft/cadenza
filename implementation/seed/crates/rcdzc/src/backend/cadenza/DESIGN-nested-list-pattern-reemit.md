@@ -1,7 +1,9 @@
 # DESIGN — nested list/collection patterns in the cadenza sum-match re-emit
 
-Owner: v-cadenza-backend. Status: DESIGN (banked for a fresh-context implementation, following the M4a
-process — see `DESIGN-matchsum-nested-pattern-whole-slot.md`). Scope: the `--target cadenza` re-emit of a
+Owner: v-cadenza-backend. Status: SUBSTANTIALLY LANDED — see §10 (2026-09-04). Site A shipped (#7880, §8) and
+BOTH original target cases (§1) now round-trip on `--target cadenza`; only a contrived direct-element-payload
+residual remains (§10). §1–§6 below describe the ORIGINAL (now-resolved) symptom; read §8/§9/§10 for current
+state. (M4a process — see `DESIGN-matchsum-nested-pattern-whole-slot.md`.) Scope: the `--target cadenza` re-emit of a
 `match` whose decision tree tests a LIST (or Bytes/Map) sub-value NESTED inside the SUM-match tree — a
 list-length probe or a list-element/rest read reached through a sum arm, NOT the direct `Core::MatchList`
 path (which already works).
@@ -193,3 +195,25 @@ in `build_arm_pat_inner`; (3) gate strictly on unambiguity, then A/B the whole 2
 zero regression before landing. This is a dedicated fresh-context effort (3 interlocking pieces + a soundness
 gate), NOT a bounded tick — deferred. Repro `/tmp/qqb/qq.sexp` (`cdz compile qq.sexp -t cadenza`; trace with
 `RUST_LOG=rcdzc::backend::cadenza=debug`).
+
+## 10. STATUS 2026-09-04 — both original target cases PASS; only a contrived residual remains
+
+Re-verified the two §1 target cases on `--target cadenza` (hop1 → hop2 recompile → run):
+
+- **list-fold** ("a mutually-recursive fold matching a rebuilt list with a payload binder…", 20-struct:762)
+  — hop1 emits (966 B), hop2 recompiles, runs **102** at n=2. Site A's keying reconciliation (#7880, §8) fixed it.
+- **quasiquote-simp** ("a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp…", 20-struct:533)
+  — hop1 emits (934 B), hop2 recompiles, runs **40**. The Site B frontier §9 deferred no longer blocks this
+  case (the `(simp (quote (* y 1)))` input partial-evaluates so the surviving tree is re-emittable). Passing.
+
+So the slice as originally scoped (its two motivating corpus cases) is DONE — do NOT re-implement §1–§6/§9's
+"deferred" plan expecting those cases to decline.
+
+**Remaining residual (LOW priority, no real corpus need):** a DIRECT read of a list element's SUM PAYLOAD in
+a match arm body still declines at `mod.rs:2687` (the `Core::SumPayload` read walk, `path=[Elem(0), Payload]`,
+`step=Payload`). Contrived repro: `(match #list((pick n)) (#list((C.R x)) x) (_ -1))` with `pick` a
+recursion-forced producer of a 2-variant sum. This is the same §7/§8 keying area, but Site A's dual-key
+registration (in `emit_match_sum`) covers the fold's desugared guard+body shape, not this direct
+single-element-list read (whose payload binder is not registered under the composed `[Elem(0), Payload]` key).
+No CURRENT corpus case hits it (the target cases pass), so it is a contrived edge — pursue only if a real case
+surfaces; the fix would extend the §8 dual-key registration to the direct-element-payload read path.
