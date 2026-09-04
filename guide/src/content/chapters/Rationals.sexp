@@ -52,11 +52,13 @@
   (h2 "Rational to a whole number")
   (p "The numerator and denominator hand back the exact integer " (em "parts") ", each an unbounded " (c "BigInt") ". Sometimes you instead want the whole value " (em "as") " one integer at a boundary, a MIDI tick, an array index, a pixel, and that's a projection to a fixed " (c "Int64") ". There are four, differing only in how they handle a fraction: " (c "truncate") " drops toward zero, " (c "floor") " rounds toward negative infinity, " (c "ceil") " toward positive infinity, and " (c "round") " to the nearest (ties going away from zero). They agree on positive whole-ish values and diverge on negatives:")
   (note (c "value    truncate  floor  ceil  round") " " (br) " " (c "  7/2        3        3     4     4") " " (br) " " (c " -7/2       -3       -4    -3    -4") " " (br) " " (c "  7/3        2        2     3     2"))
-  (p "The split to watch is on negatives: " (c "truncate") " of " (c "-7/2") " is " (c "-3") " (toward zero) while " (c "floor") " is " (c "-4") " (toward negative infinity). They only look the same on positives, so a sign change is where a wrong choice bites:")
+  (p "The split to watch is on negatives: " (c "truncate") " of " (c "-7/2") " is " (result (of "rational-trunc") -3) " (toward zero) while " (c "floor") " is " (c "-4") " (toward negative infinity). They only look the same on positives, so a sign change is where a wrong choice bites:")
   (runnable
+    (id "rational-trunc")
     (source (Rational.truncate (Rational.of -7 2))))
-  (p "And " (c "round") " breaks a tie by going " (em "away") " from zero, so " (c "5/2") " rounds to " (c "3") ", not the " (c "2") " that banker's (nearest-even) rounding would give. Cadenza names the rule rather than letting you assume it, the same refusal to guess that runs through the numeric model. All four narrow to " (c "Int64") " and trap on overflow, never silently wrapping:")
+  (p "And " (c "round") " breaks a tie by going " (em "away") " from zero, so " (c "5/2") " rounds to " (result (of "rational-round") 3) ", not the " (c "2") " that banker's (nearest-even) rounding would give. Cadenza names the rule rather than letting you assume it, the same refusal to guess that runs through the numeric model. All four narrow to " (c "Int64") " and trap on overflow, never silently wrapping:")
   (runnable
+    (id "rational-round")
     (source (Rational.round (Rational.of 5 2))))
   (h2 "Arithmetic stays exact")
   (p (c "+") ", " (c "-") ", " (c "*") ", and " (c "/") " over rationals compute the exact result and renormalize. Here's the sum floats can't get right, a third plus a third plus a third, and with rationals it is " (em "exactly") " one:")

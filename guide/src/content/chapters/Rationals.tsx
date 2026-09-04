@@ -72,10 +72,12 @@ export default function Rationals() {
       <P>The split to watch is on negatives: <C>truncate</C> of <C>-7/2</C> is <C>-3</C> (toward zero) while <C>floor</C> is <C>-4</C> (toward negative infinity). They only look the same on positives, so a sign change is where a wrong choice bites:</P>
       <Runnable
         source={`(Rational.truncate (Rational.of -7 2))`}
+        id="rational-trunc"
       />
       <P>And <C>round</C> breaks a tie by going <em>away</em> from zero, so <C>5/2</C> rounds to <C>3</C>, not the <C>2</C> that banker's (nearest-even) rounding would give. Cadenza names the rule rather than letting you assume it, the same refusal to guess that runs through the numeric model. All four narrow to <C>Int64</C> and trap on overflow, never silently wrapping:</P>
       <Runnable
         source={`(Rational.round (Rational.of 5 2))`}
+        id="rational-round"
       />
       <H2>Arithmetic stays exact</H2>
       <P><C>+</C>, <C>-</C>, <C>*</C>, and <C>/</C> over rationals compute the exact result and renormalize. Here's the sum floats can't get right, a third plus a third plus a third, and with rationals it is <em>exactly</em> one:</P>
