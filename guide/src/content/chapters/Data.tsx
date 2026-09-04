@@ -45,12 +45,14 @@ export default function Data() {
       <P>A tuple can hold a record, a record field can hold a tuple, and so on, so the shapes nest freely, and the accessor chains to reach inside. Here a record has one field, <C>pair</C>, holding a tuple; we reach the field, then index into the tuple to pull out its second element:</P>
       <Runnable
         source={`(. (. #record((= pair #tuple(10 20))) pair) 1)`}
+        id="data-nested"
       />
       <P>Reaching <C>pair</C> gets the tuple, then index <C>1</C> pulls its second element, <C>20</C>. We'll lean on this in the next chapter, but for now the point is just that the two ways of bundling stack together, with no special rule for the combination.</P>
       <H2>Functions inside data</H2>
       <P>Since functions are values, they can live in tuples and records too. Here we pull a function out of a tuple and call it:</P>
       <Runnable
         source={`((. #tuple((fn (x) (+ x 1)) 9) 0) 5)`}
+        id="data-tuple-fn"
       />
       <P>Element <C>0</C> of the tuple is the increment function; applying it to <C>5</C> gives <C>6</C>. The <C>9</C> in the other slot just rides along, since a tuple can mix a function and a plain value.</P>
       <H2>Your turn</H2>
