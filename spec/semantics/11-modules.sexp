@@ -498,6 +498,48 @@
       (export main)))
   (error CDZ0101))
 
+; The NEGATIVE-distinctness companion of the positive #8220 case: two inline modules each declaring a
+; member `(type Sh …)` are DISTINCT nominal types (occ-keyed), so they are NOT interchangeable — feeding
+; ONE module's `Sh` value to the OTHER module's consumer is a TYPE CLASH (CDZ0203), even though both types
+; print with the same name `Sh`. Here `b.mk true` builds a `b.Sh` and `a.un` expects an `a.Sh`; the mismatch
+; is caught. The diagnostic must name the same-name-two-types confusion (pinned via the message substring),
+; not silently unify them. (v-inference co-verify of #8264; the non-interchangeability half of the identity
+; battery — a regression here would let one module's type satisfy another's, collapsing per-module identity.)
+(case
+  "one inline module's member-type value is NOT interchangeable with another's same-named type (CDZ0203)"
+  (input
+    (do
+      (module a
+        (type Sh (Box Int64))
+        (def (mk (: k Int64)) (Sh.Box k))
+        (def (un (: s Sh)) (match s ((Sh.Box n) n)))
+        (export mk un))
+      (module b
+        (type Sh (Wrap Bool))
+        (def (mk (: p Bool)) (Sh.Wrap p))
+        (export mk))
+      (def (main) (a.un (b.mk true)))
+      (export main)))
+  (error CDZ0203 (message "two DIFFERENT types printed with the same name")))
+
+; A module has a FIXED set of type names: declaring the SAME member-type name twice in ONE inline module is
+; a compile-time reject (CDZ0201), the per-inline-module dup-type-key guard. Distinct from the cross-module
+; distinctness above (two modules may each declare `Sh` — those are distinct and fine); this is the
+; SAME-module duplicate, which is ill-formed exactly as a record with a duplicate field is. (v-inference
+; co-verify; guards that per-module dedup — reverting it would let two same-name in-module types through.)
+(case
+  "declaring the same member-type name twice in one inline module is a type error (CDZ0201)"
+  (input
+    (do
+      (module m
+        (type Sh (A Int64))
+        (type Sh (B Bool))
+        (def (mk (: k Int64)) (Sh.A k))
+        (export mk))
+      (def (main) 0)
+      (export main)))
+  (error CDZ0201 (message "declared more than once")))
+
 (case
   "a private sibling defined after its exported caller still resolves"
   (doc
