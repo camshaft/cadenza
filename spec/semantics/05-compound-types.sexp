@@ -8566,6 +8566,45 @@
       (export main)))
   (output (: -1 Int64)))
 
+; multi-nlist-elem (breaker, the NESTED-LIST leg of the deferred N-per-arm follow-up #8430): #8428 generalized
+; the TUPLE + RECORD value-refinement desugars to the ctor's N-position loop (>1 refutable element per arm), but
+; #8430 (docs(lower)) explicitly DEFERRED the same generalization for the NESTED-LIST + MAP refutable-element
+; desugars. So TWO refutable nested-list elements in one arm `(list (list 1 a) (list 2 b))` still DECLINE 'a list
+; arm with more than one refutable nested-list element is not supported (match one nested list per arm)' — while
+; a SINGLE nested-list element refines (#8348). Consistent decline wasm+rust+cadenza. SHOULD refine both like the
+; now-N-per-arm ctor/tuple/record: `xs = [[1,5],[2,3]]` → element 0 `(list 1 a)` → a=5, element 1 `(list 2 b)` →
+; b=3 → 8. Idealistic-todo; auto-flips when #8430's deferred nested-list N-per-arm lands (owner: v-inference, the
+; #8428 arc). The nested-list twin of multi-tup-elem #8418 / multi-rec-elem #8422.
+(case
+  "two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)"
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 a) #list(2 b)) (+ a b)) (_ -1)))
+      (def (main) (f #list(#list(1 5) #list(2 3))))
+      (export main)))
+  (output (: 8 Int64)))
+
+; multi-map-elem (breaker, the MAP leg of the deferred N-per-arm follow-up #8430): the MAP-element twin of
+; multi-nlist-elem above. TWO map elements in one arm `(list (map (= 1 a)) (map (= 2 b)))` — each refines on its
+; key — still DECLINE 'a list arm with more than one map element is not supported (match one map element per
+; arm)', deferred by #8430 alongside the nested-list leg. A SINGLE map element refines. Consistent decline
+; wasm+rust+cadenza. SHOULD refine both: `xs = [{1:5},{2:3}]` → element 0 `(map (= 1 a))` → a=5, element 1
+; `(map (= 2 b))` → b=3 → 8. Idealistic-todo; auto-flips with multi-nlist-elem when #8430's deferred N-per-arm
+; lands. Map value-refinement is a DISTINCT desugar from nested-list (as tuple #8418 vs record #8422 were), so
+; its own flip-guard.
+(case
+  "two map list elements in one arm each refine on a key (currently declines >1-per-arm)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Map Int64 Int64))))
+        (match xs (#list(#map((= 1 a)) #map((= 2 b))) (+ a b)) (_ -1)))
+      (def (main) (f #list(#map((= 1 5)) #map((= 2 3)))))
+      (export main)))
+  (output (: 8 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
