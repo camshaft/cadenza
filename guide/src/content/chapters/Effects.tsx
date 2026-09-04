@@ -26,6 +26,7 @@ export default function Effects() {
         source={`(effect Ask (op ask (-> Unit Int64)))
 
 (def (main) (handle Ask unit ((ask () s (resume 20 s))) (+ (Ask.ask) (Ask.ask))))`}
+        id="two-asks"
       />
       <P>Two performances, each answered with <C>20</C>, summed to <C>40</C>.</P>
       <H2>A handler with state</H2>
@@ -75,6 +76,7 @@ export default function Effects() {
         source={`(effect Amb (op flip (-> Unit Int64)))
 
 (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip)))`}
+        id="amb-tail"
       />
       <P>The arm resumes the performer with <C>10</C>, and here the body <em>is</em> that performance, so it reduces to <C>10</C>; then the arm's own <C>+ 1</C> wraps that result, and the answer is <C>11</C>. The <C>resume</C> plugs a value into the hole where <C>Amb.flip</C> was, and the arm gets to act on what comes back.</P>
       <P>That hole can have work around it too. If the body is <Cadenza ast="Y2R6YXN0AAEFCgErAAFkGgoDQW1iCgRmbGlwCAAAAAEAAgADAAQBAwIDBAEBBQEDAAEGBw==" kind="expr">(+ 100 (Amb.flip))</Cadenza>, the resumption re-runs <em>the whole rest of the body</em> with <C>10</C> in the hole, giving <C>110</C>, and only then does the arm's <C>+ 1</C> apply:</P>
@@ -82,6 +84,7 @@ export default function Effects() {
         source={`(effect Amb (op flip (-> Unit Int64)))
 
 (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip))))`}
+        id="amb-around"
       />
       <P>The result is <C>111</C>: <C>100 + 10</C> from re-reducing the body, then <C>+ 1</C> from the arm on the way out. This is what lets a handler <em>post-process</em> or <em>aggregate</em> a whole computation, logging a total, accumulating, transforming a result, rather than only feeding a value in. And it composes with state: each performance resumes with the advanced state, and the arm's surrounding work wraps every re-reduction:</P>
       <Runnable
@@ -130,6 +133,7 @@ export default function Effects() {
     unit
     ((ask () s (resume 5 s)))
     (let ((limit (Ask.ask))) (match 3 ((guard x (< x limit)) 1) (_ 0)))))`}
+        id="guard-fix"
       />
       <P>Now the perform happens exactly once (<C>limit</C> is <C>5</C>), the guard compares against the bound value, and since <C>3 &lt; 5</C> the first arm fires and the result is <C>1</C>. The rule is narrow: an effect is welcome in a scrutinee, in an arm body, anywhere with a defined order, just not in the guard condition itself, where "how many times, in what order" isn't a question the pattern engine can answer.</P>
       <H2>Why this matters: mock now, real later</H2>
