@@ -20271,6 +20271,36 @@
   ; same class as the B multi-apply residuals (v-core-opt); #5766 tolerate-fewer passes the collapse.
   (live-objects known-leak))
 
+(case
+  "ftp1 a fn-typed param NESTED in a tuple re-emits its (-> Int64 Int64) annotation through the cadenza hop"
+  (doc
+    "The nested-arrow re-emit face of #8435 (breaker two-sided-verified; the sibling of lm1's BARE
+        fn-typed param). `drive-pair` threads a `(Tuple (-> Int64 Int64) Int64)` param — a function type
+        NESTED in a tuple — and is RECURSION-FORCED (it recurses on `k`), so the higher-order def SURVIVES
+        the optimizer's inlining (a non-recursive higher-order def inlines away, never exercising the
+        re-emit) and its parameter annotation MUST re-emit. On `--target cadenza` the param renders
+        `(: p (Tuple (-> Int64 Int64) Int64))` — exercising `type_ast_allow_fn` threaded through `Ty::Tuple`,
+        the nested-arrow render #8435 added BEYOND lm1's bare `(-> …)` param. Applies the carried closure
+        `(+ x 3)` `k` times to 0 → 3n; n=7 → 21, n=40 → 120. Value-parity wasm==cadenza-hop at every opt
+        level. Carries a closure-retention leak-1 on the faithful debug runtime (the tuple/Box-of-closure
+        known-leak family, same as lm1/ck1/ck2) — a stable per-call retention residual, not a value bug."
+  )
+  (input
+    (do
+      (def
+        (drive-pair (: p (Tuple (-> Int64 Int64) Int64)) (: k Int64))
+        (match p ((tuple f acc) (if (> k 0) (drive-pair (tuple f (f acc)) (- k 1)) acc))))
+      (def (main (: n Int64)) (drive-pair (tuple (fn ((: x Int64)) (+ x 3)) 0) n))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 21 Int64))
+  (call main (: 40 Int64))
+  (output (: 120 Int64))
+  ; leak-1 per call on the faithful 04zoq8 debug runtime (one retained closure husk); the recursion-forced
+  ; drive builds the heap so the count is a real residual (a bare-const call folds to 0 live). Precise count
+  ; form per v-corpus-harness (catches a leak-COUNT regression, tighter than lm1's bare marker).
+  (live-objects known-leak 1))
+
 ; nzx1: the EQUALITY/ORDER split on the two float specials, juxtaposed in ONE matrix. Cadenza's `=`
 ; is the canonical TOTAL structural equality (distinguishes -0.0 from +0.0; NaN self-equal) while
 ; `<`/`<=` are the IEEE PARTIAL order (zeros compare equal; NaN unordered). The corners a rewrite
