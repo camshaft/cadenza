@@ -1,10 +1,13 @@
 # DESIGN — MatchSum nested-pattern whole-slot read (the M4a completeness gap)
 
-Owner: v-cadenza-backend. Status: DESIGN (banked for a fresh-context implementation, per operator ruling
-2026-09-02: "have v-cadenza-backend do a write up for the big redesign and restart it with a fresh context").
+Owner: v-cadenza-backend. Status: **LANDED** (see §7 STATUS 2026-09-04). B1 (wildcard-read-whole) + B2
+(destructured-read-whole reconstruct) shipped and are pinned by two green corpus cases; the original CDZ0101
+symptom no longer occurs. The header below preserves the ORIGINAL design (the operator's 2026-09-02 ruling
+was "have v-cadenza-backend do a write up for the big redesign and restart it with a fresh context" — that
+write-up is §1–§6; the fresh-context implementation then took B1→B2, NOT the Approach A refactor).
 Scope: the `--target cadenza` backend re-emit of a nested-sum `match` whose arm body reads a WHOLE payload
-slot that the arm ALSO destructures or wildcards. Currently a completeness gap → CDZ0101 on the round-trip
-(a cadenza-target TODO; NOT a silent miscompile — always validate-caught).
+slot that the arm ALSO destructures or wildcards. Was a completeness gap → CDZ0101 on the round-trip
+(a cadenza-target TODO; NOT a silent miscompile — always validate-caught). Read §7 for what actually landed.
 
 ## 1. The symptom
 
@@ -173,3 +176,34 @@ All in `implementation/seed/crates/rcdzc/src/backend/cadenza/mod.rs`:
   registered-but-unemitted `_cdz_m0` today.
 - `emit_switch_tree` (~mod.rs:3575) + `emit_nested_switch_chain` (~mod.rs:4276): the tree-walk A must
   either extend (name-scrutinee variant) or bypass for the whole-slot-read case.
+
+## 7. STATUS 2026-09-04 — LANDED (B1 + B2), pinned green; only a contrived residual declines
+
+The fresh-context implementation took the recommended B1 → B2 path (NOT Approach A's name-scrutinee
+un-flatten — B2's body-reconstruct covers every witnessed corpus shape, so A was unnecessary):
+
+- **B1 — wildcard slot read whole** (the `choices[path] == None` arm of `build_arm_pat_inner`, `mod.rs`
+  ~3985-4002): when the arm body reads THIS whole slot (`env.whole_slot_reads` contains
+  `(root_scrut, read_path)`), emit the pre-registered whole-slot binder NAME instead of `_` (a binder
+  matches anything = semantically identical to `_`, purely additive). The body's `Core::SumPayload` read
+  now resolves instead of dangling to a never-emitted `_cdz_mN` → the old CDZ0101 is gone.
+- **B2 — destructured slot read whole** (`build_arm_pat` outer, `mod.rs` ~3796-3810): when the emitted
+  pattern for a whole-slot-read path is a DESTRUCTURE (not a plain name), push a `slot_reconstructions`
+  entry `(binder, pat)` so the arm body is wrapped `(let ((_cdz_mN <reconstructed-ctor>)) body)`,
+  rebuilding the whole slot from the destructure's inner binders. Value-identical (a single-variant wrap
+  of the matched payload).
+
+**Pinned by two green corpus cases** in `spec/semantics/20-structural-editing.sexp` (both `pass` on
+wasm + rust + rust-async in `.gate-baseline*`, and both protect the cadenza round-trip):
+- "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite" (the original
+  §1 symptom program; a=40 → 42).
+- "a rewrite whose fall-through arm reads a switched slot WHOLE round-trips through the cadenza backend"
+  (the dedicated B1 witness — a `Neg`-elimination `drop-negs` whose fall-through `(Add l r)` reads `l`
+  whole after slot 0 was switched on the `Neg` discriminant).
+
+**Remaining residual (correctly DECLINED, reject-don't-miscompile — no corpus witness, LOW priority):**
+a DESTRUCTURE that itself CONTAINS a wildcard AND is read whole by the body — `build_arm_pat` cannot
+reconstruct the whole slot from a partial destructure, so it `Reject::unsupported`s ("cannot reconstruct
+a destructured whole payload slot the body reads whole when the destructure contains a wildcard",
+`mod.rs` ~3802-3808). This is a clean cadenza-target decline (never a wrong value); revive Approach A
+(name-scrutinee un-flatten) only if a real corpus case ever needs it.
