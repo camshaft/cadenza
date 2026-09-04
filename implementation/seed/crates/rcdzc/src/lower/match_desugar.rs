@@ -1750,6 +1750,9 @@ pub(super) fn desugar_refutable_literal_list_elements(
     // rewrite re-resolves), and lower it through the ordinary path (which routes back to `lower_match_list`,
     // now with no literal elements → the guarded-arm path handles them).
     let match_head = db.push_name("match");
+    // Capture the arm ids before `items` moves `new_arms`: only the ARMS are forgotten + re-resolved below
+    // (the scrutinee's resolution is preserved — see the forget-arms-only note).
+    let arm_ids: Vec<StructId> = new_arms.clone();
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
@@ -1770,12 +1773,25 @@ pub(super) fn desugar_refutable_literal_list_elements(
     // extension (the `and`-spine is non-binding, the one `(guard …)` node is a candidate its children skip
     // TO) so every inner reference hops O(1). See `Db::extend_scope_skip_into_subtree`.
     db.extend_scope_skip_into_subtree(rewritten);
-    // FORGET any stale memoized resolution in the subtree before re-resolving: the user guard cond
+    // FORGET any stale memoized resolution in the ARMS before re-resolving: the user guard cond
     // (`(> x lim)`) is REUSED from the (copied) source arm, so a reference may already be memoized against
     // its pre-desugar position (unbound, from the β-copy). Clearing the column lets `resolve_subtree`
     // re-resolve against the now-correct parent ascent. Fresh synth nodes are unmemoized; this matters only
-    // for the reused cond/body — bounded to `rewritten`'s subtree.
-    crate::resolve::forget_subtree(db, rewritten);
+    // for the reused cond/body — bounded to the arms.
+    //
+    // Forget the ARMS ONLY, NOT the SCRUTINEE: the scrutinee is a reference resolved in the ENCLOSING
+    // context (whatever binds it), which this desugar does not change — it only wraps the arms. Blanket-
+    // forgetting `rewritten` (scrutinee included) breaks a scrutinee that is a SYNTHESIZED binder bound by
+    // an OUTER ARM PATTERN — e.g. the `__ne` fresh binder the nested-list desugar introduces, whose body
+    // re-match `(match __ne ((list <lit> b) …) …)` routes HERE when its inner list has a LITERAL element:
+    // the outer nested-list desugar already resolved+pinned `__ne` to its `(guard (list __ne) …)` binder (a
+    // SIBLING arm pattern, not an ancestor), so re-resolving the scrutinee by plain parent-ascent from here
+    // fails → a spurious CDZ0101 `unbound __ne0` (breaker: nested-list-with-literal-element). Preserving the
+    // scrutinee's pinned resolution keeps that binding; a non-pinned scrutinee (a top-level variable) is not
+    // in `resolved_subtrees`, so `resolve_subtree` resolves it normally either way.
+    for &arm in &arm_ids {
+        crate::resolve::forget_subtree(db, arm);
+    }
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
     Some(core_of(db, rewritten))
@@ -2425,7 +2441,36 @@ pub(super) fn desugar_refutable_nested_list_elements(
         let cmp_op = db.push_name(if inner_fixed { "=" } else { ">=" });
         let len_test = db.push_list(vec![cmp_op, len_call, k_lit]);
         let guard_cond = match existing_guard {
-            None => len_test,
+            None => {
+                // The inner-length test ALONE is not enough when the nested pattern has REFUTABLE CONTENT
+                // (a literal / ctor element, e.g. `(list 1 b)`): the length guard passes for ANY 2-element
+                // inner list, the arm fires, and the body re-match `(match __ne ((list 1 b) body) (_ (trap)))`
+                // hits its `_ → trap` on a NON-matching element (inner `(2 …)`) — a SILENT TRAP miscompile on
+                // what should FALL THROUGH to a sibling / wildcard arm (breaker: nested-list-with-literal).
+                // So ALSO test the full inner pattern in the guard — `(match __ne (<nested-clone> true)
+                // (_ false))` — so a non-matching element makes the guard FALSE (fall through) and the body
+                // re-match's `_ → trap` is genuinely dead. For a binders-only inner pattern this match is true
+                // whenever the length matches, so it is a harmless no-op there (same behavior as len_test
+                // alone). Mirrors the `Some(g)` arm below (which already matches the inner pattern to bind
+                // `g`'s binders) — here the guard body is just `true`. A CLONE of the nested pattern (the body
+                // re-match reuses the original; a node has one parent).
+                let content_scrut = db.push_name(&name);
+                let nested_clone = clone_refutable_payload(db, nested_pat);
+                let true_body = db.push_atom(crate::ast::Leaf::Bool(true));
+                let content_true_arm = db.push_list(vec![nested_clone, true_body]);
+                let content_wild = db.push_name("_");
+                let content_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let content_false_arm = db.push_list(vec![content_wild, content_false]);
+                let content_match_head = db.push_name("match");
+                let content_match = db.push_list(vec![
+                    content_match_head,
+                    content_scrut,
+                    content_true_arm,
+                    content_false_arm,
+                ]);
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, len_test, content_match])
+            }
             Some(g) => {
                 // The user guard cond `g` may read the INNER list's binders (`(guard (list (list a .. r1)
                 // .. r2) (> a 3))` reads `a`). Those bind only in the BODY re-match (below), NOT at the outer

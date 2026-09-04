@@ -9173,6 +9173,47 @@
   (output (: 5 Int64)))
 
 (case
+  "a nested-list arm with a LITERAL inner element binds and matches (no user guard)"
+  (doc
+    "The no-user-guard companion of the nested-list-guard case above. A leading NESTED LIST element with a
+           LITERAL `(list 1 b)` — no `(guard …)`. The Inc-14 desugar replaces the nested element with a fresh
+           `__ne` binder + an inner-length guard + a body re-match `(match __ne ((list 1 b) body) (_ trap))`.
+           Regression (breaker): the body re-match's `__ne` SCRUTINEE is bound by the OUTER `(guard (list __ne)
+           …)` arm pattern, but the REFUTABLE-LITERAL inner routes the body re-match through the literal-element
+           desugar, whose `forget_subtree` + re-resolve dropped `__ne`'s binding → a spurious CDZ0101 `unbound
+           __ne0` (the literal-element desugar now forgets only the ARMS, preserving the pinned scrutinee).
+           `f [[1 5]]`: inner `(1 5)` matches `(1 b)` → b = 5.")
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 b)) b) (_ -1)))
+      (def (mk (: k Int64)) #list(#list(1 k)))
+      (def (main) (f (mk 5)))
+      (export main)))
+  (output (: 5 Int64)))
+
+(case
+  "a nested-list arm with a LITERAL inner element FALLS THROUGH when the literal differs (no spurious trap)"
+  (doc
+    "The refutation companion: the inner LITERAL must be tested in the arm GUARD, not only in the body
+           re-match — else a non-matching inner literal passes the inner-LENGTH guard, fires the arm, and hits
+           the body re-match's `_ → trap`, a SILENT TRAP miscompile on what must FALL THROUGH to a sibling /
+           wildcard arm (breaker). The Inc-14 desugar's no-user-guard arm now ANDs a full-inner-pattern match
+           into the guard (`(and <len_test> (match __ne (<nested-clone> true) (_ false)))`), so a non-matching
+           literal makes the guard false and control falls through. `f [[2 9]]`: inner `(2 9)` does NOT match
+           `(1 b)` (2 ≠ 1) → the arm is skipped → wildcard → -1 (NOT a trap).")
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 b)) b) (_ -1)))
+      (def (mk (: k Int64)) #list(#list(2 k)))
+      (def (main) (f (mk 9)))
+      (export main)))
+  (output (: -1 Int64)))
+
+(case
   "a nullary variant list element dispatches by its discriminant"
   (doc
     "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
