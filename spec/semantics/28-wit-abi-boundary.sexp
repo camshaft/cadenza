@@ -127,12 +127,14 @@
            a separate gap). Motivated by #8268: the differential wasm oracle (oracle-lean) now DECODES
            built-in Option/Result heap `.sum` results at the boundary — this fences the corpus-gate
            value-render side (which, unlike the oracle, already handles built-in AND user sums) so the two
-           observation paths cannot silently drift on the bare-sum-result shape. Census pin `(live-objects 1)`
-           = EXPECTED-RETAIN: the returned `Result` value is exactly ONE heap Sum node in BOTH arms (Ok(x)'s
-           scalar Int64 payload and Err's const-immortal String literal payload each add no extra node), and
-           the host holds that return at census — a BENIGN escaping-value retain, NOT a leak (v-memory-safety
-           adjudicated: got 1 == the value node-count, and there is no authored drop, so nothing to reclaim).
-           (The faithful nix census discriminates 1 here; the in-process census under-counts to 0.)"
+           observation paths cannot silently drift on the bare-sum-result shape. Census pin PER-CALL
+           `(live-objects 1 0)` = EXPECTED-RETAIN, and the two arms GENUINELY DIFFER (v-memory-safety
+           rc-traced post-#8394): call 0 `(mk 5)` -> `(Ok 5)` retains 1 (the returned Result Sum node held by
+           the host at census — a benign escaping-value retain, 1 == the returned value's node count, no
+           authored drop, nothing to reclaim); call 1 `(mk 0)` -> `(Err "z")` retains 0 (the Err payload is a
+           CONST-IMMORTAL String literal → no fresh heap node → the returned Sum reclaims to 0). So a single
+           `(live-objects N)` cannot capture both — the per-call `(live-objects 1 0)` is the accurate pin.
+           (The faithful nix census discriminates these; the in-process census under-counts. NOT a leak.)"
     "tri-target: wasm + rust + cadenza-hop all PASS.")
   (input
     (do
@@ -142,7 +144,7 @@
   (output (: (Ok 5) (Result Int64 String)))
   (call mk (: 0 Int64))
   (output (: (Err "z") (Result Int64 String)))
-  (live-objects 1))
+  (live-objects 1 0))
 
 (case
   "a bare LIST of String RESULT round-trips via the run/encode envelope (recursive String decode in a list container)"
