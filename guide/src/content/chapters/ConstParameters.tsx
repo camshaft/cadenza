@@ -28,6 +28,7 @@ export default function ConstParameters() {
 (def
   (main)
   (+ (fold-n #record((= op (fn (x) (+ x 10)))) 3 0) (fold-n #record((= op (fn (x) (* x 2)))) 3 1)))`}
+        id="fold-n"
       />
       <P>The first fold adds 10 three times from <C>0</C> to reach <C>30</C>, the second doubles three times from <C>1</C> to reach <C>8</C>, and together they make <C>38</C>. Because <C>d</C> is const, the <Cadenza ast="Y2R6YXN0AAEDGgoBZAoCb3AEAAAAAQACAQMAAQID" kind="expr">d.op</Cadenza> lookup folds to the concrete function in each specialized copy, so no record is passed at run time and no indirect call is emitted. You've hand-written the mechanism a typeclass or trait system would automate, handing the implementation to the function as a compile-time argument.</P>
       <H2>A const type parameter</H2>
@@ -36,6 +37,7 @@ export default function ConstParameters() {
         source={`(def (is-int (const (: t Type)) (: x Int64)) (Type.eq t Int64))
 
 (def (main) (is-int Int64 5))`}
+        id="is-int"
       />
       <P>Called with <C>Int64</C> it folds to <C>true</C>, and calling it with <C>Bool</C> folds the same code to <C>false</C>, because each call site is specialized for the type it named so the comparison is settled at compile time rather than run time. The caller hands the type in as an argument and the compiler bakes a dedicated copy for it.</P>
       <Note>A <C>const</C> parameter can carry either a type or a dictionary, and both are the same idea seen from two angles. Passing a <C>const</C> <em>type</em> (a <Cadenza ast="Y2R6YXN0AAEECgVjb25zdAoBOgoBdAoEVHlwZQYAAAABAAIAAwEDAQIDAQIABAU=" kind="expr">(const (: t Type))</Cadenza> parameter) lets the caller name the type the code specializes for, which is <em>types as values</em> made into an argument, while passing a <C>const</C> <em>dictionary</em> lets the caller name the behaviour the code runs. Both ride the same machinery, since a compile-time-known argument is inlined and specialized and then erased before the program runs.</Note>
