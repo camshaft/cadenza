@@ -15,14 +15,16 @@
   (h2 "Building on comparison")
   (p "Small decisions built from comparisons are a large part of everyday code. Here is " (c "min") ", and a " (c "clamp") " that keeps a value within a range:")
   (runnable
+    (id "min")
     (source (def (min a b) (if (< a b) a b))
 (def (main) (min 8 3))))
   (runnable
+    (id "clamp")
     (source (def (clamp lo hi x)
   (if (< x lo) lo
       (if (> x hi) hi x)))
 (def (main) (clamp 0 10 42))))
-  (p (cdz (min 8 3)) " is " (c "3") ", the smaller of the two. And " (cdz (clamp 0 10 42)) " is " (c "10") ": 42 is past the upper bound, so " (c "clamp") " pulls it back to " (c "10") ", and feeding it a value already inside " (c "0") "–" (c "10") " gives that value back unchanged.")
+  (p (cdz (min 8 3)) " is " (result (of "min") 3) ", the smaller of the two. And " (cdz (clamp 0 10 42)) " is " (result (of "clamp") 10) ": 42 is past the upper bound, so " (c "clamp") " pulls it back to " (c "10") ", and feeding it a value already inside " (c "0") "–" (c "10") " gives that value back unchanged.")
   (h2 "Three answers, not two")
   (p "A single " (c "&lt;") " only tells you yes-or-no. But comparing two values really has " (em "three") " possible answers: less, equal, or greater. You " (em "could") " encode that as " (c "-1") " / " (c "0") " / " (c "1") " and nest a couple of " (c "if") "s:")
   (runnable
