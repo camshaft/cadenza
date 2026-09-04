@@ -4409,6 +4409,24 @@ c")))
   (input (eval (quote (String.byte-len "hello"))))
   (output (: 5 Int64)))
 
+; The EFFECTFUL companion of the eval-handles-an-operation cases (breaker): the quasiquote holds a form that
+; PERFORMS a handled effect — `(quasiquote (+ (E.ask) 1))` embeds the inert `(E.ask)` perform structure —
+; and `eval` reconstructs it to the source `(+ (E.ask) 1)` AT THE EVAL SITE, which sits inside the enclosing
+; `(handle E …)`. So the reconstructed perform binds to the ENCLOSING handler and runs at runtime (eval does
+; not fold it — a perform is not a compile-time value; it desugars to the source the AST denotes). n=5: the
+; `ask` arm resumes with the state s=5 (threading s+1), so `(E.ask)` returns 5, and the reconstructed
+; `(+ 5 1)` = 6. Pins that eval-reconstruct-to-source composes with effect PERFORM + the enclosing handler
+; binding — the effectful step past the pure eval-handles-operation cases above. Compiles on all 3 targets.
+(case
+  "eval of a quasiquote that PERFORMS a handled effect reconstructs the perform to bind the enclosing handler"
+  (input
+    (do
+      (effect E (op ask (-> Int64)))
+      (def (main (: n Int64)) (handle E n ((ask () s (resume s (+ s 1)))) (eval (quasiquote (+ (E.ask) 1)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case
   "eval of a quoted List.at folds the indexing operation to its Option result"
   (doc
