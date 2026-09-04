@@ -8466,6 +8466,27 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
+; multi-tup-elem (v-inference, IDEALISTIC-TODO gap fence): TWO refutable tuple elements in ONE arm
+; `(list (tuple 1 a) (tuple 2 b))` — each refines on its literal component and binds its payload. The
+; refutable-CTOR desugar ALREADY supports N-per-arm (it loops over every ctor position, nesting one
+; discriminant-test guard + one body re-match per element — verified: `(list (Op.Add a) (Op.Mul b))` -> a+b),
+; but the tuple (and record) value-refinement desugars handle only ONE refutable element per arm and DECLINE
+; `>= 2` ("a list arm with more than one refutable tuple element is not supported"). This is an inconsistency,
+; not a fundamental limit: the tuple/record passes SHOULD generalize to the same N-position loop as the ctor
+; pass. `xs = [(1,5),(2,3)]`: element 0 `(tuple 1 a)` -> a=5, element 1 `(tuple 2 b)` -> b=3 -> 5+3 = 8.
+; Idealistic-todo; auto-flips when the tuple/record desugars gain N-per-arm support (owner: v-inference, the
+; #8367/#8371/#8380 element-refinement arc).
+(case
+  "two refutable tuple list elements in one arm each refine and bind (currently declines >1-per-arm)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Tuple Int64 Int64))))
+        (match xs (#list(#tuple(1 a) #tuple(2 b)) (+ a b)) (_ -1)))
+      (def (main) (f #list(#tuple(1 5) #tuple(2 3))))
+      (export main)))
+  (output (: 8 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
