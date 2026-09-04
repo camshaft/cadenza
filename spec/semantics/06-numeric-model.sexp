@@ -18573,7 +18573,10 @@
         (> a 5)) — was CDZ0101 unbound while the ARM BODY read the same binder fine; guard_cond scope
         registration walked only top-level pattern binders. #5300 descends via the record-field path.
         n=7 → guard true → 703; n=2 → guard false → fall-through arm reads (. r y) → 3; n=-5 → None → -1.
-        (The cadenza hop still declines this shape — a named nested-sum-step gap, banked separately.)")
+        (Round-trips the cadenza hop: the nested-record destructure re-emits as a whole-slot binder
+        `(Some _cdz_m0)` with the guard/body reading `(. _cdz_m0 x)`/`(. _cdz_m0 y)` — the M4a whole-slot
+        machinery — and recompiles to the same 703/3/-1. The earlier named nested-sum-step decline is
+        closed.)")
   (input
     (do
       (def
