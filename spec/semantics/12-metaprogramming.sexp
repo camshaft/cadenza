@@ -640,6 +640,23 @@
   (output (: 3 Int64)))
 
 (case
+  "eval of a quasiquote-built form with a runtime LIST unquote lifts the compound and folds"
+  (doc
+    "The COMPOUND step past the leaf-lift family (Int/Float/String/Bytes/Name above): the active
+           unquote lifts a runtime LIST value, not a scalar leaf. `(let ((x #list(1 2 3))) (eval
+           `(List.len ,x)))` reifies the live list `x` into an `(Ast.List …)` node, which `eval`'s source
+           reconstruction unwraps back to `x` in the enclosing scope, then folds `(List.len x)` = 3 — exactly
+           as the scalar lifts do, but over a heap compound. This is DISTINCT from `unquote-splicing` (which
+           spreads a list's ELEMENTS as multiple args of the enclosing form) and from a list LITERAL in the
+           template: here a single runtime list VALUE is lifted whole. A lift path with no compound (Ast.List)
+           arm would leave the eval un-desugared ('unbound name eval') or fail to reconstruct the list operand.")
+  (input
+    (do
+      (def (main) (let ((x #list(1 2 3))) (eval (quasiquote (List.len (unquote x))))))
+      (export main)))
+  (output (: 3 Int64)))
+
+(case
   "eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form"
   (doc
     "The eval-splice pins above are SINGLE-unquote; this reconstructs a form with TWO active
