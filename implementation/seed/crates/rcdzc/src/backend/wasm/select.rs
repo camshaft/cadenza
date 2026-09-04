@@ -8771,6 +8771,78 @@ fn def_nonlooped_reclaims_param(
     true
 }
 
+/// CATALAN 2nd-root (v-memory-safety, framing A-gated-B): whether a THREADED-CALLEE co-operand `(callee … c …)`
+/// RECLAIMS-OR-BORROWS its heap param at `param_index` WITHIN the call — i.e. the callee does NOT escape/keep
+/// that param, so its reference is released by the call (a borrow is never taken; an invariant owned-borrow is
+/// dropped at the fn-exit epilogue via [`looped_owned_param_drops`], BEFORE the call returns). Used by the
+/// deferred-consume-op operand seq (mark_binder_dups, v-inference) to grant the `k-1` (spare_last) dup
+/// accounting to such a co-operand instead of the `k != i` count: since the callee's ref is freed by the call,
+/// a SIBLING consume of the same binder does NOT need its own retained ref held simultaneously.
+///
+/// This is the LOOPED analog of [`def_nonlooped_reclaims_param`] (blx1) restricted to the caller's dup
+/// decision. The load-bearing distinction vs the szf-9 threaded-and-consumed witnesses (which KEEP `k != i`):
+/// those callees ESCAPE the param (hold it simultaneously-live in the result / a ctor), so
+/// `param_only_borrowed_or_backedge` is FALSE for them and they are correctly EXCLUDED here.
+///
+/// Gate — every conjunct conservative toward NOT granting `k-1` (wrong ⇒ an EXTRA dup = a leak, never a UAF):
+///   • LOOPED single-member self-recursion (the looped analog; a mutual group shares slots — deferred).
+///   • not an export entry / not funcref-taken / not called-from-lifted (the [`def_nonlooped_reclaims_param`]
+///     UAF caveats — a `call_indirect`/eta edge could pass a param this direct-index analysis cannot see).
+///   • heap param, INVARIANT across every back-edge (identity-threaded), and `param_only_borrowed_or_backedge`
+///     (read + identity-back-edge only → NOT escaped → reclaimed/borrowed within the call). Exactly the
+///     invariant-path condition [`looped_owned_param_drops`] uses to prove the callee reclaims the param.
+///
+/// WIRING (v-inference, mark_binder_dups deferred-consume seq): for a co-operand that is a
+/// `Core::Call { callee, args }` where the binder is `args[j]`, this predicate at `param_index = j` being
+/// `true` makes that co-operand SPARE-ELIGIBLE (grant `k-1` — do not add it to a sibling bare-binder
+/// consume's `other`/`live_after`). VERIFIED (v-memory-safety instrument): `true` for gP2/CATALAN's
+/// `rlen`/`conv` (threaded read-only heap param, `drops=[that slot]`); `false` for the varying `grow`
+/// accumulator (`drops=[]`). `#[allow(dead_code)]` until wired.
+#[allow(dead_code)]
+pub(crate) fn def_looped_callee_reclaims_threaded_param(
+    db: &mut Db,
+    callee: usize,
+    param_index: usize,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    let params = crate::layout::def_params(db, callee);
+    // The SLOT this param takes (dense `0..n`, Unit elided) — matching `looped_owned_param_drops`.
+    let Some((param_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if matches!(param_ty.strip_nominal(), Ty::Unit) || !is_heap_type(&param_ty) {
+        return false;
+    }
+    let mut slot: Option<u32> = None;
+    let mut next: u32 = 0;
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return false; // a param with no machine rep → this def won't select.
+        }
+        if *binder == param_binder {
+            slot = Some(next);
+        }
+        next += 1;
+    }
+    let Some(slot) = slot else {
+        return false;
+    };
+    // SINGLE SOURCE OF TRUTH: the callee RECLAIMS this param at its fn-exit epilogue iff its slot is in
+    // `looped_owned_param_drops` — the EXACT set the emit drops (invariant + `param_only_borrowed_or_backedge`,
+    // or the varying-epilogue case). If the callee reclaims the param, its reference is released BEFORE the
+    // call returns, so a sibling consume of the same binder at the call site needs no simultaneously-held
+    // retained ref → `k-1` is safe. (The `def_nonlooped_reclaims_param` funcref-taken/lifted/export exclusions
+    // are NOT needed here: they gate whether the callee SHOULD self-drop for indirect edges; this predicate
+    // only READS the drop set the callee ALREADY emits at THIS direct call, so it is sound by construction —
+    // wrong ⇒ an extra dup = a leak, never a UAF, since a non-reclaiming param is simply absent from the set.)
+    looped_owned_param_drops(db, body, &params, Some(callee)).contains(&slot)
+}
+
 /// Whether `body` contains a `Core::Call` whose arg triggers a caller-drop ([`call_arg_caller_drops`]) — the
 /// import-side companion of the `Core::Call` emit, so `collect_module_used_ops` imports `drop` iff the emit
 /// actually emits a caller-drop (precise import/emit agreement, like `def_drops_owned_param`). Cycle-guarded.
