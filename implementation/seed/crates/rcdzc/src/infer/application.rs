@@ -2701,6 +2701,13 @@ pub(crate) fn check_application(
                             Some((n.to_string(), "a type"))
                         } else if db.effect_decl_by_name(n).is_some() {
                             Some((n.to_string(), "an effect"))
+                        } else if db.top_level_module_by_name(n).is_some() {
+                            // A MODULE NAME applied — `(m 1)`. Without this, `ht.render_name` leaks the
+                            // module's SYNTHESIZED export Record verbatim (`(Record (: g (-> Unit Int64)))`)
+                            // — the same internal-representation leak the effect/type arms avoid. Name the
+                            // category: "`m` is a module, not a function" (a module is a record of its
+                            // exports; the author likely meant `(m.export …)`).
+                            Some((n.to_string(), "a module"))
                         } else {
                             None
                         }
