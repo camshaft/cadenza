@@ -1779,18 +1779,22 @@ pub(super) fn desugar_refutable_literal_list_elements(
     // re-resolve against the now-correct parent ascent. Fresh synth nodes are unmemoized; this matters only
     // for the reused cond/body — bounded to the arms.
     //
-    // Forget the ARMS ONLY, NOT the SCRUTINEE: the scrutinee is a reference resolved in the ENCLOSING
-    // context (whatever binds it), which this desugar does not change — it only wraps the arms. Blanket-
-    // forgetting `rewritten` (scrutinee included) breaks a scrutinee that is a SYNTHESIZED binder bound by
-    // an OUTER ARM PATTERN — e.g. the `__ne` fresh binder the nested-list desugar introduces, whose body
-    // re-match `(match __ne ((list <lit> b) …) …)` routes HERE when its inner list has a LITERAL element:
-    // the outer nested-list desugar already resolved+pinned `__ne` to its `(guard (list __ne) …)` binder (a
-    // SIBLING arm pattern, not an ancestor), so re-resolving the scrutinee by plain parent-ascent from here
-    // fails → a spurious CDZ0101 `unbound __ne0` (breaker: nested-list-with-literal-element). Preserving the
-    // scrutinee's pinned resolution keeps that binding; a non-pinned scrutinee (a top-level variable) is not
-    // in `resolved_subtrees`, so `resolve_subtree` resolves it normally either way.
+    // Forget the ARMS ONLY, NOT the SCRUTINEE (the scrutinee is a reference resolved in the ENCLOSING
+    // context, which this desugar does not change — it only wraps the arms); and forget the arms
+    // KEEP-PINNED. Both preserve a resolution that ascent CANNOT recompute here — a reference bound by an
+    // OUTER ARM PATTERN, a SIBLING of this rewrite rather than an ancestor. When the NESTED-LIST desugar
+    // (Inc-14) routes its body re-match `(match __ne (<inner-list-pat> body) …)` HERE (inner list has a
+    // LITERAL element), it has ALREADY `resolve_subtree`-PINNED both the `__ne` SCRUTINEE and every body
+    // reference to its outer `(guard (list __ne (.. r)) …)` binders — including a SIBLING outer-REST binder
+    // `r` the body reads. Blanket-forgetting drops those, and re-resolving by plain parent-ascent fails
+    // (the outer arm's pattern binders are not reachable that way) → spurious CDZ0101 `unbound __ne0` / `r`
+    // (breaker #8347 scrutinee, #8358 sibling rest binder). `forget_subtree_keep_pinned` PRESERVES the pinned
+    // (already-correct) refs while still forgetting+re-resolving the UNPINNED reused β-copied guard cond
+    // (which memoized unbound against its pre-desugar position and must recompute). A non-nested (top-level)
+    // literal-list match's scrutinee/arms are resolved normally either way (a plain variable scrutinee is not
+    // pinned to an unreachable binder; the β-copied cond is the only thing needing re-resolution).
     for &arm in &arm_ids {
-        crate::resolve::forget_subtree(db, arm);
+        crate::resolve::forget_subtree_keep_pinned(db, arm);
     }
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
