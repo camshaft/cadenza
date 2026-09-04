@@ -598,8 +598,12 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // variant-erased are declined at the value site); the set of decls that landed gates which sum values
     // may emit, so the two agree (a value emits ⇔ its decl was emitted — no unbound-type recompile).
     let mut emitted: std::collections::HashSet<StructId> = std::collections::HashSet::new();
-    // Track each pushed `(type Name …)` node with its surface NAME, for the dead-decl prune below.
-    let mut type_decl_nodes: Vec<(StructId, String)> = Vec::new();
+    // Track each pushed `(type Name …)` node with the surface names that make it REACHABLE — its type
+    // NAME *and* every variant CONSTRUCTOR name — for the dead-decl prune below. A sum VALUE / MATCH can
+    // reference the decl by a bare ctor (`(Box v)` / `((Box v) …)`) with the type name absent, so keying
+    // the prune on the type name ALONE would wrongly drop a decl whose ctor is still live (→ CDZ0101
+    // unbound ctor on recompile). Keeping any of these names live keeps the decl.
+    let mut type_decl_nodes: Vec<(StructId, Vec<String>)> = Vec::new();
     for i in 0..db.type_decls.len() {
         let decl = db.type_decls[i].clone();
         if db.is_user_node(decl.occ)
@@ -607,7 +611,9 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         {
             root_children.push(node);
             emitted.insert(decl.occ);
-            type_decl_nodes.push((node, decl.name.to_string()));
+            let mut keys = vec![decl.name.to_string()];
+            keys.extend(decl.variants.iter().map(|v| v.name.to_string()));
+            type_decl_nodes.push((node, keys));
         }
     }
 
@@ -673,11 +679,14 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // type whose constructing def is DCE'd because the call folds to a constant) leaves an ORPHAN `(type
     // Name …)` nothing references — and TWO distinct occ-keyed decls sharing a surface name (a module-
     // scoped `Sh` in two inline modules, #8220) then re-emit as two top-level `(type Sh …)` that COLLIDE
-    // on recompile (CDZ0201 "type `Sh` is declared more than once"). Drop a type-decl node whose surface
-    // NAME is referenced NOWHERE in the emitted def/export/effect nodes (nor, transitively, in a KEPT
-    // type decl's payload — the fixpoint below). This is CONSERVATIVE — a name-scan only ever KEEPS a
-    // decl (a coincidental name match over-keeps, harmless), never drops a referenced one — so it is
-    // byte-identical for any program whose type decls are all live; only orphan decls are removed.
+    // on recompile (CDZ0201 "type `Sh` is declared more than once"). Drop a type-decl node NONE of whose
+    // surface names — its type NAME or any variant CONSTRUCTOR name — is referenced anywhere in the emitted
+    // def/export/effect nodes (nor, transitively, in a KEPT type decl's payload — the fixpoint below). The
+    // ctor names matter: a sum value/match re-emits a bare `(Box v)` / `((Box v) …)` with the TYPE name
+    // absent, so keying on the type name alone would drop a decl whose ctor is still live (→ CDZ0101 unbound
+    // ctor on recompile). This is CONSERVATIVE — a name-scan only ever KEEPS a decl (a coincidental name
+    // match over-keeps, harmless), never drops a referenced one — so it is byte-identical for any program
+    // whose type decls are all live; only orphan decls (no name AND no ctor referenced) are removed.
     if !type_decl_nodes.is_empty() {
         fn collect_names(b: &Builder, id: StructId, out: &mut std::collections::HashSet<String>) {
             match b.get(id) {
@@ -706,8 +715,8 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         // reachable only through another reachable decl stays live.
         loop {
             let mut grew = false;
-            for (id, name) in &type_decl_nodes {
-                if referenced.contains(name.as_str()) {
+            for (id, keys) in &type_decl_nodes {
+                if keys.iter().any(|k| referenced.contains(k.as_str())) {
                     let before = referenced.len();
                     collect_names(&b, *id, &mut referenced);
                     grew |= referenced.len() != before;
@@ -719,7 +728,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         }
         root_children.retain(
             |child| match type_decl_nodes.iter().find(|(id, _)| id == child) {
-                Some((_, name)) => referenced.contains(name.as_str()),
+                Some((_, keys)) => keys.iter().any(|k| referenced.contains(k.as_str())),
                 None => true,
             },
         );
