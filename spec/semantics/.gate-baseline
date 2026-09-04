@@ -4676,6 +4676,7 @@ pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a refutable map value sub-pattern falls through on a non-matching variant
 pass	a refutable map value sub-pattern folds the same over a constant map
 pass	a refutable tuple list element with a literal component refines by value
+pass	a refutable tuple list element with a nested constructor component refines by discriminant and binds its payload
 pass	a refutable-ctor list element still requires a catch-all covering every length
 pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
