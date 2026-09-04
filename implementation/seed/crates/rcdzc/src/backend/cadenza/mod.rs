@@ -4782,7 +4782,18 @@ fn emit_match_sum(
         ));
     }
     let match_head = b.name("match");
-    let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+    // NEWTYPE-SCRUTINEE PEEL: this flat-arm dispatch matches the INNER sum's variants (`decl` recovered above
+    // is the inner `Ty::Sum`, e.g. `Box`), but if the scrutinee is a binder DECLARED as a single-variant
+    // newtype over that sum (`(: w Wrap)`, `(type Wrap (Mk Box))`) whose erased solved type is the inner, the
+    // bare binder recompiles as the NOMINAL — so `(match w ((Zero …)(One …)))` fails CDZ0203 (Zero/One are not
+    // variants of `Wrap`). The optimizer folded away the `(match w ((Mk b) …))` unwrap. Re-insert it: emit the
+    // scrutinee PEELED to its inner via `(match w ((Mk x) x))`, so the inner-variant arms dispatch on the
+    // underlying sum. Returns `None` (→ bare emit) unless the scrutinee is exactly that folded newtype binder
+    // (a newtype-over-tuple keeps its `(Mk #tuple…)` arm on the Leaf path, never reaching here — no regression).
+    let scrut_node = match emit_binder_newtype_inner_peel(db, b, scrutinee, env, emitted)? {
+        Some(peel) => peel,
+        None => emit_expr(db, b, scrutinee, None, env, emitted)?,
+    };
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
         match arm.disc {
@@ -6600,6 +6611,24 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
                 None => NominalDisp::PassThrough,
             }
         }
+        // A TUPLE PROJECTION `(. p i)` — reads element `i` of a runtime tuple. Like `Core::SumPayload`, the
+        // read hands back whatever the slot STORES: a slot typed this nominal (a stored `Lst` in a `(Tuple
+        // Int64 Lst)` spine — the recursive-newtype traversal `(sm (. p 1))`) yields the nominal directly →
+        // PASS-THROUGH (bare `(. p i)`, no re-wrap); a slot holding the INNER type a `(Ctor …)` wraps →
+        // CONSTRUCT; undeterminable → conservative PASS-THROUGH. Was `_ => Decline` → CDZ0900 on a projected
+        // recursive-newtype field.
+        Core::Proj { operand, index } => match crate::infer::type_of(db, operand) {
+            Ty::Tuple(ts) => match ts.get(index) {
+                Some(Ty::Nominal { decl: sd, .. }) | Some(Ty::Sum { decl: sd, .. })
+                    if *sd == decl =>
+                {
+                    NominalDisp::PassThrough
+                }
+                Some(_) => NominalDisp::Construct,
+                None => NominalDisp::PassThrough,
+            },
+            _ => NominalDisp::PassThrough,
+        },
         // Control flow / binding carry the nominal through from their sub-expressions.
         Core::If { .. }
         | Core::Let { .. }
