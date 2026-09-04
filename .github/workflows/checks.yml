@@ -276,8 +276,14 @@ jobs:
         with:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       - uses: ./.github/actions/nix-store-cache
+      # --keep-going (v-gha-green 2026-09-04): the aggregate depends on ~35 per-file coarse gates, each of which
+      # FAILS its own build on a pass→not-pass regression. WITHOUT --keep-going nix aborts the remaining per-file
+      # builds at the FIRST failure, so a drift/regression set surfaces ONE case per ci cycle (slow to clear now
+      # that this gate is load-bearing on the baseline sync). --keep-going builds ALL per-file gates before failing
+      # the top-level → EVERY regressed file is reported in one run → the baseline owner batch-re-pins instead of
+      # one-per-cycle. Semantics UNCHANGED: the job still reds (nix exits non-zero) iff any file regresses.
       - name: Run the corpus gate (via nix — full-corpus wasm coarse, fail-on-regression)
-        run: nix build .#checks.aarch64-linux.corpus-gate-coarse --print-build-logs
+        run: nix build .#checks.aarch64-linux.corpus-gate-coarse --print-build-logs --keep-going
 
   cad-tests:
     # The Cadenza-SOURCE @test suites — libraries written IN Cadenza, run via `cdz test` (compile a
