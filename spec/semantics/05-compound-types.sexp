@@ -8534,6 +8534,37 @@
   (call main (: 2 Int64))
   (output (: -1 Int64)))
 
+; rec-in-nlist (breaker, COMPOSITION guard #8393 × #8348): a refutable RECORD element (literal field) sitting
+; INSIDE a NESTED-list element `(list (list (record (= v 1))))` composes the two element-refinement desugars —
+; the Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the record-element field-value refinement
+; (#8380/#8393). The inner `(record (= v 1))` refines on field `v` THROUGH the nested-list layer:
+; `xs = [[{v:1}]]` → inner record `{v:1}` matches `(= v 1)` → 100. Record-element is a DISTINCT desugar from
+; the tuple-element one guarded at tup-in-nlist above (#8367), so this is independent composition coverage — a
+; refactor of the record-element path could break record-nesting while sparing tuple-nesting. The fall-through
+; companion pins that a non-matching inner record field composes its REFUTATION through the nested-list layer
+; too (no spurious trap, the #8358-class hazard).
+(case
+  "a refutable record element inside a nested-list element refines through both layers"
+  (input
+    (do
+      (def
+        (f (: xs (List (List (Record (: v Int64))))))
+        (match xs (#list(#list(#record((= v 1)))) 100) (_ -1)))
+      (def (main) (f #list(#list(#record((= v 1))))))
+      (export main)))
+  (output (: 100 Int64)))
+
+(case
+  "a refutable record element inside a nested-list element FALLS THROUGH when the field differs"
+  (input
+    (do
+      (def
+        (f (: xs (List (List (Record (: v Int64))))))
+        (match xs (#list(#list(#record((= v 1)))) 100) (_ -1)))
+      (def (main) (f #list(#list(#record((= v 2))))))
+      (export main)))
+  (output (: -1 Int64)))
+
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
   (doc
