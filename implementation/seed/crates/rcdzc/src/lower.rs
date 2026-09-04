@@ -5502,7 +5502,16 @@ fn build_bin_arm_predicate(
                     "a runtime dependent-size bin match size field is not an earlier segment",
                 ));
             };
-            if bin_static_offset(segs, j).is_none() {
+            // The size field must sit at a STATIC offset so `bytes-len >= total` proves its read in bounds. A
+            // byte-aligned int size resolves via `bin_static_offset`; a sub-byte BIT-FIELD size (bfx9 — e.g.
+            // `(bits pad 4)(bits len 4)(utf8 s len)`) starts MID-BYTE so `bin_static_offset` declines it, but its
+            // value is read out of its byte-aligned RUN (`bin_size_len_read`'s `Bits` arm via `bin_bitfield_run`),
+            // which is equally STATIC + in-bounds within the fixed prefix. Accept a bit-field size field whose run
+            // is byte-aligned + readable; only a size at a DYNAMIC offset (a second dependent size before it — an
+            // interleaved chain) is not yet lowered → decline.
+            let size_static =
+                bin_static_offset(segs, j).is_some() || bin_bitfield_run(segs, j).is_some();
+            if !size_static {
                 return Err(Reject::unsupported(
                     "a runtime bin match with a dynamically-offset dependent size field is not lowered",
                 ));
