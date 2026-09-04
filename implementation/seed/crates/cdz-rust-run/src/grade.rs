@@ -233,6 +233,7 @@ mod tests {
                 call,
                 expect,
                 diag: None,
+                exact_code: false,
             }],
             host_responses: vec![],
             host_calls: vec![],
