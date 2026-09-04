@@ -8519,7 +8519,7 @@
   (input
     (do
       (def
-        (f (: xs (List (Record (v Int64) (w Int64)))))
+        (f (: xs (List (Record (: v Int64) (: w Int64)))))
         (match xs
           ((guard #list(#record((= v 1) (= w b))) (> b 3)) (* b 10))
           (_ -1)))
