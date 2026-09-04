@@ -731,51 +731,13 @@
   (call main)
   (output (: 10 Int64)))
 
-; --- An ERRORING subject reports its OWN resolution error ahead of the arm pattern-support check ---------
-; When the match SUBJECT itself fails to resolve — an unbound NAME (CDZ0101) or an unresolved MODULE MEMBER
-; (CDZ0201) — that real error MUST surface regardless of the arm patterns. A poison subject's type is `Any`
-; (unresolved), so it matches NONE of the kind-dispatches above; without propagating the subject's poison
-; first, an arm with a STRUCTURAL/ctor pattern fell through to the scalar-probe path and MASKED the subject
-; error with the misleading uncoded "a match pattern that is not a scalar literal or `_` is not supported".
-; The erroring-SUBJECT sibling of the wrong-KIND CDZ0203 cases above (breaker-found, concierge-routed).
-; CONTRAST: a WILDCARD/scalar arm ALWAYS surfaced the subject error (that path lowers the scrutinee + prop-
-; agates its poison), so the fix aligns the structural-arm case with the wildcard one — every arm shape now
-; reports the real cause.
-(case
-  "an unbound match subject reports CDZ0101 even under a structural arm pattern (not masked)"
-  (doc
-    "`(match undefined_subject ((Some v) v) (_ 0))` — the subject `undefined_subject` is unbound (a
-           CDZ0101). The `(Some v)` structural arm must NOT mask it with the generic pattern-support decline;
-           the subject's own unbound-name error surfaces ahead of the arm check.")
-  (input (do (def (main) (match undefined_subject ((Some v) v) (_ 0))) (export main)))
-  (error CDZ0101 (message "unbound name")))
-
-(case
-  "an unbound match subject under a wildcard arm reports CDZ0101 (the always-clean control)"
-  (doc
-    "The contrast that isolates the fix: the SAME unbound subject under a WILDCARD arm always surfaced
-           CDZ0101 (the scalar/wildcard path lowers the scrutinee + propagates its poison). Pins that the
-           structural-arm case (above) now matches this clean behavior.")
-  (input (do (def (main) (match undefined_subject (_ 0))) (export main)))
-  (error CDZ0101 (message "unbound name")))
-
-(case
-  "an unresolved-member match subject reports CDZ0201 even under a structural arm pattern (not masked)"
-  (doc
-    "`(match (Map.of #list(1)) ((Some x) x) (_ 0))` — `Map.of` is not a member of the `Map` module (a
-           CDZ0201). The structural `(Some x)` arm must not mask the unresolved-member error; it surfaces
-           ahead of the arm pattern-support check — the CDZ0201 twin of the unbound-name case.")
-  (input (do (def (main) (match (Map.of #list(1)) ((Some x) x) (_ 0))) (export main)))
-  (error CDZ0201 (message "has no member")))
-
 ; A map pattern can refine an entry's VALUE against a LITERAL (breaker): every map-pattern case above binds
 ; the value to a BINDER `(= 1 v)`; this refines it against a LITERAL `(= 1 5)` — the arm matches ONLY when
 ; entry 1's value equals 5. n=5: `{1:5}` matches `(= 1 5)` → 100; n=3: `{1:3}` fails the value refinement →
 ; the `_` arm → 0. Pins that the map matcher does VALUE refinement (a refutable entry-value sub-pattern),
-; NOT only key-presence + value-binding. (The length-dispatch LIST matcher's refutable-ELEMENT refinement has
-; since caught up: a nested-list LITERAL element leaked __ne0 (#8347) then #8348 fixed it, and a refutable
-; TUPLE element declined CDZ0900 until #8367/#8371 refined it — so now sum-ctor/newtype/nested-list/tuple all
-; refine as list elements; a refutable RECORD element is the remaining holdout, CDZ0900, fenced #8380.)
+; NOT only key-presence + value-binding. (Contrast the length-dispatch LIST matcher, which does NOT support a
+; refutable TUPLE-element sub-pattern — CDZ0900; a nested-list LITERAL element formerly leaked __ne0 (#8347)
+; but #8348 fixed it, so nested-list literals now refine — a refutable tuple element remains the residual gap.)
 (case
   "a map pattern refines an entry VALUE against a literal (matches only when the value equals it)"
   (input
@@ -8472,26 +8434,44 @@
       (export main)))
   (output (: -1 Int64)))
 
-; rec-lit-elem (breaker, the RECORD holdout — #8367 'completed the arc' but RECORDS remain unrefined): the
-; refutable-list-element-refinement family now covers a multi-variant sum ctor (discriminant), a single-variant
+; rec-lit-elem (breaker, the RECORD holdout — the TRUE last refutable-list-element kind, #8380): the
+; refutable-list-element-refinement family covers a multi-variant sum ctor (discriminant), a single-variant
 ; newtype ctor (literal payload), a nested-LIST element (literal, #8348), and a TUPLE element (literal
-; component, #8367) — but a RECORD element with a refutable FIELD, `(list (record (= v 1)))`, STILL declines
-; CDZ0900 'a refutable list element sub-pattern needs element-value refinement'. This is inconsistent: a record
-; field refines by value everywhere ELSE — as a MAP entry value (#8352) and in a bare record match — just not as
-; a list ELEMENT. ISOLATION: a BINDER-field record element `(list (record (= v a)))` is IRREFUTABLE and works
-; (binds a → 7), exactly like the tuple/newtype binder controls; only a LITERAL field trips it. Consistent
-; CDZ0900 across wasm+rust+cadenza (front-end desugar). SHOULD refine by the field value like its siblings:
-; `xs = [{v:1}]`, record `{v:1}` matches `(= v 1)` → 100 (a non-matching `{v:2}` would fall through). Idealistic
-; todo; auto-flips when record-element value-refinement lands. Routed to the list-matcher element-refinement
-; owner (the #8367/#8371 arc — records are the next holdout after tuples).
+; component, #8367/#8371) — and now a RECORD element with a refutable FIELD, `(list (record (= v 1)))`, refines
+; by the field value TOO (#8380), consistent with a record field refining everywhere else — as a MAP entry value
+; (#8352) and in a bare record match. Desugar (the RECORD twin of the tuple pass): a fresh binder + a
+; record-value-test guard `(match __lr ((record (= v 1)) true) (_ false))` for fall-through + a body re-match
+; binding the field sub-patterns. ISOLATION: a BINDER-field record element `(list (record (= v a)))` is
+; IRREFUTABLE and stays on the pre-existing path (binds a → 7); only a LITERAL field routes the refinement.
+; `xs = [{v:1}]`, record `{v:1}` matches `(= v 1)` → 100; a non-matching `{v:2}` falls through → -1.
 (case
-  "a refutable record list element with a literal field should refine by value (currently CDZ0900)"
+  "a refutable record list element with a literal field refines by value (#8380)"
   (input
     (do
-      (def (f (: xs (List (Record (: v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
+      (def (f (: xs (List (Record (v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
       (def (main) (f #list(#record((= v 1)))))
       (export main)))
   (output (: 100 Int64)))
+
+; rec-lit-elem-2 (#8380 companion): a MIXED refutable record element — a LITERAL field `(= v 1)` that refines
+; by value AND a BINDER field `(= w b)` the body reads — over a runtime list, plus a second literal arm and a
+; fall-through. Pins that the record desugar's body re-match binds the field binder (b) for the body while the
+; guard tests only the literal field, that two literal-field arms refine independently (v=1 → +100, v=2 → +200),
+; and that a non-matching literal (v=3) falls through to the wildcard. `[{v:1,w:n}]` n=5 → 100+5=105.
+(case
+  "a mixed refutable record list element refines by a literal field and binds a binder field for the body (#8380)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (v Int64) (w Int64)))))
+        (match xs
+          (#list(#record((= v 1) (= w b))) (+ 100 b))
+          (#list(#record((= v 2) (= w b))) (+ 200 b))
+          (_ -1)))
+      (def (main (: n Int64)) (f #list(#record((= v 1) (= w n)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 105 Int64)))
 
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"

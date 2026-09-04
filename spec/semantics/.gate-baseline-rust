@@ -2862,6 +2862,7 @@ pass	a misspelled match keyword in head position suggests match
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
 pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
+pass	a mixed refutable record list element refines by a literal field and binds a binder field for the body (#8380)
 pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
@@ -9027,6 +9028,6 @@ todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the b
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
 todo	lcap4 an ESCAPING curried closure captures a def-param AND an intermediate lambda param (params escape; bounds lcap2 to locals)
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
-todo	a refutable record list element with a literal field should refine by value (currently CDZ0900)
+pass	a refutable record list element with a literal field refines by value (#8380)
 pass	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest
 pass	a refutable tuple list element with a literal component refines by value

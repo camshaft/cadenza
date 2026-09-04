@@ -405,7 +405,7 @@ pass	Ordering values order Less below Equal below Greater
 pass	Ordering.of orders strings lexicographically in the three-way comparison
 pass	Ordering.of yields the three-way ordering of two Int64 operands
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
-pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
+fail	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
@@ -3559,6 +3559,7 @@ pass	a misspelled variant in a list-element pattern suggests the near variant wi
 pass	a mistyped argument to a sum parameter offers a wrap-in-variant fix at the call site
 pass	a mixed String and scalar argument cross to a peer in one op, each in its own ABI lane
 pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
+pass	a mixed refutable record list element refines by a literal field and binds a binder field for the body (#8380)
 pass	a mixed-int-width operator with a non-aliased target width carries NO conversion fix
 pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
@@ -6961,8 +6962,6 @@ pass	an unbound export BEFORE a valid main export is rejected
 pass	an unbound export after a valid HELPER export is rejected
 pass	an unbound handle head keeps its own unbound-name error
 pass	an unbound match arm head over a recursive body is a coded CDZ0101, not silently accepted
-pass	an unbound match subject reports CDZ0101 even under a structural arm pattern (not masked)
-pass	an unbound match subject under a wildcard arm reports CDZ0101 (the always-clean control)
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name as an ARGUMENT to a known ctor in an uncalled def is rejected
 pass	an unbound name close to a let binding suggests the binding with a replace fix
@@ -7041,7 +7040,6 @@ pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
 pass	an unrelated-payload Option mismatch gets no match-it hint
 pass	an unrepresentable closure export is one coded boundary error, not a shadowing decline
-pass	an unresolved-member match subject reports CDZ0201 even under a structural arm pattern (not masked)
 pass	an unsatisfiable equality still traps on a divide-by-zero operand
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding

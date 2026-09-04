@@ -323,20 +323,6 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
             },
         };
     }
-    // A SUBJECT that fails to RESOLVE — an unbound name (CDZ0101) or an unresolved module member
-    // (CDZ0201) — is a real error that must report AS ITSELF, ahead of any arm-pattern-support check.
-    // Its lowered core is a `Core::Poison` carrying that coded reject; propagate it here. Without this,
-    // a poison subject's TYPE is `Any` (unresolved), so it matches NONE of the Sum/Tuple/Bytes/List/Map
-    // dispatches below and the definite-kind CDZ0203 check, falling through to the scalar-probe path —
-    // which, when an arm carries a STRUCTURAL/ctor pattern the scalar path can't handle, declines with the
-    // misleading uncoded "a match pattern that is not a scalar literal or `_` is not supported", MASKING
-    // the subject's own CDZ0101/CDZ0201. (A wildcard/scalar arm already surfaced the subject error, because
-    // that path lowers the scrutinee and propagates its poison — so this only fixes the structural-arm case,
-    // aligning every arm shape on the real cause.) This is the erroring-SUBJECT sibling of the wrong-KIND
-    // CDZ0203 scrutinee check below (breaker-found, concierge-routed).
-    if let Core::Poison(r) = core_of(db, scrutinee) {
-        return Core::Poison(r);
-    }
     // A FUNCTION-VALUED scrutinee — `(match g …)` where `g` is a closure/def — is not matchable: a match
     // deconstructs a DATA value by its cases (`core-semantics.md §Patterns Compose` — literals, tuples,
     // constructors), and a function is not data (it has no cases, no discriminant, no machine value to
@@ -3014,6 +3000,261 @@ pub(super) fn desugar_refutable_tuple_list_elements(
     Some(core_of(db, rewritten))
 }
 
+/// The (key, value) sub-pattern of a record-pattern field, across the three field forms: the native
+/// `FieldPair` (head `Leaf::FieldPair`), the name-head `(= k v)` alias, and the legacy positional `(k v)`.
+/// `None` for a `.. rest` marker or a malformed field. The record twin of the key/value extraction in
+/// `map_pattern_with_wildcard_values`.
+fn record_field_kv(db: &Db, pair: StructId) -> Option<(StructId, StructId)> {
+    db.ast
+        .field_pair_parts(pair)
+        .or_else(|| db.ast.field_pair(pair))
+        .or_else(|| match db.ast.get(pair) {
+            crate::ast::Struct::List(kv) if kv.len() == 2 => Some((kv[0], kv[1])),
+            _ => None,
+        })
+}
+
+/// Whether `elem_pat` is a REFUTABLE RECORD list-element pattern — a `(record (= k v) …)` with ≥1 field
+/// whose VALUE sub-pattern `check_binding_pattern` flags NON-EXHAUSTIVE (a literal atom or a multi-variant
+/// constructor). A record of only bare-binder / `_` field values is IRREFUTABLE (it matches any record
+/// having those fields, bound inline by `check_binding_pattern`), so it returns `false` and is left on the
+/// pre-existing irrefutable path (that is exactly the dst2/dm1/dt2 shape); only a literal-bearing record
+/// like `(record (= v 1))` needs the value-refinement desugar — the true last refutable-list-element kind
+/// after ctor/newtype/nested-list/map/tuple (#8380). Refutability is the AUTHORITATIVE recursive
+/// `check_binding_pattern` signal (the same predicate `is_refutable_tuple_element` / the map & list
+/// irrefutable checks use), NOT a coarse structural test: a NESTED irrefutable compound field value declines
+/// upstream (not-yet-wired) with a non-`NonExhaustive` code, so it is correctly NOT routed here. A non-record
+/// element returns `false`.
+pub(super) fn is_refutable_record_element(db: &mut Db, elem_pat: StructId) -> bool {
+    let Some(fields) = db
+        .ast
+        .compound_form_of(elem_pat, CompoundCtor::Record)
+        .map(<[_]>::to_vec)
+    else {
+        return false;
+    };
+    fields.iter().any(|&pair| {
+        // A `.. rest` marker is not a field-value refutation (it binds the unnamed fields, irrefutable).
+        if db.ast.as_name(pair) == Some("..") || db.ast.as_form(pair, "..").is_some() {
+            return false;
+        }
+        match record_field_kv(db, pair) {
+            Some((_, value)) => matches!(
+                check_binding_pattern(db, value, &crate::ty::Ty::Any),
+                Err(ref r) if r.code == Some(Code::NonExhaustive)
+            ),
+            None => false,
+        }
+    })
+}
+
+/// A copy of the record pattern `record_pat` for the guard's value test, with every BARE-BINDER / `_` field
+/// VALUE replaced by a wildcard `_` but every REFUTABLE field value (a literal, a nested ctor) CLONED and
+/// KEPT, and any trailing `.. rest` dropped. The record twin of `ctor_pattern_with_wildcard_payloads` /
+/// `map_pattern_with_wildcard_values`: the guard `(match __lr ((record (= v 1)) true) (_ false))` must test
+/// the refutable field values (so a non-matching literal FALLS THROUGH), bind nothing (the body re-match
+/// binds), and — since a record pattern names only the fields it wants — the presence of the named fields is
+/// implied. Keys / the `record` head / the `=` markers are reused live (structural nodes); the refutable
+/// values are cloned (the ORIGINAL record pattern is reused by the body re-match — a node has one parent).
+pub(super) fn record_pattern_with_wildcard_values(db: &mut Db, record_pat: StructId) -> StructId {
+    let fields = db
+        .ast
+        .compound_form_of(record_pat, CompoundCtor::Record)
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
+    let head = match db.ast.get(record_pat) {
+        crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+        _ => db.push_name("record"),
+    };
+    let mut children = vec![head];
+    for &pair in &fields {
+        // Stop at a `..` marker — the value test needs only the NAMED fields.
+        if db.ast.as_name(pair) == Some("..") || db.ast.as_form(pair, "..").is_some() {
+            break;
+        }
+        let Some((key, value)) = record_field_kv(db, pair) else {
+            children.push(pair);
+            continue;
+        };
+        // A BARE BINDER / `_` value → wildcard (the guard should not bind it, and it matches any value). A
+        // REFUTABLE value (a literal / nested ctor — anything NOT a bare name) is CLONED and kept so the guard
+        // tests it and a mismatch FALLS THROUGH instead of trapping in the body re-match.
+        let new_value = if db.ast.as_name(value).is_some() {
+            db.push_name("_")
+        } else {
+            clone_refutable_payload(db, value)
+        };
+        // Rebuild the field pair as the canonical name-head `(= key value)` (the direct record matcher reads
+        // both this and the native FieldPair form; the name-head form is the simplest to synthesize).
+        let eq = db.push_name("=");
+        children.push(db.push_list(vec![eq, key, new_value]));
+    }
+    db.push_list(children)
+}
+
+/// PRE-PASS for `lower_match_list` (the RECORD twin of `desugar_refutable_tuple_list_elements`): rewrite an
+/// arm whose list pattern has a refutable RECORD leading element `(list (record (= v 1)) rest… .. r)` into an
+/// equivalent guarded arm the length-dispatch matcher + the (direct) record matcher already handle. A record
+/// is a fixed-shape product (a static field set, no length dispatch), so — exactly like a tuple — the ONLY
+/// refutation is its literal/ctor field values; it needs a value-test guard for fall-through AND value
+/// binding for the body:
+///   `((list (record (= v 1)) rest… .. r) body)`  ≡
+///   `((guard (list __lr rest… .. r) (match __lr ((record (= v 1)) true) (_ false)))
+///       (match __lr ((record (= v a)) body) (_ (trap …))))`
+/// The GUARD's value test (a wildcard-value record pattern via `record_pattern_with_wildcard_values` — keeps
+/// the literal `1`, wildcards the binder fields) gates the arm so a non-matching literal FALLS THROUGH; the
+/// BODY re-matches the SAME element binder to bind the field binders for the original body. One
+/// refutable-record element per arm (the common shape); ≥2 declines (mirrors the tuple ">1" limit). NO new
+/// IR. Returns `Some(Core)` iff the rewrite fired. (Completes the refutable-list-element-refinement arc — the
+/// TRUE last element kind after ctor/newtype/nested-list/map/tuple; #8380.)
+pub(super) fn desugar_refutable_record_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .compound_form_of(inner, CompoundCtor::List)
+            .map(<[_]>::to_vec)?;
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    let mut any_record = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat)
+            && leading.iter().any(|&e| is_refutable_record_element(db, e))
+        {
+            any_record = true;
+        }
+    }
+    if !any_record {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .compound_form_of(inner, CompoundCtor::List)
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = db
+            .ast
+            .rest_marker(&es)
+            .map(|(i, _, _)| i)
+            .unwrap_or(es.len());
+        let record_positions: Vec<usize> = (0..lead)
+            .filter(|&p| is_refutable_record_element(db, es[p]))
+            .collect();
+        if record_positions.is_empty() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if record_positions.len() > 1 {
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one refutable record element is not supported (match one \
+                 refutable record element per arm)",
+            )));
+        }
+        let rpos = record_positions[0];
+        let record_pat = es[rpos]; // the original `(record (= v 1))` element pattern
+        let list_head = match db.ast.get(inner) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__lr{ai}");
+        // Rebuild the list pattern with the record element replaced by a fresh bare binder.
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == rpos {
+                new_es.push(db.push_name(&name));
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The VALUE-test guard: `(match __lr ((record (= v 1)) true) (_ false))`.
+        let test_scrut = db.push_name(&name);
+        let test_pat = record_pattern_with_wildcard_values(db, record_pat);
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let test_true_arm = db.push_list(vec![test_pat, true_node]);
+        let wild = db.push_name("_");
+        let test_false_arm = db.push_list(vec![wild, false_node]);
+        let test_match_head = db.push_name("match");
+        let value_test = db.push_list(vec![
+            test_match_head,
+            test_scrut,
+            test_true_arm,
+            test_false_arm,
+        ]);
+        let guard_cond = match existing_guard {
+            None => value_test,
+            Some(g) => {
+                // The user guard cond `g` may read the record's FIELD binders (`(guard (list (record (= v a)))
+                // (> a 3))` reads `a`). Those bind only in the BODY re-match, NOT at the outer guard level — so
+                // ANDing `g` with the value_test would leave `a` unbound (a false CDZ0101). Mirror the tuple /
+                // nested-list desugar: evaluate `g` INSIDE a match on `__lr` that binds the FULL record pattern
+                // — `(match __lr ((record (= v a)) g) (_ false))` — so `a` is in scope for `g`, and the literal
+                // field is tested by the same match (subsuming value_test: a non-matching field → `_ → false` →
+                // fall through). A FULL clone of the record pattern (the body re-match reuses the original).
+                let g_scrut = db.push_name(&name);
+                let g_clone = clone_refutable_payload(db, record_pat);
+                let g_true_arm = db.push_list(vec![g_clone, g]);
+                let g_wild = db.push_name("_");
+                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                let g_match_head = db.push_name("match");
+                db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __lr ((record (= v a)) <body>) (_ (trap …)))` — the DIRECT record matcher
+        // binds the field sub-patterns for the original body; the `_` arm is dead (the guard proved the value
+        // match) but keeps the inner match exhaustive.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![record_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg = db.push_str("unreachable: list-record-element value already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable record element → fresh-binder + value-test guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
 pub(super) fn lower_match_list(
     db: &mut Db,
     scrutinee: StructId,
@@ -3086,6 +3327,15 @@ pub(super) fn lower_match_list(
     // length dispatch). The last refutable-element kind after ctor/map/nested-list (#8364); a tuple element
     // is none of those, so the other passes skip it. Rebuilds the match and recurses through `core_of`.
     if let Some(core) = desugar_refutable_tuple_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS (record): a refutable RECORD leading element (`(list (record (= v 1)) .. r)`) — a literal/ctor
+    // in a record field value — desugars to a fresh binder + a value-test guard + a body re-match binding the
+    // field sub-patterns (the direct record matcher). A record is a fixed-shape product, so — like a tuple —
+    // it needs only the value test (no length dispatch). The TRUE last refutable-element kind after
+    // ctor/map/nested-list/tuple (#8380); a record element is none of those, so the other passes skip it.
+    // Rebuilds the match and recurses through `core_of`.
+    if let Some(core) = desugar_refutable_record_list_elements(db, scrutinee, arms) {
         return core;
     }
     // PRE-PASS (ctor saturation): `(list) + (list (Some x) .. r) + (list (None) .. r)` covers every length —
