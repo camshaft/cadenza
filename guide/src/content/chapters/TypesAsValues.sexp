@@ -16,8 +16,9 @@
     (source (let ((y 42)) (: 100 (Type.of y)))))
   (p "The reflected type is a real type, checked in full: annotate a value it " (em "doesn't") " match and you get the same " (c "CDZ0203") " a written mismatch would. " (c "Type.of") " reads the static type, not a runtime value, so it's decided and erased before anything runs.")
   (h2 "Comparing types")
-  (p "Two type-values compare with " (c "Type.eq") ", which folds to a constant " (c "Bool") " at compile time. Same type, " (c "true") ":")
+  (p "Two type-values compare with " (c "Type.eq") ", which folds to a constant " (c "Bool") " at compile time. Same type, " (result (of "types-eq-same") true) ":")
   (runnable
+    (id "types-eq-same")
     (source (Type.eq (Type.of 5) (Type.of 6))))
   (p "Different types, " (c "false") ", because " (c "Int64") " is not " (c "Bool") ":")
   (runnable
@@ -27,8 +28,9 @@
     (source (Type.eq (Type.of (Qty.of 1.0 (Unit.base #"meter")))
          (Type.of (Qty.of 1.0 (Unit.base #"second"))))))
   (h2 "Branching on a type")
-  (p "Because " (c "Type.eq") " produces a compile-time constant, an " (c "if") " over it selects a branch " (em "at compile time") ", so the program branches on types, with no runtime test emitted. Here the condition is " (c "true") ", so the whole expression is " (c "100") ":")
+  (p "Because " (c "Type.eq") " produces a compile-time constant, an " (c "if") " over it selects a branch " (em "at compile time") ", so the program branches on types, with no runtime test emitted. Here the condition is " (c "true") ", so the whole expression is " (result (of "types-if") 100) ":")
   (runnable
+    (id "types-if")
     (source (if (Type.eq (Type.of 5) Int64) 100 200)))
   (p "A written type (" (c "Int64") ") and a reflected one (" (cdz (Type.of 5)) ") are the same kind of value, so they compare freely. This is the point where inference and first-class types meet: the compiler computes a type, you compare it, and the answer picks the code, all before the program runs.")
   (note "This is the surface the compiler's own generic machinery is built on: a type passed as a value drives " (em "ad-hoc polymorphism") " (one name, a per-type implementation chosen at compile time), and a " (c "const") " parameter lets a caller fix a compile-time-known argument that's then erased. Both compile to specialized, type-free code, and the observable " (em "value") " is identical to the hand-written monomorphic version, so the abstraction costs nothing at runtime.")

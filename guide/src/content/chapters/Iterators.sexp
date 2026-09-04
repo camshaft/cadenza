@@ -7,8 +7,9 @@
   (lede "A list holds all its elements at once. An " (em "iterator") " produces them one at a time, on demand, so you can describe an enormous (even endless) sequence and pull only the few values you actually need.")
   (p "The shape is a " (em "lazy pull") ": an iterator answers one question, " (c "next") ", \"give me the next element, and the iterator for the rest.\" When there's nothing left it says so. We model the answer as an " (c "Option") " of a " (c "(element, rest)") " pair: " (cdz (Some #tuple(v rest))) " yields " (c "v") " and hands back the iterator " (c "rest") " for what follows, or " (cdz (None unit)) " when the sequence is exhausted.")
   (h2 "An iterator is a value you step")
-  (p "Rather than a function that hides its state, we make the iterator an ordinary " (em "value") ", a small sum type naming each kind of iterator, and " (c "next") " interprets one step of it. A " (c "Range") " yields " (c "lo") ", then the range starting at " (c "lo + 1") ", until it reaches " (c "hi") ". Summing a range by stepping it to exhaustion, 1 through 4, gives " (c "10") ":")
+  (p "Rather than a function that hides its state, we make the iterator an ordinary " (em "value") ", a small sum type naming each kind of iterator, and " (c "next") " interprets one step of it. A " (c "Range") " yields " (c "lo") ", then the range starting at " (c "lo + 1") ", until it reaches " (c "hi") ". Summing a range by stepping it to exhaustion, 1 through 4, gives " (result (of "iter-range") 10) ":")
   (runnable
+    (id "iter-range")
     (source (type Iter
   (Range (Tuple Int64 Int64)))
 (def (next it)

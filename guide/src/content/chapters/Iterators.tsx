@@ -29,6 +29,7 @@ export default function Iterators() {
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it (Iter.Range #tuple(1 5))))`}
+        id="iter-range"
       />
       <P><C>next</C> is an ordinary recursive function over a plain sum, with no hidden mutable cursor. Exhaustion isn't a special error; it's just the <C>None</C> case, so stepping is <em>total</em> and never traps, whatever the range.</P>
       <H2>Lazy: only what you pull</H2>
