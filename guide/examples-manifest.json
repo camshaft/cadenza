@@ -37,7 +37,7 @@
     { "dir": "0031-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0032-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0033-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
-    { "dir": "0034-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
+    { "dir": "0034-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0035-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "runnable", "graded": false, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0036-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
     { "dir": "0037-bytes", "file": "src/content/chapters/Bytes.tsx", "kind": "exercise", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false },
