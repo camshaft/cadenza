@@ -19,6 +19,7 @@ export default function BinaryMatching() {
       <P>The same grammar, on the left of a <C>match</C> arm, <em>reads</em> a <C>Bytes</C> back. Matching a two-byte value against <Cadenza ast="Y2R6YXN0AAEDCgNiaW4KA3UxNgoBbgUAAAABAAIBAgECAQIAAwQ=" kind="expr">(bin (u16 n))</Cadenza> binds <C>n</C> to the integer those bytes encode, since construction and matching are exact inverses:</P>
       <Runnable
         source={`(match (bin (u16 258)) ((bin (u16 n)) (Some n)) (_ (None unit)))`}
+        id="bin-u16"
       />
       <P>The arm reads <C>258</C> back, returned as <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAIBAgMAAAABAQIAAQI=" kind="expr">(Some 258)</Cadenza>: a match that reads a value hands back an <C>Option</C>, so the wildcard can honestly say <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when the bytes don't fit the layout, rather than a stand-in number. Byte order is explicit and honored both ways: add the <C>le</C> modifier and the same integer is written, and read, least-significant byte first.</P>
       <Runnable
@@ -37,10 +38,12 @@ export default function BinaryMatching() {
       <P>A <C>bin</C> pattern must describe the <em>entire</em> byte sequence, so leftover bytes are a non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the catch-all and gives <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza>, honestly reporting that the read failed rather than a stand-in number:</P>
       <Runnable
         source={`(match (Bytes.of #list(1 2 3)) ((bin (u16 n)) (Some n)) (_ (None unit)))`}
+        id="bin-nomatch"
       />
       <P>The fix is a trailing unsized <Cadenza ast="Y2R6YXN0AAECCgVieXRlcwoEcmVzdAMAAAABAQIAAQI=" kind="expr">(bytes rest)</Cadenza>, which absorbs the variable-length remainder, so now the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, the arm matches, and the result is <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAIBAgMAAAABAQIAAQI=" kind="expr">(Some 258)</Cadenza>:</P>
       <Runnable
         source={`(match (Bytes.of #list(1 2 3)) ((bin (u16 n) (bytes rest)) (Some n)) (_ (None unit)))`}
+        id="bin-rest"
       />
       <Note>Because a <C>bin</C> pattern never covers every possible byte sequence, a <C>match</C> over a <C>Bytes</C> needs a catch-all <C>_</C> arm, the same exhaustiveness rule as a sum match. Without one it's a compile error (CDZ0210).</Note>
       <H2>A segment's size can be a value</H2>
@@ -64,6 +67,7 @@ export default function BinaryMatching() {
   (Bytes.of #list((UInt8.wrap 165)))
   ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
   (_ (None unit)))`}
+        id="bin-bits"
       />
       <P>That reads back as <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAIB+QMAAAABAQIAAQI=" kind="expr">(Some 505)</Cadenza>. A bit-field literal dispatches the same way a byte literal does, so a leading <Cadenza ast="Y2R6YXN0AAECCgRiaXRzAAEBBAAAAAEAAQEDAAECAw==" kind="expr">(bits 1 1)</Cadenza> matches only when the top bit is set and binds the remaining seven, which is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes, and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits don't add up is a compile error rather than a runtime surprise.</P>
       <Why tenet="A binary layout is width-typed, and checked at compile time">A fixed-width segment takes a value of <em>exactly</em> its width, so <Cadenza ast="Y2R6YXN0AAECCgJ1OAoBdgMAAAABAQIAAQI=" kind="expr">(u8 v)</Cadenza> wants a <C>UInt8</C> and <Cadenza ast="Y2R6YXN0AAEDCgRiaXRzCgF2CgFrBAAAAAEAAgEDAAECAw==" kind="expr">(bits v k)</Cadenza> a <Cadenza ast="Y2R6YXN0AAECCgRVSW50CgFrAwAAAAEBAgABAg==" kind="expr">(UInt k)</Cadenza>. Hand it something wider or negative and it's a compile-time type error, not a runtime "does not fit" trap, since construction is total, and narrowing is the caller's explicit choice (<C>UInt8.wrap</C> truncates, <C>UInt8.of</C> narrows checked). And the byte alignment is static too: a layout whose bits don't close a byte is rejected before it runs. The result is that a binary format's shape is checked the same way the rest of your types are, so the layout can't silently corrupt a value, because a value that wouldn't fit never compiles.</Why>

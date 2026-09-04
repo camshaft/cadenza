@@ -13,10 +13,11 @@
   (h2 "Taking bytes apart")
   (p "The same grammar, on the left of a " (c "match") " arm, " (em "reads") " a " (c "Bytes") " back. Matching a two-byte value against " (cdz (bin (u16 n))) " binds " (c "n") " to the integer those bytes encode, since construction and matching are exact inverses:")
   (runnable
+    (id "bin-u16")
     (source (match (bin (u16 258))
   ((bin (u16 n)) (Some n))
   (_             (None unit)))))
-  (p "The arm reads " (c "258") " back, returned as " (cdz (Some 258)) ": a match that reads a value hands back an " (c "Option") ", so the wildcard can honestly say " (cdz (None unit)) " when the bytes don't fit the layout, rather than a stand-in number. Byte order is explicit and honored both ways: add the " (c "le") " modifier and the same integer is written, and read, least-significant byte first.")
+  (p "The arm reads " (c "258") " back, returned as " (result (of "bin-u16") (: (Some 258) (Option Int64))) ": a match that reads a value hands back an " (c "Option") ", so the wildcard can honestly say " (cdz (None unit)) " when the bytes don't fit the layout, rather than a stand-in number. Byte order is explicit and honored both ways: add the " (c "le") " modifier and the same integer is written, and read, least-significant byte first.")
   (runnable
     (source (match (bin (u16 258 le))
   ((bin (u16 n le)) (Some n))
@@ -33,13 +34,15 @@
   ((bin (u32 0x89504E47) (bytes rest)) true)
   (_                                   false))))
   (h2 "A pattern accounts for the whole value")
-  (p "A " (c "bin") " pattern must describe the " (em "entire") " byte sequence, so leftover bytes are a non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the catch-all and gives " (cdz (None unit)) ", honestly reporting that the read failed rather than a stand-in number:")
+  (p "A " (c "bin") " pattern must describe the " (em "entire") " byte sequence, so leftover bytes are a non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the catch-all and gives " (result (of "bin-nomatch") (: (None unit) (Option Int64))) ", honestly reporting that the read failed rather than a stand-in number:")
   (runnable
+    (id "bin-nomatch")
     (source (match (Bytes.of #list(1 2 3))
   ((bin (u16 n)) (Some n))
   (_             (None unit)))))
-  (p "The fix is a trailing unsized " (cdz (bytes rest)) ", which absorbs the variable-length remainder, so now the " (c "u16") " reads the first two bytes and " (c "rest") " takes the third, the arm matches, and the result is " (cdz (Some 258)) ":")
+  (p "The fix is a trailing unsized " (cdz (bytes rest)) ", which absorbs the variable-length remainder, so now the " (c "u16") " reads the first two bytes and " (c "rest") " takes the third, the arm matches, and the result is " (result (of "bin-rest") (: (Some 258) (Option Int64))) ":")
   (runnable
+    (id "bin-rest")
     (source (match (Bytes.of #list(1 2 3))
   ((bin (u16 n) (bytes rest)) (Some n))
   (_                          (None unit)))))
@@ -59,10 +62,11 @@
   (h2 "Sub-byte fields")
   (p "Not every field is a whole number of bytes. A " (cdz (bits name k)) " segment reads exactly " (c "k") " bits, so you can split a single byte into smaller fields. Bits are read most-significant first, which means the first segment takes the high bits. Here one byte splits into a 3-bit field and a 5-bit field, and " (c "165") " is " (c "0b101_00101") ", so " (c "a") " reads the high " (c "0b101 = 5") " and " (c "b") " the low " (c "0b00101 = 5") ":")
   (runnable
+    (id "bin-bits")
     (source (match (Bytes.of #list((UInt8.wrap 165)))
   ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
   (_                           (None unit)))))
-  (p "That reads back as " (cdz (Some 505)) ". A bit-field literal dispatches the same way a byte literal does, so a leading " (cdz (bits 1 1)) " matches only when the top bit is set and binds the remaining seven, which is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes, and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits don't add up is a compile error rather than a runtime surprise.")
+  (p "That reads back as " (result (of "bin-bits") (: (Some 505) (Option Int64))) ". A bit-field literal dispatches the same way a byte literal does, so a leading " (cdz (bits 1 1)) " matches only when the top bit is set and binds the remaining seven, which is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes, and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits don't add up is a compile error rather than a runtime surprise.")
   (why (tenet "A binary layout is width-typed, and checked at compile time") "A fixed-width segment takes a value of " (em "exactly") " its width, so " (cdz (u8 v)) " wants a " (c "UInt8") " and " (cdz (bits v k)) " a " (cdz (UInt k)) ". Hand it something wider or negative and it's a compile-time type error, not a runtime \"does not fit\" trap, since construction is total, and narrowing is the caller's explicit choice (" (c "UInt8.wrap") " truncates, " (c "UInt8.of") " narrows checked). And the byte alignment is static too: a layout whose bits don't close a byte is rejected before it runs. The result is that a binary format's shape is checked the same way the rest of your types are, so the layout can't silently corrupt a value, because a value that wouldn't fit never compiles.")
   (p "Bytes and binary layouts are about raw data. The last of the core value types is the opposite, a value that's purely a " (em "name") ", compared by identity: " (em "symbols") ", next.")
   (h2 "Your turn")
