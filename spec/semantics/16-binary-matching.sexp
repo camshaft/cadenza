@@ -4616,10 +4616,19 @@
 ; binder AS the size: `(bits len 4)(utf8 s len)`. A bit-field value (0-15) is a valid size — there is no
 ; alignment obstacle (two 4-bit fields leave the cursor byte-aligned before the utf8), so this is a
 ; completeness gap in the dependent-size resolution (it recognizes byte/int binders but not sub-byte
-; bit-field binders), not a soundness reject. Consistent CDZ0900 across wasm+rust+cadenza. Idealistic:
-; SHOULD decode — b0=0x32 (pad3,len2) over [104,105] -> "hi"; len=5 with only 2 bytes -> fall-through "x";
-; len=0 -> "". Grades todo until the dependent-size resolution accepts a bit-field binder. Routed to
-; concierge for the bin-match owner.
+; bit-field binders), not a soundness reject. LOWERING FIXED (the DECODE): the runtime lowering's size-field
+; static-offset guard now accepts a byte-aligned bit-field RUN as a size source (`bin_size_len_read` already
+; reads it), so the bit-field-driven dependent size lowers and decodes the CORRECT VALUE on all 3 targets:
+; b0=0x32 (pad3,len2) over [104,105] -> "hi"; len=5 with only 2 bytes -> overrun fall-through "x"; len=0 ->
+; total=1 but the input is 3 bytes and the pattern has NO trailing rest, so whole-consumption REJECTS
+; (1 != 3) -> fall-through "x" (a genuine len=0 MATCH -> "" would need a 1-byte input). [Corrected breaker's
+; initial len=0 -> "" expectation, which overlooked the two unconsumed trailing bytes.]
+; REMAINING GAP (why this stays TODO): on wasm the decode LEAKS 2 heap objects (`live-objects` 2, not 0) —
+; a Perceus drop-insertion gap SPECIFIC to the bit-field-run-read size path. The byte-binder dependent-utf8
+; analog ("two length-prefixed dependent frames chain at runtime", ~4305) is CLEAN (`(live-objects 0)`), so
+; 0 is the idealistic target here too (asserted below); the leak is a fixable bug, not an inherent
+; known-leak. Value assertions hold; auto-flips todo->pass once the drop for this shape is inserted. Routed
+; to the bin-match/runtime owner. cadenza re-emit of this shape is a separate slice (still todo).
 (case
   "a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes"
   (input
@@ -4633,7 +4642,8 @@
   (call main (: 53 Int64))
   (output (: "x" String))
   (call main (: 48 Int64))
-  (output (: "" String)))
+  (output (: "x" String))
+  (live-objects 0))
 
 ; bfx10 (breaker, GAP): a dependent segment size from an ARITHMETIC EXPRESSION over a byte binder declines
 ; ("a runtime bin utf8 segment needs a computable byte range (offset + size)"). This is a SECOND dependent-
