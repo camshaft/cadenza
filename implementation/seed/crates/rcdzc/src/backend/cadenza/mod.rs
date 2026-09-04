@@ -580,6 +580,44 @@ fn emit_newtype_unwrap_peel(
     Some(b.list(vec![match_head, scrut, arm]))
 }
 
+/// DEEP newtype-unwrap peel: unwrap `scrut` (whose declared type is `ty`) through a STACK of single-payload
+/// newtypes until it reaches `expected` — `(match w ((MkO i) (match i ((MkI y) y))))` for a double newtype
+/// `Outer(MkO Inner)`, `Inner(MkI Int64)` consumed as `Int64`. Recurses one level per newtype: mint a payload
+/// binder, unwrap into it, recurse on the inner. Returns `None` if the stack does NOT bottom out at `expected`
+/// (an intervening non-newtype type ≠ `expected`, or a non-emitted newtype) — the caller then emits bare.
+/// Generalizes [`emit_newtype_unwrap_peel`] (the 1-level case) to arbitrary nesting. Value-equivalent (each
+/// level is an irrefutable single-variant unwrap the recompile re-erases).
+fn emit_newtype_unwrap_peel_deep(
+    db: &mut Db,
+    b: &mut Builder,
+    scrut: StructId,
+    ty: &Ty,
+    expected: &Ty,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Option<StructId> {
+    if ty == expected {
+        return Some(scrut);
+    }
+    let Ty::Nominal { decl, inner, .. } = ty else {
+        return None;
+    };
+    let decl = *decl;
+    if !is_emitted_single_payload_newtype(db, decl, emitted) {
+        return None;
+    }
+    let ctor = crate::lower::variant_head_ast(db, b, decl, 0)?;
+    let x = synth_payload_name(env.next_payload);
+    env.next_payload += 1;
+    let x_pat = b.name(x.clone());
+    let pat = b.list(vec![ctor, x_pat]);
+    let x_ref = b.name(x);
+    let body = emit_newtype_unwrap_peel_deep(db, b, x_ref, inner, expected, env, emitted)?;
+    let arm = b.list(vec![pat, body]);
+    let match_head = b.name("match");
+    Some(b.list(vec![match_head, scrut, arm]))
+}
+
 /// Emit the binary-AST artifact for the program in `db` under `layout`. Reconstructs a Cadenza surface
 /// tree `(do (def …)… (export …)…)` over the same reachable definition set (`layout.order`) the other
 /// backends emit, then serializes it with the binary-AST codec.
@@ -1850,13 +1888,15 @@ fn emit_expr_viewed(
             // v))` return re-emits bare `w:M` → `(: 7 M)` not `7`). Re-insert `(match w ((Mk v) v))`. Gated on
             // `expected == Some(inner)`: a VALUE/return consumer explicitly wants the inner; a MATCH SCRUTINEE
             // is emitted with `expected = None` (keeping the nominal), so this never double-matches a scrutinee.
-            if let Some(exp) = &expected
-                && let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, binder)
-                && &*inner == exp
-                && is_emitted_single_payload_newtype(db, decl, emitted)
-                && let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env)
-            {
-                return Ok(peel);
+            // DEEP peel: unwraps through a STACK of newtypes (`Outer(MkO Inner)`, `Inner(MkI Int64)` → Int64).
+            if let Some(exp) = &expected {
+                let bty = crate::infer::type_of(db, binder);
+                if matches!(bty, Ty::Nominal { .. })
+                    && let Some(peel) =
+                        emit_newtype_unwrap_peel_deep(db, b, name, &bty, exp, env, emitted)
+                {
+                    return Ok(peel);
+                }
             }
             Ok(name)
         }
@@ -1882,14 +1922,16 @@ fn emit_expr_viewed(
                 return Ok(b.list(vec![head, name]));
             }
             // NEWTYPE-UNWRAP peel — same as the `Core::Param` arm above (a folded `(match w ((Mk v) v))`
-            // unwrap of a declared-newtype let/match binder consumed as its inner: `expected == inner`).
-            if let Some(exp) = &expected
-                && let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, binder)
-                && &*inner == exp
-                && is_emitted_single_payload_newtype(db, decl, emitted)
-                && let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env)
-            {
-                return Ok(peel);
+            // unwrap of a declared-newtype let/match binder consumed as its inner: `expected == inner`),
+            // DEEP through a stack of newtypes.
+            if let Some(exp) = &expected {
+                let bty = crate::infer::type_of(db, binder);
+                if matches!(bty, Ty::Nominal { .. })
+                    && let Some(peel) =
+                        emit_newtype_unwrap_peel_deep(db, b, name, &bty, exp, env, emitted)
+                {
+                    return Ok(peel);
+                }
             }
             Ok(name)
         }
