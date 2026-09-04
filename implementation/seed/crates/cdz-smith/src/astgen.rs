@@ -3798,7 +3798,7 @@ fn gen_try_body<C: Choice>(c: &mut C, out: &mut String) {
 /// pattern-destructured (a fixed-arity `(list a b c)` pattern is CDZ0210) — projection/`List.len` cover them.
 fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
     let t = pick_scalar_ty(c);
-    match c.variant(4) {
+    match c.variant(7) {
         // 2-tuple destructure → return the first binder.
         0 => {
             out.push_str("(match (tuple ");
@@ -3826,7 +3826,7 @@ fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
             out.push_str(")) ((record (= a x) (= b y)) y))");
         }
         // NESTED: a `Some`-wrapped 2-tuple, destructured in the `Some` pattern; `None` → a same-typed default.
-        _ => {
+        3 => {
             out.push_str("(match (Some (tuple ");
             gen_scalar_leaf(c, t, out);
             out.push(' ');
@@ -3834,6 +3834,48 @@ fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
             out.push_str(")) ((Some (tuple x y)) x) ((None) ");
             gen_scalar_leaf(c, t, out);
             out.push_str("))");
+        }
+        // LIST head+rest pattern → return the HEAD binder (type-general): `(match (list s s s) ((list) s)
+        // ((list x .. _r) x))`. Exercises the list-pattern head-bind + rest-binder shape + the empty arm —
+        // a whole match-pattern family (`(list …)` with a `..` rest) the tuple/record destructure arms
+        // never reached (the lowering the #8348 nested-list arc churned).
+        4 => {
+            out.push_str("(match (list ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((list) ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((list x .. _r) x))");
+        }
+        // FIXED-arity LIST pattern → return a bound element (type-general): `(match (list s s) ((list a b) a)
+        // (_ s))`. A definite-length list pattern with a `_` fall-through for the non-matching lengths.
+        5 => {
+            out.push_str("(match (list ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((list a b) a) (_ ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str("))");
+        }
+        // NESTED-LIST element + OUTER-REST, both consumed → Int64: `(match (list (list i i) (list i))
+        // ((list) 0) ((list inner .. rest) (+ (List.len inner) (List.len rest))))`. Binds a LIST element
+        // (`inner`) AND the outer `rest`, consuming BOTH via `List.len` — the exact refutable-element +
+        // sibling-rest-binder lowering class the #8348 → #8359 → #8367/#8371 arc regressed (a dropped rest
+        // / unbound sibling binder). Int64-typed (List.len arithmetic), independent of `t`.
+        _ => {
+            out.push_str("(match (list (list ");
+            gen_int_literal(c, out);
+            out.push(' ');
+            gen_int_literal(c, out);
+            out.push_str(") (list ");
+            gen_int_literal(c, out);
+            out.push_str(
+                ")) ((list) 0) ((list inner .. rest) (+ (List.len inner) (List.len rest))))",
+            );
         }
     }
 }
