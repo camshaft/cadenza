@@ -736,8 +736,8 @@
 ; entry 1's value equals 5. n=5: `{1:5}` matches `(= 1 5)` → 100; n=3: `{1:3}` fails the value refinement →
 ; the `_` arm → 0. Pins that the map matcher does VALUE refinement (a refutable entry-value sub-pattern),
 ; NOT only key-presence + value-binding. (Contrast the length-dispatch LIST matcher, which does NOT support a
-; refutable list-ELEMENT sub-pattern — CDZ0900 for a tuple element, the __ne0 bug for a list element, #8347;
-; the key-indexed map matcher refines cleanly where the length-dispatch list matcher cannot.)
+; refutable TUPLE-element sub-pattern — CDZ0900; a nested-list LITERAL element formerly leaked __ne0 (#8347)
+; but #8348 fixed it, so nested-list literals now refine — a refutable tuple element remains the residual gap.)
 (case
   "a map pattern refines an entry VALUE against a literal (matches only when the value equals it)"
   (input
@@ -9172,17 +9172,19 @@
       (export main)))
   (output (: 5 Int64)))
 
-; nlp-lit (breaker, GAP in the Inc-14 nested-list desugar): a nested list pattern whose INNER list has a
-; LITERAL element leaks the internal synthesized name — CDZ0101 'unbound name `__ne0`'. The desugar (above)
-; replaces the nested-list element with a fresh `__ne` binder + an inner re-match; the LITERAL-element case
-; (`#list(#list(1 b)) …`) generates `__ne0` but fails to bind it, so the body's `b` re-match never binds and
-; `__ne0` surfaces unbound. ISOLATION: a FLAT list-with-literal `(#list(1 b))` compiles; nested-list
-; BINDERS-only `(#list(#list(c b)))` compiles; nested-list-with-GUARD compiles (the case above) — ONLY a
-; literal INSIDE a nested list pattern trips it. Consistent CDZ0101 across wasm+rust+cadenza (front-end
-; desugar). SHOULD compile + match: scrutinee `[[1 5]]`, pattern `[[1 b]]` binds b=5 → 5. Idealistic todo;
-; auto-flips when the __ne re-match handles a literal inner element. Routed to the Inc-14 desugar owner.
+; nlp-lit (breaker, FIXED by #8348 — was a GAP in the Inc-14 nested-list desugar): a nested list pattern
+; whose INNER list has a LITERAL element USED to leak the internal synthesized name — CDZ0101 'unbound name
+; `__ne0`'. The desugar (above) replaces the nested-list element with a fresh `__ne` binder + an inner
+; re-match; the LITERAL-element case (`#list(#list(1 b)) …`) generated `__ne0` but failed to bind it, so the
+; body's `b` re-match never bound and `__ne0` surfaced unbound. ORIGINAL ISOLATION: a FLAT list-with-literal
+; `(#list(1 b))` compiled; nested-list BINDERS-only `(#list(#list(c b)))` compiled; nested-list-with-GUARD
+; compiled — ONLY a literal INSIDE a nested list pattern tripped it. #8348 fixed the literal-element desugar
+; to resolve `__ne` (the re-match now forgets only the ARMS, preserving the pinned scrutinee) + fall through
+; on a differing literal (no spurious trap). This case (inline-literal scrutinee `[[1 5]]`, pattern `[[1 b]]`)
+; now compiles + matches → b=5 → 5, consistent across wasm+rust+cadenza. Regression-guard on the #8348 fix;
+; its two companions below cover the typed-param + fall-through legs.
 (case
-  "a nested list pattern with a LITERAL inner element binds and matches (currently leaks __ne0)"
+  "a nested list pattern with a LITERAL inner element binds and matches (inline-literal scrutinee)"
   (input
     (do
       (def (main (: n Int64)) (match #list(#list(1 n)) (#list(#list(1 b)) b) (_ -1)))
