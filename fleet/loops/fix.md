@@ -21,7 +21,9 @@ seed case is in your inbox as the `assign` message (and its file is referenced b
    replays only your not-yet-upstream commits by patch-id, so it never orphans a queued MR's `--ref`
    like a bare `git reset --hard trunk`; bare-hub: `trunk` is a LOCAL branch, NO `origin/trunk`; reset
    not rebase, since pr-sync squash-integrates), `cargo xtask build`, then
-   run the case (`cargo xtask gate --case "<substr>"` or the `.sexp` directly). If it already
+   run the case — `cdz compile -t <target> <case>.sexp` for the decline/CDZ diagnostic, or
+   `nix build .#checks.<sys>.corpus-gate-coarse-<file-stem>` to grade the whole file vs `.gate-baseline`
+   (the in-process `cargo xtask gate --case` was DELETED in #8318 — corpus grading is nix-only now). If it already
    behaves correctly on current `trunk`, it was stale — `note` the PM "stale, already fixed", then
    `cargo xtask fleet remove <you>` and stop.
 4. **Fix the compiler** (`rcdzc`, or the relevant seed crate). Follow the house rules from the

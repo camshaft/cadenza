@@ -24,9 +24,10 @@ the operator via the concierge). Each is a `.sexp` reproducer (same `case`/`inpu
    from the concierge resolves an earlier `ask`. Handle a design `issue` per step 5.
 3. **Triage the queue.** For each un-handled item, decide FIRST whether it's real (this is the
    highest-value thing you do — a stale finding wastes a whole agent):
-   - Reproduce it against a FRESH build: `cargo xtask build` then `cargo xtask gate --case
-     "<substring>"` (or run the `.sexp` directly). Producers' builds lag `trunk`, so **many findings
-     are already fixed** — confirm the fault still reproduces on current `trunk` before acting.
+   - Reproduce it against a FRESH build: `cargo xtask build` then `cdz compile -t <target> <case>.sexp`
+     for the decline/diagnostic, or `nix build .#checks.<sys>.corpus-gate-coarse-<file-stem>` to grade
+     the file vs `.gate-baseline` (the in-process `cargo xtask gate --case` was deleted #8318). Producers'
+     builds lag `trunk`, so **many findings are already fixed** — confirm the fault still reproduces on current `trunk` before acting.
    - Already behaves correctly → rename it `<name>.RESOLVED.md` in the queue (or `rm`), note "stale,
      already fixed on trunk@<sha>", done. Don't spawn an agent for a non-bug.
    - Genuinely a fault → it's a job.
@@ -77,7 +78,8 @@ the operator via the concierge). Each is a `.sexp` reproducer (same `case`/`inpu
      onto `trunk` + replays only your not-yet-upstream commits by patch-id, so it never orphans a queued
      MR's `--ref` like a bare `git reset --hard trunk`; bare-hub: `trunk` is a LOCAL branch, NO
      `origin/trunk`; reset not rebase, since pr-sync squash-integrates), `cargo xtask build`, then
-     re-run the case (`cargo xtask gate --case "<substr>"`) — it must now PASS, and the
+     re-run the case (`nix build .#checks.<sys>.corpus-gate-coarse-<file-stem>`, or `cdz compile`/run for
+     a quick decline check — `cargo xtask gate --case` was deleted #8318) — it must now PASS, and the
      reproducer must be migrated into `spec/semantics/NN-*.sexp` (not just fixed ad hoc).
    - Verified → reap the panel: `cargo xtask fleet remove <fix-agent> --close` (marks it stopped AND
      kills the tmux window; the registry row is kept for history). This is what stops the 1000-panel
