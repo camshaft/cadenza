@@ -8404,6 +8404,36 @@
       (export main)))
   (output (: 5 Int64)))
 
+; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
+; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
+; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
+; The inner `(tuple 1 b)` refines on its literal component `1` and binds `b`, THROUGH the nested-list layer:
+; `xs = [[(1 5)]]` → inner tuple `(1 5)` matches `(1 b)` → b=5. Two-desugar compositions are where a future
+; refactor of either path silently breaks; this pins that they nest correctly. (The fall-through companion
+; below pins that a non-matching inner tuple literal composes its REFUTATION through the nested-list layer too
+; — no spurious trap, the #8358-class hazard.)
+(case
+  "a refutable tuple element inside a nested-list element refines through both layers"
+  (input
+    (do
+      (def
+        (f (: xs (List (List (Tuple Int64 Int64)))))
+        (match xs (#list(#list(#tuple(1 b))) b) (_ -1)))
+      (def (main) (f #list(#list(#tuple(1 5)))))
+      (export main)))
+  (output (: 5 Int64)))
+
+(case
+  "a refutable tuple element inside a nested-list element FALLS THROUGH when the tuple literal differs"
+  (input
+    (do
+      (def
+        (f (: xs (List (List (Tuple Int64 Int64)))))
+        (match xs (#list(#list(#tuple(1 b))) b) (_ -1)))
+      (def (main) (f #list(#list(#tuple(2 5)))))
+      (export main)))
+  (output (: -1 Int64)))
+
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
   (doc
