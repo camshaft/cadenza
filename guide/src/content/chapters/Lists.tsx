@@ -39,6 +39,7 @@ export default function Lists() {
         source={`(let
   ((original #list(10 20 30)) (bumped (List.update original 1 99)))
   (match (List.at original 1) ((Some x) x) ((None _) 0)))`}
+        id="list-update-immut"
       />
       <P>The answer is <C>20</C>, not <C>99</C>: <C>original</C> never changed. The <C>99</C> lives only in <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again to see <C>99</C>. Two lists, sharing most of their structure internally, each with its own value.</P>
       <P>Return the updated list itself and you can see the change in place, one slot different, <Cadenza ast="Y2R6YXN0AAEEFAABCgABYwABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 99 30)</Cadenza>, and the input <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza> still intact wherever else it's held:</P>
@@ -73,6 +74,7 @@ export default function Lists() {
   #list(10 20 30)
   (#list(a (.. rest)) (match rest (#list(b (.. r)) b) (#list() 0)))
   (#list() 0))`}
+        id="list-rest-match"
       />
       <P>A leading element can still be any pattern, so <Cadenza ast="Y2R6YXN0AAEGFBUKAXgKAXkKAi4uCgRyZXN0CQAAAAEAAgADAQMBAgMABAAFAQIFBgEDAAQHCA==" kind="expr">#list(#tuple(x y) (.. rest))</Cadenza> is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.</P>
       <P>A list holds every element at once. Sometimes you want the elements without ever building the whole sequence, even an endless one. That's an <em>iterator</em>, next.</P>
