@@ -1879,14 +1879,27 @@ fn emit_expr_viewed(
                                 n: StructId,
                                 env: &mut BinderEnv|
              -> Result<StructId, Reject> {
+                // A Qty operand of a bare-numeric arith peels to its bare magnitude. Two shapes:
+                //  - inner == result_ty: peel viewed at the inner (the erased-`Qty.value` peel, #7516).
+                //  - inner WIDENS to result_ty: a NARROW Qty operand (e.g. an `Int8` magnitude) beside a wider
+                //    one, so the arith result is the WIDER bare int — peel viewed AT result_ty (widening the
+                //    magnitude). Without this the narrow operand kept `Ty::Qty` and self-emitted `(Qty.of v u)`,
+                //    so `(+ 8 (Qty.of v u))` re-lowered to dimensionless + dimensioned → spurious CDZ0501
+                //    (v-core-opt-pinpointed; both operands must peel to bare so `(+ 8 v)` re-lowers clean).
                 if numeric_result
                     && let Ty::Qty { inner, .. } = crate::infer::type_of(db, n)
-                    && *inner == result_ty
                 {
-                    emit_expr_viewed(db, b, n, Some((*inner).clone()), None, env, emitted)
-                } else {
-                    emit_expr(db, b, n, None, env, emitted)
+                    if *inner == result_ty {
+                        return emit_expr_viewed(db, b, n, Some((*inner).clone()), None, env, emitted);
+                    }
+                    if let (Ty::Int(iw), Ty::Int(rw)) = (&*inner, &result_ty)
+                        && iw.ground_signed() == rw.ground_signed()
+                        && iw.ground_width() <= rw.ground_width()
+                    {
+                        return emit_expr_viewed(db, b, n, Some(result_ty.clone()), None, env, emitted);
+                    }
                 }
+                emit_expr(db, b, n, None, env, emitted)
             };
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
