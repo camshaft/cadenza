@@ -323,6 +323,14 @@ pub(crate) struct FileScopeTable {
     /// projects `member` against that module's exports (`resolve_member`), the collision-free path for a
     /// uniformly-named export imported from 2+ modules. Empty for a single-file / alias-free program.
     module_aliases: Vec<crate::fxhash::FxHashMap<String, usize>>,
+    /// Per file, the set of names the file EXPORTS — its `(export …)` clause names (`link::FileScope::exports`:
+    /// value defs + type handles). DISTINCT from `visible[fi]`, which holds EVERY own def (private + exported)
+    /// for the file's OWN name resolution — the export set is the OUTWARD surface. Used to export-GATE the
+    /// whole-module-alias projection (`export_def_in_file`): `(. alias member)` must reach only an EXPORTED
+    /// member, else it leaks a PRIVATE def of the aliased module (`modules-and-namespaces.md` §Visibility Is
+    /// Explicit) — the alias's member-access-time resolution bypasses the link step's named-import export
+    /// validation, so the gate must be applied here.
+    exports: Vec<crate::fxhash::FxHashSet<String>>,
 }
 
 impl FileScopeTable {
@@ -526,6 +534,18 @@ fn build_file_scope(
         }
     }
 
+    // Per-file EXPORT surface (the `(export …)` clause names) — the OUTWARD-visible set that gates the
+    // whole-module-alias projection so `(. alias member)` reaches only an EXPORTED member (not a private def).
+    let exports: Vec<crate::fxhash::FxHashSet<String>> = (0..files.len())
+        .map(|fi| {
+            linkage
+                .scopes
+                .get(fi)
+                .map(|s| s.exports.iter().cloned().collect())
+                .unwrap_or_default()
+        })
+        .collect();
+
     FileScopeTable {
         files,
         visible,
@@ -533,6 +553,7 @@ fn build_file_scope(
         visible_ctors,
         visible_ctors_qualified,
         module_aliases,
+        exports,
     }
 }
 
@@ -4533,11 +4554,18 @@ impl Db {
         fs.module_aliases.get(file)?.get(alias).copied()
     }
 
-    /// The def INDEX a `from_file` module exports under `key` (its own defs + re-exported imports) — the
-    /// exact `visible` surface a named import binds from. `None` if `from_file` does not export a VALUE def
-    /// `key`. The projection target for a module-alias `(. alias key)`.
+    /// The def INDEX a `from_file` module EXPORTS under `key` — the projection target for a whole-module-alias
+    /// `(. alias key)`. EXPORT-GATED: `key` must be in `from_file`'s `(export …)` surface, else `None` — so the
+    /// alias reaches only an EXPORTED def, never a PRIVATE one (a whole-module alias grants access exactly to
+    /// the module's exports, `modules-and-namespaces.md` §Visibility Is Explicit). Without the gate the alias
+    /// projected any `visible[from_file]` def — which includes the file's PRIVATE defs (`build_file_scope`
+    /// records every own def) — so `(. alias privateDef)` leaked a non-exported def (a module-privacy hole; the
+    /// named-import path is gated at link time, but the alias resolves at member-access time and bypasses that).
     pub(crate) fn export_def_in_file(&self, from_file: usize, key: &str) -> Option<usize> {
         let fs = self.file_scope.as_ref()?;
+        if !fs.exports.get(from_file).is_some_and(|e| e.contains(key)) {
+            return None;
+        }
         fs.visible.get(from_file)?.get(key).copied()
     }
 
