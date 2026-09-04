@@ -483,6 +483,16 @@ def valueEqOp : HeapState → List Value → HeapResult
   | s, [.i32 a, .i32 b] => .ret [.i32 (if s.valueEq a b then 1 else 0)] s
   | s, _                => .trap "value-eq: expected (i32, i32)"
 
+/-- `value-eq-shaped(a, b, desc) → bool` (i32 0/1) [BORROWS all]: structural value equality with a shape
+DESCRIPTOR. The descriptor only disambiguates render-tags whose UNDERLYING rep compares identically (Char↔Int
+codepoint, Symbol↔Str bytes, Str↔Bytes), so there is NO type pair it distinguishes that compares differently —
+i.e. its RESULT equals plain structural `valueEq` (v-lean-oracle, from value_codec.rs `value_eq_shaped`). The
+runtime needs `desc` only because its heap rep is untyped; our structural `HeapValue` already carries the
+constructor, so we IGNORE `desc` and reuse `valueEq`. -/
+def valueEqShapedOp : HeapState → List Value → HeapResult
+  | s, [.i32 a, .i32 b, .i32 _desc] => .ret [.i32 (if s.valueEq a b then 1 else 0)] s
+  | s, _                           => .trap "value-eq-shaped: expected (i32, i32, i32)"
+
 /-- `map-empty() → m`: a fresh empty map. -/
 def mapEmpty : HeapState → List Value → HeapResult
   | s, []     => s.box (.map #[])
@@ -1610,6 +1620,7 @@ def heapHostOps : List (String × HostFn HeapState) :=
   , ("set-to-list",        toHostFn [.i32, .i32]             [.i32]  HeapState.setToList)
     -- value-* (W5.5): structural value equality (borrows both). eq-shaped/canonicalize/cmp = follow-ups.
   , ("value-eq",           toHostFn [.i32, .i32]             [.i32]  HeapState.valueEqOp)
+  , ("value-eq-shaped",    toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.valueEqShapedOp)
     -- bytes + strings (W5.3a): packed byte buffer + UTF-8; concat/slice/compact rope = W5.3b
   , ("bytes-alloc",        toHostFn [.i32]                   [.i32]  HeapState.bytesAlloc)
   , ("bytes-set",          toHostFn [.i32, .i32, .i32]       [.i32]  HeapState.bytesSet)
@@ -2088,6 +2099,35 @@ private def probeValueEqOp : Bool :=
      | _ => false
    | _ => false)
 example : probeValueEqOp = true := by native_decide
+
+/-- `value-eq-shaped` (W5.5, 3-param) IGNORES the descriptor and equals structural `valueEq`: agrees with
+`value-eq` on equal/unequal ints AND on order-independent set equality ({1,2} == {2,1}). -/
+private def probeValueEqShapedOp : Bool :=
+  let e1 : UInt32 := match boxInt ({} : HeapState) [.i64 1] with | .ret [.i32 h] _ => h | _ => 0
+  let e2 : UInt32 := match boxInt ({} : HeapState) [.i64 2] with | .ret [.i32 h] _ => h | _ => 0
+  -- desc arg (here 0/7/3) is IGNORED. (Empty-heap int compares are fine post the valueEq fuel +2 fix.)
+  (match valueEqShapedOp ({} : HeapState) [.i32 e1, .i32 e1, .i32 0] with | .ret [.i32 1] _ => true | _ => false) &&
+  (match valueEqShapedOp ({} : HeapState) [.i32 e1, .i32 e2, .i32 7] with | .ret [.i32 0] _ => true | _ => false) &&
+  (match setEmpty ({} : HeapState) [] with
+     | .ret [.i32 se] s0 =>
+       match setInsert s0 [.i32 se, .i32 e1] with
+       | .ret [.i32 a1] s1 =>
+         match setInsert s1 [.i32 a1, .i32 e2] with
+         | .ret [.i32 sa] s2 =>
+           match setEmpty s2 [] with
+           | .ret [.i32 se2] s3 =>
+             match setInsert s3 [.i32 se2, .i32 e2] with
+             | .ret [.i32 b1] s4 =>
+               match setInsert s4 [.i32 b1, .i32 e1] with
+               | .ret [.i32 sb] s5 =>
+                 match valueEqShapedOp s5 [.i32 sa, .i32 sb, .i32 3] with | .ret [.i32 1] _ => true | _ => false
+               | _ => false
+             | _ => false
+           | _ => false
+         | _ => false
+       | _ => false
+     | _ => false)
+example : probeValueEqShapedOp = true := by native_decide
 
 /-! #### Collection CONSUME-op witnesses (map-merge, set-union, set-intersection, set-difference),
 immediate-aware. Re-added after the immediates rework (they were dropped from the focused set). Each op
