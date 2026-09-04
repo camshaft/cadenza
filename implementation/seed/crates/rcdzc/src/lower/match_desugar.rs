@@ -2865,9 +2865,10 @@ pub(super) fn is_refutable_tuple_element(db: &mut Db, elem_pat: StructId) -> boo
 ///       (match __lt ((tuple 1 b) body) (_ (trap …))))`
 /// The GUARD's value test (a wildcard-BINDER tuple pattern via `ctor_pattern_with_wildcard_payloads` — keeps
 /// the literal `1`, wildcards the binder `b`) gates the arm so a non-matching literal FALLS THROUGH; the BODY
-/// re-matches the SAME element binder to bind `b` for the original body. One refutable-tuple element per arm
-/// (the common shape); ≥2 declines. NO new IR. Returns `Some(Core)` iff the rewrite fired. (Completes the
-/// refutable-list-element-refinement arc — the last element kind after ctor/map/nested-list; #8364.)
+/// re-matches the SAME element binder to bind `b` for the original body. N refutable-tuple elements per arm
+/// (a fresh binder + one nested value-test + one nested body re-match each, the ctor-desugar N-loop; #8418
+/// lifted the old ≥2 decline). NO new IR. Returns `Some(Core)` iff the rewrite fired. (#8364; the
+/// refutable-list-element-refinement arc — tuple after ctor/map/nested-list.)
 pub(super) fn desugar_refutable_tuple_list_elements(
     db: &mut Db,
     scrutinee: StructId,
@@ -2926,88 +2927,85 @@ pub(super) fn desugar_refutable_tuple_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         }
-        if tuple_positions.len() > 1 {
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable tuple element is not supported (match one \
-                 refutable tuple element per arm)",
-            )));
-        }
-        let tpos = tuple_positions[0];
-        let tuple_pat = es[tpos]; // the original `(tuple 1 b)` element pattern
+        // N refutable tuple elements in one arm (N ≥ 1): give each a fresh binder in the list pattern, nest
+        // one value-test into the guard + one body re-match per binder (the RECORD/CTOR N-per-arm structure;
+        // the single-element case is N == 1, subsumed uniformly). #8418: was previously a ≥2 decline.
         let list_head = match db.ast.get(inner) {
             crate::ast::Struct::List(items) if !items.is_empty() => items[0],
             _ => db.push_name("list"),
         };
-        let name = format!("__lt{ai}");
-        // Rebuild the list pattern with the tuple element replaced by a fresh bare binder.
+        // A fresh binder name per tuple position (`__lt{arm}_{k}`), paired with its original tuple pattern.
+        let tuple_binders: Vec<(String, StructId)> = tuple_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &tpos)| (format!("__lt{ai}_{k}"), es[tpos]))
+            .collect();
+        // Rebuild the list pattern with EACH tuple element replaced by its fresh bare binder.
         let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
         for (p, &e) in es.iter().enumerate() {
-            if p == tpos {
-                new_es.push(db.push_name(&name));
-            } else {
-                new_es.push(e);
+            match tuple_positions.iter().position(|&tp| tp == p) {
+                Some(k) => new_es.push(db.push_name(&tuple_binders[k].0)),
+                None => new_es.push(e),
             }
         }
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The VALUE-test guard: `(match __lt ((tuple 1 _) true) (_ false))` — a wildcard-BINDER tuple pattern
-        // (keeps the literal `1`, wildcards the binder `b`) tests ONLY the refutable components, no value
-        // binding in the guard, so a non-matching literal FALLS THROUGH.
-        let test_scrut = db.push_name(&name);
-        let test_pat = ctor_pattern_with_wildcard_payloads(db, tuple_pat);
+        // The VALUE-test guard over every tuple binder, nested INSIDE-OUT: the innermost matched arm holds the
+        // user cond (or `true`); each enclosing test binds its tuple's components. Two shapes per test:
+        //   - NO user guard: `(match __lt_k ((tuple 1 _) <inner>) (_ false))` — a wildcard-binder tuple pattern
+        //     (keeps the literal `1`, wildcards the binder) tests ONLY the refutable components; a mismatch
+        //     falls through. `<inner>` = `true` at the innermost (a pure value test).
+        //   - WITH a user guard: EVERY test uses the REAL tuple pattern (`clone_refutable_payload`) so all
+        //     component binders are in scope for the user cond `g`, which sits at the innermost `<inner>` —
+        //     `(match __lt_k ((tuple 1 b) g) (_ false))`. Mirrors the ctor-element guard fix (a bare `(and g
+        //     value_test)` left the component binders unbound → false CDZ0101).
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let test_true_arm = db.push_list(vec![test_pat, true_node]);
-        let wild = db.push_name("_");
-        let test_false_arm = db.push_list(vec![wild, false_node]);
-        let test_match_head = db.push_name("match");
-        let value_test = db.push_list(vec![
-            test_match_head,
-            test_scrut,
-            test_true_arm,
-            test_false_arm,
-        ]);
-        let guard_cond = match existing_guard {
-            None => value_test,
-            Some(g) => {
-                // The user guard cond `g` may read the tuple's COMPONENT binders (`(guard (list (tuple 1 b))
-                // (> b 3))` reads `b`). Those bind only in the BODY re-match (below), NOT at the outer guard
-                // level — so ANDing `g` with the value_test left `b` unbound (a false CDZ0101). Mirror the
-                // nested-list desugar: evaluate `g` INSIDE a match on `__lt` that binds the FULL tuple pattern
-                // — `(match __lt ((tuple 1 b) g) (_ false))` — so `b` is in scope for `g`, and the literal `1`
-                // is tested by the same match (subsuming value_test: a non-matching literal → `_ → false` →
-                // fall through). A FULL clone of the tuple pattern (the body re-match reuses the original; a
-                // node has one parent).
-                let g_scrut = db.push_name(&name);
-                let g_clone = clone_refutable_payload(db, tuple_pat);
-                let g_true_arm = db.push_list(vec![g_clone, g]);
-                let g_wild = db.push_name("_");
-                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
-                let g_false_arm = db.push_list(vec![g_wild, g_false]);
-                let g_match_head = db.push_name("match");
-                db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm])
-            }
-        };
+        let mut inner_result = existing_guard.unwrap_or(true_node);
+        for (bname, tuple_pat) in tuple_binders.iter().rev() {
+            let test_scrut = db.push_name(bname);
+            let matched_pat = if existing_guard.is_some() {
+                clone_refutable_payload(db, *tuple_pat)
+            } else {
+                ctor_pattern_with_wildcard_payloads(db, *tuple_pat)
+            };
+            let test_true_arm = db.push_list(vec![matched_pat, inner_result]);
+            let wild = db.push_name("_");
+            let test_false_arm = db.push_list(vec![wild, false_node]);
+            let test_match_head = db.push_name("match");
+            inner_result = db.push_list(vec![
+                test_match_head,
+                test_scrut,
+                test_true_arm,
+                test_false_arm,
+            ]);
+        }
+        let guard_cond = inner_result;
         let guard_head = db.push_name("guard");
         let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
-        // The BODY re-match: `(match __lt ((tuple 1 b) <body>) (_ (trap …)))` — the DIRECT tuple matcher binds
-        // the component sub-patterns for the original body; the `_` arm is dead (the guard proved the value
-        // match) but keeps the inner match exhaustive.
-        let body_scrut = db.push_name(&name);
-        let body_true_arm = db.push_list(vec![tuple_pat, body]);
-        let trap_head = db.push_name("trap");
-        let trap_msg = db.push_str("unreachable: list-tuple-element value already gated by guard");
-        let trap = db.push_list(vec![trap_head, trap_msg]);
-        let wild_b = db.push_name("_");
-        let body_false_arm = db.push_list(vec![wild_b, trap]);
-        let body_match_head = db.push_name("match");
-        let new_body = db.push_list(vec![
-            body_match_head,
-            body_scrut,
-            body_true_arm,
-            body_false_arm,
-        ]);
+        // The BODY re-match, NESTED from the INNERMOST tuple binder out: the innermost match holds the original
+        // `body` (every tuple's components in scope); each enclosing match binds its own tuple's components,
+        // its body the next-inner match. Each `_` arm is dead (the guard proved the value match) but keeps the
+        // inner match exhaustive.
+        let mut new_body = body;
+        for (bname, tuple_pat) in tuple_binders.iter().rev() {
+            let body_scrut = db.push_name(bname);
+            let body_true_arm = db.push_list(vec![*tuple_pat, new_body]);
+            let trap_head = db.push_name("trap");
+            let trap_msg =
+                db.push_str("unreachable: list-tuple-element value already gated by guard");
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let wild_b = db.push_name("_");
+            let body_false_arm = db.push_list(vec![wild_b, trap]);
+            let body_match_head = db.push_name("match");
+            new_body = db.push_list(vec![
+                body_match_head,
+                body_scrut,
+                body_true_arm,
+                body_false_arm,
+            ]);
+        }
         new_arms.push(db.push_list(vec![new_pat, new_body]));
     }
     let match_head = db.push_name("match");
@@ -3122,10 +3120,11 @@ pub(super) fn record_pattern_with_wildcard_values(db: &mut Db, record_pat: Struc
 ///       (match __lr ((record (= v a)) body) (_ (trap …))))`
 /// The GUARD's value test (a wildcard-value record pattern via `record_pattern_with_wildcard_values` — keeps
 /// the literal `1`, wildcards the binder fields) gates the arm so a non-matching literal FALLS THROUGH; the
-/// BODY re-matches the SAME element binder to bind the field binders for the original body. One
-/// refutable-record element per arm (the common shape); ≥2 declines (mirrors the tuple ">1" limit). NO new
-/// IR. Returns `Some(Core)` iff the rewrite fired. (Completes the refutable-list-element-refinement arc — the
-/// TRUE last element kind after ctor/newtype/nested-list/map/tuple; #8380.)
+/// BODY re-matches the SAME element binder to bind the field binders for the original body. N
+/// refutable-record elements per arm (a fresh binder + one nested value-test + one nested body re-match each,
+/// the ctor/tuple-desugar N-loop; #8418 lifted the old ≥2 decline). NO new IR. Returns `Some(Core)` iff the
+/// rewrite fired. (Completes the refutable-list-element-refinement arc — the TRUE last element kind after
+/// ctor/newtype/nested-list/map/tuple; #8380.)
 pub(super) fn desugar_refutable_record_list_elements(
     db: &mut Db,
     scrutinee: StructId,
@@ -3184,85 +3183,84 @@ pub(super) fn desugar_refutable_record_list_elements(
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         }
-        if record_positions.len() > 1 {
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable record element is not supported (match one \
-                 refutable record element per arm)",
-            )));
-        }
-        let rpos = record_positions[0];
-        let record_pat = es[rpos]; // the original `(record (= v 1))` element pattern
+        // N refutable record elements in one arm (N ≥ 1): fresh binder per position, one value-test nested
+        // into the guard + one body re-match per binder (the TUPLE/CTOR N-per-arm structure; single-element
+        // is N == 1, subsumed uniformly). #8418: was previously a ≥2 decline.
         let list_head = match db.ast.get(inner) {
             crate::ast::Struct::List(items) if !items.is_empty() => items[0],
             _ => db.push_name("list"),
         };
-        let name = format!("__lr{ai}");
-        // Rebuild the list pattern with the record element replaced by a fresh bare binder.
+        // A fresh binder name per record position (`__lr{arm}_{k}`), paired with its original record pattern.
+        let record_binders: Vec<(String, StructId)> = record_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &rpos)| (format!("__lr{ai}_{k}"), es[rpos]))
+            .collect();
+        // Rebuild the list pattern with EACH record element replaced by its fresh bare binder.
         let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
         for (p, &e) in es.iter().enumerate() {
-            if p == rpos {
-                new_es.push(db.push_name(&name));
-            } else {
-                new_es.push(e);
+            match record_positions.iter().position(|&rp| rp == p) {
+                Some(k) => new_es.push(db.push_name(&record_binders[k].0)),
+                None => new_es.push(e),
             }
         }
         let mut list_children = vec![list_head];
         list_children.extend(new_es);
         let new_list = db.push_list(list_children);
-        // The VALUE-test guard: `(match __lr ((record (= v 1)) true) (_ false))`.
-        let test_scrut = db.push_name(&name);
-        let test_pat = record_pattern_with_wildcard_values(db, record_pat);
+        // The VALUE-test guard over every record binder, nested INSIDE-OUT: the innermost matched arm holds
+        // the user cond (or `true`); each enclosing test binds its record's fields. Two shapes per test:
+        //   - NO user guard: `(match __lr_k ((record (= v 1)) <inner>) (_ false))` via
+        //     `record_pattern_with_wildcard_values` (keeps refutable field values, wildcards binder fields);
+        //     `<inner>` = `true` at the innermost (a pure value test), a mismatch falls through.
+        //   - WITH a user guard: EVERY test uses the REAL record pattern (`clone_refutable_payload`) so all
+        //     field binders are in scope for the user cond `g` at the innermost `<inner>` (the field binders
+        //     bind only in the body otherwise → a bare `(and g value_test)` would false-reject CDZ0101).
         let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
         let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
-        let test_true_arm = db.push_list(vec![test_pat, true_node]);
-        let wild = db.push_name("_");
-        let test_false_arm = db.push_list(vec![wild, false_node]);
-        let test_match_head = db.push_name("match");
-        let value_test = db.push_list(vec![
-            test_match_head,
-            test_scrut,
-            test_true_arm,
-            test_false_arm,
-        ]);
-        let guard_cond = match existing_guard {
-            None => value_test,
-            Some(g) => {
-                // The user guard cond `g` may read the record's FIELD binders (`(guard (list (record (= v a)))
-                // (> a 3))` reads `a`). Those bind only in the BODY re-match, NOT at the outer guard level — so
-                // ANDing `g` with the value_test would leave `a` unbound (a false CDZ0101). Mirror the tuple /
-                // nested-list desugar: evaluate `g` INSIDE a match on `__lr` that binds the FULL record pattern
-                // — `(match __lr ((record (= v a)) g) (_ false))` — so `a` is in scope for `g`, and the literal
-                // field is tested by the same match (subsuming value_test: a non-matching field → `_ → false` →
-                // fall through). A FULL clone of the record pattern (the body re-match reuses the original).
-                let g_scrut = db.push_name(&name);
-                let g_clone = clone_refutable_payload(db, record_pat);
-                let g_true_arm = db.push_list(vec![g_clone, g]);
-                let g_wild = db.push_name("_");
-                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
-                let g_false_arm = db.push_list(vec![g_wild, g_false]);
-                let g_match_head = db.push_name("match");
-                db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm])
-            }
-        };
+        let mut inner_result = existing_guard.unwrap_or(true_node);
+        for (bname, record_pat) in record_binders.iter().rev() {
+            let test_scrut = db.push_name(bname);
+            let matched_pat = if existing_guard.is_some() {
+                clone_refutable_payload(db, *record_pat)
+            } else {
+                record_pattern_with_wildcard_values(db, *record_pat)
+            };
+            let test_true_arm = db.push_list(vec![matched_pat, inner_result]);
+            let wild = db.push_name("_");
+            let test_false_arm = db.push_list(vec![wild, false_node]);
+            let test_match_head = db.push_name("match");
+            inner_result = db.push_list(vec![
+                test_match_head,
+                test_scrut,
+                test_true_arm,
+                test_false_arm,
+            ]);
+        }
+        let guard_cond = inner_result;
         let guard_head = db.push_name("guard");
         let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
-        // The BODY re-match: `(match __lr ((record (= v a)) <body>) (_ (trap …)))` — the DIRECT record matcher
-        // binds the field sub-patterns for the original body; the `_` arm is dead (the guard proved the value
-        // match) but keeps the inner match exhaustive.
-        let body_scrut = db.push_name(&name);
-        let body_true_arm = db.push_list(vec![record_pat, body]);
-        let trap_head = db.push_name("trap");
-        let trap_msg = db.push_str("unreachable: list-record-element value already gated by guard");
-        let trap = db.push_list(vec![trap_head, trap_msg]);
-        let wild_b = db.push_name("_");
-        let body_false_arm = db.push_list(vec![wild_b, trap]);
-        let body_match_head = db.push_name("match");
-        let new_body = db.push_list(vec![
-            body_match_head,
-            body_scrut,
-            body_true_arm,
-            body_false_arm,
-        ]);
+        // The BODY re-match, NESTED from the INNERMOST record binder out: the innermost match holds the
+        // original `body` (every record's fields in scope); each enclosing match binds its own record's fields,
+        // its body the next-inner match. Each `_` arm is dead (the guard proved the value match) but keeps the
+        // inner match exhaustive.
+        let mut new_body = body;
+        for (bname, record_pat) in record_binders.iter().rev() {
+            let body_scrut = db.push_name(bname);
+            let body_true_arm = db.push_list(vec![*record_pat, new_body]);
+            let trap_head = db.push_name("trap");
+            let trap_msg =
+                db.push_str("unreachable: list-record-element value already gated by guard");
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let wild_b = db.push_name("_");
+            let body_false_arm = db.push_list(vec![wild_b, trap]);
+            let body_match_head = db.push_name("match");
+            new_body = db.push_list(vec![
+                body_match_head,
+                body_scrut,
+                body_true_arm,
+                body_false_arm,
+            ]);
+        }
         new_arms.push(db.push_list(vec![new_pat, new_body]));
     }
     let match_head = db.push_name("match");
