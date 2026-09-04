@@ -17,14 +17,17 @@ export default function Lists() {
       <P><C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a whole new list, so Run this and you'll see the result, <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza>, not just a count:</P>
       <Runnable
         source={`(List.push #list(1 2) 3)`}
+        id="list-push"
       />
       <P><C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather than the end. It takes the list first and the new element second, the same receiver-first order as <C>push</C>, so prepending <C>1</C> to <Cadenza ast="Y2R6YXN0AAEDFAABAgABAwQAAAABAAIBAwABAgM=" kind="expr">#list(2 3)</Cadenza> gives <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza>, the new element leading:</P>
       <Runnable
         source={`(List.prepend #list(2 3) 1)`}
+        id="list-prepend"
       />
       <P><C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list, <Cadenza ast="Y2R6YXN0AAEGFAABAQABAgABAwABBAABBQcAAAABAAIAAwAEAAUBBgABAgMEBQY=" kind="expr">#list(1 2 3 4 5)</Cadenza>, the two inputs laid end to end:</P>
       <Runnable
         source={`(List.concat #list(1 2) #list(3 4 5))`}
+        id="list-concat"
       />
       <H2>Reaching in safely</H2>
       <P><C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than crash, <C>List.at</C> returns an <C>Option</C>, either <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF4AwAAAAEBAgABAg==" kind="expr">(Some x)</Cadenza> when the element exists or <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when it doesn't, which you take apart with <C>match</C>. Here index 1 exists, so you get its value, <C>20</C>:</P>
@@ -45,6 +48,7 @@ export default function Lists() {
       <P>Return the updated list itself and you can see the change in place, one slot different, <Cadenza ast="Y2R6YXN0AAEEFAABCgABYwABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 99 30)</Cadenza>, and the input <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza> still intact wherever else it's held:</P>
       <Runnable
         source={`(List.update #list(10 20 30) 1 99)`}
+        id="list-update"
       />
       <Why tenet="Immutable, persistent values">Every value in Cadenza is immutable; an "update" always produces a fresh value and leaves every existing reference untouched. That's not just tidiness; it's what makes the whole system tractable. Because values can never form a cycle, the runtime reclaims memory by simple reference counting, no garbage collector needed. Because a list you handed to a function can't change underneath you, there's a whole class of aliasing bug that simply cannot happen. And whether a list is stored as a flat array or a balanced tree is the runtime's business, not yours: one type, many representations, sharing structure between versions so <C>update</C> doesn't copy the whole thing.</Why>
       <H2>Lists through functions</H2>

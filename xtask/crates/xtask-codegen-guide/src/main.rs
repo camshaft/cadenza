@@ -826,9 +826,20 @@ fn scan_inline(
                 // <Cadenza> is re-exported from Prose.tsx, so it rides the same prose import line as C.
                 prose.insert("Cadenza");
             }
-            // (result …) renders its value as <C>…</C> (prose-value gate) → needs the C import.
+            // (result …) renders its value inline (prose-value gate): a bare atom → <C>…</C> (needs C); a
+            // COMPOUND form value-part → <Cadenza>…</Cadenza> (surface-aware, needs Cadenza) — mirror the
+            // render's atom-vs-form split so the right import is emitted.
             Some("result") => {
-                prose.insert("C");
+                let shown =
+                    result_value_node(a, i).map(|v| ascription_value_part(a, v).unwrap_or(v));
+                match shown {
+                    Some(v) if result_value_is_surface_aware(a, v) => {
+                        prose.insert("Cadenza");
+                    }
+                    _ => {
+                        prose.insert("C");
+                    }
+                }
             }
             Some("link") => {
                 *uses_ch = true;
@@ -928,13 +939,20 @@ fn cdz_payload_ast(a: &Arenas, cdz_form: StructId) -> Option<(String, String)> {
     if kids.len() != 1 {
         return None; // multi-child or empty — leave as a plain text span
     }
-    let child = kids[0];
-    // Build the single-root fragment arena: parse a string child, or lift an embedded form subtree.
-    let frag: Arenas = if let Some(s) = a.as_str(child) {
+    node_payload_ast(a, kids[0])
+}
+
+/// Back an arbitrary value NODE with its canonical binary AST — the [`cdz_payload_ast`] core, reused by the
+/// `(result …)` render to display a COMPOUND result value-part SURFACE-AWARE (via `<Cadenza>`) exactly as
+/// the `(cdz VALUE)` claim it replaces. Parses a string atom (one-time BUILD parse) or lifts an embedded
+/// form subtree (no parse) into a single-root fragment arena. Returns `(base64 of codec::encode(fragment),
+/// canonical s-expr text)`; `None` if the node isn't a single parseable fragment.
+fn node_payload_ast(a: &Arenas, node: StructId) -> Option<(String, String)> {
+    let frag: Arenas = if let Some(s) = a.as_str(node) {
         cadenza_syntax_sexpr::read(s).ok()?
     } else {
         let mut b = Builder::new();
-        let root = copy_subtree(a, child, &mut b);
+        let root = copy_subtree(a, node, &mut b);
         b.finish(root)
     };
     let canonical = cadenza_syntax_sexpr::print_pretty(&frag);
@@ -972,6 +990,22 @@ pub fn ascription_value_part(a: &Arenas, node: StructId) -> Option<StructId> {
     }
     let kids = children(a, node);
     (kids.len() == 2).then(|| kids[0])
+}
+
+/// Whether a `(result …)` value-part should DISPLAY surface-aware (via `<Cadenza>`, so the ml toggle shows
+/// `[1, 2, 3]`/`Some(42)`) rather than as a fixed `<C>` literal. True for the forms whose ml surface DIFFERS
+/// from the s-expr surface — the `#`-sigil collection literals (`#list`/`#tuple`/`#record`/`#"…"`) and
+/// constructor applications (a capitalized head: `(Some …)`, `(Ok …)`, a user ctor). False for a bare atom
+/// (scalar/string) and for values that render IDENTICALLY in both surfaces (a rational literal `1/2`, whose
+/// AST is a list but whose surfaces match) — those stay plain `<C>`, matching the `(c "…")` they replace and
+/// keeping every landed scalar/rational pin byte-stable.
+pub fn result_value_is_surface_aware(a: &Arenas, shown: StructId) -> bool {
+    if matches!(a.get(shown), Struct::Atom(_)) {
+        return false;
+    }
+    cadenza_syntax_sexpr::print_from(a, shown).starts_with('#')
+        || a.head_name(shown)
+            .is_some_and(|h| h.starts_with(|c: char| c.is_uppercase()))
 }
 
 fn render_inline(a: &Arenas, i: StructId) -> String {
@@ -1014,10 +1048,20 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
             // a bare scalar has no ascription and renders whole. The shred gate keeps the full node.
             Some(v) => {
                 let shown = ascription_value_part(a, v).unwrap_or(v);
-                format!(
-                    "<C>{}</C>",
-                    escape_text(&cadenza_syntax_sexpr::print_from(a, shown))
-                )
+                // A surface-DIVERGENT value-part (`#list(…)`/`#tuple(…)`/`(Some …)` — ml shows `[1, 2, 3]`/
+                // `Some(42)`) renders via <Cadenza>, IDENTICALLY to the (cdz VALUE) claim it replaces; a bare
+                // atom or a surface-STABLE value (a rational `1/2`) stays a plain <C> literal.
+                match node_payload_ast(a, shown).filter(|_| result_value_is_surface_aware(a, shown))
+                {
+                    Some((b64, canon)) => format!(
+                        "<Cadenza ast=\"{b64}\" kind=\"expr\">{}</Cadenza>",
+                        escape_text(&canon)
+                    ),
+                    None => format!(
+                        "<C>{}</C>",
+                        escape_text(&cadenza_syntax_sexpr::print_from(a, shown))
+                    ),
+                }
             }
             None => "<C></C>".to_string(),
         },
@@ -1382,11 +1426,20 @@ mod tests {
         assert_eq!(render("6"), "<C>6</C>");
         assert_eq!(render("-3"), "<C>-3</C>");
         assert_eq!(render("true"), "<C>true</C>");
-        // compound ascription → VALUE part only, in prose
+        // an ATOM value-part (scalar, rational literal) → plain <C> (unchanged; keeps landed pins stable)
         assert_eq!(render("(: 1/2 Rational)"), "<C>1/2</C>");
-        assert_eq!(
-            render("(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))"),
-            "<C>#tuple(1 2 3)</C>"
+        // a COMPOUND (form) value-part → surface-aware <Cadenza>, BYTE-IDENTICAL to the (cdz VALUE) it
+        // replaces (so a `(cdz #tuple(1 2 3))` claim converts to a graded `(result …)` with no .tsx churn).
+        let via_result = render("(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))");
+        let via_cdz = {
+            let a = parse("(chapter (slug \"x\") (p (cdz #tuple(1 2 3))))").0;
+            let p = first(&a, locate_chapter(&a).unwrap(), "p");
+            render_inlines(&a, children(&a, p))
+        };
+        assert_eq!(via_result, via_cdz, "compound result render == (cdz value)");
+        assert!(
+            via_result.starts_with("<Cadenza ast=\"")
+                && via_result.ends_with("#tuple(1 2 3)</Cadenza>")
         );
         // the shred gate side sees the WHOLE value node (full ascribed form), matching `cdz run`
         let text = "(chapter (slug \"x\") (p (result (of \"r\") (: 1/2 Rational))))";

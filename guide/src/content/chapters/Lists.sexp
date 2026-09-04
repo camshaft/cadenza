@@ -9,14 +9,17 @@
   (runnable
     (source (List.len #list(1 2 3))))
   (h2 "Building lists")
-  (p (c "List.push") " adds an element to the end; " (c "List.concat") " joins two lists. Each returns a whole new list, so Run this and you'll see the result, " (cdz #list(1 2 3)) ", not just a count:")
+  (p (c "List.push") " adds an element to the end; " (c "List.concat") " joins two lists. Each returns a whole new list, so Run this and you'll see the result, " (result (of "list-push") (: #list(1 2 3) (List Int64))) ", not just a count:")
   (runnable
+    (id "list-push")
     (source (List.push #list(1 2) 3)))
-  (p (c "List.prepend") " is the mirror of " (c "push") ": it adds an element to the " (em "front") " rather than the end. It takes the list first and the new element second, the same receiver-first order as " (c "push") ", so prepending " (c "1") " to " (cdz #list(2 3)) " gives " (cdz #list(1 2 3)) ", the new element leading:")
+  (p (c "List.prepend") " is the mirror of " (c "push") ": it adds an element to the " (em "front") " rather than the end. It takes the list first and the new element second, the same receiver-first order as " (c "push") ", so prepending " (c "1") " to " (cdz #list(2 3)) " gives " (result (of "list-prepend") (: #list(1 2 3) (List Int64))) ", the new element leading:")
   (runnable
+    (id "list-prepend")
     (source (List.prepend #list(2 3) 1)))
-  (p (c "List.concat") " joins two lists into a new one, so Run this and you see the whole joined list, " (cdz #list(1 2 3 4 5)) ", the two inputs laid end to end:")
+  (p (c "List.concat") " joins two lists into a new one, so Run this and you see the whole joined list, " (result (of "list-concat") (: #list(1 2 3 4 5) (List Int64))) ", the two inputs laid end to end:")
   (runnable
+    (id "list-concat")
     (source (List.concat #list(1 2) #list(3 4 5))))
   (h2 "Reaching in safely")
   (p (c "List.at") " gets the element at an index. But what if the index is out of range? Rather than crash, " (c "List.at") " returns an " (c "Option") ", either " (cdz (Some x)) " when the element exists or " (cdz (None unit)) " when it doesn't, which you take apart with " (c "match") ". Here index 1 exists, so you get its value, " (c "20") ":")
@@ -37,8 +40,9 @@
     ((Some x) x)
     ((None _) 0)))))
   (p "The answer is " (result (of "list-update-immut") 20) ", not " (c "99") ": " (c "original") " never changed. The " (c "99") " lives only in " (c "bumped") ". Swap " (c "original") " for " (c "bumped") " in the " (c "List.at") " line and Run again to see " (c "99") ". Two lists, sharing most of their structure internally, each with its own value.")
-  (p "Return the updated list itself and you can see the change in place, one slot different, " (cdz #list(10 99 30)) ", and the input " (cdz #list(10 20 30)) " still intact wherever else it's held:")
+  (p "Return the updated list itself and you can see the change in place, one slot different, " (result (of "list-update") (: #list(10 99 30) (List Int64))) ", and the input " (cdz #list(10 20 30)) " still intact wherever else it's held:")
   (runnable
+    (id "list-update")
     (source (List.update #list(10 20 30) 1 99)))
   (why (tenet "Immutable, persistent values") "Every value in Cadenza is immutable; an \"update\" always produces a fresh value and leaves every existing reference untouched. That's not just tidiness; it's what makes the whole system tractable. Because values can never form a cycle, the runtime reclaims memory by simple reference counting, no garbage collector needed. Because a list you handed to a function can't change underneath you, there's a whole class of aliasing bug that simply cannot happen. And whether a list is stored as a flat array or a balanced tree is the runtime's business, not yours: one type, many representations, sharing structure between versions so " (c "update") " doesn't copy the whole thing.")
   (h2 "Lists through functions")
