@@ -1332,6 +1332,38 @@
   (output (: 25 Int64))
   (live-objects 0))
 
+; lcap1/lcap2 (breaker): the capture-SOURCE axis for an ESCAPING closure. Every escaping-closure case above
+; captures a function DEF-PARAM (k/a/b/base/…). lcap1 (positive control, IN-PROGRAM apply) shows a closure
+; capturing a LET-LOCAL scalar `v = (+ k 1)` computes fine: `((mk n) 10)` = (n+1)+10, tri-target. lcap2 is
+; the GAP: the SAME closure ESCAPED (returned to the host, then applied) declines CDZ0900 on wasm (and the
+; rust value-heap escaping-closure gap on rust/cadenza). So the escape lowering's capture-environment reaches
+; function params but NOT let-locals (a match-arm binding behaves identically — same root). This SHOULD
+; compile: ch21's own note (~line 275, "the escaping-closure scan must see through the `let`") says the scan
+; is meant to see through a let; a def-param capture escapes fine (control above), and the in-program apply
+; (lcap1) proves the value is correct — only the escape path drops the let-local from the capture set.
+; Idealistic todo: lcap2 SHOULD escape + apply to 16. Routed to the closure-capture owner (concierge).
+(case
+  "lcap1 a closure capturing a LET-LOCAL scalar computes when applied in-program"
+  (input
+    (do
+      (def (mk (: k Int64)) (let ((v (+ k 1))) (fn ((: y Int64)) (+ v y))))
+      (def (main (: n Int64)) ((mk n) 10))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 16 Int64)))
+
+(case
+  "lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary"
+  (input
+    (do
+      (def (mk (: k Int64)) (let ((v (+ k 1))) (fn ((: y Int64)) (+ v y))))
+      (def (main (: n Int64)) (mk n))
+      (export main)))
+  (call main (: 5 Int64) (: 10 Int64))
+  (drop)
+  (output (: 16 Int64))
+  (live-objects 0))
+
 ; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
 ; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
 ; resource types — yet both lower to the SAME core functype `(i32 env, i64) -> i64`. Each must still
