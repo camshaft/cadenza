@@ -6868,6 +6868,10 @@ fn emit_nominal_elem_peel(
     };
     let slot_ty = match inner {
         Ty::Tuple(ts) => ts.get(index).cloned().unwrap_or(Ty::Any),
+        // A RECORD inner: `index` is the field's canonical (sorted `BTreeMap`) layout position; its type is
+        // the `index`-th VALUE. `inner_len` is deliberately left `None` for a Record (below) so the
+        // multi-payload branch never fires — a single-field record is NOT a 1-payload variant to bind-whole.
+        Ty::Record(fs) => fs.values().nth(index).cloned().unwrap_or(Ty::Any),
         _ => Ty::Any,
     };
     let head = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
@@ -6906,6 +6910,25 @@ fn emit_nominal_elem_peel(
         });
         let t_ref = b.name(t);
         let proj = b.list(vec![dot, t_ref, idx]);
+        let arm = b.list(vec![pat, proj]);
+        Ok((b.list(vec![match_head, node, arm]), slot_ty))
+    } else if let (1, Ty::Record(fs)) = (arity, inner)
+        && let Some((fname, _)) = fs.iter().nth(index)
+    {
+        // Arity-1 RECORD-payload newtype (`(type Wrap (Mk (Record (: v Int64) …)))`): the sole payload is the
+        // erased record, so a folded `(. w index)` reads field `index` of it. A record projects by field NAME
+        // (canonical `BTreeMap` sorted order), NOT position, so bind the payload `r` and emit `(. r <name>)` —
+        // `(. r <int>)` would recompile as a tuple index over a record → CDZ0201. The record-payload twin of
+        // the tuple arm above; `inner_len` stays `None` for a Record so this arm (not the bind-whole
+        // multi-payload branch) handles it. Without it, a newtype-over-record field read fell to the `else`.
+        let r = synth_payload_name(env.next_payload);
+        env.next_payload += 1;
+        let r_pat = b.name(r.clone());
+        let pat = b.list(vec![head, r_pat]);
+        let dot = b.name(".");
+        let field = b.name(&*fname.name);
+        let r_ref = b.name(r);
+        let proj = b.list(vec![dot, r_ref, field]);
         let arm = b.list(vec![pat, proj]);
         Ok((b.list(vec![match_head, node, arm]), slot_ty))
     } else {
