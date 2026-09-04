@@ -90,11 +90,14 @@
 
 ; A Qty.+ magnitude that is a FUNCTION-APPLICATION RESULT reconciles its width against the sibling
 ; magnitude. Summing two same-unit quantities where one magnitude is `((fn (v1) 8) 3)` (a call result
-; carrying a bare default-Int repr) and the other is a narrow `Int8` must widen the call-result magnitude
-; to the Qty.+ magnitude width. This was a cdz-smith fuzzer finding: the backend once emitted INVALID wasm
-; here (`type mismatch: expected i64, found i32`) — a bare literal magnitude adapts to the wide slot at
-; compile time, but a call-RESULT magnitude kept its own repr and the widen was dropped. Now fixed; the
-; sum is 8 + 3 = 11. (Regression guard for the cdz-smith Qty-magnitude-over-call-result invalid-wasm.)
+; carrying a bare DEFERRED default-Int repr) and the other is a declared narrow `Int8` reconciles the
+; deferred call-result magnitude to the sibling's declared `Int8` (no-promotion join, #8300 — the generic
+; Qty inner is preserved: a fixed inner is preferred over a deferred one, never widened to a machine
+; default). This was a cdz-smith fuzzer finding: the backend once emitted INVALID wasm here (`type mismatch:
+; expected i64, found i32`) — a bare literal magnitude adapted to the reconciled slot at compile time, but a
+; call-RESULT magnitude kept its own repr and the reconciliation was dropped. Now fixed; both magnitudes
+; reconcile at Int8 and the sum is 8 + 3 = 11 (fits Int8). (Regression guard for the cdz-smith
+; Qty-magnitude-over-call-result invalid-wasm.)
 (case
   "a Qty.+ magnitude from a function-application result reconciles against an Int8 sibling"
   (input
