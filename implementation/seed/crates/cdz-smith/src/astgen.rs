@@ -2125,6 +2125,13 @@ fn gen_int_literal<C: Choice>(c: &mut C, out: &mut String) {
     write!(out, "{n}").ok();
 }
 
+/// Append a SMALL non-negative Int64 literal (0..=1000). For contexts that later SUM several bound
+/// values in one const-foldable expression — small operands keep the fold inside Int64 so it cannot
+/// trip a CDZ0304 constant-overflow decline (unlike the edge-biased [`gen_int_literal`]).
+fn gen_small_int_literal<C: Choice>(c: &mut C, out: &mut String) {
+    write!(out, "{}", c.int_bounded(0, 1000)).ok();
+}
+
 /// Append one COMPOUND value of Int64 elements: a `(tuple <e> <e>)` (`is_list=false`) or a homogeneous
 /// `(list <e> <e> <e>)` (`is_list=true`). Shared by `main`'s compound body and the structural
 /// `(= <compound> <compound>)` equality arm (both sides built with the SAME `is_list` → type-correct).
@@ -3798,7 +3805,7 @@ fn gen_try_body<C: Choice>(c: &mut C, out: &mut String) {
 /// pattern-destructured (a fixed-arity `(list a b c)` pattern is CDZ0210) — projection/`List.len` cover them.
 fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
     let t = pick_scalar_ty(c);
-    match c.variant(7) {
+    match c.variant(9) {
         // 2-tuple destructure → return the first binder.
         0 => {
             out.push_str("(match (tuple ");
@@ -3866,7 +3873,7 @@ fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
         // (`inner`) AND the outer `rest`, consuming BOTH via `List.len` — the exact refutable-element +
         // sibling-rest-binder lowering class the #8348 → #8359 → #8367/#8371 arc regressed (a dropped rest
         // / unbound sibling binder). Int64-typed (List.len arithmetic), independent of `t`.
-        _ => {
+        6 => {
             out.push_str("(match (list (list ");
             gen_int_literal(c, out);
             out.push(' ');
@@ -3876,6 +3883,45 @@ fn gen_pattern_match_body<C: Choice>(c: &mut C, out: &mut String) {
             out.push_str(
                 ")) ((list) 0) ((list inner .. rest) (+ (List.len inner) (List.len rest))))",
             );
+        }
+        // A REFUTABLE TUPLE-or-RECORD element inside a LIST pattern + outer rest → Int64: `(match (list
+        // (tuple i i) (tuple i i)) ((list) 0) ((list (tuple a b) .. _rest) (+ a b)))` (or the record twin).
+        // The element pattern DESTRUCTURES a compound list element (the dst2 / dt3 refutable-element class
+        // #8367/#8371 pinned) with a sibling rest binder — now that #8428 lifts the >1 decline. Int64.
+        7 => {
+            if c.variant(2) == 0 {
+                out.push_str("(match (list (tuple ");
+                gen_small_int_literal(c, out);
+                out.push(' ');
+                gen_small_int_literal(c, out);
+                out.push_str(") (tuple ");
+                gen_small_int_literal(c, out);
+                out.push(' ');
+                gen_small_int_literal(c, out);
+                out.push_str(")) ((list) 0) ((list (tuple a b) .. _rest) (+ a b)))");
+            } else {
+                out.push_str("(match (list (record (= x ");
+                gen_small_int_literal(c, out);
+                out.push_str(") (= y ");
+                gen_small_int_literal(c, out);
+                out.push_str(
+                    "))) ((list) 0) ((list (record (= x xa) (= y ya)) .. _rest) (+ xa ya)))",
+                );
+            }
+        }
+        // N (>1) REFUTABLE tuple elements per arm → Int64: `(match (list (tuple i i) (tuple i i)) ((list
+        // (tuple a b) (tuple c d)) (+ (+ a b) (+ c d))) (_ 0))`. TWO refutable compound element patterns in
+        // one arm — the N-per-arm lowering #8428 just lifted from a >1 decline (idealistic-todo #8418/#8422).
+        _ => {
+            out.push_str("(match (list (tuple ");
+            gen_small_int_literal(c, out);
+            out.push(' ');
+            gen_small_int_literal(c, out);
+            out.push_str(") (tuple ");
+            gen_small_int_literal(c, out);
+            out.push(' ');
+            gen_small_int_literal(c, out);
+            out.push_str(")) ((list (tuple a b) (tuple c d)) (+ (+ a b) (+ c d))) (_ 0))");
         }
     }
 }
