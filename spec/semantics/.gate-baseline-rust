@@ -9026,5 +9026,5 @@ todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the b
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
 todo	lcap4 an ESCAPING curried closure captures a def-param AND an intermediate lambda param (params escape; bounds lcap2 to locals)
 fail	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
-todo	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest (currently unbound r)
+pass	a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest (currently unbound r)
 todo	nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)
