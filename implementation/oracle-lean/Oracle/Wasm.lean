@@ -221,14 +221,15 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
   | .ok m => resultScalarTyOfModule? m entry
   | .error _ => none
 
-/-- A single-child heap result-type HEAD the driver decodes structurally to the matching `Oracle.Value` with
-NO result-type fixup: BigInt→`.int`, List→`.list`, Map→`.map`, Set→`.set`, Rational→`.rational`, Bytes→`.bytes`
-(the decoder + `canonicalizeValue` produce exactly Core's form). String is EXCLUDED here because it needs the
-`.toStr` fixup (`.bytes`→`.str`) — it is routed separately via `stringResultHeadOfModule?`. Record (→`.record`,
-needs the type's field names) and Nominal / Qty / sums still decline. -/
+/-- A single-child heap result-type HEAD the driver decodes structurally, then `resultTyFixup` finalizes:
+BigInt→`.int`, List→`.list`, Map→`.map`, Set→`.set`, Rational→`.rational`, Bytes→`.bytes` (no retag), and
+Record→`.record` (the fixup zips the type's `(: name type)` fields onto the decoded `.tuple`, recursing the
+String/nested fixup into each field value). String is routed separately via `stringResultHeadOfModule?` (its
+own `.bytes`→`.str`). Nominal / Qty / sums still decline. -/
 def decodableHeapHead (ty : ByteArray) : Bool :=
   ty == "BigInt".toUTF8 || ty == "List".toUTF8 || ty == "Map".toUTF8
     || ty == "Set".toUTF8 || ty == "Rational".toUTF8 || ty == "Bytes".toUTF8
+    || ty == "Record".toUTF8
 
 /-- Whether the entry's result type is a HEAP type the driver can decode + `toOutcomeHeap` finalizes WITHOUT a
 result-type fixup. Recognizing it makes `runWasmWithLeak` INVOKE the driver (which structurally decodes the
@@ -322,6 +323,13 @@ partial def fixupTy : Nat → Module → Nat → Value → Option Value
         match tyChildren m i, v with
         | [kt, vt], .map ps => (fixupMap fuel m kt vt ps.toList).map (fun qs => .map qs.toArray)
         | _,        _       => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+      else if name == "Record".toUTF8 then
+        -- A record decodes structurally to a `.tuple` (positional, KEY-SORTED — matching the type's sorted
+        -- `(: name type)` fields); retag → `.record [(name, value)…]`, recursing the fixup into each field
+        -- value. (The driver's `canonicalizeValue` key-sorts the result — idempotent here.)
+        match v with
+        | .tuple vs => (fixupRecord fuel m (tyChildren m i) vs.toList).map (fun fs => .record fs.toArray)
+        | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else
         if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
     | Option.none => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
@@ -350,6 +358,20 @@ partial def fixupMap : Nat → Module → Nat → Nat → List (Value × Value) 
     match fixupTy fuel m kt k, fixupTy fuel m vt v, fixupMap fuel m kt vt ps with
     | Option.some k', Option.some v', Option.some ps' => Option.some ((k', v') :: ps')
     | _,              _,              _               => Option.none
+
+/-- Fix RECORD fields: each type child is a `(: name type)` node (already key-sorted, matching the heap's sorted
+positional order). Pair each field name (the `:` node's 2nd child — a `name` leaf) with the fixup of its value
+by the field type (3rd child) → `(name, value)`. Arity mismatch / malformed field / missing name → decline. -/
+partial def fixupRecord : Nat → Module → List Nat → List Value → Option (List (ByteArray × Value))
+  | _,    _, [],              []      => Option.some []
+  | fuel, m, fieldNode :: fs, x :: xs =>
+    match tyChildren m fieldNode with
+    | [nameIdx, tyIdx] =>
+      match nameAtom? m nameIdx, fixupTy fuel m tyIdx x, fixupRecord fuel m fs xs with
+      | Option.some nm, Option.some y, Option.some rest => Option.some ((nm, y) :: rest)
+      | _,              _,             _                => Option.none
+    | _ => Option.none
+  | _,    _, _,               _       => Option.none
 end
 
 /-- The result-type-directed fixup for the entry (from the raw section bytes): retags nested `.bytes`→`.str`
@@ -560,9 +582,8 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.int 1, .int 2])]) "(
 -- (same UTF-8 bytes) = Core's form.
 example : (runWasmWith (fun _ _ => .ok #[.compound (.bytes "hi".toUTF8)]) "(module)" (rtBytes "String") { entry := "main" }
     == .value (.str "hi".toUTF8)) = true := by native_decide
--- Record is still NOT heap-decodable (needs the type's field names threaded) → sound skip (driver not invoked).
-example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "Record") { entry := "main" }
-    == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Record)") = true := by native_decide
+-- (Record is now heap-decodable via `resultTyFixup`'s Record arm — witnessed at the end with a real
+-- `(Record (: name type) …)` result type.)
 
 -- `toOutcomeHeap` applies the fixup to the decoded compound: identity keeps the value; a `none`-returning
 -- fixup (an unreachable nested `String`) → a sound skip.
@@ -584,7 +605,8 @@ private def rtNestedBytes (container elem : String) : ByteArray :=
     { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name container.toUTF8, .name elem.toUTF8],
       nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .list #[2, 3], .list #[0, 1, 4]], root := 5 }
 
--- `resultTyFixup` DECLINES (`none`) when a `String` sits in an unhandled position (a `Record` subtree).
+-- `resultTyFixup` DECLINES (`none`) on a MALFORMED Record field (a bare `(Record String)` — the child is not a
+-- valid `(: name type)` field node), so an unexpected shape skips rather than mis-decodes.
 example : (resultTyFixup (rtNestedBytes "Record" "String") "main".toUTF8 (.tuple #[.bytes "x".toUTF8]) == none) = true := by native_decide
 
 -- end-to-end: a `(List String)` result NOW DECODES with nested `.bytes`→`.str` (previously declined pre the
@@ -600,5 +622,30 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.bytes "a".toUTF8])])
 example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "(module)"
     (rtNestedBytes "List" "Int") { entry := "main" }
     == .value (.list #[.int 1, .int 2])) = true := by native_decide
+
+/-- A `cdz-result-type` section for a RECORD `(result-type main (Record (: n1 t1) (: n2 t2)))` — the real
+spelling (name-leaf `Record`, each field a `(: name type)` node with the `:` ascription leaf), fields in
+KEY-SORTED order (as the compiler emits). `t1`/`t2` are bare type-name leaves. -/
+private def rtRecordBytes (n1 t1 n2 t2 : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Record".toUTF8, .name ":".toUTF8,
+                  .name n1.toUTF8, .name t1.toUTF8, .name n2.toUTF8, .name t2.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[3, 4, 5],
+                 .atom 3, .atom 6, .atom 7, .list #[7, 8, 9], .list #[2, 6, 10], .list #[0, 1, 11]],
+      root := 12 }
+
+-- A `(Record (: a Int) (: s String))` result DECODES: the driver's positional `.tuple #[.int 5, .bytes "hi"]`
+-- (key-sorted, matching the type) is zipped to `.record [("a", .int 5), ("s", .str "hi")]` — the String field
+-- retagged, the Int field passed through.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.tuple #[.int 5, .bytes "hi".toUTF8])]) "(module)"
+    (rtRecordBytes "a" "Int" "s" "String") { entry := "main" }
+    == .value (.record #[("a".toUTF8, .int 5), ("s".toUTF8, .str "hi".toUTF8)])) = true := by native_decide
+-- An all-scalar record decodes with no retag.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.tuple #[.int 1, .int 2])]) "(module)"
+    (rtRecordBytes "x" "Int" "y" "Int") { entry := "main" }
+    == .value (.record #[("x".toUTF8, .int 1), ("y".toUTF8, .int 2)])) = true := by native_decide
+-- `resultTyFixup` on the Record type retags directly: `.tuple #[.bytes,.int]` → `.record [(a,.str),(s,.int)]`.
+example : (resultTyFixup (rtRecordBytes "a" "String" "s" "Int") "main".toUTF8 (.tuple #[.bytes "hi".toUTF8, .int 9])
+    == some (.record #[("a".toUTF8, .str "hi".toUTF8), ("s".toUTF8, .int 9)])) = true := by native_decide
 
 end Oracle.Wasm
