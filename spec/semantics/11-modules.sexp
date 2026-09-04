@@ -1936,6 +1936,34 @@
   (output (: 42 Int64)))
 
 (case
+  "a whole-module alias projects a qualified TYPE constructor (idealistic; declines today, DEF face works)"
+  (doc
+    "The TYPE/CTOR face of whole-module alias projection — the DEF face already works (the two cases above:
+           `a.descriptor` and `((. a descriptor) 41)`). `lib` wildcard-exports the sum TYPE `Color` (handle + every
+           constructor) plus a consumer `to-int`; the entry imports the WHOLE module under alias `c` and projects a
+           qualified CONSTRUCTOR `c.Color.Green`, which SHOULD build `(Color.Green)` so `(c.to-int c.Color.Green)`
+           folds to 2. Declines TODAY (CDZ0101 unbound `c`): a whole-module alias resolves as a VALUE — a def
+           projection `c.to-int` / `c.mk` resolves + applies (the alias cases above) — but the alias is NOT yet
+           resolved as the BASE of a qualified TYPE/CTOR projection `(. c Color)`; the type-face resolution paths
+           (`resolve_name`'s type step + the qualified-ctor path) do not consult the whole-module alias binding. An
+           IMPLEMENTATION gap, NOT a decl-reject: the NAMED-LIST import `(import \"lib\" (Color to-int))` already
+           brings the TYPE + its constructors into scope (bare / self-qualified — the wildcard-import case later in
+           this file), so the imported type crosses the link fine; only the ALIAS-QUALIFIED surface `c.Color.Green`
+           lags. todo→pass when whole-module-alias qualified TYPE/CTOR resolution lands (v-module-system: extend the
+           type + qualified-ctor resolution to resolve a module-alias base — the type-face analogue of the working
+           alias def projection). Verified via the `cdz compile` package path (native `xtask gate --case` is nix-only
+           since seq-202): a directory package with the same lib+entry declines CDZ0101 on `c.Color.Green` while the
+           `c.to-int (c.mk)` control compiles + runs → 2.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (to-int (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color.*)
+      (export to-int)))
+  (input (do (import "lib" c) (def (main) (c.to-int c.Color.Green)) (export main)))
+  (output (: 2 Int64)))
+
+(case
   "an unimported sibling definition is not in scope"
   (doc
     "Witnesses modules-and-namespaces.md #Imports Are Explicit (2nd sentence: an import introduces
