@@ -20125,9 +20125,12 @@
         and f was beta-substituted; the residual direct (f 2) then read its closure cell from the
         param slot — INVALID wasm ('type mismatch: expected i32, found i64'). Now force-kept: extract
         the stored copy via List.at and apply it (xs[0]=n), plus the direct application (xs[2]=3).
-        n=7 → 7+3 = 10; n=0 → 0+3 = 3. Rust-agreed. (The hop declines this shape — captured-variable
-        resolution, a known not-yet face. The DOUBLED-in-one-literal + direct residual is the open
-        adv-closure-doubled-in-literal queue witness.)")
+        n=7 → 7+3 = 10; n=0 → 0+3 = 3. Rust-agreed. (Round-trips the cadenza hop at every opt level: the
+        `#list(f)` escape + direct `(f 2)` re-emit as a let-bound closure applied twice, recompiling to the
+        same 10/3 — the closure-in-literal capture is no longer a hop decline (the doubled-in-literal twin
+        ck2 round-trips too). The genuine remaining closure gap is a fn-TYPED PARAMETER in a def signature —
+        `(: f (-> Int64 Int64))` has no value-form type surface → CDZ0900, see lm1 — not the in-literal
+        escape.)")
   (input
     (do
       (def
