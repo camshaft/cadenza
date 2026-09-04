@@ -3812,6 +3812,7 @@ pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a refutable map value sub-pattern falls through on a non-matching variant
 pass	a refutable map value sub-pattern folds the same over a constant map
 pass	a refutable record list element with a literal field refines by value (#8380)
+pass	a refutable record list element with two literal fields refines on both (#8380)
 pass	a refutable tuple list element with a literal component refines by value
 pass	a refutable tuple list element with a nested constructor component refines by discriminant and binds its payload
 pass	a refutable-ctor list element still requires a catch-all covering every length

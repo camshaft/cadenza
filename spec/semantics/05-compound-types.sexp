@@ -8654,6 +8654,22 @@
       (export main)))
   (output (: 100 Int64)))
 
+; rec-two-lit-fields (#8380 coverage): a record list element with TWO refutable LITERAL fields
+; `(record (= v 1) (= w 2))` — `record_pattern_with_wildcard_values` keeps BOTH literals in the value-test
+; guard, so the element matches only when BOTH fields equal their literals; a mismatch on EITHER field falls
+; the arm through. `[{v:1,w:2}]` → 100; `[{v:1,w:9}]` (2nd field) and `[{v:5,w:2}]` (1st field) → -1 (verified;
+; the -1 faces are pinned by the mixed companion below via the wildcard arm — this pins the two-literal match).
+(case
+  "a refutable record list element with two literal fields refines on both (#8380)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v Int64) (: w Int64)))))
+        (match xs (#list(#record((= v 1) (= w 2))) 100) (_ -1)))
+      (def (main) (f #list(#record((= v 1) (= w 2)))))
+      (export main)))
+  (output (: 100 Int64)))
+
 ; rec-lit-elem-2 (#8380 companion): a MIXED refutable record element — a LITERAL field `(= v 1)` that refines
 ; by value AND a BINDER field `(= w b)` the body reads — over a runtime list, plus a second literal arm and a
 ; fall-through. Pins that the record desugar's body re-match binds the field binder (b) for the body while the
