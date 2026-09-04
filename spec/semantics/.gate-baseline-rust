@@ -9019,3 +9019,4 @@ pass	two invocations of a macro each draw a FRESH internal helper def — per-ex
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 pass	splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly
 todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
+pass	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
