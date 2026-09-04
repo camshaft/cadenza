@@ -108,6 +108,18 @@ pub fn rust_call_arg(val: &str) -> String {
     if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
         return format!("{v}.to_string()");
     }
+    // A BYTES literal (`b"\x2a"`) — the canonical value form of a `Bytes` ENTRY arg — must cross as an OWNED
+    // `Vec<u8>`, because the emitted export's parameter is `b: Vec<u8>` (the rust backend now materializes a
+    // non-scalar Bytes entry param). A bare `b"..."` Rust byte-string literal is a `&[u8; N]`, so passing it
+    // directly is a type error (E0308: `&[u8; N]` vs `Vec<u8>`) — the exported-entry Bytes-arg surface (the
+    // BYTES twin of the String/Symbol entry-arg marshals above; a bin-match over an exported Bytes param was
+    // the only corpus case to pass a Bytes ENTRY arg, so it was untested). Wrap it `b"...".to_vec()`. The
+    // `b"..."` byte-string sigil is unambiguously a Bytes value (a String renders `"..."`, a Symbol `#"..."`),
+    // and cdz-run's Bytes literal escaping (`\xNN` for non-printables) is Rust-byte-string-valid, so the
+    // literal crosses verbatim inside `.to_vec()`.
+    if v.starts_with("b\"") && v.ends_with('"') && v.len() >= 3 {
+        return format!("{v}.to_vec()");
+    }
     // A NON-SCALAR entry arg must cross via the SAME construction form the emitted LIBRARY body uses for
     // that type — the corpus writes the RAW Cadenza literal/expr text (`100N`, `1R`, `((. Bytes of) …)`),
     // none of which is valid Rust, so the rust gate DRIVER's arg-emit must lower it (breaker-found CLUSTER;
@@ -1791,6 +1803,20 @@ mod tests {
         assert_eq!(rust_call_arg("#list(4 #tuple(1 2))"), "vec![4, (1, 2)]");
         // A `#"sym"` Symbol arg is still the symbol marshal (not caught by the compound branch — no `(`).
         assert_eq!(rust_call_arg("#\"read\""), "\"read\".to_string()");
+    }
+
+    #[test]
+    fn rust_call_arg_marshals_owned_entry_args_by_type() {
+        // A String ENTRY arg crosses as an OWNED `String` (the export param is `s: String`, not `&str`) —
+        // a bare `"abc"` would be `&'static str` → E0308.
+        assert_eq!(rust_call_arg("\"abc\""), "\"abc\".to_string()");
+        // A BYTES ENTRY arg (`b"..."` byte-string literal) crosses as an OWNED `Vec<u8>` (the export param is
+        // `b: Vec<u8>`) — a bare `b"\x2a"` is `&[u8; N]` → E0308 (the bin-match-over-exported-Bytes-param
+        // fail: `(def (f (: b Bytes)) (match b ((bin (u8 x)) x) …))` called `(f b"\x2a")`). `.to_vec()` owns it.
+        assert_eq!(rust_call_arg("b\"\\x2a\""), "b\"\\x2a\".to_vec()");
+        assert_eq!(rust_call_arg("b\"hi\""), "b\"hi\".to_vec()");
+        // The `((. Bytes of) (list …))` Bytes value form is unchanged (already an owned `vec![…]`).
+        assert_eq!(rust_call_arg("((. Bytes of) (list 1 2))"), "vec![1u8, 2u8]");
     }
 
     #[test]
