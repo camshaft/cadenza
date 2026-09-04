@@ -89,15 +89,45 @@ def tallyReasons (rs : List String) : List (String × Nat) :=
     | none => acc ++ [(r, 1)]) []
   (counts.toArray.qsort (fun a b => a.2 > b.2)).toList
 
+/-- Round-robin shard selection: keep the cases whose 0-based index ≡ `i` (mod `n`). N parallel CI jobs
+(`--shard 0 N` … `--shard (N-1) N`) then each process ~1/N of the corpus, so no single job exceeds GitHub
+Actions' HARD 6h per-JOB cap — which the full-corpus differential now blows, because heap-result decode moved
+hundreds of heap-valued-result cases from fast SKIP to decode+EXECUTE-through-talos (the coverage win). Each
+job prints its shard's partial tally; the workflow aggregates. Round-robin (NOT a contiguous slice) spreads
+the fuel-heavy tail (near-8M-step cases) evenly across shards. `n = 0` ⇒ no sharding (all cases). -/
+def shardOf {α : Type} (i n : Nat) (xs : List α) : List α :=
+  if n == 0 then xs
+  else
+    -- structural recursion with an explicit index (NOT `List.enum`/`filter`/`mapM` combinators — those trip
+    -- the `#guard`/native-eval "uses sorry" codegen trap; a plain `go` is evaluable).
+    let rec go : Nat → List α → List α
+      | _,   []        => []
+      | idx, x :: rest => if idx % n == i then x :: go (idx + 1) rest else go (idx + 1) rest
+    go 0 xs
+
+#guard (shardOf 0 3 [10, 11, 12, 13, 14, 15, 16] == [10, 13, 16])
+#guard (shardOf 1 3 [10, 11, 12, 13, 14, 15, 16] == [11, 14])
+#guard (shardOf 2 3 [10, 11, 12, 13, 14, 15, 16] == [12, 15])
+#guard (shardOf 0 0 [10, 11, 12] == [10, 11, 12])  -- n = 0 ⇒ no sharding (all)
+#guard (shardOf 2 4 [10, 11, 12, 13, 14, 15] == [12])  -- i = last valid shard (i < n)
+#guard (shardOf 3 3 [10, 11, 12, 13] == ([] : List Nat))  -- i ≥ n (out of range) → empty, safe (no crash)
+
 def main (args : List String) : IO UInt32 := do
-  let manifest? := match args with
-    | ["--manifest", f] => some f
-    | [f] => some f
-    | _ => none
+  -- `--manifest FILE` (or a bare FILE); optional `--shard I N` runs only cases with (index % N == I), so the
+  -- full-corpus diff fits under GHA's 6h per-job cap as N parallel shards (see `shardOf`).
+  let (manifest?, shard?) : Option String × Option (Nat × Nat) := match args with
+    | ["--manifest", f] => (some f, none)
+    | ["--manifest", f, "--shard", i, n] => (some f, (do let iN ← i.toNat?; let nN ← n.toNat?; pure (iN, nN)))
+    | [f] => (some f, none)
+    | _ => (none, none)
   match manifest? with
-  | none => IO.eprintln "oracle-wasm-diff: usage: oracle-wasm-diff (--manifest FILE | FILE)"; return 2
+  | none => IO.eprintln "oracle-wasm-diff: usage: oracle-wasm-diff (--manifest FILE | FILE) [--shard I N]"; return 2
   | some manifest =>
-    let dirs ← readManifest manifest
+    let allDirs ← readManifest manifest
+    let dirs := match shard? with | some (i, n) => shardOf i n allDirs | none => allDirs
+    (match shard? with
+     | some (i, n) => IO.println s!"[oracle-wasm-diff shard {i}/{n}: {dirs.length} of {allDirs.length} cases]"
+     | none => pure ())
     let mut cases : List (String × Ast.Module × String × ByteArray) := []
     for dir in dirs do
       match ← loadCase dir with
