@@ -735,9 +735,10 @@
 ; the value to a BINDER `(= 1 v)`; this refines it against a LITERAL `(= 1 5)` — the arm matches ONLY when
 ; entry 1's value equals 5. n=5: `{1:5}` matches `(= 1 5)` → 100; n=3: `{1:3}` fails the value refinement →
 ; the `_` arm → 0. Pins that the map matcher does VALUE refinement (a refutable entry-value sub-pattern),
-; NOT only key-presence + value-binding. (Contrast the length-dispatch LIST matcher, which does NOT support a
-; refutable TUPLE-element sub-pattern — CDZ0900; a nested-list LITERAL element formerly leaked __ne0 (#8347)
-; but #8348 fixed it, so nested-list literals now refine — a refutable tuple element remains the residual gap.)
+; NOT only key-presence + value-binding. (The length-dispatch LIST matcher's refutable-ELEMENT refinement has
+; since caught up: a nested-list LITERAL element leaked __ne0 (#8347) then #8348 fixed it, and a refutable
+; TUPLE element declined CDZ0900 until #8367/#8371 refined it — so now sum-ctor/newtype/nested-list/tuple all
+; refine as list elements; a refutable RECORD element is the remaining holdout, CDZ0900, fenced #8380.)
 (case
   "a map pattern refines an entry VALUE against a literal (matches only when the value equals it)"
   (input
