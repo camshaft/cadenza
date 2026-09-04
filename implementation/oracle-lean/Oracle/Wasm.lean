@@ -128,8 +128,10 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
 canonicalized. The `fixup` (from `resultTyFixup`) retags nested `.bytes`→`.str` at the result type's `String`
 positions — `Oracle.Value` shares the byte rep for Str/Bytes, so a structural decode yields `.bytes` where Core
 has `.str`. `fixup` returns `none` when a `String` sits in a position it cannot faithfully reach (a Record/Sum
-payload) → a SOUND SKIP, never a false-diverge. trap/err/outOfFuel map as in `toOutcome`. -/
-def toOutcomeHeap (fixup : Value → Option Value) (o : WasmOutcome) : Outcome :=
+payload) → a SOUND SKIP, never a false-diverge, surfaced with `declineReason` (a type-tagged reason from
+`heapDeclineReason`, so the skip histogram buckets user-sums / Ordering / Record separately).
+trap/err/outOfFuel map as in `toOutcome`. -/
+def toOutcomeHeap (fixup : Value → Option Value) (declineReason : String) (o : WasmOutcome) : Outcome :=
   match o with
   | .trap msg  => .trap msg
   | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
@@ -139,7 +141,7 @@ def toOutcomeHeap (fixup : Value → Option Value) (o : WasmOutcome) : Outcome :
     | [.compound v] =>
       match fixup v with
       | some v' => .value v'
-      | none    => .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip"
+      | none    => .unsupported declineReason
     | _ => .unsupported "heap result was not a decodable heap value"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
@@ -450,6 +452,38 @@ def unmodeledResultReason (bytes : ByteArray) (entry : ByteArray) : String :=
     | none => base
   | .error _ => base
 
+/-- The decline reason for a HEAP-DECODABLE result whose `resultTyFixup` returned `none` — tagged by the
+result-type head (and, for a `Sum`, the sum NAME) so the skip histogram buckets the causes SEPARATELY:
+a USER/unmodeled sum result (`sum=Color` — variant names aren't in the emitted `cdz-result-type`, needs an emit
+extension) vs a Record-field gap vs other. Sizing these buckets is what justifies (or not) the emit-extension
+route. Single-head form only (`cs.size == 3`); the flat-tuple decline falls to the generic base. -/
+def heapDeclineReason (bytes : ByteArray) (entry : ByteArray) : String :=
+  let base := "heap result: result-type-directed fixup cannot reconstruct the value"
+  match Ast.decode bytes with
+  | .ok m =>
+    match m.nodes.findSome? (fun node =>
+      match node with
+      | .list cs =>
+        if cs.size == 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+            && atomText? m cs[1]! == some entry then some cs[2]! else none
+      | _ => none) with
+    | some tyNode =>
+      match headTypeName? m tyNode with
+      | some head =>
+        if head == "Sum".toUTF8 then
+          match tyChildren m tyNode with
+          | sumNameIdx :: _ =>
+            match nameAtom? m sumNameIdx with
+            | some nm => s!"{base}: user/unmodeled sum result (sum={(String.fromUTF8? nm).getD "?"}) — variant names not in cdz-result-type (needs emit extension)"
+            | none    => s!"{base}: sum result (unnamed)"
+          | [] => s!"{base}: sum result (no name node)"
+        else if head == "Record".toUTF8 then
+          s!"{base}: record result (a field nested a String, or a non-decodable field)"
+        else s!"{base} (head={(String.fromUTF8? head).getD "?"})"
+      | none => base
+    | none => base
+  | .error _ => base
+
 /-! ### The `run_wasm` composition spine + the interpreter seam
 
 `runWasmWith` ties the two pure pieces together — `resultScalarTy?` (decode the entry's scalar type) and
@@ -492,7 +526,8 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
     if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8
         || stringResult? resultTypeBytes trial.entry.toUTF8 then
       let o := drive coreWat trial
-      (toOutcomeHeap (resultTyFixup resultTypeBytes trial.entry.toUTF8) o, wasmLeakOf o)
+      (toOutcomeHeap (resultTyFixup resultTypeBytes trial.entry.toUTF8)
+        (heapDeclineReason resultTypeBytes trial.entry.toUTF8) o, wasmLeakOf o)
     else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
 
 /-- The pure `run_wasm` boundary: resolve the entry's scalar result type, drive the interpreter on the
@@ -617,9 +652,9 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.bytes "hi".toUTF8)]) "(modu
 
 -- `toOutcomeHeap` applies the fixup to the decoded compound: identity keeps the value; a `none`-returning
 -- fixup (an unreachable nested `String`) → a sound skip.
-example : (toOutcomeHeap (fun v => some v) (.ok #[.compound (.int 5)]) == .value (.int 5)) = true := by native_decide
-example : (toOutcomeHeap (fun _ => none) (.ok #[.compound (.bytes "x".toUTF8)])
-    == .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip") = true := by native_decide
+example : (toOutcomeHeap (fun v => some v) "unused" (.ok #[.compound (.int 5)]) == .value (.int 5)) = true := by native_decide
+example : (toOutcomeHeap (fun _ => none) "declined: test reason" (.ok #[.compound (.bytes "x".toUTF8)])
+    == .unsupported "declined: test reason") = true := by native_decide
 -- `resultTyFixup`: a bare `String` retags a top-level `.bytes`→`.str`; a non-String scalar passes through.
 example : (resultTyFixup (rtBytes "String") "main".toUTF8 (.bytes "hi".toUTF8) == some (.str "hi".toUTF8)) = true := by native_decide
 example : (resultTyFixup (rtBytes "Int") "main".toUTF8 (.int 5) == some (.int 5)) = true := by native_decide
@@ -716,9 +751,10 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 (.int 7)
     (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.ok (.int 7))) = true := by native_decide
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.int 9))]) "(module)"
     (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.err (.int 9))) = true := by native_decide
--- A USER sum DECLINES (variant names unrecoverable from the emitted type) → sound skip.
+-- A USER sum DECLINES (variant names unrecoverable from the emitted type) → sound skip, with a type-TAGGED
+-- reason (`heapDeclineReason`) naming the sum so the histogram buckets user-sum results distinctly.
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)]) "(module)"
     (rtSumUserBytes "Color") { entry := "main" }
-    == .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip") = true := by native_decide
+    == .unsupported "heap result: result-type-directed fixup cannot reconstruct the value: user/unmodeled sum result (sum=Color) — variant names not in cdz-result-type (needs emit extension)") = true := by native_decide
 
 end Oracle.Wasm
