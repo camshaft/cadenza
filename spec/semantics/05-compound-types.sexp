@@ -9255,19 +9255,18 @@
       (export main)))
   (output (: -1 Int64)))
 
-; nlp-lit-rest (breaker, RESIDUAL of #8348): a nested-list arm with a LITERAL inner element AND an OUTER rest
-; binder `(list (list 1 b) (.. r))` DROPS the outer rest binder — reading `r` in the body is CDZ0101 'unbound
-; name `r`', yet if `r` is NOT read the compiler still fires the CDZ0306 'unused binding `r`' warning. That
-; warn-then-unbound split is the tell: the pattern-checker binds `r` (so it can warn it unused) but the
-; LITERAL-element re-match desugar's forget_subtree then drops the sibling outer-rest binder. #8348 fixed the
-; same desugar to preserve the pinned `__ne` SCRUTINEE, but a sibling `(.. r)` in the SAME arm is still lost.
-; ISOLATION (bounds it to the literal path): a BINDER inner element `(list (c b) (.. r))` with the same outer
-; rest binds `r` fine → `(+ b (List.len r))` folds; only a LITERAL inner element trips it. Consistent CDZ0101
-; across wasm+rust+cadenza (front-end desugar). SHOULD compile + bind: `xs = [[1 5] [9 9]]`, inner `(1 5)`
-; matches `(1 b)` → b=5, outer rest `r = [[9 9]]` (len 1) → `(+ 5 1)` = 6. Idealistic todo; auto-flips when the
-; literal-element re-match preserves the sibling rest binder. Routed to the Inc-14 desugar owner (the #8348 arc).
+; nlp-lit-rest (breaker, FIXED by #8359 — was a RESIDUAL of #8348): a nested-list arm with a LITERAL inner
+; element AND an OUTER rest binder `(list (list 1 b) (.. r))` USED to DROP the outer rest binder — reading `r`
+; in the body was CDZ0101 'unbound name `r`', while an UNread `r` still fired the CDZ0306 'unused binding `r`'
+; warning (the warn-then-unbound split: the pattern-checker bound `r` but the literal-element re-match's
+; forget_subtree dropped it). #8348 preserved the pinned `__ne` SCRUTINEE but not a sibling `(.. r)`; #8359
+; (5eb33ce3ca) fixed it via forget_subtree_keep_pinned — the nested-list desugar pinned `r`, and keep_pinned
+; keeps it while re-resolving the β-copied cond. Now works: `xs = [[1 5] [9 9]]`, inner `(1 5)` matches
+; `(1 b)` → b=5, outer rest `r = [[9 9]]` (len 1) → `(+ 5 1)` = 6, consistent across wasm+rust+cadenza. And
+; #8361 pins the position-independent plain-sibling-binder GENERALIZATION (the fix preserves ANY sibling, not
+; just a rest). Regression-guard on the #8359 fix.
 (case
-  "a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest (currently unbound r)"
+  "a nested-list arm with a LITERAL inner element AND an outer rest binder binds the rest"
   (input
     (do
       (def
