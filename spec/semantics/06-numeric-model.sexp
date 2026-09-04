@@ -19453,8 +19453,10 @@
     "The doctrine asymmetry fence (cdzw60's equality face × #5519/#5525's ordering model): Cadenza `=`
         compares floats by canonical BYTES so (= NaN NaN) is TRUE, while the ordering ops < > <= are IEEE
         NaN-unordered so every NaN comparison — even (<= NaN NaN) — is FALSE. 1000 for any n (only the
-        equality digit set). (The cadenza hop declines this shape — ConstFloatNan has no re-emit yet, a
-        named gap banked as a flip witness; HOP-1 declines SKIP in corpus-cadenza.)")
+        equality digit set). (Round-trips the cadenza hop: `Core::ConstFloatNan` re-emits as its written
+        member-access form `(. Float64 nan)` — #7298 — which folds straight back on recompile, so the
+        runtime-`n` NaN orderings survive the hop and grade identically to direct-wasm. Earlier this shape
+        was a banked flip witness while ConstFloatNan had no re-emit; that gap is now closed.)")
   (input
     (do
       (def
