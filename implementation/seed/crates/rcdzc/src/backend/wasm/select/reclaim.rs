@@ -2998,10 +2998,19 @@ pub(super) fn mark_binder_dups_inner(
     // each child with `la || (binder occurs in some other child)`. Still fold right-to-left within the pass
     // (preserves the later-sibling propagation), but seed each child's `la` from the group-wide occurrence
     // EXCLUDING itself. Returns whether `binder` occurred in any of them.
-    let seq = |db: &mut Db,
-               children: &[(StructId, bool)],
-               la_in: bool,
-               s: &mut HashSet<StructId>|
+    // `spare_last` (szf1/2/3, v-memory-safety co-design): for a CONSUME-BOTH-IN-PLACE op (a runtime op that
+    // consumes ALL its heap operands DIRECTLY at the op, no threading/callee/simultaneous-hold — `BytesConcat`/
+    // `ListConcat`/`MapMerge`/`SetAlgebra`), the LAST-evaluated occurrence of a binder among its operands can
+    // use the binding's OWN ref (Perceus needs k-1 dups for k direct consumes, not k). So spare it: `other`
+    // counts only LATER siblings (`k > i`) instead of ANY other sibling (`k != i`). `String.concat acc acc`
+    // then dups `acc` ONCE (was twice → 1 husk/level, the szf leak). Gated to that family ONLY — a `Call`/ctor
+    // /control-flow holds operands simultaneously-live / threads them past the op, so it KEEPS `k != i` (the
+    // 9 threaded-and-consumed witnesses; v-mem's GLOBAL k>i broke exactly those). `seq` wraps this at `false`.
+    let seq_impl = |db: &mut Db,
+                    children: &[(StructId, bool)],
+                    la_in: bool,
+                    s: &mut HashSet<StructId>,
+                    spare_last: bool|
      -> bool {
         // Pre-pass: does `binder` occur in each child? Use the CHEAP occurrence scan (`binder_occurs`), NOT
         // `mark_binder_dups` — the latter's full two-pass walk, invoked from every nested `seq`'s pre-pass,
@@ -3027,12 +3036,23 @@ pub(super) fn mark_binder_dups_inner(
         let mut la = la_in;
         for i in (0..children.len()).rev() {
             let (c, is_borrow) = children[i];
-            let other = any && occurs.iter().enumerate().any(|(k, &o)| k != i && o);
+            let other = any
+                && occurs
+                    .iter()
+                    .enumerate()
+                    .any(|(k, &o)| (if spare_last { k > i } else { k != i }) && o);
             let here = mark_binder_dups(db, c, binder, !is_borrow, la || other, s);
             la = la || here;
         }
         any
     };
+    // Thin wrapper: the DEFAULT (`spare_last = false`, the original `k != i`) for every caller EXCEPT the
+    // consume-both-in-place family arms (which call `seq_impl(.., true)`). Keeps the ~25 other call sites intact.
+    let seq = |db: &mut Db,
+               children: &[(StructId, bool)],
+               la_in: bool,
+               s: &mut HashSet<StructId>|
+     -> bool { seq_impl(db, children, la_in, s, false) };
     // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
     // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
     // arm's use (an arm runs after the prefix). Returns whether `binder` occurred anywhere.
@@ -3259,9 +3279,13 @@ pub(super) fn mark_binder_dups_inner(
             seq(db, &[(lhs, true), (rhs, true)], live_after, sites)
         }
         // Consuming constructors / ops: every operand is consumed into the result.
+        // CONSUME-BOTH-IN-PLACE (szf): consumes both heap operands DIRECTLY at the op (fresh result, no
+        // threading/callee) → the last-evaluated same-binder operand uses the binding's ref → `spare_last`.
         Core::BytesConcat { lhs, rhs }
         | Core::ListConcat { lhs, rhs }
-        | Core::MapMerge { lhs, rhs } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
+        | Core::MapMerge { lhs, rhs } => {
+            seq_impl(db, &[(lhs, false), (rhs, false)], live_after, sites, true)
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => seq(
@@ -3367,7 +3391,8 @@ pub(super) fn mark_binder_dups_inner(
             seq(db, &[(set, true), (elem, false)], live_after, sites)
         }
         Core::SetAlgebra { lhs, rhs, .. } => {
-            seq(db, &[(lhs, false), (rhs, false)], live_after, sites)
+            // Consume-both-in-place (union/intersection/difference) → `spare_last` (szf family).
+            seq_impl(db, &[(lhs, false), (rhs, false)], live_after, sites, true)
         }
         // Arithmetic / logical: both operands consumed positions (scalars anyway; a heap binding can only
         // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
