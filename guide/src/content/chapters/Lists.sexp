@@ -30,12 +30,13 @@
   (h2 "Updating a slot without touching the original")
   (p (c "List.update") " takes a list, an index, and a new value, and hands back a list with that one slot changed. The word \"update\" is doing something specific here: it does " (em "not") " reach into your list and overwrite a slot, since nothing in Cadenza does that. It builds a " (em "new") " list. The old one is still exactly what it was. This snippet proves it: bind a list, make a bumped version, then read the original back:")
   (runnable
+    (id "list-update-immut")
     (source (let ((original #list(10 20 30))
       (bumped   (List.update original 1 99)))
   (match (List.at original 1)
     ((Some x) x)
     ((None _) 0)))))
-  (p "The answer is " (c "20") ", not " (c "99") ": " (c "original") " never changed. The " (c "99") " lives only in " (c "bumped") ". Swap " (c "original") " for " (c "bumped") " in the " (c "List.at") " line and Run again to see " (c "99") ". Two lists, sharing most of their structure internally, each with its own value.")
+  (p "The answer is " (result (of "list-update-immut") 20) ", not " (c "99") ": " (c "original") " never changed. The " (c "99") " lives only in " (c "bumped") ". Swap " (c "original") " for " (c "bumped") " in the " (c "List.at") " line and Run again to see " (c "99") ". Two lists, sharing most of their structure internally, each with its own value.")
   (p "Return the updated list itself and you can see the change in place, one slot different, " (cdz #list(10 99 30)) ", and the input " (cdz #list(10 20 30)) " still intact wherever else it's held:")
   (runnable
     (source (List.update #list(10 20 30) 1 99)))
@@ -61,8 +62,9 @@
   (#list(a .. #list(b .. r)) a)
   (_ 0)))
     (expect "error"))
-  (p "To reach the second element, bind the tail to a name and match " (em "that") ", a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here " (c "rest") " is " (cdz #list(20 30)) ", and matching it pulls out " (c "20") ":")
+  (p "To reach the second element, bind the tail to a name and match " (em "that") ", a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here " (c "rest") " is " (cdz #list(20 30)) ", and matching it pulls out " (result (of "list-rest-match") 20) ":")
   (runnable
+    (id "list-rest-match")
     (source (match #list(10 20 30)
   (#list(a .. rest)
    (match rest
