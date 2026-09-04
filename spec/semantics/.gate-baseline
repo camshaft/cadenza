@@ -1594,7 +1594,7 @@ pass	a bare Map.insert FLOAT value adopts the sibling's Float32 width (map unifi
 pass	a bare Map.insert value that adopts Float32 and OVERFLOWS binary32 is rejected (CDZ0302, adopt range-check)
 pass	a bare Qty constructor in a parameter type names its missing arguments
 pass	a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value
-fail	a bare Result<s64,String> RESULT round-trips DIRECTLY (unwrapped) via the run/encode envelope both arms
+pass	a bare Result<s64,String> RESULT round-trips DIRECTLY (unwrapped) via the run/encode envelope both arms
 pass	a bare SYMBOL in the Qty unit position names a unit expression, not a bare symbol, with a wrap fix
 pass	a bare Set constructor in a parameter type names the missing element argument
 pass	a bare TUPLE export result crosses as a typed WIT tuple (declared world)
