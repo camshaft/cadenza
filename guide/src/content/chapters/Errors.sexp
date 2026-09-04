@@ -20,14 +20,16 @@
   (h2 "Safe indexing")
   (p "The same pattern shows up in the standard library. " (c "List.at") " returns an " (c "Option") ", so you never read past the end by accident:")
   (runnable
+    (id "list-at")
     (source (def (main)
   (match (List.at #list(10 20 30) 1)
     ((Some x) x)
     ((None _) 0)))))
-  (p "Index " (c "1") " holds " (c "20") ", so the " (c "Some") " arm binds it and you get " (c "20") ". Change the index to " (c "9") " and the " (c "None") " arm's " (c "0") " comes back instead: a miss you handle, not a crash.")
+  (p "Index " (c "1") " holds " (c "20") ", so the " (c "Some") " arm binds it and you get " (result (of "list-at") 20) ". Change the index to " (c "9") " and the " (c "None") " arm's " (c "0") " comes back instead: a miss you handle, not a crash.")
   (h2 "When you're sure: " (c "expect"))
-  (p "Sometimes you know an " (c "Option") " holds a value and want to get on with it. " (c "Option.expect") " unwraps a " (c "Some") ", or halts with your message if it's a " (c "None") ". The message is required, so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is present, so this just hands back " (c "20") ":")
+  (p "Sometimes you know an " (c "Option") " holds a value and want to get on with it. " (c "Option.expect") " unwraps a " (c "Some") ", or halts with your message if it's a " (c "None") ". The message is required, so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is present, so this just hands back " (result (of "option-expect") 20) ":")
   (runnable
+    (id "option-expect")
     (source (Option.expect (List.at #list(10 20 30) 1) "index out of range")))
   (p "But ask for index " (c "9") ", off the end, and there's no value to unwrap. " (c "expect") " makes good on its name and halts, with the message you supplied:")
   (note "This one is " (strong "meant to halt") ". It compiles fine (the trap is a run-time event, not a compile error), so Run it and read the status bar: the program stops deliberately, at the exact spot you asked it to, rather than limping on with a bogus value.")
@@ -60,13 +62,14 @@
   (h2 "Matching on the value inside")
   (p "A pattern can look " (em "inside") " a variant, not just name it. Here the first arm only fires for exactly " (cdz (Some 0)) "; a different " (c "Some") " falls through to the binding arm.")
   (runnable
+    (id "describe-some0")
     (source (def (describe o)
   (match o
     ((Some 0) 100)
     ((Some x) x)
     ((None _) -1)))
 (def (main) (describe (Some 0)))))
-  (p (cdz (Some 0)) " matches the literal-" (c "0") " arm, so this is " (c "100") ". Feed it " (cdz (Some 7)) " instead and the second arm binds " (c "x") " and returns " (c "7") "; " (cdz (None unit)) " takes the last.")
+  (p (cdz (Some 0)) " matches the literal-" (c "0") " arm, so this is " (result (of "describe-some0") 100) ". Feed it " (cdz (Some 7)) " instead and the second arm binds " (c "x") " and returns " (c "7") "; " (cdz (None unit)) " takes the last.")
   (h2 "Failing with a reason: " (c "Result"))
   (p "An " (c "Option") " says " (em "whether") " there's an answer; sometimes you also want to say " (em "why") " there isn't. " (c "Result") " is the sum for that: " (cdz (Ok value)) " when it worked, " (cdz (Err e)) " carrying a reason when it didn't, and you take it apart with " (c "match") " exactly like an " (c "Option") ". Here " (c "safe-div") " reports the offending divisor on failure:")
   (runnable
