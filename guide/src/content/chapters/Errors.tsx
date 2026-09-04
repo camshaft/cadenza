@@ -23,12 +23,14 @@ export default function Errors() {
       <P>The same pattern shows up in the standard library. <C>List.at</C> returns an <C>Option</C>, so you never read past the end by accident:</P>
       <Runnable
         source={`(def (main) (match (List.at #list(10 20 30) 1) ((Some x) x) ((None _) 0)))`}
+        id="list-at"
       />
       <P>Index <C>1</C> holds <C>20</C>, so the <C>Some</C> arm binds it and you get <C>20</C>. Change the index to <C>9</C> and the <C>None</C> arm's <C>0</C> comes back instead: a miss you handle, not a crash.</P>
       <H2>When you're sure: <C>expect</C></H2>
       <P>Sometimes you know an <C>Option</C> holds a value and want to get on with it. <C>Option.expect</C> unwraps a <C>Some</C>, or halts with your message if it's a <C>None</C>. The message is required, so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is present, so this just hands back <C>20</C>:</P>
       <Runnable
         source={`(Option.expect (List.at #list(10 20 30) 1) "index out of range")`}
+        id="option-expect"
       />
       <P>But ask for index <C>9</C>, off the end, and there's no value to unwrap. <C>expect</C> makes good on its name and halts, with the message you supplied:</P>
       <Note>This one is <strong>meant to halt</strong>. It compiles fine (the trap is a run-time event, not a compile error), so Run it and read the status bar: the program stops deliberately, at the exact spot you asked it to, rather than limping on with a bogus value.</Note>
@@ -67,6 +69,7 @@ export default function Errors() {
         source={`(def (describe o) (match o ((Some 0) 100) ((Some x) x) ((None _) -1)))
 
 (def (main) (describe (Some 0)))`}
+        id="describe-some0"
       />
       <P><Cadenza ast="Y2R6YXN0AAECCgRTb21lAAADAAAAAQECAAEC" kind="expr">(Some 0)</Cadenza> matches the literal-<C>0</C> arm, so this is <C>100</C>. Feed it <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAEHAwAAAAEBAgABAg==" kind="expr">(Some 7)</Cadenza> instead and the second arm binds <C>x</C> and returns <C>7</C>; <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> takes the last.</P>
       <H2>Failing with a reason: <C>Result</C></H2>
