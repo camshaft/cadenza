@@ -3129,7 +3129,14 @@ fn emit_expr_viewed(
         // to `Int64`, `List.at` to its `Option` result — the member re-resolves to the same op on recompile.
         Core::ListLen { operand } => {
             let head = member_access(b, "List", "len");
-            let l = emit_expr(db, b, operand, None, env, emitted)?;
+            // PEEL a newtype operand to its inner list (the collection-op twin of the arith-operand peel):
+            // a folded `(match w ((Mk xs) (List.len xs)))` leaves `List.len` over the bare newtype binder
+            // `w : Wrap` (`type Wrap (Mk (List Int64))`), which recompiles as `List.len` on a `Wrap` → hop2
+            // CDZ0203. Re-insert the unwrap `(match w ((Mk xs) xs))` so `List.len` sees the inner list.
+            let l = match emit_binder_newtype_inner_peel(db, b, operand, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, operand, None, env, emitted)?,
+            };
             Ok(b.list(vec![head, l]))
         }
         Core::ListPush { list, elem } => {
