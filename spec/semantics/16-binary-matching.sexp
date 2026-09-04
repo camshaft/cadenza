@@ -4632,3 +4632,23 @@
   (output (: "x" String))
   (call main (: 48 Int64))
   (output (: "" String)))
+
+; bfx10 (breaker, GAP): a dependent segment size from an ARITHMETIC EXPRESSION over a byte binder declines
+; ("a runtime bin utf8 segment needs a computable byte range (offset + size)"). This is a SECOND dependent-
+; size limitation, DISTINCT from bfx9 (a bit-field binder as size): here the binder is a plain byte, but the
+; size is `(* c 2)` — a computed expression, not the bare binder the length-prefixed frames (~4305,
+; `(u8 c)(utf8 s c)`) use. `(* c 2)` is runtime-computable, so idealistically this SHOULD decode; the
+; dependent-size resolution just doesn't yet accept a computed size expression, only a bare binder. Consistent
+; decline across wasm+rust+cadenza (front-end/lowering completeness gap, not a divergence). Idealistic: c=2
+; -> size (* 2 2)=4 -> utf8 over [104,105,106,107] = "hijk". Grades todo until a computed dependent size is
+; accepted. Routed to concierge (same bin-match dependent-size owner as bfx9).
+(case
+  "a dependent utf8 size from an arithmetic expression over a byte binder decodes"
+  (input
+    (do
+      (def (parse (: b Bytes))
+        (match b ((bin (u8 c) (utf8 s (* c 2))) s) (_ "x")))
+      (def (main (: c0 Int64)) (parse (Bytes.of #list((UInt8.of c0) 104 105 106 107))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: "hijk" String)))
