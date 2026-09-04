@@ -3042,7 +3042,8 @@ pub(super) fn mark_binder_dups_inner(
                     children: &[(StructId, bool)],
                     la_in: bool,
                     s: &mut HashSet<StructId>,
-                    spare_last: bool|
+                    spare_last: bool,
+                    strict_consume_op: bool|
      -> bool {
         // Pre-pass: does `binder` occur in each child? Use the CHEAP occurrence scan (`binder_occurs`), NOT
         // `mark_binder_dups` — the latter's full two-pass walk, invoked from every nested `seq`'s pre-pass,
@@ -3061,10 +3062,43 @@ pub(super) fn mark_binder_dups_inner(
                 .unwrap_or_else(|| binder_occurs(db, c, binder, &mut occ_cache));
             occurs.push(o);
         }
+        // For a STRICT CONSUMING-OP operand seq (`strict_consume_op` — ListPush/ListPrepend/ListUpdate/
+        // MapInsert/SetInsert: all operands EVALUATE, then the op consumes a bare heap operand AT THE OP), a
+        // co-operand that only BORROWS the binder and yields a non-aliasing SCALAR (`holds_no_handle`) reads
+        // the LIVE binder BEFORE the deferred consume, so it needs NO retain-dup of a consuming co-operand — it
+        // must NOT contribute to a co-operand's `other`/`live_after`. `(List.push c (List.len c))`: child1 =
+        // `(List.len c)` borrows `c` and returns Int64, so child0 = `c` (bare consume) must not be forced to
+        // `dup` by it (v-mem WAT-localized the spurious dup to the bare-binder site at the `LocalRef`/`Param`
+        // arm, fed by this seq's `la` fold + `other` seed; the borrow reads live `c` before List.push's deferred
+        // FBIP mutation). SCOPED to these ops: a borrow at a HIGHER seq / let-body (the `+` op0-vs-op1
+        // persistence, the let-binding-vs-body persistence, `ctl_consume_first`) is NOT a co-operand of the
+        // consuming op — the consume completes before that read — so it KEEPS its dup (applying this GLOBALLY
+        // was fix-2's UAF: it dropped those needed dups → wasm traps). Computed only when `strict_consume_op`;
+        // the scalar `&&` short-circuits the `binding_escapes` walk to shallow non-heap children. UAF-SAFE by
+        // construction (a scalar result holds no handle → only a missed dup = leak, never a use-after-free; the
+        // `binding_escapes` conjunct keeps the dup for a CONSUMING co-operand — a 2nd consumer — and
+        // `is_heap_type_for_retain` for an ALIASING-heap borrow). v-memory-safety rc-trace-verified this rule.
+        let holds_no_handle: Vec<bool> = if strict_consume_op {
+            children
+                .iter()
+                .enumerate()
+                .map(|(k, &(c, _))| {
+                    occurs[k]
+                        && !is_heap_type_for_retain(&type_of(db, c))
+                        && !binding_escapes(db, c, binder, false)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // `strict_consume_op && holds_no_handle[k]` — the `&&` short-circuits so the empty vec is never indexed
+        // when `strict_consume_op` is false.
+        let no_handle = |k: usize| strict_consume_op && holds_no_handle[k];
         let any = occurs.iter().any(|&o| o);
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
         // additionally seed each child's `la` with "binder occurs in some OTHER child" (the left-sibling
-        // case the one-directional fold misses for simultaneously-live operands).
+        // case the one-directional fold misses for simultaneously-live operands). A co-operand that holds no
+        // live handle (see above) is excluded from BOTH the `other` seed AND the `la` propagation.
         let mut la = la_in;
         for i in (0..children.len()).rev() {
             let (c, is_borrow) = children[i];
@@ -3072,19 +3106,30 @@ pub(super) fn mark_binder_dups_inner(
                 && occurs
                     .iter()
                     .enumerate()
-                    .any(|(k, &o)| (if spare_last { k > i } else { k != i }) && o);
+                    .any(|(k, &o)| (if spare_last { k > i } else { k != i }) && o && !no_handle(k));
             let here = mark_binder_dups(db, c, binder, !is_borrow, la || other, s);
-            la = la || here;
+            la = la || (here && !no_handle(i));
         }
         any
     };
-    // Thin wrapper: the DEFAULT (`spare_last = false`, the original `k != i`) for every caller EXCEPT the
-    // consume-both-in-place family arms (which call `seq_impl(.., true)`). Keeps the ~25 other call sites intact.
+    // Thin wrapper: the DEFAULT (`spare_last = false`, `strict_consume_op = false`) for every caller EXCEPT the
+    // consume-both-in-place family arms (`seq_impl(.., true, false)`) and the strict deferred-consume ops
+    // (`seq_strict` below). Keeps the ~25 other call sites intact.
     let seq = |db: &mut Db,
                children: &[(StructId, bool)],
                la_in: bool,
                s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false) };
+     -> bool { seq_impl(db, children, la_in, s, false, false) };
+    // Wrapper for a STRICT DEFERRED-CONSUME op (ListPush/ListPrepend/ListUpdate/MapInsert/SetInsert): all
+    // operands evaluate before the op consumes a bare heap operand, so a borrow-only SCALAR co-operand's read
+    // of the binder completes before the deferred consume and must not force a retain-dup (the CATALAN
+    // loop-carried over-dup fix; `strict_consume_op = true`). `spare_last = false` (the k>i last-consumer spare
+    // is the consume-both-in-place family's concern, not this one).
+    let seq_strict = |db: &mut Db,
+                      children: &[(StructId, bool)],
+                      la_in: bool,
+                      s: &mut HashSet<StructId>|
+     -> bool { seq_impl(db, children, la_in, s, false, true) };
     // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
     // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
     // arm's use (an arm runs after the prefix). Returns whether `binder` occurred anywhere.
@@ -3315,9 +3360,14 @@ pub(super) fn mark_binder_dups_inner(
         // threading/callee) → the last-evaluated same-binder operand uses the binding's ref → `spare_last`.
         Core::BytesConcat { lhs, rhs }
         | Core::ListConcat { lhs, rhs }
-        | Core::MapMerge { lhs, rhs } => {
-            seq_impl(db, &[(lhs, false), (rhs, false)], live_after, sites, true)
-        }
+        | Core::MapMerge { lhs, rhs } => seq_impl(
+            db,
+            &[(lhs, false), (rhs, false)],
+            live_after,
+            sites,
+            true,
+            false,
+        ),
         Core::BytesSlice {
             bytes, start, len, ..
         } => seq(
@@ -3382,9 +3432,9 @@ pub(super) fn mark_binder_dups_inner(
             ),
         },
         Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
-            seq(db, &[(list, false), (elem, false)], live_after, sites)
+            seq_strict(db, &[(list, false), (elem, false)], live_after, sites)
         }
-        Core::ListUpdate { list, index, elem } => seq(
+        Core::ListUpdate { list, index, elem } => seq_strict(
             db,
             &[(list, false), (index, false), (elem, false)],
             live_after,
@@ -3398,7 +3448,7 @@ pub(super) fn mark_binder_dups_inner(
             }
             seq(db, &cs, live_after, sites)
         }
-        Core::MapInsert { map, key, val, .. } => seq(
+        Core::MapInsert { map, key, val, .. } => seq_strict(
             db,
             &[(map, false), (key, false), (val, false)],
             live_after,
@@ -3409,14 +3459,14 @@ pub(super) fn mark_binder_dups_inner(
             seq(db, &[(map, true), (key, false)], live_after, sites)
         }
         Core::MapRemove { map, key, .. } => {
-            seq(db, &[(map, false), (key, false)], live_after, sites)
+            seq_strict(db, &[(map, false), (key, false)], live_after, sites)
         }
         Core::SetOf { elems, .. } => {
             let cs: Vec<(StructId, bool)> = elems.iter().map(|&e| (e, false)).collect();
             seq(db, &cs, live_after, sites)
         }
         Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
-            seq(db, &[(set, false), (elem, false)], live_after, sites)
+            seq_strict(db, &[(set, false), (elem, false)], live_after, sites)
         }
         // `Set.contains` BORROWS the set; the element is consumed into an owned temporary.
         Core::SetContains { set, elem, .. } => {
@@ -3424,7 +3474,14 @@ pub(super) fn mark_binder_dups_inner(
         }
         Core::SetAlgebra { lhs, rhs, .. } => {
             // Consume-both-in-place (union/intersection/difference) → `spare_last` (szf family).
-            seq_impl(db, &[(lhs, false), (rhs, false)], live_after, sites, true)
+            seq_impl(
+                db,
+                &[(lhs, false), (rhs, false)],
+                live_after,
+                sites,
+                true,
+                false,
+            )
         }
         // Arithmetic / logical: both operands consumed positions (scalars anyway; a heap binding can only
         // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
