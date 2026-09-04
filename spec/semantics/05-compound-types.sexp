@@ -734,6 +734,26 @@
   (error CDZ0101 (message "undefined_subject")))
 
 (case
+  "an unbound match subject under a wildcard arm still reports CDZ0101 (the always-clean control for the ctor case)"
+  (doc
+    "The contrast that isolates the fix: the SAME unbound subject under a WILDCARD arm always surfaced
+           CDZ0101 (the scalar/wildcard path lowers the scrutinee + propagates its poison). Pins that the
+           ctor-arm case above now matches this clean behavior, rather than masking it with the pattern-
+           support decline.")
+  (input (do (def (main) (match undefined_subject (_ 0))) (export main)))
+  (error CDZ0101 (message "undefined_subject")))
+
+(case
+  "an unresolved-member match subject surfaces CDZ0201 under a ctor pattern (not masked)"
+  (doc
+    "The unresolved-MEMBER (CDZ0201) twin of the unbound-name case: `(match (Map.of #list(1)) ((Some x)
+           x) (_ 0))` — `Map.of` is not a member of the `Map` module. The structural `(Some x)` arm must not
+           mask the unresolved-member error; the subject's own CDZ0201 surfaces ahead of the arm pattern-
+           support check.")
+  (input (do (def (main) (match (Map.of #list(1)) ((Some x) x) (_ 0))) (export main)))
+  (error CDZ0201 (message "has no member")))
+
+(case
   "a list pattern over its matching List scrutinee kind is valid and matches (no over-rejection)"
   (input (do (def (main) (match #list(1 2) (#list(a b) a) (_ 0))) (export main)))
   (call main)
