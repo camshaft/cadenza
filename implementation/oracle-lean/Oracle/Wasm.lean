@@ -139,7 +139,7 @@ def toOutcomeHeap (fixup : Value → Option Value) (o : WasmOutcome) : Outcome :
     | [.compound v] =>
       match fixup v with
       | some v' => .value v'
-      | none    => .unsupported "heap result nests a String in a position not yet fixed up (Record/Sum payload) — recursive fixup pending"
+      | none    => .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip"
     | _ => .unsupported "heap result was not a decodable heap value"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
@@ -229,7 +229,7 @@ own `.bytes`→`.str`). Nominal / Qty / sums still decline. -/
 def decodableHeapHead (ty : ByteArray) : Bool :=
   ty == "BigInt".toUTF8 || ty == "List".toUTF8 || ty == "Map".toUTF8
     || ty == "Set".toUTF8 || ty == "Rational".toUTF8 || ty == "Bytes".toUTF8
-    || ty == "Record".toUTF8
+    || ty == "Record".toUTF8 || ty == "Sum".toUTF8
 
 /-- Whether the entry's result type is a HEAP type the driver can decode + `toOutcomeHeap` finalizes WITHOUT a
 result-type fixup. Recognizing it makes `runWasmWithLeak` INVOKE the driver (which structurally decodes the
@@ -330,6 +330,36 @@ partial def fixupTy : Nat → Module → Nat → Value → Option Value
         match v with
         | .tuple vs => (fixupRecord fuel m (tyChildren m i) vs.toList).map (fun fs => .record fs.toArray)
         | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+      else if name == "Sum".toUTF8 then
+        -- Sum type node `(Sum <sumName> <declId> <payloadType>*)`. The decoder handed us the intermediate
+        -- `.variant <decimal-disc> payload`. BUILT-IN Option/Result map by discriminant to Core's DEDICATED
+        -- ctors (Some=disc0 / None=disc1; Ok=disc0 / Err=disc1 — declaration order; CONFIRM w/ v-lean-oracle),
+        -- recursing the payload by its type. USER sums + Ordering + unknown → DECLINE (variant names aren't in
+        -- the emitted type → sound skip, no false-diverge).
+        match v with
+        | .variant discTag payloadV =>
+          match tyChildren m i with
+          | sumNameIdx :: _declId :: payloadTypes =>
+            match nameAtom? m sumNameIdx, (String.fromUTF8? discTag).bind (·.toNat?) with
+            | Option.some sumName, Option.some disc =>
+              if sumName == "Option".toUTF8 then
+                if disc == 0 then
+                  match payloadTypes with
+                  | pt :: _ => (fixupTy fuel m pt payloadV).map (fun pv => Value.some pv)
+                  | []      => Option.none
+                else if disc == 1 then Option.some Value.none
+                else Option.none
+              else if sumName == "Result".toUTF8 then
+                match payloadTypes with
+                | okT :: errT :: _ =>
+                  if disc == 0 then (fixupTy fuel m okT payloadV).map (fun pv => Value.ok pv)
+                  else if disc == 1 then (fixupTy fuel m errT payloadV).map (fun pv => Value.err pv)
+                  else Option.none
+                | _ => Option.none
+              else Option.none   -- Ordering / Sign / user sums: no recoverable variant names → decline
+            | _, _ => Option.none
+          | _ => Option.none
+        | _ => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else
         if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
     | Option.none => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
@@ -589,7 +619,7 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.bytes "hi".toUTF8)]) "(modu
 -- fixup (an unreachable nested `String`) → a sound skip.
 example : (toOutcomeHeap (fun v => some v) (.ok #[.compound (.int 5)]) == .value (.int 5)) = true := by native_decide
 example : (toOutcomeHeap (fun _ => none) (.ok #[.compound (.bytes "x".toUTF8)])
-    == .unsupported "heap result nests a String in a position not yet fixed up (Record/Sum payload) — recursive fixup pending") = true := by native_decide
+    == .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip") = true := by native_decide
 -- `resultTyFixup`: a bare `String` retags a top-level `.bytes`→`.str`; a non-String scalar passes through.
 example : (resultTyFixup (rtBytes "String") "main".toUTF8 (.bytes "hi".toUTF8) == some (.str "hi".toUTF8)) = true := by native_decide
 example : (resultTyFixup (rtBytes "Int") "main".toUTF8 (.int 5) == some (.int 5)) = true := by native_decide
@@ -647,5 +677,48 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.tuple #[.int 1, .int 2])]) 
 -- `resultTyFixup` on the Record type retags directly: `.tuple #[.bytes,.int]` → `.record [(a,.str),(s,.int)]`.
 example : (resultTyFixup (rtRecordBytes "a" "String" "s" "Int") "main".toUTF8 (.tuple #[.bytes "hi".toUTF8, .int 9])
     == some (.record #[("a".toUTF8, .str "hi".toUTF8), ("s".toUTF8, .int 9)])) = true := by native_decide
+
+/-- `cdz-result-type` for a built-in `(result-type main (Sum Option <declId> <payloadTy>))` — the extracted
+sum spelling: name-leaf `Sum`, sum-name leaf, an int-lit declId (ignored), then the payload-bearing variant's
+type. (The decoder hands the fixup an intermediate `.variant "<disc>" payload`; the Sum arm maps disc→ctor.) -/
+private def rtSumOptionBytes (payloadTy : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Sum".toUTF8, .name "Option".toUTF8,
+                  .intLit false .dec (ByteArray.mk #[1]), .name payloadTy.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[2, 3, 4, 5], .list #[0, 1, 6]],
+      root := 7 }
+/-- `(result-type main (Sum Result <declId> <okTy> <errTy>))` — Result has TWO payload types (Ok, Err) in disc order. -/
+private def rtSumResultBytes (okTy errTy : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Sum".toUTF8, .name "Result".toUTF8,
+                  .intLit false .dec (ByteArray.mk #[2]), .name okTy.toUTF8, .name errTy.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .atom 6, .list #[2, 3, 4, 5, 6], .list #[0, 1, 7]],
+      root := 8 }
+/-- `(result-type main (Sum <userName> <declId>))` — a USER sum: no recoverable variant names → the fixup declines. -/
+private def rtSumUserBytes (userName : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Sum".toUTF8, .name userName.toUTF8,
+                  .intLit false .dec (ByteArray.mk #[9])],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3, 4], .list #[0, 1, 5]],
+      root := 6 }
+
+-- Built-in Option decode (disc 0 = Some, disc 1 = None — declaration order): `(Some 5)` [decoder → `.variant "0"
+-- (.int 5)`] → `Value.some (.int 5)`; `(None)` [`.variant "1" .unit`] → `Value.none`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 (.int 5))]) "(module)"
+    (rtSumOptionBytes "Int") { entry := "main" } == .value (.some (.int 5))) = true := by native_decide
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 .unit)]) "(module)"
+    (rtSumOptionBytes "Int") { entry := "main" } == .value .none) = true := by native_decide
+-- `Option String`'s `Some` retags the nested payload `.bytes`→`.str`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 (.bytes "hi".toUTF8))]) "(module)"
+    (rtSumOptionBytes "String") { entry := "main" } == .value (.some (.str "hi".toUTF8))) = true := by native_decide
+-- Built-in Result decode (disc 0 = Ok, disc 1 = Err): `(Ok 7)` → `Value.ok (.int 7)`; `(Err 9)` → `Value.err (.int 9)`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 (.int 7))]) "(module)"
+    (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.ok (.int 7))) = true := by native_decide
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.int 9))]) "(module)"
+    (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.err (.int 9))) = true := by native_decide
+-- A USER sum DECLINES (variant names unrecoverable from the emitted type) → sound skip.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)]) "(module)"
+    (rtSumUserBytes "Color") { entry := "main" }
+    == .unsupported "heap result has a value the result-type-directed fixup cannot reconstruct (a String nested in a Record/Sum payload, or a user sum whose variant names are not in the emitted type) — sound skip") = true := by native_decide
 
 end Oracle.Wasm

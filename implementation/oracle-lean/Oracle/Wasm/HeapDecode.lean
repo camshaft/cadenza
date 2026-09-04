@@ -4,7 +4,7 @@ decoder (the next big coverage lever: a heap-valued `main` returns an i32 HANDLE
 lets us reconstruct its value instead of skipping the case).
 
 This module is the pure, self-contained CORE: `handle + HeapState → raw Oracle.Value`. It produces the RAW
-STRUCTURAL value — a byte buffer → `.bytes`, an array → `.tuple`, a sum DECLINES (needs the type's variant
+STRUCTURAL value — a byte buffer → `.bytes`, an array → `.tuple`, a sum → an intermediate `.variant` carrying the disc (the type-directed fixup maps built-in Option/Result; user-sum variant names need the type
 names). The result-type FIXUPS (`.bytes`→`.str` / `.tuple`→`.record` guided by the entry's result type) and
 `Eval.canonicalizeValue` (canonically sort/dedupe set/map/record to match Core's order-sensitive `valueEqSpec`)
 are applied at the Outcome boundary by the driver/`toOutcome` wiring — a follow-up. Kept separate so this read
@@ -26,9 +26,10 @@ mutual
 Fuel-bounded recursion. Immediates decode inline (fixnum → `.int`, atom → `.bool`/`.unit`); a live heap object
 decodes by its `HeapValue`: scalars/bigint → `.int`, floats → `.f64`, a byte buffer → `.bytes` (a String
 result is fixed up by result-type later), rational → `.rational`, array → `.tuple`, vec → `.list`, set → `.set`,
-map → `.map` (all children decoded recursively, RAW order — canonicalized later). A SUM declines (`none` —
-mapping a numeric disc → `Some/None/Ok/Err`/`variant name` needs the result type). `none` = undecodable
-(sum / unknown / non-heap-non-immediate / exhausted fuel). -/
+map → `.map` (all children decoded recursively, RAW order — canonicalized later). A SUM decodes to an
+INTERMEDIATE `.variant "<decimal-disc>" payload` (the numeric disc → variant NAME needs the result type, so the
+result-type-directed `Oracle.Wasm.fixupTy` Sum arm rewrites it — built-in Option/Result → `.some/.none/.ok/.err`,
+user sums → decline). `none` = undecodable (unknown / non-heap-non-immediate / exhausted fuel). -/
 partial def decodeValueWork : Nat → HeapState → UInt32 → Option Value
   | 0,        _, _ => Option.none
   | fuel + 1, s, h =>
@@ -56,7 +57,14 @@ partial def decodeValueWork : Nat → HeapState → UInt32 → Option Value
           | .vec es   => (decodeSeqWork fuel s es.toList).map (fun vs => .list vs.toArray)
           | .set es   => (decodeSeqWork fuel s es.toList).map (fun vs => .set vs.toArray)
           | .map es   => (decodeMapWork fuel s es.toList).map (fun ps => .map ps.toArray)
-          | .sum _ _ => Option.none
+          | .sum disc payload =>
+            -- Carry the numeric discriminant forward as a DECIMAL-STRING tag on an INTERMEDIATE `.variant`;
+            -- the result-type-directed fixup (`Oracle.Wasm.fixupTy`'s Sum arm) rewrites it — built-in
+            -- Option/Result by `disc` → Core's dedicated `.some`/`.none`/`.ok`/`.err`, or DECLINES a user sum
+            -- (variant names aren't in the emitted result type). The payload decodes structurally (a nullary
+            -- variant's payload is the unit immediate → `.unit`). This intermediate is always consumed by the
+            -- Sum fixup arm for a well-typed sum result; it never reaches the differential as-is.
+            (decodeValueWork fuel s payload).map (fun pv => .variant ((toString disc.toNat).toUTF8) pv)
 
 /-- Decode a handle LIST structurally (NOT `List.mapM` over `Option` — that generates a `_spec_` the
 compiler cannot evaluate → `native_decide`/`#guard` fail with "uses sorry"). -/
