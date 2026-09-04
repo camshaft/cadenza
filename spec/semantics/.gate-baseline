@@ -7,7 +7,7 @@ fail	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
 fail	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
 fail	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 fail	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
-fail	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
+pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 fail	String.at and String.scalar-at at a runtime index are scalar-indexed across an astral char
 fail	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 fail	a constant-size utf8 segment decodes inside a nested bin arm
