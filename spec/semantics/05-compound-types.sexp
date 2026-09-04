@@ -8434,6 +8434,27 @@
       (export main)))
   (output (: -1 Int64)))
 
+; rec-lit-elem (breaker, the RECORD holdout — #8367 'completed the arc' but RECORDS remain unrefined): the
+; refutable-list-element-refinement family now covers a multi-variant sum ctor (discriminant), a single-variant
+; newtype ctor (literal payload), a nested-LIST element (literal, #8348), and a TUPLE element (literal
+; component, #8367) — but a RECORD element with a refutable FIELD, `(list (record (= v 1)))`, STILL declines
+; CDZ0900 'a refutable list element sub-pattern needs element-value refinement'. This is inconsistent: a record
+; field refines by value everywhere ELSE — as a MAP entry value (#8352) and in a bare record match — just not as
+; a list ELEMENT. ISOLATION: a BINDER-field record element `(list (record (= v a)))` is IRREFUTABLE and works
+; (binds a → 7), exactly like the tuple/newtype binder controls; only a LITERAL field trips it. Consistent
+; CDZ0900 across wasm+rust+cadenza (front-end desugar). SHOULD refine by the field value like its siblings:
+; `xs = [{v:1}]`, record `{v:1}` matches `(= v 1)` → 100 (a non-matching `{v:2}` would fall through). Idealistic
+; todo; auto-flips when record-element value-refinement lands. Routed to the list-matcher element-refinement
+; owner (the #8367/#8371 arc — records are the next holdout after tuples).
+(case
+  "a refutable record list element with a literal field should refine by value (currently CDZ0900)"
+  (input
+    (do
+      (def (f (: xs (List (Record (v Int64))))) (match xs (#list(#record((= v 1))) 100) (_ -1)))
+      (def (main) (f #list(#record((= v 1)))))
+      (export main)))
+  (output (: 100 Int64)))
+
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
   (doc
