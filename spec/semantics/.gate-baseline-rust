@@ -9023,3 +9023,4 @@ todo	a module-member-type ctor value at the exported-entry boundary declines (id
 pass	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
 pass	lcap1 a closure capturing a LET-LOCAL scalar computes when applied in-program
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
+todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
