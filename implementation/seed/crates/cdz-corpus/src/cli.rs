@@ -1373,6 +1373,11 @@ fn push_diag_forms(b: &mut Builder, tk: &mut Vec<StructId>, d: &DiagQuality) {
         let nl = str_leaf(b, &n.to_string());
         tk.push(form(b, "count", vec![nl]));
     }
+    // `(exact-code)` — lift the nested C1 fence flag to a trial-level marker the grade side reads into
+    // `GTrial.exact_code` (→ `grade_compile_error(exact=true)`: a wrong/uncoded code FAILs).
+    if d.exact_code {
+        tk.push(form(b, "exact-code", vec![]));
+    }
 }
 
 /// A member-access `(. Ast <member>)` node — the shape the parser produces for a dotted reference like
@@ -1898,6 +1903,29 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         assert!(warn_tr.contains("no-fix"), "no-fix clause: {warn_tr}");
         // The warning case ROUTES as its own kind for the exec router.
         assert_eq!(expect_kind(&recs[1]), "warning");
+    }
+
+    /// C1 fence: a `(error CODE (exact-code))` case lifts the nested `(exact-code)` to a trial-level
+    /// `(exact-code)` clause in the shredded `test-run.ast` — which `cdz_corpus_grade::decode_trial` reads
+    /// into `GTrial.exact_code` (→ `grade_compile_error(exact=true)`: a wrong/uncoded code FAILs). A case
+    /// WITHOUT it stays clause-free (the default lenient wrong-code→Todo).
+    #[test]
+    fn exact_code_fence_reaches_the_shredded_test_run() {
+        let recs = crate::read(
+            r#"(case "fenced" (input 1_) (error CDZ0201 (exact-code)))
+               (case "lenient" (input 1_) (error CDZ0201))"#,
+        )
+        .unwrap();
+        let fenced = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            fenced.contains("(exact-code)"),
+            "exact-code lifts to a trial-level clause: {fenced}"
+        );
+        let lenient = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
+        assert!(
+            !lenient.contains("exact-code"),
+            "a case without (exact-code) stays fence-free: {lenient}"
+        );
     }
 
     /// `oracle-trials` emits each trial's VALUES as BINARY AST (parsed from value-form text, not opaque
