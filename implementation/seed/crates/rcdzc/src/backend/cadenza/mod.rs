@@ -1843,6 +1843,21 @@ fn emit_expr_viewed(
                 let head = member_access(b, "Qty", "value");
                 return Ok(b.list(vec![head, name]));
             }
+            // NEWTYPE-UNWRAP peel (the newtype twin of the Qty peel): a binder DECLARED a single-payload
+            // newtype (`(: w M)`, `(type M (Mk Int64))`) that the optimizer FOLDED an `(match w ((Mk v) v))`
+            // unwrap out of — so the CONSUMER wants the inner (`expected == inner`) but the bare binder
+            // recompiles as the NOMINAL `M`, mis-typing the def result (a recursion-forced `(match w ((Mk v)
+            // v))` return re-emits bare `w:M` → `(: 7 M)` not `7`). Re-insert `(match w ((Mk v) v))`. Gated on
+            // `expected == Some(inner)`: a VALUE/return consumer explicitly wants the inner; a MATCH SCRUTINEE
+            // is emitted with `expected = None` (keeping the nominal), so this never double-matches a scrutinee.
+            if let Some(exp) = &expected
+                && let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, binder)
+                && &*inner == exp
+                && is_emitted_single_payload_newtype(db, decl, emitted)
+                && let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env)
+            {
+                return Ok(peel);
+            }
             Ok(name)
         }
         // A reference to a kept `let` binding — its binder is the initializer occurrence (NOT a `Name`),
@@ -1865,6 +1880,16 @@ fn emit_expr_viewed(
             if peel {
                 let head = member_access(b, "Qty", "value");
                 return Ok(b.list(vec![head, name]));
+            }
+            // NEWTYPE-UNWRAP peel — same as the `Core::Param` arm above (a folded `(match w ((Mk v) v))`
+            // unwrap of a declared-newtype let/match binder consumed as its inner: `expected == inner`).
+            if let Some(exp) = &expected
+                && let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, binder)
+                && &*inner == exp
+                && is_emitted_single_payload_newtype(db, decl, emitted)
+                && let Some(peel) = emit_newtype_unwrap_peel(db, b, name, decl, env)
+            {
+                return Ok(peel);
             }
             Ok(name)
         }
