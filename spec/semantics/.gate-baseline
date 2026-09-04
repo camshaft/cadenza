@@ -4127,10 +4127,10 @@ pass	a partial application persists its capture across two applications
 pass	a partial application still needing two arguments pluralizes the count
 pass	a partial application where a scalar is expected names the forgotten call
 pass	a partial application whose residual reads the compound capture in TWO escaping positions reclaims cleanly (per-occurrence dup)
-todo	a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)
-todo	a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)
-todo	a partial built-in operation (slice at 2 of 3 args) curries — completing it yields a value (should-work)
-todo	a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)
+pass	a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)
+pass	a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)
+pass	a partial built-in operation (slice at 2 of 3 args) curries — completing it yields a value (should-work)
+pass	a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
 pass	a partial constructor in a runtime tuple element completes via an eta-closure lift
@@ -7017,7 +7017,7 @@ pass	an unconditional cross-function abort folds via inline
 pass	an unconsumed handler seed is unobserved when the body never performs, so its trap is elided (lazy-effect)
 pass	an unconsumed resume next-state is unobserved, so its trapping expression is elided (lazy-effect)
 pass	an undefined name in the 2nd+ position of a multi-name export clause is caught with a did-you-mean
-todo	an under-applied built-in operation curries — completing it yields a value (should-work)
+pass	an under-applied built-in operation curries — completing it yields a value (should-work)
 pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument

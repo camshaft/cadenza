@@ -242,9 +242,10 @@
   "a partial built-in operation (slice at 2 of 3 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.slice s 0)` is slice partially applied (start given, end missing) — it SHOULD curry to a
-           closure awaiting the end index (core-semantics L73/L295), completing to a substring. Declines today
-           only until the built-in-as-value closure synth is realized (declined(PrimAsValueNeedsClosure)). f holds
-           the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4). `String.slice` is TOTAL —
+           closure awaiting the end index (core-semantics L73/L295), completing to a substring. Now CURRIES +
+           computes (the built-in-as-value closure synth landed); the captured runtime String leaks by 1 —
+           tracked `(live-objects known-leak)`, v-memory-safety's borrow-only-heap-capture reclaim follow-up.
+           f holds the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4). `String.slice` is TOTAL —
            collections-and-text.md §134 MUSTs a sub-sequence slice yield an OPTIONAL value (present in bounds,
            absent out of bounds), so the result is `(Option String)` (the sibling of `String.at`), not a bare
            String — the in-bounds slice is `Some \"abcd\"` (end EXCLUSIVE), unwrapped to byte-len 4.")
@@ -254,14 +255,16 @@
       (def (main) (match ((f "abcdef") 4) ((Some sub) (String.byte-len sub)) ((None _u) -1)))
       (export main)))
   (call main)
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak))
 
 (case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
-           index (core-semantics L73/L295), declining today only until the built-in-as-value closure synth is
-           realized (declined(PrimAsValueNeedsClosure)). `((f \"hi\") 0)` completes it to String.at(\"hi\",0) =
+           index (core-semantics L73/L295). Now CURRIES + computes (the built-in-as-value closure synth landed);
+           the captured runtime String leaks by 1 — tracked `(live-objects known-leak)`, v-memory-safety's
+           borrow-only-heap-capture reclaim follow-up. `((f \"hi\") 0)` completes it to String.at(\"hi\",0) =
            Some \"h\" — String.at yields an (Option String) 1-scalar substring (not a Char); the arm returns 1.")
   (input
     (do
@@ -269,7 +272,8 @@
       (def (main) (match ((f "hi") 0) ((Some c) (if (= c "h") 1 0)) ((None _u) -1)))
       (export main)))
   (call main)
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak))
 
 (case
   "a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)"
@@ -278,23 +282,25 @@
            to `((f a) b)`), so it curries identically — the spine is flattened to its bottom head, so the nested
            and flat surfaces are treated the same. Completing `((f \"abcdef\") 4)` = slice(\"abcdef\",0,4) =
            `Some \"abcd\"` — `String.slice` is TOTAL, returning `(Option String)` (collections-and-text.md §134),
-           so it is unwrapped like the flat form; byte-len 4, same value. Declines today only until the
-           built-in-as-value closure synth is realized (declined(PrimAsValueNeedsClosure)).")
+           so it is unwrapped like the flat form; byte-len 4, same value. Now CURRIES + computes (the closure
+           synth landed); the captured runtime String leaks by 1 — tracked `(live-objects known-leak)`,
+           v-memory-safety's borrow-only-heap-capture reclaim follow-up.")
   (input
     (do
       (def (f (: s String)) ((String.slice s) 0))
       (def (main) (match ((f "abcdef") 4) ((Some sub) (String.byte-len sub)) ((None _u) -1)))
       (export main)))
   (call main)
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak))
 
 (case
   "a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "The HEAP-COLLECTION sibling of the String partials above: `(List.at l)` is at partially applied
-           (index missing) — it SHOULD curry to a closure awaiting the index (core-semantics L73/L295),
-           declining today only until the built-in-as-value closure synth is realized
-           (declined(PrimAsValueNeedsClosure), owner v-compiler-primitives). No spec carve-out makes a
+           (index missing) — it SHOULD curry to a closure awaiting the index (core-semantics L73/L295).
+           Now CURRIES + computes + RECLAIMS cleanly (live-objects 0): the built-in-as-value closure synth
+           landed and part-1 (CallClosure-result=Owned) reclaims the scalar-payload Option shell. No spec carve-out makes a
            heap-collection op differ from a String op: a captured List is just a heap handle, captured in the
            pending closure by the same mechanism as a captured String. `f` holds the partial; `((f #list(10
            20 30)) 1)` completes it to List.at([10,20,30],1) = Some 20, and the arm returns 20. (Migrated
@@ -306,7 +312,8 @@
       (def (main) (match ((f #list(10 20 30)) 1) ((Some x) x) ((None _u) -1)))
       (export main)))
   (call main)
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects 0))
 
 (case
   "a FULLY applied built-in operation is not flagged as a partial"
@@ -348,15 +355,17 @@
   (doc
     "`(List.at l)` is List.at partially applied (index missing) — the OPPOSITE of the over-application
            above: it SHOULD curry to a closure awaiting the index (core-semantics L73/L295), not stay a decline.
-           Declines today only until the built-in-as-value closure synth is realized
-           (declined(PrimAsValueNeedsClosure)). `((List.at #list(10 20 30)) 1)` completes it to List.at(l,1) =
+           Now CURRIES + computes + RECLAIMS cleanly (live-objects 0): the built-in-as-value closure synth landed
+           and part-1 (CallClosure-result=Owned) reclaims the scalar-payload Option shell.
+           `((List.at #list(10 20 30)) 1)` completes it to List.at(l,1) =
            Some 20 (0-indexed); the arm returns 20.")
   (input
     (do
       (def (main) (match ((List.at #list(10 20 30)) 1) ((Some v) v) ((None _u) -1)))
       (export main)))
   (call main)
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects 0))
 
 ; An OVER-APPLIED binary OPERATOR (`+`/`<`/float `+` given 3 operands) is the binop-arity twin of the
 ; over-applied member op above: it reports EXACTLY ONE CDZ0201 "takes exactly 2 operands" with a delete-the-
