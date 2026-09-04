@@ -618,6 +618,39 @@ fn emit_newtype_unwrap_peel_deep(
     Some(b.list(vec![match_head, scrut, arm]))
 }
 
+/// DEEP scrutinee peel: if `scrutinee` is a BINDER whose DECLARED type is a stack of single-payload newtypes
+/// bottoming out at `target` (the sum the enclosing match dispatches on), emit the binder unwrapped down to
+/// `target` — `(match w ((Mk x) (match x ((Mi y) y))))` for `w : Wrap(Mk Inner)`, `Inner(Mi Box)` matched on
+/// `Box`'s variants. The optimizer folded the newtype-unwrap matches away, leaving the arms dispatching the
+/// inner sum against the still-nominal binder → CDZ0203; this re-inserts the unwrap chain. `None` (→ bare
+/// emit) unless the scrutinee is such a folded newtype binder. Multi-level generalization of the 1-level
+/// [`emit_binder_newtype_inner_peel`]; caller uses it only at the FLAT-ARM SUM dispatch (scrutinee typed a
+/// `Ty::Sum`), so a newtype-over-tuple scrutinee — which never reaches that path — is untouched.
+fn emit_binder_newtype_scrutinee_peel_deep(
+    db: &mut Db,
+    b: &mut Builder,
+    scrutinee: StructId,
+    target: &Ty,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Option<StructId> {
+    let name: std::rc::Rc<str> = match core_of(db, scrutinee) {
+        Core::Param { binder } => db.ast.as_name(binder).map(|n| n.into())?,
+        Core::LocalRef { binder } => env.lets.get(&binder).cloned()?,
+        _ => return None,
+    };
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => binder,
+        _ => return None,
+    };
+    let bty = crate::infer::type_of(db, binder);
+    if !matches!(bty, Ty::Nominal { .. }) {
+        return None;
+    }
+    let name_node = b.name(name);
+    emit_newtype_unwrap_peel_deep(db, b, name_node, &bty, target, env, emitted)
+}
+
 /// Emit the binary-AST artifact for the program in `db` under `layout`. Reconstructs a Cadenza surface
 /// tree `(do (def …)… (export …)…)` over the same reachable definition set (`layout.order`) the other
 /// backends emit, then serializes it with the binary-AST codec.
@@ -2612,10 +2645,13 @@ fn emit_expr_viewed(
             // belongs to the UNDERLYING sum, and a sum-ctor node never IS a pre-existing nominal, so peel the
             // nominal to its inner sum — the variant head, payload types, and `(: … <sum>)` ascription all
             // resolve against the underlying sum. Without this, `own_ty` stays the nominal → "non-sum SumNew".
-            let own_ty = match &own_ty {
-                Ty::Nominal { inner, .. } => (**inner).clone(),
-                _ => own_ty,
-            };
+            // Peel through a STACK of newtypes (`Wrap(Mk Inner)`, `Inner(Mi Box)`, `Box` a sum): a
+            // newtype-over-newtype-over-sum construction reaches the inner sum only after unwrapping EVERY
+            // nominal layer (single-level left `own_ty` = an inner NEWTYPE, still non-sum → the decline).
+            let mut own_ty = own_ty;
+            while let Ty::Nominal { inner, .. } = &own_ty {
+                own_ty = (**inner).clone();
+            }
             let ty = match (&own_ty, &expected) {
                 // Under-determined own type + a concrete expected of the same sum decl → use expected.
                 (Ty::Sum { decl: od, .. }, Some(ex @ Ty::Sum { decl: ed, .. }))
@@ -4880,7 +4916,16 @@ fn emit_match_sum(
     // scrutinee PEELED to its inner via `(match w ((Mk x) x))`, so the inner-variant arms dispatch on the
     // underlying sum. Returns `None` (→ bare emit) unless the scrutinee is exactly that folded newtype binder
     // (a newtype-over-tuple keeps its `(Mk #tuple…)` arm on the Leaf path, never reaching here — no regression).
-    let scrut_node = match emit_binder_newtype_inner_peel(db, b, scrutinee, env, emitted)? {
+    // DEEP: peel through a STACK of newtypes (`Wrap(Mk Inner)`, `Inner(Mi Box)`) down to the dispatch sum.
+    let sum_target = crate::infer::type_of(db, scrutinee);
+    let scrut_node = match emit_binder_newtype_scrutinee_peel_deep(
+        db,
+        b,
+        scrutinee,
+        &sum_target,
+        env,
+        emitted,
+    ) {
         Some(peel) => peel,
         None => emit_expr(db, b, scrutinee, None, env, emitted)?,
     };
