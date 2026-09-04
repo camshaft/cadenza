@@ -8535,6 +8535,37 @@
       (export main)))
   (output (: 100 Int64)))
 
+; multi-rec-elem-nested (breaker, COMPOSITION guard #8428 × #8393): the N-per-arm loop (#8428, >1 refutable
+; element) composed with a NESTED-compound field refinement (#8393). TWO record elements in one arm, each
+; refined on a nested TUPLE-literal field — `(list (record (= v (tuple 1 a))) (record (= v (tuple 2 b))))`. Both
+; the N-position loop AND the nested-field value-refinement are in the element-refinement desugar path (coupled:
+; a refactor of the N-loop or the nested-field refine could break their interaction), so this pins their
+; composition — neither #8428's flat N-per-arm cases nor #8393's single-element nested-field case exercise
+; both at once. `xs = [{v:(1,5)},{v:(2,3)}]`: element 0 refines `(tuple 1 a)` → a=5, element 1 refines
+; `(tuple 2 b)` → b=3 → 8. The fall-through companion pins that a non-matching nested field on the SECOND
+; element composes its refutation across the N-loop (no spurious trap, the #8358-class hazard).
+(case
+  "two record list elements each refine on a nested tuple-literal field (N-per-arm x nested-field)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v (Tuple Int64 Int64))))))
+        (match xs (#list(#record((= v #tuple(1 a))) #record((= v #tuple(2 b)))) (+ a b)) (_ -1)))
+      (def (main) (f #list(#record((= v #tuple(1 5))) #record((= v #tuple(2 3))))))
+      (export main)))
+  (output (: 8 Int64)))
+
+(case
+  "two record list elements with nested fields FALL THROUGH when the second element's field differs"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v (Tuple Int64 Int64))))))
+        (match xs (#list(#record((= v #tuple(1 a))) #record((= v #tuple(2 b)))) (+ a b)) (_ -1)))
+      (def (main) (f #list(#record((= v #tuple(1 5))) #record((= v #tuple(9 3))))))
+      (export main)))
+  (output (: -1 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
