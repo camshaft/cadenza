@@ -20238,9 +20238,11 @@
         single-variant sum destructured by LET forwards its const closure exactly like MATCH, and
         two sites with DISTINCT closures each keep their own specialization: site A folds (+ x 3)
         (drive from 0 = 3n) and site B folds (+ (* 2 x) 1) (= 2^n - 1), on BOTH faces →
-        3n*10000 + (2^n-1)*100 + 3n*10 + (2^n-1). n=7: 21|127 → 223037. Rust-agreed 223037;
-        hop declines CDZ0900 (fn-typed param, pre-existing baseline). A cross-specialization
-        (fingerprint collision) would corrupt exactly one weighted digit pair.")
+        3n*10000 + (2^n-1)*100 + 3n*10 + (2^n-1). n=7: 21|127 → 223037. Rust-agreed 223037; ALSO
+        round-trips the cadenza hop (the fn-typed def param `(: f (-> Int64 Int64))` now re-emits its
+        `(-> …)` annotation surface via `type_ast_allow_fn`, and the closure value survives the hop —
+        0/60363/223037 at every opt level, exact). A cross-specialization (fingerprint collision) would
+        corrupt exactly one weighted digit pair.")
   (input
     (do
       (type (Box a) (Mk a))
