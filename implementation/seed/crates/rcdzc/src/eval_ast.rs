@@ -76,9 +76,26 @@ pub(crate) fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashS
 // program's AST data — not a separate macro interpreter.
 //= spec/capabilities/metaprogramming.md#compile-time-evaluation-is-one-tier
 //# A macro MUST be an ordinary compile-time function over the abstract syntax tree, so that a macro is not a distinct construct but an application of the one compile-time tier to a program's data.
-pub fn desugar_eval(ast: &mut Arenas) {
-    // Only ORIGINAL nodes can be a source `(eval …)`; reconstruction APPENDS, so bound the scan.
-    let original_len = ast.structure.len() as u32;
+/// `boundary` is the eval PROVENANCE line — the arena length BEFORE the FIRST desugar pass (captured once
+/// in `Db::load`, held fixed across the nested-eval fixpoint): a node `< boundary` is from the original
+/// program (a caller-origin live-reuse operand), `>= boundary` is reconstructed/reified template. `eval_
+/// result_nodes` accumulates, across fixpoint rounds, the node id of every `(eval …)` this pass FOLDED —
+/// each such node now holds the DYNAMICALLY-PRODUCED result of an eval. An `(eval ARG)` whose `ARG` is one
+/// of those is executing the result of ANOTHER eval, which the spec forbids (metaprogramming.md: "the
+/// compiler … does not execute dynamically-constructed AST" — the seed ships NO runtime AST interpreter);
+/// so it is left for `resolve` to decline (CDZ0101), NOT folded. This is the narrowing that distinguishes
+/// `(eval `(eval (quote …)))` — outer arg is a QUOTE-FAMILY value, folds compositionally — from `(eval
+/// (eval …))` — outer arg is an eval APPLICATION, a correct reject (v-spec-oracle nested-eval ruling +
+/// re-adjudication; corpus 12-metaprogramming "eval does not execute the result of a nested eval").
+pub fn desugar_eval(
+    ast: &mut Arenas,
+    boundary: u32,
+    eval_result_nodes: &mut std::collections::HashSet<u32>,
+) {
+    // Scan the CURRENT arena: a source `(eval …)` may live in an ORIGINAL node OR (on a fixpoint re-run)
+    // in reconstructed source appended by an earlier round. Reconstruction in THIS pass appends only
+    // during apply (after the scan), so `entry_len` bounds the scan to nodes present now.
+    let entry_len = ast.structure.len() as u32;
     // FAST BAIL for a program with no `(eval …)` (the overwhelming common case). This pass runs at
     // EVERY load, scanning every node with an `as_form(id,"eval")` probe; an `(eval ARG)` node is a
     // `List` headed by the NAME `eval`, so its head is a `Leaf::Name("eval")` in the leaf pool. If no
@@ -95,9 +112,9 @@ pub fn desugar_eval(ast: &mut Arenas) {
         return;
     }
     #[cfg(test)]
-    crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.set(c.get() + original_len as u64));
+    crate::db::DESUGAR_EVAL_SCAN_NODES.with(|c| c.set(c.get() + entry_len as u64));
     let mut plans: Vec<EvalPlan> = Vec::new();
-    for i in 0..original_len {
+    for i in 0..entry_len {
         let id = StructId(i);
         // Match `(eval ARG)` — head name `eval`, exactly one argument. Clone the slice's ids so the
         // borrow ends before the reconstruction's `&mut ast`.
@@ -107,10 +124,16 @@ pub fn desugar_eval(ast: &mut Arenas) {
         }) else {
             continue;
         };
+        // NARROW (no runtime AST interpreter): if `ARG` is the folded RESULT of another eval, this outer
+        // eval would be executing a dynamically-produced AST — a correct reject (`(eval (eval …))`), left
+        // for `resolve`. Only a quote-family / literal-`Ast.*` argument (compile-time-visible) folds.
+        if eval_result_nodes.contains(&arg.0) {
+            continue;
+        }
         if let Some(replacement) = reconstruct(ast, arg) {
-            // eval PROVENANCE: a node LIVE-REUSED from the eval argument (`id < original_len`) is the
-            // caller's spliced operand; a FRESH reconstructed node (`>= original_len`) is template.
-            rename_captured_binders(ast, replacement, &|id| id.0 < original_len);
+            // eval PROVENANCE: a node LIVE-REUSED from the eval argument (`id < boundary`) is the caller's
+            // spliced operand; a FRESH reconstructed/reified node (`>= boundary`) is template.
+            rename_captured_binders(ast, replacement, &|id| id.0 < boundary);
             plans.push(EvalPlan {
                 eval: id,
                 arg,
@@ -147,13 +170,20 @@ pub fn desugar_eval(ast: &mut Arenas) {
         // own `StructId` (and span) is preserved as the spliced-in form's node.
         let entry = ast.get(replacement).clone();
         ast.structure[eval.0 as usize] = entry;
+        // RECORD this node as an eval RESULT: it now holds the source an eval produced. On a fixpoint
+        // re-run, an OUTER `(eval …)` whose argument is THIS node is executing a dynamically-produced AST
+        // (the `(eval (eval …))` shape) and must NOT fold — the scan above skips it (no runtime AST
+        // interpreter). A quote-family argument, by contrast, is never an eval-result node, so it folds.
+        eval_result_nodes.insert(eval.0);
         // BLANK the reconstruction root when it is a FRESH appended node (a `push_*`-built compound) — it is
         // now a duplicate of the copy written into `eval`, and (higher-id) would otherwise out-rank the eval
-        // copy as the shared children's parent (the same orphan hazard, mirrored from `reify_quotes`). A
-        // reconstruction returning an ORIGINAL node directly (id < original_len — the whole eval arg was a
-        // single `(Ast.Int <payload>)`, so `reconstruct` returns `payload` live) is the live spliced value,
-        // still reachable through the eval copy; the `live`-set diff above already kept it, so don't blank.
-        if replacement.0 >= original_len {
+        // copy as the shared children's parent (the same orphan hazard, mirrored from `reify_quotes`). FRESH
+        // means appended during THIS pass (`>= entry_len`, this call's start length) — NOT the fixed
+        // provenance `boundary`, since a later fixpoint round may live-reuse an EARLIER round's appended node
+        // (`>= boundary` yet `< entry_len`), which must be kept. A reconstruction returning an ORIGINAL node
+        // directly (the whole eval arg was a single `(Ast.Int <payload>)`, so `reconstruct` returns `payload`
+        // live) is the live spliced value, still reachable through the eval copy; `live` above already kept it.
+        if replacement.0 >= entry_len {
             ast.structure[replacement.0 as usize] = Struct::List(Vec::new());
         }
     }

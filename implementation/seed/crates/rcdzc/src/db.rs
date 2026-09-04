@@ -2678,7 +2678,7 @@ impl Db {
         // is left untouched for `resolve::resolve_quote` (a Todo decline / a CDZ0201, never a rewrite).
         // Returns the quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed — a rest binds the
         // tail, meaningful only last), which `collect_faults` reports CDZ0221.
-        let nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
+        let mut nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
         // Desugar every `(eval AST)` whose argument is a compile-time-visible `Ast` construction into the
         // SOURCE form that AST denotes — the inverse of the reification just run, so `(eval (quote (+ 1
         // 2)))` (now `(eval (Ast.List …))`) becomes `(+ 1 2)` and folds to `3` through the ordinary path
@@ -2686,7 +2686,52 @@ impl Db {
         // `reify_quotes` (so a quoted argument is already `Ast.*`) and BEFORE the parent index (so the
         // spliced-in source resolves like hand-written code). A non-constant/runtime AST argument is left
         // untouched for `resolve` to decline (the compiler does not execute a dynamically-built AST).
-        crate::eval_ast::desugar_eval(&mut ast);
+        // `eval_boundary` = the arena length AFTER reify + BEFORE the first desugar: it is the eval
+        // PROVENANCE line (reified `Ast.*` and original nodes are `< boundary` = caller-origin live-reuse;
+        // a desugar reconstruction is `>= boundary` = template). `eval_result_nodes` records each folded
+        // eval's node id so the fixpoint never executes ONE eval's result with ANOTHER (see below). Both are
+        // held across the fixpoint.
+        let eval_boundary = ast.structure.len() as u32;
+        let mut eval_result_nodes = std::collections::HashSet::new();
+        crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
+        // FIXPOINT for NESTED / multi-stage eval (v-spec-oracle should-fold ruling + re-adjudication, 2026-09):
+        // `desugar_eval` splices the SOURCE an `Ast` denotes, so `(eval `(eval (quote (+ 1 2))))` reconstructs
+        // to the LIVE source `(eval (quote (+ 1 2)))` — carrying an UN-reified `(quote …)` + an un-desugared
+        // inner `(eval …)`. `reconstruct` unwraps only a reified `Ast.*` (not a source `(quote …)`), and
+        // `reify_quotes` already ran once, so ONE reify→desugar pass leaves the inner eval a bare name. Re-run
+        // the reify→desugar PAIR to a FIXPOINT: each round reifies the freshly-spliced inner quote, then folds
+        // the inner eval — so eval is COMPOSITIONAL (eval evaluates an AST value AS CODE, and that code may use
+        // eval on a further quote-family argument). Both passes only ever APPEND for real work, so a round that
+        // appends nothing (`structure` length stable) is the fixpoint; each round consumes one quote/eval
+        // layer → converges at the (finite) nesting depth. The `eval_result_nodes` narrowing in `desugar_eval`
+        // keeps `(eval (eval …))` a CORRECT REJECT (an eval whose ARGUMENT is another eval's dynamically-
+        // produced result is NOT compile-time-visible — "the compiler does not execute dynamically-constructed
+        // AST"; corpus "eval does not execute the result of a nested eval"), so only quote-family nesting folds.
+        // Gated on the program actually using `eval`, so a quote-only macro program pays no extra reify pass.
+        // The round cap is a defensive backstop against a would-be non-terminating rewrite (debug asserts it).
+        if ast
+            .leaves
+            .iter()
+            .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "eval"))
+        {
+            let mut rounds = 0u32;
+            loop {
+                let len_before = ast.structure.len();
+                nonfinal_splice_patterns.extend(crate::quote::reify_quotes(&mut ast));
+                crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
+                if ast.structure.len() == len_before {
+                    break; // no quote reified + no eval folded this round → fixpoint reached
+                }
+                rounds += 1;
+                debug_assert!(
+                    rounds < 256,
+                    "nested-eval reify/desugar fixpoint did not converge"
+                );
+                if rounds >= 256 {
+                    break;
+                }
+            }
+        }
         // Expand every `(tagged-template <tag> (chunks …) (holes …))` (the reader's canonical form for the
         // ML surface `tag"…{expr}…"`) into the binding-dispatched application `(<tag> (list …) (list …))`.
         // The `tag` resolves in the ordinary environment to a compile-time `List String -> List Ast -> Ast`

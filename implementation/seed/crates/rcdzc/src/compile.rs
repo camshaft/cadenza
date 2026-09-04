@@ -219,8 +219,14 @@ fn compile_with_opt_inner(
     // metaprogramming.md §Compile-Time Evaluation Is One Tier). Gated on macros having run (`quote_params`);
     // both passes also self-fast-bail on an arena with no `quote`/no `eval`, so this is a no-op otherwise.
     if !db.quote_params.is_empty() {
+        let eval_boundary = db.ast.structure.len() as u32;
         crate::quote::reify_quotes(&mut db.ast);
-        crate::eval_ast::desugar_eval(&mut db.ast);
+        // Post-expansion eval desugar: SINGLE pass (a macro expansion is not itself re-quoted here, so the
+        // load-time nested-eval fixpoint does not apply). `eval_boundary` (pre-reify length) is the provenance
+        // line; a fresh `eval_result_nodes` supplies the narrowing that keeps `(eval (eval …))` a correct
+        // reject even for an expansion-produced nested eval.
+        let mut eval_result_nodes = std::collections::HashSet::new();
+        crate::eval_ast::desugar_eval(&mut db.ast, eval_boundary, &mut eval_result_nodes);
         // Invalidate the memoized resolution/type: `expand_macros` resolved the eval node while its arg was
         // still an un-expanded macro call (caching the CDZ0101 decline), and `desugar_eval` above just
         // OVERWROTE that node with the reconstructed source — so its stale memo must be dropped for the
