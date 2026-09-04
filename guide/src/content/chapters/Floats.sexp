@@ -13,13 +13,15 @@
   (runnable
     (source (- 5.0 1.5)))
   (runnable
+    (id "float-div")
     (source (/ 7.0 2.0)))
-  (p "Notice " (cdz (/ 7.0 2.0)) " is " (c "3.5") ", which is real division because the operands are floats. Give " (c "/") " two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.")
+  (p "Notice " (cdz (/ 7.0 2.0)) " is " (result (of "float-div") 3.5) ", which is real division because the operands are floats. Give " (c "/") " two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.")
   (h2 "Floating-point is approximate, and honest about it")
   (p "IEEE-754 floats can't represent every decimal exactly, and Cadenza doesn't pretend otherwise. The classic example: add a tenth and two tenths, and the result isn't quite three tenths.")
   (runnable
+    (id "float-imprecision")
     (source (+ 0.1 0.2)))
-  (p "That " (c "0.30000000000000004") " isn't a bug, since it's the true value of the nearest float to the sum, the same answer you'd get in any IEEE-754 language. Cadenza shows you the real number rather than rounding it away, so what you read is what your program actually computed.")
+  (p "That " (result (of "float-imprecision") 0.30000000000000004) " isn't a bug, since it's the true value of the nearest float to the sum, the same answer you'd get in any IEEE-754 language. Cadenza shows you the real number rather than rounding it away, so what you read is what your program actually computed.")
   (h2 "Ints and floats never mix silently")
   (p "Try to add an integer to a float and the compiler refuses, the same way it refuses to add a number and a boolean. There is no automatic widening from " (c "Int64") " to " (c "Float64") ". The rejection doesn't come from the operator naming a type; it comes from the two operands disagreeing.")
   (note "This example is " (strong "meant to be refused") ". Run it and read the diagnostic: the compiler declines with " (c "CDZ0301") " rather than inventing a conversion, and it suggests a one-token fix to make the two operands agree (here, dropping the " (c ".0") " so both are integers).")

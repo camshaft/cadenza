@@ -20,12 +20,14 @@ export default function Floats() {
       />
       <Runnable
         source={`(/ 7.0 2.0)`}
+        id="float-div"
       />
       <P>Notice <Cadenza ast="Y2R6YXN0AAEDCgEvBgAAAAAAAAAAAAEHBgAAAAAAAAAAAAECBAAAAAEAAgEDAAECAw==" kind="expr">(/ 7.0 2.0)</Cadenza> is <C>3.5</C>, which is real division because the operands are floats. Give <C>/</C> two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.</P>
       <H2>Floating-point is approximate, and honest about it</H2>
       <P>IEEE-754 floats can't represent every decimal exactly, and Cadenza doesn't pretend otherwise. The classic example: add a tenth and two tenths, and the result isn't quite three tenths.</P>
       <Runnable
         source={`(+ 0.1 0.2)`}
+        id="float-imprecision"
       />
       <P>That <C>0.30000000000000004</C> isn't a bug, since it's the true value of the nearest float to the sum, the same answer you'd get in any IEEE-754 language. Cadenza shows you the real number rather than rounding it away, so what you read is what your program actually computed.</P>
       <H2>Ints and floats never mix silently</H2>
