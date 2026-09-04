@@ -4427,6 +4427,22 @@ c")))
   (call main (: 5 Int64))
   (output (: 6 Int64)))
 
+; The TWO-PERFORM extension of the single-perform case above (breaker): the eval-reconstructed form performs
+; the effect TWICE — (quasiquote (+ (E.ask) (E.ask))). This pins that eval-reconstruct-to-source preserves
+; the ORDER + STATE-THREADING of MULTIPLE performs against the enclosing handler (not just one): the two
+; (E.ask) run left-to-right through the ask arm's state thread. n=5: ask1 resumes s=5 (state→6), ask2 resumes
+; s=6 (state→7), so (+ 5 6) = 11. A reconstruction that reordered the performs or dropped the state thread
+; would yield a different sum. The single→double step (cf. abx3→abx6 for #st-drain).
+(case
+  "eval of a quasiquote performing an effect TWICE threads the handler state in order (both performs bind the enclosing handler)"
+  (input
+    (do
+      (effect E (op ask (-> Int64)))
+      (def (main (: n Int64)) (handle E n ((ask () s (resume s (+ s 1)))) (eval (quasiquote (+ (E.ask) (E.ask))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64)))
+
 (case
   "eval of a quoted List.at folds the indexing operation to its Option result"
   (doc
