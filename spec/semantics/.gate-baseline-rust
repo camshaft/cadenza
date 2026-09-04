@@ -807,6 +807,7 @@ pass	a GENSYM effect derives fresh symbols from a counter state — same base yi
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
+pass	a GUARDED newtype-over-record inline destructure under recursion binds the field for the cond on both backends (#8452)
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
 pass	a HANDLE of an undeclared effect in an uncalled def is rejected
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index

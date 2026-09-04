@@ -300,9 +300,10 @@ fn ctor_pattern_head_and_args(db: &mut Db, pat: StructId) -> Option<(StructId, V
 /// fresh binder (the SumPayload path alone, which wires) + a body re-match that destructures the record
 /// (bind-then-project — verified to compute on both backends). Only IRREFUTABLE record payloads route (a
 /// literal-field record payload is refutable and belongs to the value-refinement path, not here); a tuple
-/// payload composes via `Elem` and a bare-binder payload is already fine, so neither routes. GUARDED arms are
-/// left unchanged (the guard would read the record's field binders — a separate sub-case). One re-match per
-/// record payload arg, nested inside-out. NO new IR. Returns `Some(Core)` iff the rewrite fired.
+/// payload composes via `Elem` and a bare-binder payload is already fine, so neither routes. A GUARDED arm
+/// routes too (its cond hits the same composite-path miscompile): the cond is a DEEP CLONE evaluated INSIDE
+/// the record re-match (`(match __cr ((record …) g) (_ false))`) so its field binders are in scope. One
+/// re-match per record payload arg, nested inside-out. NO new IR. Returns `Some(Core)` iff the rewrite fired.
 pub(super) fn desugar_ctor_record_payload_destructure(
     db: &mut Db,
     scrutinee: StructId,
@@ -314,11 +315,14 @@ pub(super) fn desugar_ctor_record_payload_destructure(
     };
     let mut any = false;
     for &(pat, _) in arms {
-        // A GUARDED ctor arm is left alone (the cond reads the record's field binders — a separate sub-case).
-        if db.ast.as_form(pat, "guard").is_some() {
-            continue;
-        }
-        if let Some((_, args)) = ctor_pattern_head_and_args(db, pat)
+        // Peel a `(guard <pat> <cond>)` wrapper — a GUARDED ctor-record-payload arm hits the SAME miscompile
+        // (its cond AND body both read the record's field binders through the un-wireable composite path), so
+        // it routes here too (the cond is lifted into the record re-match below, with the fields in scope).
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        if let Some((_, args)) = ctor_pattern_head_and_args(db, inner)
             && args.iter().any(|&a| is_irref_record(db, a))
         {
             any = true;
@@ -329,11 +333,11 @@ pub(super) fn desugar_ctor_record_payload_destructure(
     }
     let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
     for (ai, &(pat, body)) in arms.iter().enumerate() {
-        if db.ast.as_form(pat, "guard").is_some() {
-            new_arms.push(db.push_list(vec![pat, body]));
-            continue;
-        }
-        let Some((head, args)) = ctor_pattern_head_and_args(db, pat) else {
+        let (inner_pat, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let Some((head, args)) = ctor_pattern_head_and_args(db, inner_pat) else {
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         };
@@ -351,19 +355,15 @@ pub(super) fn desugar_ctor_record_payload_destructure(
         // reading that broken path even after the rewrite (a runtime trap / rust decline that `forget_subtree`
         // alone did not clear for the erased-newtype case). Fresh clones force `resolve_subtree` to bind `v`
         // cleanly against the new inner re-match (via `__cr` — the wireable path).
+        // Paired with the ORIGINAL record pattern as a TEMPLATE; each USE (the body re-match, and — for a
+        // guarded arm — the guard cond) clones it fresh so `v` re-resolves against each new inner match rather
+        // than the stale un-wireable composite path (a reused/`forget`-only node kept trapping for the erased
+        // newtype). The `body` and the user cond `g` are likewise deep-cloned at their use sites below.
         let binders: Vec<(String, StructId)> = rec_positions
             .iter()
             .enumerate()
-            .map(|(k, &pos)| {
-                (
-                    format!("__cr{ai}_{k}"),
-                    clone_refutable_payload(db, args[pos]),
-                )
-            })
+            .map(|(k, &pos)| (format!("__cr{ai}_{k}"), args[pos]))
             .collect();
-        // The body is likewise DEEP-CLONED so its field-binder references (`v`) are fresh nodes that re-resolve
-        // against the new inner record re-match, not the stale composite path.
-        let body = clone_refutable_payload(db, body);
         // Rebuild the ctor pattern with each record payload arg replaced by its fresh bare binder. The head is
         // FRESH-cloned (`clone_ctor_head`) so it re-resolves as a ctor OUT of any stale/inert in-place pattern
         // resolution (the dodge `refutable_ctor_element_head` documents); the non-record args are reused (each
@@ -376,14 +376,16 @@ pub(super) fn desugar_ctor_record_payload_destructure(
                 None => new_children.push(arg),
             }
         }
-        let new_pat = db.push_list(new_children);
-        // The BODY re-match(es), NESTED from the INNERMOST record binder out: the innermost holds the original
-        // `body` (every record's fields in scope); each enclosing match binds its record's fields. Each `_` arm
-        // is dead (the ctor already bound an irrefutable record payload) but keeps the inner match exhaustive.
-        let mut new_body = body;
-        for (bname, record_pat) in binders.iter().rev() {
+        let new_ctor_pat = db.push_list(new_children);
+        // The BODY re-match(es), NESTED from the INNERMOST record binder out: the innermost holds a DEEP CLONE
+        // of the original `body` (every record's fields in scope); each enclosing match binds its record's
+        // fields (a FRESH clone of the template). Each `_` arm is dead (the ctor already bound an irrefutable
+        // record payload) but keeps the inner match exhaustive.
+        let mut new_body = clone_refutable_payload(db, body);
+        for (bname, orig_rec) in binders.iter().rev() {
             let body_scrut = db.push_name(bname);
-            let body_true_arm = db.push_list(vec![*record_pat, new_body]);
+            let rec_clone = clone_refutable_payload(db, *orig_rec);
+            let body_true_arm = db.push_list(vec![rec_clone, new_body]);
             let trap_head = db.push_name("trap");
             let trap_msg = db.push_str(
                 "unreachable: ctor record payload already bound by the outer ctor pattern",
@@ -399,6 +401,31 @@ pub(super) fn desugar_ctor_record_payload_destructure(
                 body_false_arm,
             ]);
         }
+        // The new arm PATTERN. UNGUARDED -> the bare rebuilt ctor pattern. GUARDED -> wrap in
+        // `(guard <ctor> <guard_cond>)` where `guard_cond` evaluates a DEEP CLONE of the user cond `g` with
+        // EVERY record's fields in scope: nest `(match __cr_k ((record ...clone) inner) (_ false))`
+        // innermost-out (innermost = the cloned `g`). The records are irrefutable so each `_ -> false` is dead;
+        // the guard fires iff `g` holds (a false `g` falls the arm through). Mirrors the tuple/nested-list
+        // `Some(g)` handling — a bare `(and g ...)` would leave the field binders unbound (a false CDZ0101).
+        let new_pat = match existing_guard {
+            None => new_ctor_pat,
+            Some(g) => {
+                let mut inner_result = clone_refutable_payload(db, g);
+                for (bname, orig_rec) in binders.iter().rev() {
+                    let g_scrut = db.push_name(bname);
+                    let rec_clone = clone_refutable_payload(db, *orig_rec);
+                    let g_true_arm = db.push_list(vec![rec_clone, inner_result]);
+                    let g_wild = db.push_name("_");
+                    let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                    let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                    let g_match_head = db.push_name("match");
+                    inner_result =
+                        db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm]);
+                }
+                let guard_head = db.push_name("guard");
+                db.push_list(vec![guard_head, new_ctor_pat, inner_result])
+            }
+        };
         new_arms.push(db.push_list(vec![new_pat, new_body]));
     }
     let match_head = db.push_name("match");
