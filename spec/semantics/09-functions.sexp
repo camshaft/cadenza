@@ -348,7 +348,7 @@
 (case
   "an over-applied built-in operation is ONE CDZ0203 with a delete-surplus fix, not doubled with the wrong-arity decline"
   (input (do (def (main) (Map.len #map((= 1 2)) 99)) (export main)))
-  (error CDZ0203 (fix (kind delete)) (count 1)))
+  (error CDZ0203 (fix (kind delete)) (count 1) (exact-code)))
 
 ; The USER-FUNCTION twin of the built-in over-application above (breaker): over-applying a plain user `def`
 ; — `(f 1 2)` where `f` is arity 1 — is ALSO a permanent CDZ0203, but with a DISTINCT diagnostic from the
@@ -4203,7 +4203,7 @@
            DELETE fix on the surplus argument (heuristic/unverified — which callee the author meant is a
            guess). Fix-quality migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.")
   (input (Some 1 2))
-  (error CDZ0203 (fix (kind delete) (unverified))))
+  (error CDZ0203 (fix (kind delete) (unverified)) (exact-code)))
 
 (case
   "over-applying a constructor by several arguments is a type error"
@@ -4213,7 +4213,7 @@
            MUST reject it (CDZ0203). Pins that the arity check is on the constructor's single-argument
            application, not forgiving of any number of trailing arguments.")
   (input (Some 1 2 3))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 ; The LOW-arity mirror: UNDER-applying a unary constructor. A payload-carrying variant produces its value
 ; only when applied to its argument (§A Sum Type Constructor Is A Single-Arity Function), so `(Some)` — the
@@ -4257,7 +4257,7 @@
            (+ x 1)) 5) 9)`: the inner application yields the Int64 6, and applying 6 to 9 applies a
            non-function → CDZ0203. The compiler MUST reject it, not drop the 9 and yield 6.")
   (input (do (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "over-applying a named function by an extra argument is a type error"
@@ -4272,7 +4272,7 @@
            uncoded 'applied more arguments than the function accepts' decline for the same node, which
            dedup_faults drops when the coded reject is present. Hence (count 1).")
   (input (do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main)))
-  (error CDZ0203 (fix (kind delete) (unverified)) (count 1)))
+  (error CDZ0203 (fix (kind delete) (unverified)) (count 1) (exact-code)))
 
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
 ; sum type constructor is a single-arity function that produces the tagged variant "when applied to
@@ -4317,7 +4317,7 @@
            that a `Ty::Fn` scrutinee is a coded type error, not an internal decline about a closure's
            parameter representation.")
   (input (do (def (g (: x Int64)) (+ x 1)) (def (main) (match g (v v))) (export main)))
-  (error CDZ0203 (message "function value cannot be matched")))
+  (error CDZ0203 (message "function value cannot be matched") (exact-code)))
 
 (case
   "matching on a partial application is a type error"
@@ -4331,7 +4331,7 @@
       (def (add (: a Int64) (: b Int64)) (+ a b))
       (def (main) (match (add 1) (v 0)))
       (export main)))
-  (error CDZ0203 (message "function value cannot be matched")))
+  (error CDZ0203 (message "function value cannot be matched") (exact-code)))
 
 (case
   "a recursive def computes over its argument"
@@ -4410,7 +4410,7 @@
     (do
       (def (main) ((fn (v0) (if (v0 v0) 1 (v0 v0))) (fn (v2) (if (v2 v2) 1 (v2 v2)))))
       (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow"
@@ -6556,7 +6556,7 @@
            the use silently reinterpret the annotation. The contradiction is between the WRITTEN Bool and
            the INFERRED Int64 at the same binding, exactly the conflicting-annotation shape.")
   (input (do (def (bad (: a Bool)) (+ a 1)) (def (main) (bad true)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 ; A function's RETURN TYPE is declared by ascribing its body: `(def (f …) (: body R))` constrains the
 ; result to `R` exactly as a parameter binder `(: name T)` constrains a parameter and a value annotation
@@ -6592,7 +6592,7 @@
            body ascription, and a return type that contradicts the body cannot be reconciled. The
            result-position companion of the parameter-annotation-contradiction case above.")
   (input (do (def (f (: x Int64)) (: (+ x 1) Bool)) (def (main) (f 5)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a lambda's return type ascription agreeing with the body is transparent"
@@ -6622,7 +6622,7 @@
            as a returned value. Distinct from the body-contradiction case above: here the annotation and
            body agree and it is the ARGUMENT that disagrees.")
   (input (do (def (f (: x Bool)) x) (def (main) (f 5)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "an Int argument to a parameter used as a Bool condition is rejected"
@@ -6633,7 +6633,7 @@
            reduced body's fault is reported, so the program is rejected rather than miscompiled to an
            invalid component. The correctly-typed `(f true)` yields 1.")
   (input (do (def (f x) (if x 1 2)) (def (main) (f 5)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a Bool argument to a parameter used in integer addition is rejected"
@@ -6644,7 +6644,7 @@
            yields 10. Pins that an argument is checked against a body-INFERRED parameter type, not only
            an explicit annotation.")
   (input (do (def (f x) (+ x x)) (def (main) (f true)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 ; --- A FUNCTION-TYPED parameter annotation is checked against the passed function, RESULT included -
 ; The higher-order analogue of the scalar arg-vs-param checks above. A parameter annotated with a
@@ -6666,7 +6666,7 @@
            rejection above.")
   (input
     (do (def (f (: g (-> Int64 Bool))) (g 41)) (def (main) (f (fn (x) (+ x 1)))) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a function-typed parameter annotation is not silently discarded in the body"
@@ -6682,7 +6682,7 @@
       (def (f (: g (-> Int64 Bool))) (+ (g 41) 1))
       (def (main) (f (fn (x) (+ x 1))))
       (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a curried function-type annotation checks its inner result type against the argument"
@@ -6697,7 +6697,7 @@
       (def (f (: g (-> Int64 (-> Int64 Bool)))) ((g 1) 2))
       (def (main) (f (fn (a) (fn (b) (+ a b)))))
       (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a correctly-annotated function parameter is accepted"
@@ -7916,7 +7916,7 @@
         (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ (sum-ints h) (flatten-bad rest)))))
       (def (main) (flatten-bad (from-list #list((from-list #list("a" "b"))))))
       (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
@@ -13005,7 +13005,7 @@
            rejects with the same positional type fault. This pins the `List.len` sibling (the first live
            escape found); the valid-closure control below must keep compiling.")
   (input (do (def (main (: n Int64)) (List.len #list((fn (v) (+ v (List.len v)))))) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "control: an UNCALLED stored closure with a CONSISTENT param still compiles and runs"
