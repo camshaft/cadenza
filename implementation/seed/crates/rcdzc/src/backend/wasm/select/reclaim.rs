@@ -1797,6 +1797,23 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     )
 }
 
+/// Whether `scrutinee` is an owned producer whose `Some` payload is a FRESHLY-ALLOCATED, INDEPENDENT heap
+/// handle — NOT a VIEW that aliases the shell's own storage. `String.from-bytes` (`Core::StrFromBytes`)
+/// decodes the byte range into a BRAND-NEW `String` leaf (`str-from-bytes` transfers the decoded buffer
+/// out), so the resulting `Some(String)` shell merely POINTS AT that independent leaf. This is the load-
+/// bearing distinction from [`is_owned_single_view_producer`]'s `String.at`/`Bytes.slice`, whose extracted
+/// payload MAY alias the shell — so for a view producer an ESCAPING extraction must stay leaking (the
+/// #4917 escape-stays-leaking control: dropping the shell could free the still-referenced view = UAF). A
+/// FRESH-payload producer has no such alias, so its shell is SAFELY reclaimable EVEN when the payload
+/// escapes: `dup` the payload (rc++) then `drop` the shell (its cascade decrements the payload back to a
+/// live rc, leaving it owned + independent). Used to admit the ESCAPE disposition (a body-result `Some`
+/// extraction) into the SumExpect shell_set — a v-memory-safety fresh-payload reclaim (the bfx9 utf8-decode
+/// husk + the general `(Option.expect (String.from-bytes …))` shell leak). SOUND: `dup`+`drop-shell` nets
+/// to 0 on the payload (survives) and frees the one owned shell exactly once — never a double-free.
+pub(super) fn is_owned_fresh_payload_producer(db: &mut Db, scrutinee: StructId) -> bool {
+    matches!(core_of(db, scrutinee), Core::StrFromBytes { .. })
+}
+
 /// Whether `parent`'s use of `target` is a SCALAR-returning read WITH a view-drop hook — a `Bytes.at`
 /// (→reclaim_bytes) or `String.scalar-len` (→the StrScalarLen reclaim). Such a consumer lets us OWN + drop
 /// the view (VIEW-set, net -1). Any OTHER single consumer (a `Call`/op that takes the view onward) leaves the
@@ -1828,23 +1845,38 @@ pub(super) fn collect_sumexpect_view_reclaim_seen(
     // EXACTLY ONCE (single-consumer + no-escape: count > 1 ⟹ multi-consumer/escape ⟹ neither set). Classify
     // by its single consumer's kind — the disjoint two-set partition.
     if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
-        && is_owned_single_view_producer(db, scrutinee)
+        && (is_owned_single_view_producer(db, scrutinee)
+            || is_owned_fresh_payload_producer(db, scrutinee))
         && is_heap_type(&type_of(db, id))
-        && count_node_refs(db, top_body, id) == 1
     {
+        // A FRESH-payload producer (`String.from-bytes`) yields an INDEPENDENT payload leaf, so — unlike a
+        // VIEW producer whose escaping extraction must stay leaking (the #4917 control) — its shell is
+        // safely reclaimable on the ESCAPE disposition too (see `is_owned_fresh_payload_producer`).
+        let fresh_payload = is_owned_fresh_payload_producer(db, scrutinee);
+        let refs = count_node_refs(db, top_body, id);
         match single_parent_of(db, top_body, id) {
             // Consumer is a scalar-read with a view-drop hook (Bytes.at / String.scalar-len) → VIEW-set:
             // compound_dupd dups + shell-drops, and the consumer's reclaim drops the now-owned view (net -1).
-            Some(parent) if is_view_scalar_read_consumer(db, parent, id) => {
+            // Single-consumer (`refs == 1`): a multi-use extraction is not this reclaim's shape.
+            Some(parent) if refs == 1 && is_view_scalar_read_consumer(db, parent, id) => {
                 view_set.insert(id);
             }
             // Consumer is a Call/op that takes the view onward → SHELL-set: compound_dupd's dup (+1) exactly
             // compensates the shell-drop cascade (-1) = NET-0 on the view (consumer owns it), only the
-            // orphaned shell freed. No view-drop on our side. (None = escape/body-result → neither.)
-            Some(_) => {
+            // orphaned shell freed. No view-drop on our side.
+            Some(_) if refs == 1 => {
                 shell_set.insert(id);
             }
-            None => {}
+            // ESCAPE / body-result: `single_parent_of` is `None` AND `refs == 0` (the node is the body root
+            // / an arm result — referenced by no parent Core node). For a VIEW producer this stays leaking
+            // (the escaping view may alias the shell → the #4917 control). For a FRESH-payload producer the
+            // escaping payload is INDEPENDENT, so it takes the SHELL-set path: `dup` the escaping payload
+            // (+1) + drop the shell (cascade -1) = NET-0 (payload escapes owned), the one orphaned shell
+            // freed. (`refs == 0` — a `None` with `refs >= 2` is a MULTI-USE share, not reclaimed here.)
+            None if fresh_payload && refs == 0 => {
+                shell_set.insert(id);
+            }
+            _ => {}
         }
     }
     for child in core_child_ids(db, id) {
