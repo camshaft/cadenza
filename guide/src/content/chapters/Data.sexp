@@ -36,13 +36,15 @@
   (h2 "They compose")
   (p "A tuple can hold a record, a record field can hold a tuple, and so on, so the shapes nest freely, and the accessor chains to reach inside. Here a record has one field, " (c "pair") ", holding a tuple; we reach the field, then index into the tuple to pull out its second element:")
   (runnable
+    (id "data-nested")
     (source (. (. #record((= pair #tuple(10 20))) pair) 1)))
-  (p "Reaching " (c "pair") " gets the tuple, then index " (c "1") " pulls its second element, " (c "20") ". We'll lean on this in the next chapter, but for now the point is just that the two ways of bundling stack together, with no special rule for the combination.")
+  (p "Reaching " (c "pair") " gets the tuple, then index " (c "1") " pulls its second element, " (result (of "data-nested") 20) ". We'll lean on this in the next chapter, but for now the point is just that the two ways of bundling stack together, with no special rule for the combination.")
   (h2 "Functions inside data")
   (p "Since functions are values, they can live in tuples and records too. Here we pull a function out of a tuple and call it:")
   (runnable
+    (id "data-tuple-fn")
     (source ((. #tuple((fn (x) (+ x 1)) 9) 0) 5)))
-  (p "Element " (c "0") " of the tuple is the increment function; applying it to " (c "5") " gives " (c "6") ". The " (c "9") " in the other slot just rides along, since a tuple can mix a function and a plain value.")
+  (p "Element " (c "0") " of the tuple is the increment function; applying it to " (c "5") " gives " (result (of "data-tuple-fn") 6) ". The " (c "9") " in the other slot just rides along, since a tuple can mix a function and a plain value.")
   (h2 "Your turn")
   (exercise
     (id "data:1")
