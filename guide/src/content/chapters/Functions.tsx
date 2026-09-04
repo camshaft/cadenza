@@ -61,6 +61,7 @@ export default function Functions() {
         source={`(def (fold-list f acc xs) (match xs (#list() acc) (#list(h (.. t)) (fold-list f (f h acc) t))))
 
 (def (main) (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30)))`}
+        id="fold-list"
       />
       <P>No annotation on the closure's <C>x</C> or <C>a</C>, none on <C>fold-list</C>'s <C>f</C>, yet inference recovers all of it from how they're used. That's the everyday shape: write the callback inline and let the types follow.</P>
       <H2>Your turn</H2>
