@@ -2516,6 +2516,16 @@ fn emit_expr_viewed(
             // (the `if`/`let`/match position this value fills). Both are the SAME sum declaration; `expected`
             // just carries the RESOLVED type arguments, which is what the `(: … <sum-type>)` ascription needs.
             let own_ty = crate::infer::type_of(db, id);
+            // A newtype-Construct PEEL: `nominal_disposition` classifies a `SumNew` typed the erased newtype
+            // as a Construction (`(Mk <inner>)`), and re-emits its payload via `emit_expr_viewed`, so this arm
+            // is reached with `own_ty` = the NOMINAL (`Cached`), not the inner sum. The variant (`Some`/`None`)
+            // belongs to the UNDERLYING sum, and a sum-ctor node never IS a pre-existing nominal, so peel the
+            // nominal to its inner sum — the variant head, payload types, and `(: … <sum>)` ascription all
+            // resolve against the underlying sum. Without this, `own_ty` stays the nominal → "non-sum SumNew".
+            let own_ty = match &own_ty {
+                Ty::Nominal { inner, .. } => (**inner).clone(),
+                _ => own_ty,
+            };
             let ty = match (&own_ty, &expected) {
                 // Under-determined own type + a concrete expected of the same sum decl → use expected.
                 (Ty::Sum { decl: od, .. }, Some(ex @ Ty::Sum { decl: ed, .. }))
@@ -6546,6 +6556,15 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         | Core::BytesOf { .. }
         | Core::BytesConcat { .. }
         | Core::MapNew { .. }
+        // A SUM constructor (`(Some x)`/`(Ok x)`/a user variant) intrinsically builds a FRESH sum value —
+        // like the tuple/record/list/map/set builders above, it can NEVER yield a pre-existing nominal — so a
+        // newtype over a sum (`(Mk (Some k))` : `(type Cached (Mk (Option Int64)))`) is a CONSTRUCTION site
+        // here: wrap `(Mk <SumNew viewed as inner>)`, the payload peeled to `inner` (the underlying sum) via
+        // the `view` recursion; a nested newtype element re-wraps through its own disposition (recursive
+        // newtypes compose). Without this the erased newtype value's Core (the `SumNew` node) fell to the
+        // ambiguous `_ => Decline` → CDZ0900 on an escaping newtype-over-sum value (05 "a newtype over a sum
+        // escapes to the host as its erased underlying sum value-form" + the recursive-newtype-escape family).
+        | Core::SumNew { .. }
         | Core::SetOf { .. } => NominalDisp::Construct,
         // A binder: construction iff its DECLARED type is NOT already this nominal (a wrapped inner value);
         // a binder already typed as the nominal is a pass-through (emit the bare name).
