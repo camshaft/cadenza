@@ -267,6 +267,160 @@ pub(super) fn fuse_match_into_match(
     Some(core_of(db, rewritten))
 }
 
+/// If `pat` is a CONSTRUCTOR pattern — `(Ctor arg…)`, a bare nullary ctor name, or a member `(. Sum V)` used
+/// whole — whose head resolves to a variant, return `(head, payload-args)`. `None` for a `(record …)` /
+/// `(tuple …)` / `(list …)` compound (their heads are not variants), a literal, or a bare binder. The head is
+/// resolved via a FRESH clone (`clone_ctor_head`) so an inert in-place occurrence still classifies (the same
+/// dodge `refutable_ctor_element_head` uses).
+fn ctor_pattern_head_and_args(db: &mut Db, pat: StructId) -> Option<(StructId, Vec<StructId>)> {
+    let (head, args) = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            match children.first().copied() {
+                // A member `(. Sum V)` used WHOLE (a nullary variant) — head is the pat, no payload args.
+                Some(first) if db.ast.as_name(first) == Some(".") => (pat, Vec::new()),
+                Some(first) => (first, children[1..].to_vec()),
+                None => return None,
+            }
+        }
+        crate::ast::Struct::Atom(_) => (pat, Vec::new()), // a bare nullary ctor name
+    };
+    let resolve_head = clone_ctor_head(db, head);
+    crate::eval::variant_owner_decl(db, resolve_head)?;
+    Some((head, args))
+}
+
+/// PRE-PASS for `lower_match` (sum/nominal scrutinee): rewrite an arm whose pattern is a CONSTRUCTOR with an
+/// INLINE IRREFUTABLE RECORD-destructure payload — `((Mk (record (= a v))) body)` — into the bind-then-project
+/// form the backends handle:
+///   `((Mk (record (= a v))) body)`  ≡  `((Mk __cr) (match __cr ((record (= a v)) body) (_ (trap …))))`
+/// The inline form binds a field `v` through a COMPOSITE path (SumPayload(Mk) → record-field `a`) the payload
+/// materialization cannot wire — on a runtime scrutinee rust declines "sum payload has no bound match arm" and
+/// wasm accepts-then-TRAPS (breaker; non-uniform). The rewrite lifts each irrefutable-record payload arg to a
+/// fresh binder (the SumPayload path alone, which wires) + a body re-match that destructures the record
+/// (bind-then-project — verified to compute on both backends). Only IRREFUTABLE record payloads route (a
+/// literal-field record payload is refutable and belongs to the value-refinement path, not here); a tuple
+/// payload composes via `Elem` and a bare-binder payload is already fine, so neither routes. GUARDED arms are
+/// left unchanged (the guard would read the record's field binders — a separate sub-case). One re-match per
+/// record payload arg, nested inside-out. NO new IR. Returns `Some(Core)` iff the rewrite fired.
+pub(super) fn desugar_ctor_record_payload_destructure(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    let is_irref_record = |db: &mut Db, arg: StructId| -> bool {
+        db.ast.compound_form_of(arg, CompoundCtor::Record).is_some()
+            && matches!(check_binding_pattern(db, arg, &crate::ty::Ty::Any), Ok(()))
+    };
+    let mut any = false;
+    for &(pat, _) in arms {
+        // A GUARDED ctor arm is left alone (the cond reads the record's field binders — a separate sub-case).
+        if db.ast.as_form(pat, "guard").is_some() {
+            continue;
+        }
+        if let Some((_, args)) = ctor_pattern_head_and_args(db, pat)
+            && args.iter().any(|&a| is_irref_record(db, a))
+        {
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        if db.ast.as_form(pat, "guard").is_some() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        let Some((head, args)) = ctor_pattern_head_and_args(db, pat) else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let rec_positions: Vec<usize> = (0..args.len())
+            .filter(|&i| is_irref_record(db, args[i]))
+            .collect();
+        if rec_positions.is_empty() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        // A fresh binder name per record payload position (`__cr{arm}_{k}`), paired with a DEEP CLONE of its
+        // record pattern. Cloning (not reusing `args[pos]`) gives fresh UNMEMOIZED nodes: the original record
+        // pattern + the body carry resolutions memoized against the OLD inline position (the field binder `v`
+        // bound through the un-wireable SumPayload→record-field composite path), and reusing them leaves `v`
+        // reading that broken path even after the rewrite (a runtime trap / rust decline that `forget_subtree`
+        // alone did not clear for the erased-newtype case). Fresh clones force `resolve_subtree` to bind `v`
+        // cleanly against the new inner re-match (via `__cr` — the wireable path).
+        let binders: Vec<(String, StructId)> = rec_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &pos)| {
+                (
+                    format!("__cr{ai}_{k}"),
+                    clone_refutable_payload(db, args[pos]),
+                )
+            })
+            .collect();
+        // The body is likewise DEEP-CLONED so its field-binder references (`v`) are fresh nodes that re-resolve
+        // against the new inner record re-match, not the stale composite path.
+        let body = clone_refutable_payload(db, body);
+        // Rebuild the ctor pattern with each record payload arg replaced by its fresh bare binder. The head is
+        // FRESH-cloned (`clone_ctor_head`) so it re-resolves as a ctor OUT of any stale/inert in-place pattern
+        // resolution (the dodge `refutable_ctor_element_head` documents); the non-record args are reused (each
+        // moves to exactly one new parent — the original `pat` is dropped).
+        let fresh_head = clone_ctor_head(db, head);
+        let mut new_children = vec![fresh_head];
+        for (i, &arg) in args.iter().enumerate() {
+            match rec_positions.iter().position(|&p| p == i) {
+                Some(k) => new_children.push(db.push_name(&binders[k].0)),
+                None => new_children.push(arg),
+            }
+        }
+        let new_pat = db.push_list(new_children);
+        // The BODY re-match(es), NESTED from the INNERMOST record binder out: the innermost holds the original
+        // `body` (every record's fields in scope); each enclosing match binds its record's fields. Each `_` arm
+        // is dead (the ctor already bound an irrefutable record payload) but keeps the inner match exhaustive.
+        let mut new_body = body;
+        for (bname, record_pat) in binders.iter().rev() {
+            let body_scrut = db.push_name(bname);
+            let body_true_arm = db.push_list(vec![*record_pat, new_body]);
+            let trap_head = db.push_name("trap");
+            let trap_msg = db.push_str(
+                "unreachable: ctor record payload already bound by the outer ctor pattern",
+            );
+            let trap = db.push_list(vec![trap_head, trap_msg]);
+            let wild_b = db.push_name("_");
+            let body_false_arm = db.push_list(vec![wild_b, trap]);
+            let body_match_head = db.push_name("match");
+            new_body = db.push_list(vec![
+                body_match_head,
+                body_scrut,
+                body_true_arm,
+                body_false_arm,
+            ]);
+        }
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms.iter().copied());
+    let rewritten = db.push_list(items);
+    // FORGET the rewritten arms' stale resolutions before re-resolving: the body + the record pattern are
+    // REUSED from the original arm, where the body's field reference `v` was resolved through the OLD
+    // COMPOSITE path (SumPayload(Mk) → record-field) — the very path the backend cannot wire. Left memoized,
+    // `v` would still read that broken path (a runtime mismatch → the inner `_ → trap` fires) even though the
+    // rewrite now binds it via `__cr` + the inner record re-match. Forgetting the arms forces `resolve_subtree`
+    // to re-resolve `v` against the NEW inner re-match (via `__cr`, which wires). The scrutinee is a sibling of
+    // the arms (not inside them), so it is untouched. Plain `forget_subtree` (not keep-pinned): this is a
+    // top-level pre-pass, so no reference is pinned to an unreachable outer-arm-pattern sibling binder.
+    for &arm in &new_arms {
+        crate::resolve::forget_subtree(db, arm);
+    }
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "ctor with an inline irrefutable record-destructure payload → fresh binder + body re-match (bind-then-project)");
+    Some(core_of(db, rewritten))
+}
+
 pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -387,6 +541,20 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
     | crate::ty::Ty::Tuple(_)
     | crate::ty::Ty::Record(_) = crate::infer::type_of(db, scrutinee)
     {
+        // PRE-PASS (ctor-record-payload): an arm whose pattern is a CONSTRUCTOR with an INLINE IRREFUTABLE
+        // RECORD-destructure payload — `((Mk (record (= a v))) body)` — binds a field `v` through a COMPOSITE
+        // path (SumPayload(Mk) → record-field `a`) that the backends cannot wire: on a RUNTIME scrutinee
+        // (e.g. a self-recursive fn's param, so the record can't const-fold) rust DECLINES "sum payload has
+        // no bound match arm" and wasm ACCEPTS-then-TRAPS (a non-uniform miscompile; breaker). The
+        // bind-then-project form `((Mk r) (. r a))` works on both, so LIFT the inline destructure to it:
+        // rewrite to `((Mk __cr) (match __cr ((record (= a v)) body) (_ (trap …))))` — the ctor binds the
+        // payload to a fresh binder (the SumPayload path alone, which wires), and the inner re-match
+        // destructures the record (bind-then-project). A tuple payload composes via `Elem` and a bare-binder
+        // payload is already fine, so this fires ONLY on a record-destructure payload. Rebuilds the match and
+        // recurses through `core_of`. Returns `None` (falls through unchanged) for every other shape.
+        if let Some(core) = desugar_ctor_record_payload_destructure(db, scrutinee, arms) {
+            return core;
+        }
         return lower_match_sum(db, scrutinee, arms);
     }
     // A STRUCTURAL pattern head — `(bin …)` / `(list …)` / `(map …)` / `(tuple …)` — decodes a value of a

@@ -8046,6 +8046,27 @@
   (input (do (type UserId (Mk Int64)) (def (main) (match (Mk 1) ((Some n) n))) (export main)))
   (error CDZ0203))
 
+; newtype-over-record INLINE destructure under RECURSION (v-inference, was a wasm accept-then-trap vs rust
+; decline, breaker). A newtype `Mk` over a single-field record matched with an INLINE record-destructure
+; `(Mk (record (= a v)))` binds `v` through a COMPOSITE path (SumPayload(Mk) → record-field `a`) the payload
+; materialization cannot wire. On a RUNTIME scrutinee — here the PARAMETER of a self-recursive fn, so the
+; record cannot const-fold (the non-recursive form folds and always worked) — wasm compiled then TRAPPED and
+; rust declined "sum payload has no bound match arm" (a non-uniform accept-then-trap MISCOMPILE). The
+; bind-then-project form `(Mk r)` + `(. r a)` always worked, so the ctor-record-payload pre-pass now LIFTS the
+; inline destructure to it. `loop 3 (Mk {a:7})` threads `w` unchanged to the base case, which unwraps → 7 on
+; both backends. (Ingredients all necessary: newtype + record payload + inline destructure + recursion.)
+(case
+  "a newtype-over-record inline destructure under recursion binds the field on both backends (was wasm-trap/rust-decline)"
+  (input
+    (do
+      (type Wrap (Mk (Record (: a Int64))))
+      (def
+        (loop (: n Int64) (: w Wrap))
+        (if (< n 1) (match w ((Mk (record (= a v))) v)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk (record (= a 7)))))
+      (export main)))
+  (output (: 7 Int64)))
+
 (case
   "a sum-match recursion that accumulates a built-in list returns a list"
   (doc
