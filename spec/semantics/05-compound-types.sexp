@@ -8605,6 +8605,35 @@
       (export main)))
   (output (: 8 Int64)))
 
+; multi-rec-elem-multifield (breaker, COMPOSITION guard #8428 × multi-field): N-per-arm (#8428, >1 refutable
+; element) composed with MULTI-FIELD record refinement (#8438 pinned a single record element with TWO literal
+; fields). TWO record elements in one arm, EACH with two literal fields — `(list (record (= v 1) (= w 2))
+; (record (= v 3) (= w 4)))`. Exercises the N-position loop AND >1 field-test per element together; a refactor
+; threading only ONE field-test per element through the N-loop would break this while #8422 (1 field/element) +
+; #8438 (1 element, 2 fields) each still pass. Both refine → 100; a non-matching field on the SECOND element
+; falls through → -1 (refutation composes across the N-loop, the #8358-class hazard). Consistent wasm+rust+cadenza.
+(case
+  "two record list elements each with two literal fields all refine (N-per-arm x multi-field)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v Int64) (: w Int64)))))
+        (match xs (#list(#record((= v 1) (= w 2)) #record((= v 3) (= w 4))) 100) (_ -1)))
+      (def (main) (f #list(#record((= v 1) (= w 2)) #record((= v 3) (= w 4)))))
+      (export main)))
+  (output (: 100 Int64)))
+
+(case
+  "two record list elements with two fields each FALL THROUGH when a second-element field differs"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (: v Int64) (: w Int64)))))
+        (match xs (#list(#record((= v 1) (= w 2)) #record((= v 3) (= w 4))) 100) (_ -1)))
+      (def (main) (f #list(#record((= v 1) (= w 2)) #record((= v 9) (= w 4)))))
+      (export main)))
+  (output (: -1 Int64)))
+
 ; tup-in-nlist (breaker, COMPOSITION guard #8348 × #8367): a refutable TUPLE element (literal component) sitting
 ; INSIDE a NESTED-list element `(list (list (tuple 1 b)))` composes the two recently-landed desugars — the
 ; Inc-14 nested-list literal-element re-match (#8347/#8348) wraps the tuple-element value-refinement (#8367).
