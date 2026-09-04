@@ -9021,3 +9021,5 @@ todo	a macro splices its quote-param list into an expansion via active unquote-s
 pass	splice-flatten recursion is MULTI-LEVEL — a def three nested statement-position (do …) levels deep still binds visibly
 todo	a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)
 pass	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
+pass	lcap1 a closure capturing a LET-LOCAL scalar computes when applied in-program
+todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
