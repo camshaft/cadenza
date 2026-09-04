@@ -1182,7 +1182,7 @@ pass	a PARENTHESIZED literal magnitude adopts its arith sibling's fixed width li
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a PARTITION fold splits one spine into two lists by a runtime predicate
-fail	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
+pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
 pass	a PER-CALL-selected runtime symbol dispatches through the = chain
 pass	a PERFORM of an undeclared op on a declared effect in an uncalled def is rejected
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
