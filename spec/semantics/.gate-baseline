@@ -123,17 +123,17 @@ pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
 pass	DIFF-WIDTH RESULT: a (Result Int64 Int32) group + a (Result Int32 Int64) group, distinct-sig
 pass	DIFF-WIDTH RESULT: two same-sig (Result Int64 Int32) closures share one call
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
-pass	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
+fail	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
 pass	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)
-pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
+fail	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
 pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs — driving the Int64 group
-pass	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
-pass	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
-pass	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
+fail	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
+fail	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
+fail	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
 pass	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
 pass	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
 pass	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
-pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
+fail	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
 pass	DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)
@@ -142,7 +142,7 @@ pass	DISTINCT-SIG: driving the Result-arg group (Err)
 pass	DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple
 pass	DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export
 pass	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — driving the Int64-inner group
-pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
+fail	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
 pass	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
 pass	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
@@ -7893,14 +7893,14 @@ pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
 pass	distinct-magnitude runtime quantities in a Set stay separate
-pass	distinct-sig byte-rope closure alongside a plain export — the closure
+fail	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closure alongside a plain export — the plain
-pass	distinct-sig byte-rope closures — the Bool→Bytes one
-pass	distinct-sig byte-rope closures — the Int64→Bytes one
-pass	distinct-sig collection result — the Bool→List closure
-pass	distinct-sig collection result — the Int64→List closure
-pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
-pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
+fail	distinct-sig byte-rope closures — the Bool→Bytes one
+fail	distinct-sig byte-rope closures — the Int64→Bytes one
+fail	distinct-sig collection result — the Bool→List closure
+fail	distinct-sig collection result — the Int64→List closure
+fail	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
+fail	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
 pass	distinct-sig round-trip: TWO collection consumers of different sigs — the List
@@ -7913,9 +7913,9 @@ pass	distinct-sig round-trip: a List consumer + a compound consumer of another s
 pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
 pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
 pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
-pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
+fail	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
 pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
-pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
+fail	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
 pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
 pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
@@ -7924,15 +7924,15 @@ pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of a
 pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
 pass	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 pass	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
-pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
-pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
+fail	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
+fail	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
-pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
-pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
-pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
+fail	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
+fail	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
+fail	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
 pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
-pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
-pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
+fail	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
+fail	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
 pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
 pass	distinct-signature capturing closures alongside a parameterized plain export
 pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
@@ -9667,7 +9667,7 @@ pass	rop3 payload extracted to a bare Int64 const param before recursing folds (
 pass	rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
-pass	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
+fail	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
 pass	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
 pass	round-trip: a String-returning consumer of a closure
 pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
@@ -9676,21 +9676,21 @@ pass	round-trip: a closure taking a String arg built in-guest
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
 pass	round-trip: a compound consumer alongside a plain export — the plain
-pass	round-trip: a compound-arg closure whose consumer returns a compound
+fail	round-trip: a compound-arg closure whose consumer returns a compound
 pass	round-trip: a consumer applies a closure taking a List arg built in-guest
 pass	round-trip: a consumer applies a closure taking a Record arg built in-guest
 pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
-pass	round-trip: a consumer applies the handed-back closure and returns Bytes
+fail	round-trip: a consumer applies the handed-back closure and returns Bytes
 pass	round-trip: a consumer applies the handed-back closure and returns a List
 pass	round-trip: a consumer applies the handed-back closure and returns a tuple
 pass	round-trip: a consumer returns a Map from the closure result
 pass	round-trip: a consumer returns a Map whose VALUE is a list
 pass	round-trip: a consumer returns a Result (Err type pinned) from the closure result
 pass	round-trip: a consumer returns a Result reaching BOTH variants
-pass	round-trip: a consumer returns a Set built from REPEATED closure application
+fail	round-trip: a consumer returns a Set built from REPEATED closure application
 pass	round-trip: a consumer returns a Set built from the closure result
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
-pass	round-trip: a consumer returns a list of tuples from repeated closure application
+fail	round-trip: a consumer returns a list of tuples from repeated closure application
 pass	round-trip: a consumer returns a record built from the closure result
 pass	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
 pass	round-trip: a consumer returns an Option built from the closure result
