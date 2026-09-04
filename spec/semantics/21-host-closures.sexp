@@ -8318,6 +8318,35 @@
   (output (: 110 Int64))
   (live-objects 0))
 
+; hcn4/hcn5 (breaker, #8239-adjacent): the ownership-conditional CallClosure relax (#8239 — applying a
+; BORROWED captured closure does not escape it, closing the hcn1 leak) generalizes to MULTIPLE and
+; CONDITIONAL application sites. hcn4 applies the borrowed inner closure `g` TWICE in one body; hcn5
+; applies it in ONE if-arm only. Both still reclaim to zero after the outer closure is dropped (census
+; discriminating: live-objects 1 FAILs both). Guards the relax against a regression that re-escapes on a
+; second or a conditionally-reached application site. wasm-only, like the rest of the hcn family (the
+; closure-capture heap shape declines on rust + the cadenza hop — the known non-blocking value-heap gap).
+(case
+  "hcn4 a borrowed captured closure applied TWICE in one body reclaims"
+  (input
+    (do
+      (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (fn ((: y Int64)) (+ (g y) (g (* y 2))))))
+      (export f)))
+  (call f (: 100 Int64) (: 5 Int64))
+  (drop)
+  (output (: 215 Int64))
+  (live-objects 0))
+
+(case
+  "hcn5 a borrowed captured closure applied in ONE if-arm reclaims"
+  (input
+    (do
+      (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (fn ((: y Int64)) (if (> y 0) (g y) 0))))
+      (export f)))
+  (call f (: 100 Int64) (: 5 Int64))
+  (drop)
+  (output (: 105 Int64))
+  (live-objects 0))
+
 (case
   "hcn2 a closure capturing a runtime-built MAP looks up by the call argument"
   (input
