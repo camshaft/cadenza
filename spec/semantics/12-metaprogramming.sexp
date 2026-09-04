@@ -4443,6 +4443,19 @@ c")))
   (call main (: 5 Int64))
   (output (: 11 Int64)))
 
+; eval × BINARY-MATCHING (breaker): a fresh cross-domain bridge — the eval-reconstructed form is a `(bin …)`
+; MATCH over an unquoted Bytes value. `(unquote b)` lifts the live `b = (Bytes.of (list 42))` into an
+; `(Ast.Bytes …)` leaf (the byte-string compound-lift), and `eval` reconstructs `(match <bytes> ((bin (u8 x))
+; x) (_ 0))`, which reads the first u8 = 42. Pins that eval-reconstruct-to-source composes with a binary-match
+; segment pattern — the bin-match family and the eval family were covered SEPARATELY; this is their bridge.
+(case
+  "eval of a quasiquote whose form BIN-MATCHES an unquoted Bytes reads the segment"
+  (input
+    (do
+      (def (main) (let ((b (Bytes.of (list 42)))) (eval (quasiquote (match (unquote b) ((bin (u8 x)) x) (_ 0))))))
+      (export main)))
+  (output (: 42 Int64)))
+
 (case
   "eval of a quoted List.at folds the indexing operation to its Option result"
   (doc
