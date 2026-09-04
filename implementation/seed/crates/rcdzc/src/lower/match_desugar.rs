@@ -323,6 +323,20 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
             },
         };
     }
+    // A SUBJECT that fails to RESOLVE — an unbound name (CDZ0101) or an unresolved module member
+    // (CDZ0201) — is a real error that must report AS ITSELF, ahead of any arm-pattern-support check.
+    // Its lowered core is a `Core::Poison` carrying that coded reject; propagate it here. Without this,
+    // a poison subject's TYPE is `Any` (unresolved), so it matches NONE of the Sum/Tuple/Bytes/List/Map
+    // dispatches below and the definite-kind CDZ0203 check, falling through to the scalar-probe path —
+    // which, when an arm carries a STRUCTURAL/ctor pattern the scalar path can't handle, declines with the
+    // misleading uncoded "a match pattern that is not a scalar literal or `_` is not supported", MASKING
+    // the subject's own CDZ0101/CDZ0201. (A wildcard/scalar arm already surfaced the subject error, because
+    // that path lowers the scrutinee and propagates its poison — so this only fixes the structural-arm case,
+    // aligning every arm shape on the real cause.) This is the erroring-SUBJECT sibling of the wrong-KIND
+    // CDZ0203 scrutinee check below (breaker-found, concierge-routed).
+    if let Core::Poison(r) = core_of(db, scrutinee) {
+        return Core::Poison(r);
+    }
     // A FUNCTION-VALUED scrutinee — `(match g …)` where `g` is a closure/def — is not matchable: a match
     // deconstructs a DATA value by its cases (`core-semantics.md §Patterns Compose` — literals, tuples,
     // constructors), and a function is not data (it has no cases, no discriminant, no machine value to
