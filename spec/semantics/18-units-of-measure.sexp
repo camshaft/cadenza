@@ -90,11 +90,13 @@
 
 ; A Qty.+ magnitude that is a FUNCTION-APPLICATION RESULT reconciles its width against the sibling
 ; magnitude. Summing two same-unit quantities where one magnitude is `((fn (v1) 8) 3)` (a call result
-; carrying a bare default-Int repr) and the other is a narrow `Int8` must widen the call-result magnitude
-; to the Qty.+ magnitude width. This was a cdz-smith fuzzer finding: the backend once emitted INVALID wasm
-; here (`type mismatch: expected i64, found i32`) — a bare literal magnitude adapts to the wide slot at
-; compile time, but a call-RESULT magnitude kept its own repr and the widen was dropped. Now fixed; the
-; sum is 8 + 3 = 11. (Regression guard for the cdz-smith Qty-magnitude-over-call-result invalid-wasm.)
+; carrying a bare DEFERRED default-Int repr) and the other is a declared narrow `Int8` reconciles the
+; deferred call-result magnitude to the sibling's declared `Int8` (no-promotion join, #8300 — a fixed inner
+; is preferred over a deferred one; the generic Qty inner is never widened to a machine default). This was a
+; cdz-smith fuzzer finding: the backend once emitted INVALID wasm here (`type mismatch: expected i64, found
+; i32`) — a bare literal magnitude adapted to the reconciled slot at compile time, but a call-RESULT
+; magnitude kept its own repr and the reconciliation was dropped. Now fixed; both magnitudes reconcile at
+; Int8 and the sum is 8 + 3 = 11 (fits Int8). (Regression guard for the cdz-smith Qty-magnitude-over-call-result invalid-wasm.)
 (case
   "a Qty.+ magnitude from a function-application result reconciles against an Int8 sibling"
   (input
@@ -106,19 +108,20 @@
       (export main)))
   (output (: 11 Int8)))
 
-; COMMUTATIVITY of the Qty.+ width join (breaker; fixed by #8292): the #8278 widen (a bare-default
-; call-result Qty magnitude widens to Int64) used to fire ONLY when the call-result was the FIRST `Qty.+`
-; operand — COMMUTED (narrow Int8 magnitude first), the result width was taken as Int8, so the call-result
-; narrowed and a sum overflowing Int8 SPURIOUSLY rejected CDZ0304 while the operand-swapped twin compiled to
-; 150. #8292 made the join symmetric: the additive Qty arm now takes the WIDER effective width (ground_width,
-; deferred→Int64 default) regardless of operand order, so this folds to 150 Int64 both ways. (Triangulation
-; that pinned it as Qty-specific: the PLAIN-int analog `(+ (: 50 Int8) ((fn () 100) 3))` rejects CDZ0304 in
-; BOTH orders — the asymmetry lived in the Qty magnitude-width reconciliation, not the general integer width
-; rule.) Soundness preserved by #8292: a genuine both-Int8 sum overflow + a mixed-scale overflow still
-; CDZ0304, and two-fixed-DIFFERENT widths still CDZ0301 in both orders. Regression guard for the join
-; symmetry.
+; COMMUTATIVITY of the Qty.+ width join (breaker; operator ruling, fixed by #8300 — supersedes the reverted
+; #8292 widen): `Qty` is GENERIC over its inner numeric type, so a Qty.+ join must PRESERVE the operand inner
+; and NEVER promote a narrow width to a machine default. The additive arm now uses `ia.join(ib)`, which for a
+; FIXED inner (a declared `Int8`) beside a DEFERRED one (a bare-default call-result magnitude) PREFERS THE
+; FIXED width — so the deferred call-result adapts to the sibling's declared `Int8`, order-INDEPENDENTLY.
+; Consequence for this case: `(: 50 Int8) + call-result(100)` reconciles at `Int8`, and 50 + 100 = 150
+; OVERFLOWS Int8 → CDZ0304 in BOTH orders (verified: Int8-first AND swapped call-result-first both reject —
+; the earlier #8292 widen that folded this to 150 Int64 was unsound promotion). The PLAIN-int analog
+; `(+ (: 50 Int8) ((fn () 100) 3))` also rejects CDZ0304 in both orders, so Qty magnitude reconciliation now
+; matches the general integer width rule. Soundness: a genuine same-inner overflow stays CDZ0304 (both
+; orders), and two fixed-DIFFERENT widths still disagree → CDZ0301. Regression guard for the no-promotion
+; join symmetry.
 (case
-  "a Qty.+ narrow Int8 magnitude FIRST widens the call-result sibling commutatively (not a spurious overflow reject)"
+  "a Qty.+ narrow Int8 magnitude reconciles a call-result sibling at Int8 (no promotion) — an Int8-overflowing sum rejects CDZ0304 both orders"
   (input
     (do
       (def (main)
@@ -126,7 +129,7 @@
           (+ (Qty.of (: 50 Int8) (Unit.base #"meter"))
              (Qty.of ((fn (v1) 100) 3) (Unit.base #"meter")))))
       (export main)))
-  (output (: 150 Int64)))
+  (error CDZ0304))
 
 ; `Qty`'s SECOND argument is a UNIT, not a type. A bare unbound name there — `(Qty Int64 meter)` — used to
 ; draw the type-oriented guidance (lowercase → "not a type variable"; uppercase → "unknown type, declare it
