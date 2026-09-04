@@ -431,15 +431,20 @@
       (export main)))
   (output (: 42 Int64)))
 
-; The FAIL side: the SAME `(W 42)` construct+match placed in the module's OWN EXPORTED ENTRY `main` (the
-; value crosses the entry boundary) declines CDZ0201 — the member-type ctor arrow is unreadable at
-; entry-lowering, so the variant reads as nullary. SHOULD return 42 (idealistic should-cross TODO, auto-flips
-; when v-module-system's boundary-lowering lands); grades todo on all three backends. NOT bare-literal
-; grounding (the local case above uses the identical bare `(W 42)` and passes) and NOT a decl-reject. The
-; mk-RETURNS-a-member-value-across-defs shape is the same boundary fault. (Verified via the gate — a
-; standalone `cdz compile` of this module MIS-succeeds; the gate's module context is authoritative.)
+; The FAIL side — RE-SCOPED (v-module-system investigation, 2026-09): this declines on the PROGRAM FORM, NOT
+; member-type resolution. A bare `(module … (def (main) …) (export main))` used as the WHOLE PROGRAM declines
+; CDZ0201 regardless of member types — the minimal `(module m (def (main) 42) (export main))` (no types, no
+; siblings, literal main) ALSO declines, and NO passing bare-module-whole-program exists anywhere in the
+; corpus. The canonical program form is `(do (module …) (def (main) …) (export main))` or top-level defs
+; (both work — the do-wrapped plain `(do (def (main) 42) (export main))` folds to 42). So the earlier reading
+; ("member-type ctor arrow unreadable at entry-lowering") was WRONG: member-type RESOLUTION is complete
+; (#7946/#8264/#8312, sibling-visible + distinct + non-leaking + bare-ctor-in-helpers, the PASS side above);
+; the reject is purely the unsupported bare-module-as-whole-program form. Idealistic: a bare module COULD be a
+; valid whole program -> 42; grades todo on all three, routed to the ENTRY-EXPORT/backend lane (a niche form,
+; zero other corpus cases use it — low-value). NOT member-type, NOT opacity (main is INSIDE m here, so it sees
+; W). (Verified: bare-module `(module m (def (main) 42) …)` -> CDZ0201; do-wrapped -> 42.)
 (case
-  "a module-member-type ctor value at the exported-entry boundary declines (idealistic; local use passes)"
+  "a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)"
   (input (module m (type W (W Int64)) (def (main) (match (W 42) ((W n) n))) (export main)))
   (output (: 42 Int64)))
 
