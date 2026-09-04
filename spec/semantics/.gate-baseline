@@ -8458,7 +8458,6 @@ pass	immortal-nullary FBIP witness: a recursive Nat walk REBUILDS the spine (FBI
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
-fail	a whole-module alias projecting a NON-exported private def is rejected (privacy; wrong-accepts today)
 pass	imr1 a per-name import rename binds the export under the alias and runs
 pass	imr2 per-name renames disambiguate a uniform export name from two modules
 pass	imr3 one export imported under TWO aliases — both bind to the same def
