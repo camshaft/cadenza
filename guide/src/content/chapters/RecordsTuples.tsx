@@ -63,6 +63,7 @@ export default function RecordsTuples() {
         source={`(def (swap p) #tuple((. p 1) (. p 0)))
 
 (def (main) (swap #tuple(3 7)))`}
+        id="swap-tuple"
       />
       <P>The result is <Cadenza ast="Y2R6YXN0AAEDFQABBwABAwQAAAABAAIBAwABAgM=" kind="expr">#tuple(7 3)</Cadenza>, both elements in their new positions, returned as one value you could pass along or reach into further.</P>
       <P>And just as <C>Record.merge</C> combined two records, <C>Tuple.concat</C> joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:</P>
