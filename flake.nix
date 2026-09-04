@@ -7332,6 +7332,14 @@
                 path_checks() {
                   case "$1" in
                 ${dirCaseArms}
+                    # Corpus edit (v-nix + v-corpus-harness GO): a spec/semantics/<stem>.sexp change is in NO
+                    # crate, so it used to hit the empty catch-all → fast-gate ran nothing → silent-green. That
+                    # was the #8380 miss (a corpus edit broke the ml round-trip, fast-gate was green, it landed +
+                    # was caught only as a trunk-red). Emit that file's per-file coarse verdict gate (my #8321
+                    # corpus-gate-coarse-<stem> attr) + the whole-corpus syntax roundtrip (checks.roundtrip, the
+                    # sexpr-byte-identical + ml-fixed-point check). Full localGate stays the authoritative catch
+                    # (roundtripCheck is already in its fail-set) — this just makes the inner loop cover corpus.
+                    spec/semantics/*.sexp) echo "corpus-gate-coarse-$(basename "$1" .sexp) roundtrip" ;;
                     *) echo "" ;;
                   esac
                 }
@@ -7362,7 +7370,7 @@
                 # Dedup the check set.
                 checks="$(echo "$checks" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
                 if [ -z "$checks" ]; then
-                  echo "cdz fast-gate: no touched gated crate detected — nothing to build (a non-crate edit, e.g. docs/corpus, is not covered by a per-crate check; use the full localGate for those)."
+                  echo "cdz fast-gate: no touched gated crate or corpus file detected — nothing to build (a non-crate/non-corpus edit, e.g. docs, is not covered by a fast check; use the full localGate for those)."
                   exit 0
                 fi
                 echo "cdz fast-gate: building touched-crate checks (warm-cached):$checks"
@@ -7373,8 +7381,9 @@
                 # shellcheck disable=SC2086
                 if nix build $attrs --print-build-logs; then
                   echo ""
-                  echo "cdz fast-gate: GREEN — the touched crate(s) pass test + clippy + fmt."
-                  echo "⚠ NOT MERGE-SAFE: this is the NARROW inner-loop gate (touched crate only). It does NOT"
+                  echo "cdz fast-gate: GREEN — the touched crate(s)/corpus file(s) pass their checks + fmt."
+                  echo "⚠ NOT MERGE-SAFE: this is the NARROW inner-loop gate (touched crate + touched-corpus-file"
+                  echo "  coarse+roundtrip only). It does NOT"
                   echo "  run integration checks (guide/codegen/bench/gate/native/hash-parity) or cross-crate"
                   echo "  dependents. pr-sync's FULL localGate is the authoritative pre-merge catch — a green"
                   echo "  here means 'fast feedback OK to keep iterating', not 'ready to land'."
