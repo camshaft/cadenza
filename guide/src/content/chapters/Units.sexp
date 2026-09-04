@@ -27,8 +27,9 @@
   (runnable
     (source (Unit.in (Unit.of #"meter")
          (Qty.of 2.0 (Unit.of #"kilometer")))))
-  (p "The result is the bare number " (c "2000") ". Converting " (em "into") " a unit is the deliberate exit from the quantity world: you asked \"how many meters?\" and get the plain number of meters, ready for ordinary arithmetic. There's no " (c "Qty.value") " to strip because " (c "Unit.in") " already hands back the number. Toggle to the ML surface and it reads as a plain postfix, " (c "2.0 kilometer as meter") ". It runs both ways across a scale: two hundred fifty milliseconds in seconds is a quarter of a second (" (c "0.25") "):")
+  (p "The result is the bare number " (c "2000") ". Converting " (em "into") " a unit is the deliberate exit from the quantity world: you asked \"how many meters?\" and get the plain number of meters, ready for ordinary arithmetic. There's no " (c "Qty.value") " to strip because " (c "Unit.in") " already hands back the number. Toggle to the ML surface and it reads as a plain postfix, " (c "2.0 kilometer as meter") ". It runs both ways across a scale: two hundred fifty milliseconds in seconds is a quarter of a second (" (result (of "unit-in-sec") 0.25) "):")
   (runnable
+    (id "unit-in-sec")
     (source (Unit.in (Unit.of #"second")
          (Qty.of 250.0 (Unit.of #"millisecond")))))
   (h2 "Different dimensions do not mix")
@@ -80,12 +81,14 @@
   (h2 "Worked example: exact CAD")
   (p "Here's where units and " (em "exact") " numbers pay off together. Every quantity so far used a " (c "Float64") " value, but a " (c "Qty") " can carry a " (em "rational") " just as well, and then a conversion is " (em "exact") ", no rounding. This is exactly how Cadenza's CAD library models solids: rational coordinates in real units, so a metric body and imperial fasteners coexist with no float drift. A quarter-inch hole in a millimetre plate converts to precisely " (c "127/20") " mm, which is " (c "6.35") " mm, exactly, as a fraction:")
   (runnable
+    (id "qinch")
     (source (def (main)
   (= (Unit.in (Unit.of #"millimeter")
               (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
      (Rational.of 127 20)))))
-  (p "That reads " (c "true") ": the converted value is the exact rational " (c "127/20") ", not a float approximation of 6.35. The exactness comes from the " (em "value") " type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly " (c "1") ", so the comparison against " (cdz (Rational.of 1 1)) " is " (c "true") ", which floating point can't promise:")
+  (p "That reads " (result (of "qinch") true) ": the converted value is the exact rational " (c "127/20") ", not a float approximation of 6.35. The exactness comes from the " (em "value") " type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly " (c "1") ", so the comparison against " (cdz (Rational.of 1 1)) " is " (result (of "thirds") true) ", which floating point can't promise:")
   (runnable
+    (id "thirds")
     (source (def (main)
   (let ((t (Rational.of 1 3)))
     (= (+ (+ t t) t) (Rational.of 1 1))))))

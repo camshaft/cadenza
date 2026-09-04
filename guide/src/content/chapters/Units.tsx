@@ -37,6 +37,7 @@ export default function Units() {
       <P>The result is the bare number <C>2000</C>. Converting <em>into</em> a unit is the deliberate exit from the quantity world: you asked "how many meters?" and get the plain number of meters, ready for ordinary arithmetic. There's no <C>Qty.value</C> to strip because <C>Unit.in</C> already hands back the number. Toggle to the ML surface and it reads as a plain postfix, <C>2.0 kilometer as meter</C>. It runs both ways across a scale: two hundred fifty milliseconds in seconds is a quarter of a second (<C>0.25</C>):</P>
       <Runnable
         source={`(Unit.in (Unit.of #"second") (Qty.of 250.0 (Unit.of #"millisecond")))`}
+        id="unit-in-sec"
       />
       <H2>Different dimensions do not mix</H2>
       <P>Here is where the safety shows up. A length and a time share nothing. There is no exact factor between meters and seconds, so adding them is a mistake, and the compiler says so <em>before</em> the program ever runs:</P>
@@ -98,10 +99,12 @@ export default function Units() {
   (=
     (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
     (Rational.of 127 20)))`}
+        id="qinch"
       />
       <P>That reads <C>true</C>: the converted value is the exact rational <C>127/20</C>, not a float approximation of 6.35. The exactness comes from the <em>value</em> type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly <C>1</C>, so the comparison against <Cadenza ast="Y2R6YXN0AAEEGgoIUmF0aW9uYWwKAm9mAAEBBwAAAAEAAgEDAAECAAMAAwEDAwQFBg==" kind="expr">(Rational.of 1 1)</Cadenza> is <C>true</C>, which floating point can't promise:</P>
       <Runnable
         source={`(def (main) (let ((t (Rational.of 1 3))) (= (+ (+ t t) t) (Rational.of 1 1))))`}
+        id="thirds"
       />
       <P>This is the split that makes the CAD model trustworthy: the <em>model</em> (coordinates, dimensions, bolt positions) stays exact in rationals and units, so a bounding box reports true dimensions and a metric-plus-imperial assembly is precise to the fraction. Float only appears at the very end, in the <em>mesh</em> the renderer draws (an arbitrary-angle rotation needs sine and cosine, which aren't rational). Exact where it matters, float only at the geometry kernel, and the <AppLink to="/cad"> CAD page </AppLink> lets you see a model like this rendered. The <AppLink to="/calculator"> calculator </AppLink> works in dimensioned quantities too, if you'd rather just do unit arithmetic at a prompt.</P>
       <Why tenet="Dimensions are checked, then erased">Units live entirely at compile time. <Cadenza ast="Y2R6YXN0AAEFGgoDUXR5CgJvZgYAAAAAAAAAAAABBQoFbWV0ZXIHAAAAAQACAQMAAQIAAwAEAQMDBAUG" kind="expr">(Qty.of 5.0 meter)</Cadenza> and the bare <C>5.0</C> emit <em>byte-identical</em> code: the unit is a static claim the checker verifies and then throws away, so a dimensional mismatch is always a compile error (CDZ0501) and never a runtime trap. You get the discipline of dimensional analysis (a length never adds to a time, a velocity is length over time) with zero runtime cost. It's the same principle as the rest of the numeric model: Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.</Why>
