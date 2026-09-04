@@ -197,6 +197,10 @@ pub struct GTrial {
     /// against the structured diagnostics once the exec captures them (the `(error …)` diagnostic-quality
     /// capability — lets the corpus "express fixes", migrating the `rcdzc/tests.rs` fix-it tests).
     pub diag: Option<DiagExpect>,
+    /// The `(exact-code)` opt-in on an `(expect-error …)` trial (C1 fence): demand the compiler emit EXACTLY
+    /// this code — a DIFFERENT/uncoded refusal FAILs (not the default lenient Todo). Fences error-masking
+    /// regressions. `false` (the norm) keeps the lenient wrong-code→Todo. See [`grade_compile_error`].
+    pub exact_code: bool,
 }
 
 pub struct GCall {
@@ -509,6 +513,7 @@ where
                     code,
                     msg,
                     not_msg,
+                    trial.exact_code,
                 ));
                 // DIAGNOSTIC-QUALITY facets (`(fix …)`/`(no-fix)`/`(count …)`) — graded against the captured
                 // structured faults for THIS error's `(Error, code)`. Only when the wire was captured.
@@ -836,12 +841,19 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
 /// Fail (miscompile); the right CODE with the message containing EVERY pinned substring is a Pass; a
 /// DIFFERENT code is Todo. `msgs` is the list of `(message …)` substrings (AND — all required; empty =
 /// code-only).
+///
+/// `exact` = the case's `(exact-code)` opt-in (C1 diagnostic-quality fence): when SET, a DIFFERENT/uncoded
+/// code FAILs instead of the default lenient Todo — so a case can FENCE that the compiler emits EXACTLY this
+/// code (an error-masking regression, where the subject's own CDZ code is masked by a downstream uncoded
+/// decline, becomes a red). Default `false` preserves the "never false-fail a novel decline" leniency for
+/// the ~60 uncoded/capability declines; only opted-in cases demand the exact code.
 pub fn grade_compile_error(
     compiled: bool,
     diag: &str,
     want: &str,
     msgs: &[String],
     not_msgs: &[String],
+    exact: bool,
 ) -> Grade {
     if compiled {
         return Grade::Fail(format!(
@@ -878,6 +890,12 @@ pub fn grade_compile_error(
             }
             Grade::Pass
         }
+        // A DIFFERENT/uncoded code: default = lenient Todo (refused-to-confirm; never false-fail a novel
+        // decline). With the `(exact-code)` opt-in = FAIL (fence the exact code — catch an error-masking
+        // regression where `want`'s own diagnostic is masked by a downstream uncoded/wrong-code decline).
+        other if exact => Grade::Fail(format!(
+            "expected EXACTLY {want} (exact-code fence), but refused with {other:?} — an error-masking or wrong-code regression"
+        )),
         _ => Grade::Todo(format!("refused, but not with {want} (got {got:?})")),
     }
 }
@@ -1605,6 +1623,7 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     let mut args: Vec<String> = Vec::new();
     let mut second_call: Option<Vec<String>> = None;
     let mut drop_handle = false;
+    let mut exact_code = false;
     let mut expect: Option<GExpect> = None;
     // The diagnostic-QUALITY facets (`(fix …)` / `(no-fix)` / `(count N)` / `(once)`) that pin more than the
     // code + message on an `(expect-error …)` / `(expect-warning …)` case — accumulated into a `DiagExpect`
@@ -1651,6 +1670,9 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
             }
             // `(drop-handle)` — resource-drop the minted handle after the call(s).
             Some("drop-handle") => drop_handle = true,
+            // `(exact-code)` — C1 fence: demand the compiler emit EXACTLY this `(expect-error …)` code (a
+            // different/uncoded refusal FAILs, not the lenient Todo). See `grade_compile_error`.
+            Some("exact-code") => exact_code = true,
             Some("expect-output") => {
                 expect = a
                     .as_form(child, "expect-output")
@@ -1745,6 +1767,7 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
         call,
         expect: expect?,
         diag,
+        exact_code,
     })
 }
 
@@ -2019,12 +2042,13 @@ mod tests {
                 e,
                 "CDZ0201",
                 &["malformed".into()],
-                &["internal".into()]
+                &["internal".into()],
+                false
             ),
             Grade::Pass
         ));
         assert!(matches!(
-            grade_compile_error(false, e, "CDZ0201", &[], &["separator".into()]),
+            grade_compile_error(false, e, "CDZ0201", &[], &["separator".into()], false),
             Grade::Fail(_)
         ));
         // expect-warning: matched code+positive but forbidden phrase present → Fail.
@@ -2571,17 +2595,18 @@ mod tests {
                 "cdz: error [CDZ0201] (node 4): sep",
                 "CDZ0201",
                 &[],
-                &[]
+                &[],
+                false
             ),
             Grade::Pass
         );
         // Different code → Todo (still refused). Compiled → Fail.
         assert!(matches!(
-            grade_compile_error(false, "error [CDZ0300]: x", "CDZ0201", &[], &[]),
+            grade_compile_error(false, "error [CDZ0300]: x", "CDZ0201", &[], &[], false),
             Grade::Todo(_)
         ));
         assert!(matches!(
-            grade_compile_error(true, "", "CDZ0201", &[], &[]),
+            grade_compile_error(true, "", "CDZ0201", &[], &[], false),
             Grade::Fail(_)
         ));
         // MULTI-SUBSTRING (AND): the message must contain EVERY pinned substring — a diagnostic that names
@@ -2593,13 +2618,13 @@ mod tests {
             "Int64".to_string(),
         ];
         assert_eq!(
-            grade_compile_error(false, diag, "CDZ0301", &all, &[]),
+            grade_compile_error(false, diag, "CDZ0301", &all, &[], false),
             Grade::Pass
         );
         // One substring absent (UInt64 not in the message) → Fail naming the missing phrase.
         let miss = ["no implicit conversion".to_string(), "UInt64".to_string()];
         assert!(matches!(
-            grade_compile_error(false, diag, "CDZ0301", &miss, &[]),
+            grade_compile_error(false, diag, "CDZ0301", &miss, &[], false),
             Grade::Fail(_)
         ));
     }
@@ -2614,13 +2639,13 @@ mod tests {
         let both = ["not a type variable".to_string(), "not a unit".to_string()];
         // Both phrases present across the two CDZ0101s → Pass (the first-diagnostic-only check false-failed this).
         assert_eq!(
-            grade_compile_error(false, two, "CDZ0101", &both, &[]),
+            grade_compile_error(false, two, "CDZ0101", &both, &[], false),
             Grade::Pass
         );
         // A phrase in NEITHER same-code diagnostic → Fail.
         let absent = ["not a lifetime".to_string()];
         assert!(matches!(
-            grade_compile_error(false, two, "CDZ0101", &absent, &[]),
+            grade_compile_error(false, two, "CDZ0101", &absent, &[], false),
             Grade::Fail(_)
         ));
         // `same_code_messages` collects only the matching code (both CDZ0101 here; a CDZ0999 is ignored).
@@ -2628,7 +2653,58 @@ mod tests {
         assert_eq!(same_code_messages(two, "CDZ0999").len(), 0);
         // seq-29 absence across diags: a `(not …)` phrase present in ANY same-code diagnostic → Fail.
         assert!(matches!(
-            grade_compile_error(false, two, "CDZ0101", &[], &["not a unit".to_string()]),
+            grade_compile_error(
+                false,
+                two,
+                "CDZ0101",
+                &[],
+                &["not a unit".to_string()],
+                false
+            ),
+            Grade::Fail(_)
+        ));
+    }
+
+    /// C1 exact-code fence (`(exact-code)` opt-in): a WRONG/uncoded refusal FAILs when `exact`, Todos when not.
+    /// Fences an error-masking regression (the subject's own code masked by a downstream uncoded decline)
+    /// that the default lenient wrong-code→Todo cannot catch.
+    #[test]
+    fn grade_compile_error_exact_code_fence() {
+        let want = "CDZ0101";
+        // The RIGHT code passes regardless of `exact`.
+        let right = "cdz: error [CDZ0101] (node 2): unbound name `x`";
+        assert_eq!(
+            grade_compile_error(false, right, want, &[], &[], false),
+            Grade::Pass
+        );
+        assert_eq!(
+            grade_compile_error(false, right, want, &[], &[], true),
+            Grade::Pass
+        );
+        // A DIFFERENT code: lenient (exact=false) → Todo; fenced (exact=true) → Fail.
+        let wrong = "cdz: error [CDZ0201] (node 2): malformed";
+        assert!(matches!(
+            grade_compile_error(false, wrong, want, &[], &[], false),
+            Grade::Todo(_)
+        ));
+        assert!(matches!(
+            grade_compile_error(false, wrong, want, &[], &[], true),
+            Grade::Fail(_)
+        ));
+        // An UNCODED masking decline (the fpr-class error-masking): lenient → Todo; fenced → Fail.
+        let masked = "cdz: error: not a scalar literal";
+        assert!(matches!(
+            grade_compile_error(false, masked, want, &[], &[], false),
+            Grade::Todo(_)
+        ));
+        assert!(matches!(
+            grade_compile_error(false, masked, want, &[], &[], true),
+            Grade::Fail(_)
+        ));
+        // exact does NOT override the COMPILED-miscompile Fail (a program that compiles when an error was
+        // expected is still a Fail, exact or not).
+        assert!(matches!(
+            grade_compile_error(true, "", want, &[], &[], true),
             Grade::Fail(_)
         ));
     }
@@ -2918,6 +2994,7 @@ mod tests {
                     no_fix: false,
                     count: Some(1),
                 }),
+                exact_code: false,
             }],
             host_responses: vec![],
             host_calls: vec![],
@@ -3004,6 +3081,7 @@ mod tests {
                 call: None,
                 expect: GExpect::Error("CDZ0900".into(), vec![], vec![]),
                 diag: None,
+                exact_code: false,
             }],
             host_responses: vec![],
             host_calls: vec![],
@@ -3059,6 +3137,7 @@ mod tests {
                 call: None,
                 expect: GExpect::Error("CDZ0201".into(), vec![], vec![]),
                 diag: None,
+                exact_code: false,
             }],
             host_responses: vec![],
             host_calls: vec![],
@@ -3129,6 +3208,7 @@ mod tests {
                 call: None,
                 expect: GExpect::Error("CDZ0201".into(), vec![], vec![]),
                 diag: None,
+                exact_code: false,
             }],
             host_responses: vec![],
             host_calls: vec![],

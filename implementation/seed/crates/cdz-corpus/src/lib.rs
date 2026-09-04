@@ -202,12 +202,16 @@ pub struct DiagQuality {
     pub no_fix: bool,
     /// The exact number of faults with this `(severity, code)` (`(count N)`, or `(once)` == `1`).
     pub count: Option<u32>,
+    /// `(exact-code)`: DEMAND the compiler emit EXACTLY this `(error …)` code — a DIFFERENT/uncoded refusal
+    /// FAILs the grade (not the default lenient Todo), fencing error-masking regressions. Lifted to a
+    /// trial-level `(exact-code)` clause in the shred; graded via `cdz_corpus_grade`'s `grade_compile_error`.
+    pub exact_code: bool,
 }
 
 impl DiagQuality {
     /// Whether this pins anything at all (else it is not emitted — the trial stays clause-free).
     pub fn is_empty(&self) -> bool {
-        self.fix.is_none() && !self.no_fix && self.count.is_none()
+        self.fix.is_none() && !self.no_fix && self.count.is_none() && !self.exact_code
     }
 }
 
@@ -455,6 +459,8 @@ fn diag_clause(a: &Arenas, tail: &[StructId]) -> Option<DiagQuality> {
                     .and_then(|id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
             }
             Some("once") => d.count = Some(1),
+            // `(exact-code)` — the C1 fence: demand EXACTLY this code (a wrong/uncoded refusal FAILs).
+            Some("exact-code") => d.exact_code = true,
             _ => {}
         }
     }
