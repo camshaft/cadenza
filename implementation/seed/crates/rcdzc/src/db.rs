@@ -2693,42 +2693,37 @@ impl Db {
         // held across the fixpoint.
         let eval_boundary = ast.structure.len() as u32;
         let mut eval_result_nodes = std::collections::HashSet::new();
-        crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
+        let folded0 =
+            crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
         // FIXPOINT for NESTED / multi-stage eval (v-spec-oracle should-fold ruling + re-adjudication, 2026-09):
         // `desugar_eval` splices the SOURCE an `Ast` denotes, so `(eval `(eval (quote (+ 1 2))))` reconstructs
         // to the LIVE source `(eval (quote (+ 1 2)))` — carrying an UN-reified `(quote …)` + an un-desugared
         // inner `(eval …)`. `reconstruct` unwraps only a reified `Ast.*` (not a source `(quote …)`), and
         // `reify_quotes` already ran once, so ONE reify→desugar pass leaves the inner eval a bare name. Re-run
-        // the reify→desugar PAIR to a FIXPOINT: each round reifies the freshly-spliced inner quote, then folds
-        // the inner eval — so eval is COMPOSITIONAL (eval evaluates an AST value AS CODE, and that code may use
-        // eval on a further quote-family argument). Both passes only ever APPEND for real work, so a round that
-        // appends nothing (`structure` length stable) is the fixpoint; each round consumes one quote/eval
-        // layer → converges at the (finite) nesting depth. The `eval_result_nodes` narrowing in `desugar_eval`
-        // keeps `(eval (eval …))` a CORRECT REJECT (an eval whose ARGUMENT is another eval's dynamically-
-        // produced result is NOT compile-time-visible — "the compiler does not execute dynamically-constructed
-        // AST"; corpus "eval does not execute the result of a nested eval"), so only quote-family nesting folds.
-        // Gated on the program actually using `eval`, so a quote-only macro program pays no extra reify pass.
-        // The round cap is a defensive backstop against a would-be non-terminating rewrite (debug asserts it).
-        if ast
-            .leaves
-            .iter()
-            .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "eval"))
-        {
+        // the reify→desugar PAIR: each round reifies the freshly-spliced inner quote, then folds the inner eval
+        // — so eval is COMPOSITIONAL (it evaluates an AST value AS CODE, and that code may use eval on a further
+        // quote-family argument). The `eval_result_nodes` narrowing keeps `(eval (eval …))` a CORRECT REJECT (an
+        // eval whose ARGUMENT is another eval's dynamically-produced result is not compile-time-visible — "the
+        // compiler does not execute dynamically-constructed AST"; corpus "eval does not execute the result of a
+        // nested eval"), so only quote-family nesting folds.
+        //
+        // TERMINATION is by FOLD COUNT, not arena length: a round that folds ZERO evals is the fixpoint. This
+        // is SOUND (each eval folds at most once — recorded in `eval_result_nodes` + overwritten — and the total
+        // eval count across all nesting is finite) where an arena-length signal is NOT: `reify_quotes` re-appends
+        // scaffolding for a NON-reifiable quote (e.g. `(eval (quote (Unit.of #"meter")))`, a symbol leaf the
+        // `Ast` sum can't carry) every round without any fold, so a length-stable test would loop forever. The
+        // loop is entered ONLY when the first pass actually folded (`folded0 > 0`): a program whose eval did not
+        // fold (non-reifiable / runtime arg) is untouched — identical to the pre-fixpoint behaviour, no extra
+        // reify pass. The iteration cap is a graceful backstop for pathologically-deep nesting (break, not panic).
+        if folded0 > 0 {
             let mut rounds = 0u32;
             loop {
-                let len_before = ast.structure.len();
                 nonfinal_splice_patterns.extend(crate::quote::reify_quotes(&mut ast));
-                crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
-                if ast.structure.len() == len_before {
-                    break; // no quote reified + no eval folded this round → fixpoint reached
-                }
+                let folded =
+                    crate::eval_ast::desugar_eval(&mut ast, eval_boundary, &mut eval_result_nodes);
                 rounds += 1;
-                debug_assert!(
-                    rounds < 256,
-                    "nested-eval reify/desugar fixpoint did not converge"
-                );
-                if rounds >= 256 {
-                    break;
+                if folded == 0 || rounds >= 256 {
+                    break; // no eval folded this round (fixpoint), or the defensive depth cap
                 }
             }
         }
