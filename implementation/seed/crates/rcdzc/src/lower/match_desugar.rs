@@ -290,41 +290,127 @@ fn ctor_pattern_head_and_args(db: &mut Db, pat: StructId) -> Option<(StructId, V
     Some((head, args))
 }
 
-/// PRE-PASS for `lower_match` (sum/nominal scrutinee): rewrite an arm whose pattern is a CONSTRUCTOR with an
-/// INLINE IRREFUTABLE RECORD-destructure payload — `((Mk (record (= a v))) body)` — into the bind-then-project
-/// form the backends handle:
+/// Whether `pat` is an IRREFUTABLE RECORD-destructure — a `(record (= f p)…)` all of whose field values are
+/// irrefutable (a literal-field record is refutable → the value-refinement path, not this lift).
+fn is_irrefutable_record_pattern(db: &mut Db, pat: StructId) -> bool {
+    db.ast.compound_form_of(pat, CompoundCtor::Record).is_some()
+        && matches!(check_binding_pattern(db, pat, &crate::ty::Ty::Any), Ok(()))
+}
+
+/// Whether `pat` contains an IRREFUTABLE-RECORD destructure sitting under a NON-record path (a ctor payload, a
+/// tuple component, or a list element) with a CONSTRUCTOR somewhere ABOVE it — the composite-path shape the
+/// backend cannot wire (`SumPayload → … → record-field`; breaker's edge matrix: ctor / tuple / list containers
+/// all trap under recursion, while a record UNDER a record path works and a bare tuple/record with NO ctor
+/// above works). `ctor_above` tracks whether a ctor/newtype has been crossed on the way down. Does NOT descend
+/// into a record's field values (a record-under-record is handled by the record matcher itself).
+fn has_liftable_nested_record(db: &mut Db, pat: StructId, ctor_above: bool) -> bool {
+    if ctor_above && is_irrefutable_record_pattern(db, pat) {
+        return true;
+    }
+    if let Some((_, args)) = ctor_pattern_head_and_args(db, pat) {
+        return args
+            .iter()
+            .any(|&a| has_liftable_nested_record(db, a, true));
+    }
+    // A record we did NOT lift (ctor_above false, or refutable) — do not descend into it.
+    if db.ast.compound_form_of(pat, CompoundCtor::Record).is_some() {
+        return false;
+    }
+    let is_tuple_or_list = db.ast.compound_form_of(pat, CompoundCtor::Tuple).is_some()
+        || db.ast.compound_form_of(pat, CompoundCtor::List).is_some();
+    if is_tuple_or_list && let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.clone();
+        return children[1..]
+            .iter()
+            .any(|&c| has_liftable_nested_record(db, c, ctor_above));
+    }
+    false
+}
+
+/// Rebuild `pat` with every liftable nested irrefutable-record destructure (per `has_liftable_nested_record`)
+/// replaced by a fresh `__cr{ai}_{k}` binder, collecting `(binder-name, original-record-template)` into
+/// `binders` (the template is cloned fresh at each use site by the caller so its field binders re-resolve
+/// against the new re-match). Recurses through ctor payloads (setting `ctor_above`), tuple components, and
+/// list elements/rest — the NON-record path steps — but lifts (does not descend into) a record. The head of a
+/// rebuilt ctor is `clone_ctor_head`'d so it re-resolves out of any inert in-place pattern position.
+fn lift_nested_records(
+    db: &mut Db,
+    pat: StructId,
+    ai: usize,
+    counter: &mut usize,
+    binders: &mut Vec<(String, StructId)>,
+    ctor_above: bool,
+) -> StructId {
+    if ctor_above && is_irrefutable_record_pattern(db, pat) {
+        let name = format!("__cr{ai}_{}", *counter);
+        *counter += 1;
+        binders.push((name.clone(), pat));
+        return db.push_name(&name);
+    }
+    if let Some((head, args)) = ctor_pattern_head_and_args(db, pat) {
+        if args.is_empty() {
+            return pat; // a nullary ctor (bare name / member) — nothing to lift, leave verbatim
+        }
+        let fresh_head = clone_ctor_head(db, head);
+        let mut children = vec![fresh_head];
+        for a in args {
+            children.push(lift_nested_records(db, a, ai, counter, binders, true));
+        }
+        return db.push_list(children);
+    }
+    // A record we did NOT lift — leave it whole (its field values are the record matcher's job).
+    if db.ast.compound_form_of(pat, CompoundCtor::Record).is_some() {
+        return pat;
+    }
+    let is_tuple_or_list = db.ast.compound_form_of(pat, CompoundCtor::Tuple).is_some()
+        || db.ast.compound_form_of(pat, CompoundCtor::List).is_some();
+    if is_tuple_or_list && let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.clone();
+        let mut new_children = vec![children[0]];
+        for &c in &children[1..] {
+            new_children.push(lift_nested_records(db, c, ai, counter, binders, ctor_above));
+        }
+        return db.push_list(new_children);
+    }
+    pat
+}
+
+/// PRE-PASS for `lower_match` (sum/nominal scrutinee): rewrite an arm that binds a record field through a
+/// COMPOSITE path the payload materialization cannot wire. An INLINE IRREFUTABLE RECORD-destructure nested
+/// under a NON-record path with a ctor above it — DIRECTLY as a ctor payload `(Mk (record (= a v)))`, or
+/// deeper as a tuple component `(Mk (tuple x (record (= a v))))`, a list element `(Mk (list (record …) .. r))`,
+/// a nested ctor payload `(Mk (Some (record …)))`, or ANY depth thereof — binds a field `v` via
+/// `SumPayload(Mk) → … → record-field a`. On a runtime scrutinee (e.g. a self-recursive fn's param, so the
+/// record can't const-fold) rust declines "sum payload has no bound match arm" / "nested sum payload not
+/// supported" and wasm accepts-then-TRAPS (breaker's edge matrix; non-uniform). The bind-then-project form
+/// works on both, so `lift_nested_records` recursively replaces each such record with a fresh `__cr` binder +
+/// a body re-match that destructures it:
 ///   `((Mk (record (= a v))) body)`  ≡  `((Mk __cr) (match __cr ((record (= a v)) body) (_ (trap …))))`
-/// The inline form binds a field `v` through a COMPOSITE path (SumPayload(Mk) → record-field `a`) the payload
-/// materialization cannot wire — on a runtime scrutinee rust declines "sum payload has no bound match arm" and
-/// wasm accepts-then-TRAPS (breaker; non-uniform). The rewrite lifts each irrefutable-record payload arg to a
-/// fresh binder (the SumPayload path alone, which wires) + a body re-match that destructures the record
-/// (bind-then-project — verified to compute on both backends). Only IRREFUTABLE record payloads route (a
-/// literal-field record payload is refutable and belongs to the value-refinement path, not here); a tuple
-/// payload composes via `Elem` and a bare-binder payload is already fine, so neither routes. A GUARDED arm
-/// routes too (its cond hits the same composite-path miscompile): the cond is a DEEP CLONE evaluated INSIDE
-/// the record re-match (`(match __cr ((record …) g) (_ false))`) so its field binders are in scope. One
-/// re-match per record payload arg, nested inside-out. NO new IR. Returns `Some(Core)` iff the rewrite fired.
+/// Ctor / tuple / list are the non-record path steps recursed through; a record UNDER a record is left whole
+/// (the record matcher handles it) and a record with NO ctor above is left alone (a bare tuple/record param
+/// lowers fine). Only IRREFUTABLE records lift (a literal-field record is refutable → the value-refinement
+/// path). A GUARDED arm routes too (its cond hits the same miscompile): a DEEP CLONE of the cond is evaluated
+/// INSIDE the (nested) record re-matches so every lifted record's field binders are in scope. The record
+/// templates + cond + body are cloned FRESH per use-site so each field ref re-resolves against its own new
+/// match, not the stale composite path. NO new IR. Returns `Some(Core)` iff the rewrite fired.
 pub(super) fn desugar_ctor_record_payload_destructure(
     db: &mut Db,
     scrutinee: StructId,
     arms: &[(StructId, StructId)],
 ) -> Option<Core> {
-    let is_irref_record = |db: &mut Db, arg: StructId| -> bool {
-        db.ast.compound_form_of(arg, CompoundCtor::Record).is_some()
-            && matches!(check_binding_pattern(db, arg, &crate::ty::Ty::Any), Ok(()))
-    };
     let mut any = false;
     for &(pat, _) in arms {
-        // Peel a `(guard <pat> <cond>)` wrapper — a GUARDED ctor-record-payload arm hits the SAME miscompile
-        // (its cond AND body both read the record's field binders through the un-wireable composite path), so
-        // it routes here too (the cond is lifted into the record re-match below, with the fields in scope).
+        // Peel a `(guard <pat> <cond>)` wrapper — a GUARDED arm hits the SAME miscompile (its cond AND body
+        // both read the lifted record's field binders through the un-wireable composite path), so it routes
+        // here too (the cond is lifted into the record re-match below, with the fields in scope).
         let inner = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => g[0],
             _ => pat,
         };
-        if let Some((_, args)) = ctor_pattern_head_and_args(db, inner)
-            && args.iter().any(|&a| is_irref_record(db, a))
-        {
+        // Fire on any IRREFUTABLE-RECORD destructure nested under a NON-record path (ctor payload / tuple
+        // component / list element) with a ctor above — at ANY depth (breaker's edge matrix: ctor/tuple/list
+        // containers all trap; a bare tuple/record with no ctor above, and a record-under-record, do NOT).
+        if has_liftable_nested_record(db, inner, false) {
             any = true;
         }
     }
@@ -337,46 +423,20 @@ pub(super) fn desugar_ctor_record_payload_destructure(
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
-        let Some((head, args)) = ctor_pattern_head_and_args(db, inner_pat) else {
-            new_arms.push(db.push_list(vec![pat, body]));
-            continue;
-        };
-        let rec_positions: Vec<usize> = (0..args.len())
-            .filter(|&i| is_irref_record(db, args[i]))
-            .collect();
-        if rec_positions.is_empty() {
+        // Recursively rebuild the arm pattern with every liftable nested irrefutable-record destructure (ctor
+        // payload / tuple component / list element, at any depth, ctor above) replaced by a fresh `__cr` binder;
+        // `binders` collects `(name, original-record-TEMPLATE)`. Each binder's template is cloned fresh at its
+        // use sites below (the body re-match, and — for a guarded arm — the guard cond) so the record's field
+        // binders re-resolve against each new inner match rather than the stale un-wireable composite path (a
+        // reused/`forget`-only node kept trapping for the erased-newtype case). No liftable record → unchanged.
+        let mut binders: Vec<(String, StructId)> = Vec::new();
+        let mut counter = 0usize;
+        let new_ctor_pat =
+            lift_nested_records(db, inner_pat, ai, &mut counter, &mut binders, false);
+        if binders.is_empty() {
             new_arms.push(db.push_list(vec![pat, body]));
             continue;
         }
-        // A fresh binder name per record payload position (`__cr{arm}_{k}`), paired with a DEEP CLONE of its
-        // record pattern. Cloning (not reusing `args[pos]`) gives fresh UNMEMOIZED nodes: the original record
-        // pattern + the body carry resolutions memoized against the OLD inline position (the field binder `v`
-        // bound through the un-wireable SumPayload→record-field composite path), and reusing them leaves `v`
-        // reading that broken path even after the rewrite (a runtime trap / rust decline that `forget_subtree`
-        // alone did not clear for the erased-newtype case). Fresh clones force `resolve_subtree` to bind `v`
-        // cleanly against the new inner re-match (via `__cr` — the wireable path).
-        // Paired with the ORIGINAL record pattern as a TEMPLATE; each USE (the body re-match, and — for a
-        // guarded arm — the guard cond) clones it fresh so `v` re-resolves against each new inner match rather
-        // than the stale un-wireable composite path (a reused/`forget`-only node kept trapping for the erased
-        // newtype). The `body` and the user cond `g` are likewise deep-cloned at their use sites below.
-        let binders: Vec<(String, StructId)> = rec_positions
-            .iter()
-            .enumerate()
-            .map(|(k, &pos)| (format!("__cr{ai}_{k}"), args[pos]))
-            .collect();
-        // Rebuild the ctor pattern with each record payload arg replaced by its fresh bare binder. The head is
-        // FRESH-cloned (`clone_ctor_head`) so it re-resolves as a ctor OUT of any stale/inert in-place pattern
-        // resolution (the dodge `refutable_ctor_element_head` documents); the non-record args are reused (each
-        // moves to exactly one new parent — the original `pat` is dropped).
-        let fresh_head = clone_ctor_head(db, head);
-        let mut new_children = vec![fresh_head];
-        for (i, &arg) in args.iter().enumerate() {
-            match rec_positions.iter().position(|&p| p == i) {
-                Some(k) => new_children.push(db.push_name(&binders[k].0)),
-                None => new_children.push(arg),
-            }
-        }
-        let new_ctor_pat = db.push_list(new_children);
         // The BODY re-match(es), NESTED from the INNERMOST record binder out: the innermost holds a DEEP CLONE
         // of the original `body` (every record's fields in scope); each enclosing match binds its record's
         // fields (a FRESH clone of the template). Each `_` arm is dead (the ctor already bound an irrefutable

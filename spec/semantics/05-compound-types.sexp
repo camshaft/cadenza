@@ -8087,6 +8087,36 @@
       (export main)))
   (output (: 7 Int64)))
 
+; the DEEPER composite-path faces (v-inference, breaker edge matrix): #8452/#8453 lift a record DIRECTLY under
+; a ctor payload; the record can also sit under a TUPLE component or a LIST element (with a ctor above), at any
+; depth, hitting the identical SumPayload→…→record-field wire gap (wasm-trap/rust-decline under recursion). The
+; ctor-record-payload pre-pass now RECURSES through ctor/tuple/list path steps and lifts EVERY such record. These
+; pin the two new container kinds beyond the direct-record case (a record UNDER a record, and a bare tuple/record
+; with no ctor above, are boundary cases that are left alone and keep working).
+(case
+  "a newtype-over-(tuple-containing-record) inline destructure under recursion lifts the nested record on both backends (#8452)"
+  (input
+    (do
+      (type W (Mk (Tuple Int64 (Record (: a Int64)))))
+      (def
+        (loop (: n Int64) (: w W))
+        (if (< n 1) (match w ((Mk (tuple x (record (= a v)))) (+ x v)) (_ -1)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk (tuple 10 (record (= a 7))))))
+      (export main)))
+  (output (: 17 Int64)))
+
+(case
+  "a newtype-over-(list-of-record) inline destructure under recursion lifts the nested record on both backends (#8452)"
+  (input
+    (do
+      (type W (Mk (List (Record (: a Int64)))))
+      (def
+        (loop (: n Int64) (: w W))
+        (if (< n 1) (match w ((Mk (list (record (= a v)))) v) (_ -1)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk (list (record (= a 7))))))
+      (export main)))
+  (output (: 7 Int64)))
+
 (case
   "a sum-match recursion that accumulates a built-in list returns a list"
   (doc
