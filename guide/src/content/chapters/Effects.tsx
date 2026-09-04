@@ -36,6 +36,7 @@ export default function Effects() {
 (def
   (main)
   (handle Counter 0 ((next (u) s (resume s (+ s 1)))) (+ (Counter.next) (* 10 (Counter.next)))))`}
+        id="counter"
       />
       <P>The first <C>next</C> resumes with the state <C>0</C> and bumps it to <C>1</C>; the second resumes with <C>1</C>. So the body computes <C>0 + 10 * 1</C> = <C>10</C>. The state never leaks out of the handler; the performing code just sees a sequence of numbers.</P>
       <H2>The performer and the handler can be far apart</H2>
@@ -65,6 +66,7 @@ export default function Effects() {
     100
     ((get (u) s (resume s s)) (set (v) s (resume unit v)))
     (do (deposit 20) (deposit 5) (balance))))`}
+        id="state"
       />
       <P>The account starts at <C>100</C>; two deposits push it to <C>125</C>. Read the arms as the store's implementation: <C>get</C> resumes with the current state and leaves it unchanged; <C>set</C> resumes with <C>unit</C> and makes its argument the new state. <C>deposit</C> and <C>balance</C> talk to that store through <C>State.get</C> / <C>State.set</C> as if it were ambient, but it isn't ambient at all. Swap in a handler that logs every <C>set</C>, or seeds a different opening balance, and not one line of <C>deposit</C> changes.</P>
       <H2>Doing work after resume</H2>
@@ -86,6 +88,7 @@ export default function Effects() {
         source={`(effect St (op tick (-> Unit Int64)))
 
 (def (main) (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (+ (St.tick) (St.tick))))`}
+        id="st-tick"
       />
       <P>The first <C>tick</C> reads the initial state <C>0</C> and the second reads the advanced <C>1</C>; each is wrapped by the arm's <C>+ 100</C>, so they add up to <C>201</C>. Tail resume answers and steps aside; non-tail resume answers, then acts on what came back.</P>
       <H2>A handler that doesn't resume: bailing out</H2>
@@ -94,6 +97,7 @@ export default function Effects() {
         source={`(effect Bail (op bail (-> Int64 Int64)))
 
 (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) 100)))`}
+        id="bail"
       />
       <P>The result is <C>7</C>, not <C>107</C>: performing <C>bail</C> jumped out of the addition entirely. This is how you'd write "stop and return this now": the same shape as an exception, but it's just a handler choosing not to resume.</P>
       <P>The bail works even right beside another effect, not just a plain value. Here the body adds a resumptive <Cadenza ast="Y2R6YXN0AAEDGgoBRQoFb3RoZXIFAAAAAQACAQMAAQIBAQME" kind="expr">(E.other)</Cadenza> and an abortive <Cadenza ast="Y2R6YXN0AAEEGgoBRQoEYmFpbAABBQYAAAABAAIBAwABAgADAQIDBAU=" kind="expr">(E.bail 5)</Cadenza>, and performing <C>bail</C> still exits the whole <C>handle</C>:</P>
@@ -101,6 +105,7 @@ export default function Effects() {
         source={`(effect E (op other (-> Int64)) (op bail (-> Int64 Int64)))
 
 (def (main) (handle E 0 ((other () s (resume s (+ s 1))) (bail (v) s v)) (+ (E.other) (E.bail 5))))`}
+        id="e-bail"
       />
       <P>The result is <C>5</C>. <Cadenza ast="Y2R6YXN0AAEDGgoBRQoFb3RoZXIFAAAAAQACAQMAAQIBAQME" kind="expr">(E.other)</Cadenza> ran first and drew the seed <C>0</C>, then <Cadenza ast="Y2R6YXN0AAEEGgoBRQoEYmFpbAABBQYAAAABAAIBAwABAgADAQIDBAU=" kind="expr">(E.bail 5)</Cadenza> bailed, so the pending <C>+</C> never finishes. The effect <Cadenza ast="Y2R6YXN0AAEDGgoBRQoFb3RoZXIFAAAAAQACAQMAAQIBAQME" kind="expr">(E.other)</Cadenza> already performed isn't undone, though: a bail-out abandons the work still <em>pending</em>, not what already happened. And the bail need not sit at the top of the body; it exits from wherever it runs, even from inside a conditional like <Cadenza ast="Y2R6YXN0AAEHCgJpZgoBYxoKAUUKBGJhaWwAAQUAAAoAAAABAAIAAwAEAQMCAwQABQECBQYABgEEAAEHCAk=" kind="expr">(if c (E.bail 5) 0)</Cadenza> that only some runs reach.</P>
       <Note>These handlers are <em>one-shot</em>: each performance resumes at most once, so they compile down to ordinary control flow: no captured continuations, no runtime machinery. Handling something the program can't discharge itself (real input, the clock) is delegated to the host at the program's edge, and shows up in its manifest. That's how effects stay honest about what a program actually does.</Note>
@@ -139,6 +144,7 @@ export default function Effects() {
   (+
     (handle Model 0 ((converse (q) s (resume q s))) (turn))
     (handle Model 0 ((converse (q) s (resume (* q 10) s))) (turn))))`}
+        id="model"
       />
       <P>The first handler resumes with the query unchanged (<C>5</C>), the second with ten times it (<C>50</C>), so the sum is <C>55</C>, from one unchanged <C>turn</C>. In a real program the mock is your unit test and the "different" handler is the one wired to the actual model at the edge; the loop's logic never mentions either. That's effects as an I/O <em>boundary</em>: the body performs, and swapping the handler swaps the whole outside world, with no dependency injection, no mocking framework, just a different <C>handle</C>.</P>
       <P>And the whole <em>loop</em> is just this. A real agent runs turns until it's done: each turn asks the model (<C>Model.converse</C>) and dispatches a tool (<C>Tools.dispatch</C>), accumulating a result, bounded by a fuel counter so it terminates. Every one of those is a performed operation; the loop itself is ordinary recursion, and the handlers supply the outside world. Here a three-step run against mock handlers accumulates <C>3 + 2 + 1 = 6</C>:</P>
