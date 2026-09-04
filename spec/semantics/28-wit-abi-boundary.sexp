@@ -140,6 +140,23 @@
   (output (: (Err "z") (Result Int64 String))))
 
 (case
+  "a bare LIST of String RESULT round-trips via the run/encode envelope (recursive String decode in a list container)"
+  (doc
+    "The recursive-String-in-a-CONTAINER heap result: the guest returns a `List String` of three
+           varying-length string literals crossing via the run/encode envelope. The decode must walk the
+           list and, per element, decode a heap String — the recursive type-directed String fixup. A broken
+           fixup (a dropped element, a wrong length, a swapped ptr) yields a different list. Motivated by
+           #8256 (oracle-wasm recursive type-directed String fixup — decode nested String, replacing the
+           #8246 decline): this fences the corpus-gate value-render side of the same nested-String heap
+           result so the oracle-decode and gate-render paths cannot drift. No prior case pins a
+           `#list(\"…\")` VALUE output. No census pin (in-process count non-discriminating for the escaping
+           list-of-heap-Strings result)."
+    "tri-target: wasm + rust + cadenza-hop all PASS.")
+  (input (do (def (mk) #list("a" "bb" "ccc")) (export mk)))
+  (call mk)
+  (output (: #list("a" "bb" "ccc") (List String))))
+
+(case
   "a named variant-with-payload field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc
     "SHAPE 2 — the general named-VARIANT RESULT lift (a discriminated union, distinct from a bare
