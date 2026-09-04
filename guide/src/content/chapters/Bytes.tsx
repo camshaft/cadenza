@@ -38,6 +38,7 @@ export default function Bytes() {
         source={`(def
   (main)
   (Bytes.len (Option.expect (Bytes.slice (Bytes.of #list(1 2 3 4 5)) 1 3) "out of range")))`}
+        id="bytes-slice-len"
       />
       <P><Cadenza ast="Y2R6YXN0AAEGGgoFQnl0ZXMKBXNsaWNlCgJicwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(Bytes.slice bs 1 3)</Cadenza> takes 3 bytes starting at index 1, so its length is <C>3</C>. Ask for more bytes than remain and you get the <C>None</C> arm instead.</P>
       <Note>A small difference worth noting: <C>Bytes.slice</C> takes a start and a <em>length</em>, while <C>String.slice</C> from the previous chapter takes a start and an <em>end</em> index. So <Cadenza ast="Y2R6YXN0AAEGGgoFQnl0ZXMKBXNsaWNlCgJicwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(Bytes.slice bs 1 3)</Cadenza> is three bytes, but <Cadenza ast="Y2R6YXN0AAEGGgoGU3RyaW5nCgVzbGljZQoBcwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(String.slice s 1 3)</Cadenza> is two characters (indices 1 and 2). Read the argument names and you won't be caught out.</Note>
