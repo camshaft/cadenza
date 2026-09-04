@@ -513,6 +513,16 @@ pub(crate) fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<Handle
         // a defined-func `Call`. So a peer-returned compound projected/consumed here is an owned temporary
         // the enclosing op reclaims (U13) rather than leaking until run-end.
         | Core::HostCall { .. }
+        // A CLOSURE APPLICATION returns a FRESH OWNED handle exactly like a defined-func `Call`: the callee
+        // builds its result and transfers ownership out at the return, so the caller now owns it. Without
+        // this arm a `CallClosure` result fell to the DECLINE default, and a borrowing consumer of it — e.g.
+        // a `match` on the `Option` an under-applied-builtin eta-closure returns (`((List.at #list) 1)`,
+        // 09-functions) — did not shell-reclaim the owned result (the result is tee'd into a local across the
+        // env-cell drop, so the match scrutinee reads as a borrowed `LocalRef`), leaking the result shell.
+        // Classifying the result Owned is UNCONDITIONALLY correct (a function/closure return transfers a
+        // fresh owned value out, never a borrow); the SITE-A soundness that governs dropping the CLOSURE
+        // OPERAND (the cell) is a SEPARATE query on the operand, unaffected by this result classification.
+        | Core::CallClosure { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
