@@ -925,6 +925,26 @@ fn emit_export(
                  effect-escaping closures are forbidden), matching the wasm target's decline",
             ));
         }
+        // A Unit-ARGUMENT eta-peeled closure export DECLINES too — the ARG twin of the Unit-result decline
+        // above, mirroring the wasm target (`a closure argument of type Unit has no scalar host-boundary
+        // representation`). A `(def (main) (m.get))` where the module-member convention makes `main` a
+        // `Unit -> T` closure emits `pub fn main(u: ())`; the gate driver calls the export with ZERO args
+        // (`prog::main()`), so a `()` parameter is an un-buildable artifact (rustc E0061 "takes 1 argument
+        // but 0 were supplied") — a case the backend cannot honestly cross MUST decline, never emit source
+        // that fails to compile (breaker zmz1/#8317). Independent of the module-member nullary CONVENTION
+        // ruling (routed separately): whichever way that lands, an EXPORTED closure taking a Unit arg has no
+        // host-boundary form (a Unit occupies no slot; the host cannot supply it), exactly as wasm declines.
+        if lam
+            .params
+            .iter()
+            .any(|(_, ty)| matches!(ty.strip_nominal(), crate::ty::Ty::Unit))
+        {
+            return Err(Reject::decline(
+                "a closure taking a Unit argument does not cross the Rust export boundary — a Unit \
+                 argument has no host-boundary form (a Unit occupies no slot, so the host cannot supply \
+                 it), matching the wasm target's decline",
+            ));
+        }
         return emit_signature(
             db,
             &e.name,
