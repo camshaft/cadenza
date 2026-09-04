@@ -7769,11 +7769,32 @@
                 # byte-identical to the per-case harvest (v-corpus-harness parity sign-off — wasm 6-file diverse
                 # sample + rust/rust-async 11-modules+05-compound-types all byte-clean). The GATE keeps the
                 # per-case granularity (fast incremental PR gating); only this HARVEST coarsens.
+                # #6835 FAIL-SPIKE GUARD (mirrors apps.save-quote-baseline; matches this app's documented intent
+                # — the header comment above claims a fail-spike guard, this makes the code honor it): a nix
+                # build-phase STARVATION run mis-emits `fail`, and a REAL pass→fail is a regression to FIX, never
+                # bake. Per backend: REFUSE to (over)write its baseline when the fresh harvest carries MORE `fail`
+                # rows than the committed baseline. Only-gains (new passes / the 28 unbaselined cases / a genuine
+                # fail→pass) always pass the guard; a spike halts so it is investigated, not silently locked in.
                 harvest="$(nix build "$root#corpus-verdicts-coarse" --no-link --print-out-paths)"
+                new_fails="$(grep -c '^fail' "$harvest" || true)"; old_fails="$(grep -c '^fail' "$root/spec/semantics/.gate-baseline" 2>/dev/null || true)"
+                if [ "''${new_fails:-0}" -gt "''${old_fails:-0}" ]; then
+                  echo "save-baseline: REFUSING .gate-baseline — harvest has ''${new_fails:-0} fail(s) vs ''${old_fails:-0} committed. A fail-spike is nix build-phase starvation (#6835 — re-run on a quiet window) OR a real regression (fix at source, never bake)." >&2
+                  exit 1
+                fi
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
                 harvest_rust="$(nix build "$root#corpus-verdicts-rust-coarse" --no-link --print-out-paths)"
+                new_fails="$(grep -c '^fail' "$harvest_rust" || true)"; old_fails="$(grep -c '^fail' "$root/spec/semantics/.gate-baseline-rust" 2>/dev/null || true)"
+                if [ "''${new_fails:-0}" -gt "''${old_fails:-0}" ]; then
+                  echo "save-baseline: REFUSING .gate-baseline-rust — harvest has ''${new_fails:-0} fail(s) vs ''${old_fails:-0} committed (fail-spike: #6835 starvation → re-run quiet, or a real regression → fix at source)." >&2
+                  exit 1
+                fi
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust" "$root/spec/semantics/.gate-baseline-rust"
                 harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async-coarse" --no-link --print-out-paths)"
+                new_fails="$(grep -c '^fail' "$harvest_rust_async" || true)"; old_fails="$(grep -c '^fail' "$root/spec/semantics/.gate-baseline-rust-async" 2>/dev/null || true)"
+                if [ "''${new_fails:-0}" -gt "''${old_fails:-0}" ]; then
+                  echo "save-baseline: REFUSING .gate-baseline-rust-async — harvest has ''${new_fails:-0} fail(s) vs ''${old_fails:-0} committed (fail-spike: #6835 starvation → re-run quiet, or a real regression → fix at source)." >&2
+                  exit 1
+                fi
                 exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust_async" "$root/spec/semantics/.gate-baseline-rust-async"
               '';
             };
