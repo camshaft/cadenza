@@ -20289,8 +20289,8 @@
     (do
       (def
         (drive-pair (: p (Tuple (-> Int64 Int64) Int64)) (: k Int64))
-        (match p ((tuple f acc) (if (> k 0) (drive-pair (tuple f (f acc)) (- k 1)) acc))))
-      (def (main (: n Int64)) (drive-pair (tuple (fn ((: x Int64)) (+ x 3)) 0) n))
+        (match p (#tuple(f acc) (if (> k 0) (drive-pair #tuple(f (f acc)) (- k 1)) acc))))
+      (def (main (: n Int64)) (drive-pair #tuple((fn ((: x Int64)) (+ x 3)) 0) n))
       (export main)))
   (call main (: 7 Int64))
   (output (: 21 Int64))
