@@ -8062,8 +8062,8 @@
       (type Wrap (Mk (Record (: a Int64))))
       (def
         (loop (: n Int64) (: w Wrap))
-        (if (< n 1) (match w ((Mk (record (= a v))) v)) (loop (- n 1) w)))
-      (def (main) (loop 3 (Mk (record (= a 7)))))
+        (if (< n 1) (match w ((Mk #record((= a v))) v)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk #record((= a 7)))))
       (export main)))
   (output (: 7 Int64)))
 
@@ -8081,9 +8081,9 @@
       (def
         (loop (: n Int64) (: w Wrap))
         (if (< n 1)
-          (match w ((guard (Mk (record (= a v))) (> v 0)) v) (_ -1))
+          (match w ((guard (Mk #record((= a v))) (> v 0)) v) (_ -1))
           (loop (- n 1) w)))
-      (def (main) (loop 3 (Mk (record (= a 7)))))
+      (def (main) (loop 3 (Mk #record((= a 7)))))
       (export main)))
   (output (: 7 Int64)))
 
@@ -8100,8 +8100,8 @@
       (type W (Mk (Tuple Int64 (Record (: a Int64)))))
       (def
         (loop (: n Int64) (: w W))
-        (if (< n 1) (match w ((Mk (tuple x (record (= a v)))) (+ x v)) (_ -1)) (loop (- n 1) w)))
-      (def (main) (loop 3 (Mk (tuple 10 (record (= a 7))))))
+        (if (< n 1) (match w ((Mk #tuple(x #record((= a v)))) (+ x v)) (_ -1)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk #tuple(10 #record((= a 7))))))
       (export main)))
   (output (: 17 Int64)))
 
@@ -8112,8 +8112,8 @@
       (type W (Mk (List (Record (: a Int64)))))
       (def
         (loop (: n Int64) (: w W))
-        (if (< n 1) (match w ((Mk (list (record (= a v)))) v) (_ -1)) (loop (- n 1) w)))
-      (def (main) (loop 3 (Mk (list (record (= a 7))))))
+        (if (< n 1) (match w ((Mk #list(#record((= a v)))) v) (_ -1)) (loop (- n 1) w)))
+      (def (main) (loop 3 (Mk #list(#record((= a 7))))))
       (export main)))
   (output (: 7 Int64)))
 
