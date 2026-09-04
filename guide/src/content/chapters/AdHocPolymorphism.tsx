@@ -24,6 +24,7 @@ export default function AdHocPolymorphism() {
 (def (bool-show) #record((= describe describe-bool)))
 
 (def (main) (+ (show-with (int-show) 5) (show-with (bool-show) true)))`}
+        id="dict-dispatch"
       />
       <P><C>show-with</C> is the polymorphic function, and it doesn't know or care <em>which</em> describe it's calling. <C>int-show</C> and <C>bool-show</C> are the two instances (the "trait implementations"), each a plain record. <C>main</C> dispatches by passing the right one, so <C>5</C> becomes <C>105</C> and <C>true</C> becomes <C>1</C>, summing to <C>106</C>. That's the whole mechanism, with no trait keyword and no instance resolution, just a record argument. And it's deliberate: the spec says a trait instance is an <em>explicitly-passed dictionary</em>, never resolved from ambient scope, so you can always see exactly which implementation a call uses by reading the argument.</P>
       <H2>Make the dictionary free: a const parameter</H2>
@@ -40,6 +41,7 @@ export default function AdHocPolymorphism() {
   (+
     (show-with #record((= describe describe-int)) 5)
     (show-with #record((= describe describe-bool)) true)))`}
+        id="const-dict"
       />
       <P>The very same two instances as before, one for <C>Int64</C> and one for <C>Bool</C>, now dispatch through a <C>const</C> dictionary: <C>describe-int</C> turns <C>5</C> into <C>105</C>, <C>describe-bool</C> turns <C>true</C> into <C>999</C>, summing to <C>1104</C>. Because the parameter is <C>const</C> and left <em>unannotated</em>, <C>show-with</C> stays fully generic and works for <em>any</em> type whose dictionary carries a <C>describe</C>, yet the compiler still inlines each call into a specialized copy and erases the record. This is exactly what a typeclass system does internally by threading a dictionary to the use site, except here the dictionary is an ordinary record you can see, and the erasure is the general <C>const</C> mechanism rather than special trait plumbing.</P>
       <Note>Left the dictionary <em>unannotated</em> on purpose: that's what keeps <C>show-with</C> generic over the element type. Cadenza has no <C>∀</C>-binder inside an annotation, so you can't write a generic type like <Cadenza ast="Y2R6YXN0AAEGCgZSZWNvcmQKAToKCGRlc2NyaWJlCgItPgoBYQoFSW50NjQJAAAAAQACAAMABAAFAQMDBAUBAwECBgECAAcI" kind="expr">{"(Record (: describe (-> a Int64)))"}</Cadenza> with a free <C>a</C>, so an unannotated parameter <em>is</em> the generic form. When you <em>want</em> the signature written out, there's a second way, below.</Note>
@@ -57,12 +59,14 @@ export default function AdHocPolymorphism() {
   (+
     (show-with Int64 #record((= describe describe-int)) 5)
     (show-with Bool #record((= describe describe-bool)) true)))`}
+        id="type-param"
       />
       <P>Same <C>1104</C>, now with a fully written-out signature: <C>show-with</C> declares that its element type is a parameter <C>t</C> and its dictionary must carry <C>describe : t → Int64</C>. Feed it <C>Int64</C> with an integer dictionary, or <C>Bool</C> with a boolean one, and each checks against that same shape. It's the more verbose of the two, but it says out loud what the unannotated form leaves to inference, so pick whichever fits how much you want the reader to see.</P>
       <H2>The built-in instances: typed operators</H2>
       <P>The prelude's operators are this same shape, pre-supplied. <C>+</C> is one surface name backed by a per-type implementation, choosing integer addition for integers, floating-point for floats, and exact for rationals by the operand type. Here the very same <C>+</C> and <C>&lt;</C> run over floats and over integers in one program:</P>
       <Runnable
         source={`(def (main) (if (< (+ 1.5 1.5) 4.0) (+ 1 2) 99))`}
+        id="typed-ops"
       />
       <P>The <Cadenza ast="Y2R6YXN0AAECCgErBgD//////////wEPBAAAAAEAAQEDAAECAw==" kind="expr">(+ 1.5 1.5)</Cadenza> is float addition and the <Cadenza ast="Y2R6YXN0AAEDCgErAAEBAAECBAAAAAEAAgEDAAECAw==" kind="expr">(+ 1 2)</Cadenza> integer addition, the same symbol picking the right implementation per type and folding to <C>3</C>. You didn't pass a dictionary because the prelude already provides the instances; it's the record-of-operations idea with the record built in.</P>
       <H2>And the implicit face: generic specialization</H2>
