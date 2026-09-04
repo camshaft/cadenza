@@ -32,6 +32,7 @@ export default function Iteration() {
         source={`(def (main) (rev #list(1 2 3) #list()))
 
 (def (rev xs acc) (match xs (#list() acc) (#list(x (.. rest)) (rev rest (List.prepend acc x)))))`}
+        id="iter-reverse"
       />
       <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza> comes back as <Cadenza ast="Y2R6YXN0AAEEFAABAwABAgABAQUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(3 2 1)</Cadenza>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
       <Runnable

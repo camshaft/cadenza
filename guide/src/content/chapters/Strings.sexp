@@ -11,10 +11,11 @@
   (h2 "Joining strings")
   (p (c "String.concat") " joins two strings into a new one (strings are immutable, so it returns a fresh value). Chain it, or wrap it in a function:")
   (runnable
+    (id "str-greet")
     (source (def (greet name)
   (String.concat "Hello, " name))
 (def (main) (greet "Cadenza"))))
-  (p (c "(greet \"Cadenza\")") " joins the two pieces into " (c "\"Hello, Cadenza\"") ", a brand-new string, with the two inputs left untouched.")
+  (p (c "(greet \"Cadenza\")") " joins the two pieces into " (result (of "str-greet") (: "Hello, Cadenza" String)) ", a brand-new string, with the two inputs left untouched.")
   (h2 "How long is a string?")
   (p "Here's a question with two right answers. How long is " (c "\"café\"") "? Counted in " (em "characters") " it's 4; counted in " (em "bytes") " (its UTF-8 encoding) it's 5, because " (c "é") " takes two bytes. Cadenza gives you both, named so you can't confuse them:")
   (runnable
