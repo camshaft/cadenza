@@ -3196,6 +3196,58 @@
   (output (: 3 Int64))
   (live-objects 0))
 
+(case
+  "a List.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)"
+  (doc
+    "The List.len twin of the Map.len-proj Proj-child reclaim: `List.len (. (mk i) a)` projects a
+           nested-compound LIST field off a fresh owned record and reads its length. The Proj emit dup's the
+           extracted List into a standalone owned handle (to survive the record drop), and the borrowing
+           `List.len` (a scalar-read) drops that dup'd child after its read (`owned_proj_child_dupd`,
+           drop-iff-dup'd). `sum over i∈{0,1,2} of List.len([x,x]) = 2+2+2 = 6`. Companion to the Map.len /
+           Bytes.len / Set.len Proj-child reclaim family.")
+  (input
+    (do
+      (def (mk (: n Int64)) (let ((x (+ n 1))) #record((= a #list(x x)) (= b x))))
+      (def
+        (loop (: i Int64) (: acc Int64))
+        (if (< i 3) (loop (+ i 1) (+ acc (List.len (. (mk i) a)))) acc))
+      (def (main) (loop 0 0))
+      (export main)))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
+  "a Bytes.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)"
+  (doc
+    "The Bytes.len twin: `Bytes.len (. (mk i) a)` over a fresh record's nested-compound BYTES field. Same
+           dup'd-child reclaim as Map.len-proj (`owned_proj_child_dupd`). `sum of Bytes.len(2 bytes) = 6`.")
+  (input
+    (do
+      (def (mk (: n Int64)) (let ((x (+ n 1))) #record((= a (Bytes.of #list((UInt8.of x) (UInt8.of x)))) (= b x))))
+      (def
+        (loop (: i Int64) (: acc Int64))
+        (if (< i 3) (loop (+ i 1) (+ acc (Bytes.len (. (mk i) a)))) acc))
+      (def (main) (loop 0 0))
+      (export main)))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
+  "a Set.len over a projected field of a fresh record reclaims the owned Proj-child (sibling of Map.len-proj)"
+  (doc
+    "The Set.len twin: `Set.len (. (mk i) a)` over a fresh record's nested-compound SET field. Same dup'd-
+           child reclaim as Map.len-proj (`owned_proj_child_dupd`). `sum of Set.len({x, x+10}) = 6`.")
+  (input
+    (do
+      (def (mk (: n Int64)) (let ((x (+ n 1))) #record((= a (Set.of #list(x (+ x 10)))) (= b x))))
+      (def
+        (loop (: i Int64) (: acc Int64))
+        (if (< i 3) (loop (+ i 1) (+ acc (Set.len (. (mk i) a)))) acc))
+      (def (main) (loop 0 0))
+      (export main)))
+  (output (: 6 Int64))
+  (live-objects 0))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type
