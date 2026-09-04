@@ -44,6 +44,7 @@
   (h2 "A contract is an ordinary boolean")
   (p "A contract's predicate is just a boolean expression in the def's scope, so it can say far more than " (c "&gt;= 0") ". It can relate two parameters (" (cdz (requires (< lo hi))) "), compare the result to an input (" (cdz (ensures (> ret x))) "), reach into a tuple or record, or even " (em "match") " a sum result. Here " (c "safe-dec") " returns an " (c "Option") ", and the postcondition matches it, promising that whenever there " (em "is") " a value it's non-negative:")
   (runnable
+    (id "dbc-safe-dec")
     (source (def (main) (safe-dec 5))
 (@ (requires (>= x 0))
   (@ (ensures (match ret
@@ -51,7 +52,7 @@
                 ((None _u) true)))
     (def (safe-dec (: x Int64))
       (if (> x 0) (Some (- x 1)) (None unit)))))))
-  (p "Called with " (c "5") " the result is " (cdz (Some 4)) ", and the postcondition's " (c "Some") " arm checks " (c "4 &gt;= 0") ". Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.")
+  (p "Called with " (c "5") " the result is " (result (of "dbc-safe-dec") (: (Some 4) (Option Int64))) ", and the postcondition's " (c "Some") " arm checks " (c "4 &gt;= 0") ". Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.")
   (h2 "@invariant: guarding a type")
   (p (c "@requires") " guards a function's entry and " (c "@ensures") " its exit. The third contract, " (c "@invariant") ", guards a " (em "type") ". Put it on a value type and the compiler enforces the predicate at " (em "every") " point a value of that type is built, so a value that breaks it can never come into existence. The predicate is written over " (c "self") ", the value being constructed. Here a " (c "Percent") " must stay between " (c "0") " and " (c "100") ", and building one in range works:")
   (runnable

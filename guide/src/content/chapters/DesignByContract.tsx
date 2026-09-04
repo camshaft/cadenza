@@ -59,6 +59,7 @@ export default function Contracts() {
   (@
     (ensures (match ret ((Some v) (>= v 0)) ((None _u) true)))
     (def (safe-dec (: x Int64)) (if (> x 0) (Some (- x 1)) (None unit)))))`}
+        id="dbc-safe-dec"
       />
       <P>Called with <C>5</C> the result is <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAEEAwAAAAEBAgABAg==" kind="expr">(Some 4)</Cadenza>, and the postcondition's <C>Some</C> arm checks <C>4 &gt;= 0</C>. Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.</P>
       <H2>@invariant: guarding a type</H2>

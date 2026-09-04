@@ -56,12 +56,13 @@
     (source (> (Bytes.of #list(128)) (Bytes.of #list(127)))))
   (p "A " (c "Map") " key or a " (c "Set") " element needs two things: the collection compares keys for " (em "equality") " to find an entry, and it uses a " (em "total order") " to enumerate its contents in a stable, canonical sequence (so " (c "Map.to-list") " always yields the same order). " (c "Bytes") " now has both, so a byte string can be a key directly, and iterating the collection reads back in sorted key order. Here a " (c "Map") " keyed by " (c "Bytes") " finds its entry:")
   (runnable
+    (id "ord-lookup")
     (source (do (def (main)
       (Map.lookup
         (Map.insert (Map.empty) (Bytes.of #list(1 2)) 42)
         (Bytes.of #list(1 2))))
     (export main))))
-  (p "The lookup returns " (cdz (Some 42)) ": the second " (c "Bytes") " value compares equal to the key that was inserted, so the " (c "Map") " finds it. A value you can order is a value you can organize.")
+  (p "The lookup returns " (result (of "ord-lookup") (: (Some 42) (Option Int64))) ": the second " (c "Bytes") " value compares equal to the key that was inserted, so the " (c "Map") " finds it. A value you can order is a value you can organize.")
   (h2 "What can't be a key: a function")
   (p "The flip side of that rule draws a sharp line. Keying needs equality and a total order, and a " (em "function") " has neither: two closures can compute the same results yet be different values, and there's no canonical way to compare or order them. So a function can't be a " (c "Map") " key or a " (c "Set") " element, and the compiler says so rather than inventing an answer. A " (c "Set") " of functions is rejected:")
   (runnable
