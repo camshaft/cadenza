@@ -8507,6 +8507,29 @@
   (call main (: 5 Int64))
   (output (: 105 Int64)))
 
+; rec-lit-elem-guard (#8380, the record analog of "a guard on a ctor list element reads the constructor's
+; payload binder", 9175): a USER guard on a refutable-record list-element arm whose cond READS the record's
+; own field binder. `(guard #list(#record((= v 1) (= w b))) (> b 3))` — the literal field `v=1` gates the
+; element value AND the binder field `w=b` must be in scope for the guard cond. The record desugar folds the
+; user cond INTO the value-test match `(match __lr ((record (= v 1) (= w b)) (> b 3)) (_ false))` so `b` binds
+; for the cond and a false cond (or a non-matching literal) falls through — the record twin of the ctor-element
+; guard fix. `[{v:1,w:5}]`: v matches, (> 5 3) holds → 50; `[{v:1,w:2}]`: guard fails → fall through → -1.
+(case
+  "a guard on a refutable record list element reads the record's field binder (#8380)"
+  (input
+    (do
+      (def
+        (f (: xs (List (Record (v Int64) (w Int64)))))
+        (match xs
+          ((guard #list(#record((= v 1) (= w b))) (> b 3)) (* b 10))
+          (_ -1)))
+      (def (main (: n Int64)) (f #list(#record((= v 1) (= w n)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 50 Int64))
+  (call main (: 2 Int64))
+  (output (: -1 Int64)))
+
 (case
   "an unwrap-transform-rewrap helper round-trips a newtype at runtime"
   (doc

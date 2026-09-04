@@ -2844,6 +2844,7 @@ pass	a guard on a MULTI-payload ctor list element reads both payload binders
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
+pass	a guard on a refutable record list element reads the record's field binder (#8380)
 pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a dependent-size bin pattern gates on the length field
