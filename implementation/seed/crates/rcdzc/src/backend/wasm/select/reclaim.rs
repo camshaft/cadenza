@@ -3062,17 +3062,41 @@ pub(super) fn mark_binder_dups_inner(
             occurs.push(o);
         }
         let any = occurs.iter().any(|&o| o);
+        // Per child (only where `binder` occurs), whether it HOLDS NO LIVE HANDLE to `binder` at the enclosing
+        // op — its RESULT is a non-aliasing SCALAR (`!is_heap_type_for_retain`, so it carries no handle to
+        // `binder` past the op) AND `binder` is only BORROWED within it (`!binding_escapes` — it does not
+        // consume/keep `binder`). Such a sibling — e.g. `(List.len c)` beside the consuming `c` in
+        // `(List.push c (List.len c))` — needs NO retain-dup of a CONSUMING sibling: its borrow completes
+        // before the op's FBIP in-place mutation and leaves no exposed handle, so it must NOT contribute to any
+        // sibling's `live_after`. Removing it fixes the FINDING#20 loop-carried-param over-dup (CATALAN / growB /
+        // growC leak per-iteration; v-memory-safety root-caused + rc-trace co-verified this exact rule).
+        // UAF-SAFE BY CONSTRUCTION: a scalar result holds NO handle to miss, so the only possible error
+        // direction is a MISSED dup (a leak), never a use-after-free. The two conjuncts keep the dup exactly
+        // where it is still needed: `binding_escapes` keeps it for a SECOND CONSUMER of `binder` (excluding a
+        // consuming sibling would double-free), and `is_heap_type_for_retain` keeps it for an ALIASING-HEAP
+        // borrow whose result carries a handle (e.g. `(List.at cc 0)` returning an inner-list handle). The
+        // scalar `&&` SHORT-CIRCUITS the `binding_escapes` walk to non-heap-result children only (shallow leaves
+        // like `List.len` — a heap-result child like a `push`-chain link skips it), so no super-linear re-walk.
+        let holds_no_handle: Vec<bool> = children
+            .iter()
+            .enumerate()
+            .map(|(k, &(c, _))| {
+                occurs[k]
+                    && !is_heap_type_for_retain(&type_of(db, c))
+                    && !binding_escapes(db, c, binder, false)
+            })
+            .collect();
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
         // additionally seed each child's `la` with "binder occurs in some OTHER child" (the left-sibling
-        // case the one-directional fold misses for simultaneously-live operands).
+        // case the one-directional fold misses for simultaneously-live operands) — EXCLUDING a sibling that
+        // holds no live handle (a scalar borrow-only use, per `holds_no_handle`).
         let mut la = la_in;
         for i in (0..children.len()).rev() {
             let (c, is_borrow) = children[i];
             let other = any
-                && occurs
-                    .iter()
-                    .enumerate()
-                    .any(|(k, &o)| (if spare_last { k > i } else { k != i }) && o);
+                && occurs.iter().enumerate().any(|(k, &o)| {
+                    (if spare_last { k > i } else { k != i }) && o && !holds_no_handle[k]
+                });
             let here = mark_binder_dups(db, c, binder, !is_borrow, la || other, s);
             la = la || here;
         }
