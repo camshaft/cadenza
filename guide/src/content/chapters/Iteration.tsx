@@ -18,6 +18,7 @@ export default function Iteration() {
         source={`(def (main) (sum-to 5 0))
 
 (def (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n))))`}
+        id="sum-to"
       />
       <P>Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the <Cadenza ast="Y2R6YXN0AAEDCgE9CgFuAAAEAAAAAQACAQMAAQID" kind="expr">(= n 0)</Cadenza> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing mutates; each call just receives the next pair of values.</P>
       <P>The same shape works over a list. Match the list by its structure, either the empty list <Cadenza ast="Y2R6YXN0AAEBFAIAAAEBAAE=" kind="expr">#list()</Cadenza> or a non-empty <Cadenza ast="Y2R6YXN0AAEEFAoBeAoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#list(x (.. rest))</Cadenza> that binds the first element to <C>x</C> and the remainder to <C>rest</C>, and thread the accumulator through:</P>

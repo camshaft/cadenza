@@ -52,6 +52,7 @@ export default function SizedIntegers() {
   (def (main) (add1 41))
 
   (export main))`}
+        id="add1"
       />
       <P>Only the <em>bare</em> name is the mistake, since <Cadenza ast="Y2R6YXN0AAECCgNJbnQAAUADAAAAAQECAAEC" kind="expr">(Int 64)</Cadenza> and <C>Int64</C> are the same type written two ways. Reach for the width name and the reflex costs you nothing.</P>
       <H2>Arithmetic stays inside the width</H2>
