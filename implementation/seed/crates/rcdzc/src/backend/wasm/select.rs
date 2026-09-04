@@ -2440,18 +2440,22 @@ fn varying_param_epilogue_droppable(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
 ) -> bool {
-    // SCALAR-RETURN FENCE (lgx1, v-memory-safety Q3 — closes a real UAF hole): the base-case-exit epilogue
-    // drop is UAF-safe ONLY if no heap CHILD of `binder` can escape the frame. `terminal_arms_no_heapchild_
-    // escape` runs `arm_borrows_heap_subvalue` ONLY for a MATCH-ON-`binder` terminal — for an `if`/`let`/bare-
-    // op terminal (lgx1's is an `if`) its check-set is EMPTY and it returns true VACUOUSLY. So a sibling
-    // `if`-terminal returning a heap child of `binder` (`(List.at acc 0)`/`(. acc 0)`) would pass vacuously and
-    // — with the base-consume relaxation above admitting the back-edge — get the drop, deep-freeing the escaped
-    // child → UAF (the sread/tr3 axis-B). FENCE: require the fn to return a SCALAR (no machine heap rep). Then
-    // NO heap child of `binder` reaches the result, so the deep-drop is safe by construction; and it covers
-    // EVERY consume-to-scalar case (List.len/Map.len/String.byte-len → Int64 — lgx1/wk1/sgx1/Map-len). A heap
-    // return (returns `binder` or a child) → NOT dropped (leak-safe = the escaping-return case, which must stay
-    // un-dropped). Tighter + strictly sound vs extending terminal_arms to if/let terminals.
-    if is_heap_type(&type_of(db, body)) {
+    // HEAP-CHILD-ESCAPE FENCE (lgx1, v-memory-safety Q3 — closes a real UAF hole): the base-case-exit epilogue
+    // deep-drop is UAF-safe ONLY if no live heap CHILD of `binder` can escape the frame. `terminal_arms_no_
+    // heapchild_escape` runs `arm_borrows_heap_subvalue` ONLY for a MATCH-ON-`binder` terminal — for an `if`/
+    // `let`/bare-op terminal its check-set is EMPTY and it returns true VACUOUSLY. So a sibling terminal
+    // returning a heap child of `binder` (`(List.at acc 0)`/`(Bytes.slice acc ..)`) would pass vacuously and —
+    // with the base-consume relaxation above admitting the back-edge — get the drop, deep-freeing the escaped
+    // child → UAF (the sread/tr3 axis-B). ORIGINAL fence was the BLUNT `is_heap_type(body)` (fence on ANY heap
+    // return); that OVER-SUPPRESSED — a FRESH construction that merely CONSUMES `binder` (`(List.push acc solo)`,
+    // the PAIRWISE/PASCAL solo arm) is a fresh owned escaping value, not a view into `binder`, yet the blunt
+    // fence suppressed its owner-drop → LEAK (v-mem rc-trace: PAIRWISE mode-2 leaked 4, mode-3 leaked 2, the
+    // fresh (List.push acc solo) rc1 never released). NARROWED (v-core-opt + v-mem co-design): fence ONLY when
+    // the body's heap result actually reaches a live heap sub-handle EXTRACTED FROM `binder` (`result_reaches_
+    // binder_or_heapchild`) — then a fresh construction reclaims (fixes PAIRWISE/PASCAL) while a genuine heap-
+    // child escape still fences (no UAF). SOUND-toward-fence (over-cover = leak, never a UAF). Strictly narrower
+    // than the old blunt fence, so it can only reclaim MORE, never suppress a drop the old fence permitted.
+    if is_heap_type(&type_of(db, body)) && result_reaches_binder_or_heapchild(db, body, binder) {
         return false;
     }
     param_only_borrowed_or_reclaimed_backedge(db, body, binder, members, param_slots, slots)
@@ -2524,6 +2528,60 @@ fn terminal_arms_no_heapchild_escape(
     }
     let mut seen = HashSet::new();
     walk(db, body, binder, members, &mut seen)
+}
+
+/// lgx1-fix (v-core-opt + v-memory-safety co-design): whether `body` contains a HEAP-typed EXTRACTION that
+/// hands out a live sub-handle aliasing `binder` — `Proj`/`ListAt`/`StrAt`/`StrSlice`/`BytesSlice`/`MapLookup`/
+/// `SumExpect`/`SumPayload`(non-`RestFrom`) whose source-compound operand contains `binder`. Such a handle, if
+/// it escapes a terminal, would be freed by the epilogue deep-drop of `binder`'s slot → UAF, so the part-2
+/// heap-child-escape fence must fire. A FRESH construction that merely CONSUMES `binder` (`List.push`/`prepend`/
+/// `insert`/`concat`/record/tuple) is NOT an extraction → does not fire → its fresh owner-ref is reclaimed
+/// (fixes the PAIRWISE/PASCAL over-suppress leak, v-mem rc-trace). Scalar extractions (`BytesAt`→byte,
+/// `len`/`size`→int, `SetContains`→bool, `StrScalarAt`→Char) are excluded by the `is_heap_type` gate. A
+/// `RestFrom` `SumPayload` tail is a FRESH owned sublist (`vec-drop` mints it), not a view into `binder` →
+/// excluded. SOUND-toward-fence: scans the WHOLE body (incl. borrowed-scrutinee + back-edge-arg positions) with
+/// no position filtering, so it can only OVER-fence (a tracked leak, never a UAF); position precision is a safe
+/// later refinement. The set = `arm_borrows_heap_subvalue`'s `is_heap_borrow` (Proj/SumExpect/SumPayload)
+/// EXTENDED with the collection/slice/view producers it omits (`ListAt`/`StrAt`/`StrSlice`/`BytesSlice`/
+/// `MapLookup`) — omitting those UNDER-covers a `(List.at acc 0)`/`(Bytes.slice acc ..)` heap-child escape = the
+/// criterion-#4 UAF. Strictly narrower than the old blunt `is_heap_type(body)` fence, so only reclaims more.
+fn result_reaches_binder_or_heapchild(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    fn walk(db: &mut Db, id: StructId, binder: StructId, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if is_heap_type(&type_of(db, id)) {
+            let src: Option<StructId> = match core_of(db, id) {
+                Core::Proj { operand, .. } => Some(operand),
+                Core::ListAt { list, .. } => Some(list),
+                Core::StrAt { string, .. } => Some(string),
+                Core::StrSlice { string, .. } => Some(string),
+                Core::BytesSlice { bytes, .. } => Some(bytes),
+                Core::MapLookup { map, .. } => Some(map),
+                Core::SumExpect { scrutinee, .. } => Some(scrutinee),
+                // A non-`RestFrom` payload read is a live view into the sum's owned compound; a `RestFrom`
+                // tail is a fresh owned sublist (`vec-drop` mints it), so it is NOT a view into `binder`.
+                Core::SumPayload { scrutinee, path } => {
+                    if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) {
+                        None
+                    } else {
+                        Some(scrutinee)
+                    }
+                }
+                _ => None,
+            };
+            if let Some(s) = src
+                && occurs_in(db, s, binder)
+            {
+                return true;
+            }
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| walk(db, c, binder, seen))
+    }
+    let mut seen = HashSet::new();
+    walk(db, body, binder, &mut seen)
 }
 
 /// Whether `binder` occurs anywhere in the subtree at `id` (a fresh-cache wrapper over `binder_occurs`).
