@@ -4623,12 +4623,20 @@
 ; total=1 but the input is 3 bytes and the pattern has NO trailing rest, so whole-consumption REJECTS
 ; (1 != 3) -> fall-through "x" (a genuine len=0 MATCH -> "" would need a 1-byte input). [Corrected breaker's
 ; initial len=0 -> "" expectation, which overlooked the two unconsumed trailing bytes.]
-; REMAINING GAP (why this stays TODO): on wasm the decode LEAKS 2 heap objects (`live-objects` 2, not 0) —
-; a Perceus drop-insertion gap SPECIFIC to the bit-field-run-read size path. The byte-binder dependent-utf8
-; analog ("two length-prefixed dependent frames chain at runtime", ~4305) is CLEAN (`(live-objects 0)`), so
-; 0 is the idealistic target here too (asserted below); the leak is a fixable bug, not an inherent
-; known-leak. Value assertions hold; auto-flips todo->pass once the drop for this shape is inserted. Routed
-; to the bin-match/runtime owner. cadenza re-emit of this shape is a separate slice (still todo).
+; REMAINING GAP (why the wasm baseline is a #4547 tracked FAIL, not todo — #8315): the case now COMPILES,
+; so it cannot grade todo (todo requires a compile DECLINE); it decodes the CORRECT VALUE but on wasm still
+; LEAKS 2 heap objects (`live-objects` 2, not 0), so it grades FAIL and is pinned as a tracked known-fail
+; that auto-surfaces a re-baseline when the leak is fixed. The `(live-objects 0)` assertion below stays the
+; IDEALISTIC target (corpus policy). ROOT CAUSE (v-memory-safety rc-trace, matches nix): the 2 leaked cells
+; are node#3 + node#4, the utf8-decode (`StrFromBytes`) Option shells — NOT the bit-field size read and NOT
+; the slice-drop on the size path. The rc-trace factor matrix is decisive: bit-field-size + utf8 leaks 2;
+; byte-size (`(u8 len)`) + utf8 leaks the SAME 2 (identical node#3/#4); and a bit-field-size ->
+; `(bytes payload len)` -> `Bytes.len` (NO StrFromBytes) is CLEAN 0. So the leak is the DEPENDENT-SIZE UTF8
+; DECODE husk itself, shared across BOTH size-sources — NOT bit-field-specific. (An earlier "byte-binder
+; analog is CLEAN" reading was an IN-PROCESS gate UNDER-COUNT of the utf8/String husk class; rc-trace, which
+; matches nix, shows the byte analog also leaks 2.) OWNED by v-memory-safety's utf8-decode `StrFromBytes`
+; shell-reclaim family (their lane, not the bin-match lowering side, which is verified sound). cadenza
+; re-emit of this shape is a separate slice (still todo).
 (case
   "a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes"
   (input
