@@ -598,6 +598,8 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // variant-erased are declined at the value site); the set of decls that landed gates which sum values
     // may emit, so the two agree (a value emits ⇔ its decl was emitted — no unbound-type recompile).
     let mut emitted: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    // Track each pushed `(type Name …)` node with its surface NAME, for the dead-decl prune below.
+    let mut type_decl_nodes: Vec<(StructId, String)> = Vec::new();
     for i in 0..db.type_decls.len() {
         let decl = db.type_decls[i].clone();
         if db.is_user_node(decl.occ)
@@ -605,6 +607,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         {
             root_children.push(node);
             emitted.insert(decl.occ);
+            type_decl_nodes.push((node, decl.name.to_string()));
         }
     }
 
@@ -663,6 +666,63 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         if let Some(e) = layout.export_plan(def) {
             root_children.push(emit_export(db, &mut b, def, e)?);
         }
+    }
+
+    // PRUNE dead type declarations. Emit reachability-filters DEFS (via `layout.order`) but pushed EVERY
+    // emittable user `(type …)` unconditionally. A type whose only use FOLDS AWAY (e.g. a module-member
+    // type whose constructing def is DCE'd because the call folds to a constant) leaves an ORPHAN `(type
+    // Name …)` nothing references — and TWO distinct occ-keyed decls sharing a surface name (a module-
+    // scoped `Sh` in two inline modules, #8220) then re-emit as two top-level `(type Sh …)` that COLLIDE
+    // on recompile (CDZ0201 "type `Sh` is declared more than once"). Drop a type-decl node whose surface
+    // NAME is referenced NOWHERE in the emitted def/export/effect nodes (nor, transitively, in a KEPT
+    // type decl's payload — the fixpoint below). This is CONSERVATIVE — a name-scan only ever KEEPS a
+    // decl (a coincidental name match over-keeps, harmless), never drops a referenced one — so it is
+    // byte-identical for any program whose type decls are all live; only orphan decls are removed.
+    if !type_decl_nodes.is_empty() {
+        fn collect_names(b: &Builder, id: StructId, out: &mut std::collections::HashSet<String>) {
+            match b.get(id) {
+                crate::ast::Struct::Atom(_) => {
+                    if let Some(n) = b.as_name(id) {
+                        out.insert(n.to_string());
+                    }
+                }
+                crate::ast::Struct::List(children) => {
+                    for c in children.clone() {
+                        collect_names(b, c, out);
+                    }
+                }
+            }
+        }
+        let type_node_ids: std::collections::HashSet<StructId> =
+            type_decl_nodes.iter().map(|(id, _)| *id).collect();
+        // Names referenced by every NON-type-decl root child (defs, exports, effect decls, the `do` head).
+        let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &child in &root_children {
+            if !type_node_ids.contains(&child) {
+                collect_names(&b, child, &mut referenced);
+            }
+        }
+        // Fixpoint: a KEPT type decl's payload can name another type (`(type Outer (V Inner))`), so a decl
+        // reachable only through another reachable decl stays live.
+        loop {
+            let mut grew = false;
+            for (id, name) in &type_decl_nodes {
+                if referenced.contains(name.as_str()) {
+                    let before = referenced.len();
+                    collect_names(&b, *id, &mut referenced);
+                    grew |= referenced.len() != before;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        root_children.retain(
+            |child| match type_decl_nodes.iter().find(|(id, _)| id == child) {
+                Some((_, name)) => referenced.contains(name.as_str()),
+                None => true,
+            },
+        );
     }
 
     let root = b.list(root_children);
