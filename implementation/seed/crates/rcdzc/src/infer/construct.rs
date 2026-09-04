@@ -495,7 +495,10 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                                 inner: ia,
                                 unit: ua,
                             },
-                            Ty::Qty { unit: ub, .. },
+                            Ty::Qty {
+                                inner: ib,
+                                unit: ub,
+                            },
                         ) = (&a, &b)
                         {
                             let unit = if ua == ub {
@@ -503,18 +506,19 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                             } else {
                                 ua.at_reference()
                             };
-                            // REVERTED #8292 (operator design correction): Qty is GENERIC over its inner
-                            // numeric type — an Int8 inner MUST NOT be promoted/widened to Int64. #8292 made
-                            // the result inner the WIDER effective width (deferred→Int64) to restore
-                            // commutativity, but that silently PROMOTES the narrow inner, which is wrong. The
-                            // correct no-promotion fix (deferred operand unifies to the sibling's DECLARED
-                            // inner, so a genuine same-inner overflow stays CDZ0304, commutative WITHOUT
-                            // widening) is co-owned with v-cadenza-backend (#8278's emit peel is premised on
-                            // the widening and needs matching rework), so it is NOT landed here. This restores
-                            // the pre-#8292 behavior (take the lhs inner) until that co-land; the residual
-                            // order-dependence (breaker #8287) stays an idealistic todo.
+                            // Qty is GENERIC over its inner numeric type — the result inner PRESERVES the
+                            // operand inner, NEVER widening a narrow width to a machine default (operator
+                            // ruling; #8292 widened Int8→Int64 and was reverted #8297). `ia.join(ib)` does
+                            // exactly this: for a FIXED inner beside a DEFERRED one (a bare-default literal /
+                            // call-result magnitude), it PREFERS the FIXED width, so the deferred magnitude
+                            // adapts to the sibling's DECLARED inner (Int8 stays Int8) — order-INDEPENDENTLY,
+                            // fixing the #8287 commutativity gap WITHOUT promotion. A genuine same-inner
+                            // overflow then stays CDZ0304 (the sum of two Int8 magnitudes that exceeds Int8 is
+                            // a real overflow, both orders); two DIFFERENT FIXED widths still disagree → CDZ0301
+                            // by the operand-agreement fault check (no silent promotion). Non-Int inners join
+                            // by the same width-preference (deferred float adapts to a fixed sibling).
                             return Ty::Qty {
-                                inner: Box::new((**ia).clone()),
+                                inner: Box::new(ia.join(ib)),
                                 unit,
                             };
                         }
