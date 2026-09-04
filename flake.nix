@@ -3942,6 +3942,22 @@
           echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline (no regression)" >> "$out"
         '';
 
+        # BOUNDED-SUBSET COARSE WASM GATE (v-nix — FOLD B, the localGate gateCheck swap, atomic with v-xtask's
+        # in-process `gate --check` delete). This is the per-MR localGate constituent that REPLACES the deleted
+        # gateCheck: a LIGHT subset (01-literals + 05-compound-types + 06-numeric-model) of the full
+        # corpusGateCoarse, so a per-MR gate stays fast and does not re-serialize pr-sync. Same per-file
+        # fail-on-regression semantics as the full aggregate (each file drv caches independently → only a
+        # touched-file / compiler edit rebuilds). The FULL corpusGateCoarse runs in nightly for whole-corpus
+        # coverage (same narrow-per-MR + full-nightly philosophy as gateCheckRust's `--case mutual` was).
+        # TUNABLE: widen this list reactively if a nightly full-coarse red exposes a class the subset misses.
+        corpusGateCoarseSubset = pkgs.runCommand "corpus-gate-coarse-subset" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (stem: ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${stem}.sexp"; }} >> "$out"'')
+              [ "01-literals" "05-compound-types" "06-numeric-model" ]}
+          echo "ok: corpus-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model graded vs .gate-baseline (localGate gateCheck swap; full corpusGateCoarse in nightly)" >> "$out"
+        '';
+
         # PARITY SPIKE — the coarse per-file harvest MUST be byte-identical to the per-case verdictsFileAgg for
         # the SAME file (the v-corpus-harness acceptance test, one file). Sorts both before diffing because the
         # coarse loop walks the shred dirs in glob (numeric) order while verdictsFileAgg walks eval-time idxs —
@@ -4653,6 +4669,19 @@
               corpusFileNames}
           echo "ok: corpus-rust-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline-rust (membership-only, no regression)" >> "$out"
         '';
+        # BOUNDED-SUBSET COARSE RUST GATE (v-nix — FOLD B, the localGate gateCheckRust swap). The per-MR
+        # localGate constituent that REPLACES the deleted gateCheckRust: the SAME light subset (01-literals +
+        # 05-compound-types + 06-numeric-model) through the RUST backend (rustc-per-case → a full per-MR rust
+        # coarse would re-serialize pr-sync, exactly the reason gateCheckRust was a narrow `--case mutual`).
+        # membership_only #7706 applies (absent-from-baseline-rust fail not enforced). FULL corpusRustGateCoarse
+        # runs in nightly. TUNABLE — trim to 01-literals only if the combined per-MR gate measures too heavy.
+        corpusRustGateCoarseSubset = pkgs.runCommand "corpus-rust-gate-coarse-subset" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (stem: ''cat ${mkCorpusRustGateFileCoarse { name = stem; file = ./spec/semantics + "/${stem}.sexp"; }} >> "$out"'')
+              [ "01-literals" "05-compound-types" "06-numeric-model" ]}
+          echo "ok: corpus-rust-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model graded vs .gate-baseline-rust (membership-only; localGate gateCheckRust swap; full set in nightly)" >> "$out"
+        '';
         corpusRustAsyncVerdictsCoarseAll = pkgs.runCommand "corpus-verdicts-rust-async-coarse" { } ''
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
@@ -4847,33 +4876,10 @@
             ./spec/semantics
           ];
         };
-        # CRANE-CONVERTED (v-nix, operator throughput 2026-08-09): consumes the RELEASE dep-cache
-        # (cargoArtifactsRelease) via craneLib.mkCargoDerivation so crane restores the release deps' target/
-        # before the run — a rotation recompiles only FIRST-PARTY (rcdzc/cdz/xtask/…), NOT the ~55 release
-        # deps (measured: a corpus-only .sexp edit was ~330s of which the dep closure is the bulk). Gate only
-        # builds the native host binaries (cdz/rcdzc/cdz-run — no build-std, no component builds), so the
-        # ROOT lock (seedCargoVendor) covers it; codegenVendor's extra runtime/nfc/build-std locks were
-        # over-provisioning for gate, and cargoArtifactsRelease is built with seedCargoVendor so the restored
-        # target/ matches. Behavior UNCHANGED: same `cargo run -p xtask -- gate --check --store` command,
-        # same corpus grading against the committed baselines — only the dep-compile is now cached.
-        gateCheck = craneLib.mkCargoDerivation {
-          pname = "cdz-gate-check";
-          version = "0.0.0";
-          src = gateSrc;
-          cargoArtifacts = cargoArtifactsRelease;
-          cargoVendorDir = seedCargoVendor;
-          CARGO_PROFILE = "release";
-          doInstallCargoArtifacts = false;
-          nativeBuildInputs = [ pkgs.wasm-tools ];
-          # Grade the whole corpus against the committed baselines, resolving the runtime from my nix-built
-          # component store (skips the CI job's `xtask build`). --locked = hard-fail on lock drift.
-          buildPhaseCargoCommand = ''
-            cargo run --locked --package xtask --profile release -- gate --check --store "${componentStore}"
-          '';
-          installPhaseCommand = ''
-            echo "ok: cdz-gate-check (cargo xtask gate --check --store <nix store>, crane release-deps-cached)" > "$out"
-          '';
-        };
+        # gateCheck (the in-process `cargo xtask gate --check` full-corpus wasm gate) DELETED (v-nix FOLD B,
+        # atomic with v-xtask's gate --check machinery delete). Its localGate role is taken by
+        # corpusGateCoarseSubset (per-MR subset) + the full corpusGateCoarse in nightly — strictly-better
+        # coverage (adds the --diagnostics warning-capture wire gateCheck lacked). opt-sweep (below) preserved.
 
         # optSweepCheck — the TIERED-OPT LEVEL-EQUIVALENCE invariant (v-core-opt's OptLevel/PassManager on the
         # shared Core column). `cargo xtask gate --opt-sweep` compiles+runs EVERY corpus case at O0/O1/O2/O3 and
@@ -4905,72 +4911,15 @@
           '';
         };
 
-        # gateCheckVerify — a SOLO full-corpus verify path with a GENEROUS per-case timeout (v-nix, for v-effects'
-        # UAF-critical #5090 SITE-B verification, concierge 2026-08-29). WHY: gateCheck (above) sets NO
-        # CDZ_RUN_TIMEOUT_SECS, so `gate --check` uses run_timeout()'s 30s DEFAULT per-case deadline — a
-        # multi-file effects-grade case that folds >30s UNDER FLEET LOAD false-traps ("did not finish within
-        # 30s"), so a heavy effects grade can't be solo-verified. This clone raises CDZ_RUN_TIMEOUT_SECS to 1800
-        # (30 min/case) so a legitimately-slow case runs to completion; identical full-corpus grade otherwise
-        # (same gateSrc + baselines + store). NOT a localGate constituent: a 30-min per-case ceiling is a
-        # VERIFY affordance, NOT a merge gate (a real infinite loop must still be caught fast by the 30s gate).
-        # And a plain `nix build .#checks.<sys>.gate-check-verify` runs with NO fleet batch-prefilter wall cap
-        # (that 15-min cap is pr-sync's, not a solo build) → the two caps v-effects hit are both lifted here.
-        # Strictly a timeout-RELAXATION of the green gateCheck → cannot newly fail a case gateCheck passes.
-        gateCheckVerify = craneLib.mkCargoDerivation {
-          pname = "cdz-gate-check-verify";
-          version = "0.0.0";
-          src = gateSrc;
-          cargoArtifacts = cargoArtifactsRelease;
-          cargoVendorDir = seedCargoVendor;
-          CARGO_PROFILE = "release";
-          CDZ_RUN_TIMEOUT_SECS = "1800";
-          doInstallCargoArtifacts = false;
-          nativeBuildInputs = [ pkgs.wasm-tools ];
-          buildPhaseCargoCommand = ''
-            cargo run --locked --package xtask --profile release -- gate --check --store "${componentStore}"
-          '';
-          installPhaseCommand = ''
-            echo "ok: cdz-gate-check-verify (full-corpus gate --check, CDZ_RUN_TIMEOUT_SECS=1800 — solo verify, not a merge gate)" > "$out"
-          '';
-        };
-
-        # gateCheckRust — the RUST-BACKEND gate, a NARROW per-MR subset (v-nix+v-ft 2026-08-10). WHY: gateCheck
-        # above runs `gate --check` with NO --target → it defaults to WASM, so the RUST backend emit was NEVER
-        # gated in localGate. A rust-only divergence (v-effects E0425: mutual-recursive effect-spec dedup dropped
-        # a by-name-resolved fn — green-on-wasm, red-on-rust) reached trunk green through the wasm-only gate.
-        # This folds a rust-backend check into localGate to close that hole. SUBSET, NOT FULL: `--target rust`
-        # is a rustc-invocation-per-case (measured: even a tiny slice ~76s cold; the full 6686-case baseline is
-        # >1hr of rustc) — a full per-MR rust gate would re-serialize pr-sync exactly like the corpus-over-
-        # trigger did. So `--case mutual` (the 38 mutual-recursion cases = the EXACT divergence-mechanism class
-        # that bit v-effects, NOT the whole ~1260-case 14-effects file) is the tight principled needle: it runs
-        # the mutual-rec emit through rustc where the by-name-resolution divergence surfaces. VERIFIED the needle
-        # runs those cases through the rust backend + passes on the fixed trunk (so the pre-fix shape would have
-        # RED'd here). Full rust-backend coverage of the classes OUTSIDE the needle comes from a NIGHTLY
-        # scheduled `gate --check --target rust` (checks.yml, NOT a localGate constituent) — widen the per-MR
-        # needle reactively when a new divergence class reds nightly (same widen-on-new-class pattern as a
-        # baseline). Rotates on a compiler-closure edit (seedCompiler in the emit path) → reruns when rust emit
-        # can diverge; caches otherwise. Case-set policy is v-ft's; the derivation + fold are mine.
-        gateCheckRust = craneLib.mkCargoDerivation {
-          pname = "cdz-gate-check-rust";
-          version = "0.0.0";
-          src = gateSrc;
-          cargoArtifacts = cargoArtifactsRelease;
-          cargoVendorDir = seedCargoVendor;
-          CARGO_PROFILE = "release";
-          doInstallCargoArtifacts = false;
-          # rustToolchain: the rust backend emits a Rust source artifact + compiles it with rustc per case, so
-          # the toolchain must be on PATH (unlike the wasm gate). wasm-tools kept for parity with gateCheck's
-          # pipeline needs.
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
-          # --target rust drives each matched case through the Rust backend (emit → rustc → run), graded against
-          # .gate-baseline-rust. --case mutual = the narrow divergence-prone needle (see the note above).
-          buildPhaseCargoCommand = ''
-            cargo run --locked --package xtask --profile release -- gate --check --target rust --case "mutual" --store "${componentStore}"
-          '';
-          installPhaseCommand = ''
-            echo "ok: cdz-gate-check-rust (gate --check --target rust --case mutual — narrow rust-backend divergence guard)" > "$out"
-          '';
-        };
+        # gateCheckVerify (the CDZ_RUN_TIMEOUT_SECS=1800 solo full-corpus `gate --check` verify for v-effects'
+        # #5090 SITE-B, concierge 2026-08-29) DELETED (v-nix FOLD B) — it was a timeout-relaxation of gateCheck,
+        # and with the in-process `gate --check` machinery gone (v-xtask delete) it has no base to relax. It was
+        # never a localGate constituent. If a heavy-case solo verify is needed again post-delete, run the
+        # nightly full corpusGateCoarse or a bespoke per-case coarse build. (flagged to concierge/v-effects.)
+        #
+        # gateCheckRust (the narrow `--case mutual` per-MR rust-backend gate) DELETED (v-nix FOLD B). Its
+        # localGate role is taken by corpusRustGateCoarseSubset (per-MR subset) + the full corpusRustGateCoarse
+        # in nightly — the same narrow-per-MR + full-nightly divergence-coverage story, now via the coarse gate.
 
         # Full-CI-in-nix increment 6d: the GHA `bench` job (`cargo xtask bench`) — the runtime ALLOCATION
         # benchmark. xtask runs cdz-runtime's `#[ignore]`d `hot_op_allocation_ceilings` test
@@ -6752,7 +6701,7 @@
                 # DENY (e.g. a new non-allowlisted tests/*.rs) now REJECTS the merge path. It's a cheap native
                 # source-scan (seconds), so it adds ~no gate time. Distinct from emojiLintCheck, which stays
                 # advisory (exposed as a check but NOT in this fail-set).
-                inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust
+                inherit clippyShardA clippyShardB codegenCheck corpusGateCoarseSubset corpusRustGateCoarseSubset
                   # guideExamplesCheck DROPPED from the fail-set → ADVISORY (still exposed as
                   # checks.guide-examples). It runs the guide's serial node check:* battery which COMPILES every
                   # example/preload via the browser compiler-wasm, and that OOBs "memory access out of bounds"
@@ -6876,10 +6825,16 @@
             # check for the full verify; the localGate fold (replace gateCheckRust) follows the same operator
             # cost-decision path as the wasm corpus-gate-coarse.
             corpus-rust-gate-coarse = corpusRustGateCoarse;
-            # corpus-gate-coarse (gateCheckNix swap): the whole-corpus coarse WASM fail-on-regression gate,
-            # the localGate replacement for the in-process `gateCheck`. Exposed as a check for the full verify;
-            # the gateCheck→corpus-gate-coarse localGate fold lands in a follow-up (coordinated w/ v-xtask delete).
+            # corpus-gate-coarse (gateCheckNix swap): the whole-corpus coarse WASM fail-on-regression gate.
+            # FOLD B (v-nix, atomic with v-xtask's gate --check delete): gateCheck/gateCheckRust are now DELETED;
+            # localGate inherits the bounded *Subset twins (below) for per-MR speed, and this FULL aggregate +
+            # corpus-rust-gate-coarse are wired into nightly.yml for whole-corpus coverage.
             corpus-gate-coarse = corpusGateCoarse;
+            # The bounded-subset coarse gates that localGate inherits in place of the deleted gateCheck/
+            # gateCheckRust (01-literals + 05-compound-types + 06-numeric-model x wasm+rust). Exposed here so a
+            # per-MR gate constituent is independently buildable / warmable.
+            corpus-gate-coarse-subset = corpusGateCoarseSubset;
+            corpus-rust-gate-coarse-subset = corpusRustGateCoarseSubset;
             # The RUST-ASYNC target's whole-corpus aggregate (the async/gas-metered rust backend) — the last
             # corpus target to move off the native in-process `xtask gate --target rust-async` into a cached
             # nix check. Per-file `corpus-rust-async-<file>` aggregates spread in below.
@@ -7008,15 +6963,12 @@
             cdz-wasm-native = cdzWasmNativeCheck;
             # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
             codegen-check = codegenCheck;
-            # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
-            gate-check = gateCheck;
+            # gate-check / gate-check-verify / gate-check-rust exposures removed (v-nix FOLD B) — the
+            # underlying gateCheck/gateCheckVerify/gateCheckRust derivations are deleted (the coarse gates
+            # replace them). corpus-gate-coarse / corpus-rust-gate-coarse (+ the localGate *Subset twins) below.
             # ADVISORY (NOT in the localGate fail-set) — the tiered-opt O0..O3 level-equivalence sweep, wired
             # into nightly.yml by v-gha-green. `nix build .#checks.<sys>.opt-sweep`.
             opt-sweep = optSweepCheck;
-            # gate-check-verify: SOLO full-corpus grade with a 30-min/case timeout (for v-effects' UAF-critical
-            # verify past the 30s gate cap + the fleet batch cap). NOT in localGate — verify affordance only.
-            gate-check-verify = gateCheckVerify;
-            gate-check-rust = gateCheckRust;
             # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
             bench-check = benchCheck;
             # Full-CI-in-nix increment 6e: the GHA cad-tests job (cdz test on the 4 in-tree Cadenza projects).
