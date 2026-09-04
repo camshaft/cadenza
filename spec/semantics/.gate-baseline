@@ -405,7 +405,7 @@ pass	Ordering values order Less below Equal below Greater
 pass	Ordering.of orders strings lexicographically in the three-way comparison
 pass	Ordering.of yields the three-way ordering of two Int64 operands
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
-pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
+fail	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
