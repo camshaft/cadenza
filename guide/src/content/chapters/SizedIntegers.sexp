@@ -34,8 +34,9 @@
   (runnable
     (source (def (f (: a Int)) a))
     (expect "error"))
-  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (cdz (Int 64)) " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (cdz (add1 41)) " is " (c "42") ":")
+  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (cdz (Int 64)) " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (cdz (add1 41)) " is " (result (of "add1") 42) ":")
   (runnable
+    (id "add1")
     (source (do (def (add1 (: n (Int 64))) (+ n 1))
     (def (main) (add1 41))
     (export main))))

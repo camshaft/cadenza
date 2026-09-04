@@ -11,12 +11,13 @@
   (h2 "The mechanism: a recursive accumulator")
   (p "The workhorse pattern is a function that carries the answer-so-far in an argument, the " (em "accumulator") ", and calls itself with an updated one. It needs two things: a " (strong "base case") " that stops the recursion and returns the accumulator, and a " (strong "recursive case") " that does one step and recurses on the rest. Here is a sum from " (c "n") " down to " (c "1") ":")
   (runnable
+    (id "sum-to")
     (source (def (main) (sum-to 5 0))
 (def (sum-to n acc)
   (if (= n 0)
     acc
     (sum-to (- n 1) (+ acc n))))))
-  (p "Read it as a loop turned inside out: " (c "acc") " is the running total, " (c "n") " counts down, the " (cdz (= n 0)) " check is the exit condition, and each call adds " (c "n") " to " (c "acc") " and continues. When " (c "n") " reaches " (c "0") " the base case hands back the total, " (c "15") ". Nothing mutates; each call just receives the next pair of values.")
+  (p "Read it as a loop turned inside out: " (c "acc") " is the running total, " (c "n") " counts down, the " (cdz (= n 0)) " check is the exit condition, and each call adds " (c "n") " to " (c "acc") " and continues. When " (c "n") " reaches " (c "0") " the base case hands back the total, " (result (of "sum-to") 15) ". Nothing mutates; each call just receives the next pair of values.")
   (p "The same shape works over a list. Match the list by its structure, either the empty list " (cdz #list()) " or a non-empty " (cdz #list(x .. rest)) " that binds the first element to " (c "x") " and the remainder to " (c "rest") ", and thread the accumulator through:")
   (runnable
     (source (def (main) (sum-list #list(10 20 30) 0))
