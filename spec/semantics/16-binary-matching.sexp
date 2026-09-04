@@ -4652,3 +4652,19 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: "hijk" String)))
+
+; bxp1 (breaker, #8302-adjacent, cross-target ASYMMETRY): a bare Bytes ENTRY PARAM bin-matched. On rust the
+; entry param materializes as `fn f(b: Vec<u8>)` and #8302 fixed the gate driver's `b"..."` arg marshal
+; (→ `.to_vec()`), so `(f b"\x2a")` computes 42. On wasm + the cadenza hop the same bare-envelope Bytes entry
+; PARAM declines CDZ0900 — the untyped run/encode envelope does not take a Bytes param (a TYPED WIT interface
+; DOES cross Bytes params, ch28 SHAPE 34 / ResultLower::CopyBytes; this is the bare-entry route). So the
+; behavior splits by target: rust computes 42 (regression guard for #8302's marshal), wasm/cadenza grade todo
+; (idealistic: the bare envelope should eventually accept a Bytes param via list<u8>, reaching parity with the
+; typed interface + rust). Not a soundness split — rust soundly accepts, wasm soundly rejects; a capability
+; asymmetry pinned so a rust regression (re-break the marshal) OR a wasm bare-envelope Bytes-param landing both
+; show up here. Routed to v-rust-backend (owns the marshal) for awareness.
+(case
+  "a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm"
+  (input (do (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f)))
+  (call f (: b"\x2a" Bytes))
+  (output (: 42 Int64)))
