@@ -196,6 +196,26 @@
   (error CDZ0201 (message "the `m` module has no member `secret`")))
 
 (case
+  "applying a module NAME names the module category, not the internal export Record"
+  (doc
+    "The apply-position category sibling of the absent-member case above (and of the effect/type
+           apply-rejects in 07-type-system: '`E` is an effect, not a function' / '`Color` is a type, not a
+           function'). A module BINDS its name to a RECORD of its exports (core-semantics.md #A Module
+           Evaluates To A Record Of Its Exports), so `(m 1)` applies a non-function. The message MUST name the
+           MODULE category — '`m` is a module, not a function' — not leak the internal SYNTHESIZED export
+           record `(Record (: g (-> Unit Int64)))` the user never wrote (the leaky-message anti-pattern the
+           effect/type siblings avoid). The author likely meant to call an export, `(m.g)`. (v-inference
+           apply-position category fix; breaker C1 diagnostic-quality report.)")
+  (input
+    (do
+      (module m
+        (def (g) 1)
+        (export g))
+      (def (main) (m 1))
+      (export main)))
+  (error CDZ0201 (message "`m` is a module, not a function")))
+
+(case
   "an absent member of a PRELUDE module names the module, not a record"
   (doc
     "The prelude-module face of the member-miss message: `(. Int64 bogus)` projects a member the
