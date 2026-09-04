@@ -71,6 +71,7 @@ export default function Ordering() {
   (def (main) (Map.lookup (Map.insert (Map.empty) (Bytes.of #list(1 2)) 42) (Bytes.of #list(1 2))))
 
   (export main))`}
+        id="ord-lookup"
       />
       <P>The lookup returns <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAEqAwAAAAEBAgABAg==" kind="expr">(Some 42)</Cadenza>: the second <C>Bytes</C> value compares equal to the key that was inserted, so the <C>Map</C> finds it. A value you can order is a value you can organize.</P>
       <H2>What can't be a key: a function</H2>
