@@ -60,12 +60,14 @@
   (p "Constructing by hand is what you reach for when the pieces come from " (em "values") " rather than being written out: a computed argument, a name chosen at run time.")
   (note "The ML surface has lighter sugar for this: a " (em "quasiquote") " is a backtick-brace template, and an " (em "unquote") " (a comma) drops a value into a hole. " (c "`{ ,x + 10 }") " with " (c "x = 2") " builds the AST for " (cdz (+ 2 10)) ", i.e. " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(2), Ast.Int(10)])") ". It's exactly the constructor call above, written as a template. This is construction, not execution: the " (c ",x") " evaluates " (em "x") " to get a value to embed, not the whole form.")
   (h2 "Eval: run a tree")
-  (p "An AST is inert data until you " (c "eval") " it, which executes the tree as code. Evaluating the quoted " (cdz (+ 1 2)) " finally gives " (c "3") ":")
+  (p "An AST is inert data until you " (c "eval") " it, which executes the tree as code. Evaluating the quoted " (cdz (+ 1 2)) " finally gives " (result (of "eval-quote") 3) ":")
   (runnable
+    (id "eval-quote")
     (source (def (main)
   (eval (quote (+ 1 2))))))
-  (p "And a tree you " (em "built") " runs the same way. Assemble a call to " (c "double") " on the argument " (c "21") " and eval it: the reconstructed " (cdz (double 21)) " folds to " (c "42") ". That's the shape of a macro: build a form, then run it.")
+  (p "And a tree you " (em "built") " runs the same way. Assemble a call to " (c "double") " on the argument " (c "21") " and eval it: the reconstructed " (cdz (double 21)) " folds to " (result (of "eval-built") 42) ". That's the shape of a macro: build a form, then run it.")
   (runnable
+    (id "eval-built")
     (source (def (double x) (* 2 x))
 (def (main)
   (eval (Ast.List #list((Ast.Name "double") (Ast.Int 21)))))))
@@ -103,8 +105,9 @@
   ((Ast.Name _n) true)
   (_             false))))
   (h2 "Interpolating a computed subtree")
-  (p "The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a " (em "computed") " value (" (cdz (* 3 7)) " = 21) spliced into the tree, which is then evaluated. The built " (cdz (+ 21 4)) " runs to " (c "25") ":")
+  (p "The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a " (em "computed") " value (" (cdz (* 3 7)) " = 21) spliced into the tree, which is then evaluated. The built " (cdz (+ 21 4)) " runs to " (result (of "interpolate") 25) ":")
   (runnable
+    (id "interpolate")
     (source (def (main)
   (let ((x (* 3 7)))
     (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))))
