@@ -578,6 +578,7 @@ pass	sexp/39-match-native-tuple-refutable-noop
 pass	sexp/40-comment-in-quasiquote
 pass	sexp/41-comment-in-quote
 pass	sexp/42-comment-in-match-pattern
+pass	sexp/43-record-type-field-positional-canonicalizes-to-colon
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	ml/476-ambiguous-toplevel-juxtaposition-rejected
