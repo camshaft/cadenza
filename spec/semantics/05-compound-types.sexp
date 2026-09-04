@@ -8385,17 +8385,18 @@
 ; tup-lit-elem (breaker, the LAST unrefined refutable-element kind): every OTHER refutable list-element kind
 ; now refines by value — a multi-variant sum ctor by discriminant, a single-variant NEWTYPE ctor by its
 ; literal payload (the three cases just above), and a nested-LIST element by its literal (#8347/#8348). But a
-; refutable TUPLE element — a literal in a tuple component, `(list (tuple 1 b))` — still DECLINES CDZ0900 'a
-; refutable list element sub-pattern needs element-value refinement, which the length-dispatch list matcher
-; does not support'. So the tuple element is the odd one out: the value-refinement desugar was taught ctor
-; payloads + nested-list literals but not tuple components. ISOLATION: a BINDER tuple element `(list (tuple a
-; b))` is IRREFUTABLE and works (`(+ a b)` folds), exactly like the `(Wrap x)` binder-payload control above —
-; only a LITERAL tuple component trips it. Consistent CDZ0900 across wasm+rust+cadenza (front-end desugar).
-; SHOULD refine by the component value like its newtype/sum/nested-list siblings: `xs = [(1 5)]`, tuple `(1
-; 5)` matches `(1 b)` → b=5. Idealistic todo; auto-flips when tuple-element value-refinement lands. Routed to
-; the list-matcher element-refinement owner (the newtype/#8348 arc).
+; refutable TUPLE element — a literal in a tuple component, `(list (tuple 1 b))` — refines by value like its
+; siblings (FIXED #8364; formerly CDZ0900 'a refutable list element sub-pattern needs element-value
+; refinement'). The value-refinement desugar was taught ctor payloads + nested-list literals; #8364 added the
+; TUPLE twin (`desugar_refutable_tuple_list_elements`): a fresh binder + a value-test guard `(match __lt
+; ((tuple 1 _) true) (_ false))` + a body re-match binding the components — the last refutable-element kind
+; after ctor/map/nested-list. ISOLATION: a BINDER tuple element `(list (tuple a b))` is IRREFUTABLE and works
+; (`(+ a b)` folds), exactly like the `(Wrap x)` binder-payload control above — only a LITERAL tuple component
+; needs the refinement. Refines by the component value like its newtype/sum/nested-list siblings: `xs = [(1
+; 5)]`, tuple `(1 5)` matches `(1 b)` → b=5; a non-matching literal falls through. (Routed to the list-matcher
+; element-refinement owner — the newtype/#8348 arc.)
 (case
-  "a refutable tuple list element with a literal component should refine by value (currently CDZ0900)"
+  "a refutable tuple list element with a literal component refines by value"
   (input
     (do
       (def (f (: xs (List (Tuple Int64 Int64)))) (match xs (#list(#tuple(1 b)) b) (_ -1)))
