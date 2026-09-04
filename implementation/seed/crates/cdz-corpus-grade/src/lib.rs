@@ -602,7 +602,13 @@ where
     // Host-call SEQUENCE check — the observed calls of the first value-producing trial must equal the
     // recorded ops exactly (ordered). `run_trial` returns each observed entry as `<op>` OR `<op>\t<message>`
     // (a call carrying a string arg), so compare on the op alone (split on the first tab), as the gate does.
-    if !matches!(worst, Grade::Fail(_)) && !test_run.host_calls.is_empty() {
+    // GATED on `compiled` (the sibling `warns` check above is too): a case that did NOT compile RAN NOTHING,
+    // so it has no observed host-calls to compare — a SOUND coded decline of a should-run case (its idealistic
+    // `(host-calls …)` is the goal, not yet met) must stay its decline-TODO, NOT be spuriously FAILed by
+    // `observed [] != [expected]` (operator corpus policy: a sound decline is a `todo`, never a hard fail —
+    // e.g. fpr3's deferred cross-function-resume CDZ0900 decline). A COMPILED run that made the wrong calls
+    // (observed Some, even empty) still fails correctly.
+    if !matches!(worst, Grade::Fail(_)) && !test_run.host_calls.is_empty() && compiled {
         let observed: Vec<String> = first_observed
             .unwrap_or_default()
             .iter()
@@ -2817,6 +2823,77 @@ mod tests {
             "silent decline → todo: {:?}",
             res.grade
         );
+    }
+
+    #[test]
+    fn grade_run_declined_case_with_host_calls_stays_todo_not_spurious_fail() {
+        // fpr3-class regression guard: a should-RUN output case that carries a `(host-calls …)` clause but
+        // SOUNDLY DECLINES (coded CDZ, no run) must grade TODO — NOT be spuriously FAILed by the host-call
+        // check comparing `observed []` (nothing ran) against the idealistic expected sequence. The host-call
+        // check is gated on `compiled` for exactly this. (Operator corpus policy: a sound decline is a todo.)
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        let mut b = Builder::new();
+        let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+        let head = b.name("test-run");
+        let dh = b.name("description");
+        let dv = s(&mut b, "case");
+        let desc = b.list(vec![dh, dv]);
+        let th = b.name("trial");
+        let eh = b.name("expect-output");
+        let ev = s(&mut b, "(: 2 Int64)");
+        let expect = b.list(vec![eh, ev]);
+        let trial = b.list(vec![th, expect]);
+        let trials_head = b.name("trials");
+        let trials = b.list(vec![trials_head, trial]);
+        // (host-calls (op "ask.ask")) — the idealistic host-call the case WOULD make if it ran.
+        let hc_head = b.name("host-calls");
+        let op_head = b.name("op");
+        let op_val = s(&mut b, "ask.ask");
+        let op = b.list(vec![op_head, op_val]);
+        let host_calls = b.list(vec![hc_head, op]);
+        let root = b.list(vec![head, desc, trials, host_calls]);
+        let bytes = codec::encode(&b.finish(root));
+        let tr = decode_test_run(&bytes).expect("decodes");
+        assert_eq!(
+            tr.host_calls,
+            vec!["ask.ask".to_string()],
+            "host_calls parsed"
+        );
+
+        let never = |_: &GTrial| -> Result<Outcome> { panic!("must not run a declined case") };
+        // DECLINED (coded CDZ0900) + a host-calls clause → TODO, not a spurious host-call-mismatch FAIL.
+        let res = grade_run(
+            &tr,
+            1,
+            "error [CDZ0900] (node 82): this handler is not reducible by the tail-resumptive fold",
+            None,
+            None,
+            never,
+        )
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Todo(_)),
+            "declined case with a host-calls clause → todo (not spurious host-call FAIL): {:?}",
+            res.grade
+        );
+        // The check STILL fires for a case that actually RAN but made the WRONG calls (observed empty here) →
+        // FAIL — the fix only skips the check when nothing compiled/ran, never masks a real run mismatch.
+        let res = grade_run(&tr, 0, "", None, None, |_| {
+            Ok(Outcome::Value("2".into(), vec![]))
+        })
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "ran but made no calls vs expected [ask.ask] → fail: {:?}",
+            res.grade
+        );
+        // A run that makes the RIGHT call → Pass.
+        let res = grade_run(&tr, 0, "", None, None, |_| {
+            Ok(Outcome::Value("2".into(), vec!["ask.ask".into()]))
+        })
+        .unwrap();
+        assert_eq!(res.grade, Grade::Pass);
     }
 
     /// C1-PLUMBING: `grade_run` fires `grade_diag_quality` on a diag-bearing trial WHEN the structured
