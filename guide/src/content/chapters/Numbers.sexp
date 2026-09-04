@@ -8,8 +8,9 @@
   (h2 "Checked Int64")
   (p "Cadenza's core integer type is a checked " (c "Int64") ", a 64-bit signed integer. Ordinary arithmetic works as you'd expect, and the result carries its exact type:")
   (runnable
+    (id "trillion")
     (source (* 1000000 1000000)))
-  (p "That's a trillion, " (c "1000000000000") ", comfortably inside a 64-bit integer's range. Keep pushing, though, and a product eventually won't fit.")
+  (p "That's a trillion, " (result (of "trillion") 1000000000000) ", comfortably inside a 64-bit integer's range. Keep pushing, though, and a product eventually won't fit.")
   (h2 "Overflow is caught, not wrapped")
   (p "What happens when a result is too big to fit? In many languages it silently " (em "wraps around") " to a wrong (often negative) answer. Cadenza refuses instead. " (c "Int64") "'s largest value times 2 can't fit, and the compiler says so rather than producing garbage:")
   (note "This example is " (strong "meant to be refused") ". Run it and read the status bar: the result can't fit an " (c "Int64") ", so the compiler declines rather than wrapping to a bogus value.")
@@ -21,14 +22,17 @@
     (source (/ 5 0))
     (expect "error"))
   (h2 "Division truncates; remainder picks up the rest")
-  (p "When it " (em "can") " divide, integer division keeps the whole part and throws away the fraction, so it truncates toward zero. So " (c "17 / 5") " is " (c "3") ", not " (c "3.4") ":")
+  (p "When it " (em "can") " divide, integer division keeps the whole part and throws away the fraction, so it truncates toward zero. So " (c "17 / 5") " is " (result (of "int-div") 3) ", not " (c "3.4") ":")
   (runnable
+    (id "int-div")
     (source (/ 17 5)))
-  (p "The piece that division discards is exactly what " (c "%") ", the remainder, keeps: " (c "17 % 5") " is " (c "2") ", because " (c "17 = 5 × 3 + 2") ". The two together recover the original.")
+  (p "The piece that division discards is exactly what " (c "%") ", the remainder, keeps: " (c "17 % 5") " is " (result (of "int-rem") 2) ", because " (c "17 = 5 × 3 + 2") ". The two together recover the original.")
   (runnable
+    (id "int-rem")
     (source (% 17 5)))
-  (p "\"Truncates toward zero\" matters once a negative is involved: " (c "-17 / 5") " is " (c "-3") ", not " (c "-4") ", because the fraction is dropped, moving the result " (em "toward") " zero rather than down. The remainder follows so the identity still holds (" (c "-17 = 5 × -3 + -2") "), so " (c "-17 % 5") " is " (c "-2") ", so the remainder takes the sign of the dividend.")
+  (p "\"Truncates toward zero\" matters once a negative is involved: " (c "-17 / 5") " is " (result (of "neg-div") -3) ", not " (c "-4") ", because the fraction is dropped, moving the result " (em "toward") " zero rather than down. The remainder follows so the identity still holds (" (c "-17 = 5 × -3 + -2") "), so " (c "-17 % 5") " is " (c "-2") ", so the remainder takes the sign of the dividend.")
   (runnable
+    (id "neg-div")
     (source (/ -17 5)))
   (h2 "Handling an overflow instead of halting")
   (p "A bare " (c "*") " that overflows " (em "declines") ", so the whole program stops. Sometimes you'd rather " (em "handle") " the possibility: the checked operations do the same arithmetic but hand back an " (c "Option") ", namely " (cdz (Some v)) " when it fits and " (cdz (None unit)) " when it would overflow, so you decide what happens. Here " (c "Int64.checked-mul") " of two small numbers succeeds:")
@@ -36,8 +40,9 @@
     (source (match (Int64.checked-mul 6 7)
   ((Some v) v)
   ((None _) -1))))
-  (p "And the overflow that made the bare " (c "*") " decline instead returns " (c "None") " here, so the " (c "None") " arm runs and the program keeps going, with " (c "-1") " standing in for \"didn't fit\":")
+  (p "And the overflow that made the bare " (c "*") " decline instead returns " (c "None") " here, so the " (c "None") " arm runs and the program keeps going, with " (result (of "checked-overflow") -1) " standing in for \"didn't fit\":")
   (runnable
+    (id "checked-overflow")
     (source (match (Int64.checked-mul 9223372036854775807 2)
   ((Some v) v)
   ((None _) -1))))
