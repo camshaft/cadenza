@@ -13216,17 +13216,16 @@
   (output (: 101 Int64)))
 
 ; -- abx3 (breaker): mixed resume(step)+abortive(bail) arms over a GROWING LIST state whose ABORT arm READS
-; the state. The step dispatch threads the growing state as a FINDING-24 `#st{node}_{slot}` name (bound only
-; in the resume continuation's drain scope); the strict-op (`+`) abort collapse does NOT drain those binds
-; (do-form only), so the abort arm's `(List.len #st…)` reference previously LEAKED unbound → a spurious
-; CDZ0101 on a well-formed program. Now DECLINES CLEANLY (HANDLER_NOT_REDUCIBLE) — the abortive-arm-reads-a-
-; #st-threaded-state guard in reduce_handle turns the wrong-diagnostic into an honest decline. Pinned as a
-; decline-witness (verdict todo) with the CORRECT value 102 (n=5: step resumes List.len(list 5)=1; bail
-; adds 100 + List.len of the grown [0,5]=2 → 100+2=102; 1 (dead, abandoned) is dropped) — flips to 102 PASS
-; when the strict-op-abort fold increment lands (drain the `#st` binds around the abort value + the outer-
-; observation soundness). Controls that FOLD: abx4 (abort ignores state), abx5 (abort-only, state ungrown).
+; the state. The step dispatch threads the growing state as a FINDING-24 `#st{node}_{slot}` name; the abort
+; arm's `(List.len #st…)` reads it. This FOLDS: the abort-value path in reduce_handle is the GENERAL abort
+; path — it wraps the abort value in the pending `#st` binding-lets (`drain_and_wrap` + `apply_seed_wrap`),
+; regardless of `do`-vs-strict-op(`+`) shape — so the `#st` ref resolves against the grafted bind. (Formerly
+; an over-conservative guard DECLINED this, thinking the strict-op abort emitted the value outside the drain
+; scope; the general drain handles it, so the guard was removed.) n=5: step resumes List.len(list 5)=1; bail
+; adds 100 + List.len of the grown [0,5]=2 → 100+2=102; the resume value 1 is dead (abandoned) + reclaimed
+; (live-objects 0 under --guarded-all). Controls: abx4 (abort ignores state), abx5 (abort-only, state ungrown).
 (case
-  "abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)"
+  "abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state folds (strict-op-abort #st-drain)"
   (input
     (do
       (effect E (op step (-> Int64)) (op bail (-> Int64 Int64)))
@@ -13239,7 +13238,8 @@
           (+ (E.step) (E.bail 100))))
       (export main)))
   (call main (: 5 Int64))
-  (output (: 102 Int64)))
+  (output (: 102 Int64))
+  (live-objects 0))
 
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER

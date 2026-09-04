@@ -8885,7 +8885,7 @@ todo	abr1 an abortive arm drops the LIST handler state (no live objects)
 todo	abr3 a heap-valued abort ARGUMENT is consumed by the arm and dropped
 todo	abx1 two-op effect, BOTH arms resuming (control)
 todo	abx2 two-op effect, one resuming one ABORTIVE (scalar state)
-todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
+pass	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state folds (strict-op-abort #st-drain)
 todo	abx4 mixed arms, list state, abort arm IGNORES the state
 todo	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
 todo	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances

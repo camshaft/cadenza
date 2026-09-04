@@ -947,26 +947,18 @@ pub(crate) fn thread_bounded(
                 // Any other arity mismatch — decline.
                 return None;
             }
-            // A FINDING-24 `#st{node}_{slot}` growing-state bind (set at the resume path below) is in scope
-            // ONLY inside the RESUME continuation's `drain_and_wrap`. An ABORTIVE arm that READS the state
-            // gets `cur[slot]` = that `#st` NAME substituted for its state binder, but the strict-op abort
-            // collapse emits the abort value OUTSIDE that scope and drains the `#st` binds for `do`-form
-            // bodies only — so a `+`-form abort's `#st` reference LEAKS unbound → a spurious CDZ0101 on a
-            // well-formed program (breaker abx3/ab4). Decline HONESTLY (`reduce_handle` → None →
-            // HANDLER_NOT_REDUCIBLE todo) rather than emit the leaked `#st`. NARROW: fires only when the
-            // state IS a `#st` name (a prior resume grew it), this arm is abortive, AND its body references
-            // the state — an abort-only handle (abx5: state is the seed, not `#st`) or a state-ignoring abort
-            // arm (abx4) is untouched. The FULL fold (drain the `#st` into the strict-op abort value + the
-            // outer-observation soundness) is a separate increment.
-            if ctx.abortive.contains(&(decl, idx))
-                && db
-                    .ast
-                    .as_name(cur[slot])
-                    .is_some_and(|n| n.starts_with("#st"))
-                && count_param_refs(db, arm.body, arm.state) > 0
-            {
-                return None;
-            }
+            // [abx3 — the strict-op-abort `#st`-drain increment, now LANDED] An ABORTIVE arm that READS a
+            // FINDING-24 `#st{node}_{slot}` growing-state (a prior resume grew it) gets `cur[slot]` = that
+            // `#st` NAME substituted for its state binder. Formerly this DECLINED (the strict-op `+`-form
+            // abort was thought to emit the abort value OUTSIDE the `#st` drain scope, leaking the ref →
+            // CDZ0101). It no longer needs a guard: the abort-value path in `reduce_handle`
+            // (`drain_and_wrap` + `apply_seed_wrap` + forget, reduce.rs ~1148) is the GENERAL abort path — it
+            // wraps the abort value in the pending `#st` binding-lets regardless of `do`-vs-strict-op shape,
+            // so the abort arm's `(List.len #st…)` resolves against the grafted `#st` bind and folds
+            // correctly (abx3 → 102, live-objects 0 under --guarded-all; 14/14b/14c --check 0-regressed).
+            // Reject-don't-miscompile safe: were the drain ever incomplete for some shape, an un-bound `#st`
+            // ref resolves UNBOUND → Poison → an honest reject (gate-caught), never a wrong-`#st` miscompile
+            // (`#st` names are node-id-gensym'd — a ref resolves to its exact binder or nothing).
             subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
             // ABORTIVE arm (E4): the arm never resumes, so performing it ABANDONS the surrounding
