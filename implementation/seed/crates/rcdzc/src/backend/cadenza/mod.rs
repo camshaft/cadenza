@@ -1005,10 +1005,14 @@ fn emit_def(
                 ))
             })?;
             let pname_node = b.name(pname);
-            let ty_node = crate::lower::type_ast(b, ty, &ncx).ok_or_else(|| {
+            // A def-PARAMETER ascription: `(: f (-> Int64 Int64))` is legal annotation surface (unlike an
+            // escaping value's type), so render a function-typed param via `type_ast_allow_fn` — a higher-order
+            // def (`drive (: f (-> Int64 Int64)) …`) re-emits + recompiles. A still-free-var / continuation
+            // param still declines (no honest surface).
+            let ty_node = crate::lower::type_ast_allow_fn(b, ty, &ncx).ok_or_else(|| {
                 Reject::unsupported(format!(
                     "the Cadenza backend does not support lowering a parameter of type `{}` (`{name}`) — no \
-                     value-form type surface (a function / unsolved type)",
+                     value-form type surface (an unsolved type / continuation)",
                     ty.render_name(&ncx)
                 ))
             })?;

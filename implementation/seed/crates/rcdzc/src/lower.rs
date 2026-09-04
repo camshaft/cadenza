@@ -1688,6 +1688,33 @@ pub(crate) fn type_ast(
     ty: &crate::ty::Ty,
     ncx: &crate::ty::NameCtx,
 ) -> Option<StructId> {
+    type_ast_inner(b, ty, ncx, false)
+}
+
+/// Like [`type_ast`], but ALSO renders a function type `Ty::Fn(p, r)` as its surface `(-> p r)` (matching
+/// `render_name`). Used ONLY where the type is a DEF-PARAMETER / binder ASCRIPTION — `(: f (-> Int64 Int64))`
+/// is legal annotation surface (the source writes it) and re-reads to the same `Ty::Fn`, so a higher-order
+/// def re-emits + recompiles. NOT for an ESCAPING VALUE's type: a function has no boundary VALUE form, so the
+/// escape path MUST keep declining it (`type_ast` → `None`) — otherwise a `(tuple 1 (fn …))` return the direct
+/// backend rejects CDZ0900 would re-emit through the cadenza hop and fail HOP-2 (a decline→red divergence).
+pub(crate) fn type_ast_allow_fn(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    ncx: &crate::ty::NameCtx,
+) -> Option<StructId> {
+    type_ast_inner(b, ty, ncx, true)
+}
+
+fn type_ast_inner(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    ncx: &crate::ty::NameCtx,
+    // When true, a `Ty::Fn` renders its `(-> p r)` annotation surface (a def-param ascription) instead of
+    // declining. Threaded through every compound arm so a function NESTED in a param type (`(Box (-> …))`,
+    // `(List (-> …))`) also renders. The escape/value-form callers pass `false` (a function value can never
+    // cross the boundary).
+    allow_fn: bool,
+) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
         // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt`/`Rational` are
@@ -1713,7 +1740,7 @@ pub(crate) fn type_ast(
                 let head = b.name(name);
                 let mut children = vec![head];
                 for a in args.iter() {
-                    children.push(type_ast(b, a, ncx)?);
+                    children.push(type_ast_inner(b, a, ncx, allow_fn)?);
                 }
                 Some(b.list(children))
             }
@@ -1722,7 +1749,7 @@ pub(crate) fn type_ast(
             let head = b.name("Tuple");
             let mut children = vec![head];
             for t in elems.iter() {
-                children.push(type_ast(b, t, ncx)?);
+                children.push(type_ast_inner(b, t, ncx, allow_fn)?);
             }
             Some(b.list(children))
         }
@@ -1736,7 +1763,7 @@ pub(crate) fn type_ast(
             for (name, t) in fields.iter() {
                 let colon = b.name(":");
                 let fname = b.name(&*name.name);
-                let fty = type_ast(b, t, ncx)?;
+                let fty = type_ast_inner(b, t, ncx, allow_fn)?;
                 children.push(b.list(vec![colon, fname, fty]));
             }
             Some(b.list(children))
@@ -1744,20 +1771,20 @@ pub(crate) fn type_ast(
         // A list's type surface is `(List Elem)` — matches `render_name`.
         Ty::List(elem) => {
             let head = b.name("List");
-            let ety = type_ast(b, elem, ncx)?;
+            let ety = type_ast_inner(b, elem, ncx, allow_fn)?;
             Some(b.list(vec![head, ety]))
         }
         // A map's type surface is `(Map Key Value)` — matches `render_name` (key first).
         Ty::Map(k, v) => {
             let head = b.name("Map");
-            let kty = type_ast(b, k, ncx)?;
-            let vty = type_ast(b, v, ncx)?;
+            let kty = type_ast_inner(b, k, ncx, allow_fn)?;
+            let vty = type_ast_inner(b, v, ncx, allow_fn)?;
             Some(b.list(vec![head, kty, vty]))
         }
         // A set's type surface is `(Set Elem)` — one element type parameter (matches `render_name`).
         Ty::Set(elem) => {
             let head = b.name("Set");
-            let ety = type_ast(b, elem, ncx)?;
+            let ety = type_ast_inner(b, elem, ncx, allow_fn)?;
             Some(b.list(vec![head, ety]))
         }
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
@@ -1781,7 +1808,7 @@ pub(crate) fn type_ast(
         // surface `(Qty Float64 (Unit.base #"meter"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
-            let ity = type_ast(b, inner, ncx)?;
+            let ity = type_ast_inner(b, inner, ncx, allow_fn)?;
             let uty = unit_value_ast(b, unit);
             Some(b.list(vec![head, ity, uty]))
         }
@@ -1800,7 +1827,7 @@ pub(crate) fn type_ast(
                 let head = b.name(name);
                 let mut children = vec![head];
                 for a in args.iter() {
-                    children.push(type_ast(b, a, ncx)?);
+                    children.push(type_ast_inner(b, a, ncx, allow_fn)?);
                 }
                 Some(b.list(children))
             }
@@ -1814,6 +1841,16 @@ pub(crate) fn type_ast(
         // has no determined serialization. A program that would escape one declines before the escape.
         // A reified continuation has no value-form surface (like a function) — it never crosses as a
         // rendered value.
+        // A function type. As an ESCAPING VALUE's type it has no boundary value form → `None` (the escape
+        // declines). As a DEF-PARAMETER ASCRIPTION (`allow_fn`) it renders its surface `(-> p r)` (matching
+        // `render_name`), curried like `Ty::Fn` itself, so a higher-order def re-emits + re-reads to the same
+        // `Ty::Fn`. The arg/result recurse with `allow_fn` preserved (a fn nested in a fn type still renders).
+        Ty::Fn(p, r) if allow_fn => {
+            let head = b.name("->");
+            let pn = type_ast_inner(b, p, ncx, allow_fn)?;
+            let rn = type_ast_inner(b, r, ncx, allow_fn)?;
+            Some(b.list(vec![head, pn, rn]))
+        }
         Ty::Fn(_, _) | Ty::Cont { .. } | Ty::Var(_) | Ty::Any => None,
     }
 }
