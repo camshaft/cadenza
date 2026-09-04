@@ -6150,6 +6150,10 @@ pass	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm r
 pass	abx4 mixed arms, list state, abort arm IGNORES the state
 pass	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
 pass	abx6 multi-#st-drain strict-op abort whose arm reads the doubly-grown LIST state folds
+todo	pr1 partial-resume arm whose ABORT branch reads the growing #st state folds
+todo	pr2 partial-resume arm whose ABORT branch yields a HEAP list value reclaims
+todo	pr3 partial-resume arm whose ABORT is spliced from a NESTED conditional folds
+todo	pr4 partial-resume arm whose ABORT branch reads the op PARAM folds
 pass	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances
 pass	ac1 a runtime-BUILT Ast equals the quoted constant structurally and reclaims clean (the construction/quote identity contract)
 pass	ac2 ten build+walk frames over runtime-constructed Ast chains leak linearly (the construction face of the walk-leak)
