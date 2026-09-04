@@ -727,11 +727,15 @@
 ; tuple) over an unbound subject emitted that uncoded decline, MASKING the CDZ0101; a wildcard or scalar-literal
 ; arm surfaced it. Verified two-sided: post-#8391 `(Some v)` and `(#list a b)` arms over an unbound subject both
 ; report CDZ0101, and an unresolved MEMBER subject `(Map.of …)` reports CDZ0201 — while valid matches and the
-; wrong-kind CDZ0203 cases above are unchanged.
+; wrong-kind CDZ0203 cases above are unchanged. This case carries `(exact-code)` (#8401 pilot): a DIFFERENT or
+; UNCODED refusal FAILs the grade (not the default lenient wrong-code→Todo), so a re-masking regression — the
+; subject's CDZ0101 masked by the uncoded 'not a scalar literal or `_`' decline, exactly what #8393's
+; stale-branch merge briefly reintroduced by dropping #8391 (re-applied #8399) — is caught as a RED, not
+; silently tolerated.
 (case
   "a ctor pattern over an unbound-name subject surfaces the subject CDZ0101 (subject error not masked by the pattern check)"
   (input (do (def (main) (match undefined_subject ((Some v) v) (_ 0))) (export main)))
-  (error CDZ0101 (message "undefined_subject")))
+  (error CDZ0101 (message "undefined_subject") (exact-code)))
 
 (case
   "an unbound match subject under a wildcard arm still reports CDZ0101 (the always-clean control for the ctor case)"
