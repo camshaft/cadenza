@@ -19,12 +19,13 @@
   (h2 "The handler intercepts every performance")
   (p "A handler isn't a one-time value; it answers " (em "each") " time the operation is performed. Here the body performs " (c "Ask.ask") " twice, and each one resumes with " (c "20") ":")
   (runnable
+    (id "two-asks")
     (source (effect Ask (op ask (-> Unit Int64)))
 (def (main)
   (handle Ask unit
     ((ask () s (resume 20 s)))
     (+ (Ask.ask) (Ask.ask))))))
-  (p "Two performances, each answered with " (c "20") ", summed to " (c "40") ".")
+  (p "Two performances, each answered with " (c "20") ", summed to " (result (of "two-asks") 40) ".")
   (h2 "A handler with state")
   (p "That " (c "s") " is the handler's own state, threaded from one performance to the next. A " (c "handle") " seeds it (here " (c "0") "), each arm receives it, and " (c "resume") " takes both the value to hand back " (em "and") " the next state. So a counter that hands out " (c "0") ", then " (c "1") ", then " (c "2") "… is a three-line handler:")
   (runnable
@@ -65,20 +66,22 @@
   (h2 "Doing work after resume")
   (p "Every handler so far has " (c "resume") "d as its " (em "last") " act: it hands a value back and steps aside, and whatever the performing code computes flows straight out. But an arm can do work " (em "after") " the resumption returns. " (c "resume") " is an ordinary expression, so its result, the value the rest of the body eventually produces, is something the arm can keep computing with:")
   (runnable
+    (id "amb-tail")
     (source (effect Amb (op flip (-> Unit Int64)))
 (def (main)
   (handle Amb 0
     ((flip (u) s (+ 1 (resume 10 s))))
     (Amb.flip)))))
-  (p "The arm resumes the performer with " (c "10") ", and here the body " (em "is") " that performance, so it reduces to " (c "10") "; then the arm's own " (c "+ 1") " wraps that result, and the answer is " (c "11") ". The " (c "resume") " plugs a value into the hole where " (c "Amb.flip") " was, and the arm gets to act on what comes back.")
+  (p "The arm resumes the performer with " (c "10") ", and here the body " (em "is") " that performance, so it reduces to " (c "10") "; then the arm's own " (c "+ 1") " wraps that result, and the answer is " (result (of "amb-tail") 11) ". The " (c "resume") " plugs a value into the hole where " (c "Amb.flip") " was, and the arm gets to act on what comes back.")
   (p "That hole can have work around it too. If the body is " (cdz (+ 100 (Amb.flip))) ", the resumption re-runs " (em "the whole rest of the body") " with " (c "10") " in the hole, giving " (c "110") ", and only then does the arm's " (c "+ 1") " apply:")
   (runnable
+    (id "amb-around")
     (source (effect Amb (op flip (-> Unit Int64)))
 (def (main)
   (handle Amb 0
     ((flip (u) s (+ 1 (resume 10 s))))
     (+ 100 (Amb.flip))))))
-  (p "The result is " (c "111") ": " (c "100 + 10") " from re-reducing the body, then " (c "+ 1") " from the arm on the way out. This is what lets a handler " (em "post-process") " or " (em "aggregate") " a whole computation, logging a total, accumulating, transforming a result, rather than only feeding a value in. And it composes with state: each performance resumes with the advanced state, and the arm's surrounding work wraps every re-reduction:")
+  (p "The result is " (result (of "amb-around") 111) ": " (c "100 + 10") " from re-reducing the body, then " (c "+ 1") " from the arm on the way out. This is what lets a handler " (em "post-process") " or " (em "aggregate") " a whole computation, logging a total, accumulating, transforming a result, rather than only feeding a value in. And it composes with state: each performance resumes with the advanced state, and the arm's surrounding work wraps every re-reduction:")
   (runnable
     (id "st-tick")
     (source (effect St (op tick (-> Unit Int64)))
@@ -120,6 +123,7 @@
     (expect "error"))
   (p "The error is " (c "CDZ0407") ", and its message names the fix: " (c "a guard must be side-effect-free — an effect is performed in this guard, which the pattern engine may evaluate speculatively or repeatedly; lift it to a `let` evaluated once before the `match` and guard on the bound value") ". That is exactly the repair: perform the effect " (em "once") ", before the " (c "match") ", bind the result, and let the guard read the bound value, which is pure. Same logic, now with a defined evaluation:")
   (runnable
+    (id "guard-fix")
     (source (effect Ask (op ask (-> Unit Int64)))
 (def (main)
   (handle Ask unit
@@ -128,7 +132,7 @@
       (match 3
         ((guard x (< x limit)) 1)
         (_ 0)))))))
-  (p "Now the perform happens exactly once (" (c "limit") " is " (c "5") "), the guard compares against the bound value, and since " (c "3 &lt; 5") " the first arm fires and the result is " (c "1") ". The rule is narrow: an effect is welcome in a scrutinee, in an arm body, anywhere with a defined order, just not in the guard condition itself, where \"how many times, in what order\" isn't a question the pattern engine can answer.")
+  (p "Now the perform happens exactly once (" (c "limit") " is " (c "5") "), the guard compares against the bound value, and since " (c "3 &lt; 5") " the first arm fires and the result is " (result (of "guard-fix") 1) ". The rule is narrow: an effect is welcome in a scrutinee, in an arm body, anywhere with a defined order, just not in the guard condition itself, where \"how many times, in what order\" isn't a question the pattern engine can answer.")
   (h2 "Why this matters: mock now, real later")
   (p "This is what makes effects useful in real programs. Because the performer doesn't know who answers, the " (em "same") " code runs against a test mock or a real external service just by choosing a different handler. Picture a step of an agent loop: " (c "turn") " performs " (c "Model.converse") ", a call to a language model. It names what it needs; it doesn't reach out itself. Run it under a " (em "mock") " handler that echoes the query back, and under a " (em "different") " handler that answers differently, and you get two behaviours from the same " (c "turn") ":")
   (runnable
