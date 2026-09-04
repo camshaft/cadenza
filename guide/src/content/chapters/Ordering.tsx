@@ -24,11 +24,13 @@ export default function Ordering() {
         source={`(def (min a b) (if (< a b) a b))
 
 (def (main) (min 8 3))`}
+        id="min"
       />
       <Runnable
         source={`(def (clamp lo hi x) (if (< x lo) lo (if (> x hi) hi x)))
 
 (def (main) (clamp 0 10 42))`}
+        id="clamp"
       />
       <P><Cadenza ast="Y2R6YXN0AAEDCgNtaW4AAQgAAQMEAAAAAQACAQMAAQID" kind="expr">(min 8 3)</Cadenza> is <C>3</C>, the smaller of the two. And <Cadenza ast="Y2R6YXN0AAEECgVjbGFtcAAAAAEKAAEqBQAAAAEAAgADAQQAAQIDBA==" kind="expr">(clamp 0 10 42)</Cadenza> is <C>10</C>: 42 is past the upper bound, so <C>clamp</C> pulls it back to <C>10</C>, and feeding it a value already inside <C>0</C>–<C>10</C> gives that value back unchanged.</P>
       <H2>Three answers, not two</H2>
