@@ -755,7 +755,7 @@
            mask the unresolved-member error; the subject's own CDZ0201 surfaces ahead of the arm pattern-
            support check.")
   (input (do (def (main) (match (Map.of #list(1)) ((Some x) x) (_ 0))) (export main)))
-  (error CDZ0201 (message "has no member")))
+  (error CDZ0201 (message "has no member") (exact-code)))
 
 (case
   "a list pattern over its matching List scrutinee kind is valid and matches (no over-rejection)"
