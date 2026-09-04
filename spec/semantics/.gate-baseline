@@ -11049,3 +11049,4 @@ pass	lcap4 an ESCAPING curried closure captures a def-param AND an intermediate 
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 pass	an over-applied USER function is CDZ0203 — applying past its arity hits a non-function result
 todo	a nested list pattern with a LITERAL inner element binds and matches (currently leaks __ne0)
+todo	nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)

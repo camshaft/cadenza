@@ -4370,6 +4370,19 @@ c")))
   (input (eval (quote ((fn (x) (* x x)) 5))))
   (output (: 25 Int64)))
 
+; NESTED (multi-stage) eval (breaker; v-spec-oracle SHOULD-FOLD ruling): `(eval (quasiquote (eval (quote
+; (+ 1 2)))))` — the outer eval's form is ITSELF an eval. It SHOULD fold to 3: eval evaluates an AST value as
+; code (metaprogramming.md:72), compositionally, with no principled eval-refuses-eval special-case ("optional"
+; :76 means a generation may provide NO eval, not that a provided eval is single-level). Today it declines
+; CDZ0101 'unbound name `eval`' — the eval-reconstruction doesn't re-recognize the inner `eval` special-form in
+; the reconstructed source (a should-work GAP, not a spec reject; v-spec-oracle + v-metaprogramming ruled).
+; Grades todo until the reconstruct-recognition impl lands (v-metaprogramming owns it), then auto-flips ->
+; PASS (3). Reported+held-then-fenced-on-ruling: the correct verdict is idealistic-todo, NOT a correct-reject.
+(case
+  "nested (multi-stage) eval — an eval whose form is itself an eval folds (should-fold)"
+  (input (eval (quasiquote (eval (quote (+ 1 2))))))
+  (output (: 3 Int64)))
+
 ; The eval-fold family above covers CONTROL forms (if/let/match/lambda); these cover DATA-CONSTRUCTION
 ; forms — a quoted `(list …)` / `(tuple …)` eval'd folds to the runtime COLLECTION it builds, not just a
 ; scalar. Pins that eval reconstructs a collection constructor (the `list`/`tuple` head + its element
