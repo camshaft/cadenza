@@ -3227,6 +3227,8 @@ pass	a newtype over a sum erases without a second box and matches through both l
 pass	a newtype over a sum escapes to the host as its erased underlying sum value-form
 pass	a newtype whose variant name equals its type name resolves in both head and annotation positions
 pass	a newtype wrapping a heap list compares by the inner heap walk
+pass	a newtype-over-(list-of-record) inline destructure under recursion lifts the nested record on both backends (#8452)
+pass	a newtype-over-(tuple-containing-record) inline destructure under recursion lifts the nested record on both backends (#8452)
 pass	a newtype-over-record inline destructure under recursion binds the field on both backends (was wasm-trap/rust-decline)
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
