@@ -2439,6 +2439,38 @@
   (call f (: 5 Int64))
   (output (: 1 Int64)))
 
+; A runtime nominal sum reached ONLY through its bare constructors must keep its `(type …)` declaration
+; through the cadenza re-emit. This is a regression guard for the cadenza-backend dead-type-decl PRUNE
+; (#8326, fixed in #8328): `pick` is a RECURSION-FORCED producer (the `(> n 100)` self-call blocks inlining)
+; so `(pick n)` is a genuine runtime `T` value the optimizer cannot fold, and the `match` dispatches on its
+; tag. On the cadenza re-emit the sum VALUE emits as a BARE ctor `(A n)` and the arms as `((A x) …)` with the
+; TYPE name `T` ABSENT (an inferred / tail-position value drops the `(: (V p) T)` annotation) — so the re-emit
+; references `T` ONLY through its ctor names `A`/`B`. The dead-decl prune must therefore key reachability on
+; the variant CONSTRUCTOR names, not the type name alone; keying on the type name (the #8326 bug) wrongly
+; dropped `(type T …)` here, leaving `A` unbound → CDZ0101 on the hop2 recompile. The equality cases above
+; keep their sum via the `(= …)` type annotation, so they do NOT exercise this bare-ctor-only path — the gap
+; that let the #8326 over-prune slip the full gate.
+(case
+  "a runtime nominal sum reached only via bare constructors keeps its decl through the cadenza re-emit"
+  (doc
+    "`pick` is a recursion-forced producer of `T (A Int64) (B Int64)`, so `(pick n)` is a runtime sum
+           value the optimizer cannot fold; the `match` dispatches on its tag. The cadenza hop re-emits the
+           value as a bare `(A n)` and the arms as `((A x) …)` with the type name `T` absent, so `T` is
+           reachable only through its ctors `A`/`B` — the dead-type-decl prune must key on ctor names (not the
+           type name alone) or it drops `(type T …)` and leaves `A` unbound (CDZ0101) on recompile (#8326 bug,
+           #8328 fix). Pins that a surviving nominal sum reached only via bare ctors keeps its decl through the
+           hop. `f(5)` → `pick 5` = `T.A 5` → 5; `f(-3)` → `T.B -3` → -30.")
+  (input
+    (do
+      (type T (A Int64) (B Int64))
+      (def (pick (: n Int64)) (if (> n 100) (pick (- n 1)) (if (> n 0) (T.A n) (T.B n))))
+      (def (main (: n Int64)) (match (pick n) ((T.A x) x) ((T.B y) (* y 10))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (call main (: -3 Int64))
+  (output (: -30 Int64)))
+
 ; --- Record equality is by field-name SET, so it is independent of the order fields are written ---
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields (a record's fields are a SET) together
 ; with deterministic-value-form.md #Ordering Of Aggregate Members Is Fixed ("The canonical encoding of
