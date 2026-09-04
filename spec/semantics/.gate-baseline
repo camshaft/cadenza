@@ -7963,6 +7963,7 @@ pass	dst2 THREE levels: list of tuples of records, no Option wrapper
 pass	dst5 a USER sum with a list payload destructured to scalars
 pass	dst6 CONTROL: Option payload bound WHOLE (not destructured) then consumed by List.len
 pass	dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims
+pass	dt3 two IRREFUTABLE nested-tuple list elements (list of tuples of tuples, no records) refine and bind — pins the >1-nested-compound-element refutability classifier (#8371)
 pass	dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing
 pass	du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps
 pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged

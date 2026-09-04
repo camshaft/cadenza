@@ -29336,6 +29336,31 @@
   (output (: 15 Int64))
   (live-objects 0))
 
+; dt3 pins the OTHER refutability axis of the #8367->#8371 arc: dst2/dm1/dt2 above all use a nested
+; RECORD component, but breaker's isolation showed #8367's coarse `as_name().is_none()` classifier
+; mis-flagged ANY nested COMPOUND (record / TUPLE / list) of binders+wildcards as refutable, so a list
+; arm with TWO IRREFUTABLE nested-TUPLE elements tripped the ">1 refutable tuple element per arm" guard
+; and spuriously declined CDZ0900. #8371 made refutability the authoritative recursive
+; check_binding_pattern signal; this case witnesses the nested-tuple axis (no record, no Option) so a
+; future classifier change that special-cases only records cannot silently re-break it.
+(case
+  "dt3 two IRREFUTABLE nested-tuple list elements (list of tuples of tuples, no records) refine and bind — pins the >1-nested-compound-element refutability classifier (#8371)"
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (if
+            (> n 0)
+            #list(#tuple(1 #tuple(n 0)) #tuple(2 #tuple((* n 2) 0)))
+            #list(#tuple(0 #tuple(0 0))))
+          (#list(#tuple(_ #tuple(a _)) #tuple(_ #tuple(b _))) (+ a b))
+          (_ -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects 0))
+
 (case
   "drs1 Result Ok nested-payload destructure (the Option-leak sibling)"
   (input
