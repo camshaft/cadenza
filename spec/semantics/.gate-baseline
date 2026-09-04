@@ -1190,7 +1190,7 @@ pass	a Qty-keyed trie churned with differently-normalized magnitudes equals the 
 pass	a Qty-typed export carries its unit frame across the module boundary into caller algebra
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a Qty.+ magnitude from a function-application result reconciles against an Int8 sibling
-pass	a Qty.+ narrow Int8 magnitude FIRST widens the call-result sibling commutatively (not a spurious overflow reject)
+todo	a Qty.+ narrow Int8 magnitude FIRST widens the call-result sibling commutatively (not a spurious overflow reject)
 pass	a Qty.of magnitude that is a bool is rejected as not numeric
 pass	a Qty.of magnitude that is a string is rejected as not numeric
 pass	a Qty.of magnitude that is a tuple is rejected as not numeric

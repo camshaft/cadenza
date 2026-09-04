@@ -495,10 +495,7 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                                 inner: ia,
                                 unit: ua,
                             },
-                            Ty::Qty {
-                                inner: ib,
-                                unit: ub,
-                            },
+                            Ty::Qty { unit: ub, .. },
                         ) = (&a, &b)
                         {
                             let unit = if ua == ub {
@@ -506,31 +503,18 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                             } else {
                                 ua.at_reference()
                             };
-                            // The result magnitude type takes the WIDER of the two operand inners — the
-                            // effective machine width (`ground_width`: a fixed width is itself, a DEFERRED
-                            // width is the default Int64) — so `+` is COMMUTATIVE in the magnitude width.
-                            // Taking the lhs inner raw reconciled ASYMMETRICALLY: a DEFERRED call-result
-                            // magnitude (default Int64) + a fixed NARROW sibling, narrow-FIRST, forced the
-                            // result to the narrow width → a sum that overflows it SPURIOUSLY rejected CDZ0304,
-                            // while the swapped order kept the wider default and compiled (breaker #8287).
-                            // Picking the wider effective width is order-independent → the deferred magnitude
-                            // keeps its default rather than narrowing to the fixed sibling, both orders. The
-                            // widen emit is already realized (the call-result-first order compiles today). Two
-                            // DIFFERENT FIXED widths still disagree and are rejected CDZ0301 by the
-                            // operand-agreement fault check (no silent promotion), symmetric in both orders —
-                            // this arm only chooses the RESULT type, which is moot for a rejected program.
-                            let result_inner = match (ia.as_ref(), ib.as_ref()) {
-                                (Ty::Int(x), Ty::Int(y)) => {
-                                    if x.ground_width() >= y.ground_width() {
-                                        (**ia).clone()
-                                    } else {
-                                        (**ib).clone()
-                                    }
-                                }
-                                _ => ia.join(ib),
-                            };
+                            // REVERTED #8292 (operator design correction): Qty is GENERIC over its inner
+                            // numeric type — an Int8 inner MUST NOT be promoted/widened to Int64. #8292 made
+                            // the result inner the WIDER effective width (deferred→Int64) to restore
+                            // commutativity, but that silently PROMOTES the narrow inner, which is wrong. The
+                            // correct no-promotion fix (deferred operand unifies to the sibling's DECLARED
+                            // inner, so a genuine same-inner overflow stays CDZ0304, commutative WITHOUT
+                            // widening) is co-owned with v-cadenza-backend (#8278's emit peel is premised on
+                            // the widening and needs matching rework), so it is NOT landed here. This restores
+                            // the pre-#8292 behavior (take the lhs inner) until that co-land; the residual
+                            // order-dependence (breaker #8287) stays an idealistic todo.
                             return Ty::Qty {
-                                inner: Box::new(result_inner),
+                                inner: Box::new((**ia).clone()),
                                 unit,
                             };
                         }
