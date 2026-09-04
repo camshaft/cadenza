@@ -5526,6 +5526,8 @@ pass	a structurally-duplicate tuple arm is unreachable and earns a CDZ0213 warni
 pass	a structurally-mismatched List.push element names the operation and the field-level delta
 pass	a structurally-mismatched perform argument names the operation and the field-level delta
 pass	a sub-byte bit-field straddling a byte boundary re-emits (a read combining bits from two bytes)
+pass	a byte-aligned data segment following sub-byte bit-fields reads both binders
+todo	a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes
 pass	a subnormal float renders its full fractional expansion, not scientific or shortest (small-magnitude companion of f64::MAX)
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
