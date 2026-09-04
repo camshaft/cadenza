@@ -122,38 +122,25 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
       | none => .unsupported s!"wasm result valtype does not match the declared Cadenza scalar type (ty={scalarTyName ty}, wasm={wasmValKind v})"
     | _, _ => .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)"
 
-/-- A result-type-directed fixup applied to the TOP-LEVEL decoded heap value at the Outcome boundary. A
-`String` result decodes structurally to `.bytes b` (a byte buffer); Core's value is `.str b` — the SAME UTF-8
-bytes under a different constructor — so `.toStr` retags the top-level `.bytes` → `.str`. `.asIs` = no fixup
-(BigInt/List/Map/Set/Rational/Bytes/Tuple already decode to Core's exact form). NESTED strings (`(List String)`)
-are NOT retagged here — that needs a recursive type-directed fixup (a follow-up); this covers the single-head
-`String` result. Record (→`.record`) needs the type's field NAMES threaded — also a follow-up. -/
-inductive HeapFixup where
-  | asIs
-  | toStr
-  deriving Repr, DecidableEq, BEq
-
-/-- Apply a `HeapFixup` to a decoded top-level value. `.toStr` retags a `.bytes` buffer as a `.str` (same
-bytes); everything else passes through unchanged. -/
-def applyHeapFixup : HeapFixup → Value → Value
-  | .toStr, .bytes b => .str b
-  | _,      v        => v
-
-/-- Map a wasm run outcome for a HEAP result type onto `Oracle.Outcome`. A heap-valued `main` returns an i32
-handle; the talos driver reads the final `HeapState` at that handle and hands back a decoded `.compound v`
-(see `Oracle.Wasm.HeapDecode`), which this maps to `.value (applyHeapFixup fx v)`. (Canonicalization of
-set/map/record — to match Core's order-sensitive `valueEqSpec` — is applied by the driver before this;
-`fx` applies the result-type-directed top-level retag, e.g. `String`'s `.bytes`→`.str`.) A non-`.compound`
-`.ok` → a sound skip (the result was not a decodable heap object); trap/err/outOfFuel map as in `toOutcome`. -/
-def toOutcomeHeap (fx : HeapFixup) (o : WasmOutcome) : Outcome :=
+/-- Map a wasm run outcome for a HEAP result type onto `Oracle.Outcome`, applying a result-type-directed
+`fixup` to the decoded compound. A heap-valued `main` returns an i32 handle; the talos driver reads the final
+`HeapState` at that handle and hands back a decoded `.compound v` (see `Oracle.Wasm.HeapDecode`), already
+canonicalized. The `fixup` (from `resultTyFixup`) retags nested `.bytes`→`.str` at the result type's `String`
+positions — `Oracle.Value` shares the byte rep for Str/Bytes, so a structural decode yields `.bytes` where Core
+has `.str`. `fixup` returns `none` when a `String` sits in a position it cannot faithfully reach (a Record/Sum
+payload) → a SOUND SKIP, never a false-diverge. trap/err/outOfFuel map as in `toOutcome`. -/
+def toOutcomeHeap (fixup : Value → Option Value) (o : WasmOutcome) : Outcome :=
   match o with
   | .trap msg  => .trap msg
   | .outOfFuel => .unsupported "wasm exceeded the interpreter fuel budget (inconclusive, not a divergence)"
   | .err msg   => .unsupported msg
   | .ok vals _ =>
     match vals.toList with
-    | [.compound v] => .value (applyHeapFixup fx v)
-    | _             => .unsupported "heap result was not a decodable heap value"
+    | [.compound v] =>
+      match fixup v with
+      | some v' => .value v'
+      | none    => .unsupported "heap result nests a String in a position not yet fixed up (Record/Sum payload) — recursive fixup pending"
+    | _ => .unsupported "heap result was not a decodable heap value"
 
 /-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
 
@@ -301,21 +288,88 @@ def tyNodeMentionsString? (m : Module) : Nat → Nat → Bool
     | some (.list cs) => cs.any (fun c => tyNodeMentionsString? m fuel c)
     | _               => false
 
-/-- Whether the entry's (driver-decodable) heap result type NESTS a `String` anywhere in its type children — a
-currently-false-diverging shape (nested `.bytes` vs Core's `.str`) that we route to a sound skip. A BARE
-single-head `String` (`resultHeapDecodable?` is false for it; handled by `stringResult?`) is NOT matched here —
-this only fires for a container/tuple result whose element/key/value type mentions `String`. -/
-def resultNestsString? (bytes : ByteArray) (entry : ByteArray) : Bool :=
+/-- Child type nodes of a type node `(Head T0 T1 …)` — `[T0, T1, …]` (the tail after the head atom); `[]` for a
+bare atom / non-list. Lets the recursive fixup descend into a container/tuple/map's component types. -/
+def tyChildren (m : Module) (i : Nat) : List Nat :=
+  match m.nodes[i]? with
+  | some (.list cs) => cs.toList.drop 1
+  | _               => []
+
+mutual
+/-- Recursively retag nested `.bytes`→`.str` at the `String` positions of type node `i` in the decoded `v`.
+`String` → retag `.bytes`; `List`/`Set` → fix each element by the element type; `Tuple` → positional by the
+child types; `Map` → key/value by K/V. A head the fixup does NOT descend into (Record/Sum/Nominal/…) or a
+scalar passes through UNCHANGED — UNLESS its subtree mentions a `String` it therefore cannot reach, in which
+case it DECLINES (`none`) so the caller SKIPS (never a false-diverge). Fuel-bounded (sized to the node pool).
+Uses explicit list helpers, NOT `List.mapM` over `Option` (which trips the `native_decide` codegen). -/
+partial def fixupTy : Nat → Module → Nat → Value → Option Value
+  | 0,        _, _, v => Option.some v
+  | fuel + 1, m, i, v =>
+    match headTypeName? m i with
+    | Option.some name =>
+      if name == "String".toUTF8 then
+        match v with | .bytes b => Option.some (.str b) | _ => Option.some v
+      else if name == "List".toUTF8 || name == "Set".toUTF8 then
+        match tyChildren m i, v with
+        | [et], .list vs => (fixupSeq fuel m et vs.toList).map (fun ws => .list ws.toArray)
+        | [et], .set vs  => (fixupSeq fuel m et vs.toList).map (fun ws => .set ws.toArray)
+        | _,    _        => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+      else if name == "Tuple".toUTF8 then
+        match v with
+        | .tuple vs => (fixupTuple fuel m (tyChildren m i) vs.toList).map (fun ws => .tuple ws.toArray)
+        | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+      else if name == "Map".toUTF8 then
+        match tyChildren m i, v with
+        | [kt, vt], .map ps => (fixupMap fuel m kt vt ps.toList).map (fun qs => .map qs.toArray)
+        | _,        _       => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+      else
+        if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+    | Option.none => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
+
+/-- Fix a homogeneous element list (List/Set) by element type `et`. -/
+partial def fixupSeq : Nat → Module → Nat → List Value → Option (List Value)
+  | _,    _, _,  []      => Option.some []
+  | fuel, m, et, x :: xs =>
+    match fixupTy fuel m et x, fixupSeq fuel m et xs with
+    | Option.some y, Option.some ys => Option.some (y :: ys)
+    | _,             _              => Option.none
+
+/-- Fix tuple elements positionally against their element type nodes (arity must match). -/
+partial def fixupTuple : Nat → Module → List Nat → List Value → Option (List Value)
+  | _,    _, [],      []      => Option.some []
+  | fuel, m, t :: ts, x :: xs =>
+    match fixupTy fuel m t x, fixupTuple fuel m ts xs with
+    | Option.some y, Option.some ys => Option.some (y :: ys)
+    | _,             _              => Option.none
+  | _,    _, _,       _       => Option.none
+
+/-- Fix map `(key, value)` pairs by key type `kt` / value type `vt`. -/
+partial def fixupMap : Nat → Module → Nat → Nat → List (Value × Value) → Option (List (Value × Value))
+  | _,    _, _,  _,  []            => Option.some []
+  | fuel, m, kt, vt, (k, v) :: ps =>
+    match fixupTy fuel m kt k, fixupTy fuel m vt v, fixupMap fuel m kt vt ps with
+    | Option.some k', Option.some v', Option.some ps' => Option.some ((k', v') :: ps')
+    | _,              _,              _               => Option.none
+end
+
+/-- The result-type-directed fixup for the entry (from the raw section bytes): retags nested `.bytes`→`.str`
+per the result type, returning `none` on an unreachable `String` position (→ skip). Handles the single-head
+form `(result-type "main" T)` (`cs.size == 3`) and the FLAT multi-value TUPLE form `(result-type "main" T0
+T1 …)`. A missing/undecodable section or an absent entry → identity (`some`). -/
+def resultTyFixup (bytes : ByteArray) (entry : ByteArray) : Value → Option Value :=
   match Ast.decode bytes with
   | .ok m =>
-    m.nodes.any (fun node =>
-      match node with
-      | .list cs =>
-        if nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry then
-          (List.range cs.size).any (fun j => j ≥ 2 && tyNodeMentionsString? m (m.nodes.size + 1) cs[j]!)
-        else false
-      | _ => false)
-  | .error _ => false
+    match m.nodes.find? (fun node =>
+        match node with
+        | .list cs => nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry
+        | _        => false) with
+    | some (.list cs) =>
+      if cs.size == 3 then (fun v => fixupTy (m.nodes.size + 1) m cs[2]! v)
+      else (fun v => match v with
+        | .tuple vs => (fixupTuple (m.nodes.size + 1) m (cs.toList.drop 2) vs.toList).map (fun ws => .tuple ws.toArray)
+        | _         => Option.some v)
+    | _ => (fun v => Option.some v)
+  | .error _ => (fun v => Option.some v)
 
 /-- The result-type HEAD NAME of the entry when the node is PRESENT but its head is not a modeled scalar
 type (`scalarTyOfName? = none`) — i.e. the exact head we skipped on, for diagnostics. `none` if the entry's
@@ -378,17 +432,15 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
   match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
   | some ty => let o := drive coreWat trial; (toOutcome o ty, wasmLeakOf o)
   | none =>
-    -- Not a scalar result type: if it is a driver-decodable HEAP result type, run + decode the returned
-    -- handle (the ~heap-valued-result lever). A single-head `String` result decodes the same way but retags
-    -- the top-level `.bytes`→`.str` (`.toStr`); everything else needs no fixup (`.asIs`). Else a sound skip.
-    if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8 then
-      -- A decodable container/tuple that NESTS a `String` would false-diverge (nested `.bytes` vs Core's
-      -- `.str`) — decline it to a sound skip until the recursive type-directed fixup lands.
-      if resultNestsString? resultTypeBytes trial.entry.toUTF8 then
-        (.unsupported "heap result nests a String (decoded structurally as Bytes) — recursive type-directed fixup pending", 0)
-      else let o := drive coreWat trial; (toOutcomeHeap .asIs o, wasmLeakOf o)
-    else if stringResult? resultTypeBytes trial.entry.toUTF8 then
-      let o := drive coreWat trial; (toOutcomeHeap .toStr o, wasmLeakOf o)
+    -- Not a scalar result type: a driver-decodable HEAP result type (List/Map/Set/Tuple/BigInt/Rational/Bytes,
+    -- OR a bare `String`) → run + decode the returned handle, then apply the result-type-directed `fixup`
+    -- (`resultTyFixup`): retag nested `.bytes`→`.str` at the type's `String` positions (`String` itself, or
+    -- nested inside List/Set/Tuple/Map); it declines to a sound skip on a `String` position it can't reach
+    -- (Record/Sum payload). Else (unmodeled type) a sound skip.
+    if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8
+        || stringResult? resultTypeBytes trial.entry.toUTF8 then
+      let o := drive coreWat trial
+      (toOutcomeHeap (resultTyFixup resultTypeBytes trial.entry.toUTF8) o, wasmLeakOf o)
     else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
 
 /-- The pure `run_wasm` boundary: resolve the entry's scalar result type, drive the interpreter on the
@@ -504,20 +556,22 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "
     == .value (.list #[.int 1, .int 2])) = true := by native_decide
 example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.int 1, .int 2])]) "(module)" (rtBytes "Set") { entry := "main" }
     == .value (.set #[.int 1, .int 2])) = true := by native_decide
--- A single-head `String` result NOW routes to the heap path with the `.toStr` fixup: the driver decodes the
--- byte buffer to `.bytes` and the fixup retags the top-level value to `.str` (same UTF-8 bytes) = Core's form.
+-- A single-head `String` result routes to the heap path; `resultTyFixup` retags the decoded `.bytes` → `.str`
+-- (same UTF-8 bytes) = Core's form.
 example : (runWasmWith (fun _ _ => .ok #[.compound (.bytes "hi".toUTF8)]) "(module)" (rtBytes "String") { entry := "main" }
     == .value (.str "hi".toUTF8)) = true := by native_decide
 -- Record is still NOT heap-decodable (needs the type's field names threaded) → sound skip (driver not invoked).
 example : (runWasmWith (fun _ _ => .ok #[.i64 0]) "(module)" (rtBytes "Record") { entry := "main" }
     == .unsupported "cdz-result-type: entry has no modeled scalar result type (head=Record)") = true := by native_decide
 
--- `applyHeapFixup`: `.toStr` retags ONLY a top-level `.bytes`; other shapes (and `.asIs`) pass through.
-example : applyHeapFixup .toStr (.bytes "hi".toUTF8) = .str "hi".toUTF8 := rfl
-example : applyHeapFixup .toStr (.list #[.int 1]) = .list #[.int 1] := rfl
-example : applyHeapFixup .asIs (.bytes "hi".toUTF8) = .bytes "hi".toUTF8 := rfl
--- `toOutcomeHeap`: the `.toStr` fixup finalizes a decoded `.compound (.bytes …)` to a `.str` value.
-example : (toOutcomeHeap .toStr (.ok #[.compound (.bytes "ok".toUTF8)]) == .value (.str "ok".toUTF8)) = true := by native_decide
+-- `toOutcomeHeap` applies the fixup to the decoded compound: identity keeps the value; a `none`-returning
+-- fixup (an unreachable nested `String`) → a sound skip.
+example : (toOutcomeHeap (fun v => some v) (.ok #[.compound (.int 5)]) == .value (.int 5)) = true := by native_decide
+example : (toOutcomeHeap (fun _ => none) (.ok #[.compound (.bytes "x".toUTF8)])
+    == .unsupported "heap result nests a String in a position not yet fixed up (Record/Sum payload) — recursive fixup pending") = true := by native_decide
+-- `resultTyFixup`: a bare `String` retags a top-level `.bytes`→`.str`; a non-String scalar passes through.
+example : (resultTyFixup (rtBytes "String") "main".toUTF8 (.bytes "hi".toUTF8) == some (.str "hi".toUTF8)) = true := by native_decide
+example : (resultTyFixup (rtBytes "Int") "main".toUTF8 (.int 5) == some (.int 5)) = true := by native_decide
 -- String-head recognition: `stringResult?` accepts a `String` result type, rejects a `List`/`Int` one.
 example : stringResult? (rtBytes "String") "main".toUTF8 = true := by native_decide
 example : stringResult? (rtBytes "List") "main".toUTF8 = false := by native_decide
@@ -530,17 +584,19 @@ private def rtNestedBytes (container elem : String) : ByteArray :=
     { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name container.toUTF8, .name elem.toUTF8],
       nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .list #[2, 3], .list #[0, 1, 4]], root := 5 }
 
--- `resultNestsString?`: a container nesting `String` is detected; a container of `Int` (or a bare `List`) is not.
-example : resultNestsString? (rtNestedBytes "List" "String") "main".toUTF8 = true := by native_decide
-example : resultNestsString? (rtNestedBytes "Set" "String") "main".toUTF8 = true := by native_decide
-example : resultNestsString? (rtNestedBytes "List" "Int") "main".toUTF8 = false := by native_decide
-example : resultNestsString? (rtBytes "List") "main".toUTF8 = false := by native_decide
--- end-to-end: a `(List String)` result is DECLINED to a sound skip (NOT decoded/diverged), even though the stub
--- driver hands back a `.compound` — this is the nested-String false-diverge guard.
-example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.str "hi".toUTF8])]) "(module)"
+-- `resultTyFixup` DECLINES (`none`) when a `String` sits in an unhandled position (a `Record` subtree).
+example : (resultTyFixup (rtNestedBytes "Record" "String") "main".toUTF8 (.tuple #[.bytes "x".toUTF8]) == none) = true := by native_decide
+
+-- end-to-end: a `(List String)` result NOW DECODES with nested `.bytes`→`.str` (previously declined pre the
+-- recursive fixup) — the driver's structural `.list #[.bytes …]` is retagged to Core's `.list #[.str …]`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.bytes "a".toUTF8, .bytes "b".toUTF8])]) "(module)"
     (rtNestedBytes "List" "String") { entry := "main" }
-    == .unsupported "heap result nests a String (decoded structurally as Bytes) — recursive type-directed fixup pending") = true := by native_decide
--- but a `(List Int)` result still DECODES (the guard does not over-fire on non-String containers).
+    == .value (.list #[.str "a".toUTF8, .str "b".toUTF8])) = true := by native_decide
+-- `(Set String)` likewise retags nested elements.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.set #[.bytes "a".toUTF8])]) "(module)"
+    (rtNestedBytes "Set" "String") { entry := "main" }
+    == .value (.set #[.str "a".toUTF8])) = true := by native_decide
+-- `(List Int)` decodes unchanged (the fixup is a no-op on non-String element types).
 example : (runWasmWith (fun _ _ => .ok #[.compound (.list #[.int 1, .int 2])]) "(module)"
     (rtNestedBytes "List" "Int") { entry := "main" }
     == .value (.list #[.int 1, .int 2])) = true := by native_decide
