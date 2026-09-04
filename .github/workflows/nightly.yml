@@ -69,140 +69,33 @@ jobs:
       - name: Run the full ignored probe set (leak / UAF / enumeration — no name filter)
         run: cargo test -p rcdzc --lib -- --ignored --test-threads=1
 
-  # build-store — build the value-heap runtime store ONCE and share it with the rust-gate shards as an
-  # artifact, so each of the 12 shards DOWNLOADS it instead of running the ~8-min cold `cargo xtask build`
-  # (cargo-component build-std of the runtime). That build DOMINATED each shard's wall-clock and pushed the
-  # total past the ~15-min free-runner reclaim window, so shards kept dying exit-143 mid-build even after the
-  # CARGO_BUILD_JOBS cap (v-nix 2026-08-23: the cap moved the deaths ~5-6min → ~10-12min but did not clear
-  # them — the death is build-dominated, not gate-dominated, so a shard-count bump alone wouldn't fix it).
-  # With the store pre-built + downloaded, a shard does only setup (~2min) + the gate cases (~2-4min), well
-  # under the window. Same aarch64 runner as the shards (the store's REQUIRED_RUNTIME_HASH is arch-specific).
-  build-store:
-    name: build the shared runtime store
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          # Share the shards' cache key so this build warms the same deps cache the shards restore.
-          cache-key: rust-gate-full
-      - name: Build the runtime store
-        run: cargo xtask build
-      # actions/upload-artifact's max version is @v7 (there is NO @v8 — "unable to resolve" — the two
-      # actions version INDEPENDENTLY). @v7-upload paired with the shards' @v8-download is the correct,
-      # compatible pairing the repo already uses (build.yml upload@v7 → publish download@v8). A prior
-      # "align to @v8" attempt (v-nix 2026-08-23) used the non-existent upload@v8 and broke build-store at
-      # "Set up job" — reverted here. (The earlier "digest-mismatch" was NOT a version skew; if the shards
-      # still evict, it is free-runner preemption — a runner-class call, not an artifact-version one.)
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cadenza-store
-          path: target/cadenza-store
-          retention-days: 1
 
-  # rust-gate-full — the FULL rust-backend gate (all ~6686 .gate-baseline-rust cases), NIGHTLY (v-nix+v-ft
-  # 2026-08-10). The per-MR localGate runs only a NARROW rust-backend subset (checks.<sys>.gate-check-rust =
-  # `--case mutual`, the divergence-prone mutual-recursion class) because `--target rust` is a rustc-invocation
-  # -per-case (the full set is >1hr of rustc — prohibitive to gate every MR without re-serializing pr-sync).
-  # This nightly job gives the BROAD coverage the per-MR needle can't: it drives the WHOLE corpus through the
-  # rust backend, so a backend-divergent emit OUTSIDE the `--case mutual` needle (green-on-wasm, red-on-rust)
-  # is caught here within a day. On a RED: note the owner + WIDEN the per-MR needle reactively (add a second
-  # gate-check-rust `--case` or case-id set for the new divergence class — the widen-on-new-class pattern, same
-  # as re-recording a baseline). Builds the store first (like rc-leak-full) so the rust emit resolves the runtime.
-  #
-  # SHARDED (v-nix 2026-08-23): the full gate is >1hr of rustc, and the free ubuntu-24.04-arm runner is
-  # reclaimed at ~15 min wall (exit 143 SIGTERM), so the whole-corpus job NEVER completed — infra, not a
-  # corpus regression. Split into a matrix: `cargo xtask gate --shard I/N` round-robins the sorted corpus
-  # files into N groups, so each shard gates ~1/N of the cases. `--check --shard` scopes the baseline compare
-  # to the cases the shard runs (regressions only; other shards' cases are not "vanished"). The union of the
-  # shards is the whole corpus, so coverage is unchanged; the run is green iff every shard is. fail-fast:false
-  # so one shard's regression still lets the others report.
-  #
-  # SHARED STORE (v-nix 2026-08-23): sharding alone didn't clear the evictions — each shard still ran the
-  # ~8-min cold `cargo xtask build` (runtime store), which dominated its wall-clock and kept pushing it past
-  # the reclaim window (deaths mid-build, even after the CARGO_BUILD_JOBS cap). The store is now built ONCE by
-  # the `build-store` job and DOWNLOADED here (the gate consumes a pre-built store — main.rs:715 — never
-  # rebuilds it), so a shard does only setup + the gate cases.
-  #
-  # N=24 (v-nix 2026-08-24): the first post-shared-store nightly (run 32678228361) confirmed the store fix —
-  # build-store SUCCEEDED and 11/12 shards COMPLETED (the whole-corpus job never had before). But ONE shard
-  # (4/12) still reclaimed exit-143. The signal was clear from the shard durations: the same ~599 cases/shard
-  # took 3.5 min on a WARM-cache runner but 10-13 min COLD (the first wave, before the shared cargo cache is
-  # restored) — and the cold ~11-13 min shards sit right on the ~15 min reclaim window, so an early shard that
-  # draws a short-lived runner dies. This is the documented "bump N" case (the gate cases are the only variable
-  # cost now): halving each shard's case load (12→24, ~599→~300 cases) drops even a COLD shard to ~6-7 min,
-  # well under the window. Retry can't help — exit-143 SIGTERMs the whole job, not just the step. If a shard
-  # STILL reclaims at N=24, the residual is random free-runner PREEMPTION (not duration) → a runner-CLASS call
-  # (paid runner vs accept the flake), which is escalated, not tuned here.
-  rust-gate-full:
-    name: rust-backend gate (shard ${{ matrix.shard }}/24)
+  # corpus-rust-gate-coarse-full — the FULL rust-backend coarse gate (all corpus files through the rust
+  # backend, graded vs .gate-baseline-rust with #7706 membership_only), NIGHTLY. FOLD B (v-nix 2026-09-04):
+  # REPLACES the former native sharded `cargo xtask gate --check --target rust` job — that in-process
+  # `gate --check` path was DELETED (v-xtask seq-202); this nix coarse aggregate is its replacement. The
+  # per-MR localGate runs only the bounded corpusRustGateCoarseSubset (01+05+06); this nightly job gives the
+  # whole-corpus rust coverage the per-MR subset can't. UNSHARDED nix build (like opt-sweep): a nix build has
+  # no ~15-min free-runner reclaim window — it runs to completion and PULLS the cache-warm closure — so the
+  # sharding + shared-store plumbing the native job needed is gone (build-store removed with it, it fed only
+  # this). ADVISORY: a RED = a rust-backend divergence outside the per-MR subset → note the owner + widen the
+  # subset (the same widen-on-new-class remedy the native job used).
+  corpus-rust-gate-coarse-full:
+    name: rust-backend coarse gate (full corpus, advisory)
     runs-on: ubuntu-24.04-arm
-    # The store is built ONCE by `build-store` and downloaded below — no per-shard `cargo xtask build`.
-    needs: build-store
-    strategy:
-      fail-fast: false
-      matrix:
-        shard:
-          - 1
-          - 2
-          - 3
-          - 4
-          - 5
-          - 6
-          - 7
-          - 8
-          - 9
-          - 10
-          - 11
-          - 12
-          - 13
-          - 14
-          - 15
-          - 16
-          - 17
-          - 18
-          - 19
-          - 20
-          - 21
-          - 22
-          - 23
-          - 24
-    # CARGO_BUILD_JOBS still caps concurrent rustc within the shard's remaining builds (the gate tools + the
-    # per-case rustc) as a belt-and-suspenders memory bound; the heavy runtime-store build that dominated the
-    # shard and drove the exit-143 evictions is gone (pre-built + downloaded), so this is now a minor guard.
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - uses: DeterminateSystems/nix-installer-action@v22
         with:
-          wasm-tools: "true"
-          # Shared key across shards + build-store: they build the same tools/deps, so a warm cache makes
-          # each shard's setup ~2 min instead of a cold ~7 min.
-          cache-key: rust-gate-full
-      - name: Download the shared runtime store
-        uses: actions/download-artifact@v8
-        with:
-          name: cadenza-store
-          path: target/cadenza-store
-      - name: rust-backend gate (shard ${{ matrix.shard }}/24)
-        # `CDZ_GATE_JOBS` caps concurrent gate CASES (each a rustc invocation) within the shard; the
-        # job-level `CARGO_BUILD_JOBS` above caps rustc WITHIN each such build. Both bound peak memory so the
-        # host doesn't reclaim the runner (exit-143 = graceful eviction = MEMORY PRESSURE, not a timeout).
-        #
-        # 2 (was 4) — v-nix 2026-08-24: two independent N=24 nightlies (32682966881, 32701625126) both
-        # reclaimed exit-143 on the SAME two shards (4 and 9), both SHORT (~4-6 min, far under the reclaim
-        # window). Same-shards-twice rules out random spot-preemption (that would hit different shards each
-        # run) — it is DETERMINISTIC memory pressure: shards 4/9 hold the memory-heaviest rust-backend cases,
-        # and 4 concurrent rustc compiles of them OOM the host. Halving the concurrent-case cap (4→2, so ~2
-        # concurrent rustc × CARGO_BUILD_JOBS=2 threads) roughly halves peak memory — the documented
-        # "lower either if a shard dies memory-signed" remedy, tried BEFORE any runner-class change (this is a
-        # compute/config lever, not a cost decision). If 4/9 still die at 2, drop to 1 (serial) next; if they
-        # die even serial, the OOM is a single pathological case to isolate, not concurrency.
-        env:
-          CDZ_GATE_JOBS: "2"
-        run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/24
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      - uses: ./.github/actions/nix-store-cache
+      - name: corpus-rust-gate-coarse (via nix — full corpus through the rust backend)
+        run: nix build .#checks.aarch64-linux.corpus-rust-gate-coarse --print-build-logs
+
+  # (The FULL wasm coarse gate is NOT a separate nightly job: checks.yml's `gate` job — called by the
+  # `checks` job above — was repointed (FOLD B) to `nix build .#checks.<sys>.corpus-gate-coarse`, so
+  # nightly already runs the whole-corpus wasm coarse gate through that call. Only the RUST coarse gate
+  # needs its own nightly job, since checks.yml has no rust gate.)
 
   # opt-sweep — the TIERED-OPT LEVEL-EQUIVALENCE gate (v-core-opt's OptLevel/PassManager on the shared Core
   # column), NIGHTLY ADVISORY (v-nix #6779, concierge-greenlit). `checks.aarch64-linux.opt-sweep` is a craneLib

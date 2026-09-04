@@ -261,25 +261,23 @@ jobs:
           RUSTC_BOOTSTRAP: "1"
 
   gate:
-    # The behavior gate: compile+run every corpus case and compare to the recorded verdict.
-    # MUST build the runtime store first (`xtask build`) or every heap case is a false "runtime
-    # missing" failure. `gate --check` fails only on a REGRESSION vs the committed baseline.
-    #
-    # Runs on aarch64 for the same reason as `codegen`: it builds the runtime whose content hash a
-    # compiled program pins, and that hash must match REQUIRED_RUNTIME_HASH (recorded on aarch64)
-    # until the runtime is byte-identical across arches. On x86 every runtime-heap case would trap
-    # with "no runtime of content address … in the store". See runtime-cross-arch-determinism.
+    # The behavior gate: compile+run every corpus case and compare to the recorded verdict. FOLD B
+    # (v-nix 2026-09-04): repointed from the in-process `cargo xtask gate --check` (DELETED, seq-202) to
+    # the nix corpus-gate-coarse aggregate — the whole-corpus WASM fail-on-regression coarse gate that
+    # REPLACED gateCheck (strictly-better: adds the --diagnostics warning-capture wire). Advisory (GHA is
+    # not the merge gate; localGate is). The nix build PULLS the cache-warm closure (release-deps + the
+    # component store the per-file drvs resolve the runtime from), so no `xtask build` step is needed.
+    # soft-baselines is obsolete under the coarse gate (the "surface newly-passing" nudge is served by the
+    # corpus-verdicts-coarse harvest), so this job is always strict. aarch64 for the runtime-hash reason.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - uses: DeterminateSystems/nix-installer-action@v22
         with:
-          wasm-tools: "true"
-          cache-key: gate
-      - name: Build the runtime store
-        run: cargo xtask build
-      - name: Run the corpus gate
-        run: cargo xtask gate ${{ inputs.soft-baselines && '' || '--check' }}
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      - uses: ./.github/actions/nix-store-cache
+      - name: Run the corpus gate (via nix — full-corpus wasm coarse, fail-on-regression)
+        run: nix build .#checks.aarch64-linux.corpus-gate-coarse --print-build-logs
 
   cad-tests:
     # The Cadenza-SOURCE @test suites — libraries written IN Cadenza, run via `cdz test` (compile a

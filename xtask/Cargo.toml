@@ -39,12 +39,10 @@ cadenza-syntax = { path = "../implementation/seed/crates/cadenza-syntax" }
 # fingerprint) live here now; it owns sha2 + cdz-contract (xtask reaches them through this, so xtask no
 # longer deps cdz-contract directly). Per-command crates share it too.
 xtask-support = { path = "crates/xtask-support" }
-# TRANSIENT — REMOVE AT THE GATE-MACHINERY DELETE (seq-202, blocked on v-nix gateCheckNix). The in-process
-# `gate --check` grader (main.rs `grade_trial`) was a hand-rolled MIRROR of `cdz_corpus_grade`; that mirror
-# diverged from the shared grader and caused a fleet gate red (#7273). This dep lets the mirror's value-canon
-# CALL the single-source `cdz_corpus_grade::canonical_output_value` (operator SLICE-1 structural value-compare)
-# instead of drifting. When the gate-machinery delete lands (xtask stops grading in-process → calls the nix
-# graders), this dep + the whole in-process grader go away — deliberately NOT permanent xtask bloat.
+# The in-process corpus `gate --check` grader was DELETED in the seq-202 gate-machinery delete (the nix
+# per-file coarse gates replace it). This dep survives for the ONE remaining in-process gate — `gate
+# --opt-sweep` (opt-level O0..O3 equivalence, `optSweepCheck`), whose `sweep_outcome_key` classifies each
+# run outcome via `cdz_corpus_grade::classify` (shared trap taxonomy, single-sourced not re-mirrored).
 cdz-corpus-grade = { path = "../implementation/seed/crates/cdz-corpus-grade" }
 # The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
 # JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.
