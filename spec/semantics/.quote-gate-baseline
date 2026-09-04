@@ -7951,7 +7951,7 @@ todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a conditional-resume (two-site) arm folds across TWO performs via the two-hole refold
 todo	a conditional-resume (two-site) arm folds across a SINGLE perform
-todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
+pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param folds (conditional-abort/resume-branch lowering)
 todo	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 todo	a constant bin construction folds alongside performs in the same handle body
 todo	a constant multi-payload variant match binds both payloads and folds to a scalar

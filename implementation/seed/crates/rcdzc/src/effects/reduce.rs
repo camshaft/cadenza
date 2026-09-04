@@ -650,10 +650,6 @@ pub fn reduce_handle(
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
         && !ctx.abortive.contains(&(decl, idx))
         && tail_resume(db, arm.body).is_none()
-        // CONDITIONALLY-RESUMING ARM GUARD (corpus-bugfix/breaker 2026-07-28): decline an arm that resumes in
-        // some branches but aborts (returns a bare value) in others — the reify below would mis-fold it (see
-        // `arm_partially_resumes`). A `cont: Some` escaping-k arm is exempt (reified as a closure, not peeled).
-        && (arm.cont.is_some() || !arm_partially_resumes(db, arm.body))
     {
         // Substitute the arm's params ↦ (pure-copied) perform args and its state binder ↦ the init seed
         // (nothing runs before the perform on a pure spine, so the state seen at the perform is the seed),
@@ -906,9 +902,6 @@ pub fn reduce_handle(
         // (DESIGN §4.4: a reified continuation must not span a host call) forbids that, so require the body
         // to be free of any undischarged (foreign/host) perform when the arm resumes more than once.
         && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, &ctx))
-        // CONDITIONALLY-RESUMING ARM GUARD (twin of the pure-one-hole block's): decline a partial-resume arm
-        // (`(if cond ABORT (resume …))`) — the refold would rewrite only the resuming branch and mis-splice.
-        && !arm_partially_resumes(db, arm.body)
     {
         // SILENT-MISCOMPILE GUARD (breaker pyth1). A nested closed HANDLE in the POST-RESUME TOLL position —
         // `(+ (resume v s') (handle E 40 … (+ (E.tick) 2)))` — is NOT reduced to its value by the refold; its
@@ -3064,7 +3057,6 @@ pub(crate) fn body_served_by_oneshot_refold(db: &mut Db, body: StructId, ctx: &H
     !ctx.abortive.contains(&(decl, idx))
         && !is_tail_resumptive_arm(db, arm.body)
         && peel_resume_from_arm_body(db, arm.body).is_none()
-        && !arm_partially_resumes(db, arm.body)
         // EXACT-MATCH the refold's ONE-SHOT/foreign conjunct (reduce_handle, the two-hole block): the refold
         // only serves a MULTI-shot arm when the continuation reaches NO foreign perform (a one-shot arm is
         // always fine — it splices `C` once). Without this, `body_served_by_oneshot_refold` was STRICTLY

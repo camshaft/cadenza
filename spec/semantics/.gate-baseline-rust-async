@@ -8794,7 +8794,7 @@ todo	a closed literal closure forwarded through const-wrapper hops is not a fals
 todo	a compound built from two distinct peers escapes the entrypoint as a resource
 todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 pass	a conditional abort hoisted alongside a second abortive sibling declines cleanly
-todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
+pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param folds (conditional-abort/resume-branch lowering)
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a consumer bound to two distinct peer interfaces combines their results
 todo	a consumer bound to two scalar peer interfaces runs with no runtime

@@ -2124,7 +2124,7 @@ pass	a conditional's condition may itself be a conditional
 pass	a conditional-resume (two-site) arm folds across TWO performs via the two-hole refold
 pass	a conditional-resume (two-site) arm folds across a SINGLE perform
 pass	a conditionally-reached trap in a loop body fires exactly when its iteration arrives
-todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
+pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param folds (conditional-abort/resume-branch lowering)
 pass	a conditionally-selected nullary variant is returned as a runtime sum result
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a confident prelude-module member typo carries an applyable rename fix
