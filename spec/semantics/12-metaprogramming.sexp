@@ -4452,7 +4452,7 @@ c")))
   "eval of a quasiquote whose form BIN-MATCHES an unquoted Bytes reads the segment"
   (input
     (do
-      (def (main) (let ((b (Bytes.of (list 42)))) (eval (quasiquote (match (unquote b) ((bin (u8 x)) x) (_ 0))))))
+      (def (main) (let ((b (Bytes.of #list(42)))) (eval (quasiquote (match (unquote b) ((bin (u8 x)) x) (_ 0))))))
       (export main)))
   (output (: 42 Int64)))
 
