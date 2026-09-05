@@ -1731,6 +1731,57 @@ fn emit_elem_grounding_empty_list(
         match t.strip_nominal() {
             Ty::Int(it) => return emit_grounded(db, id, *it, env, ctx),
             Ty::Float(ft) => return emit_grounded_float(db, id, ft.ground_width(), env, ctx),
+            // A COMPOUND element/field whose OWN `type_of` is UNDER-GROUND relative to the container's
+            // DECLARED slot: a `#tuple(100)` element of a `(Set (Tuple Int8))` reads its own type as
+            // `(Tuple Int64)` (the literal defaulted), so the plain Tuple emit grounds `100` to the i64
+            // DEFAULT → `((100 as i64),)` inserted into a `BTreeSet<(i8,)>` → rustc E0308 (a nested-descent
+            // over-broad differential: wasm grounds the field from the container annotation and runs). RECURSE:
+            // ground each field to the TARGET compound's field type (not the element's under-ground self-type) —
+            // the compound twin of the scalar Int/Float arms above. Only when the node IS the matching compound
+            // LITERAL; a non-literal compound (a binding / call result) carries its own concrete type and falls
+            // through to the plain emit below.
+            Ty::Tuple(ts) => {
+                if let Core::Tuple { elems } = core_of(db, id)
+                    && ts.len() == elems.len()
+                {
+                    let field_tys = ts.clone();
+                    let mut parts = Vec::with_capacity(elems.len());
+                    for (k, &e) in elems.iter().enumerate() {
+                        parts.push(emit_elem_grounding_empty_list(
+                            db,
+                            e,
+                            field_tys.get(k),
+                            env,
+                            ctx,
+                        )?);
+                    }
+                    let trailing = if parts.len() == 1 { "," } else { "" };
+                    return Ok(format!("({}{trailing})", parts.join(", ")));
+                }
+            }
+            Ty::Record(ts) => {
+                if let Core::Record { fields } = core_of(db, id)
+                    && ts.len() == fields.len()
+                {
+                    // A record → a Rust tuple in SORTED field-name order (the `Core::Record` emit convention);
+                    // `ts.values()` and `fields.values()` both iterate that same sorted order, so position `k`
+                    // aligns. Ground each field value to its declared field type.
+                    let field_tys: Vec<Ty> = ts.values().cloned().collect();
+                    let field_ids: Vec<StructId> = fields.values().copied().collect();
+                    let mut parts = Vec::with_capacity(field_ids.len());
+                    for (k, &v) in field_ids.iter().enumerate() {
+                        parts.push(emit_elem_grounding_empty_list(
+                            db,
+                            v,
+                            field_tys.get(k),
+                            env,
+                            ctx,
+                        )?);
+                    }
+                    let trailing = if parts.len() == 1 { "," } else { "" };
+                    return Ok(format!("({}{trailing})", parts.join(", ")));
+                }
+            }
             _ => {}
         }
     }
@@ -3164,9 +3215,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // sibling-width render (#1766) and the compound-slot literal grounding above (adv-68, v-inference).
             // Both Int AND Float element widths (the float twin closes the same wasm-vs-rust E0308 as the
             // list/map fix — a bare deferred-width float element beside an f32-settled sibling).
-            let (set_elem_it, set_elem_fw) = match type_of(db, id).strip_nominal() {
-                Ty::Set(elem) => container_slot_grounding(elem),
-                _ => (None, None),
+            let set_elem_ty: Option<Ty> = match type_of(db, id).strip_nominal() {
+                Ty::Set(elem) => Some((**elem).clone()),
+                _ => None,
+            };
+            let (set_elem_it, set_elem_fw) = match &set_elem_ty {
+                Some(elem) => container_slot_grounding(elem),
+                None => (None, None),
             };
             let mut lines = String::new();
             for e in elems.iter() {
@@ -3174,6 +3229,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     emit_grounded(db, *e, it, env, ctx)?
                 } else if let Some(fw) = set_elem_fw {
                     emit_grounded_float(db, *e, fw, env, ctx)?
+                } else if let Some(ct) = set_elem_ty
+                    .as_ref()
+                    .filter(|t| matches!(t.strip_nominal(), Ty::Tuple(_) | Ty::Record(_)))
+                {
+                    // A COMPOUND element type (a Set of tuples/records): ground each element's FIELDS to the
+                    // set's DECLARED element type via the compound recursion in `emit_elem_grounding_empty_list`
+                    // — a bare narrow-int field of a `#tuple(100)` element of `(Set (Tuple Int8))` would
+                    // otherwise emit `(100 as i64)` into a `BTreeSet<(i8,)>` → rustc E0308 (the tuple's own
+                    // `type_of` is under-ground `(Tuple Int64)`; `container_slot_grounding` only grounds a SCALAR
+                    // element). Mirrors wasm, which grounds the nested field and runs.
+                    emit_elem_grounding_empty_list(db, *e, Some(ct), env, ctx)?
                 } else {
                     emit(db, *e, env, ctx)?
                 };

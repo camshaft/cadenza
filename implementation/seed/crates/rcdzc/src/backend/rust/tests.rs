@@ -2339,6 +2339,57 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn rustc_a_narrow_literal_in_a_compound_nested_in_a_set_element_grounds_to_the_field_width() {
+    // REGRESSION (v-corpus-harness family-B, 06-numeric-model:2527 "an IN-RANGE literal in a tuple nested
+    // inside a set element still compiles — the nested check is not over-broad"): `#set(#tuple(100))` under
+    // `(Set (Tuple Int8))` — the in-range literal `100` (≤127) sits inside the tuple inside the set element.
+    // The set is `BTreeSet<(i8,)>`, but the tuple element's OWN `type_of` is UNDER-GROUND `(Tuple Int64)`, so
+    // the plain Tuple emit grounded `100` to the i64 DEFAULT → `((100u64 as i64),)` inserted into a
+    // `BTreeSet<(i8,)>` → rustc E0308 (uncompilable, graded fail — while wasm grounds the field and runs to 1).
+    // `container_slot_grounding` only grounds a SCALAR set element; the fix grounds a COMPOUND element's FIELDS
+    // to the set's DECLARED element type (the compound recursion in `emit_elem_grounding_empty_list`).
+    let tup = "(module m (def (g) (Set.len (: #set(#tuple(100)) (Set (Tuple Int8))))) (export g))";
+    let s = compile_rust(tup);
+    assert!(
+        s.contains("BTreeSet<(i8,)>") && s.contains("100u8 as i8") && !s.contains("100u64 as i64"),
+        "the nested tuple literal grounds to the tuple's i8 field width (not the i64 default) so the \
+         `(i8,)` element matches the `BTreeSet<(i8,)>`:\n{s}"
+    );
+    assert!(
+        compile_rust_result(tup).is_ok(),
+        "the tuple-in-set program emits (was E0308-uncompilable via the i64-default field)"
+    );
+    if let Some(out) = rustc_run(&s, "g()") {
+        assert_eq!(
+            out, "1",
+            "the set has one element — Set.len = 1, same as wasm"
+        );
+    }
+    // RECORD twin (exercises the `Ty::Record` compound arm): a record → a Rust tuple in sorted field-name
+    // order, its `a: Int8` field grounded to i8.
+    let rec = "(module m (def (g) (Set.len (: #set(#record((= a 100))) (Set (Record (: a Int8)))))) (export g))";
+    let sr = compile_rust(rec);
+    assert!(
+        sr.contains("BTreeSet<(i8,)>") && sr.contains("100u8 as i8"),
+        "a record set element grounds its `a: Int8` field to i8:\n{sr}"
+    );
+    // NESTED-COMPOUND (tuple-in-tuple): the grounding recurses through arbitrary compound depth.
+    let nested = "(module m (def (g) (Set.len (: #set(#tuple(#tuple(100))) (Set (Tuple (Tuple Int8)))))) (export g))";
+    let sn = compile_rust(nested);
+    assert!(
+        sn.contains("BTreeSet<((i8,),)>") && sn.contains("100u8 as i8"),
+        "a tuple-nested-in-a-tuple set element grounds the deepest i8 field (descent recurses):\n{sn}"
+    );
+    // MUST-HOLD control: a determined-scalar set (`(Set Int8)`) still grounds+compiles unchanged (no
+    // over-reject, no regression to the scalar `container_slot_grounding` path this fix sits beside).
+    let scalar = "(module m (def (g) (Set.len (: #set(100) (Set Int8)))) (export g))";
+    assert!(
+        compile_rust_result(scalar).is_ok(),
+        "a scalar-element set is unaffected by the compound-element grounding"
+    );
+}
+
+#[test]
 fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
     // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
     // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but
