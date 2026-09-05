@@ -12,18 +12,24 @@ it, you never edit it, you never open a cadenza PR, and you never `cargo xtask f
 for your own work. Treat it purely as your fleet mailbox.
 
 - **Your WORK repo** is named in the CHARTER (`~/Projects/aws/…`). `cd` there for everything real.
-- **Fleet comms work from ANY cwd** via the BUILT xtask binary by ABSOLUTE PATH. `cargo xtask` will NOT
-  work from your work repo (it needs the cadenza cargo project at cwd), so do NOT use `cargo xtask` once
-  you've `cd`'d away. Instead, at the START of every session define a helper and use it everywhere:
-  ```sh
-  FLEETX="$(cd <YOUR-CADENZA-COMMS-WORKTREE> && pwd)/target/release/xtask"   # absolute; self-locates the hub
-  fleetx() { "$FLEETX" fleet "$@"; }
-  ```
-  The binary bakes its own repo location at build time and resolves the shared hub via
-  `git --git-common-dir` of THAT path, so `fleetx heartbeat <you> / inbox <you> / send …` all work no
-  matter what cwd you're in. (Your comms-worktree path is printed in your kickoff as "Your worktree is …".)
-  If `target/release/xtask` is missing, run `cargo xtask fleet --help` ONCE from the comms worktree to
-  build it, or `cd` back to the comms worktree for comms calls.
+- ⚠ **TWO different `xtask`s — do NOT conflate them** (naming collision, operator called this out):
+  - **your WORK repo's OWN `xtask`** (e.g. s2n-quic's `xtask` crate: host-deploy / benchmark-run /
+    result-collection). Run it as **bare `cargo xtask …` FROM your work repo** — that resolves to the WORK
+    repo's xtask, which is your PRIMARY experiment harness. USE it and EXTEND it freely for the mission.
+  - **the cadenza `xtask`** — used ONLY for `fleet …` comms back to the concierge, and NEVER as `cargo
+    xtask` (a bare `cargo xtask` from your work repo hits the WORK repo's xtask, not cadenza's). Reach the
+    cadenza fleet tooling via the BUILT binary by ABSOLUTE PATH instead. At the START of every session:
+    ```sh
+    FLEETX="$(cd <YOUR-CADENZA-COMMS-WORKTREE> && pwd)/target/release/xtask"   # absolute; self-locates the hub
+    fleetx() { "$FLEETX" fleet "$@"; }   # cadenza fleet comms, works from ANY cwd
+    ```
+    The binary bakes its own repo location at build time and resolves the shared hub via
+    `git --git-common-dir` of THAT path, so `fleetx heartbeat <you> / inbox <you> / send …` all work no
+    matter what cwd you're in. (Your comms-worktree path is printed in your kickoff as "Your worktree is …".)
+    If `target/release/xtask` is missing, run `cargo xtask fleet --help` ONCE from the comms worktree to
+    build it, or `cd` back to the comms worktree for comms calls.
+  - RULE OF THUMB: **`fleetx …` = talk to the concierge; bare `cargo xtask …` (in the work repo) = run/extend
+    the experiment harness.** Never `fleetx` for harness work; never bare `cargo xtask` for fleet comms.
 
 ## Each tick (what the generic kickoff/watchdog prompt means FOR YOU)
 
@@ -77,6 +83,12 @@ the concierge at once (it's the launcher's env to fix, not yours) and proceed wi
 > suggests `i8ge.12xl` — **VERIFY** the instance type actually delivers 75 Gbps before relying on it).
 > Use **dc-tester** to drive throughput. Known problem: a workload requesting **64 KB chunks** where
 > dcQUIC is NOT hitting line rate in the benchmark. Go through **EVERY** workload.
+>
+> **Harness:** the s2n-quic repo has its OWN `xtask` crate with substantial tooling to deploy to hosts,
+> run benchmarks, and collect results. USE that s2n-quic `xtask` (bare `cargo xtask …` FROM ~/Projects/aws/
+> s2n-quic) as your PRIMARY host-deploy / bench-run / result-collection harness, and EXTEND it freely as the
+> optimization work needs. (Reminder: this "s2n-quic xtask" is DISTINCT from the cadenza xtask, which you
+> touch ONLY via `fleetx` for fleet comms — see the two-xtask warning above.)
 >
 > **Benchmark docs/results:** `https://bunsho.amazon.dev/91s3R7JNzBa06` (read via the internal-website MCP;
 > if you cannot access it, `note` the concierge immediately — do not proceed blind on that dimension).
