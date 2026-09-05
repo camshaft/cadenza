@@ -662,19 +662,20 @@ all IRREFUTABLE (tuple/record have a single shape). Returns `none` (→ the call
 or unmodeled sub-pattern: a literal, a variant `(Ctor p)`, a nested list pattern, an arity/key/head/type
 mismatch. Dedup of the collected binders is left to the top-level classifier. This is the shared engine for
 the collection-pattern classifiers, so nesting composes (`#tuple(a #record((= x b)))`, etc.). -/
-partial def subPatBinds? (m : Ast.Module) (τ : Ty) (patId : Nat) : Option (List (ByteArray × Ty)) :=
+partial def subPatBinds? (m : Ast.Module) (τ : Ty) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
   match m.nodes[patId]? with
   | some (.atom lid) =>
     (match m.leaves[lid]? with
-     | some (.name b) => some (if b == "_".toUTF8 then [] else [(b, τ)])
-     | _ => none)                                             -- a literal → refutable → decline
+     | some (.name b) => some (true, if b == "_".toUTF8 then [] else [(b, τ)])  -- binder/`_`: irrefutable
+     | _ => none)                                             -- a bare literal → refutable, no binds; defer (decline)
   | some (.list pc) =>
     (match m.headName? (.list pc), τ with
      | some hp, .tuple τs =>
        if hp == "tuple".toUTF8 then
          let sps := (pc.extract 1 pc.size).toList
          if sps.length == τs.length then
-           (sps.zip τs).foldl (fun acc (sp, t) => acc.bind (fun bs => (subPatBinds? m t sp).map (bs ++ ·))) (some [])
+           (sps.zip τs).foldl (fun acc (sp, t) => acc.bind (fun (ir, bs) =>
+             (subPatBinds? m t sp).map (fun (ir2, bs2) => (ir && ir2, bs ++ bs2)))) (some (true, []))
          else none                                            -- arity mismatch → decline
        else none
      | some hp, .record fields =>
@@ -687,13 +688,27 @@ partial def subPatBinds? (m : Ast.Module) (τ : Ty) (patId : Nat) : Option (List
            if patKeys.eraseDups.length == patKeys.length
               && patKeys.all (fun k => fields.any (·.1 == k))
               && fields.all (fun f => patKeys.any (· == f.1)) then
-             kps.foldl (fun acc (k, sp) => acc.bind (fun bs =>
+             kps.foldl (fun acc (k, sp) => acc.bind (fun (ir, bs) =>
                match (fields.find? (·.1 == k)).map (·.2) with
-               | some t => (subPatBinds? m t sp).map (bs ++ ·)
-               | none => none)) (some [])
+               | some t => (subPatBinds? m t sp).map (fun (ir2, bs2) => (ir && ir2, bs ++ bs2))
+               | none => none)) (some (true, []))
            else none                                          -- subset / extra key / open-row rest → decline
        else none
-     | _, _ => none)                                          -- variant/list/other nested, or head/type mismatch → decline (defer)
+     | some hp, .sum variants =>
+       -- T1.52 inc-5 — a NESTED VARIANT pattern `(Ctor p)` / `(Ctor)` under a match position (e.g.
+       -- `#tuple(a (Some b))`): binds the payload; REFUTABLE unless the sum has a single variant. A refutable
+       -- sub-pattern makes the ENCLOSING arm refutable, so the outer match needs a covering (catch-all) arm.
+       (match variants.find? (·.1 == hp) with
+        | some (_, some payloadTy) =>                          -- payload-bearing variant `(Ctor p)`
+          if pc.size == 2 then
+            (match pc[1]? with
+             | some subId => (subPatBinds? m payloadTy subId).map (fun (subIr, bs) => ((variants.length == 1) && subIr, bs))
+             | none => none)
+          else none                                           -- `(Ctor)` on a payload variant / over-applied → decline
+        | some (_, none) =>                                   -- nullary variant `(Ctor)` (no payload, no binds)
+          if pc.size == 1 then some (variants.length == 1, []) else none
+        | none => none)                                       -- not a variant of this sum → decline
+     | _, _ => none)                                          -- a nested list pattern / literal / head-type mismatch → decline (defer)
   | none => none
 
 /-- Dedup a bind list: `none` if a name repeats (rcdzc CDZ0201 — declined to avoid a false accept). -/
@@ -705,7 +720,7 @@ inc-4 with NESTED sub-patterns). A `_` / bare binder binds the whole tuple; a `(
 element (each sub-pattern may itself be a nested tuple/record via `subPatBinds?`). Always IRREFUTABLE ⇒ the
 match is exhaustive. `none` (→ DECLINE) on arity mismatch, a refutable/unmodeled sub-pattern, or a dup binder. -/
 def tuplePatClassify? (m : Ast.Module) (τs : List Ty) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
-  ((subPatBinds? m (.tuple τs) patId).bind noDupBinds?).map (fun bs => (true, bs))
+  (subPatBinds? m (.tuple τs) patId).bind (fun (ir, bs) => (noDupBinds? bs).map (fun bs' => (ir, bs')))
 
 /-- Classify a MATCH pattern `patId` against a RECORD scrutinee of fields `fields` (T1.52 inc-2). Returns
 `some (irrefutable, binds)` for a MODELED pattern: a `_` / bare binder (binds the whole record —
@@ -715,7 +730,7 @@ field's type — irrefutable). `none` (→ DECLINE, never a false reject) for an
 key, an open-row `(.. rest)`, a nested/literal sub-pattern, or a DUPLICATE binder. A record has a single
 shape, so a modeled record pattern is always irrefutable ⇒ the match is exhaustive. -/
 def recordPatClassify? (m : Ast.Module) (fields : List (ByteArray × Ty)) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
-  ((subPatBinds? m (.record fields) patId).bind noDupBinds?).map (fun bs => (true, bs))
+  (subPatBinds? m (.record fields) patId).bind (fun (ir, bs) => (noDupBinds? bs).map (fun bs' => (ir, bs')))
 
 /-- Classify a MATCH pattern `patId` against a LIST scrutinee of element type `elem` (T1.52 inc-3). Returns
 `some (coversAll, binds)`: `coversAll` = the pattern matches a list of ANY length (a `_` / bare binder, or a
@@ -735,7 +750,7 @@ def listPatClassify? (m : Ast.Module) (elem : Ty) (patId : Nat) : Option (Bool �
   -- an element sub-pattern binds via `subPatBinds?` (T1.52 inc-4): a `_`/binder, OR a nested irrefutable
   -- tuple/record (`#list(#tuple(a b) …)`); a refutable/unmodeled element → decline.
   let addBind : List (ByteArray × Ty) → Nat → Ty → Option (List (ByteArray × Ty)) := fun bs sp τ =>
-    (subPatBinds? m τ sp).map (bs ++ ·)
+    (subPatBinds? m τ sp).map (fun (_, bs2) => bs ++ bs2)  -- list arm ignores element refutability (coversAll is length-based)
   let noDup : List (ByteArray × Ty) → Option (List (ByteArray × Ty)) := fun bs =>
     let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some bs else none
   match m.nodes[patId]? with
@@ -1494,7 +1509,9 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         | none => .error (.unsupported "type oracle: match produced no result type")
                         | some τr =>
                           if sawIrref then .ok (τr, stF)   -- an irrefutable tuple/catch-all arm ⇒ exhaustive
-                          else .error (.illTyped "CDZ0210")))
+                          -- else: only refutable arms (a nested variant sub-pattern, T1.52 inc-5) with no
+                          -- covering catch-all → not provably exhaustive → DECLINE (sound, not a false CDZ0210)
+                          else .error (.unsupported "type oracle: tuple match not provably exhaustive (only refutable nested sub-patterns, no catch-all) — declined")))
                   | .record fields =>
                     -- T1.52 inc-2 — MATCH on a RECORD scrutinee: each arm is a `(record (= k p)…)` pattern
                     -- whose field-key set matches the record's (binding each field type) or a catch-all,
@@ -1529,7 +1546,8 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         | none => .error (.unsupported "type oracle: match produced no result type")
                         | some τr =>
                           if sawIrref then .ok (τr, stF)
-                          else .error (.illTyped "CDZ0210")))
+                          -- refutable-only record arms (nested variant, inc-5) with no catch-all → decline (sound)
+                          else .error (.unsupported "type oracle: record match not provably exhaustive (only refutable nested sub-patterns, no catch-all) — declined")))
                   | .listTy elem =>
                     -- T1.52 inc-3 — MATCH on a LIST scrutinee: arms are `#list(p1…pn)` / `#list(p1…pk (.. r))`
                     -- / catch-all, via `listPatClassify?` (each element binds `elem`, a rest binds `List elem`).
