@@ -8,6 +8,16 @@
 use super::*;
 
 pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
+    // Splat-expand the call args FIRST — an empty-tuple splat `(.. #tuple())` contributes ZERO positional
+    // args, so `(f (.. #tuple()))` for a nullary `f` types EXACTLY as `(f)` (its body type), not `Any`.
+    // Without it the raw splat arg makes the nullary application look 1-ary (no lambda β-reduce, no Fn
+    // scheme), so it falls through to `Any` → "function return type has no machine representation" at the
+    // boundary when the result flows unannotated (breaker #8487 result-type residual; the arity + lowering
+    // sides already splat-expand — this threads the reduced type on the inference side too). A no-op when no
+    // `(.. )` arg is present, and the lambda arm's own `apply_lambda` re-expand then finds no marker (no
+    // double-expansion). Recursive `apply_type` calls below pass these already-expanded args.
+    let splat_expanded = crate::eval::expand_call_splat_args(db, args);
+    let args: &[StructId] = splat_expanded.as_deref().unwrap_or(args);
     // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
     // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
     // concrete result type, so the application's type is that (`Int64`), NOT `Ty::Fn` (the naive type

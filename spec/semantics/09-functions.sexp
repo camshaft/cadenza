@@ -13542,6 +13542,22 @@
   (output (: 12 Int64)))
 
 (case
+  "an empty tuple splat into a nullary fn threads the RESULT TYPE, not just the value"
+  (doc
+    "The result-type companion (breaker #8487 residual): `(f (.. #tuple()))` must not only reduce to the
+           nullary's VALUE but also INFER its RESULT TYPE from the reduced `(f)`'s body (Int64). Before the
+           `apply_type` splat-expansion, the raw splat arg made the nullary application type `Any` — a bare
+           unannotated result then declined at the boundary (`function return type has no machine
+           representation`). Here the splat result is BOUND in a `let` and returned, so main's result type is
+           threaded from the splat-application node (Int64), = 7, on all three backends.")
+  (input
+    (do
+      (def (f) 7)
+      (def (main) (let ((x (f (.. #tuple())))) x))
+      (export main)))
+  (output (: 7 Int64)))
+
+(case
   "a tuple splat spreads a tuple held in a variable"
   (doc
     "The splat operand need not be a tuple LITERAL — a bound `let`-local holding a tuple splats the same
