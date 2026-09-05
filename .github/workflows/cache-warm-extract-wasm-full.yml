@@ -112,7 +112,7 @@ jobs:
           nix build .#checks.aarch64-linux.oracle-wasm-diff-full-shard-${{ matrix.shard }}-of-16 \
             --print-build-logs --keep-going 2>&1 | tee /tmp/shard.log || true
           grep -E 'oracle-wasm-diff:.*agree' /tmp/shard.log | tail -1 > tally/shard-${{ matrix.shard }}.txt || true
-          { echo "--- shard ${{ matrix.shard }}/16 DIVERGE/LEAK lines:"; grep -E '^(DIVERGE|LEAK) ' /tmp/shard.log || true; } >> tally/shard-${{ matrix.shard }}.txt
+          { echo "--- shard ${{ matrix.shard }}/16 DIVERGE/LEAK/CAPPED lines:"; grep -oE '(DIVERGE|LEAK|CAPPED) .*' /tmp/shard.log | sort -u || true; } >> tally/shard-${{ matrix.shard }}.txt
       - name: upload shard ${{ matrix.shard }} tally
         if: always()
         uses: actions/upload-artifact@v7
@@ -155,8 +155,8 @@ jobs:
           echo ""
           echo "FULL CORPUS TOTAL: $A agree, $D diverge, $S skip, $L leak (summed across 16 shards; $missing shard(s) missing a tally)"
           echo ""
-          echo "=== all DIVERGE/LEAK lines across shards ==="
-          grep -hE '^(DIVERGE|LEAK) ' tallies/shard-*.txt 2>/dev/null || echo "(none)"
+          echo "=== all DIVERGE/LEAK/CAPPED lines across shards ==="
+          grep -hE '^(DIVERGE|LEAK|CAPPED) ' tallies/shard-*.txt 2>/dev/null | sort -u || echo "(none)"
           if [ "$D" -gt 0 ]; then
             echo "::warning::full-corpus oracle-wasm-diff: $D DIVERGE(s) across the corpus — advisory miscompile signal for v-wasm-oracle → v-cadenza-backend (see lines above)"
           fi
