@@ -202,23 +202,59 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
             "(type Color (Red) (Green) (Blue))".to_string(),
             ["Red", "Green", "Blue"][(a % 3) as usize].to_string(),
         ),
-        // PAYLOAD-CARRYING tagged-sum RESULT — `main` RETURNS the constructed variant VALUE bare (not
-        // matched): the user-sum result+payload codec the match-consuming arms never exercised as a
-        // returned value (the surface v-wasm-oracle's user-sum result/payload decode #8537/#8546 targets;
-        // here confirmed DIRECTLY by wasm-vs-rust, no value oracle needed).
-        3 => {
-            let ctor = if c.variant(2) == 0 {
-                format!("(Circle {a})")
-            } else {
-                format!("(Rect {a} {b})")
-            };
-            (
-                "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
-                ctor,
-            )
-        }
-        // SINGLE-variant struct-newtype RESULT — `main` RETURNS the bare newtype value (erases to a field
-        // tuple), the newtype-result codec.
+        // PAYLOAD-CARRYING / RESULT-RETURN family — `main` RETURNS the constructed variant VALUE bare (not
+        // matched): the user-sum result+payload decode codec (#8537 names / #8547 payloads arity 0/1/≥2)
+        // the match-consuming arms never exercised as a returned value. v-wasm-oracle S488 EMPHASIS (priority
+        // order): arity≥2 · NESTED payloads (recursive fixupTy + mid-traversal module switch = highest-value)
+        // · mixed-arity multi-variant · prelude-name-reuse. All confirmed DIRECTLY by wasm-vs-rust AGREE.
+        3 => match c.variant(6) {
+            // arity≥2 tagged payload (Rect a b) — the `.tuple` payload / fixupTuple path.
+            0 => {
+                let ctor = if c.variant(2) == 0 {
+                    format!("(Circle {a})")
+                } else {
+                    format!("(Rect {a} {b})")
+                };
+                (
+                    "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
+                    ctor,
+                )
+            }
+            // MIXED-arity multi-variant (nullary + arity1 + arity2), return one — exercises disc→field-type
+            // indexing ACROSS arities in one type.
+            1 => {
+                let v = match c.variant(3) {
+                    0 => "(A)".to_string(),
+                    1 => format!("(B {a})"),
+                    _ => format!("(C {a} {b})"),
+                };
+                ("(type M (A) (B Int64) (C Int64 Int64))".to_string(), v)
+            }
+            // NESTED Option payload, multi-variant so the tag is KEPT — recursive fixupTy over Option.
+            2 => (
+                "(type W (Wrap (Option Int64)) (Nada))".to_string(),
+                format!("(Wrap (Some {a}))"),
+            ),
+            // NESTED List payload, tagged — recursive fixupTy over List.
+            3 => (
+                "(type T (Tag (List Int64)) (Bare))".to_string(),
+                format!("(Tag (list {a} {b}))"),
+            ),
+            // NESTED USER-SUM payload, tagged — a variant field that is ITSELF a user sum: the recursive
+            // fixupTy-against-cm + mid-traversal module switch (m:=cm), v-wasm's highest-value decode case.
+            4 => (
+                "(type Inner (I Int64) (J)) (type Outer (O Inner) (P))".to_string(),
+                format!("(O (I {a}))"),
+            ),
+            // PRELUDE-name-reuse nullary variants (Neg/Zero/Pos) — stresses resolve-against-user-type-not-
+            // prelude (userSumTypes keyed by sumName), an adversarial decode case.
+            _ => (
+                "(type Sign (Neg) (Zero) (Pos))".to_string(),
+                ["(Neg)", "(Zero)", "(Pos)"][(a % 3) as usize].to_string(),
+            ),
+        },
+        // SINGLE-variant struct-newtype RESULT — `main` RETURNS the bare newtype value (ERASES to a field
+        // tuple, NO tag → validates the `.tuple` non-tagged decode path, distinct from tagged `.variant`).
         _ => (
             "(type Pt (Mk Int64 Int64))".to_string(),
             format!("(Pt.Mk {a} {b})"),
