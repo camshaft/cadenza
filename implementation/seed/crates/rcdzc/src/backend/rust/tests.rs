@@ -2429,6 +2429,39 @@ fn rustc_a_fitting_payload_through_option_expect_grounds_to_the_narrow_result_an
 }
 
 #[test]
+fn a_recursive_local_fn_capturing_an_enclosing_binding_declines_cdz0900_not_an_adhoc_fail() {
+    // REGRESSION (v-corpus-harness family-B, 09-functions:13309 llb1): a recursive do-local `climb`
+    // capturing param `n` AND do-local `step` — the multi-capture lambda-lift is not yet built (v-inference;
+    // the #6879 param-face residual). WASM cleanly declines CDZ0900 (`RECURSIVE_LOCAL_CAPTURE_DECLINE`);
+    // RUST previously hit an ad-hoc `Reject::decline("reference has no bound Rust identifier")` on the
+    // unbound captured PARAM (`n`, whose `def_of_param` matches — the current fn's params are all in `env`,
+    // so an unbound one is definitionally an enclosing-scope capture), which graded a DISHONEST FAIL where
+    // wasm honestly declines (todo). The fix raises the SAME coded CDZ0900, so the two backends agree.
+    let llb1 = "(do (def (main (: n Int64)) (do (def step 3) (def (climb (: k Int64) (: acc Int64)) (if (> k 0) (climb (- k 1) (+ acc (+ step n))) acc)) (climb 4 0))) (export main))";
+    let err = try_compile_rust(llb1)
+        .expect_err("a recursive local fn capturing an enclosing binding must DECLINE (multi-capture lift unbuilt)");
+    assert!(
+        err.iter()
+            .any(|d| d.contains("recursive local function that captures a binding")),
+        "the decline is the coded CDZ0900 recursive-local-capture message (matching wasm), not the ad-hoc \
+         `no bound Rust identifier` fail: {err:?}"
+    );
+    // NO OVER-DECLINE: a SINGLE capture (only the param `n`, or only the const-folded do-local `step`) is
+    // supported by the #6879 lift and must still COMPILE — the CDZ0900 fires only for the genuinely-unbuilt
+    // multi-capture, never for a case the backend can emit.
+    let only_n = "(do (def (main (: n Int64)) (do (def (climb (: k Int64) (: acc Int64)) (if (> k 0) (climb (- k 1) (+ acc n)) acc)) (climb 4 0))) (export main))";
+    assert!(
+        compile_rust_result(only_n).is_ok(),
+        "a recursive local fn capturing only the enclosing PARAM must still compile (single-capture lift)"
+    );
+    let only_step = "(do (def (main (: n Int64)) (do (def step 3) (def (climb (: k Int64) (: acc Int64)) (if (> k 0) (climb (- k 1) (+ acc step)) acc)) (climb 4 0))) (export main))";
+    assert!(
+        compile_rust_result(only_step).is_ok(),
+        "a recursive local fn capturing only a const-folded do-local must still compile"
+    );
+}
+
+#[test]
 fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
     // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
     // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but
