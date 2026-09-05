@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 27 };
+    let arms = if depth == 0 { 2 } else { 28 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -954,7 +954,23 @@ fn gen_typefuzz_int<C: Choice>(
         // An EXHAUSTIVE `match` over a built-in sum with flat `(Ctor binder)` arms → Int64 (Mat rule
         // T1.16). Option (`(Some x)`/`(None)`) or Ordering (all three variants); the payload binder is
         // an Int64 var in scope for that arm's body. Non-exhaustive/nested patterns are out-of-fragment.
-        _ => gen_typefuzz_match(c, depth, iscope, bscope, fresh, false),
+        26 => gen_typefuzz_match(c, depth, iscope, bscope, fresh, false),
+        // A MATCH on a TUPLE scrutinee (T1.52 inc-1): a FIXED-ARITY tuple pattern `(tuple x y)` /
+        // `(tuple x y z)` binds each element's type; return a bound element → Int64. A tuple has one shape,
+        // so the pattern is irrefutable ⇒ exhaustive ⇒ both rcdzc + oracle infer WellTyped (HOLDS).
+        // Elements via `gen_typefuzz_int` (as the tuple-proj arm); return a BOUND binder (no arithmetic) so
+        // no CDZ0304 const-fold overflow. Nested/literal sub-patterns, arity-mismatch, rest, dup-binder,
+        // and non-tuple scrutinees are NOT generated (still oracle-skip in inc-1).
+        _ => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(match (tuple {a} {b}) ((tuple x y) x))")
+            } else {
+                let d = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+                format!("(match (tuple {a} {b} {d}) ((tuple x y z) y))")
+            }
+        }
     }
 }
 
@@ -3815,7 +3831,7 @@ fn gen_splat_destructure_body<C: Choice>(c: &mut C, out: &mut String) {
         gen_small_int_literal(c, out);
         out.push(' ');
         gen_small_int_literal(c, out);
-        out.push_str(")))))");
+        out.push_str("))))");
     } else {
         // Destructure-pattern param: the fn's parameter IS a `#tuple(a b)` pattern binding both components.
         out.push_str("(do (def (fs #tuple(a b)) (+ a b)) (fs (tuple ");
