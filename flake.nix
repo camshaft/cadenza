@@ -5910,10 +5910,14 @@
         # (v-gha-green) seed-warms the closure once (#8446) then runs an N-way `needs:seed` matrix + SUMS the
         # tallies. `oracleWasmDiffFullShardN n i` = shard i of n; the of-8 set is the default matrix, the of-16
         # set is staged as the N=16 contingency (viable post-seed — each shard PULLS warm, runs a 1/16 slice).
+        # `--cap-ms 1800000` (30 min) = the per-CASE wall-clock cap (#8512): sharding bounds per-shard COUNT,
+        # not per-CASE time, so a single near-8M-step runaway case hung 5 shards >4.5h (v-gha-green N=16
+        # diagnosis). 30 min decisively caps the >4.5h runaways (→ tallied `capped`, skipped) while sparing
+        # legit fuel-heavy cases, so every shard COMPLETES + diffs its other ~558 cases (recovers the lost tail).
         oracleWasmDiffFullShardN = n: i: pkgs.runCommand "oracle-wasm-diff-full-shard-${toString i}-of-${toString n}"
           { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleWasmCaseDirsFull; } ''
           echo "oracle-wasm-diff-full shard ${toString i}/${toString n}: $(wc -l < "$caseDirs") total cases (round-robin)"
-          oracle-wasm-diff --manifest "$caseDirs" --shard ${toString i} ${toString n} | tee result
+          oracle-wasm-diff --manifest "$caseDirs" --shard ${toString i} ${toString n} --cap-ms 1800000 | tee result
           echo "ok: oracle-wasm Core->wasm differential (full corpus, shard ${toString i}/${toString n}) — $(tail -1 result)" > "$out"
         '';
         oracleWasmDiffFullShard = oracleWasmDiffFullShardN 8;  # back-compat: the default of-8 matrix
