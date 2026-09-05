@@ -198,7 +198,7 @@ def main (args : List String) : IO UInt32 := do
           tally := { tally with diverge := tally.diverge + 1 }
           let ops := heapOpImportsOf coreWat
           divergeLeakOps := divergeLeakOps ++ ops
-          IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm} | heap-ops: {ops}"
+          IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm} | result: {resultKindTag rtBytes "main".toUTF8} | heap-ops: {ops}"
       | some (.skip r) =>
           tally := { tally with skip := tally.skip + 1 }
           skipReasons := r :: skipReasons
@@ -209,7 +209,9 @@ def main (args : List String) : IO UInt32 := do
           tally := { tally with leak := tally.leak + 1 }
           let ops := heapOpImportsOf coreWat
           divergeLeakOps := divergeLeakOps ++ ops
-          IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak) | heap-ops: {ops}"
+          -- Tag the result KIND (`scalar <Ty>` = genuine husk; `string`/`heap` = owned result already dropped,
+          -- residual is real) so v-memory-safety can partition scalar-vs-heap leaks straight from the CI log.
+          IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak) | result: {resultKindTag rtBytes "main".toUTF8} | heap-ops: {ops}"
     IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip, {tally.leak} leak, {tally.capped} capped (of {cases.length} cases)"
     -- Heap-op usage histogram over the DIVERGE + LEAK cases — which consume-op dominates the regression.
     IO.println "oracle-wasm-diff diverge+leak heap-op histogram:"
