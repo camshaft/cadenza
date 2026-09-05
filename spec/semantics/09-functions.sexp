@@ -13511,6 +13511,21 @@
   (output (: 3 Int64)))
 
 (case
+  "an EMPTY tuple splat into a rest parameter gathers to the EMPTY list"
+  (doc
+    "The empty-splat + rest-parameter corner: `(count (.. #tuple()))` spreads ZERO arguments, which
+           `count`'s list-rest parameter gathers into the EMPTY `xs : List Int64` — length 0. The two
+           empty-splat mechanisms compose (spread-to-zero then gather-nothing). Edge-hunt companion to the
+           sole-arg-into-nullary + amid-positionals cases, guarding the empty-splat family across the varargs
+           gather path.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (count (.. #tuple())))
+      (export main)))
+  (output (: 0 Int64)))
+
+(case
   "an empty tuple splat as the sole argument to a nullary fn spreads to zero args"
   (doc
     "An empty tuple splat `(.. #tuple())` contributes ZERO positional arguments, so `(f (.. #tuple()))`
