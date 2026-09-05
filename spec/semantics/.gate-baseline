@@ -15,7 +15,7 @@ fail	a dependent-utf8 segment decodes and the string is used, invalid bytes fall
 fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
 fail	a post-payload literal mismatch at the dynamic offset falls through
 fail	a shadowed utf8 string binder reads the inner decode
-fail	a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes
+pass	a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes
 fail	a u16 literal segment matches at the dynamic offset after a dependent payload
 pass	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closures — the Bool→Bytes one
