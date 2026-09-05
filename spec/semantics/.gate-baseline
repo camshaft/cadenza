@@ -1,5 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
+pass	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
 pass	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
 pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
 pass	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result

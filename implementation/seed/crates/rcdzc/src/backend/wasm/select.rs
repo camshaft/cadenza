@@ -2244,8 +2244,15 @@ fn param_only_borrowed_or_backedge_rec(
                     !binding_escapes(db, arg, binder, false)
                         || arg_reclaims_binder_as_base(db, arg, binder)
                 } else {
-                    // Invariant path (UNCHANGED): a non-identity arg must not reference binder at all.
-                    !occurs_in(db, arg, binder)
+                    // Invariant path: a non-identity arg must not CONSUME/escape binder. Historically the
+                    // strict `!occurs_in`; RELAXED (CATALAN, v-memory-safety) to also admit an arg that only
+                    // BORROWS binder — recurse it in a RESULT position (`borrowed = false`) so the leaf arms
+                    // decide: a direct `Param(binder)` consume DENIES, a SCALAR built from borrows of binder
+                    // (conv's `(+ acc (* (at0 c i) (at0 c …)))` — the `at0` = `Option.expect(List.at c i)`
+                    // reads are borrows via the `ListAt` scalar-element arm) is a BORROW → OK. The arg's own
+                    // VALUE is scalar here so binder does not escape through the recursive-call arg. NEUTRAL
+                    // without the `ListAt` borrow arm (the `at0` reads would then DENY, = the old `!occurs_in`).
+                    !occurs_in(db, arg, binder) || recur(db, arg, false)
                 }
             })
         }
@@ -2261,6 +2268,20 @@ fn param_only_borrowed_or_backedge_rec(
         | Core::IntToCharChecked { operand, .. }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand } => recur(db, operand, true),
+        // `List.at` READS an element at a scalar index — it BORROWS the list (like `ListLen`), reclaimed by
+        // its owner. SOUND only when the ELEMENT is a SCALAR (non-heap): a heap element is a live child
+        // aliasing the list that, if it escapes, makes borrowing-the-list-then-dropping-it-at-the-base a UAF
+        // (the #4917 view-producer class) → deny for a heap element (conservative). Index is a scalar.
+        // (CATALAN v-memory-safety: conv reads `c : (List Int64)` via `(Option.expect (List.at c i))` — Int64
+        // element → borrow → conv's `c` is borrow-only → the looped epilogue drops it at the base, so conv
+        // reclaims its threaded `c` and grow's gP2 spare balances → the min-heap-shape leak clears.)
+        Core::ListAt { list, .. } => {
+            let elem_scalar = match type_of(db, list).strip_nominal() {
+                Ty::List(e) => !is_heap_type(e),
+                _ => false,
+            };
+            elem_scalar && recur(db, list, true)
+        }
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
