@@ -1000,6 +1000,26 @@ partial def eqSeqSC (xs ys : Array Value) (i : Nat) : Outcome :=
   else .value (.bool true)
 end
 
+/-- A resolved call-argument SOURCE after splat expansion: either an unevaluated arg NODE (bound LAZILY
+under its parameter, per spec — an unused parameter's arg is never forced) or a VALUE already produced by
+expanding a splat `(.. tuple)` operand (the operand is evaluated STRICTLY to spread its elements into
+per-slot arguments, matching the compiler's `(a3 (. t 0) (. t 1) …)` projection expansion). -/
+inductive ArgSrc where
+  | node : Nat → ArgSrc
+  | val  : Value → ArgSrc
+
+/-- Is call-argument node `aid` a SPLAT `(.. e)` (head `..`, exactly one operand)? Pure (no eval) — used
+at the call-dispatch to route a splat-carrying call to `evalCallSplat`. Returns the operand node id. -/
+def splatOperand? (m : Module) (aid : Nat) : Option Nat :=
+  match m.nodes[aid]? with
+  | some (Node.list c) =>
+    if m.headName? (Node.list c) == some "..".toUTF8 && c.size == 2 then c[1]? else none
+  | _ => none
+
+/-- Does any call argument (children after the head) splat? -/
+def hasSplatArg (m : Module) (children : Array Nat) : Bool :=
+  (children.extract 1 children.size).any (fun aid => (splatOperand? m aid).isSome)
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -1085,7 +1105,11 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
                else (defTable m).find? (fun d => d.1 == h) |>.bind (fun d =>
                  let params := d.2.1; let nargs := children.size - 1
-                 if params.size == nargs then some (evalCall m env fuel params d.2.2 children)
+                 -- A SPLAT argument `(.. tuple)` supplies several positional args from ONE child, so the raw
+                 -- child count `nargs` under-counts — expand+bind via `evalCallSplat` (checked route first,
+                 -- else a 3-param call with a single tuple-splat arg would mis-fire the partial-app branch).
+                 if hasSplatArg m children then some (evalCallSplat m env fuel params d.2.2 children)
+                 else if params.size == nargs then some (evalCall m env fuel params d.2.2 children)
                  -- PARTIAL application `(f a)` (f has more params than args given): a closure over the
                  -- REMAINING params, CAPTURING the given args (as values, evaluated now) under their param
                  -- names. Applied later (`((f a) b)`), applyClosure binds the rest + this cap.
@@ -1598,6 +1622,50 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
        | .errReturn ev => .value ev
        | o => o)
     else .unsupported "eval: call has a malformed parameter spec"
+
+/-- Expand a call's raw argument nodes into positional `ArgSrc`s, spreading any splat `(.. e)` argument:
+`e` is evaluated STRICTLY (the tuple/list must be built to spread it — matching the compiler's per-slot
+projection), and a tuple/list value contributes its elements as separate positional args; a non-tuple/list
+splat operand is a sound skip, and a trap/diverges/errReturn from the operand propagates as the call's
+outcome. A non-splat arg passes through as a lazy `.node` (an unused parameter's arg is never forced). -/
+partial def expandArgs (m : Module) (env : Env) (fuel : Nat) (args : Array Nat) : Except Outcome (Array ArgSrc) := do
+  let mut out : Array ArgSrc := #[]
+  for aid in args do
+    match splatOperand? m aid with
+    | some opId =>
+      match evalNode m env defaultIntTy fuel opId with
+      | .value (.tuple es) => out := out ++ es.map ArgSrc.val
+      | .value (.list es)  => out := out ++ es.map ArgSrc.val
+      | .value _ => throw (.unsupported "eval: splat operand is not a tuple or list")
+      | o => throw o
+    | none => out := out.push (ArgSrc.node aid)
+  return out
+
+/-- A call `(f arg… (.. tuple) arg…)` carrying at least one SPLAT argument: expand the args (spreading each
+splat's tuple/list elements into positional slots), then — if the expanded count matches `f`'s arity —
+bind each slot under its parameter (a `.node` slot lazily over the CALLER's env, a splat-produced `.val`
+slot as the already-computed value) and evaluate the body. A non-matching expanded arity (partial/over-
+application via splat) is not modeled → a sound skip. -/
+partial def evalCallSplat (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array Nat) (bodyId : Nat) (children : Array Nat) : Outcome :=
+  match fuel with
+  | 0 => .diverges
+  | Nat.succ fuel' =>
+    match expandArgs m env fuel' (children.extract 1 children.size) with
+    | .error o => o
+    | .ok srcs =>
+      if srcs.size != paramSpecs.size then
+        .unsupported "eval: splat-expanded call arity mismatch (partial/over-application via splat not modeled)"
+      else
+        let bindings := (paramSpecs.zip srcs).filterMap (fun (specId, src) =>
+          (paramSpec? m specId).map (fun (nm, ty) =>
+            (nm, Thunk.mk (fun _ => match src with
+                                    | .node aid => evalNode m env (ty.getD defaultIntTy) fuel' aid
+                                    | .val v => Outcome.value v), ty)))
+        if bindings.size == paramSpecs.size then
+          (match evalNode m bindings.toList defaultIntTy fuel' bodyId with
+           | .errReturn ev => .value ev
+           | o => o)
+        else .unsupported "eval: call has a malformed parameter spec"
 
 /-- `(fn (param…) body)` → a closure value capturing the CURRENT env (each binding forced now to a value
 or a `poison`, so an unused captured binding never surfaces its trap; laziness preserved via poison). -/
