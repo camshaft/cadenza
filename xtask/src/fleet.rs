@@ -296,8 +296,12 @@ impl Fleet {
     /// every worktree via `--git-common-dir`, and it stays put after the bare conversion). Anchor the
     /// TRACKED source to the current worktree (`paths.repo` = `CARGO_MANIFEST_DIR`'s parent = the
     /// worktree root, which has `fleet/` checked out from `trunk`).
+    ///
+    /// The hub root is resolved via [`resolve_hub`]: an explicit `$FLEET_HUB` override takes
+    /// precedence (the extraction's hub-decouple seam), else today's git-common-dir derivation — so
+    /// with `$FLEET_HUB` unset the live fleet's runtime state is byte-identical to before.
     fn new(paths: &Paths) -> Self {
-        let hub = hub_root(&paths.repo).unwrap_or_else(|| paths.repo.clone());
+        let hub = resolve_hub(&paths.repo);
         Fleet {
             root: hub.join(".claude/fleet"),
             worktrees: hub.join(".claude/worktrees"),
@@ -9846,6 +9850,34 @@ fn hub_root(dir: &Path) -> Option<PathBuf> {
     common.parent().map(Path::to_path_buf)
 }
 
+/// Choose the HUB root from an explicit `$FLEET_HUB` override (if set + non-empty) or the `derived`
+/// git-common-dir hub. Split out PURE (env passed in) so precedence is unit-testable without mutating
+/// process-global env — see [`resolve_hub`].
+fn choose_hub(explicit: Option<&std::ffi::OsStr>, derived: PathBuf) -> PathBuf {
+    match explicit {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => derived,
+    }
+}
+
+/// Resolve the HUB root — the machine-local anchor under which all runtime state lives
+/// (`<hub>/.claude/fleet`, `<hub>/.claude/worktrees`).
+///
+/// Precedence (the P1 hub-decouple seam toward the standalone extraction — see
+/// `fleet/DESIGN-fleet-extraction-standalone-multirepo.md`):
+///   1. `$FLEET_HUB` if set + non-empty — the EXPLICIT hub config the standalone `fleet` binary will
+///      use (e.g. `~/.fleet`), decoupling the hub from any target repo's git layout.
+///   2. else the git-common-dir of `dir` (today's cadenza-derived hub).
+///   3. else `dir` itself (fail-open, matching the prior `unwrap_or_else`).
+///
+/// With `$FLEET_HUB` unset (the live fleet's state today) this is BYTE-IDENTICAL to the previous
+/// `hub_root(dir).unwrap_or_else(|| dir.clone())` derivation, so the running fleet is untouched; the
+/// override is the non-disruptive first step of the extraction (P1).
+fn resolve_hub(dir: &Path) -> PathBuf {
+    let derived = hub_root(dir).unwrap_or_else(|| dir.to_path_buf());
+    choose_hub(std::env::var_os("FLEET_HUB").as_deref(), derived)
+}
+
 fn in_tmux() -> bool {
     std::env::var("TMUX").is_ok()
 }
@@ -16273,6 +16305,21 @@ fn batch_commit_inner(repo: &Path, execute: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn choose_hub_prefers_explicit_fleet_hub_over_derived_but_falls_back_when_absent_or_empty() {
+        use std::ffi::OsStr;
+        let derived = PathBuf::from("/repo/.git-common");
+        // No override → the git-common-dir-derived hub (byte-identical to today's live fleet).
+        assert_eq!(choose_hub(None, derived.clone()), derived);
+        // Empty override (e.g. `FLEET_HUB=`) is ignored → derived (never a bogus empty-path hub).
+        assert_eq!(choose_hub(Some(OsStr::new("")), derived.clone()), derived);
+        // Explicit non-empty override wins → the standalone extraction's decoupled hub.
+        assert_eq!(
+            choose_hub(Some(OsStr::new("/home/u/.fleet")), derived),
+            PathBuf::from("/home/u/.fleet")
+        );
+    }
 
     #[test]
     fn hot_overlap_is_the_sorted_deduped_intersection_of_branch_and_upstream_files() {
