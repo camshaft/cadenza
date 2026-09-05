@@ -5715,6 +5715,7 @@ pass	a tuple relayed through an intermediate parameter hop still splats at the c
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
 pass	a tuple splat composes with inline arguments
 pass	a tuple splat feeds a rest parameter — the caller spreads, the callee gathers
+pass	an EMPTY tuple splat into a rest parameter gathers to the EMPTY list
 pass	a tuple splat relays a function's own tuple parameter into a fixed-arity call
 pass	a tuple splat spreads a tuple held in a variable
 pass	a tuple splat spreads its elements into a call's arguments
