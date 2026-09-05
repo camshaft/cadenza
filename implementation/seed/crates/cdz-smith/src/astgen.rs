@@ -2396,7 +2396,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(36) {
+    match c.variant(37) {
         // A BIN-MATCH body (binary construction / destructure) → value-comparable Int64. Exercises the
         // heavily-churned cadenza-backend bin-match re-emit (#7972 dependent-size / #7977 fixed-after-
         // dependent / #7979 guarded arms) the coercing grammar never reached. See [`gen_bin_body`].
@@ -2509,8 +2509,34 @@ fn gen_main_body<C: Choice>(
         // A call-site tuple SPLAT or a DESTRUCTURE-PATTERN PARAM body (#8487/#8494; EVAL-oracle-backed
         // value surfaces per v-lean-oracle S442) — arg-spread + param-destructure lowering.
         35 => gen_splat_destructure_body(c, out),
+        // A MACRO-EXPANSION body (#8528 pure-splice / #8531 hygiene-safe binder; EVAL-oracle-backed value
+        // surface per v-lean-oracle S480) — a local macro def + call whose reduce is oracle-modeled, so the
+        // wasm/rust value confirms the compiler's expansion. See [`gen_macro_body`].
+        36 => gen_macro_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
+    }
+}
+
+/// A MACRO-EXPANSION body → value-comparable Int64. Emits a LOCAL (nested-in-main) macro def + a call,
+/// in one of two v-lean-oracle-blessed (S480) hygiene-safe shapes whose reduce the Lean EVAL oracle
+/// models (so the wasm-vs-rust value differential confirms the compiler's expansion):
+///   * PURE-SPLICE (#8528): `(def (f (quote x)) (quasiquote (+ (unquote x) (unquote x))))` + `(f n)` → `2n`.
+///   * HYGIENE-SAFE binder (#8531): `(def (g (quote e)) (quasiquote (do (def t (unquote e)) (+ t t))))` +
+///     `(g n)` → `2n`. The template binder `t` is a fresh do-local; the arg is a NAMELESS literal, so no
+///     capture (the SKIP-only capture / sibling-visibility cases are left to v-metaprogramming's corpus).
+///
+/// Small `0..=1000` literal so `2n` stays well within Int64 (no CDZ0304 overflow).
+fn gen_macro_body<C: Choice>(c: &mut C, out: &mut String) {
+    let n = c.int_bounded(0, 1000);
+    if c.variant(2) == 0 {
+        out.push_str(&format!(
+            "(do (def (f (quote x)) (quasiquote (+ (unquote x) (unquote x)))) (f {n}))"
+        ));
+    } else {
+        out.push_str(&format!(
+            "(do (def (g (quote e)) (quasiquote (do (def t (unquote e)) (+ t t)))) (g {n}))"
+        ));
     }
 }
 
@@ -4517,6 +4543,37 @@ mod tests {
         }
         // Empty entropy still yields a valid program (all choices bottom out).
         assert!(generate_coerced(&[]).source.ends_with("(export main))"));
+    }
+
+    /// `gen_macro_body` REACHES both hygiene-safe shapes (pure-splice `(f …)` #8528 + hygiene-safe binder
+    /// `(g …)` #8531; v-lean-oracle-blessed S480) and every body COMPILES — the value-dim macro-expansion
+    /// surface, so the wasm-vs-rust differential confirms the compiler's expansion against the reduce oracle.
+    #[test]
+    fn gen_macro_body_reaches_all_forms_and_compiles() {
+        let (mut saw_splice, mut saw_binder) = (false, false);
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(4127);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_macro_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_splice |= body.contains("(def (f (quote x))");
+            saw_binder |= body.contains("(def (g (quote e))");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "macro body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_splice, "should reach the pure-splice macro shape");
+        assert!(
+            saw_binder,
+            "should reach the hygiene-safe binder macro shape"
+        );
     }
 
     /// REGRESSION GUARD for the bucket-1 emit miscompile (rcdzc #4961): an EXPORTED entry with a
