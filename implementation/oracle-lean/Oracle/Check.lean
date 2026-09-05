@@ -25,6 +25,9 @@ inductive Expect where
   | trap (kind : String)
   | error (code : String)
   | declines
+  | notApplicable   -- a trial with NO expect-… clause: a WARNS-ONLY / BUILD-ONLY case has no oracle
+                    -- runtime VALUE to check (v-corpus-harness: the corpus .sexp is correct) → a SKIP,
+                    -- not a mismatch. (Was a parse error that failed the whole case, hiding its value trials.)
   deriving Inhabited
 
 /-- One parsed trial: an optional call export, its argument value-AST node ids, and the expectation. -/
@@ -214,7 +217,7 @@ def parseTrial (m : Module) (tid : Nat) : Except String OTrial := do
     | _ => pure ()
   match expect with
   | some e => .ok { call, args, expect := e }
-  | none => .error "oracle-trial: trial has no expect-… clause"
+  | none => .ok { call, args, expect := .notApplicable }  -- no expect-value → warns-only/build-only → skip (not a parse error)
 
 /-- Parse the `oracle-trials` module into its trials. Root: `(oracle-trials (trials (trial …)…) …)`. -/
 def parseTrials (m : Module) : Except String (Array OTrial) := do
@@ -262,7 +265,9 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
   -- oracle models a pure program's value, not this stateful member-on-result harness → SKIP (a sound
   -- coverage-gap), rather than grade the raw program result against the member-call's expected output.
   if t.call == some "" then .skip "call-method/reducer-continuation trial (empty export) — harness shape not modeled"
-  else
+  else match t.expect with
+  | .notApplicable => .skip "no oracle value (warns-only / build-only trial) — not applicable to value grading"
+  | _ =>
   -- Run the trial's CALLED export (a program may export several defs with NO `main`, and the trial's
   -- `(call <export> …)` names which one): `executeExport` binds the arg VALUES to that def's params. A
   -- no-call / bare-expr trial is `reduce` (the wrapped `main`). Args are the trial's value-AST nodes (bare
@@ -274,6 +279,7 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
          | some nm => Oracle.executeExport prog nm.toUTF8 argVals
          | none => if t.args.isEmpty then Oracle.reduce prog else Oracle.execute prog argVals
   match t.expect with
+  | .notApplicable => .skip "no oracle value (warns-only / build-only trial)"  -- unreachable (handled above); kept for exhaustiveness
   | .error _ | .declines => .skip "expect is a compile outcome (error/declines) — not modeled"
   | .trap kind =>
     match outcome with
