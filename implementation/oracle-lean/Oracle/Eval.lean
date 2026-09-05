@@ -700,6 +700,28 @@ def newtypeCtor? (m : Module) (name : ByteArray) : Bool :=
   !((defNames m).contains name) &&
   (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, 1)] => cn == name | _ => false)
 
+/-- The declared INTEGER field type of a NEWTYPE ctor's single field, e.g. `UInt64` for
+`(type Duration (Duration UInt64))`. Used to evaluate a newtype construction's payload at its DECLARED
+width (so `(Duration.Duration (- a b))` subtracts at `UInt64` — trapping on unsigned underflow — instead
+of the ambient default width). `none` if `name` is not a newtype ctor or its field type is not a modeled
+integer type (then the payload evaluates at the ambient type, unchanged). -/
+def newtypeFieldTy? (m : Module) (name : ByteArray) : Option IntTy :=
+  if !(newtypeCtor? m name) then none
+  else match m.nodes[m.root]? with
+    | some (Node.list stmts) =>
+      stmts.toList.findSome? (fun sid =>
+        match m.nodes[sid]? with
+        | some (Node.list tc) =>
+          if m.headName? (Node.list tc) == some "type".toUTF8 then
+            (tc.extract 2 tc.size).toList.findSome? (fun vid =>
+              match m.nodes[vid]? with
+              | some (Node.list vc) =>
+                if m.headName? (Node.list vc) == some name then (vc[1]?).bind (parseIntTy? m) else none
+              | _ => none)
+          else none
+        | _ => none)
+    | _ => none
+
 /-- A SOLE NULLARY constructor: a type with exactly ONE ctor which is nullary (`(type T (A))`). Like a
 newtype (single-field → erase to the field), a single-nullary-ctor type carries no information, so its
 value ERASES to `unit` — `(T.A)` = `(: unit T)` — NOT a tagged `variant` (a nullary ctor of a MULTI-ctor
@@ -1104,7 +1126,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       let ctorConstruct : Option Outcome :=
         (match (ctorAppName? m children).bind (fun c => if (env.lookup? c).isSome then none else some c) with
          | some cname =>
-           if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env defaultIntTy fuel pId)
+           if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env ((newtypeFieldTy? m cname).getD defaultIntTy) fuel pId)
            -- a single-variant ≥2-field STRUCT newtype erases to the bare TUPLE of its fields (no tag).
            else if structNewtypeCtor? m cname then some (evalSeqCtor m env fuel children Value.tuple false)
            else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
