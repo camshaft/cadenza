@@ -3192,6 +3192,40 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // E0282. A wrong ground → a LOUD rustc error at `new()` (a build failure graded todo), never a
             // silent miscompile — strictly safer than the bare `new()`. The exact twin of the empty-Map fix.
             let set_ty = type_of(db, id);
+            // CDZ0203 UNDETERMINED-KEY reject — mirror `backend/wasm/select/ownership.rs`. When the element
+            // type is GENUINELY undetermined (reaching the ground-to-default fallback below: not insert-fixed
+            // AND no non-open expected `Set`) AND bakes NO canonical-compare shape (`value_cmp_shape_descriptor`
+            // None — e.g. `(Set.of #list(#list()))` key `(List (List Any))`), REJECT it CODED rather than
+            // grounding `Any`→`i64` and emitting a Set with a FABRICATED key type (the wrong-accept the fresh
+            // harvest caught: rust emitted where wasm rejects CDZ0203). A DETERMINED key (`(Set.of #list(1))`,
+            // or annotated `(: (list) (List Int64))`) bakes a shape → grounds+emits as before, so the empty-Set
+            // len-only / insert-fixed breaker paths are unaffected (no false reject).
+            if !elems.is_empty()
+                && types::has_open_or_any(&set_ty)
+                && !ctx.set_typed_by_enclosing_insert
+                && !ctx
+                    .expected_ty
+                    .as_ref()
+                    .is_some_and(|e| matches!(e, Ty::Set(_)) && !types::has_open_or_any(e))
+                && let Ty::Set(elem) = set_ty.strip_nominal()
+            {
+                // ONLY a NON-EMPTY set with an undetermined-shape key rejects: an EMPTY `(Set.of #list())`
+                // has NO keys to compare, so grounding its phantom element type to the default is harmless
+                // and MUST still emit (the breaker E0282 empty-Set-grounds-and-compiles path). `(Set.of
+                // #list(#list()))` has a REAL element (the inner empty list) whose key type `(List Any)` bakes
+                // no canonical shape → that genuinely-undetermined key rejects below.
+                let elem = (**elem).clone();
+                if crate::lower::value_cmp_shape_descriptor(db, &elem).is_none() {
+                    let name = elem.render_name(&db.name_ctx());
+                    return Err(Reject::coded(
+                        crate::diag::Code::TypeMismatch,
+                        format!(
+                            "a Set/Map key's type `{name}` is not fully determined — annotate it \
+                             (e.g. `(: (list) (List Int64))`) so its keys have a canonical form for comparison"
+                        ),
+                    ));
+                }
+            }
             let ncx = db.name_ctx();
             let ann = if ctx.set_typed_by_enclosing_insert {
                 match types::rust_type(&ncx, &set_ty) {
