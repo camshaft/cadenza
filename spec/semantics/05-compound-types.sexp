@@ -30228,6 +30228,30 @@
   (live-objects 0))
 
 (case
+  "lar3 a List.at-extracted INNER LIST unwrapped by Option.expect and read by List.len reclaims the extraction (the SumExpect form of lar1)"
+  (doc
+    "The `Option.expect` (SumExpect) form of lar1's `match`-bound extraction: `List.len (Option.expect
+           (List.at xs 1))` unwraps the extracted inner list directly and reads its length, rather than binding
+           it in a `match` arm. The two lower to DIFFERENT Core nodes — lar1/mlr2 reach the extracted inner list
+           through a MatchSum binder (the match-shell reclaim, bdf09c60a), while this reaches it through a
+           SumExpect the borrowing `List.len` consumes as a view-scalar-read (`List.len`/`byte-len` are in
+           reclaim.rs `is_view_scalar_read_consumer`; the `sumexpect_view_reclaim` view-drop reclaims the fresh
+           extraction — #8518). WITHOUT that view-drop the extracted inner list + its Option shell leak per call
+           (2 cells; the scalar-consume sibling of the bfx9 escape husk). Regression fence for the ListLen half
+           of #8518 (the BytesLen half is fenced in 16-binary-matching). `xs[1]` = `[5,6]` → length 2.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((xs (if (> n 0) #list(#list(n) #list(n (+ n 1))) #list(#list(9)))))
+          (List.len (Option.expect (List.at xs 1) "in bounds"))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
   "mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)"
   (input
     (do
