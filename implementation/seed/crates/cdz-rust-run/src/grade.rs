@@ -22,16 +22,24 @@ use crate::run::{Outcome as RunOutcome, RlibDirs, compile_and_run};
 use crate::sig::sole_export_name;
 
 /// Whether a decoded case is driven by a resource protocol the standalone-`.rs` rust exec path cannot
-/// perform: a `(then …)` borrowed-handle TWO-CALL (`second_call`), an explicit resource `(drop)`
-/// (`drop_handle`), or a `(call-method …)` value-resource member reach (`method`). All three live ONLY in
-/// the wasm `cdz-run` closure/escape driver; the rust path would run only the FIRST call and silently
-/// produce the single-call value (a dishonest miscompile). Such a case DECLINES → `Todo`, mirroring the
-/// in-process `xtask gate` guard so the nix coarse-rust gate and the in-process gate agree.
+/// perform CORRECTLY, so the grade would be a dishonest wrong-value rather than an honest outcome:
+/// - a `(then …)` borrowed-handle TWO-CALL (`second_call`): the standalone-`.rs` driver runs only the
+///   FIRST call, so a repeatable double-call SILENTLY produces the single-call value (e.g. a compound
+///   `#tuple(5 105)` where `#tuple(#tuple(5 105) #tuple(5 105))` is expected — v-nix #3). DECLINE.
+/// - a `(call-method …)` value-resource member reach (`method`): the driver has no member-invoke, so it
+///   would grade the resource value, not the member result — a wrong value. DECLINE.
+///
+/// NOTE: an explicit `(drop)` (`drop_handle`) is NOT declined. It is a wasm resource-drop whose ONLY rust
+/// analogue is the natural `Rc`/value drop — a NO-OP after the `make`+`call` this driver already performs,
+/// so the case's VALUE is produced correctly and the `live-objects` assertion the drop witnesses is wasm-
+/// only (rust ignores `live_objects`). Declining `drop_handle` (as #8005 originally did) OVER-declined ~156
+/// passing compound-result/multi-export repeatable-closure `(drop)` cases → a pass→todo regression (the
+/// harvest v-corpus-harness caught). Only the protocols that would MIS-RUN (second_call/method) decline.
 fn declines_resource_drive(test_run: &cdz_corpus_grade::TestRun) -> bool {
     test_run.trials.iter().any(|t| {
         t.call
             .as_ref()
-            .is_some_and(|c| c.second_call.is_some() || c.drop_handle || c.method.is_some())
+            .is_some_and(|c| c.second_call.is_some() || c.method.is_some())
     })
 }
 
@@ -72,15 +80,13 @@ pub fn grade(
     peer: Option<&Path>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
-    // A `(then …)` two-call, a `(drop)`, or a `(call-method …)` value-resource case is driven ONLY through
-    // the WASM harness (`cdz-run`'s closure/escape driver: `--call-twice` / `--drop-handle` / `--call-member`).
-    // The standalone-`.rs` rust exec path has NO such resource drive — it runs only the FIRST call — so a
-    // compound-result `(then)` case would SILENTLY produce the single-call value (e.g. `#tuple(5 105)` where the
-    // repeatable double-call expects `#tuple(#tuple(5 105) #tuple(5 105))`), a DISHONEST miscompile the nix
-    // coarse-rust gate catches as a todo→fail. DECLINE it → `Todo`, the EXACT mirror of the in-process
-    // `xtask gate` guard (`xtask/src/main.rs`, non-wasm two-call/drop/method → Declined): without this the two
-    // paths DIVERGE (in-process declines-todo, nix emits-and-mis-runs → fail). The compiler cannot self-decline
-    // — `call`/`then`/`drop`/`method` are corpus sibling clauses it never sees, same as `wit_world`/`peer`.
+    // A `(then …)` two-call (`second_call`) or a `(call-method …)` value-resource member reach (`method`)
+    // would MIS-RUN on the standalone-`.rs` path — it runs only the FIRST call and has no member-invoke, so a
+    // repeatable double-call SILENTLY produces the single-call value (e.g. `#tuple(5 105)` where the double-
+    // call expects `#tuple(#tuple(5 105) #tuple(5 105))` — v-nix #3) and a member reach grades the resource
+    // not the member. DECLINE those → `Todo` (a dishonest wrong-value must never grade). A `(drop)` is NOT
+    // declined: it is a no-op on rust (natural `Rc` drop after the make+call), so the value is correct — see
+    // `declines_resource_drive` (declining it was #8005's ~156-case pass→todo over-decline, now fixed).
     let resource_driven = declines_resource_drive(&test_run);
     let result = if wit_world.is_some() {
         GradeResult {
@@ -103,8 +109,9 @@ pub fn grade(
     } else if resource_driven {
         GradeResult {
             grade: Grade::Todo(
-                "(then)/drop/method resource drive: the standalone .rs rust exec path has no borrowed-handle \
-                 two-call / resource-drop / value-resource-member drive (wasm-only) — declines by design"
+                "(then)/(call-method) resource drive: the standalone .rs rust exec path has no borrowed-handle \
+                 two-call / value-resource-member drive (wasm-only), so it would mis-run — declines by design \
+                 (a `(drop)` is a no-op on rust and is NOT declined)"
                     .to_string(),
             ),
             ran_a_trial: false,
@@ -398,14 +405,19 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_handle_case_declines_the_resource_drive() {
+    fn a_drop_handle_case_does_not_decline_drop_is_a_noop_on_rust() {
+        // A `(drop)` (drop_handle) must NOT decline: the standalone-.rs analogue of a wasm resource-drop is
+        // the natural `Rc`/value drop — a no-op after the make+call the driver already performs — so the
+        // VALUE is produced correctly (the case grades on the value; `live-objects` is wasm-only). #8005
+        // wrongly declined it, over-declining ~156 passing compound-result/repeatable-closure `(drop)` cases
+        // (pass→todo regression). This pins that a `(drop)`-only case RUNS (does not decline).
         let tr = one_trial(
             Some(call_with(None, true, None)),
             GExpect::Output("(: unit Unit)".into()),
         );
         assert!(
-            declines_resource_drive(&tr),
-            "an explicit (drop) must decline on the rust exec path"
+            !declines_resource_drive(&tr),
+            "an explicit (drop) is a no-op on the rust exec path — it must RUN, not decline"
         );
     }
 
