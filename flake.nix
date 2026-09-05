@@ -7385,9 +7385,13 @@
                     # was the #8380 miss (a corpus edit broke the ml round-trip, fast-gate was green, it landed +
                     # was caught only as a trunk-red). Emit that file's per-file coarse verdict gate (my #8321
                     # corpus-gate-coarse-<stem> attr) + the whole-corpus syntax roundtrip (checks.roundtrip, the
-                    # sexpr-byte-identical + ml-fixed-point check). Full localGate stays the authoritative catch
-                    # (roundtripCheck is already in its fail-set) — this just makes the inner loop cover corpus.
-                    spec/semantics/*.sexp) echo "corpus-gate-coarse-$(basename "$1" .sexp) roundtrip" ;;
+                    # sexpr-byte-identical + ml-fixed-point check) + the nativize lint (checks.corpus-nativize —
+                    # a classic name-head `(list/tuple/record/map …)` in an `(input …)` reds the coarse gate
+                    # post-landing; adding the cheap whole-corpus nativize lint here catches it PRE-merge on the
+                    # author's own PR — v-gha-green flagged it recurred 3× in 24h as reactive post-land fixes).
+                    # Full localGate stays the authoritative catch (all three are already in its fail-set) — this
+                    # just makes the inner loop cover corpus edits (coarse + roundtrip + nativize).
+                    spec/semantics/*.sexp) echo "corpus-gate-coarse-$(basename "$1" .sexp) roundtrip corpus-nativize" ;;
                     *) echo "" ;;
                   esac
                 }
