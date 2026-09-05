@@ -10,6 +10,7 @@
 //! wasm run vs the rust compile+run). So [`grade_run`] is the whole orchestration, parameterized on a
 //! per-backend trial-runner closure — no wasmtime, no compiler, in this crate.
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -444,6 +445,52 @@ pub fn check_live_objects_scalar(
 /// measured).
 pub fn known_leak_now_clean(per_trial: &[Option<u32>]) -> bool {
     per_trial.iter().any(Option::is_some) && per_trial.iter().flatten().all(|&n| n == 0)
+}
+
+/// The BASELINE-SIDE known-leak LEDGER (operator directive 2026-09-05: known-leak is a COMPILER FACT, not
+/// spec, so it lives baseline-side, not as a corpus annotation — see the `B + leak-ledger` design). This is
+/// the ADDITIVE mechanism half (parse + compare), OFF until the `B` grade change (drop-top-level result →
+/// true-leak count) + migration wire it in; building it dead-first mirrors the C1 fence rollout (#8401).
+///
+/// The ledger file (`spec/semantics/.gate-baseline-leaks`, WASM-only) mirrors `.gate-baseline`'s
+/// `<key>\t<description>` shape: one line `<N>\t<description>` per case whose TRUE leak (top-level result
+/// dropped, post-B) is `N > 0`. A case ABSENT from the ledger is expected to leak 0 (the default). Lines that
+/// are blank or start with `#` (the header) are ignored.
+pub fn parse_leak_ledger(text: &str) -> BTreeMap<String, u32> {
+    let mut m = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((n, desc)) = line.split_once('\t')
+            && let Ok(n) = n.trim().parse::<u32>()
+            && !desc.is_empty()
+        {
+            m.insert(desc.to_string(), n);
+        }
+    }
+    m
+}
+
+/// Grade one case's observed TRUE-leak count (top-level result dropped, post-`B`) against the leak ledger,
+/// mirroring the verdict-baseline mismatch model. RED-ON-ANY-CHANGE (operator ruling 2026-09-05: "notified
+/// ANY time that progress changes"): a case's `tracked` leak is `ledger[description]` (or 0 when ABSENT), and
+/// ANY deviation — a leak that GREW (regression) OR SHRANK (progress to record via `save-leaks`) — returns a
+/// mismatch, exactly like a `.gate-baseline` verdict deviation. `None` = matches (no notification). Pure +
+/// OFF until `B`+migration call it from the grade path.
+pub fn check_leak_ledger(
+    description: &str,
+    observed_true_leak: u32,
+    ledger: &BTreeMap<String, u32>,
+) -> Option<String> {
+    let tracked = ledger.get(description).copied().unwrap_or(0);
+    (observed_true_leak != tracked).then(|| {
+        format!(
+            "leak-ledger mismatch: tracked {tracked} true-leak(s), observed {observed_true_leak} \
+             (grew=regression / shrank=progress — re-run `save-leaks` to record the new count)"
+        )
+    })
 }
 
 /// Clamp each observed live-cell count UP to its expected threshold — the LEAK-CEILING tolerance for a
@@ -3752,6 +3799,39 @@ mod tests {
         assert!(!known_leak_now_clean(&[Some(2)])); // still leaks
         assert!(!known_leak_now_clean(&[None, None])); // no heap trial measured → not a candidate
         assert!(!known_leak_now_clean(&[])); // no trials
+    }
+
+    #[test]
+    fn parse_leak_ledger_reads_n_tab_description_skips_header_and_blanks() {
+        let text = "# gate baseline leaks — true-leak counts (top-level result dropped)\n\
+                    3\ta case that leaks three husks\n\
+                    \n\
+                    1\tanother leaking case\n\
+                    # a comment mid-file\n\
+                    12\ta big leaker\n";
+        let m = parse_leak_ledger(text);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.get("a case that leaks three husks"), Some(&3));
+        assert_eq!(m.get("another leaking case"), Some(&1));
+        assert_eq!(m.get("a big leaker"), Some(&12));
+        // a malformed line (non-numeric leak) is skipped, not panicked
+        assert!(parse_leak_ledger("notanumber\tx").is_empty());
+    }
+
+    #[test]
+    fn check_leak_ledger_reds_on_any_change_absent_means_zero() {
+        let mut ledger = BTreeMap::new();
+        ledger.insert("leaks 3".to_string(), 3u32);
+        // tracked==observed → no mismatch (both a leaker at its count, and an absent case at 0)
+        assert!(check_leak_ledger("leaks 3", 3, &ledger).is_none());
+        assert!(check_leak_ledger("clean absent case", 0, &ledger).is_none());
+        // GREW (regression) → mismatch
+        assert!(check_leak_ledger("leaks 3", 5, &ledger).is_some());
+        // SHRANK (progress) → ALSO mismatch (red-on-any-change, operator ruling)
+        assert!(check_leak_ledger("leaks 3", 1, &ledger).is_some());
+        assert!(check_leak_ledger("leaks 3", 0, &ledger).is_some());
+        // an ABSENT case that now leaks → mismatch (unexpected leak vs the implicit-0)
+        assert!(check_leak_ledger("clean absent case", 2, &ledger).is_some());
     }
 
     /// The #7527 scalar-return classifier + the `check_live_objects_scalar` skip: a later heap-RETURN trial
