@@ -776,6 +776,19 @@ pub enum FleetCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// List (or archive) ORPHANED inbox dirs — `inbox/<name>/` whose `<name>` is NOT a registered
+    /// agent. These accumulate when a sender typos a name or an agent gets RENAMED and senders keep
+    /// writing to the dead dir (the SEND-side shadow-inbox bug; the `send` guard now PREVENTS new ones,
+    /// this reconciles the historical residue). Read-only by default: prints each orphan + its message
+    /// counts. With `--archive`, MOVES each orphan dir to `inbox/.orphaned-archive/<name>/` — reversible
+    /// (nothing deleted, nothing delivered → no agent is spammed), just out of the active namespace so
+    /// audits come back clean. NEVER touches the `unknown` graveyard (use `reroute-unknown`) or the
+    /// active `slack-bridge` dir.
+    OrphanedInboxes {
+        /// Move each orphan dir to `inbox/.orphaned-archive/<name>/` (reversible). Default is list-only.
+        #[arg(long)]
+        archive: bool,
+    },
     /// git MERGE DRIVER for `.duvet/coverage-floor.json` (registered by `fleet up`; not run by hand).
     /// The floor is a single monotonic counter every citation-adding agent bumps, so concurrent slices
     /// textually CONFLICT on it (`cited` 644 vs 645). This resolves such a conflict by taking the MAX
@@ -1339,6 +1352,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => ack(&fleet, &request, &outcome, &r#ref, &body),
         FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
+        FleetCmd::OrphanedInboxes { archive } => orphaned_inboxes(&fleet, archive),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::GateLocal { arch } => gate_local(&fleet, &arch),
@@ -4625,6 +4639,117 @@ fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
     println!(
         "fleet reroute-unknown: {}{routed} re-routed, {skipped} un-derivable, {total} total in unknown/.",
         if dry_run { "DRY-RUN: " } else { "" }
+    );
+}
+
+/// Names directly under `inbox/` that are NOT registry agents yet must NEVER be treated as orphans:
+/// the `unknown` reply-graveyard (owned by `reroute-unknown`), the active `slack-bridge` message dir,
+/// and the `.orphaned-archive` holding dir this command creates. Everything else whose name is absent
+/// from the registry is a genuine orphan (a typo / old-renamed recipient's shadow inbox).
+const NON_ORPHAN_INBOX_DIRS: &[&str] = &["unknown", "slack-bridge", ".orphaned-archive"];
+
+/// Is `name` (a dir directly under `inbox/`) an ORPHANED inbox — not a registered agent, not one of
+/// the reserved non-agent dirs, and not a dotfile (no real agent name starts with `.`)? Pure so the
+/// classification is unit-tested without a filesystem.
+fn is_orphan_inbox_dir(name: &str, registered: &std::collections::HashSet<String>) -> bool {
+    !name.starts_with('.') && !registered.contains(name) && !NON_ORPHAN_INBOX_DIRS.contains(&name)
+}
+
+/// Count `*.json` message files directly in `dir` (0 if it can't be read). Used to report how much
+/// mail an orphan inbox is holding.
+fn count_inbox_json(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// List (or, with `archive`, reversibly move aside) ORPHANED inbox dirs — `inbox/<name>/` whose
+/// `<name>` is not a registered agent. The SEND-side shadow-inbox residue: the `send` guard now
+/// PREVENTS new ones, this reconciles the historical accumulation. `--archive` moves each orphan to
+/// `inbox/.orphaned-archive/<name>/` — a `rename` (nothing deleted, nothing delivered → no agent is
+/// spammed), reversible by moving it back.
+fn orphaned_inboxes(fleet: &Fleet, archive: bool) {
+    let reg = fleet.load();
+    let registered: std::collections::HashSet<String> =
+        reg.agents.iter().map(|a| a.name.clone()).collect();
+    let inbox_root = fleet.root.join("inbox");
+    let Ok(rd) = std::fs::read_dir(&inbox_root) else {
+        println!(
+            "fleet orphaned-inboxes: no {} — nothing to check.",
+            inbox_root.display()
+        );
+        return;
+    };
+    let mut orphans: Vec<(String, usize, usize)> = Vec::new();
+    for entry in rd.filter_map(Result::ok) {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_orphan_inbox_dir(&name, &registered) {
+            continue;
+        }
+        let dir = entry.path();
+        let undrained = count_inbox_json(&dir);
+        let processed = count_inbox_json(&dir.join("processed"));
+        orphans.push((name, undrained, processed));
+    }
+    orphans.sort();
+    if orphans.is_empty() {
+        println!(
+            "fleet orphaned-inboxes: none — every inbox/<name>/ maps to a registered agent. ✅"
+        );
+        return;
+    }
+    println!(
+        "fleet orphaned-inboxes: {} orphan dir(s) (name not in the {}-agent registry):",
+        orphans.len(),
+        registered.len()
+    );
+    for (name, u, p) in &orphans {
+        println!("  {name:40} undrained={u:<4} processed={p}");
+    }
+    if !archive {
+        println!(
+            "\n(read-only — re-run with --archive to MOVE these to inbox/.orphaned-archive/<name>/, reversible)"
+        );
+        return;
+    }
+    let archive_root = inbox_root.join(".orphaned-archive");
+    if let Err(e) = std::fs::create_dir_all(&archive_root) {
+        eprintln!(
+            "fleet orphaned-inboxes: cannot create {}: {e}",
+            archive_root.display()
+        );
+        std::process::exit(1);
+    }
+    let mut moved = 0usize;
+    for (name, _, _) in &orphans {
+        let src = inbox_root.join(name);
+        let dst = archive_root.join(name);
+        if dst.exists() {
+            eprintln!(
+                "  ! skip {name}: {} already exists (a prior archive) — leaving in place",
+                dst.display()
+            );
+            continue;
+        }
+        match std::fs::rename(&src, &dst) {
+            Ok(()) => {
+                println!("  archived {name} → .orphaned-archive/{name}");
+                moved += 1;
+            }
+            Err(e) => eprintln!("  ! failed to archive {name}: {e}"),
+        }
+    }
+    println!(
+        "fleet orphaned-inboxes: archived {moved}/{} orphan dir(s) into {} (reversible: mv back to restore).",
+        orphans.len(),
+        archive_root.display()
     );
 }
 
@@ -21188,6 +21313,26 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // --force bypasses in BOTH cases (preserves the deliberate pre-seed-an-inbox path).
         assert!(!unregistered_recipient_refused(true, false));
         assert!(!unregistered_recipient_refused(true, true));
+    }
+
+    #[test]
+    fn is_orphan_inbox_dir_flags_unregistered_names_but_never_reserved_or_registered() {
+        let registered: std::collections::HashSet<String> =
+            ["v-fleet-tooling", "pr-sync", "concierge"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        // A registered agent's inbox is never an orphan.
+        assert!(!is_orphan_inbox_dir("v-fleet-tooling", &registered));
+        // An unregistered name (typo / old-renamed agent) IS an orphan.
+        assert!(is_orphan_inbox_dir("v-mem", &registered));
+        assert!(is_orphan_inbox_dir("agent-harness", &registered));
+        // Reserved non-agent dirs are NEVER orphans (must be left in place).
+        assert!(!is_orphan_inbox_dir("unknown", &registered)); // reroute-unknown owns it
+        assert!(!is_orphan_inbox_dir("slack-bridge", &registered)); // active bridge infra
+        assert!(!is_orphan_inbox_dir(".orphaned-archive", &registered)); // our own holding dir
+        // Any dotfile dir is reserved (no real agent name starts with `.`).
+        assert!(!is_orphan_inbox_dir(".delivery-seq", &registered));
     }
 
     #[test]
