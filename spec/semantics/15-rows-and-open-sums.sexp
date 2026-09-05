@@ -2559,3 +2559,53 @@
   (output (: 2000 Int64))
   (call main (: 5 Int64))
   (output (: 7005 Int64)))
+
+; ── USER-SUM RESULT-RETURN decode coverage. `main` RETURNS a user-defined sum VALUE bare (not matched),
+; ── so the exported result carries a tagged variant (or an erased newtype). Pins the user-sum result+
+; ── payload decode (result names + payload arity 0/1/≥2, coreAst-sourced) as the value 3rd-side judges it
+; ── across all backends. Discovered + minimized by the cdz-smith differential (wasm==rust AGREE on every
+; ── shape); the shape emphasis (nested payloads, arity≥2) targets the recursive field-type traversal.
+(case
+  "a tagged sum with an arity-2 payload variant is returned as the result value"
+  (input (do (type Shape (Circle Int64) (Rect Int64 Int64)) (def (main) (Rect 3 4)) (export main)))
+  (output (: (Rect 3 4) Shape))
+  ; The returned tagged variant is REACHABLE at exit (shell + payload = 2 cells) — not a leak (breaker
+  ; batch 471); flips to 0 once the reachability-aware live-objects driver subtracts reachable-from-return.
+  (live-objects 2))
+
+(case
+  "a MIXED-arity multi-variant sum returns its arity-2 variant (disc→field-type indexing across arities)"
+  (input (do (type M (A) (B Int64) (C Int64 Int64)) (def (main) (C 3 4)) (export main)))
+  (output (: (C 3 4) M))
+  ; Returned tagged variant reachable at exit (shell + payload = 2 cells), not a leak (breaker batch 471).
+  (live-objects 2))
+
+(case
+  "a tagged sum with a NESTED Option payload is returned (recursive field-type traversal over Option)"
+  (input (do (type W (Wrap (Option Int64)) (Nada)) (def (main) (Wrap (Some 5))) (export main)))
+  (output (: (Wrap (Some 5)) W)))
+
+(case
+  "a tagged sum with a NESTED List payload is returned (recursive field-type traversal over List)"
+  (input (do (type T (Tag (List Int64)) (Bare)) (def (main) (Tag (list 1 2 3))) (export main)))
+  (output (: (Tag #list(1 2 3)) T)))
+
+(case
+  "a tagged sum whose payload is ITSELF a user sum is returned (recursive field-type against the module)"
+  (input
+    (do
+      (type Inner (I Int64) (J))
+      (type Outer (O Inner) (P))
+      (def (main) (O (I 7)))
+      (export main)))
+  (output (: (O (I 7)) Outer)))
+
+(case
+  "a nullary variant reusing a prelude ctor name resolves against the user type, not the prelude"
+  (input (do (type Sign (Neg) (Zero) (Pos)) (def (main) (Neg)) (export main)))
+  (output (: (Neg unit) Sign)))
+
+(case
+  "a single-variant struct-newtype result ERASES to its field tuple (untagged decode path)"
+  (input (do (type Pt (Mk Int64 Int64)) (def (main) (Pt.Mk 3 4)) (export main)))
+  (output (: #tuple(3 4) Pt)))
