@@ -796,6 +796,20 @@ partial def subtreeHasBinderHead? (m : Module) (fuel : Nat) (i : Nat) : Bool :=
       || cs.any (subtreeHasBinderHead? m fuel)
     | _ => false
 
+/-- All NAME atoms occurring in the subtree at `i` (fuel-bounded). An over-approximation of the free names:
+used by the macro HYGIENE guard as a conservative collision check — a template binder can only CAPTURE a
+caller name if some body name coincides with a caller-origin (argument) name, so if the body and the args
+share NO name atom, hygiene is a no-op and a binder-introducing macro is safe to expand without alpha-rename.
+Over-collecting (incl. operator/keyword names) only makes the guard MORE conservative (over-decline = sound). -/
+partial def collectNames (m : Module) (fuel : Nat) (i : Nat) : List ByteArray :=
+  match fuel with
+  | 0 => []
+  | fuel + 1 =>
+    match m.nodes[i]? with
+    | some (Node.list cs) => cs.toList.flatMap (collectNames m fuel)
+    | some (Node.atom _) => (nameOf? m i).toList
+    | none => []
+
 /-- A qualified application/value head `(. Q M)` → its (qualifier, member) names. Used to recognize a
 prelude MODULE function like `(. Set of)` (a collection builder), distinct from record projection and
 from a sum-ctor `(. T C)` (the ctor is dispatched separately by `variantCtorArity?`). -/
@@ -1764,12 +1778,19 @@ partial def evalMacro (m : Module) (env : Env) (fuel : Nat) (params : Array Nat)
   match fuel with
   | 0 => .diverges
   | Nat.succ fuel' =>
-    if subtreeHasBinderHead? m defaultFuel bodyId then
-      .unsupported "eval: macro expansion introduces a binder (let/fn/def) — provenance hygiene not modeled, declined"
+    let args := children.extract 1 children.size
+    -- HYGIENE GUARD: a macro-introduced binder can only CAPTURE a caller reference if a template (body) name
+    -- coincides with a caller-origin (argument) name. So expand when the body has NO binder (pure splice), OR
+    -- when no body name collides with any arg name (hygiene is a no-op). Only a binder-body WITH a name
+    -- collision needs provenance alpha-rename (not modeled) → DECLINE (a sound skip, never an unsound value).
+    let hygieneUnsafe : Bool :=
+      subtreeHasBinderHead? m defaultFuel bodyId &&
+      (let argNames := args.toList.flatMap (collectNames m defaultFuel)
+       (collectNames m defaultFuel bodyId).any (fun n => argNames.contains n))
+    if hygieneUnsafe then
+      .unsupported "eval: macro-introduced binder may capture a caller-origin name — provenance hygiene not modeled, declined"
+    else if args.size != params.size then .unsupported "eval: macro arg/param count mismatch"
     else
-      let args := children.extract 1 children.size
-      if args.size != params.size then .unsupported "eval: macro arg/param count mismatch"
-      else
         let bindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
           match quoteParamName? m specId with
           | some qn => some (qn, Thunk.mk (fun _ => quoteReflect m fuel' argId), Option.none)   -- arg as reflected Ast
