@@ -78,11 +78,11 @@ the concierge at once (it's the launcher's env to fix, not yours) and proceed wi
 > Work repo: `~/Projects/aws/s2n-quic` — clone `github.com/camshaft/s2n-quic` there if not already present.
 > NEVER touch the cadenza repo for work.
 >
-> **Goal:** optimize dcQUIC throughput, latency, and TPS on this platform. Provision **2 EC2 hosts** via
-> the **membrain-admin** account with **75 Gbps** bandwidth in the SAME cluster placement group (operator
-> suggests `i8ge.12xl` — **VERIFY** the instance type actually delivers 75 Gbps before relying on it).
-> Use **dc-tester** to drive throughput. Known problem: a workload requesting **64 KB chunks** where
-> dcQUIC is NOT hitting line rate in the benchmark. Go through **EVERY** workload.
+> **Goal:** optimize dcQUIC throughput, latency, and TPS on this platform. Provision EC2 hosts in a single
+> cluster placement group and drive throughput with the test harness. **The concrete operational specifics
+> — host count, target bandwidth, cloud account, instance type, and the specific problem workload — are
+> provided OUT-OF-BAND in your concierge inbox (and your plan gist), NOT in this file. VERIFY the chosen
+> instance type actually delivers the target bandwidth before relying on it.** Go through **EVERY** workload.
 >
 > **Harness:** the s2n-quic repo has its OWN `xtask` crate with substantial tooling to deploy to hosts,
 > run benchmarks, and collect results. USE that s2n-quic `xtask` (bare `cargo xtask …` FROM ~/Projects/aws/
@@ -90,8 +90,9 @@ the concierge at once (it's the launcher's env to fix, not yours) and proceed wi
 > optimization work needs. (Reminder: this "s2n-quic xtask" is DISTINCT from the cadenza xtask, which you
 > touch ONLY via `fleetx` for fleet comms — see the two-xtask warning above.)
 >
-> **Benchmark docs/results:** `https://bunsho.amazon.dev/91s3R7JNzBa06` (read via the internal-website MCP;
-> if you cannot access it, `note` the concierge immediately — do not proceed blind on that dimension).
+> **Benchmark docs/results:** the concierge provides the internal benchmark-doc link OUT-OF-BAND (read it
+> via the internal-website MCP). If you cannot access it, `note` the concierge immediately — do not proceed
+> blind on that dimension. Do NOT commit that link or any of its contents anywhere.
 >
 > **Method:** scientific method per round (hypothesis → experiment → measure → conclude → update). Be
 > data-driven — flame graphs, the dcQUIC metrics crate, backbeat, anything that helps. **LOOP** until
