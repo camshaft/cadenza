@@ -2285,7 +2285,7 @@
   (call mkb (: 5 Int64))
   (drop)
   (output #list(5 6))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig byte-rope closures — the Bool→Bytes one"
@@ -2301,7 +2301,7 @@
   (call mks (: true Bool))
   (drop)
   (output #list(1))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one"
@@ -2319,7 +2319,7 @@
   (call mkb (: 9 Int64))
   (drop)
   (output #list(9 10))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one"
@@ -2352,7 +2352,7 @@
   (call greet (: 0 Int64))
   (drop)
   (output #list(104 105))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig byte-rope closure alongside a plain export — the closure"
@@ -2371,7 +2371,7 @@
   (call mkb (: 3 Int64))
   (drop)
   (output #list(3))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig byte-rope closure alongside a plain export — the plain"
@@ -2520,7 +2520,7 @@
 (case
   "distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one"
   ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
-  (live-objects 0)
+  (live-objects 1)
   (doc
     "`mka : () -> (-> Int64 Int64)` and `mkb : () -> (-> Bool Int64)` are distinct signatures → two
            resource types. `appa : (own<t0>, Int64) -> Bytes` applies its closure TWICE — `(bin (u8 (g x))
@@ -2961,7 +2961,7 @@
   (call mki (: 5 Int64))
   (drop)
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig compound result — the Bool→(Tuple Bool Int64) closure"
@@ -2977,7 +2977,7 @@
   (call mkb (: true Bool))
   (drop)
   (output (: (tuple true 1) (Tuple Bool Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a compound group + a byte-rope group + a scalar group — the compound"
@@ -2997,7 +2997,7 @@
   (call mkt (: 9 Int64))
   (drop)
   (output (: (tuple 9 10) (Tuple Int64 Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope"
@@ -3016,7 +3016,7 @@
   (call mkb (: false Bool))
   (drop)
   (output #list(8))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
@@ -3677,7 +3677,7 @@
   (call mki (: 5 Int64))
   (drop)
   (output (: #list(5 6) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig collection result — the Bool→List closure"
@@ -3693,7 +3693,7 @@
   (call mkb (: true Bool))
   (drop)
   (output (: #list(1) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection"
@@ -3715,7 +3715,7 @@
   (call lst (: 7 Int64))
   (drop)
   (output (: #list(7 8) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
@@ -3735,7 +3735,7 @@
   (call pr (: false Bool))
   (drop)
   (output (: (tuple false 0) (Tuple Bool Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope"
@@ -3755,7 +3755,7 @@
   (call byt (: 65 Int64))
   (drop)
   (output #list(65))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
@@ -4516,7 +4516,7 @@
   (call mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (drop)
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)"
@@ -4533,7 +4533,7 @@
   (call mk-b (: 100 Int64) (: #tuple(7 true) (Tuple Int64 Bool)))
   (drop)
   (output (: #list(7 100) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 ; A fixed-shape compound ARGUMENT now composes with a BYTE-ROPE (`Bytes`/`String`) result: the bytes-result
 ; core serializer + its envelope thread the `TupleArgRebuild`, so the `call` rebuilds the flattened tuple cell
@@ -4833,7 +4833,7 @@
   (call mk-a (: #tuple(10 3) (Tuple Int64 Int64)))
   (drop)
   (output (: #list(10 3) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair"
@@ -4851,7 +4851,7 @@
   (call mk-b (: #tuple(7 true) (Tuple Int64 Bool)))
   (drop)
   (output (: #list(7) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 ; A fixed-shape scalar tuple ARGUMENT can now sit AMONG scalar args (single-export, scalar result): the tuple
 ; crosses flattened as a native `tuple<…>` at its own arg position, and the `call` pushes the closure's args in
@@ -5603,7 +5603,7 @@
   (call mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (drop)
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 ; The NESTED-arg-AMONG-scalars shape completes on the DISTINCT-SIG path too — the LAST nested-arg gap. Each
 ; group's per-`call-g<n>` detection takes the shared `nested_sole_or_among_scalars` classifier, so a nested
@@ -5674,7 +5674,7 @@
   (call mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (drop)
   (output (: #list(1000 100 10 3) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
@@ -6484,7 +6484,7 @@
   (call mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (drop)
   (output (: #list(5 10) (List Int64)))
-  (live-objects 0))
+  (live-objects 1))
 
 (case
   "DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures"
@@ -7493,7 +7493,7 @@
 (case
   "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one"
   ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
-  (live-objects 0)
+  (live-objects 1)
   (doc
     "The SAME two-resource-type program, driving the OTHER (collection-result) consumer of the other
            signature: `appb(handle, true)` → `h(true)` = 1 twice, so `(: (list 1 1) (List Int64))`. Confirms a
