@@ -178,7 +178,7 @@ struct Caps {
 /// Returns `(type_decl, main_body)`.
 fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
     let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
-    match c.variant(3) {
+    match c.variant(5) {
         // MULTI-variant tagged sum — construct Circle OR Rect, match both arms (each returns Int64).
         0 => {
             let ctor = if c.variant(2) == 0 {
@@ -197,11 +197,31 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
             format!("(match (Pt.Mk {a} {b}) ((Mk x y) (+ x y)))"),
         ),
         // NULLARY-ctor enum — `main` returns a BARE nullary-ctor NAME as its value (the #5589 shape:
-        // a bare nullary ctor as a value now grades; a payload-carrying ctor value the other arms never
-        // reach the nullary case of).
-        _ => (
+        // a bare nullary ctor as a value now grades).
+        2 => (
             "(type Color (Red) (Green) (Blue))".to_string(),
             ["Red", "Green", "Blue"][(a % 3) as usize].to_string(),
+        ),
+        // PAYLOAD-CARRYING tagged-sum RESULT — `main` RETURNS the constructed variant VALUE bare (not
+        // matched): the user-sum result+payload codec the match-consuming arms never exercised as a
+        // returned value (the surface v-wasm-oracle's user-sum result/payload decode #8537/#8546 targets;
+        // here confirmed DIRECTLY by wasm-vs-rust, no value oracle needed).
+        3 => {
+            let ctor = if c.variant(2) == 0 {
+                format!("(Circle {a})")
+            } else {
+                format!("(Rect {a} {b})")
+            };
+            (
+                "(type Shape (Circle Int64) (Rect Int64 Int64))".to_string(),
+                ctor,
+            )
+        }
+        // SINGLE-variant struct-newtype RESULT — `main` RETURNS the bare newtype value (erases to a field
+        // tuple), the newtype-result codec.
+        _ => (
+            "(type Pt (Mk Int64 Int64))".to_string(),
+            format!("(Pt.Mk {a} {b})"),
         ),
     }
 }
