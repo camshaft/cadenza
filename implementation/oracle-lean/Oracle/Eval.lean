@@ -1020,6 +1020,22 @@ def splatOperand? (m : Module) (aid : Nat) : Option Nat :=
 def hasSplatArg (m : Module) (children : Array Nat) : Bool :=
   (children.extract 1 children.size).any (fun aid => (splatOperand? m aid).isSome)
 
+/-- Detect a TRAILING rest binder among a tuple/record sub-pattern array `sps`. Two spellings occur: a
+GROUPED `(.. binder)` node (surface `#tuple(a (.. rest))` / `#record((= x a) (.. rest))` — head `..`, its
+one operand is the binder) or a BARE `..` marker element followed by its binder (the list-pattern spelling
+`(list x .. r)`). Returns `(leadingCount, binderNodeId)` — how many leading positional/field patterns
+precede the rest, and the node the residual binds to. `none` = no rest marker present. -/
+def restBinderOf? (m : Module) (sps : Array Nat) : Option (Nat × Nat) :=
+  match sps.findIdx? (fun sp => (m.nodes[sp]?).bind (fun n => m.headName? n) == some "..".toUTF8) with
+  | some k =>  -- grouped `(.. binder)` at index k
+    match m.nodes[sps[k]!]? with
+    | some (Node.list gc) => (gc[1]?).map (fun binder => (k, binder))
+    | _ => none
+  | none =>  -- bare `..` NAME element, binder is the next element
+    match sps.findIdx? (fun sp => nameOf? m sp == some "..".toUTF8) with
+    | some k => (sps[k+1]?).map (fun binder => (k, binder))
+    | none => none
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -2313,12 +2329,42 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       else if ph == "None".toUTF8 then (match subj, pc[1]? with | .none, some sp => matchPat m sp .unit | .none, none => .ok (some []) | _, _ => .ok none)
       else if ph == "tuple".toUTF8 then
         (match subj with
-         | .tuple es => let sps := pc.extract 1 pc.size
-                        if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
+         | .tuple es =>
+           let sps := pc.extract 1 pc.size
+           -- a TRAILING `(.. rest)` binds `rest` to the RESIDUAL sub-tuple (a fresh tuple of the elements
+           -- past the leading positional patterns; possibly empty at exact arity). A tuple has static
+           -- arity, so this is irrefutable once the leading count is available.
+           match restBinderOf? m sps with
+           | some (leadCount, binderId) =>
+             let leadPats := sps.extract 0 leadCount
+             if es.size < leadPats.size then .ok none
+             else
+               let leadPairs := (leadPats.zip (es.extract 0 leadPats.size)).toList
+               let restTuple := Value.tuple (es.extract leadPats.size es.size)
+               matchSeq m (leadPairs ++ [(binderId, restTuple)])
+           | none =>
+             if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
          | _ => .ok none)
       else if ph == "record".toUTF8 then
         (match subj with
-         | .record fields => matchRecordPats m (pc.extract 1 pc.size).toList fields
+         | .record fields =>
+           let fps := pc.extract 1 pc.size
+           -- a TRAILING `(.. rest)` binds `rest` to a record of the RESIDUAL (unnamed) fields — those not
+           -- captured by a leading `(= key p)` field pattern (#6750). Leading patterns must all be named.
+           match restBinderOf? m fps with
+           | some (leadCount, binderId) =>
+             let leadPats := (fps.extract 0 leadCount).toList
+             let leadKeys := leadPats.filterMap (fun fp => (recordField? m fp).map (·.1))
+             if leadKeys.length != leadPats.length then .error (.unsupported "eval: record rest-pattern leading field is not (= key p)")
+             else
+               match matchRecordPats m leadPats fields with
+               | .ok (some e1) =>
+                 let restFields := fields.filter (fun kv => !(leadKeys.any (fun k => k == kv.1)))
+                 (match matchPat m binderId (Value.record restFields) with
+                  | .ok (some e2) => .ok (some (e1 ++ e2))
+                  | r => r)
+               | r => r
+           | none => matchRecordPats m fps.toList fields
          | _ => .ok none)
       else if ph == "map".toUTF8 then
         -- a map pattern `(map (k p)…)` — each entry's key literal must be present with a matching value —
