@@ -3552,14 +3552,18 @@ fn send(
         // agent (reading under its canonical name) never drains → the mail is LOST. Refuse at the source
         // (all kinds). `--force` preserves the deliberate pre-seed case; `fleet add` seeds via `deliver`
         // directly, not this CLI path, so agent creation is unaffected. LIST side already guards the
-        // worktree-relative shadow trap; this is the SEND side.
-        if unregistered_recipient_refused(force, recipient_status.is_some()) {
+        // worktree-relative shadow trap; this is the SEND side. A recipient is KNOWN if it's a registry
+        // agent OR an active non-agent infra endpoint (`slack-bridge` — the operator channel; see
+        // `is_infra_send_recipient`), so the guard doesn't refuse legitimate concierge→operator routing.
+        let recipient_known = recipient_status.is_some() || is_infra_send_recipient(to);
+        if unregistered_recipient_refused(force, recipient_known) {
             eprintln!(
-                "fleet send: REFUSING a `{kind}` to `{to}` — no agent named `{to}` is in the registry. \
-                 The name is likely a TYPO or an OLD/renamed agent name; delivering would silently \
-                 create an orphaned `inbox/{to}/` dir that nobody drains, LOSING your message. Check \
-                 the name against `cargo xtask fleet status`. If you are intentionally pre-seeding an \
-                 inbox for an agent about to be created/reactivated, re-run with `--force`."
+                "fleet send: REFUSING a `{kind}` to `{to}` — `{to}` is neither a registered agent nor a \
+                 known infra endpoint. The name is likely a TYPO or an OLD/renamed agent name; \
+                 delivering would silently create an orphaned `inbox/{to}/` dir that nobody drains, \
+                 LOSING your message. Check the name against `cargo xtask fleet status`. If you are \
+                 intentionally pre-seeding an inbox for an agent about to be created/reactivated, re-run \
+                 with `--force`."
             );
             std::process::exit(1);
         }
@@ -4360,6 +4364,22 @@ fn stopped_recipient_dead_letters(kind: &str, recipient_status: Option<&str>) ->
 /// shadow-inbox trap. Pure so the gate pins the exact condition.
 fn unregistered_recipient_refused(force: bool, recipient_registered: bool) -> bool {
     !force && !recipient_registered
+}
+
+/// Active NON-agent inbox endpoints that are LEGITIMATE `fleet send` recipients even though they are
+/// not rows in the agent registry. Currently just `slack-bridge` — the operator channel the concierge
+/// routes ALL operator comms (asks/status/answers) through; it is live infra, not a typo/orphan. These
+/// are ACCEPTED by the send-side unregistered-recipient guard without `--force` (a #8556 follow-up: the
+/// guard was refusing every concierge→operator message). This is intentionally NARROWER than
+/// [`NON_ORPHAN_INBOX_DIRS`]: `unknown` (the reply graveyard) and `.orphaned-archive` are non-orphans
+/// for the LISTING tool but must NOT be valid user send targets.
+const INFRA_SEND_RECIPIENTS: &[&str] = &["slack-bridge"];
+
+/// Is `name` a legitimate active NON-agent send endpoint (see [`INFRA_SEND_RECIPIENTS`])? Pure for
+/// unit-testing. A recipient that is registered OR passes this is a KNOWN recipient — only a name that
+/// is neither is the shadow-inbox-orphan risk the send guard refuses.
+fn is_infra_send_recipient(name: &str) -> bool {
+    INFRA_SEND_RECIPIENTS.contains(&name)
 }
 
 fn mr_qualifies_for_landed_check(
@@ -21313,6 +21333,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // --force bypasses in BOTH cases (preserves the deliberate pre-seed-an-inbox path).
         assert!(!unregistered_recipient_refused(true, false));
         assert!(!unregistered_recipient_refused(true, true));
+    }
+
+    #[test]
+    fn slack_bridge_is_a_known_infra_send_recipient_but_orphans_are_not() {
+        // #8556 follow-up: the send guard must ACCEPT the active operator channel (`slack-bridge`) —
+        // it's live infra, not a registry agent — so concierge→operator routing isn't --force-only.
+        assert!(is_infra_send_recipient("slack-bridge"));
+        // A registry agent is handled by the registry check, not this allowlist; a typo/orphan name is
+        // NOT whitelisted (still refused → the shadow-inbox guard stays effective).
+        assert!(!is_infra_send_recipient("v-fleet-tooling"));
+        assert!(!is_infra_send_recipient("v-mem")); // an old-renamed orphan must stay refused
+        // The graveyard + archive dirs are non-orphans for the LISTING tool but are NOT valid send
+        // targets (deliberately narrower than NON_ORPHAN_INBOX_DIRS).
+        assert!(!is_infra_send_recipient("unknown"));
+        assert!(!is_infra_send_recipient(".orphaned-archive"));
     }
 
     #[test]
