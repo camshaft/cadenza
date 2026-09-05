@@ -657,6 +657,16 @@ def userSumTypes (m : Module) : List (ByteArray × List (ByteArray × Nat)) :=
       | _ => none)
   | _ => []
 
+/-- The constructor NAME of the `disc`-th variant of the user sum `sumName` (0-based, DECLARATION ORDER =
+runtime discriminant order, via `variantSpecs`). `none` if `sumName` is not a user `(type sumName …)` or
+`disc` is out of range. Reuses `userSumTypes` as the single source of truth so a wasm-side heap decoder can
+map an intermediate `.variant "<disc>"` → `.variant "<ctorName>"` = Core's form (v-wasm user-sum decode).
+Keyed by `sumName` (from the emitted `cdz-result-type` Sum head), NEVER the prelude — so a user sum that
+reuses a prelude ctor name resolves to its OWN local variant. Only meaningful for a MULTI-variant sum;
+single-variant/newtype/sole-nullary sums erase (no disc) and never produce a tagged variant to decode. -/
+def userSumCtorByDisc? (m : Module) (sumName : ByteArray) (disc : Nat) : Option ByteArray :=
+  ((userSumTypes m).find? (fun t => t.1 == sumName)).bind (fun t => (t.2[disc]?).map (·.1))
+
 /-- Top-level `(def (name …) …)` names — a bare ctor name shadowed by such a def is NOT a constructor
 (scope-first resolution: def/let/param bind before a bare ctor name; spec-confirmed via corpus 0683). -/
 def defNames (m : Module) : List ByteArray :=
