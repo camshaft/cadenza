@@ -736,6 +736,23 @@ private def _fieldCoreAst : Module :=
 #guard (nameOf? _fieldCoreAst 6 == some "Int64".toUTF8)
 #guard (nameOf? _fieldCoreAst 8 == some "Int64".toUTF8)
 
+/-- A decl `(type Wrap (doc d) Nil (W (List String)))` with a `(doc …)` spec INTERLEAVED among the variants
+and a NESTED-container payload — pins two contract edges the real corpus hits: (1) the `(doc …)` is SKIPPED
+so discriminants stay aligned (Nil is disc 0, W is disc 1 — matching `variantSpecs`/`userSumCtorByDisc?`; a
+future divergence in doc-handling between the two scans would silently mis-map a discriminant → wrong-ctor
+decode), and (2) an arity-1 variant whose field is a container `(List String)` returns that container's type
+node (which the decoder then descends via `fixupTy`). -/
+private def _fieldEdgeCoreAst : Module :=
+  { leaves := #[.name "type".toUTF8, .name "Wrap".toUTF8, .name "doc".toUTF8, .name "d".toUTF8,
+                .name "Nil".toUTF8, .name "W".toUTF8, .name "List".toUTF8, .name "String".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .atom 6, .atom 7,
+               .list #[6, 7], .list #[2, 3], .list #[5, 8], .list #[0, 1, 9, 4, 10], .list #[11]],
+    root := 12 }
+#guard (userSumVariantFieldTypes? _fieldEdgeCoreAst "Wrap".toUTF8 0 == some ([] : List Nat))  -- Nil nullary — the interleaved (doc …) did NOT shift it
+#guard (userSumVariantFieldTypes? _fieldEdgeCoreAst "Wrap".toUTF8 1 == some [8])               -- W (List String): the nested container type node (node 8)
+#guard (userSumCtorByDisc? _fieldEdgeCoreAst "Wrap".toUTF8 0 == some "Nil".toUTF8)             -- disc alignment survives the (doc …) spec …
+#guard (userSumCtorByDisc? _fieldEdgeCoreAst "Wrap".toUTF8 1 == some "W".toUTF8)               -- … same as userSumCtorByDisc? (both scans skip doc identically)
+
 /-- Top-level `(def (name …) …)` names — a bare ctor name shadowed by such a def is NOT a constructor
 (scope-first resolution: def/let/param bind before a bare ctor name; spec-confirmed via corpus 0683). -/
 def defNames (m : Module) : List ByteArray :=
