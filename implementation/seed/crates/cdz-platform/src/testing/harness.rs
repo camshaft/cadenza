@@ -502,7 +502,7 @@ impl Harness {
                 // ignores it and instantiates by the same hashes).
                 let mut cas = InMemoryBlobStore::new();
                 for bytes in blobs.into_values() {
-                    cas.put(bytes).await;
+                    cas.put(bytes, &[]).await;
                 }
                 let store = make_store(Arc::new(cas));
                 let recording = RecordingProgramStore::new(

@@ -306,7 +306,11 @@ impl cadenza::platform::blobs::Host for HostState {
     }
 
     async fn put(&mut self, bytes: Vec<u8>) -> Vec<u8> {
-        self.blobs.put(Bytes::from(bytes)).await.as_bytes().to_vec()
+        self.blobs
+            .put(Bytes::from(bytes), &[])
+            .await
+            .as_bytes()
+            .to_vec()
     }
 }
 
@@ -2461,7 +2465,7 @@ mod tests {
         // Seed the CAS with some bytes as an ordinary blob — the way an input program blob is seeded.
         let mut cas = InMemoryBlobStore::new();
         let bytes = b"not a valid wasm component".to_vec();
-        let blob = cas.put(Bytes::from(bytes.clone())).await;
+        let blob = cas.put(Bytes::from(bytes.clone()), &[]).await;
         // The program is the Program-tagged view of those same bytes; it shares the blob's digest, so the
         // content-keyed store resolves it (the tag is ignored).
         let program = ProgramHash::of(&bytes);

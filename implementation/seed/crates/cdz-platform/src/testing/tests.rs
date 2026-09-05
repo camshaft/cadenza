@@ -414,7 +414,7 @@ async fn blob_calls_are_recorded_with_hash_length_and_outcome() {
     let mut blobs = RecordingBlobStore::new(InMemoryBlobStore::new(), who, log.clone(), tick_clock);
 
     let bytes = Bytes::from_static(b"hello observation log");
-    let hash = blobs.put(bytes.clone()).await;
+    let hash = blobs.put(bytes.clone(), &[]).await;
     assert_eq!(
         blobs.get(hash).await,
         Some(bytes.clone()),
@@ -482,7 +482,7 @@ fn one_log_orders_two_reducers_deterministically_under_bach() {
             // Interleave the two reducers' store calls against the one log.
             a.put(Bytes::from_static(b"x"), Bytes::from_static(b"1"))
                 .await;
-            let h = b.put(Bytes::from_static(b"payload")).await;
+            let h = b.put(Bytes::from_static(b"payload"), &[]).await;
             assert_eq!(a.get(b"x").await, Some(Bytes::from_static(b"1")));
             assert!(b.has(h).await);
 
@@ -1094,7 +1094,9 @@ impl Reducer for Storer {
         self.kv
             .put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
             .await;
-        self.blobs.put(Bytes::from_static(b"blob-payload")).await;
+        self.blobs
+            .put(Bytes::from_static(b"blob-payload"), &[])
+            .await;
         (Vec::new(), Outcome::Continue)
     }
 

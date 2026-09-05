@@ -147,11 +147,13 @@ impl<B> RecordingBlobStore<B> {
 
 #[async_trait]
 impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
-    async fn put(&mut self, bytes: Bytes) -> Hash {
+    async fn put(&mut self, bytes: Bytes, refs: &[Hash]) -> Hash {
         // The stored bytes are addressed by the hash, so the record keeps the hash and the byte length,
-        // not the bytes again. Capture the length before the bytes move into the backend.
+        // not the bytes again. Capture the length before the bytes move into the backend. The blob's `refs`
+        // edges are forwarded to the backend but not recorded in the observation log — the log captures a
+        // reducer's OBSERVABLE store ops (a guest's put/get/has), and edges are GC bookkeeping, not observable.
         let len = bytes.len();
-        let hash = self.inner.put(bytes).await;
+        let hash = self.inner.put(bytes, refs).await;
         self.record(BlobOp::Put { hash, len });
         hash
     }
@@ -169,6 +171,12 @@ impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
         let present = self.inner.has(hash).await;
         self.record(BlobOp::Has { hash, present });
         present
+    }
+
+    async fn delete(&mut self, hash: Hash) -> bool {
+        // GC-only and not a guest-observable op, so it is forwarded to the backend but not logged (there is
+        // no `Delete` observation and none is warranted — the checker asserts a guest's own store activity).
+        self.inner.delete(hash).await
     }
 }
 
