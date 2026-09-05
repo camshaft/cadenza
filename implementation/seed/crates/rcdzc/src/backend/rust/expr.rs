@@ -1860,6 +1860,32 @@ fn emit_grounded(
     {
         return emit_arith(db, id, op, lhs, rhs, env, ctx, Some(it));
     }
+    // A CONTROL-FLOW operand (`if`/`match`) of a narrow op: GROUND its value-producing branches to `it`
+    // (recurse) rather than rendering them at their OWN (deferred→Int64-default) type and TRUNCATING the
+    // whole operand with `as it` below. The narrow width does NOT flow into the branches at CHECK — a
+    // `(: (+ (if c 2^40 2) 5) Int8)` leaves the `if` typed Int64 (verified: `cdz check` does not reject) —
+    // so the emit+cast path SILENTLY truncates an oversize CONST branch (`2^40 as i8`), a wrong value
+    // (v-corpus-harness family-A overflow-soundness: rust wrongly ACCEPTED it). Grounding each branch to
+    // `it` routes an overflowing const through `emit_const_int_at`'s `fits_width` check → CDZ0302 "integer
+    // literal does not fit its width" — exactly as the DIRECT `(: (if c 2^40 2) Int8)` form (where the `if`
+    // IS typed Int8) and the wasm select branch-grounding do. A FITTING const branch grounds unchanged (no
+    // truncation, no regression). A single-use `(let ((y (if …))) y)` copy-propagates to `Core::If` here, so
+    // this arm covers the let-threaded case too. (#4547-tracked; auto-flips todo/fail→pass when it declines.)
+    if let Core::If { cond, then_, else_ } = core_of(db, id) {
+        let c = emit(db, cond, env, ctx)?;
+        let t =
+            with_branch_refinement(db, cond, true, |db| emit_grounded(db, then_, it, env, ctx))?;
+        let e =
+            with_branch_refinement(db, cond, false, |db| emit_grounded(db, else_, it, env, ctx))?;
+        return Ok(format!("if {c} {{ {t} }} else {{ {e} }}"));
+    }
+    // The `match` twin of the `if` arm above: a narrow op's `match` operand grounds each ARM BODY to `it`
+    // (via `emit_match_impl`'s `ground_int_override`) so an oversize const arm body range-checks (CDZ0302)
+    // rather than the whole match rendering at Int64 then truncating `as it`. (`(: (+ (match x (0 2^40) (_ 2))
+    // 5) Int8)` — family-A overflow-soundness.)
+    if let Core::Match { scrutinee, arms } = core_of(db, id) {
+        return emit_match_impl(db, id, scrutinee, &arms, env, ctx, false, Some(it));
+    }
     let rendered = emit(db, id, env, ctx)?;
     // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal operand. A bare literal is grounded above; but
     // an operand that is an `if`/`match` (or any node) whose BRANCHES are bare deferred-width literals is
@@ -2017,7 +2043,7 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         // A `match` in tail position: each arm body is tail. (Delegates to the shared match emitter with
         // a tail flag so arm bodies go through `emit_tail`.)
         Core::Match { scrutinee, arms } => {
-            emit_match_impl(db, id, scrutinee, &arms, env, ctx, true)
+            emit_match_impl(db, id, scrutinee, &arms, env, ctx, true, None)
         }
         // A LIST match in tail position: each arm body is tail (so a self-recursive list walker iterates
         // the enclosing loop rather than growing the stack). Delegates with the tail flag.
@@ -6254,7 +6280,7 @@ fn emit_match(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
-    emit_match_impl(db, match_id, scrutinee, arms, env, ctx, false)
+    emit_match_impl(db, match_id, scrutinee, arms, env, ctx, false, None)
 }
 
 /// Render a scalar `match`, with `tail` selecting whether the arm bodies are in TAIL position (inside a
@@ -6270,15 +6296,20 @@ fn emit_match_impl(
     env: &Env,
     ctx: &Ctx,
     tail: bool,
+    // When `Some(it)`, ground each arm body to `it` (a NARROW consuming-op width) INSTEAD of the match's own
+    // result type — the match is an OPERAND of a narrow op whose width must reach the arm-body literals so an
+    // oversize const arm range-checks (CDZ0302) rather than truncating. Set by `emit_grounded`'s Core::Match
+    // arm (family-A overflow-soundness); `None` for an ordinary match (grounds to its own result width).
+    ground_int_override: Option<IntTy>,
 ) -> Result<String, Reject> {
     // The match's RESULT integer type, if any — a bare-literal arm body is grounded to it so a
     // default-Int64 literal arm beside a narrow-width arm does not yield a mismatched type (Rust E0308),
     // the same reconciliation the wasm backend applies to a `ConstInt` arm body via `emit_operand`.
     let result_ty = type_of(db, match_id);
-    let result_it = match &result_ty {
+    let result_it = ground_int_override.or(match &result_ty {
         Ty::Int(it) => Some(*it),
         _ => None,
-    };
+    });
     // The match's RESULT FLOAT width, if any — the float twin: a bare `ConstFloat` arm body defaults to
     // Float64, so under an outer `Float32` result (`(: (match n (0 0.5) (_ 1.5)) Float32)`) an ungrounded
     // arm renders `f64::from_bits(…)` in an `-> f32` match → rustc E0308 (corpus-bugfix: the match-arm
