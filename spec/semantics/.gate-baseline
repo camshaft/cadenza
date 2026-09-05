@@ -8583,6 +8583,7 @@ pass	lao2 a borrowed list read by List.at is not freed early (owner reclaims)
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
 pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
+pass	lar3 a List.at-extracted INNER LIST unwrapped by Option.expect and read by List.len reclaims the extraction (the SumExpect form of lar1)
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
