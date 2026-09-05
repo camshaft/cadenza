@@ -111,6 +111,18 @@ mutual
 or a compound `(Some e)` / `(None …)` / `(Ok e)` / `(Err e)` / `(tuple e…)` / `(list e…)` (recursively).
 `none` if it is not a value the domain models. -/
 partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
+  -- A `(: <floatLit> Float32)` expected value is DEMOTED to f32 precision (a single round f64→f32→f64),
+  -- mirroring the oracle's `evalAscribe`. Without this the expected float literal parses at FULL f64 while
+  -- the oracle's reduced value is correctly f32-demoted, so they'd false-mismatch (operator seq-283; the
+  -- Float32 VALUE renders its own shortest decimal, not the f32→f64 promotion — 06-numeric 0261/0262/0265).
+  match (match m.nodes[i]? with
+         | some (Node.list cs) =>
+           if m.headName? (Node.list cs) == some ":".toUTF8 && (cs[2]?).bind (atomName? m) == some "Float32"
+           then cs[1]? else none
+         | _ => none) with
+  | some vId => (expectedValue? m vId).map (fun v =>
+      match Value.asF64? v with | some f => Value.f64 (Float.toFloat32 f).toFloat | none => v)
+  | none =>
   let s := stripFrame m i
   match m.nodes[s]? with
   | Option.some (Node.atom lid) =>
