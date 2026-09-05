@@ -16,7 +16,7 @@
 # PULL it warm (no per-shard realize) — each shard is then just its bounded 1/8 diff slice (round-robin
 # index%8==i via #8404's `oracle-wasm-diff --shard I N`), comfortably under 6h. A final `aggregate` job SUMS
 # the 8 partial tallies (A agree / D diverge / S skip / L leak) + concatenates per-shard DIVERGE/LEAK lines.
-# Bumping N is the WRONG lever (more parallel cold realizes = worse thrash); the seed decouples it. N=8.
+# Post-seed the closure is WARM, so bumping N is now SAFE (16 shards pull warm + smaller 1/N slices, no added realize thrash) — N bumped 8→16 after the fuel-heavy tail capped 4/8 even warm (run 33902175678). N=16.
 #
 # SCHEDULED Sunday 04:00 UTC — a low-traffic off-peak slot well clear of the daily emit-warm (08:00), extract-
 # warm (10:00) and the nightly (07:00), so the heavy full warm never contends with them for the shared nix
@@ -78,17 +78,17 @@ jobs:
           cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm-full --no-link --print-out-paths --keep-going)
 
   full-diff:
-    # FAN-OUT: 8-way matrix, each shard runs oracle-wasm-diff over 1/8 of the corpus (round-robin index%8==shard).
+    # FAN-OUT: 16-way matrix, each shard runs oracle-wasm-diff over 1/16 of the corpus (round-robin index%16==shard).
     # needs: seed → the full extraction closure is already warm in cachix, so each shard PULLS it (no cold
     # realize, no 8× thrash) and runs only its bounded 1/8 diff — comfortably under the 6h per-job cap.
     # fail-fast:false so one shard's DIVERGE/timeout never cancels the others (we want ALL shards' tallies).
-    name: full-corpus Core↔wasm differential (aarch64, shard ${{ matrix.shard }}/8)
+    name: full-corpus Core↔wasm differential (aarch64, shard ${{ matrix.shard }}/16)
     needs: seed
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -104,15 +104,15 @@ jobs:
       # pushed it) → this PULLS it + runs only its 1/8 slice. --keep-going so one bad case doesn't abort the
       # shard; continue-on-error so a real DIVERGE reds only this advisory step. The tally + DIVERGE/LEAK lines
       # print to the build log whether the shard succeeds or a diverge fails it → captured from stdout.
-      - name: build + run oracle-wasm-diff-full shard ${{ matrix.shard }}/8 (advisory)
+      - name: build + run oracle-wasm-diff-full shard ${{ matrix.shard }}/16 (advisory)
         continue-on-error: true
         run: |
           set -o pipefail
           mkdir -p tally
-          nix build .#checks.aarch64-linux.oracle-wasm-diff-full-shard-${{ matrix.shard }}-of-8 \
+          nix build .#checks.aarch64-linux.oracle-wasm-diff-full-shard-${{ matrix.shard }}-of-16 \
             --print-build-logs --keep-going 2>&1 | tee /tmp/shard.log || true
           grep -E 'oracle-wasm-diff:.*agree' /tmp/shard.log | tail -1 > tally/shard-${{ matrix.shard }}.txt || true
-          { echo "--- shard ${{ matrix.shard }}/8 DIVERGE/LEAK lines:"; grep -E '^(DIVERGE|LEAK) ' /tmp/shard.log || true; } >> tally/shard-${{ matrix.shard }}.txt
+          { echo "--- shard ${{ matrix.shard }}/16 DIVERGE/LEAK lines:"; grep -E '^(DIVERGE|LEAK) ' /tmp/shard.log || true; } >> tally/shard-${{ matrix.shard }}.txt
       - name: upload shard ${{ matrix.shard }} tally
         if: always()
         uses: actions/upload-artifact@v7
@@ -126,7 +126,7 @@ jobs:
     # always() + needs:full-diff so it runs even when a shard diverged/timed-out (fail-fast:false keeps them all).
     # Report-only: a DIVERGE surfaces as a ::warning:: for v-wasm-oracle to triage to v-cadenza-backend, and does
     # NOT fail the job (this whole workflow is advisory — a red would only mean "not-measured this week").
-    name: aggregate the 8-way full-corpus tally
+    name: aggregate the 16-way full-corpus tally
     runs-on: ubuntu-latest
     needs: full-diff
     if: always()
@@ -139,9 +139,9 @@ jobs:
       - name: sum the per-shard tallies
         run: |
           set -euo pipefail
-          echo "=== full-corpus oracle-wasm-diff — 8-way sharded tally ==="
+          echo "=== full-corpus oracle-wasm-diff — 16-way sharded tally ==="
           A=0; D=0; S=0; L=0; missing=0
-          for i in 0 1 2 3 4 5 6 7; do
+          for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             f="tallies/shard-$i.txt"
             line=$(grep -E 'oracle-wasm-diff:.*agree' "$f" 2>/dev/null | tail -1 || true)
             if [ -z "$line" ]; then echo "WARN: shard $i produced no tally (build failed to emit one?)"; missing=$((missing+1)); continue; fi
@@ -153,7 +153,7 @@ jobs:
             A=$((A+a)); D=$((D+d)); S=$((S+s)); L=$((L+l))
           done
           echo ""
-          echo "FULL CORPUS TOTAL: $A agree, $D diverge, $S skip, $L leak (summed across 8 shards; $missing shard(s) missing a tally)"
+          echo "FULL CORPUS TOTAL: $A agree, $D diverge, $S skip, $L leak (summed across 16 shards; $missing shard(s) missing a tally)"
           echo ""
           echo "=== all DIVERGE/LEAK lines across shards ==="
           grep -hE '^(DIVERGE|LEAK) ' tallies/shard-*.txt 2>/dev/null || echo "(none)"
@@ -161,5 +161,5 @@ jobs:
             echo "::warning::full-corpus oracle-wasm-diff: $D DIVERGE(s) across the corpus — advisory miscompile signal for v-wasm-oracle → v-cadenza-backend (see lines above)"
           fi
           if [ "$missing" -gt 0 ]; then
-            echo "::warning::$missing/8 shards produced no tally (timeout or infra failure) — the total is partial this run"
+            echo "::warning::$missing/16 shards produced no tally (timeout or infra failure) — the total is partial this run"
           fi
