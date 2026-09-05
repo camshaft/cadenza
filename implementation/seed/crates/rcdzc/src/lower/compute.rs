@@ -1844,7 +1844,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 )
             {
                 let prim = crate::eval::meta_apply_of(db, head).unwrap();
-                return match crate::eval::reduce_ctor(db, prim, id, &args) {
+                return match crate::eval::reduce_ctor(db, prim, id, args) {
                     Ok(built) => core_of(db, built),
                     Err(msg) => Core::Poison(Reject::decline(msg)),
                 };
@@ -1997,7 +1997,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     | Prim::Le
                     | Prim::Ge
                     | Prim::Eq),
-                ) if args.len() == 2 && quantity_scales_differ(db, &args) => {
+                ) if args.len() == 2 && quantity_scales_differ(db, args) => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: mixed-unit combine (convert to reference)");
                     lower_quantity_combine(db, id, prim, args[0], args[1])
                 }
@@ -2016,7 +2016,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // conversion, not here — the scale now survives the type round-trip after the encode_ty fix).
                 // Same-DIMENSION is required — a cross-dimension pair is CDZ0501 in `check_application`.
                 Some(prim @ (Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq))
-                    if args.len() == 2 && quantity_same_unit_pair(db, &args) =>
+                    if args.len() == 2 && quantity_same_unit_pair(db, args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: same-unit quantity comparison → compare erased magnitudes");
                     let lv = qty_magnitude_occ(db, args[0]);
@@ -2033,7 +2033,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // inner floats, so the fold/emit is over `Core::ConstFloat`). A quantity's `+`/`*` is thus
                 // polymorphic over the inner numeric, unlike the bare int-only `+` (which rejects a float).
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
-                    if quantity_inner_is_float(db, id, &args) =>
+                    if quantity_inner_is_float(db, id, args) =>
                 {
                     let fprim = match prim {
                         Prim::Add => Prim::FAdd,
@@ -2042,7 +2042,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Prim::FDiv,
                     };
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
-                    lower_float_arith(db, id, fprim, &args)
+                    lower_float_arith(db, id, fprim, args)
                 }
                 // A quantity over a RATIONAL magnitude combined with `+`/`-`/`*`/`/` runs EXACT RATIONAL
                 // arithmetic on the erased inner magnitudes (the `Qty.of` operands lower to their inner
@@ -2051,7 +2051,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // (`const_value_ast`'s Qty arm), so this only computes the magnitude. `*`/`/` compose the
                 // unit; `+`/`-` require the same unit (dimensional check in `infer`).
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
-                    if quantity_inner_is_rational(db, id, &args) =>
+                    if quantity_inner_is_rational(db, id, args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity rational arithmetic (inner Rational)");
                     lower_rational_arith(db, prim, args[0], args[1])
@@ -2064,7 +2064,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // `bigint_operand` arm below because that reads the operand's type as `Ty::BigInt`, which a
                 // `(Qty BigInt u)` is NOT (its type is `Ty::Qty { inner: BigInt }`).
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
-                    if quantity_inner_is_bigint(db, id, &args) =>
+                    if quantity_inner_is_bigint(db, id, args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity bigint arithmetic (inner BigInt)");
                     lower_bigint_arith(db, prim, args[0], args[1])
@@ -2075,7 +2075,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // generic int-arith path (which would range-check/trap against a fixed width — wrong for an
                 // unbounded BigInt). Dispatch on the OPERAND type being `Ty::BigInt`, like the float arm.
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Rem))
-                    if args.len() == 2 && bigint_operand(db, &args) =>
+                    if args.len() == 2 && bigint_operand(db, args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: BigInt arithmetic");
                     lower_bigint_arith(db, prim, args[0], args[1])
@@ -2087,7 +2087,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // NOT a rational op (exact division is total — no remainder), so it is excluded here and
                 // falls through to the scheme, which rejects it.
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
-                    if args.len() == 2 && rational_operand(db, &args) =>
+                    if args.len() == 2 && rational_operand(db, args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Rational arithmetic");
                     lower_rational_arith(db, prim, args[0], args[1])
@@ -2101,7 +2101,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // BigInt/Rational arms; a float/int mix never reaches here (rejected CDZ0301 in
                 // `check_application`). `%`/bit-ops/shift are integer-only and fall through to `is_arith`.
                 Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
-                    if args.len() == 2 && float_operand(db, &args) =>
+                    if args.len() == 2 && float_operand(db, args) =>
                 {
                     let fprim = match prim {
                         Prim::Add => Prim::FAdd,
@@ -2110,36 +2110,36 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Prim::FDiv,
                     };
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Float arithmetic (operand is Float)");
-                    lower_float_arith(db, id, fprim, &args)
+                    lower_float_arith(db, id, fprim, args)
                 }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
-                    lower_arith(db, id, prim, &args)
+                    lower_arith(db, id, prim, args)
                 }
                 // A FLOAT arithmetic prim (`+.`/`-.`/`*.`/`/.`) — fold two constant floats, else decline
                 // (runtime float operands emit the machine op in F4).
                 Some(prim) if prim.is_float_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: float arithmetic prim");
-                    lower_float_arith(db, id, prim, &args)
+                    lower_float_arith(db, id, prim, args)
                 }
                 // `Float64.of-int` / `Float32.of-int` — the explicit INT→FLOAT conversion. Fold a
                 // constant integer to a `Core::ConstFloat` at the target width, else emit a runtime
                 // `f{64,32}.convert_i64_s`.
-                Some(Prim::FloatOfInt) => lower_float_of_int(db, id, &args),
+                Some(Prim::FloatOfInt) => lower_float_of_int(db, id, args),
                 // `Float64.of` / `Float32.of` — the explicit FLOAT-WIDTH conversion. Fold a constant
                 // float (round at the target width), else emit a runtime demote/promote.
-                Some(Prim::FloatOf) => lower_float_of(db, id, &args),
+                Some(Prim::FloatOf) => lower_float_of(db, id, args),
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
                 Some(Prim::Compare) if args.len() == 2 => lower_compare(db, id, args[0], args[1]),
                 Some(prim) if prim.is_comparison() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: comparison prim");
-                    lower_comparison(db, prim, &args)
+                    lower_comparison(db, prim, args)
                 }
                 Some(prim) if prim.is_conversion() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: conversion prim");
-                    lower_conversion(db, id, prim, &args)
+                    lower_conversion(db, id, prim, args)
                 }
                 // `Qty.of x u` — attach a compile-time unit. The unit is CHECKED THEN ERASED
                 // (units-of-measure.md §Dimensions Are Checked Then Erased), so lowering is the value
@@ -2209,7 +2209,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // `sum-new(disc, payload)`.
                 Some(Prim::SumNew) => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: sum variant constructor");
-                    lower_sum_new(db, id, head, &args)
+                    lower_sum_new(db, id, head, args)
                 }
                 // `List.len` applied to a list — FOLD when the operand is a compile-time-visible list
                 // literal (its length is statically known), else emit `Core::ListLen` (the runtime
@@ -2965,7 +2965,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // `Map.insert` — add-or-replace `key ↦ val`, returning the new map. For M1 the map operand
                 // is a RUNTIME map (built inline or a parameter); emit `Core::MapInsert` carrying the
                 // solved key/value types (for the box ops). A poison operand propagates.
-                Some(Prim::MapInsert) if args.len() == 3 => lower_map_insert(db, id, &args),
+                Some(Prim::MapInsert) if args.len() == 3 => lower_map_insert(db, id, args),
                 // `Map.merge` — union two runtime maps, last-writer (b) wins on an overlapping key. Emit
                 // `Core::MapMerge` (runtime `map-merge`, consumes both handles → a new map). Backs the map
                 // construction-spread fold `(. Map merge)`.
@@ -3027,7 +3027,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // case here. (A type constructor like `(Int 64)` reduces to its module the same way.)
                 Some(prim) => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: constructor prim");
-                    match crate::eval::reduce_ctor(db, prim, id, &args) {
+                    match crate::eval::reduce_ctor(db, prim, id, args) {
                         Ok(built) => core_of(db, built),
                         // A NON-constructor OPERATION prim (`list-at`, `map-insert`, …) reaches `reduce_ctor`
                         // ONLY here, when its full-arity arm above did not match — the operation was applied
@@ -3052,7 +3052,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                             // `>=` arity), which falls through to the decline below — over-application is
                             // already the coded CDZ0203 from `infer`, so this decline stays its weaker Todo
                             // sibling and the primary "no" is unchanged.
-                            if let Some(c) = partial_head_eta_closure(db, head, &args) {
+                            if let Some(c) = partial_head_eta_closure(db, head, args) {
                                 trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: under-applied built-in operation → eta-closure over the remaining args");
                                 c
                             } else {
