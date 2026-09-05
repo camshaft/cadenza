@@ -2320,6 +2320,22 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
     if let Some(out) = rustc_run(&s, "g()") {
         assert_eq!(out, "0", "an empty set has cardinality 0 — same as wasm");
     }
+    // A NON-EMPTY set with a genuinely-UNDETERMINED key element — `(Set.of #list(#list()))` whose key type
+    // `(List (List Any))` bakes no canonical-compare shape — must REJECT CDZ0203 "not fully determined —
+    // annotate it" (mirroring the wasm `ownership.rs` Set/Map-key determinacy reject), NOT ground `Any`→`i64`
+    // and emit a Set with a FABRICATED key type (the wrong-accept the fresh rust harvest caught; v-corpus-
+    // harness family-A #7, 19-sets:5790). This is DISTINCT from the empty-set grounding above: the empty set
+    // has no keys to compare (grounds harmlessly), a non-empty set with an unshapeable key does.
+    let undet = try_compile_rust(
+        "(module m (def (g) (Set.len (Set.of #list(#list())))) (export g))",
+    )
+    .expect_err(
+        "an undetermined non-empty Set key must decline CDZ0203, not emit a fabricated-key Set",
+    );
+    assert!(
+        undet.iter().any(|d| d.contains("not fully determined")),
+        "the undetermined Set key declines CDZ0203 (not a silent fabricated key): {undet:?}"
+    );
 }
 
 #[test]
