@@ -663,7 +663,7 @@
            scrutinee's kind). The match-position analogue of `(. 5 0)` (positional access on a non-tuple);
            pins the list pattern's scrutinee-kind check on a scalar.")
   (input (do (def (main) (match 5 (#list(x (.. r)) x) (_ 0))) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a list pattern over a map scrutinee is a type error"
@@ -673,7 +673,7 @@
            that the scrutinee-kind check distinguishes two COLLECTION kinds, not only collection-vs-scalar.")
   (input
     (do (def (main) (match (Map.insert Map.empty 1 2) (#list(x (.. r)) x) (_ 0))) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 (case
   "a map pattern over a non-map scrutinee is a type error"
@@ -682,7 +682,7 @@
            is not a Map, rejected CDZ0203. Pins the map pattern head's scrutinee-kind check, the map twin
            of the list case.")
   (input (do (def (main) (match 5 (#map((= 1 v)) v) (_ 0))) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (exact-code)))
 
 ; The GENERALIZATION: a `(list …)` / `(map …)` / `(tuple …)` pattern matches a value of a SPECIFIC kind
 ; (List/Map/Tuple), so over a definite scrutinee of a DIFFERENT kind it is a type error CDZ0203 naming BOTH
@@ -692,32 +692,32 @@
 (case
   "a list pattern over an Int64 scrutinee is a type error naming both kinds"
   (input (do (def (f (: n Int64)) (match n (#list(a b) 0) (_ 0))) (export f)))
-  (error CDZ0203 (message "a List value") (message "Int64")))
+  (error CDZ0203 (message "a List value") (message "Int64") (exact-code)))
 
 (case
   "a list pattern over a String scrutinee is a type error"
   (input (do (def (f (: s String)) (match s (#list(a b) 0) (_ 0))) (export f)))
-  (error CDZ0203 (message "a List value")))
+  (error CDZ0203 (message "a List value") (exact-code)))
 
 (case
   "a map pattern over an Int64 scrutinee (definite) is a type error"
   (input (do (def (f (: n Int64)) (match n (#map((= 1 v)) v) (_ 0))) (export f)))
-  (error CDZ0203 (message "a Map value")))
+  (error CDZ0203 (message "a Map value") (exact-code)))
 
 (case
   "a tuple pattern over an Int64 scrutinee is a type error"
   (input (do (def (f (: n Int64)) (match n (#tuple(a b) 0) (_ 0))) (export f)))
-  (error CDZ0203 (message "a Tuple value")))
+  (error CDZ0203 (message "a Tuple value") (exact-code)))
 
 (case
   "a tuple pattern over a Map scrutinee is a type error"
   (input (do (def (f (: mm (Map Int64 Int64))) (match mm (#tuple(a b) 0) (_ 0))) (export f)))
-  (error CDZ0203 (message "a Tuple value")))
+  (error CDZ0203 (message "a Tuple value") (exact-code)))
 
 (case
   "a list pattern over a Map scrutinee is a type error"
   (input (do (def (f (: mm (Map Int64 Int64))) (match mm (#list(a b) 0) (_ 0))) (export f)))
-  (error CDZ0203 (message "a List value")))
+  (error CDZ0203 (message "a List value") (exact-code)))
 
 ; The erroring-SUBJECT sibling of the mismatched-kind cases above (breaker; FIXED #8391): the cases above are a
 ; valid but wrong-KIND scrutinee (→ CDZ0203). Here the scrutinee does not even RESOLVE — an unbound name — so
