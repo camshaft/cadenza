@@ -151,12 +151,24 @@ cuts cleanly:
   `$FLEET_HUB` — #8539 — so it follows the core hub, not a cadenza-git-derived one.)
 - `fleet::nix_binary()` (`main.rs:336`; `codegen.rs:218` deliberately mirrors it locally to avoid
   cross-module exposure) — resolves the `nix` executable. This is CADENZA-build-specific (nix is
-  cadenza's build tool). **Cut:** it belongs in the cadenza adapter, NOT core — move it out of
-  `fleet.rs` into a cadenza-side util (or the adapter), and drop `codegen.rs`'s mirrored copy onto it.
+  cadenza's build tool) and BELONGS in the adapter in the end state. **⚠ NOT a standalone P1 move,
+  though:** `nix_binary` also has FOUR `fleet.rs`-INTERNAL callers (`fleet.rs:11417, 11541, 11828,
+  14768`) — all inside the `gate`/`local-gate`/watchdog nix-invocation paths. Those gate paths are
+  themselves cadenza-ADAPTER functionality that currently lives in `fleet.rs` and must move OUT to the
+  adapter (they are not core — "no gates/build in core"). So `nix_binary` moves TOGETHER WITH that
+  gate/local-gate code as one adapter-extraction unit **in P2**, not as an isolated P1 refactor —
+  pulling `nix_binary` alone into a cadenza util now would create BACKWARDS coupling (core `fleet.rs`
+  → cadenza util), the wrong direction. Leave it in place until the gate code it serves is extracted.
 
-**Net cut.** Core = the message-bus/window/watchdog/cron/lease machinery + `$FLEET_HUB` hub resolution
-+ `FleetCmd`/`run`. Cadenza adapter keeps `Paths.seed`, the `gate`/`build`/`check`/`codegen`/`bench`
-subcommands, and `nix_binary`. The only genuinely SHARED runtime primitive is the check-lease pool
-(core-owned, adapter-consumed) — everything else is a one-directional entry point or a cadenza-only
-helper that simply moves to the adapter. No circular coupling; no hidden global state beyond the hub
-(now `$FLEET_HUB`-routed).
+**Net cut.** Core = the message-bus/window/watchdog-liveness/cron/lease machinery + `$FLEET_HUB` hub
+resolution + `FleetCmd`/`run`. The cadenza ADAPTER takes `Paths.seed`, the `gate`/`build`/`check`/
+`codegen`/`bench` subcommands, AND the gate/local-gate machinery currently embedded in `fleet.rs`
+(with `nix_binary` riding along, plus `codegen.rs`'s mirror). The only genuinely SHARED runtime
+primitive that stays core-owned + adapter-consumed is the check-lease pool. No circular coupling; no
+hidden global state beyond the hub (now `$FLEET_HUB`-routed).
+
+**P2 extraction-order implication (from this coupling):** the gate/local-gate block inside `fleet.rs`
+is the largest cadenza-adapter tenant of the "core" file. Separating it (and `nix_binary` with it) is
+the substantive P2 adapter-carve, and it wants a clean interface (the adapter provides a "gate this
+change → verdict" callback; core owns only the lease + orchestration). That carve is what makes the
+eventual `fleet.rs`-lift into the standalone crate actually core-only.
