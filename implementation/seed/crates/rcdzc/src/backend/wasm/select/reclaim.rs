@@ -3078,7 +3078,28 @@ pub(super) fn mark_binder_dups_inner(
         // construction (a scalar result holds no handle → only a missed dup = leak, never a use-after-free; the
         // `binding_escapes` conjunct keeps the dup for a CONSUMING co-operand — a 2nd consumer — and
         // `is_heap_type_for_retain` for an ALIASING-heap borrow). v-memory-safety rc-trace-verified this rule.
+        // 🪤 PATH-SENSITIVE (option-b, #8466 14b-min-heap fix, v-mem co-diagnose): a scalar borrow (`List.len`)
+        // CANNOT mutate the binder, so #8466 first spared it UNCONDITIONALLY — but that was UNSOUND. Sparing
+        // the co-operand's `la`-fold dup lets a SIBLING consume of the SAME op (the deferred `List.push`/
+        // `List.update` FBIP mutation) rewrite the growing List IN PLACE while ANOTHER in-path read of the
+        // binder (another `List.len`/`getat`/nested `List.update` at a different index) still needs the
+        // PRE-mutation value — the 14b min-heap read its last push-7 as an older 04 (bisect: #8466 flipped
+        // 14b 707→404). So gate the spare: grant it only when `binder` is NOT live-after this op (`!la_in`)
+        // AND no OTHER child uses `binder` except a BARE direct ref (the op's own consume operand). CATALAN
+        // growB `(List.push c (List.len c))`: c used only by the bare-c consume + `List.len`, `!la_in` → still
+        // spared (growB stays fixed). 14b: the growing List is read at MULTIPLE getat/List.len/List.update
+        // sites in-path (or live-after) → NOT spared → the dup is kept → 707. Same la-fold hazard fix-2 hit
+        // globally; scoped here to the strict-consume seq + the path condition.
         let holds_no_handle: Vec<bool> = if strict_consume_op {
+            // A BARE direct `binder` ref is the ONLY other-use permitted alongside a spare (it is the
+            // deferred-consume op's own consume operand, already accounted by Perceus's k-1). Precomputed
+            // once (own db borrow) so the per-child gate need not re-walk.
+            let bare_ref: Vec<bool> = children
+                .iter()
+                .map(|&(cj, _)| {
+                    matches!(core_of(db, cj), Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder)
+                })
+                .collect();
             children
                 .iter()
                 .enumerate()
@@ -3086,6 +3107,8 @@ pub(super) fn mark_binder_dups_inner(
                     occurs[k]
                         && !is_heap_type_for_retain(&type_of(db, c))
                         && !binding_escapes(db, c, binder, false)
+                        && !la_in
+                        && (0..children.len()).all(|j| j == k || !occurs[j] || bare_ref[j])
                 })
                 .collect()
         } else {
