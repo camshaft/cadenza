@@ -2390,6 +2390,45 @@ fn rustc_a_narrow_literal_in_a_compound_nested_in_a_set_element_grounds_to_the_f
 }
 
 #[test]
+fn rustc_a_fitting_payload_through_option_expect_grounds_to_the_narrow_result_annotation() {
+    // REGRESSION (v-corpus-harness family-B, 06-numeric-model:2367 "a fitting payload projected through
+    // Option.expect under a narrow annotation runs (no over-rejection)"): `(: (Option.expect (if c (Some 100)
+    // None) "x") UInt8)` solves the expect RESULT as UInt8 (`f`'s `-> u8`), but the narrow annotation does not
+    // back-propagate to the `Some 100` node — its payload defaults to Int64, so the scrutinee is `Option<i64>`
+    // and `__expect` binds `i64`, returned where `u8` is expected → rustc E0308 (a fitting-payload OVER-FAIL;
+    // wasm's width-tagged value model runs to 100). The fix casts the bound payload to the annotated result
+    // width; the checker range-checks the payload at check (a non-fitting `Some 10000`/UInt8 is CDZ0302 before
+    // emit — the sibling case), so the cast is exact.
+    let src = "(do (def (f (: c Bool)) (: (Option.expect (if c (Some 100) None) \"x\") UInt8)) (export f))";
+    let s = compile_rust(src);
+    assert!(
+        s.contains("__expect as u8"),
+        "the expect payload is cast to the annotated u8 result width (was returned as i64 → E0308):\n{s}"
+    );
+    assert!(
+        compile_rust_result(src).is_ok(),
+        "the Option.expect-under-narrow-annotation program emits (not declined)"
+    );
+    if let Some(out) = rustc_run(&s, "f(true)") {
+        assert_eq!(
+            out, "100",
+            "the fitting payload projects through expect and runs — same as wasm"
+        );
+    }
+    // An OUT-OF-RANGE payload under the same narrow annotation is a CHECK-time CDZ0302 (the cast-at-sink
+    // never masks it — the reject fires before emit). This is the guardrail that keeps the cast sound.
+    let over = try_compile_rust(
+        "(do (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) \"x\") UInt8)) (export f))",
+    )
+    .expect_err("an out-of-UInt8 expect payload must decline CDZ0302 at check, not silently truncate");
+    assert!(
+        over.iter()
+            .any(|d| d.contains("does not fit") || d.contains("range")),
+        "the oversize payload declines CDZ0302 (not a truncating cast): {over:?}"
+    );
+}
+
+#[test]
 fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
     // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
     // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but

@@ -3888,7 +3888,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::SumExpect {
             scrutinee,
             disc_present,
-        } => emit_sum_expect(db, scrutinee, disc_present, env, ctx),
+        } => emit_sum_expect(db, id, scrutinee, disc_present, env, ctx),
         // A RUNTIME CLOSURE VALUE `(fn …)` that survived to run time (passed to a recursive fn) → a Rust
         // `Rc<dyn Fn(…) -> …>` that forwards its captured values + call args to the lifted `fn __lifted_k`.
         // The captures are emitted at the BUILD site (values in the enclosing scope) and MOVED into the
@@ -8101,6 +8101,7 @@ fn emit_sum_payload(
 /// evaluates it once, observably as the wasm path's single materialization.
 fn emit_sum_expect(
     db: &mut Db,
+    id: StructId,
     scrutinee: StructId,
     disc_present: u32,
     env: &Env,
@@ -8113,6 +8114,29 @@ fn emit_sum_expect(
         ));
     }
     let scrut = emit(db, scrutinee, env, ctx)?;
+    // GROUND the bound payload to the EXPECT's annotated result width. `(: (Option.expect (if c (Some 100)
+    // None) …) UInt8)` solves the expect RESULT as UInt8 (the fn body's type → `-> u8`), but the narrow
+    // annotation does NOT back-propagate to the `Some 100` node, whose payload defaults to Int64 — so the
+    // scrutinee is `Option<i64>` and `__expect` binds `i64`, returned where `u8` is expected → rustc E0308
+    // (a fitting-payload over-fail; wasm's width-tagged value model runs). Cast the bound payload to the
+    // result int width when it DIFFERS from the payload's settled width. SOUND: the checker range-checks the
+    // payload against the annotation (a non-fitting payload is CDZ0302 BEFORE emit — the sibling `Some 10000`
+    // /UInt8 case), so the value fits the target and the `as` is exact/value-preserving — never a silent
+    // truncation. A same-width or non-integer payload binds `__expect` unchanged.
+    let result_ty = type_of(db, id);
+    let scrut_ty = type_of(db, scrutinee);
+    let payload_ty = variant_payload_ty(db, &scrut_ty, disc_present);
+    let bound = match (
+        result_ty.strip_nominal(),
+        payload_ty.as_ref().map(|t| t.strip_nominal()),
+    ) {
+        (Ty::Int(rit), Some(Ty::Int(pit))) if pit != rit => {
+            let rt = types::rust_type(&db.name_ctx(), &Ty::Int(*rit))
+                .unwrap_or_else(|| "i64".to_string());
+            format!("(__expect as {rt})")
+        }
+        _ => "__expect".to_string(),
+    };
     // The payload binds to `__expect` and is the match's value directly (a single-payload present arm).
     // The absent-case panic message is `"unreachable"` (NOT `"expect"`): requiring the value of an absent
     // optional is a trap whose canonical KIND is `unreachable` — the SAME kind the wasm backend produces
@@ -8121,7 +8145,7 @@ fn emit_sum_expect(
     // "unreachable")` expect-on-absent case graded todo on rust though it correctly halts. Matching the
     // literal makes rust agree with wasm.
     Ok(format!(
-        "match {scrut} {{ {vpath}(__expect) => __expect, _ => panic!(\"unreachable\") }}"
+        "match {scrut} {{ {vpath}(__expect) => {bound}, _ => panic!(\"unreachable\") }}"
     ))
 }
 
