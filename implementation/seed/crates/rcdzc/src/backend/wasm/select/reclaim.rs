@@ -3078,7 +3078,7 @@ pub(super) fn mark_binder_dups_inner(
         // construction (a scalar result holds no handle → only a missed dup = leak, never a use-after-free; the
         // `binding_escapes` conjunct keeps the dup for a CONSUMING co-operand — a 2nd consumer — and
         // `is_heap_type_for_retain` for an ALIASING-heap borrow). v-memory-safety rc-trace-verified this rule.
-        // 🪤 PATH-SENSITIVE (option-b, #8466 14b-min-heap fix, v-mem co-diagnose): a scalar borrow (`List.len`)
+        // TRAP: PATH-SENSITIVE (option-b, #8466 14b-min-heap fix, v-mem co-diagnose): a scalar borrow (`List.len`)
         // CANNOT mutate the binder, so #8466 first spared it UNCONDITIONALLY — but that was UNSOUND. Sparing
         // the co-operand's `la`-fold dup lets a SIBLING consume of the SAME op (the deferred `List.push`/
         // `List.update` FBIP mutation) rewrite the growing List IN PLACE while ANOTHER in-path read of the
