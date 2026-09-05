@@ -5534,8 +5534,10 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut note_backlogs = 0usize;
     let mut spent_informational_reaped = 0usize;
     for a in &reg.agents {
-        // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
-        if a.status != "active" || fleet.stopfile(&a.name).exists() {
+        // Only ACTIVE agents with no stop-file are candidates — a stopped/removed (e.g. weekend-rested)
+        // agent SHOULD be idle and must never be re-armed/reissued back to life (see
+        // `watchdog_skips_agent` for the double-guard rationale that keeps a rest airtight).
+        if watchdog_skips_agent(&a.status, fleet.stopfile(&a.name).exists()) {
             continue;
         }
         // No live window → `up` hasn't launched it (or it was closed); the watchdog doesn't create
@@ -8779,6 +8781,17 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
 /// dead-cron decision fix #1568 landed — the decision was right, the delivery didn't stick). The short
 /// `continue`/`/compact` nudges get away with one Enter; this long line needs the second to clear the
 /// paste buffer.
+/// Should the watchdog SKIP this agent entirely — never re-arm (`continue`-nudge), re-issue its `/loop`,
+/// or otherwise revive it? True for any agent that is not `active` OR has a stop-file, i.e. a
+/// `fleet remove`d / weekend-rested agent. A DOUBLE guard on purpose (belt-and-suspenders): the stop-file
+/// is the durable rest signal, so even if a concurrent heartbeat races the registry `status` back to
+/// "active" (the registry read-modify-write race), the stop-file half still forces the skip — the
+/// watchdog can NEVER resurrect a rested agent's loop and undo an operator-ordered rest (weekend-rest
+/// invariant, 2026-09-05). Pure so the invariant is unit-pinned against a future watchdog refactor.
+fn watchdog_skips_agent(status: &str, has_stopfile: bool) -> bool {
+    status != "active" || has_stopfile
+}
+
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
     let target = format!("{session}:{agent}");
     let line = format!("/loop {interval} {tick_prompt}");
@@ -17794,6 +17807,19 @@ mod tests {
         // Empty merge-base string (git printed nothing) is treated as unresolved → trunk fallback, never
         // "..ref" (which would resolve to the ref's whole history from the root — a huge wrong range).
         assert_eq!(merge_base_range(Some(""), "deadbeef"), "trunk..deadbeef");
+    }
+
+    #[test]
+    fn watchdog_skips_stopped_or_stopfiled_agents_so_a_rest_is_never_resurrected() {
+        // An active agent with no stop-file is a candidate for re-arm/reissue.
+        assert!(!watchdog_skips_agent("active", false));
+        // A stopped agent is skipped (normal removal).
+        assert!(watchdog_skips_agent("stopped", false));
+        // BELT-AND-SUSPENDERS: even if a concurrent heartbeat raced status back to "active", a present
+        // stop-file STILL forces the skip — the weekend-rest invariant (watchdog can't un-rest an agent).
+        assert!(watchdog_skips_agent("active", true));
+        // And a stopped agent that also has a stop-file (the normal rested state) is skipped.
+        assert!(watchdog_skips_agent("stopped", true));
     }
 
     #[test]
