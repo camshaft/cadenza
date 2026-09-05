@@ -144,7 +144,7 @@ mod tests {
         // A wide `(a0 a1 … a19)` list — well past the pretty printer's wrap width.
         let mut kids = Vec::new();
         for i in 0..20 {
-            kids.push(b.name(&format!("aaaaaaaa{i}")));
+            kids.push(b.name(format!("aaaaaaaa{i}")));
         }
         let root = b.list(kids);
         let arenas = b.finish(root);
