@@ -186,6 +186,43 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
+; A MULTI-VARIANT tagged user sum RETURNED bare from `main` escapes to the host as a discriminated value
+; and renders `(: (<case> <payload>) <TypeName>)` — the disc selects the variant by CONSTRUCTOR NAME. The
+; emitted `(Sum <name> <declId>)` result-type node carries NO variant names or payload types (its trailing
+; nodes are the sum's generic args, empty for a monomorphic sum), so the wasm/lean differential VALUE oracle
+; resolves the name + payload field types from the Core `(type …)` decl. These three cases pin the result-
+; boundary decode across arity 0 / 1 / ≥2 — coverage the corpus previously lacked (it exercised user sums
+; only via `match`, returning scalars). A nullary variant carries the `unit` payload; a multi-field variant
+; renders its fields FLAT under the case name (the runtime boxes multi-payloads as a tuple, but the type-
+; directed render lays them out positionally).
+(case
+  "a multi-variant user sum returned to the host renders its NULLARY variant tagged (: (Circle unit) Shape)"
+  (doc
+    "`(type Shape (Circle) (Square Int64) (Rect Int64 Int64))`, `(def (main) (Circle))` returns the bare
+           nullary variant; it escapes to the host tagged with its own name and the unit payload, rendering
+           `(: (Circle unit) Shape)`. Pins the arity-0 result-boundary decode of a multi-variant user sum.")
+  (input (do (type Shape (Circle) (Square Int64) (Rect Int64 Int64)) (def (main) (Circle)) (export main)))
+  (output (: (Circle unit) Shape)))
+
+(case
+  "a multi-variant user sum returned to the host renders its ARITY-1 payload variant (: (Square 7) Shape)"
+  (doc
+    "The single-payload arm of the same sum: `(def (main) (Square 7))` returns the bare `Square` variant,
+           rendering `(: (Square 7) Shape)` — the disc tags `Square` and its Int64 payload rides along. Pins
+           the arity-1 result-boundary decode (name + single payload from the Core `(type …)` decl).")
+  (input (do (type Shape (Circle) (Square Int64) (Rect Int64 Int64)) (def (main) (Square 7)) (export main)))
+  (output (: (Square 7) Shape)))
+
+(case
+  "a multi-variant user sum returned to the host renders its MULTI-FIELD variant (: (Rect 3 7) Shape)"
+  (doc
+    "The multi-field arm: `(def (main) (Rect 3 7))` (arity 2) returns the bare `Rect` variant, rendering
+           `(: (Rect 3 7) Shape)` — the two fields render FLAT under the case name. Pins the arity≥2 result-
+           boundary decode (name + per-field payloads from the Core `(type …)` decl).")
+  (input (do (type Shape (Circle) (Square Int64) (Rect Int64 Int64)) (def (main) (Rect 3 7)) (export main)))
+  (output (: (Rect 3 7) Shape))
+  (live-objects 2))
+
 ; A record field name (and a member-access field name) is a LABEL, not a value reference — so it is
 ; immune to argument substitution when a function is called. A function whose body builds a record with a
 ; field KEYED the same as a parameter, or projects a field whose name matches a parameter, must compute
