@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 30 };
+    let arms = if depth == 0 { 2 } else { 31 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -989,13 +989,30 @@ fn gen_typefuzz_int<C: Choice>(
         // `gen_typefuzz_int`; return a bound element / rest-length (no arith → no CDZ0304). Nested/literal
         // element sub-patterns, dup binders, non-list scrutinees, and NON-EXHAUSTIVE matches (no
         // all-length arm) are NOT generated (still oracle-skip).
-        _ => {
+        29 => {
             let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             if c.variant(2) == 0 {
                 format!("(match (list {a} {b}) ((list x .. r) x) (_ 0))")
             } else {
                 format!("(match (list {a} {b}) ((list (.. rest)) (List.len rest)))")
+            }
+        }
+        // A match with a NESTED IRREFUTABLE sub-pattern in a tuple/record position (T1.52 inc-4): a
+        // tuple/record match arm whose element/field pattern is itself a nested `(tuple …)` / `(record …)`
+        // pattern, each inner element/field binding its type; return a bound INNER binder → Int64 (no arith
+        // → no CDZ0304). Irrefutable ⇒ exhaustive ⇒ HOLDS. Nested REFUTABLE sub-patterns (variant/literal)
+        // are NOT generated — they make the arm refutable and still oracle-skip in inc-4.
+        _ => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let d = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(match (tuple {a} (tuple {b} {d})) ((tuple x (tuple y z)) y))")
+            } else {
+                format!(
+                    "(match (record (= x {a}) (= y (record (= z {b})))) ((record (= x p) (= y (record (= z q)))) q))"
+                )
             }
         }
     }
