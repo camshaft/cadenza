@@ -681,8 +681,8 @@ example : stringResult? (rtBytes "Int") "main".toUTF8 = false := by native_decid
 -- `resultKindTag`: the leak-partition classifier. A scalar result → `scalar <Ty>` (a genuine husk if it
 -- leaks); String / heap heads → `string` / `heap` (owned result already dropped, residual = real); an
 -- unmodeled head → `unmodeled` (skips, never a leak). Mirrors `runWasmWithLeak`'s scalar-then-heap routing.
-example : resultKindTag (rtBytes "Int") "main".toUTF8 = "scalar Int" := by native_decide
-example : resultKindTag (rtBytes "Bool") "main".toUTF8 = "scalar Bool" := by native_decide
+example : resultKindTag (rtBytes "Int") "main".toUTF8 = "scalar int" := by native_decide
+example : resultKindTag (rtBytes "Bool") "main".toUTF8 = "scalar bool" := by native_decide
 example : resultKindTag (rtBytes "String") "main".toUTF8 = "string" := by native_decide
 example : resultKindTag (rtBytes "List") "main".toUTF8 = "heap" := by native_decide
 example : resultKindTag (rtBytes "BigInt") "main".toUTF8 = "heap" := by native_decide
