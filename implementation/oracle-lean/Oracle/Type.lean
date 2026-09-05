@@ -655,46 +655,57 @@ def matchPatClassify? (m : Ast.Module) (vs : List (ByteArray × Option Ty)) (scr
         | none => none))
   | none => none
 
-/-- Classify a MATCH pattern `patId` against a TUPLE scrutinee of element types `τs` (T1.52 inc-1).
-Returns `some (irrefutable, binds)` for a MODELED pattern: a `_` wildcard or a bare binder (binds the whole
-tuple — irrefutable), or a fixed-arity `(tuple p1…pn)` whose arity matches `τs` and whose every sub-pattern
-is a plain binder / `_` (each `pi` binds `τs[i]` — irrefutable). Returns `none` (→ the caller DECLINES the
-whole match as `Unsupported`, never a false reject) for anything else: an arity mismatch, a nested/literal
-sub-pattern, or a DUPLICATE binder name (rcdzc CDZ0201 — declined here to avoid a false accept). A tuple
-has a single shape, so a modeled tuple pattern is always irrefutable ⇒ the match is exhaustive. -/
-def tuplePatClassify? (m : Ast.Module) (τs : List Ty) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
-  let binderName? : Nat → Option (Option ByteArray) := fun sp =>  -- some none = `_`; some (some b) = binder; none = not a plain binder
-    match m.nodes[sp]? with
-    | some (.atom lid) => (match m.leaves[lid]? with
-                           | some (.name b) => some (if b == "_".toUTF8 then none else some b)
-                           | _ => none)
-    | _ => none
+/-- Recursively bind an IRREFUTABLE sub-pattern `patId` against its expected type `τ` (T1.52 inc-4 —
+NESTED sub-patterns). Returns `some binds` for a `_`/bare binder, OR a nested `(tuple p1…pn)` (vs a tuple
+type, recursing each element) / `(record (= k p)…)` (vs a record type, exact keys, recursing each field) —
+all IRREFUTABLE (tuple/record have a single shape). Returns `none` (→ the caller DECLINES) for a REFUTABLE
+or unmodeled sub-pattern: a literal, a variant `(Ctor p)`, a nested list pattern, an arity/key/head/type
+mismatch. Dedup of the collected binders is left to the top-level classifier. This is the shared engine for
+the collection-pattern classifiers, so nesting composes (`#tuple(a #record((= x b)))`, etc.). -/
+partial def subPatBinds? (m : Ast.Module) (τ : Ty) (patId : Nat) : Option (List (ByteArray × Ty)) :=
   match m.nodes[patId]? with
-  | some (.atom _) =>
-    (match binderName? patId with
-     | some none => some (true, [])                    -- `_` wildcard
-     | some (some b) => some (true, [(b, .tuple τs)])  -- bare binder = binds the whole tuple
-     | none => none)                                   -- a literal on a tuple → decline
+  | some (.atom lid) =>
+    (match m.leaves[lid]? with
+     | some (.name b) => some (if b == "_".toUTF8 then [] else [(b, τ)])
+     | _ => none)                                             -- a literal → refutable → decline
   | some (.list pc) =>
-    if m.headName? (.list pc) == some "tuple".toUTF8 then
-      let sps := (pc.extract 1 pc.size).toList
-      if sps.length == τs.length then
-        -- collect binders left-to-right; a non-plain-binder sub-pattern (nested/literal) → decline (none)
-        let binds? : Option (List (ByteArray × Ty)) := (sps.zip τs).foldl (fun acc (sp, τ) =>
-          match acc with
-          | none => none
-          | some bs => (match binderName? sp with
-                        | some none => some bs                 -- `_`: no bind
-                        | some (some b) => some (bs ++ [(b, τ)])
-                        | none => none)) (some [])
-        match binds? with
-        | none => none
-        | some bs =>
-          let names := bs.map (·.1)
-          if names.eraseDups.length == names.length then some (true, bs) else none  -- dup binder → CDZ0201, decline
-      else none                                        -- arity mismatch → decline (not a false reject)
-    else none                                          -- record/list/ctor pattern head → decline (inc-1 = tuple only)
+    (match m.headName? (.list pc), τ with
+     | some hp, .tuple τs =>
+       if hp == "tuple".toUTF8 then
+         let sps := (pc.extract 1 pc.size).toList
+         if sps.length == τs.length then
+           (sps.zip τs).foldl (fun acc (sp, t) => acc.bind (fun bs => (subPatBinds? m t sp).map (bs ++ ·))) (some [])
+         else none                                            -- arity mismatch → decline
+       else none
+     | some hp, .record fields =>
+       if hp == "record".toUTF8 then
+         let fps := (pc.extract 1 pc.size).toList
+         match fps.foldl (fun acc fp => acc.bind (fun xs => (Eval.recordField? m fp).map (fun kp => xs ++ [kp]))) (some []) with
+         | none => none
+         | some kps =>
+           let patKeys := kps.map (·.1)
+           if patKeys.eraseDups.length == patKeys.length
+              && patKeys.all (fun k => fields.any (·.1 == k))
+              && fields.all (fun f => patKeys.any (· == f.1)) then
+             kps.foldl (fun acc (k, sp) => acc.bind (fun bs =>
+               match (fields.find? (·.1 == k)).map (·.2) with
+               | some t => (subPatBinds? m t sp).map (bs ++ ·)
+               | none => none)) (some [])
+           else none                                          -- subset / extra key / open-row rest → decline
+       else none
+     | _, _ => none)                                          -- variant/list/other nested, or head/type mismatch → decline (defer)
   | none => none
+
+/-- Dedup a bind list: `none` if a name repeats (rcdzc CDZ0201 — declined to avoid a false accept). -/
+def noDupBinds? (bs : List (ByteArray × Ty)) : Option (List (ByteArray × Ty)) :=
+  let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some bs else none
+
+/-- Classify a MATCH pattern `patId` against a TUPLE scrutinee of element types `τs` (T1.52 inc-1, extended
+inc-4 with NESTED sub-patterns). A `_` / bare binder binds the whole tuple; a `(tuple p1…pn)` binds each
+element (each sub-pattern may itself be a nested tuple/record via `subPatBinds?`). Always IRREFUTABLE ⇒ the
+match is exhaustive. `none` (→ DECLINE) on arity mismatch, a refutable/unmodeled sub-pattern, or a dup binder. -/
+def tuplePatClassify? (m : Ast.Module) (τs : List Ty) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
+  ((subPatBinds? m (.tuple τs) patId).bind noDupBinds?).map (fun bs => (true, bs))
 
 /-- Classify a MATCH pattern `patId` against a RECORD scrutinee of fields `fields` (T1.52 inc-2). Returns
 `some (irrefutable, binds)` for a MODELED pattern: a `_` / bare binder (binds the whole record —
@@ -704,45 +715,7 @@ field's type — irrefutable). `none` (→ DECLINE, never a false reject) for an
 key, an open-row `(.. rest)`, a nested/literal sub-pattern, or a DUPLICATE binder. A record has a single
 shape, so a modeled record pattern is always irrefutable ⇒ the match is exhaustive. -/
 def recordPatClassify? (m : Ast.Module) (fields : List (ByteArray × Ty)) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
-  let binderName? : Nat → Option (Option ByteArray) := fun sp =>
-    match m.nodes[sp]? with
-    | some (.atom lid) => (match m.leaves[lid]? with
-                           | some (.name b) => some (if b == "_".toUTF8 then none else some b)
-                           | _ => none)
-    | _ => none
-  match m.nodes[patId]? with
-  | some (.atom _) =>
-    (match binderName? patId with
-     | some none => some (true, [])
-     | some (some b) => some (true, [(b, .record fields)])
-     | none => none)
-  | some (.list pc) =>
-    if m.headName? (.list pc) == some "record".toUTF8 then
-      let fps := (pc.extract 1 pc.size).toList
-      -- parse each field pattern `(= k p)` → (key, subPatNode); a non-`(= k p)` field (e.g. `(.. rest)`) → decline
-      let parsed? : Option (List (ByteArray × Nat)) := fps.foldl (fun acc fp =>
-        match acc with | none => none | some xs => (Eval.recordField? m fp).map (fun kp => xs ++ [kp])) (some [])
-      match parsed? with
-      | none => none
-      | some kps =>
-        let patKeys := kps.map (·.1)
-        -- EXACT field-set match (closed record): no dup pattern key, and pattern keys ≡ record keys as sets
-        if patKeys.eraseDups.length == patKeys.length
-           && patKeys.all (fun k => fields.any (·.1 == k))
-           && fields.all (fun f => patKeys.any (· == f.1)) then
-          let binds? : Option (List (ByteArray × Ty)) := kps.foldl (fun acc (k, sp) =>
-            match acc with
-            | none => none
-            | some bs => (match binderName? sp, (fields.find? (·.1 == k)).map (·.2) with
-                          | some none, _ => some bs                    -- `_`: no bind
-                          | some (some b), some τ => some (bs ++ [(b, τ)])
-                          | _, _ => none)) (some [])
-          match binds? with
-          | none => none
-          | some bs => let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some (true, bs) else none
-        else none                                        -- subset / extra key / open-row rest → decline
-    else none                                            -- list/ctor pattern head → decline (inc-2 = record only)
-  | none => none
+  ((subPatBinds? m (.record fields) patId).bind noDupBinds?).map (fun bs => (true, bs))
 
 /-- Classify a MATCH pattern `patId` against a LIST scrutinee of element type `elem` (T1.52 inc-3). Returns
 `some (coversAll, binds)`: `coversAll` = the pattern matches a list of ANY length (a `_` / bare binder, or a
@@ -759,11 +732,10 @@ def listPatClassify? (m : Ast.Module) (elem : Ty) (patId : Nat) : Option (Bool �
                            | some (.name b) => some (if b == "_".toUTF8 then none else some b)
                            | _ => none)
     | _ => none
+  -- an element sub-pattern binds via `subPatBinds?` (T1.52 inc-4): a `_`/binder, OR a nested irrefutable
+  -- tuple/record (`#list(#tuple(a b) …)`); a refutable/unmodeled element → decline.
   let addBind : List (ByteArray × Ty) → Nat → Ty → Option (List (ByteArray × Ty)) := fun bs sp τ =>
-    match binderName? sp with
-    | some none => some bs                    -- `_`: no bind
-    | some (some b) => some (bs ++ [(b, τ)])
-    | none => none                            -- nested/literal sub-pattern → decline
+    (subPatBinds? m τ sp).map (bs ++ ·)
   let noDup : List (ByteArray × Ty) → Option (List (ByteArray × Ty)) := fun bs =>
     let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some bs else none
   match m.nodes[patId]? with
