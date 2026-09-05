@@ -13511,6 +13511,37 @@
   (output (: 3 Int64)))
 
 (case
+  "an empty tuple splat as the sole argument to a nullary fn spreads to zero args"
+  (doc
+    "An empty tuple splat `(.. #tuple())` contributes ZERO positional arguments, so `(f (.. #tuple()))`
+           for a nullary `f` is exactly `(f)` — the nullary's value (7), NOT a one-argument application.
+           Pins the empty-splat-into-nullary case breaker + v-lean-oracle flagged: the arity was counted on
+           the PRE-spread splat FORM (1 arg → a false CDZ0201 `f takes no arguments, but 1 was applied`)
+           rather than the POST-spread count (0). Fixed on the two paths that bypass `apply_lambda`'s
+           expansion — the `None`-scheme arity fault (a nullary def resolves to its body VALUE) and the
+           non-lambda zero-arg identity in lowering.")
+  (input
+    (do
+      (def (f) 7)
+      (def (main) (f (.. #tuple())))
+      (export main)))
+  (output (: 7 Int64)))
+
+(case
+  "an empty tuple splat amid positional arguments vanishes"
+  (doc
+    "The companion to the sole-argument case: an empty tuple splat BETWEEN positionals contributes zero
+           args, so `(g 1 (.. #tuple()) 2)` is `(g 1 2)` = 12. This path already worked (it routes through
+           `apply_lambda`'s splat expansion); pinned alongside the nullary fix as a regression guard that the
+           empty-splat handling stays uniform across argument positions.")
+  (input
+    (do
+      (def (g (: a Int64) (: b Int64)) (+ (* a 10) b))
+      (def (main) (g 1 (.. #tuple()) 2))
+      (export main)))
+  (output (: 12 Int64)))
+
+(case
   "a tuple splat spreads a tuple held in a variable"
   (doc
     "The splat operand need not be a tuple LITERAL — a bound `let`-local holding a tuple splats the same

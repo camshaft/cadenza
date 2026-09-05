@@ -1815,6 +1815,15 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     }
                 }
             }
+            // Splat-expand the args on this NON-LAMBDA path (only a non-lambda head reaches here — the
+            // lambda β-reduce branch above already expands via `apply_lambda`, so this never double-expands).
+            // An empty-tuple splat `(.. #tuple())` contributes ZERO positional args, so `(f (.. #tuple()))`
+            // for a nullary `f` reaches the zero-arg identity below as a valid `(f)` → its body value. Without
+            // it the raw splat FORM stayed one argument and fell through to "value is not applyable" (breaker:
+            // empty-splat-into-nullary false-reject; the companion `(f 1 (.. #tuple()) 2)` amid positionals
+            // already vanished the empty splat via `apply_lambda`). A no-op when no `(.. )` arg is present.
+            let splat_expanded_nonlambda = crate::eval::expand_call_splat_args(db, &args);
+            let args: &[StructId] = splat_expanded_nonlambda.as_deref().unwrap_or(&args);
             // A ZERO-ARGUMENT application `(g)` whose head is not a lambda. Applying a value to no
             // arguments is the identity — the application IS the head value. This is how a NULLARY def
             // is called: `(def (g) 7)` resolves `g` to its body value (so a bare `g` is 7), and `(g)`

@@ -2680,6 +2680,15 @@ pub(crate) fn check_application(
         // on `is_definite_non_function` so an UNDETERMINED head (`Ty::Any` — a not-yet-modeled construct,
         // an unresolved var) still falls through to a clean decline, never a spurious reject.
         None => {
+            // Splat-expand the args FIRST, mirroring the function-scheme path above — an empty-tuple splat
+            // `(.. #tuple())` contributes ZERO positional args, so `(f (.. #tuple()))` for a nullary `f` is a
+            // valid `(f)`, NOT a non-function over-application. Without this the arity fault below counted the
+            // raw splat FORM as one argument (breaker: empty-splat-into-nullary false-rejected CDZ0201 "`f`
+            // takes no arguments, but 1 was applied", while `(f 1 (.. #tuple()) 2)` amid positionals correctly
+            // vanished the empty splat). Expansion is designed to run at type-check time too (see
+            // `expand_call_splat_args` / `apply_lambda` A.7), and is a no-op when no `(.. )` arg is present.
+            let splat_expanded = crate::eval::expand_call_splat_args(db, args);
+            let args: &[StructId] = splat_expanded.as_deref().unwrap_or(args);
             // A head with a `(meta apply)` PRIMITIVE is applyable via that primitive even though it has
             // no type SCHEME — the compound-value constructors (`tuple`/`record`/`list` aliases build the
             // compound), a type constructor (`(Int 64)`), etc. Those are NOT "applying a non-function";
