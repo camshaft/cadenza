@@ -3745,7 +3745,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // to GROUND an empty-list payload whose own `type_of` left its element unsolved (`List ?`). In a
             // sum payload slot the element type IS known from the declaration, so annotate `Vec::<T>::new()`
             // rather than the bare `vec![]` rustc can't infer (E0282 "type annotations needed for Vec<_>").
-            let sum_ty = type_of(db, id);
+            // PREFER a compatible concrete `expected_ty` (a fully-solved Option/Result/user-enum threaded
+            // from an enclosing annotation or if-JOIN via `emit_branch`) over this node's OWN `type_of`: a
+            // branch SumNew whose variant does not mention some type param leaves that param a FREE var
+            // defaulted to i64 in its self-type (`(Some (Ok n))` → `Option<Result<i64, ?>>`), which then
+            // mismatches the join `Option<Result<i64, String>>` (cdzw74 E0308). The expected type carries the
+            // solved param. Only when expected is a Sum with THIS disc as a valid variant (structurally the
+            // same sum) and has no free var — else fall back to `type_of` (byte-identical to before).
+            let sum_ty = match ctx.expected_ty.as_ref() {
+                Some(e)
+                    if matches!(e.strip_nominal(), Ty::Sum { .. })
+                        && !e.has_free_var()
+                        && variant_payload_ty(db, e, disc).is_some() =>
+                {
+                    e.clone()
+                }
+                _ => type_of(db, id),
+            };
             let payload_decl_tys: Vec<Option<Ty>> = match variant_payload_ty(db, &sum_ty, disc) {
                 Some(Ty::Tuple(elems)) if elems.len() == payloads.len() => {
                     elems.iter().cloned().map(Some).collect()
@@ -3755,12 +3771,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             };
             let mut args = Vec::with_capacity(payloads.len());
             for (k, &p) in payloads.iter().enumerate() {
+                // Thread the PAYLOAD's declared type as `expected_ty` so a NESTED SumNew payload (the `Ok n`
+                // inside `Some (Ok n)`) prefers the solved param recursively (its `Err` grounds to String,
+                // not the i64 default). A non-sum payload ignores a non-collection `expected_ty`, so this is
+                // inert there. Cleared to the payload type (NOT the outer sum type) so the nesting is exact.
+                let mut pctx = ctx.clone();
+                pctx.expected_ty = payload_decl_tys.get(k).and_then(|o| o.clone());
                 args.push(emit_elem_grounding_empty_list(
                     db,
                     p,
                     payload_decl_tys.get(k).and_then(|o| o.as_ref()),
                     env,
-                    ctx,
+                    &pctx,
                 )?);
             }
             // A RECURSIVE variant's payload field is a `Box<…>` (the enum boxes it to stay finite), so its
@@ -8200,6 +8222,18 @@ fn emit_branch(
     // `expected_ty`, so a nested unrelated empty collection is unaffected. The collection twin of the
     // generic-sum `if`-result annotation in the `Core::If` arm.
     if matches!(cty, Ty::Map(..) | Ty::Set(_) | Ty::List(_)) && !cty.has_free_var() {
+        let mut bctx = ctx.clone();
+        bctx.expected_ty = Some(cty.clone());
+        return emit(db, branch, env, &bctx);
+    }
+    // A generic-SUM result (Option/Result/user enum carrying type args), fully solved: thread the JOIN type
+    // as `expected_ty` so a branch SumNew whose variant does NOT mention some type param (a `(Some (Ok n))`
+    // then-branch leaves the Result's `Err` arg FREE → `ground_open_vars` defaults it to i64) ascribes to
+    // the JOIN's solved param (`Option<Result<i64, String>>`) instead of its own under-ground branch type
+    // (`Option<Result<i64, i64>>`), which the `if`'s `let __if: <join>` annotation would then reject (E0308,
+    // cdzw74). `Core::SumNew` prefers a compatible concrete `expected_ty` over its own `type_of`. The sum
+    // twin of the collection expected_ty threading above; only when the join type has NO free var (exact).
+    if matches!(cty.strip_nominal(), Ty::Sum { .. }) && !cty.has_free_var() {
         let mut bctx = ctx.clone();
         bctx.expected_ty = Some(cty.clone());
         return emit(db, branch, env, &bctx);

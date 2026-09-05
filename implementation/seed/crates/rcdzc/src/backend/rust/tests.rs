@@ -2462,6 +2462,42 @@ fn a_recursive_local_fn_capturing_an_enclosing_binding_declines_cdz0900_not_an_a
 }
 
 #[test]
+fn rustc_cdzw74_heterogeneous_result_payloads_nested_in_option_ground_to_the_if_join_type() {
+    // REGRESSION (v-corpus-harness family-B, 06-numeric-model:19336 cdzw74): `(if (> n 5) (Some (Ok n)) …)`
+    // — the then-branch `(Some (Ok n))` left the Result's `Err` type-arg FREE (no Err in that branch), and
+    // `ground_open_vars` DEFAULTED it to i64, emitting `Option::Some({ let __v: Result<i64, i64> = … })`.
+    // But the if-JOIN + `g`'s param type is `Option<Result<i64, String>>` (the else branch supplies String),
+    // so the `let __if: Option<Result<i64, String>>` outer annotation rejected the `Result<i64, i64>` branch
+    // → rustc E0308. The fix threads the if-join type as `expected_ty` (emit_branch sum arm) and Core::SumNew
+    // prefers a compatible concrete expected type over its own under-ground `type_of`, recursively through
+    // the nested `Some(Ok …)`. n=9 → 9+90=99; n=3 → 3+(-100)=-97; n=-2 → -4+0=-4.
+    // Export name `run` (NOT `main` — `rustc_run` appends its own `fn main`, which would collide E0428).
+    let src = "(do \
+        (def (f (: r (Result Int64 String))) (match r ((Ok v) v) ((Err e) (- 0 (String.byte-len e))))) \
+        (def (g (: o (Option (Result Int64 String)))) (match o ((Some (Ok v)) (* v 10)) ((Some (Err _e)) -100) ((None _u) 0))) \
+        (def (run (: n Int64)) (+ (f (if (> n 0) (Ok n) (Err \"boom\"))) (g (if (> n 5) (Some (Ok n)) (if (> n 0) (Some (Err \"x\")) (None)))))) \
+        (export run))";
+    let s = compile_rust(src);
+    assert!(
+        !s.contains("Result<i64, i64>") && !s.contains("Result<i64,i64>"),
+        "the nested Ok's Err type-arg grounds to String (the if-join), not the i64 default:\n{s}"
+    );
+    assert!(
+        compile_rust_result(src).is_ok(),
+        "the heterogeneous-Result-in-Option program emits (was E0308 via the i64-defaulted Err arg)"
+    );
+    if let Some(out) = rustc_run(&s, "run(9)") {
+        assert_eq!(out, "99", "n=9 → f(Ok 9)=9 + g(Some(Ok 9))=90 = 99");
+    }
+    if let Some(out) = rustc_run(&s, "run(3)") {
+        assert_eq!(out, "-97", "n=3 → f(Ok 3)=3 + g(Some(Err))=-100 = -97");
+    }
+    if let Some(out) = rustc_run(&s, "run(-2)") {
+        assert_eq!(out, "-4", "n=-2 → f(Err \"boom\")=-4 + g(None)=0 = -4");
+    }
+}
+
+#[test]
 fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
     // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
     // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but
