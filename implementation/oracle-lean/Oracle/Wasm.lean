@@ -321,39 +321,38 @@ child types; `Map` → key/value by K/V. A head the fixup does NOT descend into 
 scalar passes through UNCHANGED — UNLESS its subtree mentions a `String` it therefore cannot reach, in which
 case it DECLINES (`none`) so the caller SKIPS (never a false-diverge). Fuel-bounded (sized to the node pool).
 Uses explicit list helpers, NOT `List.mapM` over `Option` (which trips the `native_decide` codegen). -/
-partial def fixupTy : Nat → Module → Nat → Value → Option Value
-  | 0,        _, _, v => Option.some v
-  | fuel + 1, m, i, v =>
+partial def fixupTy : Module → Nat → Module → Nat → Value → Option Value
+  | _,  0,        _, _, v => Option.some v
+  | cm, fuel + 1, m, i, v =>
     match headTypeName? m i with
     | Option.some name =>
       if name == "String".toUTF8 then
         match v with | .bytes b => Option.some (.str b) | _ => Option.some v
       else if name == "List".toUTF8 || name == "Set".toUTF8 then
         match tyChildren m i, v with
-        | [et], .list vs => (fixupSeq fuel m et vs.toList).map (fun ws => .list ws.toArray)
-        | [et], .set vs  => (fixupSeq fuel m et vs.toList).map (fun ws => .set ws.toArray)
+        | [et], .list vs => (fixupSeq cm fuel m et vs.toList).map (fun ws => .list ws.toArray)
+        | [et], .set vs  => (fixupSeq cm fuel m et vs.toList).map (fun ws => .set ws.toArray)
         | _,    _        => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else if name == "Tuple".toUTF8 then
         match v with
-        | .tuple vs => (fixupTuple fuel m (tyChildren m i) vs.toList).map (fun ws => .tuple ws.toArray)
+        | .tuple vs => (fixupTuple cm fuel m (tyChildren m i) vs.toList).map (fun ws => .tuple ws.toArray)
         | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else if name == "Map".toUTF8 then
         match tyChildren m i, v with
-        | [kt, vt], .map ps => (fixupMap fuel m kt vt ps.toList).map (fun qs => .map qs.toArray)
+        | [kt, vt], .map ps => (fixupMap cm fuel m kt vt ps.toList).map (fun qs => .map qs.toArray)
         | _,        _       => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else if name == "Record".toUTF8 then
         -- A record decodes structurally to a `.tuple` (positional, KEY-SORTED — matching the type's sorted
         -- `(: name type)` fields); retag → `.record [(name, value)…]`, recursing the fixup into each field
         -- value. (The driver's `canonicalizeValue` key-sorts the result — idempotent here.)
         match v with
-        | .tuple vs => (fixupRecord fuel m (tyChildren m i) vs.toList).map (fun fs => .record fs.toArray)
+        | .tuple vs => (fixupRecord cm fuel m (tyChildren m i) vs.toList).map (fun fs => .record fs.toArray)
         | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else if name == "Sum".toUTF8 then
         -- Sum type node `(Sum <sumName> <declId> <payloadType>*)`. The decoder handed us the intermediate
         -- `.variant <decimal-disc> payload`. BUILT-IN Option/Result map by discriminant to Core's DEDICATED
-        -- ctors (Some=disc0 / None=disc1; Ok=disc0 / Err=disc1 — declaration order; CONFIRM w/ v-lean-oracle),
-        -- recursing the payload by its type. USER sums + Ordering + unknown → DECLINE (variant names aren't in
-        -- the emitted type → sound skip, no false-diverge).
+        -- ctors (Some=disc0 / None=disc1; Ok=disc0 / Err=disc1 — declaration order, confirmed w/ v-lean-oracle),
+        -- recursing the payload by its type. A USER sum resolves disc→ctorName from the CORE AST `cm` (see below).
         match v with
         | .variant discTag payloadV =>
           match tyChildren m i with
@@ -363,18 +362,41 @@ partial def fixupTy : Nat → Module → Nat → Value → Option Value
               if sumName == "Option".toUTF8 then
                 if disc == 0 then
                   match payloadTypes with
-                  | pt :: _ => (fixupTy fuel m pt payloadV).map (fun pv => Value.some pv)
+                  | pt :: _ => (fixupTy cm fuel m pt payloadV).map (fun pv => Value.some pv)
                   | []      => Option.none
                 else if disc == 1 then Option.some Value.none
                 else Option.none
               else if sumName == "Result".toUTF8 then
                 match payloadTypes with
                 | okT :: errT :: _ =>
-                  if disc == 0 then (fixupTy fuel m okT payloadV).map (fun pv => Value.ok pv)
-                  else if disc == 1 then (fixupTy fuel m errT payloadV).map (fun pv => Value.err pv)
+                  if disc == 0 then (fixupTy cm fuel m okT payloadV).map (fun pv => Value.ok pv)
+                  else if disc == 1 then (fixupTy cm fuel m errT payloadV).map (fun pv => Value.err pv)
                   else Option.none
                 | _ => Option.none
-              else Option.none   -- Ordering / Sign / user sums: no recoverable variant names → decline
+              else
+                -- USER sum: resolve disc→(ctorName, arity) from the CORE AST's `(type sumName …)` decl via
+                -- `Eval.userSumTypes` (SSOT; declaration order = runtime discriminant order). Core tags a user
+                -- sum by CONSTRUCTOR NAME (`Value.variant ctorName …`), so retag the intermediate `<disc>` tag.
+                -- payloadType* is SPARSE — payload types of arity≥1 variants only, in disc order, nullary
+                -- OMITTED (v-lean-oracle #8535): so the payloadType index for `disc` = the count of arity≥1
+                -- variants BEFORE `disc`. arity 0 → `.variant ctorName payloadV` (payloadV = decoded unit,
+                -- faithful — a non-unit payload would then DIVERGE, correctly). arity 1 → fixup the payload by
+                -- its sparse-indexed type. arity ≥ 2 (multi-field) → DECLINE (sound skip: the multi-field Tuple
+                -- payload-type layout is not yet re-verified — v-lean-oracle (3), first cut). Not a user sum
+                -- (Ordering/Sign/unknown), or disc out of range → decline as before.
+                match (Eval.userSumTypes cm).find? (fun t => t.1 == sumName) with
+                | Option.some (_, ctors) =>
+                  match ctors[disc]? with
+                  | Option.some (ctorName, arity) =>
+                    if arity == 0 then Option.some (.variant ctorName payloadV)
+                    else if arity == 1 then
+                      let sparseIdx := ((ctors.take disc).filter (fun c => c.2 ≥ 1)).length
+                      match payloadTypes[sparseIdx]? with
+                      | Option.some pt => (fixupTy cm fuel m pt payloadV).map (fun pv => Value.variant ctorName pv)
+                      | Option.none    => Option.none
+                    else Option.none   -- arity ≥ 2 multi-field: sound skip until layout (3) verified
+                  | Option.none => Option.none
+                | Option.none => Option.none
             | _, _ => Option.none
           | _ => Option.none
         | _ => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
@@ -382,51 +404,51 @@ partial def fixupTy : Nat → Module → Nat → Value → Option Value
         if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
     | Option.none => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
 
-/-- Fix a homogeneous element list (List/Set) by element type `et`. -/
-partial def fixupSeq : Nat → Module → Nat → List Value → Option (List Value)
-  | _,    _, _,  []      => Option.some []
-  | fuel, m, et, x :: xs =>
-    match fixupTy fuel m et x, fixupSeq fuel m et xs with
+/-- Fix a homogeneous element list (List/Set) by element type `et`. `cm` = the Core AST (for nested user sums). -/
+partial def fixupSeq : Module → Nat → Module → Nat → List Value → Option (List Value)
+  | _,  _,    _, _,  []      => Option.some []
+  | cm, fuel, m, et, x :: xs =>
+    match fixupTy cm fuel m et x, fixupSeq cm fuel m et xs with
     | Option.some y, Option.some ys => Option.some (y :: ys)
     | _,             _              => Option.none
 
 /-- Fix tuple elements positionally against their element type nodes (arity must match). -/
-partial def fixupTuple : Nat → Module → List Nat → List Value → Option (List Value)
-  | _,    _, [],      []      => Option.some []
-  | fuel, m, t :: ts, x :: xs =>
-    match fixupTy fuel m t x, fixupTuple fuel m ts xs with
+partial def fixupTuple : Module → Nat → Module → List Nat → List Value → Option (List Value)
+  | _,  _,    _, [],      []      => Option.some []
+  | cm, fuel, m, t :: ts, x :: xs =>
+    match fixupTy cm fuel m t x, fixupTuple cm fuel m ts xs with
     | Option.some y, Option.some ys => Option.some (y :: ys)
     | _,             _              => Option.none
-  | _,    _, _,       _       => Option.none
+  | _,  _,    _, _,       _       => Option.none
 
 /-- Fix map `(key, value)` pairs by key type `kt` / value type `vt`. -/
-partial def fixupMap : Nat → Module → Nat → Nat → List (Value × Value) → Option (List (Value × Value))
-  | _,    _, _,  _,  []            => Option.some []
-  | fuel, m, kt, vt, (k, v) :: ps =>
-    match fixupTy fuel m kt k, fixupTy fuel m vt v, fixupMap fuel m kt vt ps with
+partial def fixupMap : Module → Nat → Module → Nat → Nat → List (Value × Value) → Option (List (Value × Value))
+  | _,  _,    _, _,  _,  []            => Option.some []
+  | cm, fuel, m, kt, vt, (k, v) :: ps =>
+    match fixupTy cm fuel m kt k, fixupTy cm fuel m vt v, fixupMap cm fuel m kt vt ps with
     | Option.some k', Option.some v', Option.some ps' => Option.some ((k', v') :: ps')
     | _,              _,              _               => Option.none
 
 /-- Fix RECORD fields: each type child is a `(: name type)` node (already key-sorted, matching the heap's sorted
 positional order). Pair each field name (the `:` node's 2nd child — a `name` leaf) with the fixup of its value
 by the field type (3rd child) → `(name, value)`. Arity mismatch / malformed field / missing name → decline. -/
-partial def fixupRecord : Nat → Module → List Nat → List Value → Option (List (ByteArray × Value))
-  | _,    _, [],              []      => Option.some []
-  | fuel, m, fieldNode :: fs, x :: xs =>
+partial def fixupRecord : Module → Nat → Module → List Nat → List Value → Option (List (ByteArray × Value))
+  | _,  _,    _, [],              []      => Option.some []
+  | cm, fuel, m, fieldNode :: fs, x :: xs =>
     match tyChildren m fieldNode with
     | [nameIdx, tyIdx] =>
-      match nameAtom? m nameIdx, fixupTy fuel m tyIdx x, fixupRecord fuel m fs xs with
+      match nameAtom? m nameIdx, fixupTy cm fuel m tyIdx x, fixupRecord cm fuel m fs xs with
       | Option.some nm, Option.some y, Option.some rest => Option.some ((nm, y) :: rest)
       | _,              _,             _                => Option.none
     | _ => Option.none
-  | _,    _, _,               _       => Option.none
+  | _,  _,    _, _,               _       => Option.none
 end
 
 /-- The result-type-directed fixup for the entry (from the raw section bytes): retags nested `.bytes`→`.str`
 per the result type, returning `none` on an unreachable `String` position (→ skip). Handles the single-head
 form `(result-type "main" T)` (`cs.size == 3`) and the FLAT multi-value TUPLE form `(result-type "main" T0
 T1 …)`. A missing/undecodable section or an absent entry → identity (`some`). -/
-def resultTyFixup (bytes : ByteArray) (entry : ByteArray) : Value → Option Value :=
+def resultTyFixup (bytes : ByteArray) (entry : ByteArray) (coreAst : Module := default) : Value → Option Value :=
   match Ast.decode bytes with
   | .ok m =>
     match m.nodes.find? (fun node =>
@@ -434,9 +456,9 @@ def resultTyFixup (bytes : ByteArray) (entry : ByteArray) : Value → Option Val
         | .list cs => nameAtom? m cs[0]! == some "result-type".toUTF8 && atomText? m cs[1]! == some entry
         | _        => false) with
     | some (.list cs) =>
-      if cs.size == 3 then (fun v => fixupTy (m.nodes.size + 1) m cs[2]! v)
+      if cs.size == 3 then (fun v => fixupTy coreAst (m.nodes.size + 1) m cs[2]! v)
       else (fun v => match v with
-        | .tuple vs => (fixupTuple (m.nodes.size + 1) m (cs.toList.drop 2) vs.toList).map (fun ws => .tuple ws.toArray)
+        | .tuple vs => (fixupTuple coreAst (m.nodes.size + 1) m (cs.toList.drop 2) vs.toList).map (fun ws => .tuple ws.toArray)
         | _         => Option.some v)
     | _ => (fun v => Option.some v)
   | .error _ => (fun v => Option.some v)
@@ -530,19 +552,19 @@ def wasmLeakOf : WasmOutcome → Nat
 `(scalar Outcome, leakCount)`. Drives ONCE. The differential asserts `leakCount == 0` on a value-agreeing
 run (the Perceus dynamic witness); `leakCount` is 0 whenever the run did not `.ok` or allocated nothing. -/
 def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray)
-    (trial : Trial) : Outcome × Nat :=
+    (trial : Trial) (coreAst : Module := default) : Outcome × Nat :=
   match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
   | some ty => let o := drive coreWat trial; (toOutcome o ty, wasmLeakOf o)
   | none =>
     -- Not a scalar result type: a driver-decodable HEAP result type (List/Map/Set/Tuple/BigInt/Rational/Bytes,
     -- OR a bare `String`) → run + decode the returned handle, then apply the result-type-directed `fixup`
-    -- (`resultTyFixup`): retag nested `.bytes`→`.str` at the type's `String` positions (`String` itself, or
-    -- nested inside List/Set/Tuple/Map); it declines to a sound skip on a `String` position it can't reach
-    -- (Record/Sum payload). Else (unmodeled type) a sound skip.
+    -- (`resultTyFixup`): retag nested `.bytes`→`.str` at the type's `String` positions, `.tuple`→`.record`,
+    -- and a USER-SUM `.variant <disc>`→`.variant <ctorName>` (resolved from `coreAst` via `Eval.userSumTypes`);
+    -- it declines to a sound skip on a position it can't faithfully reach. Else (unmodeled type) a sound skip.
     if resultHeapDecodable? resultTypeBytes trial.entry.toUTF8
         || stringResult? resultTypeBytes trial.entry.toUTF8 then
       let o := drive coreWat trial
-      (toOutcomeHeap (resultTyFixup resultTypeBytes trial.entry.toUTF8)
+      (toOutcomeHeap (resultTyFixup resultTypeBytes trial.entry.toUTF8 coreAst)
         (heapDeclineReason resultTypeBytes trial.entry.toUTF8) o, wasmLeakOf o)
     else (.unsupported (unmodeledResultReason resultTypeBytes trial.entry.toUTF8), 0)
 
@@ -550,8 +572,8 @@ def runWasmWithLeak (drive : Driver) (coreWat : String) (resultTypeBytes : ByteA
 core-module WAT, and map the result to an `Oracle.Outcome` — the leak-agnostic projection of
 `runWasmWithLeak` (a `none` result type → `.unsupported`, driver never invoked for an unmodeled shape). -/
 def runWasmWith (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray)
-    (trial : Trial) : Outcome :=
-  (runWasmWithLeak drive coreWat resultTypeBytes trial).1
+    (trial : Trial) (coreAst : Module := default) : Outcome :=
+  (runWasmWithLeak drive coreWat resultTypeBytes trial coreAst).1
 
 /-! ### Gate witnesses — the mapping invariants (compiled = checked; no corpus case exercises this
 internal boundary, so per PRINCIPLES.md this is exactly the kind of check that belongs in Lean, not the
@@ -776,10 +798,41 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 (.int 7)
     (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.ok (.int 7))) = true := by native_decide
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.int 9))]) "(module)"
     (rtSumResultBytes "Int" "Int") { entry := "main" } == .value (.err (.int 9))) = true := by native_decide
--- A USER sum DECLINES (variant names unrecoverable from the emitted type) → sound skip, with a type-TAGGED
--- reason (`heapDeclineReason`) naming the sum so the histogram buckets user-sum results distinctly.
+-- A USER sum DECLINES when NO Core AST is supplied (default empty module → `Eval.userSumTypes` finds no decl)
+-- → sound skip, with a type-TAGGED reason (`heapDeclineReason`) naming the sum so the histogram buckets it.
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)]) "(module)"
     (rtSumUserBytes "Color") { entry := "main" }
     == .unsupported "heap result: result-type-directed fixup cannot reconstruct the value: user/unmodeled sum result (sum=Color) — variant names not in cdz-result-type (needs emit extension)") = true := by native_decide
+
+/-! ### USER-SUM decode via the Core AST (`Eval.userSumTypes`) — NO emit extension (v-lean-oracle #8535 design).
+The emitted `(Sum <name> <declId> <payloadType>*)` lacks variant names, but the Core AST carries `(type <name>
+v1 v2 …)` (decl order = runtime disc order). Passing it as `coreAst` lets the Sum arm retag the intermediate
+`.variant "<disc>"` → `.variant "<ctorName>"` (Core's form). payloadType* is SPARSE (arity≥1 variants only). -/
+/-- A user `(type Shape Circle (Square String))`: Circle nullary (disc 0), Square arity-1 String (disc 1). -/
+private def shapeCoreAst : Module :=
+  { leaves := #[.name "type".toUTF8, .name "Shape".toUTF8, .name "Circle".toUTF8, .name "Square".toUTF8,
+                .name "String".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .list #[3, 4], .list #[0, 1, 2, 5], .list #[6]],
+    root := 7 }
+/-- `(result-type main (Sum <userName> <declId> <payloadTy>))` — like `rtSumOptionBytes` but a user sum name. -/
+private def rtSumUserPayloadBytes (userName payloadTy : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Sum".toUTF8, .name userName.toUTF8,
+                  .intLit false .dec (ByteArray.mk #[1]), .name payloadTy.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[2, 3, 4, 5], .list #[0, 1, 6]],
+      root := 7 }
+-- disc 0 = Circle (NULLARY, no payloadType slot): `.variant "0" .unit` → `.variant "Circle" .unit` (name resolved).
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)]) "(module)"
+    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" } shapeCoreAst
+    == .value (.variant "Circle".toUTF8 .unit)) = true := by native_decide
+-- disc 1 = Square (arity-1 String): `.variant "1" (.bytes "hi")` → `.variant "Square" (.str "hi")` — name resolved
+-- from the decl AND the sparse-indexed payload retagged `.bytes`→`.str` (the soundness point of the payload fixup).
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.bytes "hi".toUTF8))]) "(module)"
+    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" } shapeCoreAst
+    == .value (.variant "Square".toUTF8 (.str "hi".toUTF8))) = true := by native_decide
+-- WITHOUT the Core AST (default empty module) the SAME user sum still DECLINES → sound skip (unchanged fallback).
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.bytes "hi".toUTF8))]) "(module)"
+    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" }
+    == .unsupported "heap result: result-type-directed fixup cannot reconstruct the value: user/unmodeled sum result (sum=Shape) — variant names not in cdz-result-type (needs emit extension)") = true := by native_decide
 
 end Oracle.Wasm
