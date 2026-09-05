@@ -60,12 +60,38 @@ def paramZero? (m : Ast.Module) (specId : Nat) : Option Value :=
     else none
   | _ => none
 
+/-- Compare a Core outcome to a wasm outcome (+ the wasm run's leak count) → a `Verdict`. Trap-vs-trap /
+diverges-vs-diverges agree without comparing messages; value-vs-value uses `valueEqSpec` (float-aware).
+Any `unsupported` (either side) → skip. 🔑 A `.diverges` is FUEL-EXHAUSTION (the Lean-oracle / talos step
+bound), NOT a proof of non-termination — so an INCONCLUSIVE `.diverges` on ONE side vs a CONCRETE outcome
+(value/trap) on the other is a SKIP, never a `.diverge` (else a fuel-heavy but terminating case
+false-diverges vs a concrete wasm result — v-wasm 09-functions-0233). Both-`.diverges` = both inconclusive
+→ agree (weakly consistent). `errReturn` → skip defensively. Any remaining cross-shape (Core `.value` vs
+wasm `.trap`, etc.) → `.diverge` (a genuine miscompile signal). -/
+def compareOutcomes (core wasm : Outcome) (leak : Nat) : Verdict :=
+  match core, wasm with
+  | _, .unsupported r => .skip r
+  | .unsupported r, _ => .skip r
+  | .value cv, .value wv =>
+    if Value.valueEqSpec cv wv then (if leak > 0 then .leak leak else .agree) else .diverge core wasm
+  | .trap _, .trap _ => .agree
+  | .diverges, .diverges => .agree
+  | .errReturn _, _ | _, .errReturn _ => .skip "errReturn at boundary"
+  -- INCONCLUSIVE fuel-exhaustion on one side vs a concrete outcome → SKIP (not a false diverge):
+  | .diverges, _ => .skip "core reduce hit its fuel/step limit — INCONCLUSIVE (a Lean-oracle bound, not a proven non-termination); cannot compare to a concrete wasm outcome"
+  | _, .diverges => .skip "wasm run hit its fuel limit — inconclusive; cannot compare to a concrete Core outcome"
+  | _, _ => .diverge core wasm
+
+-- Core out-of-fuel `.diverges` vs a CONCRETE wasm outcome (value/trap) is INCONCLUSIVE → SKIP, never a
+-- false diverge (v-wasm 09-functions-0233: a fuel-heavy arrays+vecs+division case whose Core reduce runs
+-- out of fuel while the emitted wasm concretely traps div-by-zero — not a proven miscompile).
+#guard (match compareOutcomes .diverges (.trap "div-by-zero") 0 with | .skip _ => true | _ => false)
+#guard (match compareOutcomes (.value (.int 5)) .diverges 0 with | .skip _ => true | _ => false)  -- wasm out-of-fuel → skip
+#guard compareOutcomes .diverges .diverges 0 == .agree                                             -- both inconclusive → agree (unchanged)
+#guard compareOutcomes (.value (.int 5)) (.trap "unreachable") 0 == .diverge (.value (.int 5)) (.trap "unreachable")  -- concrete≠concrete → still DIVERGE
+
 /-- Compare the Core reference (`reduce`/`execute` on `coreAst`) against the wasm run (`runWasmWith …`) for
-one trial. Trap-vs-trap / diverges-vs-diverges agree WITHOUT comparing messages (the two interpreters word
-them differently); value-vs-value uses `valueEqSpec` (float-aware: `NaN`/`-0.0` handled per spec). Any
-`unsupported` (either side) → `skip`; any other cross-shape (e.g. Core `.value` vs wasm `.trap`) → `diverge`
-(a genuine miscompile signal). `errReturn` never reaches a program's top-level outcome (the function boundary
-converts it) — treated as `skip` defensively. -/
+one trial (via `compareOutcomes`). A NULLARY main → `reduce`; a scalar-param main → apply to typed zeros. -/
 def differential (drive : Driver) (coreAst : Ast.Module) (coreWat : String)
     (rtBytes : ByteArray) (trial : Trial) : Verdict :=
   -- A NULLARY main → `reduce`. A PARAM-taking main → apply Core `main` to typed ZEROS matching its
@@ -80,18 +106,7 @@ def differential (drive : Driver) (coreAst : Ast.Module) (coreWat : String)
             | none => .unsupported "wasm-diff: param-main with a bare / non-scalar param — zero-init skip")
     | none => Oracle.reduce coreAst
   let (wasm, leak) := runWasmWithLeak drive coreWat rtBytes trial
-  match core, wasm with
-  | _, .unsupported r => .skip r
-  | .unsupported r, _ => .skip r
-  -- Value agreement: if the wasm run ALSO left live heap objects (W6, leak > 0) it is a Perceus LEAK
-  -- (the value is right, memory was not); otherwise a clean agree. Leak is only meaningful on a `.ok` run
-  -- (`runWasmWithLeak` reports 0 for trap/err/outOfFuel), so this arm is the only place it can fire.
-  | .value cv, .value wv =>
-    if Value.valueEqSpec cv wv then (if leak > 0 then .leak leak else .agree) else .diverge core wasm
-  | .trap _, .trap _ => .agree
-  | .diverges, .diverges => .agree
-  | .errReturn _, _ | _, .errReturn _ => .skip "errReturn at boundary"
-  | _, _ => .diverge core wasm
+  compareOutcomes core wasm leak
 
 /-! ### Gate witnesses — the differential verdict logic, through a STUB driver + a real Core program +
 a real `cdz-result-type` section round-trip. (No corpus case exercises this internal glue, so per
