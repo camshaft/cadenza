@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 29 };
+    let arms = if depth == 0 { 2 } else { 30 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -976,10 +976,27 @@ fn gen_typefuzz_int<C: Choice>(
         // PLAIN binder (binds that field's type); return a bound field → Int64. Closed ⇒ irrefutable ⇒
         // exhaustive ⇒ both rcdzc + oracle infer WellTyped (HOLDS). Subset/extra-key/open-row/nested/
         // literal-subpat/dup-binder patterns + non-record scrutinees are NOT generated (still oracle-skip).
-        _ => {
+        28 => {
             let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             format!("(match (record (= a {a}) (= b {b})) ((record (= a x) (= b y)) x))")
+        }
+        // A MATCH on a LIST scrutinee (T1.52 inc-3) → Int64. Lists are REFUTABLE, so the match must have
+        // an ALL-LENGTHS arm to be exhaustive (else infer declines = skip): either a leading-element+rest
+        // arm followed by a catch-all `_` — `((list x .. r) x) (_ 0)` (binds head element + rest, `_`
+        // covers the empty/short case) — or a whole-list rest arm `((list (.. rest)) (List.len rest))`
+        // (binds the whole list, all-length). Both HOLD (rcdzc accept + oracle WellTyped). Elements via
+        // `gen_typefuzz_int`; return a bound element / rest-length (no arith → no CDZ0304). Nested/literal
+        // element sub-patterns, dup binders, non-list scrutinees, and NON-EXHAUSTIVE matches (no
+        // all-length arm) are NOT generated (still oracle-skip).
+        _ => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            if c.variant(2) == 0 {
+                format!("(match (list {a} {b}) ((list x .. r) x) (_ 0))")
+            } else {
+                format!("(match (list {a} {b}) ((list (.. rest)) (List.len rest)))")
+            }
         }
     }
 }
