@@ -127,3 +127,36 @@ live fleet unchanged, and gates the concentrated risk behind that evidence.
 On approval → turn the phased plan into a concrete task breakdown and begin P1. Until then, nothing is
 created or moved. See `AGENTS-fleet.md` (the contract that moves to core) and the fleet memory
 `foreign-repo-fleet-agent-pattern` (the mechanics this builds on).
+
+## Appendix: P1 shared-surface audit (`xtask/src/fleet.rs` ↔ the rest of `xtask`)
+
+Audited 2026-09-05 (the P1 "audit + cut the small shared surface" item). The coupling between
+`fleet.rs` (the future CORE) and the rest of `xtask` (the cadenza ADAPTER + build tool) is small and
+cuts cleanly:
+
+**Inbound — what `fleet.rs` needs FROM the rest of `xtask`: exactly ONE item.**
+- `crate::Paths` (`main.rs`) — a struct of `{ repo: PathBuf, seed: PathBuf }`. `fleet` uses only
+  `paths.repo` (the worktree root); `seed` (`<repo>/implementation/seed`) is a CADENZA concept `fleet`
+  never touches. **Cut:** core defines its own minimal path type (just the repo/cwd root, resolved
+  independent of cwd — already true); the `seed` field stays cadenza-adapter-only. Trivial.
+
+**Outbound — what the rest of `xtask` calls INTO `fleet`: four items.**
+- `fleet::FleetCmd` + `fleet::run(&paths, cmd)` (`main.rs:220,296`) — the CLI subcommand enum + the
+  dispatcher. In the standalone repo this IS the `fleet` binary's entry point; cadenza-xtask stops
+  re-exporting it once cutover happens.
+- `fleet::acquire_check_lease(&paths.repo, priority)` (`main.rs:429,531,3992`) — **THE shared surface
+  the design flags.** The check-lease pool is a GENERAL concurrency limiter (→ core), but cadenza's
+  `gate`/`build`/`check` CONSUME it. **Cut:** core OWNS + EXPOSES `acquire_check_lease[_weighted]`;
+  the cadenza adapter calls it from its gate/build/check commands. (Its hub dir now already honors
+  `$FLEET_HUB` — #8539 — so it follows the core hub, not a cadenza-git-derived one.)
+- `fleet::nix_binary()` (`main.rs:336`; `codegen.rs:218` deliberately mirrors it locally to avoid
+  cross-module exposure) — resolves the `nix` executable. This is CADENZA-build-specific (nix is
+  cadenza's build tool). **Cut:** it belongs in the cadenza adapter, NOT core — move it out of
+  `fleet.rs` into a cadenza-side util (or the adapter), and drop `codegen.rs`'s mirrored copy onto it.
+
+**Net cut.** Core = the message-bus/window/watchdog/cron/lease machinery + `$FLEET_HUB` hub resolution
++ `FleetCmd`/`run`. Cadenza adapter keeps `Paths.seed`, the `gate`/`build`/`check`/`codegen`/`bench`
+subcommands, and `nix_binary`. The only genuinely SHARED runtime primitive is the check-lease pool
+(core-owned, adapter-consumed) — everything else is a one-directional entry point or a cadenza-only
+helper that simply moves to the adapter. No circular coupling; no hidden global state beyond the hub
+(now `$FLEET_HUB`-routed).
