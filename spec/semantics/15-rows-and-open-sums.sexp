@@ -2587,7 +2587,7 @@
 
 (case
   "a tagged sum with a NESTED List payload is returned (recursive field-type traversal over List)"
-  (input (do (type T (Tag (List Int64)) (Bare)) (def (main) (Tag (list 1 2 3))) (export main)))
+  (input (do (type T (Tag (List Int64)) (Bare)) (def (main) (Tag #list(1 2 3))) (export main)))
   (output (: (Tag #list(1 2 3)) T)))
 
 (case
