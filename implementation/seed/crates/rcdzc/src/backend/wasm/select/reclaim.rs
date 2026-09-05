@@ -2932,6 +2932,32 @@ pub(super) fn binder_occurs_rec(
     (here, tainted)
 }
 
+/// CATALAN 2nd-root (v-memory-safety framing A-gated-B, wired by v-inference): whether co-operand `c` is a
+/// `Core::Call { callee, args }` that threads `binder` DIRECTLY as some `args[j]` (a bare `LocalRef`/`Param`
+/// occurrence) into a callee that RECLAIMS/borrows that param within the call
+/// ([`def_looped_callee_reclaims_threaded_param`] — the callee drops the param at its fn-exit epilogue, so its
+/// ref is freed BEFORE the call returns). Such a co-operand takes NO simultaneously-held retained ref of the
+/// binder alongside a sibling consume (the deferred-consume op), so it is `holds_no_handle`-eligible like a
+/// scalar borrow-only co-operand — BUT (like the scalar case) only under the PATH-SENSITIVE gate at the call
+/// site (the la-fold spare is unsound when the binder has another in-path live use, since the sibling consume
+/// FBIP-mutates in place — see the `holds_no_handle` gate + #8485). Only the DIRECT-arg shape (the
+/// CATALAN/gP2 `(rlen c 2)` case); a nested occurrence inside `args[j]` is a different shape (deferred).
+/// SOUND toward NOT granting: a `false` just keeps the `k != i` dup (a leak at worst), never a UAF.
+fn callee_reclaims_threaded_binder_arg(db: &mut Db, c: StructId, binder: StructId) -> bool {
+    if let Core::Call { callee, args } = core_of(db, c) {
+        for (j, &arg) in args.iter().enumerate() {
+            let is_direct_binder = matches!(
+                core_of(db, arg),
+                Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder
+            );
+            if is_direct_binder && def_looped_callee_reclaims_threaded_param(db, callee, j) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn mark_binder_dups(
     db: &mut Db,
     id: StructId,
@@ -3104,9 +3130,17 @@ pub(super) fn mark_binder_dups_inner(
                 .iter()
                 .enumerate()
                 .map(|(k, &(c, _))| {
+                    // TWO holds-no-handle shapes, BOTH under the SAME path-sensitive gate (#8485 lesson —
+                    // the la-fold spare is unsound whenever the binder has another in-path live use, because
+                    // the sibling deferred-consume FBIP-mutates in place while a later read needs the old
+                    // value; applies to both disjuncts):
+                    //   (a) SCALAR BORROW-ONLY (v2/#8466 growB-class): non-aliasing scalar result, no ref taken.
+                    //   (b) THREADED RECLAIMING CALLEE (gP2): `(callee … c …)` threads the binder into a callee
+                    //       that reclaims it within the call, so its ref is freed before the call returns.
                     occurs[k]
-                        && !is_heap_type_for_retain(&type_of(db, c))
-                        && !binding_escapes(db, c, binder, false)
+                        && ((!is_heap_type_for_retain(&type_of(db, c))
+                            && !binding_escapes(db, c, binder, false))
+                            || callee_reclaims_threaded_binder_arg(db, c, binder))
                         && !la_in
                         && (0..children.len()).all(|j| j == k || !occurs[j] || bare_ref[j])
                 })
