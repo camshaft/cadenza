@@ -744,6 +744,62 @@ def recordPatClassify? (m : Ast.Module) (fields : List (ByteArray × Ty)) (patId
     else none                                            -- list/ctor pattern head → decline (inc-2 = record only)
   | none => none
 
+/-- Classify a MATCH pattern `patId` against a LIST scrutinee of element type `elem` (T1.52 inc-3). Returns
+`some (coversAll, binds)`: `coversAll` = the pattern matches a list of ANY length (a `_` / bare binder, or a
+whole-list rest `#list((.. rest))`), else it matches only a specific length (fixed-arity `#list(p1…pn)`) or a
+minimum length (leading + rest `#list(p1…pk (.. rest))`). Each element sub-pattern binds `elem`; a trailing
+grouped `(.. rest)` binds `(List elem)`. `none` (→ DECLINE, never a false reject) for a nested/literal
+sub-pattern or a duplicate binder. UNLIKE tuple/record, a list is REFUTABLE (variable length), so the caller
+treats a match with NO `coversAll` arm as not-provably-exhaustive and DECLINES (rather than asserting a
+possibly-false CDZ0210) — the sound first cut; the accept path (some arm covers all lengths) is modeled. -/
+def listPatClassify? (m : Ast.Module) (elem : Ty) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
+  let binderName? : Nat → Option (Option ByteArray) := fun sp =>
+    match m.nodes[sp]? with
+    | some (.atom lid) => (match m.leaves[lid]? with
+                           | some (.name b) => some (if b == "_".toUTF8 then none else some b)
+                           | _ => none)
+    | _ => none
+  let addBind : List (ByteArray × Ty) → Nat → Ty → Option (List (ByteArray × Ty)) := fun bs sp τ =>
+    match binderName? sp with
+    | some none => some bs                    -- `_`: no bind
+    | some (some b) => some (bs ++ [(b, τ)])
+    | none => none                            -- nested/literal sub-pattern → decline
+  let noDup : List (ByteArray × Ty) → Option (List (ByteArray × Ty)) := fun bs =>
+    let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some bs else none
+  match m.nodes[patId]? with
+  | some (.atom _) =>
+    (match binderName? patId with
+     | some none => some (true, [])
+     | some (some b) => some (true, [(b, .listTy elem)])   -- bare binder: whole list, covers all lengths
+     | none => none)
+  | some (.list pc) =>
+    if m.headName? (.list pc) == some "list".toUTF8 then
+      let sps := (pc.extract 1 pc.size).toList
+      -- a trailing GROUPED `(.. rest)` (last sub-pattern headed by `..`) → leading + rest
+      let restInfo : Option (List Nat × Nat) :=
+        match sps.reverse with
+        | last :: leadRev =>
+          (match m.nodes[last]? with
+           | some (.list lc) => if m.headName? (.list lc) == some "..".toUTF8 then (lc[1]?).map (fun rb => (leadRev.reverse, rb)) else none
+           | _ => none)
+        | [] => none
+      match restInfo with
+      | some (leadPats, rb) =>
+        match leadPats.foldl (fun acc sp => acc.bind (fun bs => addBind bs sp elem)) (some []) with
+        | none => none
+        | some leadBinds =>
+          (match binderName? rb with
+           | some none => (noDup leadBinds).map (fun bs => (leadPats.isEmpty, bs))                       -- rest = `_`
+           | some (some rname) => (noDup (leadBinds ++ [(rname, .listTy elem)])).map (fun bs => (leadPats.isEmpty, bs))
+           | none => none)                                                                              -- non-binder rest → decline
+      | none =>
+        -- fixed-arity `#list(p1…pn)` (n may be 0) — matches ONLY length n → coversAll = false
+        match sps.foldl (fun acc sp => acc.bind (fun bs => addBind bs sp elem)) (some []) with
+        | none => none
+        | some binds => (noDup binds).map (fun bs => (false, bs))
+    else none                                            -- non-list pattern head → decline (inc-3 = list only)
+  | none => none
+
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
 disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
 positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
@@ -1502,6 +1558,42 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         | some τr =>
                           if sawIrref then .ok (τr, stF)
                           else .error (.illTyped "CDZ0210")))
+                  | .listTy elem =>
+                    -- T1.52 inc-3 — MATCH on a LIST scrutinee: arms are `#list(p1…pn)` / `#list(p1…pk (.. r))`
+                    -- / catch-all, via `listPatClassify?` (each element binds `elem`, a rest binds `List elem`).
+                    -- A list is REFUTABLE (variable length) so exhaustiveness needs an arm covering ALL lengths
+                    -- (catch-all / whole-list rest); a match without one is DECLINED (not asserted CDZ0210 — the
+                    -- sound first cut). An unmodeled sub-pattern declines. Arm bodies unify.
+                    let arms := children.extract 2 children.size
+                    if arms.size == 0 then .error (.unsupported "type oracle: match with no arms")
+                    else (match arms.foldlM (m := Except InferFail)
+                        (fun (acc : Bool × Option Ty × InferState) armId =>
+                          match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                          | none => .error (.unsupported "type oracle: malformed match arm")
+                          | some ac =>
+                            (match ac[0]?, ac[1]? with
+                             | some patId, some bodyId =>
+                               (match listPatClassify? m elem patId with
+                                | none => .error (.unsupported "type oracle: unmodeled list match pattern — declined")
+                                | some (coversAll, binds) =>
+                                  (match inferE m (binds.map (fun b => (b.1, ([], b.2))) ++ env) acc.2.2 bodyId with
+                                   | .error e => .error e
+                                   | .ok (τb, st') =>
+                                     (match acc.2.1 with
+                                      | none => .ok (acc.1 || coversAll, some τb, st')
+                                      | some τr =>
+                                        (match unifyInfer τb τr st' with
+                                         | .error e => .error e
+                                         | .ok st'' => .ok (acc.1 || coversAll, some τr, st'')))))
+                             | _, _ => .error (.unsupported "type oracle: malformed match arm")))
+                        ((false, none, st0) : Bool × Option Ty × InferState) with
+                     | .error e => .error e
+                     | .ok (sawCoversAll, resTy, stF) =>
+                       (match resTy with
+                        | none => .error (.unsupported "type oracle: match produced no result type")
+                        | some τr =>
+                          if sawCoversAll then .ok (τr, stF)
+                          else .error (.unsupported "type oracle: list match not provably exhaustive (no catch-all / whole-list rest) — declined")))
                   | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
           else if ((userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == h))).isSome then
             -- T1.25 — USER SUM CONSTRUCTION: `h` is a declared variant `(type T … (h τ) …)` → its type's
