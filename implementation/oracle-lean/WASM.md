@@ -417,6 +417,25 @@ Option, Result. **Still declines (sound skip):** USER sums (variant names are NO
 `cdz-result-type` — they live behind the type's `declId`; decoding them needs a COMPILER EMIT EXTENSION to carry
 variant names, route to the emit owner), Ordering/Sign (own Value repr), Nominal/Qty, and the `ast-*` codec.
 
+**🔑 Leak-census soundness for heap-valued results (two invariants — no false leak).** A heap-returning `main`
+leaves its top-level RESULT live at end-of-run because the host owns it post-call; that is NOT a Perceus leak.
+The model handles this on both axes:
+1. **Owned-result drop.** The `Oracle.Wasm.Talos` heap-result arm computes the census as `(host.dropH rawh).liveCount`
+   — it DROPS the returned handle (cascading into its children) BEFORE counting, so a clean heap-valued run reports
+   `leakCount 0`. Witnessed: `watHeapBigIntResult` / `watHeapSetResult` return a heap value yet report 0. (This is a
+   real divergence from the current CORPUS GRADE, which does NOT drop the top-level result — v-memory-safety's bfx9
+   evidence; MY model is the working precedent for a drop-top-level-result harness policy.)
+2. **Leak only on value-agreement.** `compareOutcomes` emits `.leak` ONLY when both sides are `.value` and
+   `valueEqSpec` agrees. A heap result that the driver can't reduce to a lone `[.compound v]` — e.g. a MULTI-WASM-VALUE
+   ABI result `.ok #[.i32 h1, .i32 h2]` (which falls to the scalar map, undropped) — hits `toOutcomeHeap`'s `_ =>
+   .unsupported "heap result was not a decodable heap value"` → SKIP. Its undropped `liveCount` is computed but
+   DISCARDED (a skip never reports a leak). So a multi-value heap result is a SOUND SKIP, never a false leak.
+
+**Result-KIND tag (#8520).** Each `LEAK` / `DIVERGE` runner line carries `| result: scalar <Ty> | …` vs `| result:
+heap | …` (via `resultKindTag`, mirroring `runWasmWithLeak`'s scalar-then-heap routing). A `scalar`-returning leak is
+a GENUINE husk (the value owns no heap); a `heap`/`string` leak is a residual ON TOP of the already-dropped owned
+result. Lets a reader partition the leak set scalar-vs-heap straight from the aggregated CI log without a re-run.
+
 ## Gate coverage
 
 `Oracle.Wasm`'s invariants are pinned by compiled `example` witnesses in the module (no corpus case
