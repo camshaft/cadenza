@@ -277,6 +277,22 @@ def stringResult? (bytes : ByteArray) (entry : ByteArray) : Bool :=
   | .ok m => stringResultHeadOfModule? m entry
   | .error _ => false
 
+/-- Classify the entry's RESULT KIND for triage-tagging a LEAK / DIVERGE line: `scalar <Ty>` (an immediate
+int/bool/float/unit result — the returned value owns NO heap, so a leak here is a GENUINE husk: a real
+Perceus imbalance, v-memory-safety's category (a) to rc-trace first), `string` / `heap` (a heap-valued
+result the driver DECODES — its owned top-level result graph is already DROPPED before the leak census at
+`Oracle.Wasm.Talos`'s heap-result arm (`(host.dropH rawh).liveCount`), so a residual leak on top of the
+owned result is real, category (b)), or `unmodeled` (the case skips — never reaches a leak verdict). Lets a
+reader PARTITION the leak set scalar-vs-heap straight from the aggregated CI log without a re-run — the
+partition v-memory-safety asked for. Mirrors `runWasmWithLeak`'s routing precedence (scalar, then heap). -/
+def resultKindTag (bytes : ByteArray) (entry : ByteArray) : String :=
+  match resultScalarTy? bytes entry with
+  | some ty => "scalar " ++ scalarTyName ty
+  | none =>
+    if stringResult? bytes entry then "string"
+    else if resultHeapDecodable? bytes entry then "heap"
+    else "unmodeled"
+
 /-- Does the type node subtree at `i` mention a `String` head anywhere (fuel-bounded walk over list children)?
 Used to DECLINE a driver-decodable heap result type that NESTS a `String` — e.g. `(List String)`, `(Set String)`,
 `(Tuple Int String)`, `(Map K String)`. The structural decoder yields `.bytes` for those nested strings, but
@@ -662,6 +678,15 @@ example : (resultTyFixup (rtBytes "Int") "main".toUTF8 (.int 5) == some (.int 5)
 example : stringResult? (rtBytes "String") "main".toUTF8 = true := by native_decide
 example : stringResult? (rtBytes "List") "main".toUTF8 = false := by native_decide
 example : stringResult? (rtBytes "Int") "main".toUTF8 = false := by native_decide
+-- `resultKindTag`: the leak-partition classifier. A scalar result → `scalar <Ty>` (a genuine husk if it
+-- leaks); String / heap heads → `string` / `heap` (owned result already dropped, residual = real); an
+-- unmodeled head → `unmodeled` (skips, never a leak). Mirrors `runWasmWithLeak`'s scalar-then-heap routing.
+example : resultKindTag (rtBytes "Int") "main".toUTF8 = "scalar Int" := by native_decide
+example : resultKindTag (rtBytes "Bool") "main".toUTF8 = "scalar Bool" := by native_decide
+example : resultKindTag (rtBytes "String") "main".toUTF8 = "string" := by native_decide
+example : resultKindTag (rtBytes "List") "main".toUTF8 = "heap" := by native_decide
+example : resultKindTag (rtBytes "BigInt") "main".toUTF8 = "heap" := by native_decide
+example : resultKindTag (rtBytes "Widget") "main".toUTF8 = "unmodeled" := by native_decide
 
 /-- A `cdz-result-type` section for a NESTED container type `(result-type main (container elem))` — e.g.
 `(List String)`. -/
