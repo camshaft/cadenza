@@ -2498,6 +2498,55 @@ fn rustc_cdzw74_heterogeneous_result_payloads_nested_in_option_ground_to_the_if_
 }
 
 #[test]
+fn rustc_a_non_copy_capture_escaping_twice_in_a_lifted_body_clones_not_double_moves() {
+    // REGRESSION (v-corpus-harness, 21-host-closures hczm3/hczm4, #8467-exposed): a lifted closure body
+    // that escapes a NON-COPY capture into more than one position (`(fn (q) #tuple(xs xs))` → the lifted fn
+    // `(__cap0, __cap0)`) MOVED the move-only capture twice → rustc E0382 ("use of moved value"). The
+    // `Core::Captured` emit arm emitted a bare `__cap{index}` with NO clone-on-read — the divergence from the
+    // `Core::Param`/`Core::LocalRef` arm (and the ordinary `let`-binding path, which DOES clone). Fix: the
+    // Captured arm clones a non-Copy capture read, exactly like a binding read.
+    // hczm3: a captured LIST escaping twice. h(3) builds xs=[1,2,3]; the closure(5) = (xs, xs).
+    let hczm3 = "(do \
+        (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i))) \
+        (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) #tuple(xs xs)))) \
+        (export h))";
+    let s3 = compile_rust(hczm3);
+    assert!(
+        s3.contains("(__cap0.clone(), __cap0.clone())"),
+        "the captured LIST escaping twice clones each escape (was `(__cap0, __cap0)` → E0382):\n{s3}"
+    );
+    assert!(
+        compile_rust_result(hczm3).is_ok(),
+        "the captured-list-escaping-twice program emits (was a double-move E0382)"
+    );
+    // The returned closure applied — project a scalar (a tuple of Vecs is not Display). `.0[2]` = 3 (last of
+    // [1,2,3]); `.1[0]` = 1 (both tuple slots are the same list). Confirms the value, not just that it builds.
+    if let Some(out) = rustc_run(&s3, "h(3)(5).0[2]") {
+        assert_eq!(out, "3", "the escaped list's last element is 3 ([1,2,3])");
+    }
+    if let Some(out) = rustc_run(&s3, "h(3)(5).1[0]") {
+        assert_eq!(
+            out, "1",
+            "the SECOND escaped copy is the same list ([1,2,3])"
+        );
+    }
+    // hczm4: a captured MAP escaping twice (BTreeMap, the CHAMP twin). f(1) builds {1:10, 0:20}.
+    let hczm4 = "(do (def (f (: n Int64)) (let ((m #map((= n 10) (= 0 20)))) (fn ((: q Int64)) #tuple(m m)))) (export f))";
+    let s4 = compile_rust(hczm4);
+    assert!(
+        s4.contains("(__cap0.clone(), __cap0.clone())"),
+        "the captured MAP escaping twice clones each escape:\n{s4}"
+    );
+    assert!(
+        compile_rust_result(hczm4).is_ok(),
+        "the captured-map-escaping-twice program emits (was a double-move E0382)"
+    );
+    if let Some(out) = rustc_run(&s4, "f(1)(5).0[&0]") {
+        assert_eq!(out, "20", "the escaped map's value at key 0 is 20");
+    }
+}
+
+#[test]
 fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
     // REGRESSION (v-quantity 9a5fd3c5): a Qty in a whole-MAP VALUE / LIST ELEMENT rendered RAW on rust
     // ((map (1 (Qty.of 5.0 meter))) not 5000.0) — the per-element scale-fold reached tuple/record/sum but

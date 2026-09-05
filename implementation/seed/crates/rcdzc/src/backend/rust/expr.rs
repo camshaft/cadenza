@@ -4112,7 +4112,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // The lifted-lambda emit inserted `__cap{index}` into the env keyed by the capture's binder,
             // but a `Captured` node carries only the INDEX, not the binder. The env is keyed by binder, so
             // resolve by the reserved name directly: the lifted emit names capture j `__cap{j}`.
-            Ok(format!("__cap{index}"))
+            // CLONE a NON-COPY capture read (a `List`/`Map`/`String`/… capture) exactly as the
+            // `Core::Param`/`Core::LocalRef` arm clones an ordinary binding read: a capture escaping into MORE
+            // THAN ONE position in the lifted body (`(fn (q) #tuple(xs xs))` → `(__cap0, __cap0)`) would MOVE
+            // the move-only `__cap0` twice → rustc E0382 (hczm3 List / hczm4 Map, "captured X escaping TWICE").
+            // Missing this arm's clone was the divergence from the `let`-binding path (which DOES clone). A
+            // Copy capture (a scalar) stays bare; over-cloning a single-use capture is sound (correctness
+            // oracle) and the emitted module carries `#[allow(clippy::all)]` so no needless-clone lint fires.
+            if needs_clone_on_read(db, id) {
+                Ok(format!("__cap{index}.clone()"))
+            } else {
+                Ok(format!("__cap{index}"))
+            }
         }
         // `trap` → a Rust `panic!` (a Cadenza trap, matching the wasm `unreachable`). Rust's `panic!`
         // returns the never type `!`, which coerces to ANY expected type — the runtime counterpart of
