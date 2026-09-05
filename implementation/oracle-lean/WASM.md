@@ -413,9 +413,23 @@ RECONSTRUCT the value instead of skipping the case. Two stages:
 via `stringResult?`; the flat multi-value TUPLE form too) that route a result to the driver + `resultTyFixup`.
 
 **Decoded now:** scalars, BigInt, Bytes, String (+ arbitrarily nested), List, Set, Tuple, Map, Rational, Record,
-Option, Result. **Still declines (sound skip):** USER sums (variant names are NOT in the emitted
-`cdz-result-type` — they live behind the type's `declId`; decoding them needs a COMPILER EMIT EXTENSION to carry
-variant names, route to the emit owner), Ordering/Sign (own Value repr), Nominal/Qty, and the `ast-*` codec.
+Option, Result, and **USER sums — variant NAMES** (#8537). **Still declines (sound skip):** user-sum variant
+PAYLOADS (see below), Ordering/Sign (own Value repr), Nominal/Qty, and the `ast-*` codec.
+
+**🔑 USER-SUM decode (#8537) — NO emit extension; the payload-type CORRECTION.** Core tags a user sum by
+CONSTRUCTOR NAME (`Value.variant ctorName …`); the decoder produces an intermediate `.variant "<decimal-disc>"`.
+The emitted `(Sum <name> <declId> …)` carries no variant names, but the **Core AST** (threaded as `coreAst`/`cm`
+through `fixupTy`, default = empty module ⇒ declines without it) carries `(type <name> v1 v2 …)`, and
+`Eval.userSumTypes` (v-lean-oracle, SSOT) parses it in **declaration order = runtime discriminant order**. So the
+Sum arm resolves disc → `(ctorName, arity)` and retags. **⚠️ The trailing nodes of `(Sum name declId …)` are the
+sum's GENERIC TYPE ARGS, NOT per-variant payload types** (verified v-lean-oracle: `encode_ty` `Ty::Sum`; a
+monomorphic user sum emits literally `(Sum Pair 1)`; only nominal `Option`/`Result` get their args threaded). So a
+user-sum result carries **no payload type** in the result section ⇒ currently **only NULLARY user variants decode
+(`.variant ctorName .unit`); payload-bearing variants SKIP** (sound — the payload can't be type-directed-fixed
+without its type, and guessing risks a false-diverge). **Planned (joint w/ v-lean-oracle):** source the payload
+TYPE from the Core AST's `(type …)` decl — a new `Eval` helper returns the disc-th variant's field-type node
+indices (`[]`/`[t]`/`[t1..tN]`), and the Sum arm `fixupTy`s the payload against `cm` (arity-1 = single field,
+arity ≥ 2 = a `.tuple` of fields per rcdzc's boxing). Until then payload variants are a sound skip.
 
 **🔑 Leak-census soundness for heap-valued results (two invariants — no false leak).** A heap-returning `main`
 leaves its top-level RESULT live at end-of-run because the host owns it post-call; that is NOT a Perceus leak.
