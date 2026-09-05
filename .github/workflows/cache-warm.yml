@@ -83,7 +83,7 @@ jobs:
       # the warm builds so it captures them. Default-branch-gate (save-on-default): cache-warm only runs on
       # main (schedule/dispatch), but the explicit gate keeps it push-on-main-only if the trigger ever widens.
       # Pull is already fleet-wide via accept-flake-config (#6215). Bumped to @v16 per v-nix.
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           name: camshaft
