@@ -2158,13 +2158,28 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // a `char` value (a sum payload / tuple element).
         Core::ConstChar(c) => Ok(rust_char_literal(c)),
         // A parameter or kept-let reference — read the identifier its binder maps to. A binder with no
-        // environment entry is a compiler bug (a ref whose binding was not brought into scope), so
-        // decline rather than emit a dangling name.
+        // environment entry is one of: (a) a captured ENCLOSING param reached inside a NON-INLINED
+        // recursive local function (the current fn's own params/locals are all in `env`, so an unbound
+        // PARAM whose `def_of_param` matches is definitionally such a capture — the recursive-local-capture
+        // whose lambda-lift is not yet built, routed v-inference) → DECLINE with the SAME coded CDZ0900 the
+        // wasm backend raises (`backend/wasm/select/emit.rs`), an honest cross-backend-consistent todo
+        // rather than the ad-hoc "no bound identifier" decline that graded a dishonest FAIL where wasm
+        // cleanly declines; or (b) otherwise a genuine ref-not-in-scope compiler bug — the internal decline,
+        // which must surface (not be masked as the capture todo).
         Core::Param { binder } | Core::LocalRef { binder } => {
-            let name = env
-                .get(&binder)
-                .cloned()
-                .ok_or_else(|| Reject::decline("reference has no bound Rust identifier"))?;
+            let name = match env.get(&binder).cloned() {
+                Some(n) => n,
+                None => {
+                    if matches!(core_of(db, id), Core::Param { .. })
+                        && crate::infer::def_of_param(db, binder).is_some()
+                    {
+                        return Err(Reject::unsupported(
+                            crate::diag::RECURSIVE_LOCAL_CAPTURE_DECLINE,
+                        ));
+                    }
+                    return Err(Reject::decline("reference has no bound Rust identifier"));
+                }
+            };
             // A NON-COPY binding (a `Vec` list — the native strategy's first move-only type) may be read in
             // more than one position; Rust would MOVE it on the first by-value use and reject the rest
             // (E0382). Cadenza values are persistent/shareable, so `.clone()` every non-Copy binding read —
