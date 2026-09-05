@@ -1165,7 +1165,14 @@ fn gen_typefuzz_bool<C: Choice>(
             let op = ["<", ">", "<=", ">=", "="][c.variant(5)];
             let a = typefuzz_float(c);
             let b = typefuzz_float(c);
-            format!("({op} {a} {b})")
+            // Optionally ASCRIBE both operands to the SAME float width (T1.40 — #8533 float32). A
+            // same-width comparison stays well-typed → Bool, exercising the Float32 type path
+            // (bare/unascribed operands default to Float64). Both rcdzc + oracle infer Bool ⇒ Holds.
+            match c.variant(3) {
+                0 => format!("({op} (: {a} Float32) (: {b} Float32))"),
+                1 => format!("({op} (: {a} Float64) (: {b} Float64))"),
+                _ => format!("({op} {a} {b})"),
+            }
         }
         // A RATIONAL COMPARISON → Bool (T1.44): Rationals are TOTALLY ordered, so `< > <= >= =` all yield
         // Bool. Both rcdzc + oracle infer Bool → agreement.
@@ -1463,7 +1470,7 @@ fn gen_typefuzz_illtyped<C: Choice>(
         // + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
         20 => {
             let f = typefuzz_float(c);
-            match c.variant(4) {
+            match c.variant(5) {
                 0 => {
                     let n = int(c, iscope, bscope, fresh);
                     format!("(< {f} {n})") // mixed float/int compare
@@ -1472,6 +1479,13 @@ fn gen_typefuzz_illtyped<C: Choice>(
                 2 => {
                     let g = typefuzz_float(c);
                     format!("(% {f} {g})") // float remainder → CDZ0301
+                }
+                3 => {
+                    // MIXED-WIDTH float comparison (T1.40 — #8533 float32 false-accept hunt): a Float32
+                    // operand compared to a Float64 operand → CDZ0301 (float widths do not unify). rcdzc
+                    // rejects + the oracle infers IllTyped ⇒ holds; an rcdzc ACCEPT is a soundness hole.
+                    let g = typefuzz_float(c);
+                    format!("(< (: {f} Float32) (: {g} Float64))")
                 }
                 _ => {
                     // ORDERING on a compound CONTAINING a float (T1.42): a tuple with a float leaf has no
