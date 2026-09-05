@@ -7169,6 +7169,30 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, alias, member = %key.name, from_file, "member → module-alias export projection");
         return def_as_resolved(db, d, &key.name);
     }
+    // WHOLE-MODULE ALIAS QUALIFIED CONSTRUCTOR: `(. (. alias T) Ctor)` — a nested projection whose OPERAND is
+    // itself `(. alias T)` (a module alias's exported TYPE) resolves `Ctor` to that type's constructor. The
+    // whole chain is matched STRUCTURALLY here (no bare `(. alias T)` type-handle resolution — that would
+    // resolve to the full synth record, and projecting `.Ctor` off it would leak an ABSTRACT type's withheld
+    // ctor). GATED both ways: `T` must be an EXPORTED type of the aliased file (`export_type_in_file`), and
+    // `Ctor` must be an EXPORTED ctor of `T` there (`alias_ctor_exported`: wildcard/named, never abstract) —
+    // so the alias reaches only a constructor the module made public, exactly as the named-list import
+    // `(import path (T)) → (T.Ctor)` does. `Ctor` must also be a genuine variant of `T`. #8416.
+    if let Some((inner_op, inner_key)) = db.ast.member_parts(operand)
+        && let Some(alias) = db.ast.as_name(inner_op)
+        && let Some(t_name) = db.ast.as_name(inner_key)
+        && let Some(from_file) = db.module_alias_target(id, alias)
+        && let Some(synth) = db.export_type_in_file(from_file, t_name)
+        && db.alias_ctor_exported(from_file, t_name, &key.name)
+        && let Some(decl) = db.type_decl_by_synth(synth)
+        && let Some(ctor) = decl
+            .variants
+            .iter()
+            .find(|v| v.name.as_str() == key.name.as_ref())
+            .and_then(|v| v.ctor)
+    {
+        trace!(target: "rcdzc::resolve", node = id.0, alias, ty = t_name, ctor = %key.name, from_file, "member → module-alias qualified constructor");
+        return Resolved::Ref { value: ctor };
+    }
     // WITHHELD-CONSTRUCTOR ACCESS: `(. T A)` where `T`'s handle is visible in this file but constructor
     // `A` is NOT (an abstract import — no ctors — or a partially-concrete import that did not name `A`)
     // is a CDZ0214. The constructor is hidden on purpose, so it is unreachable even through the qualified

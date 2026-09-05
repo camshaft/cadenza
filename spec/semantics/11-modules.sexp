@@ -1936,24 +1936,27 @@
   (output (: 42 Int64)))
 
 (case
-  "a whole-module alias projects a qualified TYPE constructor (idealistic; declines today, DEF face works)"
+  "a whole-module alias projects a qualified TYPE constructor"
   (doc
-    "The TYPE/CTOR face of whole-module alias projection — the DEF face already works (the two cases above:
+    "The TYPE/CTOR face of whole-module alias projection — the DEF face works too (the two cases above:
            `a.descriptor` and `((. a descriptor) 41)`). `lib` wildcard-exports the sum TYPE `Color` (handle + every
            constructor) plus a consumer `to-int`; the entry imports the WHOLE module under alias `c` and projects a
-           qualified CONSTRUCTOR `c.Color.Green`, which SHOULD build `(Color.Green)` so `(c.to-int c.Color.Green)`
-           folds to 2. Declines TODAY (CDZ0101 unbound `c`): a whole-module alias resolves as a VALUE — a def
-           projection `c.to-int` / `c.mk` resolves + applies (the alias cases above) — but the alias is NOT yet
-           resolved as the BASE of a qualified TYPE/CTOR projection `(. c Color)`; the type-face resolution paths
-           (`resolve_name`'s type step + the qualified-ctor path) do not consult the whole-module alias binding. An
-           IMPLEMENTATION gap, NOT a decl-reject: the NAMED-LIST import `(import \"lib\" (Color to-int))` already
-           brings the TYPE + its constructors into scope (bare / self-qualified — the wildcard-import case later in
-           this file), so the imported type crosses the link fine; only the ALIAS-QUALIFIED surface `c.Color.Green`
-           lags. todo→pass when whole-module-alias qualified TYPE/CTOR resolution lands (v-module-system: extend the
-           type + qualified-ctor resolution to resolve a module-alias base — the type-face analogue of the working
-           alias def projection). Verified via the `cdz compile` package path (native `xtask gate --case` is nix-only
-           since seq-202): a directory package with the same lib+entry declines CDZ0101 on `c.Color.Green` while the
-           `c.to-int (c.mk)` control compiles + runs → 2.")
+           qualified CONSTRUCTOR `c.Color.Green`, which builds `(Color.Green)` so `(c.to-int c.Color.Green)`
+           folds to 2. A whole-module alias resolves as a VALUE for the DEF face — a def projection `c.to-int` /
+           `c.mk` resolves + applies (the alias cases above) — and now ALSO as the BASE of a qualified CTOR
+           projection `(. (. c Color) Green)`: `resolve_member` matches the nested `(. (. alias T) Ctor)` shape and
+           resolves the ctor gated BOTH ways — `T` an exported handle (`export_type_in_file`) AND `Ctor` an exported
+           wildcard/named constructor (`alias_ctor_exported` over the aliased file's `type_ctor_exports`), never an
+           ABSTRACT type's withheld ctor (the whole chain is gated together; a bare `(. c T)` is NOT resolved to the
+           synth record, which would leak the withheld ctor via the outer projection). The NAMED-LIST import
+           `(import \"lib\" (Color to-int))` brings the TYPE + its constructors into scope directly (bare /
+           self-qualified — the wildcard-import case later in this file); this case exercises the ALIAS-QUALIFIED
+           surface `c.Color.Green`. Landed by v-module-system: extends qualified-ctor resolution to a module-alias
+           base — the type-face analogue of the working alias def projection; complements the #8441 def-projection
+           export-gate under the same privacy model (§Visibility Is Explicit). Verified via the `cdz compile`
+           package path (native `xtask gate --case` is nix-only since seq-202): a directory package with the same
+           lib+entry now compiles + runs → 2 on `c.Color.Green`, and the abstract handle-only variant
+           `c.Shh.Hidden` correctly declines CDZ0101 (no-leak guard).")
   (module "lib"
     (do
       (type Color (Red) (Green) (Blue))

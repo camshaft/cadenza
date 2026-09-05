@@ -331,6 +331,14 @@ pub(crate) struct FileScopeTable {
     /// Explicit) — the alias's member-access-time resolution bypasses the link step's named-import export
     /// validation, so the gate must be applied here.
     exports: Vec<crate::fxhash::FxHashSet<String>>,
+    /// Per file, each EXPORTED type NAME → which of its constructors that file EXPORTS (`link::CtorVis`:
+    /// `All` = wildcard `(. T *)`, `Named` = the listed `(. T A)` ctors; a type in `exports` but ABSENT here
+    /// is ABSTRACT — handle only, no ctors). Export-GATES a qualified CONSTRUCTOR reached through a
+    /// whole-module alias, `(. (. alias T) Ctor)`: the ctor is admitted only if the aliased file EXPORTS it,
+    /// else withheld — so the alias cannot fabricate an ABSTRACT type's private constructor (the ctor analogue
+    /// of the `exports` def-gate; the synth record carries ALL ctor fields, so projecting `.Ctor` off it
+    /// without this gate would leak a withheld constructor).
+    type_ctor_exports: Vec<crate::fxhash::FxHashMap<String, crate::link::CtorVis>>,
 }
 
 impl FileScopeTable {
@@ -545,6 +553,23 @@ fn build_file_scope(
                 .unwrap_or_default()
         })
         .collect();
+    // Per-file EXPORTED-CTOR visibility (each exported type's `CtorVis`) — gates a qualified constructor
+    // reached through a whole-module alias so an ABSTRACT-exported type's ctor stays withheld.
+    let type_ctor_exports: Vec<crate::fxhash::FxHashMap<String, crate::link::CtorVis>> = (0..files
+        .len())
+        .map(|fi| {
+            linkage
+                .scopes
+                .get(fi)
+                .map(|s| {
+                    s.type_ctor_exports
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
 
     FileScopeTable {
         files,
@@ -554,6 +579,7 @@ fn build_file_scope(
         visible_ctors_qualified,
         module_aliases,
         exports,
+        type_ctor_exports,
     }
 }
 
@@ -4567,6 +4593,43 @@ impl Db {
             return None;
         }
         fs.visible.get(from_file)?.get(key).copied()
+    }
+
+    /// The synth-record occurrence of a TYPE `key` that `from_file` EXPORTS — the type-face target for a
+    /// whole-module-alias projection `(. alias T)`. EXPORT-GATED (`key` ∈ `from_file`'s `(export …)`
+    /// surface), so the alias reaches only an EXPORTED type handle, never a PRIVATE one (`visible_types`
+    /// includes the file's own private types). The ctor analogue of `export_def_in_file`.
+    pub(crate) fn export_type_in_file(&self, from_file: usize, key: &str) -> Option<StructId> {
+        let fs = self.file_scope.as_ref()?;
+        if !fs.exports.get(from_file).is_some_and(|e| e.contains(key)) {
+            return None;
+        }
+        fs.visible_types.get(from_file)?.get(key).copied()
+    }
+
+    /// Whether `from_file` EXPORTS the constructor `ctor` of its exported type `type_name` — the gate for a
+    /// qualified constructor reached through a whole-module alias `(. (. alias T) Ctor)`. True iff the type's
+    /// `CtorVis` there is `All` (wildcard `(. T *)`) or `Named` listing `ctor`; false for an ABSTRACT export
+    /// (handle only — the type is in `exports` but not `type_ctor_exports`), so an abstract type's private
+    /// constructor stays withheld through the alias exactly as a bare/qualified in-file access would.
+    pub(crate) fn alias_ctor_exported(
+        &self,
+        from_file: usize,
+        type_name: &str,
+        ctor: &str,
+    ) -> bool {
+        let Some(fs) = self.file_scope.as_ref() else {
+            return false;
+        };
+        match fs
+            .type_ctor_exports
+            .get(from_file)
+            .and_then(|m| m.get(type_name))
+        {
+            Some(crate::link::CtorVis::All) => true,
+            Some(crate::link::CtorVis::Named(names)) => names.iter().any(|n| n == ctor),
+            None => false,
+        }
     }
 
     /// File-scoped TYPE-name lookup for a multi-file package — the type analogue of `file_scoped_def`.
