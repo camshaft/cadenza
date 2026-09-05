@@ -477,6 +477,12 @@ pub enum FleetCmd {
     /// Print the board: each agent's role/model/status, whether its tmux window is live, its inbox
     /// depth, the work-queue depth, and how far `trunk` is ahead of / behind `origin/main`.
     Status,
+    /// Print the RESOLVED hub and where it came from — the diagnostic for the hub-decouple seam
+    /// (`$FLEET_HUB`, see `fleet/DESIGN-fleet-extraction-standalone-multirepo.md`). Reports the hub
+    /// root, its runtime-state / worktrees / tracked-source dirs, and whether the hub was selected by
+    /// an explicit `$FLEET_HUB` or the default git-common-dir derivation. Read-only; run it to confirm
+    /// which hub an agent is talking to (e.g. verifying the hub before/after the eventual cutover).
+    Hub,
     /// (Re)install the fleet's git hooks into the hub's shared hooks dir, WITHOUT a full `up`. `up`
     /// installs them too, but this lets the operator/concierge deploy (or refresh) them on demand —
     /// e.g. to activate the trunk-clobber logger immediately without restarting the fleet. Idempotent
@@ -1250,6 +1256,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Up => up(&fleet),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
+        FleetCmd::Hub => hub(&fleet),
         FleetCmd::InstallHooks => install_git_hooks(&fleet),
         FleetCmd::Add {
             name,
@@ -2934,6 +2941,36 @@ fn status_headline(fleet: &Fleet, name: &str) -> Option<String> {
         cleaned.to_string()
     };
     Some(headline)
+}
+
+/// The human label for HOW the hub root was selected, given the `$FLEET_HUB` env value. Pure for
+/// unit-testing; mirrors [`choose_hub_opt`]'s precedence (an explicit non-empty override wins over
+/// the derived git-common-dir hub).
+fn hub_source_label(fleet_hub_env: Option<&std::ffi::OsStr>) -> &'static str {
+    match fleet_hub_env {
+        Some(v) if !v.is_empty() => "explicit $FLEET_HUB",
+        _ => "git-common-dir (derived)",
+    }
+}
+
+/// Print the resolved hub + where it came from — the `fleet hub` diagnostic for the hub-decouple seam.
+/// Read-only: reads the already-resolved [`Fleet`] paths (from [`resolve_hub`]) + the `$FLEET_HUB` env.
+fn hub(fleet: &Fleet) {
+    let env = std::env::var_os("FLEET_HUB");
+    println!("fleet hub:");
+    println!("  hub root:       {}", fleet.repo.display());
+    println!(
+        "  runtime state:  {}  (.claude/fleet)",
+        fleet.root.display()
+    );
+    println!("  worktrees:      {}", fleet.worktrees.display());
+    println!("  tracked source: {}  (fleet/)", fleet.src.display());
+    println!("  hub source:     {}", hub_source_label(env.as_deref()));
+    match &env {
+        Some(v) if !v.is_empty() => println!("  $FLEET_HUB:     {}", v.to_string_lossy()),
+        Some(_) => println!("  $FLEET_HUB:     (set but empty — ignored)"),
+        None => println!("  $FLEET_HUB:     (unset)"),
+    }
 }
 
 fn status(fleet: &Fleet) {
@@ -16348,6 +16385,22 @@ mod tests {
         );
         // No override AND no derived hub → None: the fail-open signal the Option call sites rely on.
         assert_eq!(choose_hub_opt(None, None), None);
+    }
+
+    #[test]
+    fn hub_source_label_matches_choose_hub_precedence() {
+        use std::ffi::OsStr;
+        // Explicit non-empty override → labelled as the explicit hub.
+        assert_eq!(
+            hub_source_label(Some(OsStr::new("/home/u/.fleet"))),
+            "explicit $FLEET_HUB"
+        );
+        // Unset OR empty → the default git-common-dir derivation (same fall-through as choose_hub_opt).
+        assert_eq!(hub_source_label(None), "git-common-dir (derived)");
+        assert_eq!(
+            hub_source_label(Some(OsStr::new(""))),
+            "git-common-dir (derived)"
+        );
     }
 
     #[test]
