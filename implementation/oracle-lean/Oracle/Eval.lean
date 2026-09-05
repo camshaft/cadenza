@@ -1036,6 +1036,24 @@ def restBinderOf? (m : Module) (sps : Array Nat) : Option (Nat × Nat) :=
     | some k => (sps[k+1]?).map (fun binder => (k, binder))
     | none => none
 
+/-- Parse a map-pattern ENTRY `(= keyLit valPat)` (fieldPair form) or bare `(keyLit valPat)` into its
+`(keyValue, valuePatternNode)`. The key is a SCALAR LITERAL (string/int/char/…, via `Value.ofLeaf`) — the
+map analogue of a record field's name key. `none` if the entry is not a scalar-keyed `(k p)`/`(= k p)`. -/
+def mapEntryPat? (m : Module) (ep : Nat) : Option (Value × Nat) :=
+  match m.nodes[ep]? with
+  | some (Node.list ec) =>
+    let kp? : Option (Nat × Nat) :=
+      if m.headName? (Node.list ec) == some "=".toUTF8 && ec.size == 3 then
+        match ec[1]?, ec[2]? with | some k, some p => some (k, p) | _, _ => none
+      else if ec.size == 2 then
+        match ec[0]?, ec[1]? with | some k, some p => some (k, p) | _, _ => none
+      else none
+    kp?.bind (fun (kn, pn) =>
+      match m.nodes[kn]? with
+      | some (Node.atom lid) => ((m.leaves[lid]?).bind Value.ofLeaf).map (fun kv => (kv, pn))
+      | _ => none)
+  | _ => none
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -2367,33 +2385,28 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
            | none => matchRecordPats m fps.toList fields
          | _ => .ok none)
       else if ph == "map".toUTF8 then
-        -- a map pattern `(map (k p)…)` — each entry's key literal must be present with a matching value —
-        -- optionally ending in `.. rest`, which binds the REMAINING entries (those not named by a leading
-        -- key) as a map. Without `..`: exact key-count decides; a FEWER-key (subset) pattern with no rest
-        -- is a skip (unmodeled — never a wrong arm selection).
+        -- a map pattern `(map (= k p)…)` — each entry's scalar-literal key must be present with a value
+        -- matching its sub-pattern — optionally ending in a trailing `(.. rest)` (grouped) / `.. rest`
+        -- (bare), which binds `rest` to the REMAINING entries (those not named by a leading key) as a map.
+        -- Without a rest: exact key-count decides; a FEWER-key (subset) pattern with no rest is a skip
+        -- (unmodeled — never a wrong arm selection).
         (match subj with
          | .map entries =>
            let eps := pc.extract 1 pc.size
-           match eps.findIdx? (fun e => nameOf? m e == some "..".toUTF8) with
-           | some kk =>
-             match eps[kk+1]? with
-             | some restBinder =>
-               let leading := (eps.extract 0 kk).toList
-               -- the leading entries' KEY literals (to compute the rest = entries minus these keys)
-               let leadKeys := leading.filterMap (fun ep => match m.nodes[ep]? with
-                 | some (Node.list ec) => (ec[0]?).bind (fun kn => (m.nodes[kn]?).bind (fun n =>
-                     match n with | .atom lid => (m.leaves[lid]?).bind Value.ofLeaf | _ => none))
-                 | _ => none)
-               if leadKeys.length != leading.length then .error (.unsupported "eval: map rest-pattern key not a scalar literal")
-               else
-                 match matchMapPats m leading entries with
-                 | .ok (some e1) =>
-                   let restEntries := entries.filter (fun e => !(leadKeys.any (fun k => k == e.1)))
-                   (match matchPat m restBinder (Value.map restEntries) with
-                    | .ok (some e2) => .ok (some (e1 ++ e2))
-                    | r => r)
-                 | r => r
-             | none => .error (.unsupported "eval: malformed map rest pattern (no binder after ..)")
+           match restBinderOf? m eps with
+           | some (leadCount, restBinder) =>
+             let leading := (eps.extract 0 leadCount).toList
+             -- the leading entries' KEY literals (to compute the rest = entries minus these keys)
+             let leadKeys := leading.filterMap (fun ep => (mapEntryPat? m ep).map (·.1))
+             if leadKeys.length != leading.length then .error (.unsupported "eval: map rest-pattern entry is not a scalar-keyed (k p)/(= k p)")
+             else
+               match matchMapPats m leading entries with
+               | .ok (some e1) =>
+                 let restEntries := entries.filter (fun e => !(leadKeys.any (fun k => valEq k e.1)))
+                 (match matchPat m restBinder (Value.map restEntries) with
+                  | .ok (some e2) => .ok (some (e1 ++ e2))
+                  | r => r)
+               | r => r
            | none =>
              if eps.size > entries.size then .ok none
              else if eps.size < entries.size then .error (.unsupported "eval: map subset-pattern not modeled")
@@ -2529,28 +2542,19 @@ partial def matchMapPats (m : Module) (entryPats : List Nat) (entries : Array (V
   match entryPats with
   | [] => .ok (some [])
   | ep :: rest =>
-    match m.nodes[ep]? with
-    | some (Node.list ec) =>
-      match ec[0]?, ec[1]? with
-      | some kNode, some pNode =>
-        match m.nodes[kNode]? with
-        | some (Node.atom lid) =>
-          match (m.leaves[lid]?).bind Value.ofLeaf with
-          | some kv =>
-            match (entries.find? (fun e => e.1 == kv)).map (·.2) with
-            | some vv =>
-              (match matchPat m pNode vv with
-               | .error o => .error o
-               | .ok none => .ok none
-               | .ok (some e1) => match matchMapPats m rest entries with
-                                  | .error o => .error o
-                                  | .ok none => .ok none
-                                  | .ok (some e2) => .ok (some (e1 ++ e2)))
-            | none => .ok none   -- key absent from the map → no match
-          | none => .error (.unsupported "eval: map-pattern key is not a scalar literal")
-        | _ => .error (.unsupported "eval: map-pattern key is not a literal")
-      | _, _ => .error (.unsupported "eval: malformed map-pattern entry")
-    | _ => .error (.unsupported "eval: malformed map-pattern entry")
+    match mapEntryPat? m ep with
+    | some (kv, pNode) =>
+      match (entries.find? (fun e => valEq e.1 kv)).map (·.2) with
+      | some vv =>
+        (match matchPat m pNode vv with
+         | .error o => .error o
+         | .ok none => .ok none
+         | .ok (some e1) => match matchMapPats m rest entries with
+                            | .error o => .error o
+                            | .ok none => .ok none
+                            | .ok (some e2) => .ok (some (e1 ++ e2)))
+      | none => .ok none   -- key absent from the map → no match
+    | none => .error (.unsupported "eval: malformed map-pattern entry (not a scalar-keyed (k p)/(= k p))")
 
 /-- `(match scrutinee (pat body)… )` — try arms in order (spec: the scrutinee IS an observation point,
 core-semantics.md:287). A top-level WILDCARD `_` or bare-name BINDER binds the scrutinee LAZILY (never
