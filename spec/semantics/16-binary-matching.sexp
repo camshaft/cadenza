@@ -4623,33 +4623,26 @@
 ; total=1 but the input is 3 bytes and the pattern has NO trailing rest, so whole-consumption REJECTS
 ; (1 != 3) -> fall-through "x" (a genuine len=0 MATCH -> "" would need a 1-byte input). [Corrected breaker's
 ; initial len=0 -> "" expectation, which overlooked the two unconsumed trailing bytes.]
-; REMAINING GAP (why the wasm baseline is a #4547 tracked FAIL, not todo — #8315): the case now COMPILES,
-; so it cannot grade todo (todo requires a compile DECLINE); it decodes the CORRECT VALUE but on wasm still
-; LEAKS 2 heap objects (`live-objects` 2, not 0), so it grades FAIL and is pinned as a tracked known-fail
-; that auto-surfaces a re-baseline when the leak is fixed. The `(live-objects 0)` assertion below stays the
-; IDEALISTIC target (corpus policy). ROOT CAUSE (v-memory-safety rc-trace, matches nix): the 2 leaked cells
-; are node#3 + node#4, the utf8-decode (`StrFromBytes`) Option shells — NOT the bit-field size read and NOT
-; the slice-drop on the size path. The rc-trace factor matrix is decisive: bit-field-size + utf8 leaks 2;
-; byte-size (`(u8 len)`) + utf8 leaks the SAME 2 (identical node#3/#4); and a bit-field-size ->
-; `(bytes payload len)` -> `Bytes.len` (NO StrFromBytes) is CLEAN 0. So the leak is the DEPENDENT-SIZE UTF8
-; DECODE husk itself, shared across BOTH size-sources — NOT bit-field-specific. (An earlier "byte-binder
-; analog is CLEAN" reading was an IN-PROCESS gate UNDER-COUNT of the utf8/String husk class; rc-trace, which
-; matches nix, shows the byte analog also leaks 2.) MECHANISM (v-memory-safety, precise): the range is
-; decoded to `Option String` TWICE — once in the ARM PREDICATE (`bin_option_is_some` builds a `MatchSum` over
-; a fresh `StrFromBytes` to AND UTF-8 well-formedness into the guard, lower.rs) and once in the ARM BODY (a
-; `SumExpect` over ANOTHER fresh `StrFromBytes` unwraps the binder `s`, lower/bin_match.rs). The source flags
-; these as "two independent reads of the same range." Each decode allocates one owned Option `Sum` (sum-new)
-; that is never reclaimed → node#3 (predicate, shell+payload dead) + node#4 (body, payload `s` escapes, shell
-; dead). NEITHER the bool-predicate `MatchSum` nor the escaping-payload `SumExpect` currently drops its owned
-; `StrFromBytes` scrutinee shell. FIX LEVER (the load-bearing soundness fact): a `StrFromBytes` payload is a
-; FRESH, INDEPENDENT owned String (str-from-bytes transfers the buffer out — emit.rs "the handle is OWNED"),
-; NOT a view aliasing the shell. So — UNLIKE the `String.at`/`Bytes.slice` VIEW producers the #4917
-; escape-stays-leaking control protects (their payload may alias the shell, so dropping it on escape would
-; UAF) — a `StrFromBytes` Option shell is SAFELY reclaimable even when its payload escapes (dup-payload +
-; drop-shell). Two candidate fixes: (a) LOWERING decode-once-reuse (one shell + a perf win; touches
-; bin_match.rs, peer-owned) or (b) RECLAIM-side (my lane): extend the SumExpect shell-reclaim to fresh-payload
-; producers on escape + reclaim the bool-`MatchSum`'s owned `StrFromBytes` scrutinee. Both UAF-critical; hold
-; for a focused whole-corpus guarded-all pass. cadenza re-emit of this shape is a separate slice (still todo).
+; DECODE HUSK CLOSED (#4547 retired; the reclaim-side fix (b) below LANDED — v-memory-safety rc-trace,
+; matches nix): the case COMPILES + decodes the CORRECT VALUE, and the utf8-decode (`StrFromBytes`) Option
+; shells are now RECLAIMED on BOTH decode sites. The range is decoded to `Option String` TWICE — the ARM
+; PREDICATE (`bin_option_is_some` = a `MatchSum` over a fresh `StrFromBytes`, ANDing UTF-8 well-formedness
+; into the guard, lower.rs) and the ARM BODY (a `SumExpect` over ANOTHER fresh `StrFromBytes` unwraps `s`,
+; lower/bin_match.rs). rc-trace of call 0 (b0=50): the predicate Option shells, the body Option shell, AND
+; the scrutinee Bytes are ALL freed. Fix lever (the load-bearing soundness fact): a `StrFromBytes` payload is
+; a FRESH, INDEPENDENT owned String (str-from-bytes transfers the buffer out — emit.rs "the handle is
+; OWNED"), NOT a view aliasing the shell — so UNLIKE the `String.at`/`Bytes.slice` VIEW producers the #4917
+; escape-stays-leaking control protects, a `StrFromBytes` Option shell is SAFELY reclaimable even when its
+; payload escapes (dup-payload + drop-shell). The reclaim wiring is `is_owned_fresh_payload_producer` +
+; `collect_sumexpect_view_reclaim_seen`'s fresh-payload ESCAPE branch (select/reclaim.rs).
+; WHY known-leak 1, not 0: the ONE remaining live cell is the escaping String RESULT ("hi"/"x") — the host
+; OWNS the top-level return post-call, so the grade (which does not drop the top-level heap result before
+; counting) reports it as 1. This is NOT a husk: a trivial `(def (main n) "hello")` grades live-objects 1
+; identically, and 0 of the 18 chapter-13 String-literal-returning cases pin `(live-objects 0)` (8 pin
+; `known-leak`, 9 omit) — so `known-leak 1` is the honest chapter-13 idiom for a heap-String return. The
+; idealistic `(live-objects 0)` is unreachable for a heap-String return under the current grade; a deliberate
+; "drop the top-level result before counting" harness slice (routed to concierge) would let this + the 17
+; chapter-13 known-leak cases target 0. cadenza re-emit of this shape is a separate slice (still todo).
 (case
   "a sub-byte bit-field value drives a dependent utf8 size (bit-field binder as a dependent size) decodes"
   (input
@@ -4664,7 +4657,7 @@
   (output (: "x" String))
   (call main (: 48 Int64))
   (output (: "x" String))
-  (live-objects 0))
+  (live-objects known-leak 1))
 
 ; bfx10 (breaker, GAP): a dependent segment size from an ARITHMETIC EXPRESSION over a byte binder declines
 ; ("a runtime bin utf8 segment needs a computable byte range (offset + size)"). This is a SECOND dependent-
