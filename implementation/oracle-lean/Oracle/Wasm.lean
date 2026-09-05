@@ -349,10 +349,11 @@ partial def fixupTy : Module → Nat → Module → Nat → Value → Option Val
         | .tuple vs => (fixupRecord cm fuel m (tyChildren m i) vs.toList).map (fun fs => .record fs.toArray)
         | _         => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
       else if name == "Sum".toUTF8 then
-        -- Sum type node `(Sum <sumName> <declId> <payloadType>*)`. The decoder handed us the intermediate
-        -- `.variant <decimal-disc> payload`. BUILT-IN Option/Result map by discriminant to Core's DEDICATED
-        -- ctors (Some=disc0 / None=disc1; Ok=disc0 / Err=disc1 — declaration order, confirmed w/ v-lean-oracle),
-        -- recursing the payload by its type. A USER sum resolves disc→ctorName from the CORE AST `cm` (see below).
+        -- Sum type node. The decoder handed us the intermediate `.variant <decimal-disc> payload`. For BUILT-IN
+        -- Option/Result the node IS `(Sum Option/Result <declId> <argType>*)` (nominal names get their type args
+        -- threaded) → map disc to Core's DEDICATED ctors (Some=disc0/None=disc1; Ok=disc0/Err=disc1, decl order),
+        -- recursing the payload by the arg type. For a USER sum the node is just `(Sum <name> <declId>)` with NO
+        -- payload types, so BOTH ctor name AND payload field types come from the CORE AST `cm` decl (see below).
         match v with
         | .variant discTag payloadV =>
           match tyChildren m i with
@@ -374,29 +375,30 @@ partial def fixupTy : Module → Nat → Module → Nat → Value → Option Val
                   else Option.none
                 | _ => Option.none
               else
-                -- USER sum: resolve disc→(ctorName, arity) from the CORE AST's `(type sumName …)` decl via
-                -- `Eval.userSumTypes` (SSOT; declaration order = runtime discriminant order). Core tags a user
-                -- sum by CONSTRUCTOR NAME (`Value.variant ctorName …`), so retag the intermediate `<disc>` tag.
-                -- payloadType* is SPARSE — payload types of arity≥1 variants only, in disc order, nullary
-                -- OMITTED (v-lean-oracle #8535): so the payloadType index for `disc` = the count of arity≥1
-                -- variants BEFORE `disc`. arity 0 → `.variant ctorName payloadV` (payloadV = decoded unit,
-                -- faithful — a non-unit payload would then DIVERGE, correctly). arity 1 → fixup the payload by
-                -- its sparse-indexed type. arity ≥ 2 (multi-field) → DECLINE (sound skip: the multi-field Tuple
-                -- payload-type layout is not yet re-verified — v-lean-oracle (3), first cut). Not a user sum
-                -- (Ordering/Sign/unknown), or disc out of range → decline as before.
-                match (Eval.userSumTypes cm).find? (fun t => t.1 == sumName) with
-                | Option.some (_, ctors) =>
-                  match ctors[disc]? with
-                  | Option.some (ctorName, arity) =>
-                    if arity == 0 then Option.some (.variant ctorName payloadV)
-                    else if arity == 1 then
-                      let sparseIdx := ((ctors.take disc).filter (fun c => c.2 ≥ 1)).length
-                      match payloadTypes[sparseIdx]? with
-                      | Option.some pt => (fixupTy cm fuel m pt payloadV).map (fun pv => Value.variant ctorName pv)
-                      | Option.none    => Option.none
-                    else Option.none   -- arity ≥ 2 multi-field: sound skip until layout (3) verified
-                  | Option.none => Option.none
-                | Option.none => Option.none
+                -- USER sum. Core tags a user sum by CONSTRUCTOR NAME (`Value.variant ctorName …`) and the
+                -- emitted `(Sum name declId …)` node has NO per-variant payload types (its trailing nodes are
+                -- the sum's GENERIC TYPE ARGS — verified v-lean-oracle; a monomorphic user sum is `(Sum Pair 1)`).
+                -- So BOTH the ctor name AND the payload field TYPES come from the CORE AST `cm` `(type name v1 …)`
+                -- decl, via v-lean-oracle's SSOT helpers (disc order = runtime discriminant order):
+                --   `userSumCtorByDisc? cm name disc`        → the ctor NAME
+                --   `userSumVariantFieldTypes? cm name disc` → the disc-th variant's field-type node indices in `cm`
+                --                                              ([] nullary / [t] arity-1 BARE / [t1..tN] arity≥2).
+                -- Retag `.variant <disc>` → `.variant <ctorName>` and fixup the payload against `cm` (a
+                -- mid-traversal module switch: the field-type nodes are `cm`-relative, sound). arity 0 → payload =
+                -- decoded unit (a non-unit payload then correctly DIVERGES). arity ≥ 2 → the runtime value is a
+                -- single `.tuple` of the fields (rcdzc boxing), so `fixupTuple` over the field types. `none`
+                -- (not a user sum / disc out of range / tuple-shape mismatch) → decline (sound skip).
+                match Eval.userSumCtorByDisc? cm sumName disc, Eval.userSumVariantFieldTypes? cm sumName disc with
+                | Option.some ctorName, Option.some fieldTys =>
+                  match fieldTys with
+                  | []  => Option.some (.variant ctorName payloadV)
+                  | [t] => (fixupTy cm fuel cm t payloadV).map (fun pv => Value.variant ctorName pv)
+                  | ts  =>
+                    match payloadV with
+                    | .tuple elems =>
+                      (fixupTuple cm fuel cm ts elems.toList).map (fun ws => Value.variant ctorName (.tuple ws.toArray))
+                    | _ => Option.none
+                | _, _ => Option.none
             | _, _ => Option.none
           | _ => Option.none
         | _ => if tyNodeMentionsString? m (fuel + 1) i then Option.none else Option.some v
@@ -804,35 +806,38 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)])
     (rtSumUserBytes "Color") { entry := "main" }
     == .unsupported "heap result: result-type-directed fixup cannot reconstruct the value: user/unmodeled sum result (sum=Color) — variant names not in cdz-result-type (needs emit extension)") = true := by native_decide
 
-/-! ### USER-SUM decode via the Core AST (`Eval.userSumTypes`) — NO emit extension (v-lean-oracle #8535 design).
-The emitted `(Sum <name> <declId> <payloadType>*)` lacks variant names, but the Core AST carries `(type <name>
-v1 v2 …)` (decl order = runtime disc order). Passing it as `coreAst` lets the Sum arm retag the intermediate
-`.variant "<disc>"` → `.variant "<ctorName>"` (Core's form). payloadType* is SPARSE (arity≥1 variants only). -/
-/-- A user `(type Shape Circle (Square String))`: Circle nullary (disc 0), Square arity-1 String (disc 1). -/
+/-! ### USER-SUM decode via the Core AST — NO emit extension. The emitted `(Sum <name> <declId>)` carries NEITHER
+variant names NOR payload types (its trailing nodes are the sum's generic type ARGS — verified v-lean-oracle), so
+BOTH come from the Core AST's `(type <name> v1 v2 …)` decl (decl order = runtime disc order) via v-lean-oracle's
+SSOT helpers `Eval.userSumCtorByDisc?` (name) + `Eval.userSumVariantFieldTypes?` (payload field-type node indices).
+Passing the decl as `coreAst` lets the Sum arm retag `.variant "<disc>"` → `.variant "<ctorName>"` AND fixup the
+payload against `cm`. The result-type here is the REAL `(Sum Shape <declId>)` shape (`rtSumUserBytes`, no payload
+type), NOT a hand-added one — so these witness the actual emitted structure. -/
+/-- A user `(type Shape Circle (Square String) (Rect Int64 Int64))`: Circle nullary (disc 0), Square arity-1
+String (disc 1), Rect arity-2 Int64×Int64 (disc 2) — the nullary / arity-1 / arity-2 cases. -/
 private def shapeCoreAst : Module :=
   { leaves := #[.name "type".toUTF8, .name "Shape".toUTF8, .name "Circle".toUTF8, .name "Square".toUTF8,
-                .name "String".toUTF8],
-    nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .list #[3, 4], .list #[0, 1, 2, 5], .list #[6]],
-    root := 7 }
-/-- `(result-type main (Sum <userName> <declId> <payloadTy>))` — like `rtSumOptionBytes` but a user sum name. -/
-private def rtSumUserPayloadBytes (userName payloadTy : String) : ByteArray :=
-  Ast.encode
-    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Sum".toUTF8, .name userName.toUTF8,
-                  .intLit false .dec (ByteArray.mk #[1]), .name payloadTy.toUTF8],
-      nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .list #[2, 3, 4, 5], .list #[0, 1, 6]],
-      root := 7 }
--- disc 0 = Circle (NULLARY, no payloadType slot): `.variant "0" .unit` → `.variant "Circle" .unit` (name resolved).
+                .name "String".toUTF8, .name "Rect".toUTF8, .name "Int64".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .list #[3, 4], .atom 5, .atom 6, .list #[6, 7, 7],
+               .list #[0, 1, 2, 5, 8], .list #[9]],
+    root := 10 }
+-- disc 0 = Circle (NULLARY): `.variant "0" .unit` → `.variant "Circle" .unit` (name from the decl, no payload).
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "0".toUTF8 .unit)]) "(module)"
-    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" } shapeCoreAst
+    (rtSumUserBytes "Shape") { entry := "main" } shapeCoreAst
     == .value (.variant "Circle".toUTF8 .unit)) = true := by native_decide
--- disc 1 = Square (arity-1 String): `.variant "1" (.bytes "hi")` → `.variant "Square" (.str "hi")` — name resolved
--- from the decl AND the sparse-indexed payload retagged `.bytes`→`.str` (the soundness point of the payload fixup).
+-- disc 1 = Square (arity-1 String): `.variant "1" (.bytes "hi")` → `.variant "Square" (.str "hi")` — name from the
+-- decl AND the BARE payload retagged `.bytes`→`.str` by the field type sourced from `cm` (the soundness point).
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.bytes "hi".toUTF8))]) "(module)"
-    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" } shapeCoreAst
+    (rtSumUserBytes "Shape") { entry := "main" } shapeCoreAst
     == .value (.variant "Square".toUTF8 (.str "hi".toUTF8))) = true := by native_decide
+-- disc 2 = Rect (arity-2): the runtime payload is a single `.tuple` of the fields → `fixupTuple` over the field
+-- types (Int64×Int64, passthrough) → `.variant "Rect" (.tuple #[.int 3, .int 7])`.
+example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "2".toUTF8 (.tuple #[.int 3, .int 7]))]) "(module)"
+    (rtSumUserBytes "Shape") { entry := "main" } shapeCoreAst
+    == .value (.variant "Rect".toUTF8 (.tuple #[.int 3, .int 7]))) = true := by native_decide
 -- WITHOUT the Core AST (default empty module) the SAME user sum still DECLINES → sound skip (unchanged fallback).
 example : (runWasmWith (fun _ _ => .ok #[.compound (.variant "1".toUTF8 (.bytes "hi".toUTF8))]) "(module)"
-    (rtSumUserPayloadBytes "Shape" "String") { entry := "main" }
+    (rtSumUserBytes "Shape") { entry := "main" }
     == .unsupported "heap result: result-type-directed fixup cannot reconstruct the value: user/unmodeled sum result (sum=Shape) — variant names not in cdz-result-type (needs emit extension)") = true := by native_decide
 
 end Oracle.Wasm
