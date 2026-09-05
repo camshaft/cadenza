@@ -766,6 +766,36 @@ def defTable (m : Module) : List (ByteArray × (Array Nat × Nat)) :=
       | none => none)
   | _ => []
 
+/-- The bound name of a QUOTE-parameter `(quote x)` (a MACRO param — the arg is passed as unevaluated
+Ast/syntax, not a value), if `specId` is one. Macro dispatch is by BINDING: a def with a quote-param is a
+macro (metaprogramming.md §A Macro Is Dispatched By Binding). -/
+def quoteParamName? (m : Module) (specId : Nat) : Option ByteArray :=
+  match m.nodes[specId]? with
+  | some (Node.list pc) =>
+    if m.headName? (Node.list pc) == some "quote".toUTF8 && pc.size == 2 then (pc[1]?).bind (nameOf? m) else none
+  | _ => none
+
+/-- Is this def a MACRO — does any parameter carry a `(quote …)` mark? -/
+def isMacroParams? (m : Module) (params : Array Nat) : Bool :=
+  params.any (fun p => (quoteParamName? m p).isSome)
+
+/-- Does the subtree at `i` contain a BINDER-introducing head (`let`/`fn`/`def`) anywhere? A macro whose
+expansion introduces a binder needs provenance-based HYGIENE (alpha-rename to avoid capturing a caller
+name — metaprogramming.md §Macros Are Hygienic), which the oracle does NOT model yet. So a macro with such
+a body is DECLINED (a sound skip), never expanded without hygiene (which could produce a WRONG value). A
+fuel-out conservatively returns `true` (decline). -/
+partial def subtreeHasBinderHead? (m : Module) (fuel : Nat) (i : Nat) : Bool :=
+  match fuel with
+  | 0 => true
+  | fuel + 1 =>
+    match m.nodes[i]? with
+    | some (Node.list cs) =>
+      (match m.headName? (Node.list cs) with
+       | some h => h == "let".toUTF8 || h == "fn".toUTF8 || h == "def".toUTF8
+       | none => false)
+      || cs.any (subtreeHasBinderHead? m fuel)
+    | _ => false
+
 /-- A qualified application/value head `(. Q M)` → its (qualifier, member) names. Used to recognize a
 prelude MODULE function like `(. Set of)` (a collection builder), distinct from record projection and
 from a sum-ctor `(. T C)` (the ctor is dispatched separately by `variantCtorArity?`). -/
@@ -1176,10 +1206,13 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
                if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
                else (defTable m).find? (fun d => d.1 == h) |>.bind (fun d =>
                  let params := d.2.1; let nargs := children.size - 1
+                 -- A def with a QUOTE-param is a MACRO (dispatch by binding): expand its call rather than
+                 -- calling it — bind quote-params to reflected args, eval the quasiquote body, reify + eval.
+                 if isMacroParams? m params then some (evalMacro m env fuel params d.2.2 children)
                  -- A SPLAT argument `(.. tuple)` supplies several positional args from ONE child, so the raw
                  -- child count `nargs` under-counts — expand+bind via `evalCallSplat` (checked route first,
                  -- else a 3-param call with a single tuple-splat arg would mis-fire the partial-app branch).
-                 if hasSplatArg m children then some (evalCallSplat m env fuel params d.2.2 children)
+                 else if hasSplatArg m children then some (evalCallSplat m env fuel params d.2.2 children)
                  else if params.size == nargs then some (evalCall m env fuel params d.2.2 children)
                  -- PARTIAL application `(f a)` (f has more params than args given): a closure over the
                  -- REMAINING params, CAPTURING the given args (as values, evaluated now) under their param
@@ -1719,6 +1752,35 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
       (match evalNode m bindings defaultIntTy fuel' bodyId with
        | .errReturn ev => .value ev
        | o => o)
+
+/-- Expand + evaluate a MACRO call `(f arg…)` where `f` has a quote-param. Each quote-param `(quote xi)`
+binds `xi` to the arg's REFLECTED Ast (the arg is SYNTAX/data); a non-quote param binds its arg's value.
+The body (a quasiquote template) is evaluated to the EXPANSION as an Ast VALUE, then reified back into
+concrete nodes and evaluated — `(twice 5)` with `(quasiquote (+ (unquote x) (unquote x)))` expands to
+`(+ 5 5)` → 10 (a reflected literal arg reifies back to its literal, so the expansion computes). A macro
+whose body would introduce a BINDER (`let`/`fn`/`def`) needs provenance HYGIENE (alpha-rename, not modeled)
+→ DECLINE (sound skip), never an unsound no-hygiene expansion. -/
+partial def evalMacro (m : Module) (env : Env) (fuel : Nat) (params : Array Nat) (bodyId : Nat) (children : Array Nat) : Outcome :=
+  match fuel with
+  | 0 => .diverges
+  | Nat.succ fuel' =>
+    if subtreeHasBinderHead? m defaultFuel bodyId then
+      .unsupported "eval: macro expansion introduces a binder (let/fn/def) — provenance hygiene not modeled, declined"
+    else
+      let args := children.extract 1 children.size
+      if args.size != params.size then .unsupported "eval: macro arg/param count mismatch"
+      else
+        let bindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
+          match quoteParamName? m specId with
+          | some qn => some (qn, Thunk.mk (fun _ => quoteReflect m fuel' argId), Option.none)   -- arg as reflected Ast
+          | none => (paramSpec? m specId).map (fun (nm, ty) => (nm, Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId), ty)))
+        if bindings.length == params.size then
+          match evalNode m bindings defaultIntTy fuel' bodyId with   -- the quasiquote body → the expansion (an Ast value)
+          | .value astv => (match reifyInto m astv with
+                            | .ok (m', rootId) => evalNode m' [] defaultIntTy fuel' rootId   -- reify + eval the (closed) expansion
+                            | .error e => .unsupported s!"eval: macro reify failed: {e}")
+          | other => other
+        else .unsupported "eval: macro param spec malformed"
 
 /-- Expand a call's raw argument nodes into positional `ArgSrc`s, spreading any splat `(.. e)` argument:
 `e` is evaluated STRICTLY (the tuple/list must be built to spread it — matching the compiler's per-slot
