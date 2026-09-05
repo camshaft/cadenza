@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 28 };
+    let arms = if depth == 0 { 2 } else { 29 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -961,7 +961,7 @@ fn gen_typefuzz_int<C: Choice>(
         // Elements via `gen_typefuzz_int` (as the tuple-proj arm); return a BOUND binder (no arithmetic) so
         // no CDZ0304 const-fold overflow. Nested/literal sub-patterns, arity-mismatch, rest, dup-binder,
         // and non-tuple scrutinees are NOT generated (still oracle-skip in inc-1).
-        _ => {
+        27 => {
             let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             if c.variant(2) == 0 {
@@ -970,6 +970,16 @@ fn gen_typefuzz_int<C: Choice>(
                 let d = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
                 format!("(match (tuple {a} {b} {d}) ((tuple x y z) y))")
             }
+        }
+        // A MATCH on a RECORD scrutinee (T1.52 inc-2): a CLOSED record pattern `(record (= a x) (= b y))`
+        // whose field-key set EXACTLY equals the record type's (every field named, no extra), each field a
+        // PLAIN binder (binds that field's type); return a bound field → Int64. Closed ⇒ irrefutable ⇒
+        // exhaustive ⇒ both rcdzc + oracle infer WellTyped (HOLDS). Subset/extra-key/open-row/nested/
+        // literal-subpat/dup-binder patterns + non-record scrutinees are NOT generated (still oracle-skip).
+        _ => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            format!("(match (record (= a {a}) (= b {b})) ((record (= a x) (= b y)) x))")
         }
     }
 }
