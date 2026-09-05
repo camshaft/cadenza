@@ -810,9 +810,21 @@ partial def canonicalizeValue : Value → Value
 #guard (canonicalizeValue (.map #[(.int 2, .str "b".toUTF8), (.int 1, .str "a".toUTF8)])
         == .map #[(.int 1, .str "a".toUTF8), (.int 2, .str "b".toUTF8)])
 
-/-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`). -/
+/-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`).
+Key equality MUST be `valEq` (canonical, bit-exact via `cmpValue`), NOT the derived `Value` `==`: for floats
+the derived BEq is IEEE equality where positive-zero and negative-zero compare EQUAL, which would COLLAPSE
+them into one key on insert — but the spec keeps signed zeros DISTINCT (sign-significant zero) and
+`canonMap`/`Map.lookup` use bit-exact `valEq`. The `==` here was inconsistent with lookup: inserting the two
+signed zeros dropped the positive-zero entry, then a positive-zero lookup (valEq) missed it, a wrong result
+(differential 19-sets-0259 "nz4 Map discriminates signed zeros": Core -2 vs wasm 1020). `valEq` makes insert
+discriminate consistently with lookup + spec. -/
 def mapInsertRaw (entries : Array (Value × Value)) (k v : Value) : Array (Value × Value) :=
-  (entries.filter (fun e => !(e.1 == k))).push (k, v)
+  (entries.filter (fun e => !(valEq e.1 k))).push (k, v)
+
+-- Map insert discriminates the two signed zeros as DISTINCT keys (bit-exact valEq, not IEEE `==`) — nz4 fix.
+#guard ((mapInsertRaw (mapInsertRaw #[] (.f64 0.0) (.int 10)) (.f64 (-0.0)) (.int 20)).size == 2)
+-- but a genuine same-key re-insert (both +0.0) REPLACES (last-writer), size 1.
+#guard ((mapInsertRaw (mapInsertRaw #[] (.f64 0.0) (.int 10)) (.f64 0.0) (.int 20)).size == 1)
 
 /-- Structurally REFLECT the AST subtree at node `i` into an `Ast` sum VALUE, WITHOUT evaluating it
 (`metaprogramming.md` #Quote Produces An AST Value: `(quote <expr>)` returns the `Ast` value for
