@@ -1,19 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	a branch value fitting i32 but overflowing the sub-i32 Int16 target is rejected
-fail	a fitting payload projected through Option.expect under a narrow annotation runs (no over-rejection)
 fail	a macro-introduced REFERENCE resolves in the macro's definition scope, not captured by a caller binder (hygiene dir-2)
-fail	an IN-RANGE literal in a tuple nested inside a set element still compiles — the nested check is not over-broad
-fail	an oversize constant if-branch consumed by a narrow + is rejected
-fail	an oversize constant if-branch consumed by a narrow bitand is rejected
-fail	an oversize constant if-branch inside a NESTED narrow + is rejected
-fail	an oversize constant if-branch threaded through a let into a narrow + is rejected
-fail	an oversize constant match-arm body consumed by a narrow + is rejected
-fail	an undetermined Set-key element type is rejected CDZ0203 (annotate), not a codeless decline
-fail	cdzw74 Result with heterogeneous payloads + Result-nested-in-Option round-trip the cadenza hop
-fail	hczm3 a captured LIST escaping TWICE reclaims cleanly (vec-rep twin of hczm1)
-fail	hczm4 a captured MAP escaping TWICE reclaims cleanly (CHAMP twin)
-fail	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
-fail	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -1808,6 +1794,7 @@ pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branch refinement elides a redundant AND-mask covering the refined range (value parity)
 pass	a branch refinement folds a comparison of two disjoint refined ranges (value parity)
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
+pass	a branch value fitting i32 but overflowing the sub-i32 Int16 target is rejected
 pass	a branch-dead host-call leaks no import or host-call at any optimization level
 pass	a branch-divergent next-state under a multi-perform body folds to 18
 pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
@@ -2605,6 +2592,7 @@ pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting float literal grounded to Float32 through an arith spine runs (no over-rejection)
 pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
+pass	a fitting payload projected through Option.expect under a narrow annotation runs (no over-rejection)
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a fitting runtime-if branch literal under a narrow annotation runs (no over-rejection)
 pass	a fitting runtime-match arm literal under a narrow annotation runs (no over-rejection)
@@ -5715,7 +5703,6 @@ pass	a tuple relayed through an intermediate parameter hop still splats at the c
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
 pass	a tuple splat composes with inline arguments
 pass	a tuple splat feeds a rest parameter — the caller spreads, the callee gathers
-pass	an EMPTY tuple splat into a rest parameter gathers to the EMPTY list
 pass	a tuple splat relays a function's own tuple parameter into a fixed-arity call
 pass	a tuple splat spreads a tuple held in a variable
 pass	a tuple splat spreads its elements into a call's arguments
@@ -5938,6 +5925,9 @@ pass	a whole LIST of quantities renders every element scaled to reference in the
 pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
 pass	a whole rational carries a denominator of one
 pass	a whole-module alias projecting a NON-exported private def is rejected (privacy)
+pass	a whole-module alias projecting a WITHHELD sibling of a partially-exported constructor is rejected (per-ctor no-leak)
+pass	a whole-module alias projects a partially-exported NAMED constructor (per-ctor granular)
+pass	a whole-module alias projects a qualified TYPE constructor
 pass	a whole-module alias projects an exported FUNCTION and applies it
 pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
 pass	a wide UInt64 constant add overflows Int64 but fits UInt64 and folds
@@ -6142,6 +6132,7 @@ pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
 pass	an EMPTY Bytes arg crosses the host boundary
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
+pass	an EMPTY tuple splat into a rest parameter gathers to the EMPTY list
 pass	an EQUALITY test refines the same test in its own else to known-false
 pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
 pass	an EXPORT naming an unbound definition is rejected
@@ -6155,6 +6146,7 @@ pass	an IN-PROGRAM arm resumes a Qty built in the arm — the erased-scalar cros
 pass	an IN-RANGE Map.insert value via a sibling-inferred width computes
 pass	an IN-RANGE Set.of element via a sibling-inferred width computes
 pass	an IN-RANGE literal in a Set under a narrow annotation compiles and runs (no over-rejection)
+pass	an IN-RANGE literal in a tuple nested inside a set element still compiles — the nested check is not over-broad
 pass	an IN-RANGE literal in the transitive-arith-width position compiles and runs (no over-rejection)
 pass	an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)
 pass	an IN-RANGE literal through a Map.insert builder chain compiles and runs (no over-rejection)
@@ -6458,6 +6450,9 @@ pass	an empty set in one if-branch unifies with a non-empty set in the other and
 pass	an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param
 pass	an empty string is unequal to a non-empty string
 pass	an empty top-level annotation wraps no definition and is rejected
+pass	an empty tuple splat amid positional arguments vanishes
+pass	an empty tuple splat as the sole argument to a nullary fn spreads to zero args
+pass	an empty tuple splat into a nullary fn threads the RESULT TYPE, not just the value
 pass	an empty type annotation names the zero parts present
 pass	an empty-compound quote pattern does not match a non-empty form
 pass	an empty-compound quote pattern matches a quoted empty compound
@@ -6805,6 +6800,11 @@ pass	an over-the-64-bit-ceiling unsigned width retypes to BigInt
 pass	an overflow pragma with an unknown mode is a malformed directive (CDZ0602)
 pass	an overflow pragma with no signedness sub-form is malformed (CDZ0602)
 pass	an overflowing literal in a RECORD op argument's narrow field is rejected
+pass	an oversize constant if-branch consumed by a narrow + is rejected
+pass	an oversize constant if-branch consumed by a narrow bitand is rejected
+pass	an oversize constant if-branch inside a NESTED narrow + is rejected
+pass	an oversize constant if-branch threaded through a let into a narrow + is rejected
+pass	an oversize constant match-arm body consumed by a narrow + is rejected
 pass	an overwrite-churn runtime map holds one entry with the last value winning
 pass	an s-around-k ctl arm that ALSO performs an outer effect in the arm body folds — the two E5 fixes compose
 pass	an s-around-k ctl arm whose K-ARGUMENT performs an outer effect folds
@@ -6875,6 +6875,7 @@ pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed match-arm binder is a usable binding, not a wildcard
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	an undetermined Set-key element type is rejected CDZ0203 (annotate), not a codeless decline
 pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
@@ -7155,6 +7156,7 @@ pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
+pass	byte-len of a dependent-size-decoded String reclaims the decoded payload (no husk)
 pass	ca1c a closure over a performing nested-let-init capture folds via the capture-once hoist
 pass	ca1m a capture-once closure applied TWICE shares the single draw across both applications
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
@@ -7269,6 +7271,7 @@ pass	cdzw70 a MULTI-EXPORT program round-trips the cadenza hop with every export
 pass	cdzw71 STRING-LITERAL match arms round-trip the cadenza hop
 pass	cdzw72 a 100k-deep TAIL recursion completes through the cadenza hop — TCO survives re-emit
 pass	cdzw73 a THREE-deep guard chain on one variant cascades through the cadenza hop
+pass	cdzw74 Result with heterogeneous payloads + Result-nested-in-Option round-trip the cadenza hop
 pass	cdzw75 a let-bound PARTIAL APPLICATION reused twice round-trips the cadenza hop
 pass	cdzw76 PARTIAL APPLICATIONS stored in a list and runtime-selected round-trip the cadenza hop
 pass	cdzw77 MUTUAL recursion (with mutual tail calls at 100k depth) round-trips the cadenza hop
@@ -8253,6 +8256,8 @@ pass	hcz4 dropping a closure whose body RETURNED its captured SET reclaims clean
 pass	hcz5 dropping a closure whose body RETURNED its captured WRAPPED compound (record holding a tuple) reclaims cleanly
 pass	hczm1 a captured TUPLE escaping TWICE in the returned value reclaims cleanly (per-occurrence escape-dup)
 pass	hczm2 a captured TUPLE READ once (projection) AND escaping once reclaims cleanly
+pass	hczm3 a captured LIST escaping TWICE reclaims cleanly (vec-rep twin of hczm1)
+pass	hczm4 a captured MAP escaping TWICE reclaims cleanly (CHAMP twin)
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	het1 ONE effect with THREE result types — Int64, Bool, and String ops share a single scalar thread, each consumed by its own idiom in one run
@@ -10032,6 +10037,7 @@ pass	the byte codec round-trips an Ast.Int wider than Int64
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the byte-len decode fall-through carries no husk
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
 pass	the canonical NaN crosses the boundary as a not-a-number float
 pass	the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)
@@ -10972,7 +10978,6 @@ todo	a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (
 todo	a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)
 todo	a variant-with-payload EXPORT result crosses as a typed WIT variant (declared world)
 todo	a versioned interface name agrees across both sides and runs
-todo	a whole-module alias projects a qualified TYPE constructor
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
@@ -11018,6 +11023,8 @@ todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
 todo	gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer
+todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
+todo	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)
 todo	mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)
 todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
