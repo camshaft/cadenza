@@ -2294,7 +2294,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(35) {
+    match c.variant(36) {
         // A BIN-MATCH body (binary construction / destructure) → value-comparable Int64. Exercises the
         // heavily-churned cadenza-backend bin-match re-emit (#7972 dependent-size / #7977 fixed-after-
         // dependent / #7979 guarded arms) the coercing grammar never reached. See [`gen_bin_body`].
@@ -2404,6 +2404,9 @@ fn gen_main_body<C: Choice>(
         // are PERFORM results, consumed to a scalar — the effect-value × collection-marshal interaction
         // (a feature cross the single-shape effect + collection arms never combine), value-comparable.
         33 => gen_effect_collection_body(c, out),
+        // A call-site tuple SPLAT or a DESTRUCTURE-PATTERN PARAM body (#8487/#8494; EVAL-oracle-backed
+        // value surfaces per v-lean-oracle S442) — arg-spread + param-destructure lowering.
+        35 => gen_splat_destructure_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -3794,6 +3797,33 @@ fn gen_try_body<C: Choice>(c: &mut C, out: &mut String) {
             write!(out, "(: (let ((x (try None))) (Some x)) (Option {ty}))").ok();
         }
     };
+}
+
+/// A CALL-SITE tuple SPLAT `(f (.. (tuple …)))` or a DESTRUCTURE-PATTERN PARAM `(def (f #tuple(a b)) …)`
+/// body → Int64. Both are VALUE-stable surfaces the EVAL/reduce oracle now backs (#8487 empty/tuple splat
+/// infer+lower, #8494 destructure-pattern params; v-lean-oracle S442) — exercises the arg-SPREAD and the
+/// param-DESTRUCTURE lowering the flat-arg call arms never reached. Small literals so the binder sums
+/// cannot const-fold to a CDZ0304 Int64 overflow.
+fn gen_splat_destructure_body<C: Choice>(c: &mut C, out: &mut String) {
+    if c.variant(2) == 0 {
+        // Call-site tuple splat spreads a 3-tuple into a 3-ary fn's positional args.
+        out.push_str(
+            "(do (def (fs (: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) (fs (.. (tuple ",
+        );
+        gen_small_int_literal(c, out);
+        out.push(' ');
+        gen_small_int_literal(c, out);
+        out.push(' ');
+        gen_small_int_literal(c, out);
+        out.push_str(")))))");
+    } else {
+        // Destructure-pattern param: the fn's parameter IS a `#tuple(a b)` pattern binding both components.
+        out.push_str("(do (def (fs #tuple(a b)) (+ a b)) (fs (tuple ");
+        gen_small_int_literal(c, out);
+        out.push(' ');
+        gen_small_int_literal(c, out);
+        out.push_str(")))");
+    }
 }
 
 /// A DESTRUCTURING pattern-match body: `match` a native `tuple`/`record` (or a `Some`-wrapped tuple) with
