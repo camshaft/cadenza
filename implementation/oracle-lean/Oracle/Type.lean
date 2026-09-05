@@ -696,6 +696,54 @@ def tuplePatClassify? (m : Ast.Module) (τs : List Ty) (patId : Nat) : Option (B
     else none                                          -- record/list/ctor pattern head → decline (inc-1 = tuple only)
   | none => none
 
+/-- Classify a MATCH pattern `patId` against a RECORD scrutinee of fields `fields` (T1.52 inc-2). Returns
+`some (irrefutable, binds)` for a MODELED pattern: a `_` / bare binder (binds the whole record —
+irrefutable), or a `(record (= k1 p1)…(= kn pn))` whose field-key set EXACTLY matches the record's
+(closed record, no subset/extra/rest) and whose every sub-pattern is a plain binder / `_` (each binds its
+field's type — irrefutable). `none` (→ DECLINE, never a false reject) for anything else: a subset/extra
+key, an open-row `(.. rest)`, a nested/literal sub-pattern, or a DUPLICATE binder. A record has a single
+shape, so a modeled record pattern is always irrefutable ⇒ the match is exhaustive. -/
+def recordPatClassify? (m : Ast.Module) (fields : List (ByteArray × Ty)) (patId : Nat) : Option (Bool × List (ByteArray × Ty)) :=
+  let binderName? : Nat → Option (Option ByteArray) := fun sp =>
+    match m.nodes[sp]? with
+    | some (.atom lid) => (match m.leaves[lid]? with
+                           | some (.name b) => some (if b == "_".toUTF8 then none else some b)
+                           | _ => none)
+    | _ => none
+  match m.nodes[patId]? with
+  | some (.atom _) =>
+    (match binderName? patId with
+     | some none => some (true, [])
+     | some (some b) => some (true, [(b, .record fields)])
+     | none => none)
+  | some (.list pc) =>
+    if m.headName? (.list pc) == some "record".toUTF8 then
+      let fps := (pc.extract 1 pc.size).toList
+      -- parse each field pattern `(= k p)` → (key, subPatNode); a non-`(= k p)` field (e.g. `(.. rest)`) → decline
+      let parsed? : Option (List (ByteArray × Nat)) := fps.foldl (fun acc fp =>
+        match acc with | none => none | some xs => (Eval.recordField? m fp).map (fun kp => xs ++ [kp])) (some [])
+      match parsed? with
+      | none => none
+      | some kps =>
+        let patKeys := kps.map (·.1)
+        -- EXACT field-set match (closed record): no dup pattern key, and pattern keys ≡ record keys as sets
+        if patKeys.eraseDups.length == patKeys.length
+           && patKeys.all (fun k => fields.any (·.1 == k))
+           && fields.all (fun f => patKeys.any (· == f.1)) then
+          let binds? : Option (List (ByteArray × Ty)) := kps.foldl (fun acc (k, sp) =>
+            match acc with
+            | none => none
+            | some bs => (match binderName? sp, (fields.find? (·.1 == k)).map (·.2) with
+                          | some none, _ => some bs                    -- `_`: no bind
+                          | some (some b), some τ => some (bs ++ [(b, τ)])
+                          | _, _ => none)) (some [])
+          match binds? with
+          | none => none
+          | some bs => let ns := bs.map (·.1); if ns.eraseDups.length == ns.length then some (true, bs) else none
+        else none                                        -- subset / extra key / open-row rest → decline
+    else none                                            -- list/ctor pattern head → decline (inc-2 = record only)
+  | none => none
+
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
 disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
 positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
@@ -1418,6 +1466,41 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Scheme)) (st : Inf
                         | none => .error (.unsupported "type oracle: match produced no result type")
                         | some τr =>
                           if sawIrref then .ok (τr, stF)   -- an irrefutable tuple/catch-all arm ⇒ exhaustive
+                          else .error (.illTyped "CDZ0210")))
+                  | .record fields =>
+                    -- T1.52 inc-2 — MATCH on a RECORD scrutinee: each arm is a `(record (= k p)…)` pattern
+                    -- whose field-key set matches the record's (binding each field type) or a catch-all,
+                    -- via `recordPatClassify?`. A record has a single shape ⇒ a modeled pattern is
+                    -- irrefutable ⇒ exhaustive; an unmodeled pattern declines (never a false reject).
+                    let arms := children.extract 2 children.size
+                    if arms.size == 0 then .error (.unsupported "type oracle: match with no arms")
+                    else (match arms.foldlM (m := Except InferFail)
+                        (fun (acc : Bool × Option Ty × InferState) armId =>
+                          match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                          | none => .error (.unsupported "type oracle: malformed match arm")
+                          | some ac =>
+                            (match ac[0]?, ac[1]? with
+                             | some patId, some bodyId =>
+                               (match recordPatClassify? m fields patId with
+                                | none => .error (.unsupported "type oracle: unmodeled record match pattern — declined")
+                                | some (irref, binds) =>
+                                  (match inferE m (binds.map (fun b => (b.1, ([], b.2))) ++ env) acc.2.2 bodyId with
+                                   | .error e => .error e
+                                   | .ok (τb, st') =>
+                                     (match acc.2.1 with
+                                      | none => .ok (acc.1 || irref, some τb, st')
+                                      | some τr =>
+                                        (match unifyInfer τb τr st' with
+                                         | .error e => .error e
+                                         | .ok st'' => .ok (acc.1 || irref, some τr, st'')))))
+                             | _, _ => .error (.unsupported "type oracle: malformed match arm")))
+                        ((false, none, st0) : Bool × Option Ty × InferState) with
+                     | .error e => .error e
+                     | .ok (sawIrref, resTy, stF) =>
+                       (match resTy with
+                        | none => .error (.unsupported "type oracle: match produced no result type")
+                        | some τr =>
+                          if sawIrref then .ok (τr, stF)
                           else .error (.illTyped "CDZ0210")))
                   | _ => .error (.unsupported "type oracle: match scrutinee is not a modeled sum type")))
           else if ((userSumMap m).bind (fun mp => mp.find? (fun e => e.1 == h))).isSome then
