@@ -3070,8 +3070,14 @@ fn add(
     let body = fleet.src.join("loops").join(format!("{role}.md"));
     if !body.exists() {
         eprintln!(
-            "fleet add: no role body at {} — valid roles are the files in .claude/fleet/loops/",
-            body.display()
+            "fleet add: no role body at {} — `add` reads the role from THIS worktree's tracked \
+             fleet/loops/ (not the hub, not origin/main). If you just LANDED a new role, `cargo xtask \
+             fleet sync` this worktree FIRST to pull it in, then retry. Otherwise check the role name; \
+             valid roles are the *.md files in {}.",
+            body.display(),
+            body.parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
         );
         std::process::exit(1);
     }
