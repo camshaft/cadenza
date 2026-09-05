@@ -2649,7 +2649,18 @@ partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (childr
         match m.leaves[lid]? with
         | some (Leaf.name b) =>
           if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)          -- wildcard: no force
-          else some (evalNode m ((b, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel scrutId)), Option.none) :: env)
+          else match variantCtorArity? m b with
+               | some 0 =>
+                 -- a bare-name arm that RESOLVES to a NULLARY variant ctor (e.g. `Red`) is a CTOR PATTERN
+                 -- matching ONLY that variant — NOT a catch-all binder. (A bare name that is NOT a ctor is
+                 -- the genuine catch-all binder below.) Force the scrutinee and compare to the ctor value.
+                 let expected := if soleNullaryCtor? m b then Value.unit else Value.variant b .unit
+                 (match evalNode m env defaultIntTy fuel scrutId with
+                  | .value sv0 => (match observeShallow sv0 with
+                                   | .value sv => if valEq sv expected then some (evalNode m env ty fuel bodyId) else none
+                                   | other => some other)
+                  | other => some other)
+               | _ => some (evalNode m ((b, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel scrutId)), Option.none) :: env)
                        ty fuel bodyId)                                          -- binder: lazy bind
         | _ => forced ()                                                        -- scalar literal
       | _ => forced ()                                                          -- decomposition pattern
