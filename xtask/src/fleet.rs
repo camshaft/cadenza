@@ -3532,6 +3532,23 @@ fn send(
             .iter()
             .find(|a| a.name == to)
             .map(|a| a.status.as_str());
+        // SEND-side shadow-inbox guard (concierge send-side-shadow-inbox issue): a recipient name that
+        // is NOT a registered agent — a typo, or an OLD/renamed agent name — would pass `deliver`'s
+        // path-component check and SILENTLY create an orphaned `inbox/<name>/` dir that the intended
+        // agent (reading under its canonical name) never drains → the mail is LOST. Refuse at the source
+        // (all kinds). `--force` preserves the deliberate pre-seed case; `fleet add` seeds via `deliver`
+        // directly, not this CLI path, so agent creation is unaffected. LIST side already guards the
+        // worktree-relative shadow trap; this is the SEND side.
+        if unregistered_recipient_refused(force, recipient_status.is_some()) {
+            eprintln!(
+                "fleet send: REFUSING a `{kind}` to `{to}` — no agent named `{to}` is in the registry. \
+                 The name is likely a TYPO or an OLD/renamed agent name; delivering would silently \
+                 create an orphaned `inbox/{to}/` dir that nobody drains, LOSING your message. Check \
+                 the name against `cargo xtask fleet status`. If you are intentionally pre-seeding an \
+                 inbox for an agent about to be created/reactivated, re-run with `--force`."
+            );
+            std::process::exit(1);
+        }
         if stopped_recipient_dead_letters(kind, recipient_status) {
             eprintln!(
                 "fleet send: REFUSING a `{kind}` to `{to}` — that agent is STOPPED (its `/loop` isn't \
@@ -4315,6 +4332,20 @@ fn merge_request_ref_is_missing(r#ref: &str) -> bool {
 /// this stops firing the instant the recipient is revived. Pure so the gate pins the exact condition.
 fn stopped_recipient_dead_letters(kind: &str, recipient_status: Option<&str>) -> bool {
     matches!(kind, "merge-request" | "ask" | "issue") && recipient_status == Some("stopped")
+}
+
+/// Should `fleet send` REFUSE delivery because `to` is not a registered agent? True iff NOT `--force`
+/// AND the recipient is absent from the registry. This is the SEND-side shadow-inbox guard (concierge
+/// send-side-shadow-inbox issue: 13 orphaned `inbox/<name>/` dirs found): an unregistered name — a
+/// TYPO, or an OLD/renamed agent name — passes `deliver`'s path-component check and SILENTLY creates
+/// an orphaned inbox dir that the intended agent (reading under its CANONICAL name) never drains, so
+/// the mail is LOST. Applies to EVERY kind (the bug drops notes/answers too, not just reply-expecting
+/// mail). `--force` bypasses, preserving the deliberate pre-seed case (an inbox for an agent about to
+/// be created/reactivated) — and note `fleet add` seeds via `deliver` directly, NOT this CLI path, so
+/// agent creation is unaffected regardless. The SEND-side analogue of the LIST-side worktree-relative
+/// shadow-inbox trap. Pure so the gate pins the exact condition.
+fn unregistered_recipient_refused(force: bool, recipient_registered: bool) -> bool {
+    !force && !recipient_registered
 }
 
 fn mr_qualifies_for_landed_check(
@@ -21144,6 +21175,19 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 "{kind} is not reply-expecting — must deliver even to a stopped recipient"
             );
         }
+    }
+
+    #[test]
+    fn unregistered_recipient_refused_unless_forced() {
+        // The SEND-side shadow-inbox guard: refuse iff NOT forced AND the recipient is not registered.
+        // Registered recipient → deliver (whatever its status; the stopped check handles that separately).
+        assert!(!unregistered_recipient_refused(false, true));
+        // Unregistered recipient (a typo / old-renamed name) with no --force → REFUSE (else it silently
+        // creates an orphaned inbox/<name>/ dir that is never drained — the 13-shadow-dir bug).
+        assert!(unregistered_recipient_refused(false, false));
+        // --force bypasses in BOTH cases (preserves the deliberate pre-seed-an-inbox path).
+        assert!(!unregistered_recipient_refused(true, false));
+        assert!(!unregistered_recipient_refused(true, true));
     }
 
     #[test]
