@@ -667,6 +667,75 @@ single-variant/newtype/sole-nullary sums erase (no disc) and never produce a tag
 def userSumCtorByDisc? (m : Module) (sumName : ByteArray) (disc : Nat) : Option ByteArray :=
   ((userSumTypes m).find? (fun t => t.1 == sumName)).bind (fun t => (t.2[disc]?).map (·.1))
 
+/-- Like `variantSpecs` but KEEPING each variant's payload FIELD-TYPE NODE INDICES (the spec node's children
+after the ctor-name head, in field order) instead of the arity count. A list `(Ci τ1…τk)` → the k type-node
+indices `[τ1,…,τk]`; a nullary `(Ci)` or a bare name atom → `[]`; a `(doc …)` is skipped — so the position
+indices stay ALIGNED with `variantSpecs`/`userSumCtorByDisc?`. Indices are into THIS module `m`. -/
+def variantFieldSpecs (m : Module) (specs : Array Nat) : List (ByteArray × List Nat) :=
+  specs.toList.filterMap (fun sid =>
+    match m.nodes[sid]? with
+    | some (Node.list vc) =>
+      match m.headName? (Node.list vc) with
+      | some h => if h == "doc".toUTF8 then none else some (h, (vc.extract 1 vc.size).toList)
+      | none => none
+    | some (Node.atom lid) => match m.leaves[lid]? with | some (Leaf.name b) => some (b, []) | _ => none
+    | none => none)
+
+/-- Companion to `userSumTypes` that keeps each variant's payload FIELD-TYPE node indices:
+per top-level `(type T …)` → (typeName, [(ctor, fieldTypeNodeIdxs)]). -/
+def userSumFieldTypes (m : Module) : List (ByteArray × List (ByteArray × List Nat)) :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.toList.filterMap (fun sid =>
+      match m.nodes[sid]? with
+      | some (Node.list tc) =>
+        match m.headName? (Node.list tc) with
+        | some h => if h == "type".toUTF8 then (nameOf? m (tc[1]!)).map (fun tn => (tn, variantFieldSpecs m (tc.extract 2 tc.size))) else none
+        | none => none
+      | _ => none)
+  | _ => []
+
+/-- The `disc`-th variant's payload FIELD-TYPE node indices in the CORE AST `m`, in field order (0-based disc
+= DECLARATION ORDER = runtime discriminant order, matching `userSumCtorByDisc?`). `some []` for a NULLARY
+variant (arity 0 — runtime payload is the unit value); `some [t]` for a single-payload variant (arity 1 —
+rcdzc boxes the payload as the BARE field value, core.rs §Sum "the single boxed payload for a one-payload
+variant", so a decoder fixups the bare payload by `t`); `some [t1,…,tN]` for a multi-field variant (arity ≥ 2
+— rcdzc boxes the payloads as a single TUPLE handle, "a tuple handle built from the payloads for a
+multi-payload variant", so a decoder fixups the `.tuple` positionally by `[t1,…,tN]`). `none` if `sumName`
+is not a user `(type sumName …)` or `disc` is out of range.
+
+The wasm heap decoder needs THIS because the emitted `(Sum <name> <declId> …)` result-type node carries NO
+variant payload types (verified 2026-09-05: `encode_ty` emits only the sum's GENERIC args — empty for a
+monomorphic user sum; the existing `cdz-run` renderer threads Sum-node args ONLY for Option/Result and
+renders a user variant type-blind), so the payload TYPE must come from the core-AST `(type …)` decl. Indices
+are `m`-relative — a decoder fixups a user-sum payload with `m := cm` (the core module), the module in which
+these type nodes live. Companion to `userSumCtorByDisc?` (same SSOT scan). -/
+def userSumVariantFieldTypes? (m : Module) (sumName : ByteArray) (disc : Nat) : Option (List Nat) :=
+  ((userSumFieldTypes m).find? (fun t => t.1 == sumName)).bind (fun t => (t.2[disc]?).map (·.2))
+
+/-- A real core-AST decl `(type Shape Circle (Named String) (Tagged Int64) (Point Int64 Int64))` — covering a
+NULLARY (Circle), an arity-1 String (Named), an arity-1 Int (Tagged), and an arity-2 multi-field (Point)
+variant — to witness `userSumVariantFieldTypes?` against every payload shape the wasm decoder must handle. -/
+private def _fieldCoreAst : Module :=
+  { leaves := #[.name "type".toUTF8, .name "Shape".toUTF8, .name "Circle".toUTF8, .name "Named".toUTF8,
+                .name "String".toUTF8, .name "Tagged".toUTF8, .name "Int64".toUTF8, .name "Point".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .atom 3, .atom 4, .atom 5, .atom 6, .atom 7, .atom 6, .atom 6,
+               .list #[3, 4], .list #[5, 6], .list #[7, 8, 9], .list #[0, 1, 2, 10, 11, 12], .list #[13]],
+    root := 14 }
+-- Field-type indices per variant, in declaration/discriminant order:
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Shape".toUTF8 0 == some ([] : List Nat))  -- Circle nullary → no payload type
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Shape".toUTF8 1 == some [4])               -- Named (String): the String type node
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Shape".toUTF8 2 == some [6])               -- Tagged (Int64): the Int64 type node
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Shape".toUTF8 3 == some [8, 9])            -- Point (Int64 Int64): two field nodes → runtime .tuple
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Shape".toUTF8 4 == none)                   -- disc out of range
+#guard (userSumVariantFieldTypes? _fieldCoreAst "Nope".toUTF8 0 == none)                    -- not a user sum decl
+-- disc alignment matches `userSumCtorByDisc?` (Named is disc 1), and the returned indices point at the
+-- expected payload TYPE nodes in the core AST (so a decoder resolves the right type via `nameOf?`):
+#guard (userSumCtorByDisc? _fieldCoreAst "Shape".toUTF8 1 == some "Named".toUTF8)
+#guard (nameOf? _fieldCoreAst 4 == some "String".toUTF8)
+#guard (nameOf? _fieldCoreAst 6 == some "Int64".toUTF8)
+#guard (nameOf? _fieldCoreAst 8 == some "Int64".toUTF8)
+
 /-- Top-level `(def (name …) …)` names — a bare ctor name shadowed by such a def is NOT a constructor
 (scope-first resolution: def/let/param bind before a bare ctor name; spec-confirmed via corpus 0683). -/
 def defNames (m : Module) : List ByteArray :=
