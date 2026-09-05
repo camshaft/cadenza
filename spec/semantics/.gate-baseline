@@ -11036,7 +11036,6 @@ todo	a self-call gated behind a nested if IN an if-condition declines cleanly, n
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands
 todo	a tuple splat inside an effect-handler body spreads its elements
-todo	a whole-module alias projects a qualified TYPE constructor (idealistic; declines today, DEF face works)
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
