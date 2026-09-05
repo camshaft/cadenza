@@ -667,7 +667,17 @@ partial def subPatBinds? (m : Ast.Module) (τ : Ty) (patId : Nat) : Option (Bool
   | some (.atom lid) =>
     (match m.leaves[lid]? with
      | some (.name b) => some (true, if b == "_".toUTF8 then [] else [(b, τ)])  -- binder/`_`: irrefutable
-     | _ => none)                                             -- a bare literal → refutable, no binds; defer (decline)
+     | _ =>
+       -- T1.52 inc-6 — a scalar LITERAL sub-pattern (e.g. `#tuple(a 5)`, `#record((= x 0))`): REFUTABLE
+       -- (matches only that value → the enclosing arm needs a covering catch-all), binds nothing. Accepted
+       -- only when the literal's type is COMPATIBLE with the position type `τ` (an int literal is width-poly
+       -- so it fits any int/numVar/bigint); a type mismatch or an unresolved `τ` isn't ours to assert → decline.
+       (match scalarLitTy? m patId, τ with
+        | some (.int _ _), .int _ _ | some (.int _ _), .numVar _ | some (.int _ _), .bigint => some (false, [])
+        | some .bool, .bool => some (false, [])
+        | some .string, .string => some (false, [])
+        | some .char, .char => some (false, [])
+        | _, _ => none))
   | some (.list pc) =>
     (match m.headName? (.list pc), τ with
      | some hp, .tuple τs =>
