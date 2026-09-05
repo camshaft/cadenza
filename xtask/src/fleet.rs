@@ -7382,7 +7382,7 @@ impl Drop for CheckLease {
 /// The `.claude/fleet/check-leases` dir for the hub that owns `repo`. `None` if the hub can't be
 /// resolved or the dir can't be created (→ caller fails open, unthrottled).
 fn check_lease_dir(repo: &Path) -> Option<PathBuf> {
-    let hub = hub_root(repo)?;
+    let hub = hub_root_or_env(repo)?;
     let dir = hub.join(".claude/fleet/check-leases");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
@@ -9851,13 +9851,28 @@ fn hub_root(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Choose the HUB root from an explicit `$FLEET_HUB` override (if set + non-empty) or the `derived`
-/// git-common-dir hub. Split out PURE (env passed in) so precedence is unit-testable without mutating
-/// process-global env — see [`resolve_hub`].
-fn choose_hub(explicit: Option<&std::ffi::OsStr>, derived: PathBuf) -> PathBuf {
+/// git-common-dir hub (itself possibly `None` when there is no git dir). Returns `None` only when
+/// there is NO override AND no derived hub — the fail-open signal the Option-returning call sites
+/// rely on. Split out PURE (env passed in) so precedence is unit-testable without mutating
+/// process-global env — see [`hub_root_or_env`] / [`resolve_hub`].
+///
+/// The override wins even when `derived` is `None`, so `$FLEET_HUB` locates the hub from a cwd that
+/// is not a git repo at all — the standalone `fleet` binary's "no repo checkout needed" property.
+fn choose_hub_opt(explicit: Option<&std::ffi::OsStr>, derived: Option<PathBuf>) -> Option<PathBuf> {
     match explicit {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
+        Some(v) if !v.is_empty() => Some(PathBuf::from(v)),
         _ => derived,
     }
+}
+
+/// The HUB root for RUNTIME-STATE resolution, fallible form: `$FLEET_HUB` if set + non-empty, else
+/// the git-common-dir derivation of `dir` (`None` if that can't be found, so the caller fails open).
+/// Used by the Option-returning hub-state call sites (`check_lease_dir`, `gate_check_dir`) so they
+/// resolve the SAME hub as [`resolve_hub`] does for [`Fleet::new`] — preventing a split-brain where
+/// leases/gate-markers land under a different hub than the registry/inbox when `$FLEET_HUB` is set.
+/// Byte-identical to a bare `hub_root(dir)` when `$FLEET_HUB` is unset.
+fn hub_root_or_env(dir: &Path) -> Option<PathBuf> {
+    choose_hub_opt(std::env::var_os("FLEET_HUB").as_deref(), hub_root(dir))
 }
 
 /// Resolve the HUB root — the machine-local anchor under which all runtime state lives
@@ -9874,8 +9889,7 @@ fn choose_hub(explicit: Option<&std::ffi::OsStr>, derived: PathBuf) -> PathBuf {
 /// `hub_root(dir).unwrap_or_else(|| dir.clone())` derivation, so the running fleet is untouched; the
 /// override is the non-disruptive first step of the extraction (P1).
 fn resolve_hub(dir: &Path) -> PathBuf {
-    let derived = hub_root(dir).unwrap_or_else(|| dir.to_path_buf());
-    choose_hub(std::env::var_os("FLEET_HUB").as_deref(), derived)
+    hub_root_or_env(dir).unwrap_or_else(|| dir.to_path_buf())
 }
 
 fn in_tmux() -> bool {
@@ -15777,7 +15791,7 @@ fn blocking_combined_check(repo: &Path) -> bool {
 
 /// Directory holding gate-batch's detached-check markers/logs/scripts. `None` if the hub can't resolve.
 fn gate_check_dir(repo: &Path) -> Option<PathBuf> {
-    let hub = hub_root(repo)?;
+    let hub = hub_root_or_env(repo)?;
     let dir = hub.join(".claude/fleet/gate-batch-checks");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
@@ -16307,18 +16321,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn choose_hub_prefers_explicit_fleet_hub_over_derived_but_falls_back_when_absent_or_empty() {
+    fn choose_hub_opt_prefers_explicit_fleet_hub_over_derived_but_falls_back_when_absent_or_empty()
+    {
         use std::ffi::OsStr;
         let derived = PathBuf::from("/repo/.git-common");
         // No override → the git-common-dir-derived hub (byte-identical to today's live fleet).
-        assert_eq!(choose_hub(None, derived.clone()), derived);
+        assert_eq!(
+            choose_hub_opt(None, Some(derived.clone())),
+            Some(derived.clone())
+        );
         // Empty override (e.g. `FLEET_HUB=`) is ignored → derived (never a bogus empty-path hub).
-        assert_eq!(choose_hub(Some(OsStr::new("")), derived.clone()), derived);
+        assert_eq!(
+            choose_hub_opt(Some(OsStr::new("")), Some(derived.clone())),
+            Some(derived.clone())
+        );
         // Explicit non-empty override wins → the standalone extraction's decoupled hub.
         assert_eq!(
-            choose_hub(Some(OsStr::new("/home/u/.fleet")), derived),
-            PathBuf::from("/home/u/.fleet")
+            choose_hub_opt(Some(OsStr::new("/home/u/.fleet")), Some(derived)),
+            Some(PathBuf::from("/home/u/.fleet"))
         );
+        // Override wins even when there is NO derived hub (a non-git cwd) — the standalone binary's
+        // "no repo checkout needed" property.
+        assert_eq!(
+            choose_hub_opt(Some(OsStr::new("/home/u/.fleet")), None),
+            Some(PathBuf::from("/home/u/.fleet"))
+        );
+        // No override AND no derived hub → None: the fail-open signal the Option call sites rely on.
+        assert_eq!(choose_hub_opt(None, None), None);
     }
 
     #[test]
