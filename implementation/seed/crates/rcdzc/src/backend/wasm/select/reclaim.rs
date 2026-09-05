@@ -2932,6 +2932,30 @@ pub(super) fn binder_occurs_rec(
     (here, tainted)
 }
 
+/// CATALAN 2nd-root (v-memory-safety framing A-gated-B, wired by v-inference): whether co-operand `c` is a
+/// `Core::Call { callee, args }` that threads `binder` DIRECTLY as some `args[j]` (a bare `LocalRef`/`Param`
+/// occurrence) into a callee that RECLAIMS/borrows that param within the call
+/// ([`def_looped_callee_reclaims_threaded_param`] — the callee drops the param at its fn-exit epilogue, so its
+/// ref is freed BEFORE the call returns). Such a co-operand needs NO simultaneously-held retained ref of the
+/// binder alongside a sibling consume (the deferred-consume op), so it is `holds_no_handle`-eligible exactly
+/// like a scalar borrow-only co-operand — grant the `k-1` accounting. Only the DIRECT-arg shape (the
+/// CATALAN/gP2 `(rlen c 2)` case); a nested occurrence inside `args[j]` is a different shape (deferred).
+/// SOUND toward NOT granting: a `false` just keeps the `k != i` dup (a leak at worst), never a UAF.
+fn callee_reclaims_threaded_binder_arg(db: &mut Db, c: StructId, binder: StructId) -> bool {
+    if let Core::Call { callee, args } = core_of(db, c) {
+        for (j, &arg) in args.iter().enumerate() {
+            let is_direct_binder = matches!(
+                core_of(db, arg),
+                Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder
+            );
+            if is_direct_binder && def_looped_callee_reclaims_threaded_param(db, callee, j) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn mark_binder_dups(
     db: &mut Db,
     id: StructId,
@@ -3078,14 +3102,25 @@ pub(super) fn mark_binder_dups_inner(
         // construction (a scalar result holds no handle → only a missed dup = leak, never a use-after-free; the
         // `binding_escapes` conjunct keeps the dup for a CONSUMING co-operand — a 2nd consumer — and
         // `is_heap_type_for_retain` for an ALIASING-heap borrow). v-memory-safety rc-trace-verified this rule.
+        // Two `holds_no_handle` shapes, both meaning "this co-operand needs NO simultaneously-held retained ref
+        // of `binder` alongside a sibling consume, so exclude it from the sibling's `other`/`la`":
+        //   (a) SCALAR BORROW-ONLY (v2, growB-class): reads the live binder and yields a non-aliasing scalar
+        //       (`!is_heap_type_for_retain` result AND `!binding_escapes` — no ref taken).
+        //   (b) THREADED RECLAIMING CALLEE (CATALAN 2nd root): `(callee … c …)` passes `binder` directly to a
+        //       callee that RECLAIMS that param within the call (drops it at its epilogue), so the ref is freed
+        //       before the call returns — `def_looped_callee_reclaims_threaded_param` via
+        //       `callee_reclaims_threaded_binder_arg`. `binding_escapes` is TRUE here (the arg is consumed by
+        //       the call), which is exactly why (a) misses it and it needs its own disjunct.
+        // Both are UAF-safe toward NOT excluding (a `false`/missed disjunct only keeps a needless dup = a leak).
         let holds_no_handle: Vec<bool> = if strict_consume_op {
             children
                 .iter()
                 .enumerate()
                 .map(|(k, &(c, _))| {
                     occurs[k]
-                        && !is_heap_type_for_retain(&type_of(db, c))
-                        && !binding_escapes(db, c, binder, false)
+                        && ((!is_heap_type_for_retain(&type_of(db, c))
+                            && !binding_escapes(db, c, binder, false))
+                            || callee_reclaims_threaded_binder_arg(db, c, binder))
                 })
                 .collect()
         } else {
