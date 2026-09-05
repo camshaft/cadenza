@@ -105,7 +105,7 @@ def differential (drive : Driver) (coreAst : Ast.Module) (coreWat : String)
             | some zeros => Oracle.execute coreAst zeros.toArray
             | none => .unsupported "wasm-diff: param-main with a bare / non-scalar param — zero-init skip")
     | none => Oracle.reduce coreAst
-  let (wasm, leak) := runWasmWithLeak drive coreWat rtBytes trial
+  let (wasm, leak) := runWasmWithLeak drive coreWat rtBytes trial coreAst
   compareOutcomes core wasm leak
 
 /-! ### Gate witnesses — the differential verdict logic, through a STUB driver + a real Core program +
