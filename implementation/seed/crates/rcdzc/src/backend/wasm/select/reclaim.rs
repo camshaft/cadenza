@@ -1815,9 +1815,15 @@ pub(super) fn is_owned_fresh_payload_producer(db: &mut Db, scrutinee: StructId) 
 }
 
 /// Whether `parent`'s use of `target` is a SCALAR-returning read WITH a view-drop hook — a `Bytes.at`
-/// (→reclaim_bytes) or `String.scalar-len` (→the StrScalarLen reclaim). Such a consumer lets us OWN + drop
-/// the view (VIEW-set, net -1). Any OTHER single consumer (a `Call`/op that takes the view onward) leaves the
-/// view to that consumer (SHELL-set, net 0). This is the two-set partition by consumer-kind (disjoint).
+/// (→reclaim_bytes), `String.scalar-len` (→the StrScalarLen reclaim), or a length read `Bytes.len`/`List.len`
+/// (→the BytesLen/ListLen `sumexpect_view_reclaim` drop). Each BORROWS its operand for a scalar and returns
+/// a plain count/byte (nothing aliases the payload onward), so its emit can OWN + drop the extracted view
+/// after the read (VIEW-set, net -1). `String.byte-len` lowers to `Core::BytesLen` and `List.len` to
+/// `Core::ListLen`, so a fresh-payload/view `SumExpect` consumed by `byte-len`/`List.len` belongs here too —
+/// they were MISSING, so such a consume fell to the SHELL-set (owner-onward) branch and the borrowed payload
+/// leaked (the byte-len-of-decoded-String husk, the scalar-consume sibling of the bfx9 escape husk). Any
+/// OTHER single consumer (a `Call`/op that takes the view onward) leaves the view to that consumer (SHELL-set,
+/// net 0). This is the two-set partition by consumer-kind (disjoint).
 pub(super) fn is_view_scalar_read_consumer(
     db: &mut Db,
     parent: StructId,
@@ -1825,7 +1831,9 @@ pub(super) fn is_view_scalar_read_consumer(
 ) -> bool {
     match core_of(db, parent) {
         Core::BytesAt { bytes, .. } => bytes == target,
-        Core::StrScalarLen { operand } => operand == target,
+        Core::StrScalarLen { operand } | Core::BytesLen { operand } | Core::ListLen { operand } => {
+            operand == target
+        }
         _ => false,
     }
 }
