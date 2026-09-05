@@ -26661,11 +26661,15 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 6 Int64))
-  ; The captured heap list `ys` threads into the lifted spec def as an extra param, but the retain lives
-  ; INSIDE the resume value (`(List.len ys)` under `(resume … s)`) — Core-invisible to Perceus, so the
-  ; per-dispatch retain is not reclaimed (v-core-opt's resume-escape structural fence, the 2c.3 class).
-  ; Two dispatches at n=2 leak 2. The scalar sibling (xas1) has no heap capture and reclaims to 0.
-  (live-objects 2))
+  ; The captured heap list `ys` threads into the lifted spec def as an extra param, and the retain lives
+  ; INSIDE the resume value (`(List.len ys)` under `(resume … s)`). This WAS Core-invisible to Perceus — a
+  ; conservative v-core-opt resume-escape fence (the 2c.3 class) that leaked 2 at n=2. But the resume value
+  ; captures only the SCALAR `(List.len ys)`, not `ys`, so `ys` is DEAD after the length read: the
+  ; List.at/len-scalar-borrow recognition (the CATALAN close fix) now reclaims it — `ys` allocs once and
+  ; DROP-frees once (rc 1→0), live-objects 0, value unchanged, on every one of the n dispatches.
+  ; v-memory-safety rc-trace-confirmed SAFE (no UAF / no double-free at n=0/2/5; the escaped resume holds only
+  ; the Int64 length, never `ys`). The scalar sibling (xas1) also reclaims to 0.
+  (live-objects 0))
 
 ; -- breaker batch 484 (2026-08-27): the xar5 scoping gap's WIDTH (companions to xar5; root cause
 ; per v-effects = specialize_recursive lifts the performer to a TOP-LEVEL def and splices the arm's
