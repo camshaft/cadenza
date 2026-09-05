@@ -2400,20 +2400,19 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
              else matchMapPats m eps.toList entries
          | _ => .ok none)
       else if ph == "list".toUTF8 then
-        -- a list pattern: fixed `(list p0 … pn)` (arity-checked positional) or a rest pattern
-        -- `(list p0 … .. rest)` — the `..` marker binds `rest` to the REMAINING elements as a list.
+        -- a list pattern: fixed `(list p0 … pn)` (arity-checked positional) or a rest pattern binding
+        -- `rest` to the REMAINING elements as a list. The rest marker is either a BARE `..` + next binder
+        -- (`(list p0 … .. rest)`) or a GROUPED `(.. rest)` node (`#list(p0 … (.. rest))`) — both via
+        -- `restBinderOf?`, so a literal/ctor-element list pattern with a trailing grouped rest matches.
         (match subj with
          | .list es =>
            let sps := pc.extract 1 pc.size
-           match sps.findIdx? (fun sp => nameOf? m sp == some "..".toUTF8) with
-           | some k =>
-             match sps[k+1]? with
-             | some restBinder =>
-               if es.size < k then .ok none
-               else
-                 let leading := (sps.extract 0 k).toList.zip (es.extract 0 k).toList
-                 matchSeq m (leading ++ [(restBinder, Value.list (es.extract k es.size))])
-             | none => .error (.unsupported "eval: malformed list rest pattern (no binder after ..)")
+           match restBinderOf? m sps with
+           | some (leadCount, restBinder) =>
+             if es.size < leadCount then .ok none
+             else
+               let leading := (sps.extract 0 leadCount).toList.zip (es.extract 0 leadCount).toList
+               matchSeq m (leading ++ [(restBinder, Value.list (es.extract leadCount es.size))])
            | none =>
              if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
          | _ => .ok none)
