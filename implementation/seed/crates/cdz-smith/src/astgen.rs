@@ -3602,7 +3602,7 @@ fn gen_bytes_body<C: Choice>(c: &mut C, out: &mut String) {
 /// (the oracle grades compound values structurally, #5540). All Int64 leaves; `List.at` index in-bounds.
 fn gen_nested_compound_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the FORM before consuming operand choices (variant-ordering).
-    let form = c.variant(5);
+    let form = c.variant(6);
     let (a, b, x, y) = (
         c.int_bounded(0, 99),
         c.int_bounded(0, 99),
@@ -3622,7 +3622,19 @@ fn gen_nested_compound_body<C: Choice>(c: &mut C, out: &mut String) {
         // A list of two tuples → a nested compound value.
         3 => write!(out, "(list (tuple {a} {b}) (tuple {x} {y}))").ok(),
         // A record whose fields are a tuple and a list → a nested compound value.
-        _ => write!(out, "(record (= a (tuple {a} {b})) (= b (list {x} {y})))").ok(),
+        4 => write!(out, "(record (= a (tuple {a} {b})) (= b (list {x} {y})))").ok(),
+        // A HEAP-ELEMENT `List.at` whose extracted child OUTLIVES the backing list → Int64 (UAF
+        // regression guard, v-memory-safety #4917/#8504): bind `xs` = a List-of-List, extract the inner
+        // child `first` via a match, then consume `first` (`List.len`) at a point where `xs` is dead.
+        // rcdzc DENIES the heap-element `List.at` borrow (retains the child), so this is safe
+        // (wasm == rust); if a future change wrongly ADMITS the borrow AND frees `xs` while `first` is
+        // still read, it surfaces as a value/UAF divergence HERE — this fence has NO surface corpus
+        // fence (breaker-confirmed), so astgen is the de-facto ongoing guard.
+        _ => write!(
+            out,
+            "(do (def xs (list (list {a} {b}) (list {x} {y}))) (def first (match (List.at xs 0) ((Some inner) inner) ((None) (list)))) (List.len first))"
+        )
+        .ok(),
     };
 }
 
