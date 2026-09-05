@@ -214,6 +214,21 @@ def paramSpec? (m : Module) (specId : Nat) : Option (ByteArray × Option IntTy) 
     match m.leaves[lid]? with | some (Leaf.name b) => some (b, none) | _ => none
   | none => none
 
+/-- A SIMPLE (non-destructuring) parameter spec: a bare name or `(: name T)`. Returns `(name, intTy?)`.
+`none` for a DESTRUCTURING pattern param — a `(tuple …)` / `(record …)` / `(list …)` / ctor pattern that
+binds by matching, NOT as one name. (Unlike `paramSpec?`, which would mis-read a `(tuple a …)` pattern's
+FIRST element `a` as the param name and bind the whole argument to it — the destructure-param bug.) -/
+def simpleParam? (m : Module) (specId : Nat) : Option (ByteArray × Option IntTy) :=
+  match m.nodes[specId]? with
+  | some (Node.atom lid) => match m.leaves[lid]? with | some (Leaf.name b) => some (b, none) | _ => none
+  | some (Node.list pc) =>
+    if m.headName? (Node.list pc) == some ":".toUTF8 then
+      match pc[1]? with
+      | some nId => (nameOf? m nId).map (fun nm => (nm, (pc[2]?).bind (parseIntTy? m)))
+      | none => none
+    else none  -- a destructuring pattern param → bind via matchPat, not as a single name
+  | none => none
+
 /-- The overflow mode for unqualified `+`/`-`/`*` of the given signedness, from a module-level
 `(pragma overflow (signed <mode>) (unsigned <mode>))` directive (corpus 06-numeric). Returns `true`
 (WRAP: two's-complement mod 2^w) when the pragma sets THIS signedness to `wrap`; otherwise `false`
@@ -1636,11 +1651,28 @@ partial def evalMapInsert (m : Module) (env : Env) (fuel : Nat) (children : Arra
     | other => other
   | _, _, _ => .unsupported "eval: malformed Map.insert"
 
-/-- A fully-applied call `(f arg…)` of a top-level `def (f param…)`: bind each arg LAZILY (a thunk over
-the CALLER's env, so an unused parameter's arg is never forced — spec) under its parameter name +
-declared integer type, then evaluate the body in that fresh scope (top-level defs/ctors resolve globally,
-not via env; recursion is fuel-bounded). Partial application / first-class `fn` closures are NOT modeled
-here (they never reach this — a partial call has a wrong arg count, a closure head is a bound local). -/
+/-- Bind a top-level def's parameters to its arguments, producing the call scope. A SIMPLE param
+(`(: name T)` / bare name, via `simpleParam?`) binds its arg LAZILY (a thunk over the CALLER's env — an
+unused param's arg is never forced, per spec). A DESTRUCTURING pattern param (`#tuple(a (.. rest))`,
+`#record(…)`, …) is an irrefutable BINDING position: the arg is evaluated and `matchPat`-ed against the
+pattern, splicing its binders (the arg is FORCED to destructure, matching the compiler). A refutable
+pattern that fails to match, or a trapping/diverging arg, propagates as the call outcome. -/
+partial def bindParams (m : Module) (env : Env) (fuel : Nat) (specs args : Array Nat) : Except Outcome Env := do
+  let mut acc : Env := []
+  for (specId, argId) in specs.zip args do
+    match simpleParam? m specId with
+    | some (nm, ty) =>
+      acc := acc ++ [(nm, Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel argId), ty)]
+    | none =>
+      match evalNode m env defaultIntTy fuel argId with
+      | .value v =>
+        match matchPat m specId v with
+        | .ok (some e) => acc := acc ++ e
+        | .ok none => throw (.unsupported "eval: refutable pattern in a binding-param position did not match")
+        | .error o => throw o
+      | o => throw o
+  return acc
+
 partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array Nat) (bodyId : Nat) (children : Array Nat) : Outcome :=
   -- DECREMENT fuel per call so an unbounded/too-deep recursion yields `diverges` instead of HANGING
   -- (a genuine infinite/large loop consumes fuel down to 0 — a sound skip, never a wedged process).
@@ -1648,14 +1680,23 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
   | 0 => .diverges
   | Nat.succ fuel' =>
     let args := children.extract 1 children.size
-    let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
-      (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId)), ty)))
-    if bindings.size == paramSpecs.size then
-      -- FUNCTION BOUNDARY: a `?`/`try` short-circuit (errReturn) from the body becomes this call's value.
+    if args.size != paramSpecs.size then .unsupported "eval: call arg/param count mismatch"
+    else if paramSpecs.all (fun sp => (simpleParam? m sp).isSome) then
+      -- FAST PATH (the overwhelming common case — no destructuring param): bind each arg LAZILY, exactly
+      -- as the original `filterMap` did, so a hot recursive loop pays no `bindParams`/matchPat overhead.
+      let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
+        (simpleParam? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env (ty.getD defaultIntTy) fuel' argId)), ty)))
       (match evalNode m bindings.toList defaultIntTy fuel' bodyId with
        | .errReturn ev => .value ev
        | o => o)
-    else .unsupported "eval: call has a malformed parameter spec"
+    else match bindParams m env fuel' paramSpecs args with
+    | .error o => o
+    | .ok bindings =>
+      -- A DESTRUCTURING pattern param is present → destructure via `bindParams` (splices matchPat binders).
+      -- FUNCTION BOUNDARY: a `?`/`try` short-circuit (errReturn) from the body becomes this call's value.
+      (match evalNode m bindings defaultIntTy fuel' bodyId with
+       | .errReturn ev => .value ev
+       | o => o)
 
 /-- Expand a call's raw argument nodes into positional `ArgSrc`s, spreading any splat `(.. e)` argument:
 `e` is evaluated STRICTLY (the tuple/list must be built to spread it — matching the compiler's per-slot
