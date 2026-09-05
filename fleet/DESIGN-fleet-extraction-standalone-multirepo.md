@@ -172,3 +172,43 @@ is the largest cadenza-adapter tenant of the "core" file. Separating it (and `ni
 the substantive P2 adapter-carve, and it wants a clean interface (the adapter provides a "gate this
 change → verdict" callback; core owns only the lease + orchestration). That carve is what makes the
 eventual `fleet.rs`-lift into the standalone crate actually core-only.
+
+## Appendix: P2-prep — the gate-block carve map (`fleet.rs` core vs cadenza-adapter)
+
+Mapped 2026-09-05 (function-name anchored; line numbers rot, so grep the names). The gate/lease
+surface in `fleet.rs` splits cleanly into a small GENERAL primitive that stays core and a large
+CADENZA-specific block that carves out to the adapter in P2:
+
+**CORE — the check-lease pool (a general concurrency limiter, NOT gate-specific).** Stays in core;
+any target's adapter can consume it.
+- `acquire_check_lease` / `acquire_check_lease_weighted`, the `CheckLease` RAII guard + `Drop`.
+- The pool internals: `check_lease_max`, `adaptive_check_lease_cap`, `check_lease_dir`
+  (now `$FLEET_HUB`-routed), `check_lease_go`, `scan_check_leases[_with]`, `reap_check_leases[_in]`,
+  `check_lease_holder_alive`.
+- `gate_priority_grant_decision` / `gate_priority_granted` (the priority-slot grant — a lease-pool
+  policy; the name says "gate" but it is generic priority arbitration).
+
+**ADAPTER — the cadenza nix-gate + pr-sync gate-batch machinery.** Carves out of core in P2 behind an
+adapter interface (roughly: "gate a change / a subset → `CiVerdict`", plus the merge-batch driver).
+- The nix local-gate: `run_gate_local`, `run_gate_local_bounded`, `gate_local`, `local_gate_verdict`,
+  `nix_gate_argv`, `gate_local_hold_advisory`, `gate_output_is_substituter_fetch_transient`,
+  `timed_gate`, `local_gate_summary_json[_timed]` — all nix + cadenza-`local-gate`-attr specific.
+- The pr-sync gate-batch integrator: `gate_batch`, `gate_batch_build_store`, `partition_batch`,
+  `gate_subset[_reparent]`, `schedule_pass_local_gate`, `plan_concurrent_gate`,
+  `gate_lanes_concurrently`, `gate_parallel_probe[_real]`, the gate-worktree helpers
+  (`ensure_gate_batch_worktree`, `ensure_named_gate_worktree`, `scrub_gate_batch_worktree[_steps]`),
+  and the gate-check markers (`gate_check_dir` [now `$FLEET_HUB`-routed], `blocking_combined_check`,
+  `gate_check_combined`, `read_gate_marker`, `gate_check_pidf_alive`, `reap_stale_gate_checks[_in]`).
+- `nix_binary` (rides along — see the coupling note above).
+
+**GRAY — watchdog gate-exoneration heuristics.** `gate_in_flight_exonerates`,
+`gate_procs_active_exonerates`, `gate_procs_running`, `ps_output_shows_gate_proc`. The WATCHDOG is
+core, but these arms encode "is a cadenza gate running?" knowledge. **Cut:** keep the watchdog in core
+but parameterize its "is a heavy job in flight for this agent?" check via the adapter (or a generic
+in-flight signal), so core carries no `local-gate`/`nix` string knowledge.
+
+**Takeaway.** The truly-general core is: messaging (send/inbox/registry/heartbeat), window management,
+watchdog liveness, host-health crons, AND the check-lease pool. Everything with `gate`/`local-gate`/
+`gate-batch`/`schedule_pass`/`nix` in the name is the cadenza adapter. The P2 carve is sizeable but
+mechanical once the adapter interface (`gate(change) -> verdict` + the merge-batch driver + `nix_binary`)
+is drawn — and it is the prerequisite that makes the P1 `fleet.rs`-lift land a genuinely core-only crate.
