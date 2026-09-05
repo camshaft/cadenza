@@ -424,10 +424,15 @@ pub(super) fn emit(
             // ALSO reclaim an OWNED nested-compound `Core::Proj` child (`List.len (. (mk i) a)`): the Proj
             // emit dup'd the child into a standalone owned handle, which this borrowing read must drop
             // (drop-iff-dup'd — `owned_proj_child_dupd`; same as `Core::MapSize`, the Proj-child leak family).
+            // ALSO a VIEW/fresh-payload SumExpect (`sumexpect_view_reclaim`, mirror `StrScalarLen`/`BytesLen`):
+            // `List.len (Option.expect (List.at …))` over a heap-element list extracts a fresh element the
+            // SumExpect dup'd (rc1) + freed the shell; this borrowing len-read is its sole scalar-read consumer
+            // → drop it post-read (VIEW set only — a SHELL-set view is owned by its Call consumer, not here).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            ) || owned_proj_child_dupd(db, operand, slots);
+            ) || owned_proj_child_dupd(db, operand, slots)
+                || out.sumexpect_view_reclaim.contains(&operand);
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -849,10 +854,16 @@ pub(super) fn emit(
             // A BORROWED param/local is left to its owner (leak-safe: Owned only on a proven-fresh producer).
             // ALSO reclaim an OWNED nested-compound `Core::Proj` child (`Bytes.len (. (mk i) a)`), the
             // Proj-child dup'd-then-dead leak family (drop-iff-dup'd — `owned_proj_child_dupd`, cf `MapSize`).
+            // (3) VIEW/fresh-payload SumExpect (`sumexpect_view_reclaim`, mirror `StrScalarLen`): `byte-len`
+            // lowers here (a runtime String is a flat byte leaf), so a `(String.byte-len (Option.expect
+            // (String.from-bytes …)))` extracts a fresh String the SumExpect dup'd (rc1) + freed the shell,
+            // and THIS borrowing len-read is its sole scalar-read consumer → drop it post-read (the
+            // byte-len-of-decoded-String husk; VIEW set only — a SHELL-set view is owned by its Call consumer).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            ) || owned_proj_child_dupd(db, operand, slots);
+            ) || owned_proj_child_dupd(db, operand, slots)
+                || out.sumexpect_view_reclaim.contains(&operand);
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);

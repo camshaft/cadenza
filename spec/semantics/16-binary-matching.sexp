@@ -675,6 +675,35 @@
   (output (: "hi" String)))
 
 (case
+  "byte-len of a dependent-size-decoded String reclaims the decoded payload (no husk)"
+  (doc
+    "The reclaim companion of the length-prefixed-string decode above: consuming the freshly-decoded
+           String `s` with a BORROWING scalar-read `String.byte-len` (which lowers to `Core::BytesLen`) must
+           DROP the decoded payload after the read, not leak it. Against `(Bytes.of (list 2 104 105))` the
+           length-2 utf8 segment decodes `s` = \"hi\"; `(String.byte-len s)` reads 2 and the fresh String is
+           reclaimed → `live-objects 0`. Regression pin for the BytesLen/ListLen view-scalar-read-consumer
+           husk (v-memory-safety): `byte-len`/`List.len` were MISSING from `is_view_scalar_read_consumer`, so
+           a fresh-payload `SumExpect` consumed by `byte-len` fell to the `shell_set` branch (which assumes the
+           consumer owns the payload onward) and the borrowed payload was never dropped — a per-call leak of 1
+           (the un-dropped decoded String). Scalar-consume sibling of the bfx9 escape husk. A scalar return, so
+           the husk is genuine, not a return-value retention artifact.")
+  (input (match (Bytes.of #list(2 104 105)) ((bin (u8 n) (utf8 s n)) (String.byte-len s)) (_ 0)))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "the byte-len decode fall-through carries no husk"
+  (doc
+    "The clean control that distinguishes the husk: ill-formed UTF-8 `(Bytes.of (list 255 255))` does NOT
+           match the `(bin (u8 n) (utf8 s n))` arm (no String is decoded), so the `_` arm yields 0 with nothing
+           to reclaim — `live-objects 0` on both the leaking and fixed compiler. Guards that the BytesLen
+           view-drop-hook fix does not over-drop on the non-decode path (a would-be UAF/double-free), the
+           #4917-view-producer-safety companion to the reclaim pin above.")
+  (input (match (Bytes.of #list(255 255)) ((bin (u8 n) (utf8 s n)) (String.byte-len s)) (_ 0)))
+  (output (: 0 Int64))
+  (live-objects 0))
+
+(case
   "a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string"
   (doc
     "A sized `utf8` segment's size MAY be a CONSTANT LITERAL, not only a name bound by an earlier
