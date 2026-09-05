@@ -60,7 +60,7 @@ jobs:
       # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix #7874).
       - name: warm the nix daemon (serialize the ca-derivations migration before the cachix post-build-hook)
         run: nix store ping
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           name: camshaft
@@ -94,7 +94,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           name: camshaft
