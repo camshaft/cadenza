@@ -742,20 +742,26 @@ fn rustc_roundtrip_flow_refined_elision_computes_identically() {
 }
 
 #[test]
-fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
-    // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
-    // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an
-    // i64 sub-expression into a narrow op (`(if … { 100i64 } …).checked_add(100i8)` → rustc E0308). The
-    // operand must be WRAPPED DOWN to the op's width with an `as iN` cast, mirroring the wasm backend's
-    // i64→iN normalization.
+fn a_narrow_op_with_a_control_flow_operand_grounds_its_branches() {
+    // A narrow-annotated op whose operand is a DEFERRED-WIDTH control-flow expression (`if`/`match` of bare
+    // literals, inferred Int64) GROUNDS each value-producing branch/arm to the op's width — NOT the old
+    // whole-operand `as iN` truncating wrap. Grounding both (a) fixes the E0308 an ungrounded i64 branch
+    // caused AND (b) range-checks an oversize const branch (CDZ0302) that the truncating wrap silently
+    // dropped (family-A overflow-soundness; #4547). Mirrors the DIRECT `(: (if …) Int8)` form + the wasm
+    // select branch-grounding.
     let rs = compile_rust(
         "(module m (def (go (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export go))",
     );
-    // The whole `if` sub-expression is wrapped down to i8 — `}) as i8)` closes the if-block then casts
-    // it, so the narrow `+` adds an i8 (its other operand `100` grounds to `100u8 as i8`).
+    // Each if-BRANCH is GROUNDED to i8 (`{ (100u8 as i8) } else { (0u8 as i8) }`) — NOT the old whole-if
+    // `}) as i8)` truncating wrap. Grounding the branches routes an oversize const branch through the
+    // fits_width check (CDZ0302 — see the oversize assertion below), where the old wrap silently truncated
+    // (family-A overflow-soundness). A fitting branch (100 ∈ Int8) grounds cleanly; the other operand `100`
+    // grounds to `(100u8 as i8)` as before.
     assert!(
-        rs.contains("}) as i8)") && rs.contains("checked_add((100u8 as i8))"),
-        "the if-operand must be wrapped down to i8 before the i8 add:\n{rs}"
+        rs.contains("{ (100u8 as i8) } else { (0u8 as i8) }")
+            && rs.contains("checked_add((100u8 as i8))")
+            && !rs.contains("}) as i8)"),
+        "the if-operand's branches must be GROUNDED to i8 (not the whole if wrapped `}}) as i8)`):\n{rs}"
     );
     // End-to-end through rustc: n=9 selects the else 0, 0+100=100 fits Int8 → 100 (compiles + runs, was
     // E0308). The overflow direction (n=3 → 200 → panic) is exercised by the wasm gate + the corpus.
@@ -765,11 +771,34 @@ fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
             "in-range narrow if-operand computes; was a compile error"
         );
     }
-    // A `match`-operand takes the same wrap-down (the match block closes then casts to i8).
+    // A `match`-operand grounds each ARM BODY to i8 (`0i8 => (5u8 as i8)`), NOT the whole-match wrap.
     let m = compile_rust(
         "(module m (def (go (: n Int8)) (: (+ (match n (0 5) (_ 1)) 2) Int8)) (export go))",
     );
-    assert!(m.contains("}) as i8)"), "match-operand wrapped to i8:\n{m}");
+    assert!(
+        m.contains("(5u8 as i8)") && m.contains("(1u8 as i8)") && !m.contains("}) as i8)"),
+        "match-operand arm bodies must be GROUNDED to i8 (not the whole match wrapped):\n{m}"
+    );
+    // THE SOUNDNESS POINT (family-A): an OVERSIZE const branch/arm now DECLINES CDZ0302 (was silently
+    // truncated by the old `as i8` wrap → a wrong value). `2^40` overflows every ≤32-bit width.
+    let over_if = try_compile_rust(
+        "(module m (def (go (: c Bool)) (: (+ (if c 1099511627776 2) 5) Int8)) (export go))",
+    )
+    .expect_err("an oversize const if-branch consumed by a narrow + must decline, not truncate");
+    assert!(
+        over_if.iter().any(|d| d.contains("does not fit its width")),
+        "the oversize if-branch declines CDZ0302 (fits_width), not a silent `as i8` truncation: {over_if:?}"
+    );
+    let over_match = try_compile_rust(
+        "(module m (def (go (: x Int8)) (: (+ (match x (0 1099511627776) (_ 2)) 5) Int8)) (export go))",
+    )
+    .expect_err("an oversize const match-arm body consumed by a narrow + must decline");
+    assert!(
+        over_match
+            .iter()
+            .any(|d| d.contains("does not fit its width")),
+        "the oversize match-arm body declines CDZ0302: {over_match:?}"
+    );
     // An UNANNOTATED op is genuinely Int64 (deferred branches) — it must NOT wrap the `if` down: the op
     // adds an i64 and the if-block is NOT followed by an `as i8` cast (the `(5u8 as i8)` in the condition
     // is unrelated — it grounds the comparison literal to `n`'s width). The operand `100` grounds to i64.
