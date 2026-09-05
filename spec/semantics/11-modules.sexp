@@ -1956,7 +1956,8 @@
            export-gate under the same privacy model (§Visibility Is Explicit). Verified via the `cdz compile`
            package path (native `xtask gate --case` is nix-only since seq-202): a directory package with the same
            lib+entry now compiles + runs → 2 on `c.Color.Green`, and the abstract handle-only variant
-           `c.Shh.Hidden` correctly declines CDZ0101 (no-leak guard).")
+           `c.Shh.Hidden` correctly declines CDZ0214 withheld-constructor (no-leak guard — same code the
+           direct named-list import path gives; see the per-ctor-granularity cases below).")
   (module "lib"
     (do
       (type Color (Red) (Green) (Blue))
@@ -1965,6 +1966,54 @@
       (export to-int)))
   (input (do (import "lib" c) (def (main) (c.to-int c.Color.Green)) (export main)))
   (output (: 2 Int64)))
+
+; per-ctor granularity through a WHOLE-MODULE ALIAS (breaker-verified soundness fence, follow-on to the #8416
+; ctor flip). The direct named-list-import path already fences per-constructor visibility (cases near
+; "a specific constructor export exposes one variant and keeps the rest private" — `(import "lib" (Color rank))`
+; then `(Color.Green)` works, `(Color.Red)` is CDZ0214). This pair is the WHOLE-MODULE-ALIAS analogue: `lib`
+; exports the handle `Shh` plus ONLY the `Hidden` constructor (not `Other`); through alias `c`, `c.Shh.Hidden`
+; resolves + runs while the SIBLING `c.Shh.Other` is rejected. Pins that exporting ONE constructor does NOT leak
+; its siblings across a whole-module alias — the no-leak guard is PER-CONSTRUCTOR, not per-type. The reject is
+; CDZ0214 withheld-constructor — the SAME code the direct import path gives — not the misleading CDZ0101
+; "unbound name `c`" the alias projection reported before (`c` IS bound; it resolves fine for the exported
+; `c.Shh.Hidden`, so the diagnostic now names the withheld constructor + its type, not the alias root).
+(case
+  "a whole-module alias projects a partially-exported NAMED constructor (per-ctor granular)"
+  (doc
+    "`lib` exports the handle `Shh` plus ONLY `(export Shh.Hidden)` (not `Other`) and a consumer `tag`.
+           The entry imports the whole module under alias `c` and projects the EXPORTED constructor
+           `c.Shh.Hidden` — `(c.tag c.Shh.Hidden)` folds to 42. The alias-qualified-ctor path (#8416) reaches a
+           NAMED-exported constructor exactly as the wildcard `(export Shh.*)` case does; this is the positive
+           half of the per-constructor granularity fence (its withheld sibling `c.Shh.Other` is rejected in the
+           companion case).")
+  (module "lib"
+    (do
+      (type Shh (Hidden) (Other))
+      (def (tag (: s Shh)) (match s ((Shh.Hidden) 42) ((Shh.Other) 7)))
+      (export Shh.Hidden)
+      (export tag)))
+  (input (do (import "lib" c) (def (main) (c.tag c.Shh.Hidden)) (export main)))
+  (output (: 42 Int64)))
+
+(case
+  "a whole-module alias projecting a WITHHELD sibling of a partially-exported constructor is rejected (per-ctor no-leak)"
+  (doc
+    "The no-leak companion: the SAME `lib` exporting only `Shh.Hidden`. Through alias `c`, the SIBLING
+           `c.Shh.Other` — a genuine variant of `Shh` whose constructor was NOT exported — is REJECTED CDZ0214
+           withheld-constructor, exactly as a direct-import `(Shh.Other)` would be (`(import \"lib\" (Shh))`
+           then `(Shh.Other)`). Pins that exporting ONE constructor of a type does NOT leak the others across a
+           whole-module alias — the guard is PER-CONSTRUCTOR, not per-type. The code is CDZ0214 (not the
+           misleading CDZ0101 \"unbound name `c`\" the alias projection reported before the withheld-via-alias
+           arm landed): the alias IS bound and resolves fine for the exported `c.Shh.Hidden`, so the diagnostic
+           names the withheld constructor and its abstract type rather than blaming the alias root.")
+  (module "lib"
+    (do
+      (type Shh (Hidden) (Other))
+      (def (tag (: s Shh)) (match s ((Shh.Hidden) 42) ((Shh.Other) 7)))
+      (export Shh.Hidden)
+      (export tag)))
+  (input (do (import "lib" c) (def (main) (c.tag c.Shh.Other)) (export main)))
+  (error CDZ0214))
 
 ; alias-privacy (breaker soundness fence, FIXED by #8441 — was a wrong-acceptance found by v-module-system): a
 ; whole-module alias projecting a NON-exported (private) def — `(c.secret)` where `secret` is NOT in lib's

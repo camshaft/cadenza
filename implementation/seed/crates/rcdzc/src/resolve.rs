@@ -7193,6 +7193,40 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, alias, ty = t_name, ctor = %key.name, from_file, "member → module-alias qualified constructor");
         return Resolved::Ref { value: ctor };
     }
+    // WITHHELD via ALIAS: the same `(. (. alias T) Ctor)` shape where `T` IS an EXPORTED type of the aliased
+    // module but `Ctor` is a WITHHELD constructor of it (a handle-only abstract export, or a partial export
+    // that did not name `Ctor`). Emit the targeted withheld-constructor CDZ0214 naming `T`/`Ctor` — the SAME
+    // code the direct named-list import path gives (`(import path (T))` then a withheld `(T.Ctor)`), NOT the
+    // misleading "unbound name `<alias>`" the generic member fall-through would report (the alias IS bound —
+    // it resolves fine for EXPORTED ctors like `c.Color.Green`, so blaming the alias root points the user at
+    // the wrong cause). Only a genuine variant is "withheld"; a non-variant member declines as a later phase.
+    if let Some((inner_op, inner_key)) = db.ast.member_parts(operand)
+        && let Some(alias) = db.ast.as_name(inner_op)
+        && let Some(t_name) = db.ast.as_name(inner_key)
+        && let Some(from_file) = db.module_alias_target(id, alias)
+        && let Some(synth) = db.export_type_in_file(from_file, t_name)
+        && !db.alias_ctor_exported(from_file, t_name, &key.name)
+        && let Some(decl) = db.type_decl_by_synth(synth)
+        && decl
+            .variants
+            .iter()
+            .any(|v| v.name.as_str() == key.name.as_ref())
+    {
+        return Resolved::Poison(
+            Reject::coded(
+                Code::AbstractCtor,
+                format!(
+                    "`{t_name}`'s constructor `{ctor}` is not exported by the module aliased as \
+                     `{alias}`: `{t_name}`'s handle is visible through the alias but `{ctor}` is \
+                     withheld, so a value of `{t_name}` cannot be constructed or matched through \
+                     `{ctor}` here — obtain one through the functions that module exports (or export \
+                     `{t_name}.*` / `(. {t_name} {ctor})` to publish it)",
+                    ctor = key.name
+                ),
+            )
+            .at(id),
+        );
+    }
     // WITHHELD-CONSTRUCTOR ACCESS: `(. T A)` where `T`'s handle is visible in this file but constructor
     // `A` is NOT (an abstract import — no ctors — or a partially-concrete import that did not name `A`)
     // is a CDZ0214. The constructor is hidden on purpose, so it is unreachable even through the qualified
