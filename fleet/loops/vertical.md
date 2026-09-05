@@ -161,10 +161,12 @@ returning to the tick-top check):
    `cargo xtask fleet send --to v-guide --kind note --subject "docs: <feature>" --body "<what/why +
    runnable examples + where it fits>"`. Skip this only for changes with no user-facing surface.
 7. Record a one-line landing note (sha + gate count + slice) in your vertical's OWN log/sub-index —
-   NOT the `MEMORY.md` root line. The root index loads into every agent's context each session, so
-   your root live-state line stays a 1–2 line POINTER (current status + next step + key traps +
-   `[[link-to-your-log]]`); landing shas + increment history live in the log. Touch the root line only
-   when your *current focus* or a *trap* changes (see the contract's "keep your root line a POINTER").
+   NOT `MEMORY.md`. **The ROOT `MEMORY.md` is LIBRARIAN-WRITE-ONLY** — never edit it directly (agents
+   appending single-finding pointers to its tail is a recurring hygiene bug the librarian has to strip +
+   relocate). To ADD / tweak / REMOVE your vertical's root POINTER line (a 1–2 line pointer: current
+   status + next step + key traps + `[[link-to-your-log]]`), send the librarian a fleet message —
+   `cargo xtask fleet send --to librarian` — describing the change; the librarian owns the root edit.
+   Finding detail, landing shas, and increment history live in YOUR log, never in root.
 
 ## Coordination
 - **Feed `v-guide` documentation suggestions for every user-visible feature you land** (tick step 6):
