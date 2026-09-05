@@ -112,7 +112,49 @@ def shardOf {α : Type} (i n : Nat) (xs : List α) : List α :=
 #guard (shardOf 2 4 [10, 11, 12, 13, 14, 15] == [12])  -- i = last valid shard (i < n)
 #guard (shardOf 3 3 [10, 11, 12, 13] == ([] : List Nat))  -- i ≥ n (out of range) → empty, safe (no crash)
 
+/-- Await a case's `differential` task, but give up once the wall-clock deadline (`deadlineMs`, absolute
+`monoMsNow`) passes. Returns `some diff` if it finished in time, `none` if it exceeded the cap (the task
+is LEFT running — a fuel-heavy near-runaway on its own dedicated thread — and dies when the process exits,
+so one runaway case never blocks the rest of the shard). Polls every 100 ms, so a fast case returns
+promptly; the cost is per-shard 1-2 runaways parked on threads. The `differential` is forced to WHNF ON the
+task thread via `IO.lazyPure` (WHNF = the `Diff` constructor, whose choice already ran the whole
+reduce-vs-wasm comparison), so the heavy work happens off the main thread — the whole point of the cap. -/
+partial def awaitCapped (diffTask : Task (Except IO.Error Oracle.WasmDiff.Verdict)) (deadlineMs : Nat) :
+    IO (Option Oracle.WasmDiff.Verdict) := do
+  if ← IO.hasFinished diffTask then
+    pure (match diffTask.get with | .ok d => some d | .error _ => none)
+  else if (← IO.monoMsNow) ≥ deadlineMs then pure none    -- exceeded the per-case wall-clock cap → capped
+  else do IO.sleep 100; awaitCapped diffTask deadlineMs
+
+/-- Run a case's differential, honoring an optional per-case wall-clock cap `capMs` (0 = no cap). With a
+cap, the `differential` runs on a DEDICATED task thread and is abandoned (→ `none` = capped) if it exceeds
+`capMs`; without, it runs inline (original behavior). -/
+def runCaseCapped (capMs : Nat) (coreAst : Ast.Module) (coreWat : String) (rtBytes : ByteArray) :
+    IO (Option Oracle.WasmDiff.Verdict) := do
+  if capMs == 0 then
+    pure (some (differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" }))
+  else
+    let diffTask ← IO.asTask
+      (IO.lazyPure (fun _ => differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" }))
+      Task.Priority.dedicated
+    awaitCapped diffTask ((← IO.monoMsNow) + capMs)
+
+/-- Extract an optional `--cap-ms N` flag from the arg list, returning `(capMs, remainingArgs)` with the
+flag+value removed (order preserved). `capMs = 0` (no cap) if the flag is absent or its value is unparsable.
+Scans positionally so the flag can appear anywhere (after `--manifest`/`--shard`), leaving the rest for the
+existing manifest/shard parse. -/
+def extractCapMs : List String → Nat × List String :=
+  let rec go (acc : List String) : List String → Nat × List String
+    | [] => (0, acc.reverse)
+    | "--cap-ms" :: v :: rest => ((v.toNat?).getD 0, acc.reverse ++ rest)
+    | x :: rest => go (x :: acc) rest
+  go []
+
 def main (args : List String) : IO UInt32 := do
+  -- Pull an optional `--cap-ms N` flag out first (v-gha-green wires the workflow to pass it): a per-CASE
+  -- WALL-CLOCK cap so a fuel-heavy near-runaway case is skipped (tallied `capped`) and its shard COMPLETES,
+  -- instead of one >6h case hanging the whole shard (sharding bounds per-shard COUNT, not per-case time).
+  let (capMs, args) := extractCapMs args
   -- `--manifest FILE` (or a bare FILE); optional `--shard I N` runs only cases with (index % N == I), so the
   -- full-corpus diff fits under GHA's 6h per-job cap as N parallel shards (see `shardOf`).
   let (manifest?, shard?) : Option String × Option (Nat × Nat) := match args with
@@ -121,13 +163,14 @@ def main (args : List String) : IO UInt32 := do
     | [f] => (some f, none)
     | _ => (none, none)
   match manifest? with
-  | none => IO.eprintln "oracle-wasm-diff: usage: oracle-wasm-diff (--manifest FILE | FILE) [--shard I N]"; return 2
+  | none => IO.eprintln "oracle-wasm-diff: usage: oracle-wasm-diff (--manifest FILE | FILE) [--shard I N] [--cap-ms N]"; return 2
   | some manifest =>
     let allDirs ← readManifest manifest
     let dirs := match shard? with | some (i, n) => shardOf i n allDirs | none => allDirs
     (match shard? with
      | some (i, n) => IO.println s!"[oracle-wasm-diff shard {i}/{n}: {dirs.length} of {allDirs.length} cases]"
      | none => pure ())
+    (if capMs > 0 then IO.println s!"[oracle-wasm-diff per-case wall-clock cap: {capMs}ms — a case exceeding it is CAPPED (skipped) so the shard completes]" else pure ())
     let mut cases : List (String × Ast.Module × String × ByteArray) := []
     for dir in dirs do
       match ← loadCase dir with
@@ -141,27 +184,33 @@ def main (args : List String) : IO UInt32 := do
     -- which consume-op a scale-only regression rides on (v-wasm-oracle triage ask).
     let mut divergeLeakOps : List String := []
     for (id, coreAst, coreWat, rtBytes) in cases.reverse do
-      match differential Oracle.Wasm.talosDriver coreAst coreWat rtBytes { entry := "main" } with
-      | .agree => tally := { tally with agree := tally.agree + 1 }
-                  IO.println s!"AGREE {id}"
-      | .diverge core wasm => tally := { tally with diverge := tally.diverge + 1 }
-                              -- Print the actual disagreement to STDOUT (survives the CI log; stderr is
-                              -- truncated) so a single diverging sub-case is triageable from the log alone:
-                              -- the case-dir path (holds program.ast/core.wat/core.ast), the Core reference
-                              -- outcome (reduce core.ast), the wasm outcome, and the heap ops it imports.
-                              let ops := heapOpImportsOf coreWat
-                              divergeLeakOps := divergeLeakOps ++ ops
-                              IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm} | heap-ops: {ops}"
-      | .skip r => tally := { tally with skip := tally.skip + 1 }
-                   skipReasons := r :: skipReasons
-                   IO.println s!"SKIP {id}: {r}"
-      | .leak n => tally := { tally with leak := tally.leak + 1 }
-                   -- W6: values AGREE but the wasm run left `n` live heap objects at end-of-run — a Perceus
-                   -- leak (an alloc never balanced by a drop). A distinct signal from diverge/skip.
-                   let ops := heapOpImportsOf coreWat
-                   divergeLeakOps := divergeLeakOps ++ ops
-                   IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak) | heap-ops: {ops}"
-    IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip, {tally.leak} leak (of {cases.length} cases)"
+      match ← runCaseCapped capMs coreAst coreWat rtBytes with
+      | none => tally := { tally with capped := tally.capped + 1 }
+                -- exceeded the per-case wall-clock cap: a fuel-heavy near-runaway skipped so the shard
+                -- completes. A distinct bucket from skip (a modeled decline) — this is a resource cap.
+                IO.println s!"CAPPED {id}: differential exceeded {capMs}ms wall-clock (fuel-heavy case skipped)"
+      | some .agree => tally := { tally with agree := tally.agree + 1 }
+                       IO.println s!"AGREE {id}"
+      | some (.diverge core wasm) =>
+          -- Print the actual disagreement to STDOUT (survives the CI log; stderr is truncated) so a single
+          -- diverging sub-case is triageable from the log alone: the case-dir path (holds program.ast/
+          -- core.wat/core.ast), the Core reference outcome (reduce core.ast), the wasm outcome, and heap ops.
+          tally := { tally with diverge := tally.diverge + 1 }
+          let ops := heapOpImportsOf coreWat
+          divergeLeakOps := divergeLeakOps ++ ops
+          IO.println s!"DIVERGE {id}: core-ref = {outcomeStr core} | wasm = {outcomeStr wasm} | heap-ops: {ops}"
+      | some (.skip r) =>
+          tally := { tally with skip := tally.skip + 1 }
+          skipReasons := r :: skipReasons
+          IO.println s!"SKIP {id}: {r}"
+      | some (.leak n) =>
+          -- W6: values AGREE but the wasm run left `n` live heap objects at end-of-run — a Perceus leak
+          -- (an alloc never balanced by a drop). A distinct signal from diverge/skip.
+          tally := { tally with leak := tally.leak + 1 }
+          let ops := heapOpImportsOf coreWat
+          divergeLeakOps := divergeLeakOps ++ ops
+          IO.println s!"LEAK {id}: {n} live heap object(s) at end-of-run (Perceus leak) | heap-ops: {ops}"
+    IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip, {tally.leak} leak, {tally.capped} capped (of {cases.length} cases)"
     -- Heap-op usage histogram over the DIVERGE + LEAK cases — which consume-op dominates the regression.
     IO.println "oracle-wasm-diff diverge+leak heap-op histogram:"
     for (op, n) in tallyReasons divergeLeakOps do

@@ -148,6 +148,9 @@ structure Tally where
   diverge : Nat := 0
   skip : Nat := 0
   leak : Nat := 0          -- W6: value-agreeing runs that left live heap objects (a Perceus leak)
+  capped : Nat := 0        -- a case whose differential exceeded the per-case WALL-CLOCK cap (--cap-ms):
+                           -- a fuel-heavy near-runaway skipped so the shard completes (per-case time bound,
+                           -- distinct from a fuel/step bound — sharding bounds count, not per-case time).
   deriving Repr, BEq, Inhabited
 
 /-- Run the differential over a corpus, tallying agree/diverge/skip + collecting divergence details
