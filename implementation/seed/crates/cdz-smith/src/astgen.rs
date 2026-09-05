@@ -472,7 +472,7 @@ fn gen_typefuzz_int<C: Choice>(
     fresh: &mut usize,
 ) -> String {
     // At depth 0 emit a leaf (literal or an in-scope Int64 var) — bounds recursion + entropy use.
-    let arms = if depth == 0 { 2 } else { 31 };
+    let arms = if depth == 0 { 2 } else { 32 };
     match c.variant(arms) {
         // Edge-biased Int64 literal.
         0 => {
@@ -1003,7 +1003,7 @@ fn gen_typefuzz_int<C: Choice>(
         // pattern, each inner element/field binding its type; return a bound INNER binder → Int64 (no arith
         // → no CDZ0304). Irrefutable ⇒ exhaustive ⇒ HOLDS. Nested REFUTABLE sub-patterns (variant/literal)
         // are NOT generated — they make the arm refutable and still oracle-skip in inc-4.
-        _ => {
+        30 => {
             let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
             let d = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
@@ -1013,6 +1013,20 @@ fn gen_typefuzz_int<C: Choice>(
                 format!(
                     "(match (record (= x {a}) (= y (record (= z {b})))) ((record (= x p) (= y (record (= z q)))) q))"
                 )
+            }
+        }
+        // A match with a NESTED REFUTABLE VARIANT sub-pattern in a tuple/record/list position (T1.52
+        // inc-5): an element/field sub-pattern is a payload-bearing `(Some p)`, binding the payload. Since
+        // a nested variant is REFUTABLE, the outer arm is refutable ⇒ the match needs a COVERING catch-all
+        // `_` arm to be exhaustive ⇒ HOLDS. Return the bound payload → Int64 (no arith → no CDZ0304).
+        // Reachability confirmed (all 3 flip skip→Holds on the inc-5 oracle); the no-catch-all form skips.
+        _ => {
+            let a = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            let b = gen_typefuzz_int(c, 0, iscope, bscope, fresh);
+            match c.variant(3) {
+                0 => format!("(match (tuple {a} (Some {b})) ((tuple x (Some y)) y) (_ 0))"),
+                1 => format!("(match (record (= x (Some {a}))) ((record (= x (Some c))) c) (_ 0))"),
+                _ => format!("(match (list (Some {a}) (Some {b})) ((list (Some p) .. r) p) (_ 0))"),
             }
         }
     }
