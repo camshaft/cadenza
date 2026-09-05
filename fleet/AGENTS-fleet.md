@@ -445,24 +445,26 @@ races the librarian + other writers) — it is NOT your job. Add what you learne
 `[[slug]]`, keep your own note tight, and move on to your actual work. If a memory file is wrong or
 sprawling, leave it for the librarian (or `note` the librarian) — don't fix it yourself.
 
-**RARELY edit the `MEMORY.md` root — it is write-COLD by default** (operator norm, 2026-08-03: "the
-memory really needs to be collapsed into a very small index; agents should RARELY be editing the main
-memory entry"). `MEMORY.md` loads into EVERY agent's context every session, so it must stay a tiny,
-scannable, near-static map. Your default write target is your OWN sub-index/log (`<vertical>-log.md`,
-`index-*` — grow those freely); the root is NOT where your work goes.
+**NEVER edit the `MEMORY.md` root directly — it is LIBRARIAN-WRITE-ONLY** (operator directive,
+2026-08-30; supersedes the older 2026-08-03 "RARELY edit / write-COLD" norm: "the memory really needs
+to be collapsed into a very small index"). `MEMORY.md` loads into EVERY agent's context every session,
+so it must stay a tiny, scannable, near-static map, and a SINGLE writer (the `librarian`) keeps it that
+way. Your default write target is your OWN sub-index/log (`<vertical>-log.md`, `index-*` — grow those
+freely); the root is NOT where your work goes.
 - **Write your learnings, landings, sha history, increment detail, status — ALL of it — to your own
   sub-index/log, NEVER to the root line.** When you land a slice, update your log, not `MEMORY.md`.
-- **Touch your root pointer line only on a GENUINE FOCUS SHIFT or a new CRITICAL trap** — not
-  per-landing, not per-increment, not per-status-tweak. Most ticks change NOTHING at the root. If you
-  find yourself editing the root most ticks, that's the churn this rule exists to stop — put it in your
-  log instead.
+- **REQUEST a root pointer change from the `librarian`** (`cargo xtask fleet send --to librarian`) only
+  on a GENUINE FOCUS SHIFT or a new CRITICAL trap — never edit the root yourself, and not per-landing,
+  per-increment, or per-status-tweak. Most ticks change NOTHING at the root. Agents appending
+  single-finding pointers to the root tail is a recurring hygiene bug the librarian has to strip +
+  relocate — put the detail in your log instead.
 - The root line is a STABLE 1-line pointer in the shape the `librarian` maintains (~1 sentence, <~250B):
   ```
   - <emoji> **NAME (v-x)** — <one-clause current status/phase> [🔜 <next, if any>] [[<your-sub-index-or-log>]]
   ```
-  So a genuine-focus-shift edit is just: change the one status clause (+ maybe the 🔜-next) — nothing
-  else. ALL detail (traps, landed shas, in-flight MRs, increments) lives in the `[[sub-index]]`. Not a
-  changelog, not a status board.
+  So a genuine-focus-shift REQUEST is just: ask the librarian to change the one status clause (+ maybe
+  the 🔜-next) — nothing else. ALL detail (traps, landed shas, in-flight MRs, increments) lives in the
+  `[[sub-index]]`. Not a changelog, not a status board.
 The `librarian` owns the structural collapse of existing root content (see "don't reorganize memory"
 above) and maintains that collapsed root-line shape; this write-norm keeps it small going forward.
 Keeping the root write-cold is how the shared entry point stays tiny for everyone.
