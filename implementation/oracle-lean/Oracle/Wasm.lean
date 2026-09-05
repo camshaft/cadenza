@@ -694,8 +694,8 @@ example : (toOutcomeHeap (fun v => some v) "unused" (.ok #[.compound (.int 5)]) 
 example : (toOutcomeHeap (fun _ => none) "declined: test reason" (.ok #[.compound (.bytes "x".toUTF8)])
     == .unsupported "declined: test reason") = true := by native_decide
 -- `resultTyFixup`: a bare `String` retags a top-level `.bytes`→`.str`; a non-String scalar passes through.
-example : (resultTyFixup (rtBytes "String") "main".toUTF8 (.bytes "hi".toUTF8) == some (.str "hi".toUTF8)) = true := by native_decide
-example : (resultTyFixup (rtBytes "Int") "main".toUTF8 (.int 5) == some (.int 5)) = true := by native_decide
+example : ((resultTyFixup (rtBytes "String") "main".toUTF8) (.bytes "hi".toUTF8) == some (.str "hi".toUTF8)) = true := by native_decide
+example : ((resultTyFixup (rtBytes "Int") "main".toUTF8) (.int 5) == some (.int 5)) = true := by native_decide
 -- String-head recognition: `stringResult?` accepts a `String` result type, rejects a `List`/`Int` one.
 example : stringResult? (rtBytes "String") "main".toUTF8 = true := by native_decide
 example : stringResult? (rtBytes "List") "main".toUTF8 = false := by native_decide
@@ -719,7 +719,7 @@ private def rtNestedBytes (container elem : String) : ByteArray :=
 
 -- `resultTyFixup` DECLINES (`none`) on a MALFORMED Record field (a bare `(Record String)` — the child is not a
 -- valid `(: name type)` field node), so an unexpected shape skips rather than mis-decodes.
-example : (resultTyFixup (rtNestedBytes "Record" "String") "main".toUTF8 (.tuple #[.bytes "x".toUTF8]) == none) = true := by native_decide
+example : ((resultTyFixup (rtNestedBytes "Record" "String") "main".toUTF8) (.tuple #[.bytes "x".toUTF8]) == none) = true := by native_decide
 
 -- end-to-end: a `(List String)` result NOW DECODES with nested `.bytes`→`.str` (previously declined pre the
 -- recursive fixup) — the driver's structural `.list #[.bytes …]` is retagged to Core's `.list #[.str …]`.
@@ -757,7 +757,7 @@ example : (runWasmWith (fun _ _ => .ok #[.compound (.tuple #[.int 1, .int 2])]) 
     (rtRecordBytes "x" "Int" "y" "Int") { entry := "main" }
     == .value (.record #[("x".toUTF8, .int 1), ("y".toUTF8, .int 2)])) = true := by native_decide
 -- `resultTyFixup` on the Record type retags directly: `.tuple #[.bytes,.int]` → `.record [(a,.str),(s,.int)]`.
-example : (resultTyFixup (rtRecordBytes "a" "String" "s" "Int") "main".toUTF8 (.tuple #[.bytes "hi".toUTF8, .int 9])
+example : ((resultTyFixup (rtRecordBytes "a" "String" "s" "Int") "main".toUTF8) (.tuple #[.bytes "hi".toUTF8, .int 9])
     == some (.record #[("a".toUTF8, .str "hi".toUTF8), ("s".toUTF8, .int 9)])) = true := by native_decide
 
 /-- `cdz-result-type` for a built-in `(result-type main (Sum Option <declId> <payloadTy>))` — the extracted
