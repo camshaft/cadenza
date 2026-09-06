@@ -798,6 +798,8 @@ pub enum FleetCmd {
     ///   * `--add --title T [--priority N] [--from A] [--body-file F]` — file an idea (theorizer).
     ///   * `--claim [--by A]` — atomically claim the top open idea (rename → `claimed/`; first claimer
     ///     wins, a loser retries the next) and print it (builder).
+    ///   * `--done <file> [--result-file F] [--by A]` — a builder COMPLETES a claimed idea: append the
+    ///     measured RESULT (confirmed/refuted + delta + PR) and move `claimed/<file>` → `done/<file>`.
     Ideas {
         /// The area: `dcquic` | `membrain-rpc` | `loadgen-cache`.
         area: String,
@@ -819,9 +821,17 @@ pub enum FleetCmd {
         /// Atomically claim the top open idea (builder).
         #[arg(long)]
         claim: bool,
-        /// The claiming builder's name (with `--claim`), recorded on the claimed idea.
+        /// The claiming/completing agent's name (with `--claim` or `--done`), recorded on the idea.
         #[arg(long, default_value = "")]
         by: String,
+        /// Complete a CLAIMED idea (builder): the claimed idea's filename. Moves `claimed/<file>` →
+        /// `done/<file>` after appending the measured result.
+        #[arg(long, default_value = "")]
+        done: String,
+        /// The measured RESULT body from a literal file (with `--done`): confirmed/refuted, per-workload
+        /// delta, PR link. A FALSIFIED hypothesis is a valid result — record it.
+        #[arg(long)]
+        result_file: Option<PathBuf>,
     },
     /// git MERGE DRIVER for `.duvet/coverage-floor.json` (registered by `fleet up`; not run by hand).
     /// The floor is a single monotonic counter every citation-adding agent bumps, so concurrent slices
@@ -1396,8 +1406,20 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             body_file,
             claim,
             by,
+            done,
+            result_file,
         } => ideas(
-            &fleet, &area, add, &title, priority, &from, body_file, claim, &by,
+            &fleet,
+            &area,
+            add,
+            &title,
+            priority,
+            &from,
+            body_file,
+            claim,
+            &by,
+            &done,
+            result_file,
         ),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
@@ -4872,8 +4894,21 @@ fn idea_order_key(filename: &str) -> (u8, u64) {
     }
 }
 
+/// Count `*.md` idea files directly in `dir` (0 if it can't be read). For the claimed/done tallies the
+/// list shows so the pipeline state is visible at a glance.
+fn count_idea_md(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// The per-area idea-queue: file (`--add`), list (default), or atomically claim (`--claim`) the top
-/// open optimization hypothesis. Hub-resolved (works from any cwd via `fleetx`). See the `Ideas` doc.
+/// open optimization hypothesis, or COMPLETE a claimed idea (`--done`). Hub-resolved (works from any
+/// cwd via `fleetx`). See the `Ideas` doc.
 #[allow(clippy::too_many_arguments)]
 fn ideas(
     fleet: &Fleet,
@@ -4885,6 +4920,8 @@ fn ideas(
     body_file: Option<PathBuf>,
     claim: bool,
     by: &str,
+    done: &str,
+    result_file: Option<PathBuf>,
 ) {
     if !idea_area_valid(area) {
         eprintln!(
@@ -4893,12 +4930,19 @@ fn ideas(
         );
         std::process::exit(1);
     }
-    if add && claim {
-        eprintln!("fleet ideas: pass only ONE of --add / --claim (or neither, to list).");
+    let done = done.trim();
+    if [add, claim, !done.is_empty()]
+        .iter()
+        .filter(|&&m| m)
+        .count()
+        > 1
+    {
+        eprintln!("fleet ideas: pass only ONE of --add / --claim / --done (or none, to list).");
         std::process::exit(1);
     }
     let open_dir = fleet.root.join("queue").join("ideas").join(area);
     let claimed_dir = open_dir.join("claimed");
+    let done_dir = open_dir.join("done");
 
     // ── ADD (theorizer files an idea) ───────────────────────────────────────────────────────────
     if add {
@@ -5032,13 +5076,96 @@ fn ideas(
         return;
     }
 
+    // ── DONE (builder completes a claimed idea) ─────────────────────────────────────────────────
+    if !done.is_empty() {
+        if !is_safe_component(done) {
+            eprintln!(
+                "fleet ideas --done: {done:?} is not a valid idea filename (a single claimed/<file>)."
+            );
+            std::process::exit(1);
+        }
+        let src = claimed_dir.join(done);
+        if !src.exists() {
+            eprintln!(
+                "fleet ideas --done: no CLAIMED idea {done:?} in the {area} queue (a builder --claim's \
+                 an idea before --done'ing it). `fleet ideas {area}` shows the queue state."
+            );
+            std::process::exit(1);
+        }
+        let by = if by.trim().is_empty() {
+            "unknown"
+        } else {
+            by.trim()
+        };
+        let result = match &result_file {
+            Some(p) => match std::fs::read_to_string(p) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "fleet ideas --done: cannot read --result-file {}: {e}",
+                        p.display()
+                    );
+                    std::process::exit(2);
+                }
+            },
+            None => String::new(),
+        };
+        // Leak-guard the result body (a measured result may be read widely / travel to a work-repo PR).
+        let leak = pr_body_secret_findings(done, &result);
+        if !leak.is_empty() {
+            eprintln!(
+                "fleet ideas --done: REFUSING — the result body looks like env-dump or secret material:"
+            );
+            for f in &leak {
+                eprintln!("  ✗ {f}");
+            }
+            eprintln!(
+                "A result is PROSE (confirmed/refuted + per-workload delta + PR). Use a literal --result-file."
+            );
+            std::process::exit(1);
+        }
+        if let Err(e) = std::fs::create_dir_all(&done_dir) {
+            eprintln!(
+                "fleet ideas --done: cannot create {}: {e}",
+                done_dir.display()
+            );
+            std::process::exit(1);
+        }
+        // Append the RESULT + flip status IN the claimed file, THEN move claimed/ → done/ (the move is
+        // the completion commit; a FALSIFIED hypothesis is a valid result and is recorded, not discarded).
+        let content = std::fs::read_to_string(&src).unwrap_or_default();
+        let stamped = format!(
+            "{}\n\n## RESULT (by {by}, {})\n\n{}\n",
+            content.replacen("status: claimed\n", "status: done\n", 1),
+            now_unix(),
+            if result.trim().is_empty() {
+                "(no result body provided)"
+            } else {
+                result.trim()
+            }
+        );
+        let dst = done_dir.join(done);
+        if std::fs::write(&src, &stamped).is_err() || std::fs::rename(&src, &dst).is_err() {
+            eprintln!("fleet ideas --done: failed to complete {done} (write/move error).");
+            std::process::exit(1);
+        }
+        println!(
+            "fleet ideas: {by} COMPLETED {done} in the {area} queue → claimed/ → done/ (result recorded)."
+        );
+        return;
+    }
+
     // ── LIST (default) ──────────────────────────────────────────────────────────────────────────
+    let claimed_n = count_idea_md(&claimed_dir);
+    let done_n = count_idea_md(&done_dir);
     if open.is_empty() {
-        println!("fleet ideas: {area} queue has no open ideas.");
+        println!(
+            "fleet ideas: {area} queue has no open ideas. (claimed: {claimed_n}, done: {done_n})"
+        );
         return;
     }
     println!(
-        "fleet ideas: {} open idea(s) in the {area} queue (priority-desc, oldest-first):",
+        "fleet ideas: {} open idea(s) in the {area} queue (priority-desc, oldest-first) [claimed: {claimed_n}, done: {done_n}]:",
         open.len()
     );
     for fname in &open {
