@@ -789,6 +789,40 @@ pub enum FleetCmd {
         #[arg(long)]
         archive: bool,
     },
+    /// The per-AREA optimization IDEA-QUEUE — the theorizer→builder pipeline (operator reorg 2026-09-06).
+    /// A THEORIZER files falsifiable hypotheses into its area queue; a BUILDER pulls the top idea, builds+
+    /// measures it, then archives it. Hub-resolved + CWD-safe (foreign-repo agents run it via `fleetx
+    /// ideas …` from any repo — same resolver discipline as the inbox; never a worktree-relative glob).
+    /// Areas: `dcquic` | `membrain-rpc` | `loadgen-cache`. Modes:
+    ///   * (default) LIST open ideas in `<hub>/queue/ideas/<area>/`, priority-desc then oldest-first.
+    ///   * `--add --title T [--priority N] [--from A] [--body-file F]` — file an idea (theorizer).
+    ///   * `--claim [--by A]` — atomically claim the top open idea (rename → `claimed/`; first claimer
+    ///     wins, a loser retries the next) and print it (builder).
+    Ideas {
+        /// The area: `dcquic` | `membrain-rpc` | `loadgen-cache`.
+        area: String,
+        /// File a new idea (theorizer). Requires `--title`.
+        #[arg(long)]
+        add: bool,
+        /// Idea title (with `--add`) — becomes the human label + filename slug.
+        #[arg(long, default_value = "")]
+        title: String,
+        /// Priority 0-9 (with `--add`; higher = claimed first). Default 5.
+        #[arg(long, default_value_t = 5)]
+        priority: u8,
+        /// The filing theorizer's name (with `--add`), recorded in the idea.
+        #[arg(long, default_value = "")]
+        from: String,
+        /// Idea body from a literal file (with `--add`): the hypothesis / mechanism / falsification.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// Atomically claim the top open idea (builder).
+        #[arg(long)]
+        claim: bool,
+        /// The claiming builder's name (with `--claim`), recorded on the claimed idea.
+        #[arg(long, default_value = "")]
+        by: String,
+    },
     /// git MERGE DRIVER for `.duvet/coverage-floor.json` (registered by `fleet up`; not run by hand).
     /// The floor is a single monotonic counter every citation-adding agent bumps, so concurrent slices
     /// textually CONFLICT on it (`cited` 644 vs 645). This resolves such a conflict by taking the MAX
@@ -1353,6 +1387,18 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::OrphanedInboxes { archive } => orphaned_inboxes(&fleet, archive),
+        FleetCmd::Ideas {
+            area,
+            add,
+            title,
+            priority,
+            from,
+            body_file,
+            claim,
+            by,
+        } => ideas(
+            &fleet, &area, add, &title, priority, &from, body_file, claim, &by,
+        ),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::GateLocal { arch } => gate_local(&fleet, &arch),
@@ -4771,6 +4817,234 @@ fn orphaned_inboxes(fleet: &Fleet, archive: bool) {
         orphans.len(),
         archive_root.display()
     );
+}
+
+/// The valid idea-queue AREAS (operator reorg 2026-09-06): the perf-fleet's three optimization fronts.
+/// A `fleet ideas <area>` with any other area is refused (same known-set discipline as the send-recipient
+/// guard) so a typo can't silently create a stray queue dir nobody pulls from.
+const IDEA_AREAS: &[&str] = &["dcquic", "membrain-rpc", "loadgen-cache"];
+
+/// Is `area` a valid idea-queue area? Pure for unit-testing.
+fn idea_area_valid(area: &str) -> bool {
+    IDEA_AREAS.contains(&area)
+}
+
+/// A filesystem-safe slug for an idea title: lowercase, non-alphanumerics collapsed to single `-`,
+/// trimmed, capped. Empty/degenerate → "idea". Pure so filename construction is unit-tested.
+fn slugify_idea(title: &str) -> String {
+    let mut s = String::new();
+    let mut prev_dash = false;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !s.is_empty() {
+            s.push('-');
+            prev_dash = true;
+        }
+    }
+    let s = s.trim_matches('-');
+    let s: String = s.chars().take(48).collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() { "idea".to_string() } else { s }
+}
+
+/// The open-idea filename `p<priority>-<seq012>-<slug>.md` (human-readable: `p9` = priority 9). The
+/// zero-padded seq keeps names unique + records filing order. `priority` is clamped to 0-9. Ordering is
+/// NOT lexical (lexical would put p5 before p9 — backwards); list/claim sort by [`idea_order_key`].
+/// Pure so filename construction is unit-pinned.
+fn idea_filename(priority: u8, seq: u64, title: &str) -> String {
+    format!("p{}-{seq:012}-{}.md", priority.min(9), slugify_idea(title))
+}
+
+/// Sort key for an open-idea filename `p<prio>-<seq012>-<slug>.md`: `(9 - priority, seq)`, so an
+/// ASCENDING sort lists HIGHEST priority first, then OLDEST (lowest seq) first — the list/claim order.
+/// An unparseable name sorts LAST (`(u8::MAX, u64::MAX)`), so a stray file never jumps the queue. Pure.
+fn idea_order_key(filename: &str) -> (u8, u64) {
+    let rest = filename.strip_prefix('p').unwrap_or(filename);
+    let mut it = rest.splitn(3, '-');
+    match (
+        it.next().and_then(|s| s.parse::<u8>().ok()),
+        it.next().and_then(|s| s.parse::<u64>().ok()),
+    ) {
+        (Some(p), Some(s)) => (9u8.saturating_sub(p.min(9)), s),
+        _ => (u8::MAX, u64::MAX),
+    }
+}
+
+/// The per-area idea-queue: file (`--add`), list (default), or atomically claim (`--claim`) the top
+/// open optimization hypothesis. Hub-resolved (works from any cwd via `fleetx`). See the `Ideas` doc.
+#[allow(clippy::too_many_arguments)]
+fn ideas(
+    fleet: &Fleet,
+    area: &str,
+    add: bool,
+    title: &str,
+    priority: u8,
+    from: &str,
+    body_file: Option<PathBuf>,
+    claim: bool,
+    by: &str,
+) {
+    if !idea_area_valid(area) {
+        eprintln!(
+            "fleet ideas: unknown area {area:?}. Valid areas: {}.",
+            IDEA_AREAS.join(" | ")
+        );
+        std::process::exit(1);
+    }
+    if add && claim {
+        eprintln!("fleet ideas: pass only ONE of --add / --claim (or neither, to list).");
+        std::process::exit(1);
+    }
+    let open_dir = fleet.root.join("queue").join("ideas").join(area);
+    let claimed_dir = open_dir.join("claimed");
+
+    // ── ADD (theorizer files an idea) ───────────────────────────────────────────────────────────
+    if add {
+        if title.trim().is_empty() {
+            eprintln!("fleet ideas --add: --title is required (the hypothesis label).");
+            std::process::exit(1);
+        }
+        let body = match &body_file {
+            Some(p) => match std::fs::read_to_string(p) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "fleet ideas --add: cannot read --body-file {}: {e}",
+                        p.display()
+                    );
+                    std::process::exit(2);
+                }
+            },
+            None => String::new(),
+        };
+        // Leak-guard (same class as send/pr): refuse env-dump/secret-shaped content in title/body.
+        let leak = pr_body_secret_findings(title, &body);
+        if !leak.is_empty() {
+            eprintln!(
+                "fleet ideas --add: REFUSING — title/body looks like env-dump or secret material:"
+            );
+            for f in &leak {
+                eprintln!("  ✗ {f}");
+            }
+            eprintln!(
+                "An idea is PROSE (hypothesis/mechanism/falsification). Use a literal --body-file."
+            );
+            std::process::exit(1);
+        }
+        if let Err(e) = std::fs::create_dir_all(&open_dir) {
+            eprintln!(
+                "fleet ideas --add: cannot create {}: {e}",
+                open_dir.display()
+            );
+            std::process::exit(1);
+        }
+        let seq = next_delivery_seq(fleet);
+        let fname = idea_filename(priority, seq, title);
+        let from = if from.trim().is_empty() {
+            "unknown"
+        } else {
+            from.trim()
+        };
+        let header = format!(
+            "# {title}\n\narea: {area}\npriority: {}\nfrom: {from}\ncreated: {}\nstatus: open\n\n---\n\n",
+            priority.min(9),
+            now_unix()
+        );
+        let path = open_dir.join(&fname);
+        let tmp = open_dir.join(format!(".{fname}.tmp"));
+        if std::fs::write(&tmp, format!("{header}{body}")).is_err()
+            || std::fs::rename(&tmp, &path).is_err()
+        {
+            eprintln!("fleet ideas --add: failed to write {}", path.display());
+            std::process::exit(1);
+        }
+        println!(
+            "fleet ideas: filed idea into {area} queue → {fname} (priority {}, from {from}).",
+            priority.min(9)
+        );
+        return;
+    }
+
+    // The open ideas, sorted priority-desc then oldest-first via idea_order_key (NOT lexical).
+    let mut open: Vec<String> = std::fs::read_dir(&open_dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    open.sort_by_key(|f| idea_order_key(f));
+
+    // ── CLAIM (builder pulls the top idea) ──────────────────────────────────────────────────────
+    if claim {
+        if open.is_empty() {
+            println!("fleet ideas: {area} queue is EMPTY — no open idea to claim.");
+            return;
+        }
+        if let Err(e) = std::fs::create_dir_all(&claimed_dir) {
+            eprintln!(
+                "fleet ideas --claim: cannot create {}: {e}",
+                claimed_dir.display()
+            );
+            std::process::exit(1);
+        }
+        let by = if by.trim().is_empty() {
+            "unknown"
+        } else {
+            by.trim()
+        };
+        // Try each open idea top-first; the rename is the atomic lock — first claimer wins, a loser
+        // (rename fails: another builder already moved it) falls through to the next.
+        for fname in &open {
+            let src = open_dir.join(fname);
+            let dst = claimed_dir.join(fname);
+            if std::fs::rename(&src, &dst).is_ok() {
+                // Best-effort claim annotation (the MOVE already locked it; an append hiccup is harmless).
+                if let Ok(content) = std::fs::read_to_string(&dst) {
+                    let stamped = content.replacen(
+                        "status: open\n",
+                        &format!(
+                            "status: claimed\nclaimed-by: {by}\nclaimed-at: {}\n",
+                            now_unix()
+                        ),
+                        1,
+                    );
+                    let _ = std::fs::write(&dst, &stamped);
+                    println!(
+                        "fleet ideas: {by} CLAIMED {fname} from the {area} queue → moved to claimed/.\n\
+                         --- idea ---\n{}",
+                        stamped
+                    );
+                } else {
+                    println!(
+                        "fleet ideas: {by} CLAIMED {fname} from the {area} queue → moved to claimed/."
+                    );
+                }
+                return;
+            }
+        }
+        println!(
+            "fleet ideas: {area} queue drained out from under the claim (all raced away) — retry."
+        );
+        return;
+    }
+
+    // ── LIST (default) ──────────────────────────────────────────────────────────────────────────
+    if open.is_empty() {
+        println!("fleet ideas: {area} queue has no open ideas.");
+        return;
+    }
+    println!(
+        "fleet ideas: {} open idea(s) in the {area} queue (priority-desc, oldest-first):",
+        open.len()
+    );
+    for fname in &open {
+        println!("  {fname}");
+    }
+    println!("\n(claim the top one: `fleet ideas {area} --claim --by <you>`)");
 }
 
 /// git merge driver for `.duvet/coverage-floor.json` (see the `MergeFloor` doc). Resolve a floor
@@ -21359,6 +21633,51 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // --force bypasses in BOTH cases (preserves the deliberate pre-seed-an-inbox path).
         assert!(!unregistered_recipient_refused(true, false));
         assert!(!unregistered_recipient_refused(true, true));
+    }
+
+    #[test]
+    fn idea_area_valid_only_for_the_three_perf_fronts() {
+        assert!(idea_area_valid("dcquic"));
+        assert!(idea_area_valid("membrain-rpc"));
+        assert!(idea_area_valid("loadgen-cache"));
+        assert!(!idea_area_valid("dcQUIC")); // case-sensitive; canonical is lowercase
+        assert!(!idea_area_valid("rcdzc"));
+        assert!(!idea_area_valid(""));
+    }
+
+    #[test]
+    fn idea_order_key_sorts_priority_desc_then_oldest_first() {
+        // Sorting open-idea filenames by idea_order_key must put higher priority first, and within the
+        // same priority, the lower (older) seq first — the exact list/claim ordering contract.
+        let a = idea_filename(9, 2, "reduce syscalls");
+        let b = idea_filename(5, 1, "batch writes");
+        let c = idea_filename(9, 1, "pin affinity");
+        let mut v = vec![a.clone(), b.clone(), c.clone()];
+        v.sort_by_key(|f| idea_order_key(f));
+        // p9 ideas before the p5 idea (priority desc); among p9, seq 1 (older) before seq 2.
+        assert_eq!(v, vec![c, a, b]);
+        // The raw key: higher priority → smaller first component (9-prio); seq is the tiebreak.
+        assert_eq!(idea_order_key("p9-000000000001-pin-affinity.md"), (0, 1));
+        assert_eq!(idea_order_key("p5-000000000001-batch-writes.md"), (4, 1));
+        // An unparseable name sorts LAST so a stray file never jumps the queue.
+        assert_eq!(idea_order_key("not-an-idea.md"), (u8::MAX, u64::MAX));
+        // slug is filesystem-safe + derived from the title; priority clamps to 0-9.
+        assert_eq!(
+            idea_filename(5, 7, "Reduce Syscalls!!"),
+            "p5-000000000007-reduce-syscalls.md"
+        );
+        assert!(idea_filename(42, 0, "x").starts_with("p9-"));
+    }
+
+    #[test]
+    fn slugify_idea_is_filesystem_safe_and_never_empty() {
+        assert_eq!(
+            slugify_idea("Reduce syscalls per batch"),
+            "reduce-syscalls-per-batch"
+        );
+        assert_eq!(slugify_idea("  a//b  c "), "a-b-c");
+        assert_eq!(slugify_idea("!!!"), "idea"); // degenerate → fallback, never empty/all-dashes
+        assert_eq!(slugify_idea(""), "idea");
     }
 
     #[test]
