@@ -6080,6 +6080,10 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         // Capture the pane ONCE for the two report-only pane signals below (drain-stall + saturation).
         let pane = capture_pane(&session, &a.name);
         let pane_working = pane.as_deref().is_some_and(pane_shows_working);
+        // Is the agent WEDGED on a Claude Code permission/confirmation dialog (a Yes/No selector)? A
+        // send-keys nudge / restart can't clear it — it needs a HUMAN answer — so on a confirmed
+        // drain-stall we ESCALATE distinctly instead of futilely nudging (concierge 2026-09-07).
+        let permission_wedge = pane.as_deref().is_some_and(pane_shows_permission_dialog);
 
         let ctx_pct = pane.as_deref().and_then(parse_context_pct);
         // Only ACTIONABLE queued mail counts toward a drain-stall — stale informational notes/merged
@@ -6223,6 +6227,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             let restart_rate_limited = wedge_restart_age_secs(fleet, &a.name, now)
                 .is_some_and(|s| s < WEDGE_RESTART_GRACE);
             let escalate_restart = action == DrainNudge::Stuck
+                && !permission_wedge // a restart can't answer a Yes/No dialog + would abandon the pending op
                 && decide_drain_escalation(
                     stuck_count,
                     DRAIN_STALL_RESTART_THRESHOLD,
@@ -6264,6 +6269,15 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         ),
                     }
                 }
+            } else if matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) && permission_wedge {
+                // A permission/confirmation DIALOG (Yes/No selector) ignores a `continue` keystroke — the
+                // nudge is futile. Skip it; the distinct concierge escalation below ("needs a human
+                // answer") is the correct action (a human presses the choice).
+                eprintln!(
+                    "  ⛔ '{}' is WEDGED on a permission dialog — SKIPPING the drain-nudge (a Yes/No selector \
+                     ignores `continue`); escalating to concierge as needs-a-human-answer instead.",
+                    a.name
+                );
             } else if matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) {
                 if action == DrainNudge::Stuck {
                     // A prior auto-nudge didn't stick (same message still unconsumed). Surface it loudly.
@@ -6326,30 +6340,63 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 persist_window,
                 SAT_NOTIFY_GRACE,
             );
-            if notify {
+            // A permission DIALOG provably can't self-clear (the agent is blocked on a Yes/No selector),
+            // so escalate it PROMPTLY — rate-limited by SAT_NOTIFY_GRACE — rather than waiting the full
+            // persist_window a normal drain-stall needs (a normal stall might self-drain; a dialog won't).
+            let permission_notify = drain_stall
+                && permission_wedge
+                && last_notify
+                    .as_ref()
+                    .map(|(_, age)| *age >= SAT_NOTIFY_GRACE)
+                    .unwrap_or(true);
+            if notify || permission_notify {
                 let flagged = flagged_id.as_deref().unwrap_or("?");
                 if dry_run {
                     println!(
-                        "  DRY-RUN would escalate '{}' persistent drain-stall to concierge",
-                        a.name
+                        "  DRY-RUN would escalate '{}' {} to concierge",
+                        a.name,
+                        if permission_wedge {
+                            "PERMISSION-DIALOG wedge (needs human)"
+                        } else {
+                            "persistent drain-stall"
+                        }
                     );
                 } else {
+                    let (subject, body) = if permission_wedge {
+                        (
+                            format!(
+                                "WEDGED ON PERMISSION DIALOG: '{}' blocked on a Claude Code Yes/No permission prompt — needs a HUMAN answer",
+                                a.name
+                            ),
+                            format!(
+                                "'{}' appears WEDGED on a Claude Code permission/confirmation dialog (a Yes/No \
+                                 selector — CC still prompts for some dangerous ops even under \
+                                 --dangerously-skip-permissions). Its inbox has {actionable_depth} unconsumed \
+                                 actionable msg(s) (oldest: {flagged}). A `continue`/`/loop` send-keys nudge \
+                                 CANNOT answer a numbered selector, so the watchdog SKIPPED the drain-nudge + \
+                                 auto-restart. ACTION: a human must open its tmux window and answer the prompt \
+                                 (or decide). This is DISTINCT from a /loop stall or a drain-glob bug — the \
+                                 watchdog can't fix a dialog.",
+                                a.name
+                            ),
+                        )
+                    } else {
+                        (
+                            format!(
+                                "DRAIN-STALL: '{}' has {actionable_depth} unconsumed actionable msg(s) — not draining",
+                                a.name
+                            ),
+                            drain_stall_note_body(&a.name, actionable_depth, flagged, ctx_pct),
+                        )
+                    };
                     deliver(
                         fleet,
                         &Message {
                             from: "watchdog".to_string(),
                             to: "concierge".to_string(),
                             kind: "note".to_string(),
-                            subject: format!(
-                                "DRAIN-STALL: '{}' has {actionable_depth} unconsumed actionable msg(s) — not draining",
-                                a.name
-                            ),
-                            body: drain_stall_note_body(
-                                &a.name,
-                                actionable_depth,
-                                flagged,
-                                ctx_pct,
-                            ),
+                            subject,
+                            body,
                             seq: next_seq(),
                             r#ref: String::new(),
                             in_reply_to: String::new(),
@@ -6359,8 +6406,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     stamp_drain_notify(fleet, &a.name, flagged);
                     drain_stall_escalations += 1;
                     println!(
-                        "  + escalated '{}' persistent drain-stall to concierge (rate-limited)",
-                        a.name
+                        "  + escalated '{}' {} to concierge (rate-limited)",
+                        a.name,
+                        if permission_wedge {
+                            "PERMISSION-DIALOG wedge (needs human)"
+                        } else {
+                            "persistent drain-stall"
+                        }
                     );
                 }
             }
@@ -8962,6 +9014,21 @@ fn pane_shows_idle_prompt(pane_text: &str) -> bool {
 fn pane_shows_update_banner(pane_text: &str) -> bool {
     let lower = pane_text.to_ascii_lowercase();
     lower.contains("restart to update") || lower.contains("update installed")
+}
+
+/// Does the pane show a Claude Code PERMISSION / confirmation DIALOG — a blocking Yes/No selector the
+/// agent is WEDGED on? Claude Code still prompts for some DANGEROUS operations (e.g. a risky `rm`) even
+/// under `--dangerously-skip-permissions`, and a `continue` / `/loop` send-keys nudge CANNOT answer a
+/// numbered selector — so the agent sits idle (inbox piling) until a human presses the choice (concierge
+/// incident 2026-09-07, dcquic-perf-rpc wedged on "Dangerous rm operation … 1. Yes / 2. No"). Detected by
+/// CC's canonical permission-prompt question or its numbered Yes/No options. Pure, and only consulted on a
+/// CONFIRMED drain-stall (the agent is wedged, not generating), so a stray mention in normal output is
+/// very unlikely to false-positive. The watchdog uses it to ESCALATE "needs a human answer" instead of
+/// futilely re-nudging or auto-restarting (a restart can't answer the dialog and would abandon the pending op).
+fn pane_shows_permission_dialog(pane_text: &str) -> bool {
+    pane_text.contains("Do you want to proceed?")
+        || pane_text.contains("❯ 1. Yes")
+        || (pane_text.contains("1. Yes") && pane_text.contains("2. No"))
 }
 
 /// Does the pane show an agent BLOCKED on a backgrounded task — "Waiting for task <id> (esc to give
@@ -20236,6 +20303,27 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!pane_shows_idle_prompt("❯ ls -la")); // typed text pending → not cleanly idle
         assert!(!pane_shows_idle_prompt("✻ Thinking… (1m · ↓ 3k tokens)")); // generating, no prompt
         assert!(!pane_shows_idle_prompt(""));
+    }
+
+    #[test]
+    fn pane_shows_permission_dialog_detects_the_yes_no_selector_wedge() {
+        // CC's canonical permission-prompt question.
+        assert!(pane_shows_permission_dialog(
+            "Dangerous rm operation detected\n\nDo you want to proceed?\n❯ 1. Yes\n  2. No"
+        ));
+        // The numbered selector alone (question phrased differently).
+        assert!(pane_shows_permission_dialog(
+            "  1. Yes\n  2. No, and tell Claude what to do differently"
+        ));
+        // The arrow-selected first option.
+        assert!(pane_shows_permission_dialog("❯ 1. Yes, proceed\n  2. No"));
+        // A normal working/idle pane is NOT a dialog (no false-positive on ordinary output).
+        assert!(!pane_shows_permission_dialog(
+            "● Running the benchmark…\n❯ \n  esc to interrupt"
+        ));
+        assert!(!pane_shows_permission_dialog(
+            "just some prose mentioning yes and no"
+        ));
     }
 
     #[test]
