@@ -533,6 +533,10 @@ pub enum FleetCmd {
         /// Also kill the tmux window (reap the panel). Default keeps it open for scrollback.
         #[arg(long)]
         close: bool,
+        /// Required to remove a PROTECTED role (the concierge — the human interface + watchdog driver).
+        /// Guards against a casual/accidental removal of the single most load-bearing agent.
+        #[arg(long)]
+        force: bool,
     },
     /// Reactivate a `stopped` agent (the inverse of `remove`): flip its registry status back to
     /// `active`, clear its stop-file, then ensure its worktree + inbox + a live tmux window (re-arming
@@ -1327,7 +1331,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => add(
             &fleet, name, role, vertical, area, interval, model, effort, seed,
         ),
-        FleetCmd::Remove { name, close } => remove(&fleet, &name, close),
+        FleetCmd::Remove { name, close, force } => remove(&fleet, &name, close, force),
         FleetCmd::Resume { name } => resume(&fleet, &name),
         FleetCmd::WithLease { command } => with_lease(&fleet, &command),
         FleetCmd::Send {
@@ -2928,19 +2932,39 @@ fn agent_from_roster(fleet: &Fleet, e: &RosterEntry) -> Agent {
     }
 }
 
+/// Is `role` a PROTECTED role that must NEVER be stopped, reaped, or window-closed by an autonomous or
+/// casual path? The `concierge` is the single human interface (Slack bridge) AND the standing watchdog/
+/// reap driver — if its window dies the whole fleet stalls (no operator channel, no watchdog), and if it
+/// is ever marked `stopped` its window self-heal is DISABLED too (the recreate guards skip stop-filed
+/// agents). So `fleet down` skips it, `fleet remove` refuses it without `--force`, and the reap never
+/// targets it — the concierge stays alive BY CONSTRUCTION, and the window self-heal (#8566/#8567) is the
+/// backstop for a process crash. Operator directive 2026-09-07: "the concierge window must ABSOLUTELY
+/// never die." Pure so the protected-set is unit-pinned. (Extensible if another single-interface/
+/// standing-driver role is added.)
+fn is_protected_role(role: &str) -> bool {
+    role == "concierge"
+}
+
 fn down(fleet: &Fleet) {
     let mut reg = fleet.load();
     std::fs::create_dir_all(fleet.root.join("stop")).expect("create stop dir");
+    let mut stopped = 0usize;
     for a in reg.agents.iter_mut() {
+        if is_protected_role(&a.role) {
+            // NEVER stop the human interface / watchdog driver — it must stay up to relaunch the fleet
+            // and relay to the operator (and stopping it would disable its own window self-heal).
+            continue;
+        }
         a.status = "stopped".to_string();
         // Drop a stop-file the loop checks at the top of each tick, so it exits cleanly.
         std::fs::write(fleet.stopfile(&a.name), "stopped by `fleet down`\n").ok();
+        stopped += 1;
     }
     fleet.save(&reg);
     println!(
-        "fleet down: {} agent(s) marked stopped (stop-files dropped). tmux windows left OPEN for\n\
-         scrollback — close them by hand when done, or `fleet up` to restart.",
-        reg.agents.len()
+        "fleet down: {stopped} agent(s) marked stopped (stop-files dropped); protected role(s) \
+         (concierge) LEFT RUNNING. tmux windows left OPEN for scrollback — close them by hand when \
+         done, or `fleet up` to restart."
     );
 }
 
@@ -3292,12 +3316,24 @@ fn add(
     }
 }
 
-fn remove(fleet: &Fleet, name: &str, close: bool) {
+fn remove(fleet: &Fleet, name: &str, close: bool, force: bool) {
     let mut reg = fleet.load();
     let Some(a) = reg.agents.iter_mut().find(|a| a.name == name) else {
         eprintln!("fleet remove: no agent named '{name}'");
         std::process::exit(1);
     };
+    // PROTECTED-ROLE guard (operator 2026-09-07): refuse to remove the concierge (the human interface +
+    // standing watchdog/reap driver) without `--force`. Removing it stops the fleet's only operator
+    // channel AND disables its own window self-heal (a stop-file makes the recreate guards skip it).
+    if is_protected_role(&a.role) && !force {
+        eprintln!(
+            "fleet remove: REFUSING to remove protected role '{name}' (role={}) — it is the human \
+             interface + watchdog driver; removing it stalls the fleet and disables its window \
+             self-heal. Re-run with `--force` only if you truly intend to tear it down.",
+            a.role
+        );
+        std::process::exit(1);
+    }
     a.status = "stopped".to_string();
     std::fs::create_dir_all(fleet.root.join("stop")).expect("create stop dir");
     std::fs::write(fleet.stopfile(name), "removed by `fleet remove`\n").ok();
@@ -7020,6 +7056,12 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut reaped = 0usize;
     for a in &reg.agents {
         if a.status != "stopped" {
+            continue;
+        }
+        if is_protected_role(&a.role) {
+            // Belt-and-suspenders: never REAP a protected role's window (the concierge). It can't
+            // normally be `stopped` (down skips it, remove refuses it), but if it ever is, killing its
+            // window would stall the fleet — leave it, and its self-heal recreates it if the process died.
             continue;
         }
         let stopfile = fleet.stopfile(&a.name);
@@ -18277,6 +18319,19 @@ mod tests {
         // Empty merge-base string (git printed nothing) is treated as unresolved → trunk fallback, never
         // "..ref" (which would resolve to the ref's whole history from the root — a huge wrong range).
         assert_eq!(merge_base_range(Some(""), "deadbeef"), "trunk..deadbeef");
+    }
+
+    #[test]
+    fn is_protected_role_covers_the_concierge_only() {
+        // The concierge is protected: down skips it, remove refuses it w/o --force, reap never targets
+        // it (operator 2026-09-07 "the concierge window must never die").
+        assert!(is_protected_role("concierge"));
+        // Ordinary roles are not protected (down/remove/reap operate normally).
+        assert!(!is_protected_role("vertical"));
+        assert!(!is_protected_role("pr-sync"));
+        assert!(!is_protected_role("perf-agent"));
+        assert!(!is_protected_role("theorizer"));
+        assert!(!is_protected_role("builder"));
     }
 
     #[test]
