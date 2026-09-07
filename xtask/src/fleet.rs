@@ -5941,10 +5941,30 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         if watchdog_skips_agent(&a.status, fleet.stopfile(&a.name).exists()) {
             continue;
         }
-        // No live window → `up` hasn't launched it (or it was closed); the watchdog doesn't create
-        // windows, only revives loops in existing ones.
-        if !live.iter().any(|w| w == &a.name) {
-            continue;
+        // No live window. A weekend-rested agent was already skipped above (watchdog_skips_agent), so
+        // reaching here means an ACTIVE, non-stop-filed agent whose window is GONE — its Claude process
+        // exited/crashed, or `up` never launched it. Nothing recreates it autonomously (`up` isn't run on
+        // a cadence), so it would stay dead until a manual `resume` — the recurring concierge-teardown
+        // class (2026-09-07). SELF-HEAL: recreate the window (ensure_window relaunches window.sh → its
+        // /loop), thrash-guarded by the SHARED wedge grace (a crash-looping process is recreated at most
+        // once per WEDGE_RESTART_GRACE, surfacing as a climbing wedge_restarts count rather than a spin;
+        // sharing the stamp also means the wall-wedge path never double-acts with this).
+        let has_window = live.iter().any(|w| w == &a.name);
+        if !has_window {
+            if should_recreate_missing_window(
+                has_window,
+                wedge_restart_age_secs(fleet, &a.name, now),
+                WEDGE_RESTART_GRACE,
+            ) {
+                eprintln!(
+                    "watchdog: '{}' is active with NO live window → recreating it (self-heal a dead/torn-down window).",
+                    a.name
+                );
+                ensure_window(fleet, &session, a);
+                stamp_wedge_restart(fleet, &a.name);
+                wedge_restarts += 1;
+            }
+            continue; // a just-(re)created window boots its own loop — nothing to nudge THIS sweep
         }
         checked += 1;
 
@@ -7249,10 +7269,12 @@ struct WatchdogCounts {
     saturated: usize,
     queued_but_landed: usize,
     wedge_escalations: usize,
-    /// Windows AUTO-RESTARTED this sweep to self-heal a 100%-context wedge (operator directive
-    /// 2026-08-02). An ACTION count (like `reaped`) — a durable record that the fleet self-healed a
-    /// wedge without an operator. Persistently >0 across sweeps means agents keep hitting the wall (the
-    /// self-compact discipline is failing upstream), worth a deeper fix than the restart papering over it.
+    /// Windows AUTO-RESTARTED/RECREATED this sweep to self-heal — either a 100%-context wedge (operator
+    /// directive 2026-08-02) OR an active agent whose window DIED/was torn down (dead-window recreate,
+    /// 2026-09-07; see `should_recreate_missing_window`). An ACTION count (like `reaped`) — a durable
+    /// record that the fleet self-healed without an operator. Persistently >0 across sweeps means agents
+    /// keep hitting the wall OR keep losing their windows (a crash-loop), worth a deeper fix than the
+    /// restart papering over it. (Both share `WEDGE_RESTART_GRACE`, so they never double-act.)
     wedge_restarts: usize,
     /// `/compact` keystrokes the watchdog sent to PRE-WALL agents this sweep (the real prevent-the-wall
     /// remedy — agents can't self-compact). An ACTION count; a healthy fleet shows occasional nudges that
@@ -9191,6 +9213,23 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
 /// invariant, 2026-09-05). Pure so the invariant is unit-pinned against a future watchdog refactor.
 fn watchdog_skips_agent(status: &str, has_stopfile: bool) -> bool {
     status != "active" || has_stopfile
+}
+
+/// Should the watchdog RECREATE an active agent's window this sweep? True when the agent has NO live
+/// window AND we have not recreated/restarted its window within `grace` (thrash-guard against a
+/// crash-looping process — a genuinely dead window is recreated once per grace, and the repetition is
+/// visible as a climbing `wedge_restarts` count rather than a tight spin). `restart_age` = seconds since
+/// we last (re)started/recreated its window (None = never).
+///
+/// This closes the concierge-teardown recurrence: an ACTIVE agent whose window dies (its Claude process
+/// exited/crashed, or `up` never launched it) was previously SKIPPED by the watchdog ("no live window →
+/// up will relaunch"), but nothing runs `up` autonomously, so it stayed dead until a manual `resume`.
+/// Now the watchdog self-heals it. PRECONDITION: the caller already excluded rested agents via
+/// [`watchdog_skips_agent`], so this only ever governs an active, non-stop-filed agent — a rested agent
+/// is NEVER recreated (weekend-rest invariant preserved). Pure so the decision is unit-pinned.
+fn should_recreate_missing_window(has_window: bool, restart_age: Option<u64>, grace: u64) -> bool {
+    // Recreate iff no window AND (never recreated OR the last recreate is older than the grace).
+    !has_window && restart_age.is_none_or(|s| s >= grace)
 }
 
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
@@ -18208,6 +18247,29 @@ mod tests {
         // Empty merge-base string (git printed nothing) is treated as unresolved → trunk fallback, never
         // "..ref" (which would resolve to the ref's whole history from the root — a huge wrong range).
         assert_eq!(merge_base_range(Some(""), "deadbeef"), "trunk..deadbeef");
+    }
+
+    #[test]
+    fn should_recreate_missing_window_only_for_a_windowless_agent_past_the_grace() {
+        let grace = WEDGE_RESTART_GRACE;
+        // A live window → never recreate (the common case).
+        assert!(!should_recreate_missing_window(true, None, grace));
+        assert!(!should_recreate_missing_window(true, Some(0), grace));
+        // No window + never recreated → recreate (self-heal a dead/torn-down window).
+        assert!(should_recreate_missing_window(false, None, grace));
+        // No window + recreated long ago (past grace) → recreate again (still dead).
+        assert!(should_recreate_missing_window(
+            false,
+            Some(grace + 1),
+            grace
+        ));
+        // No window but recreated WITHIN grace → hold (thrash-guard vs a crash-looping process).
+        assert!(!should_recreate_missing_window(false, Some(0), grace));
+        assert!(!should_recreate_missing_window(
+            false,
+            Some(grace - 1),
+            grace
+        ));
     }
 
     #[test]
