@@ -5738,12 +5738,42 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
 /// idle concierge too). Concierge-focused (the only agent whose watchdog runs inside its own tick).
 fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) {
     if fleet.stopfile(agent).exists() {
-        return; // a stopped agent stays down
-    }
-    if !tmux_windows(session).iter().any(|w| w == agent) {
-        return; // no live window to act on
+        return; // a stopped/rested agent stays down (stop-file is the durable rest signal)
     }
     let now = now_unix();
+    if !tmux_windows(session).iter().any(|w| w == agent) {
+        // No live window, and no stop-file → an ACTIVE agent whose window DIED / was torn down. This cron
+        // runs OUT-OF-BAND (independent of the concierge), so it is the ONLY thing that can revive the
+        // CONCIERGE: the concierge runs the in-tick watchdog, so a dead concierge can't self-heal via that
+        // watchdog (chicken-and-egg — "who heals the healer"). Recreate the window here, thrash-guarded by
+        // the shared wedge grace. This COMPLEMENTS the in-tick watchdog's dead-window recreate (#8566),
+        // which self-heals every OTHER active agent.
+        if should_recreate_missing_window(
+            false,
+            wedge_restart_age_secs(fleet, agent, now),
+            WEDGE_RESTART_GRACE,
+        ) {
+            if dry_run {
+                println!(
+                    "  DRY-RUN would RECREATE '{agent}' dead/torn-down window (out-of-band self-heal)"
+                );
+            } else if let Some(a) = fleet
+                .load()
+                .agents
+                .iter()
+                .find(|x| x.name == agent)
+                .cloned()
+            {
+                ensure_window(fleet, session, &a);
+                stamp_wedge_restart(fleet, agent);
+                eprintln!(
+                    "  + RECREATED '{agent}' dead/torn-down window out-of-band (active but windowless — \
+                     the concierge can't self-heal via its own in-tick watchdog). (self-heal)"
+                );
+            }
+        }
+        return; // a just-(re)created window boots its own loop — nothing to compact/nudge THIS run
+    }
     let pane = capture_pane(session, agent);
     let ctx_pct = pane.as_deref().and_then(parse_context_pct);
     // ACT ONLY WHEN IDLE: a mid-tick concierge is either genuinely working or running its own in-tick
