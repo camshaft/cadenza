@@ -401,6 +401,7 @@ impl Fleet {
             "baseline-drift-monitor.sh",
             "drain-nudge.sh",
             "compact-nudge.sh",
+            "watchdog.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -17954,6 +17955,7 @@ mod tests {
             "cpu-monitor.sh",
             "drain-nudge.sh",
             "compact-nudge.sh",
+            "watchdog.sh",
         ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
