@@ -1173,6 +1173,11 @@ pub enum FleetCmd {
         /// a stop-file (its loop demonstrably exited — never a merely-idle live agent).
         #[arg(long)]
         reap_dead_letters: bool,
+        /// The tmux session to act on, server-direct (no `$TMUX` needed) — how `watchdog.sh`'s system cron
+        /// runs the full watchdog DECOUPLED from the concierge's tick. Omit to auto-detect the current
+        /// session (the concierge's in-tick usage, which needs `$TMUX`).
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Autonomous DRAIN-NUDGE scan (the frequent "mail-present heartbeat"): nudge any IDLE agent that has
     /// unconsumed ACTIONABLE hub mail to drain it — and NOTHING else. A strict SUBSET of `watchdog
@@ -1371,6 +1376,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             nudge_drain_stalls,
             drain_nudge_grace,
             reap_dead_letters,
+            session,
         } => watchdog(
             &fleet,
             WatchdogOpts {
@@ -1381,6 +1387,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
                 nudge_drain_stalls,
                 drain_nudge_grace,
                 reap_dead_letters,
+                session,
             },
         ),
         FleetCmd::DrainNudge {
@@ -5650,6 +5657,11 @@ struct WatchdogOpts {
     nudge_drain_stalls: bool,
     drain_nudge_grace: u64,
     reap_dead_letters: bool,
+    /// Explicit tmux session to act on (server-direct, no `$TMUX` needed). `None` = auto-detect the
+    /// current session (the concierge's in-tick usage). Set by `watchdog.sh`'s system cron so the full
+    /// watchdog can run DECOUPLED from the concierge's tick (fixes the stale-binary + who-heals-the-healer
+    /// coupling — the watchdog no longer depends on the concierge being alive to run).
+    session: Option<String>,
 }
 
 /// The autonomous DRAIN-NUDGE scan (the frequent "mail-present heartbeat"; see the `DrainNudge` CLI doc).
@@ -5883,15 +5895,23 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         nudge_drain_stalls,
         drain_nudge_grace,
         reap_dead_letters,
+        session,
     } = opts;
-    if !in_tmux() {
-        eprintln!(
-            "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
-             the tmux session the fleet windows live in."
-        );
-        return;
-    }
-    let session = tmux_current_session();
+    // An explicit `--session` runs server-direct (system cron, no $TMUX — how watchdog.sh invokes it,
+    // decoupled from the concierge's tick). Otherwise auto-detect the current session, which needs $TMUX.
+    let session = match session {
+        Some(s) => s,
+        None => {
+            if !in_tmux() {
+                eprintln!(
+                    "fleet watchdog: not inside a tmux session (no $TMUX) and no --session given — nothing \
+                     to re-arm. Run it from the fleet tmux session, or pass --session <name> (as watchdog.sh does)."
+                );
+                return;
+            }
+            tmux_current_session()
+        }
+    };
     let live = tmux_windows(&session);
     let reg = fleet.load();
     let now = now_unix();
