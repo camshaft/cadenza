@@ -346,9 +346,10 @@ pre-sends with the NARROW checks only:
 - **`cargo xtask dev-gate`** — the fast inner-loop gate (auto-detects your touched crates from `git diff`
   and runs only their test+clippy+fmt; warm ≈ 4s; pass crate names to scope explicitly). Your primary
   self-check, every iteration.
-- **a scoped corpus spot-check** when your slice changes behavior: `cargo xtask gate --files
-  <your-file>.sexp --target wasm` (YOUR corpus file, one backend). Not the whole battery — just the
-  case(s) your slice touches.
+- **a scoped corpus spot-check** when your slice changes behavior: `nix build
+  .#checks.<sys>.corpus-gate-coarse-<your-file-stem>` (YOUR corpus file, wasm, fail-on-regression vs
+  `.gate-baseline`). Not the whole battery — just the case(s) your slice touches. (The in-process
+  `cargo xtask gate --files` was DELETED #8318; per-file coarse gates #8321 cover every corpus stem.)
 - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
 **🚦 `cargo xtask fleet gate-local` — THE authoritative merge gate (per THE LAND MODEL above; standing while
@@ -429,9 +430,10 @@ that routine per-MR full-gating belongs to pr-sync alone.)
 Before you send a `merge-request`, the NARROW pre-send verify (NOT the full battery):
 
 1. `cargo xtask dev-gate` green (your touched crates' test+clippy+fmt) — a `Todo→Fail` corpus flip is a
-   genuine MISCOMPILE, so if your slice changes behavior also run the scoped `cargo xtask gate --files
-   <your-file>.sexp --target wasm` and diff the FAIL SET against the baseline (ADDITIVE only; pass count
-   drifts as peers land). `(error CODE)` cases are code-matched; `(trap "reason")` reason-matched.
+   genuine MISCOMPILE, so if your slice changes behavior also run the scoped `nix build
+   .#checks.<sys>.corpus-gate-coarse-<your-file-stem>` and diff the FAIL SET against the baseline (ADDITIVE
+   only; pass count drifts as peers land; the in-process `cargo xtask gate --files` was DELETED #8318).
+   `(error CODE)` cases are code-matched; `(trap "reason")` reason-matched.
 2. For a new test/slice, add its coverage (a fold unit + a wasmtime run where a value executes; a reject
    test for a new diagnostic) and confirm it via `dev-gate` / `cargo test -p <crate> --lib`.
 3. **Format with the PINNED rustfmt, NOT ambient `cargo fmt`** (recurring reject class — cost 4 MRs one
