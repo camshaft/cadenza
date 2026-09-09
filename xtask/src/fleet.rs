@@ -6257,9 +6257,27 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             if escalate_restart {
                 // A drifted session: it ignored DRAIN_STALL_RESTART_THRESHOLD nudges on the SAME message. A
                 // nudge / `/loop` re-issue re-runs the same broken tick, so only a FRESH session clears it.
+                //
+                // BUT a restart is DESTRUCTIVE, so gate it on a FRESH confirmed-idle capture taken HERE,
+                // just before the kill — never restart a possibly-working pane (operator 2026-09-09: "stop
+                // killing heads-down agents"; the PR#1937/#1941 lesson the compact-declined restart already
+                // heeds). The drain-stall verdict + recheck earlier this iteration can be SECONDS stale (a
+                // confirm-delay sleep + a nudge send-keys ran between), so a drifted agent that has SINCE
+                // started a genuine turn would otherwise be killed mid-work. Not-confirmed-idle (mid-turn OR
+                // capture-fail) → SKIP; the next sweep retries a still-stuck agent, so skipping loses only a
+                // cycle. Shared, unit-tested gate: `restart_pane_confirmed_idle`.
+                let confirmed_idle =
+                    restart_pane_confirmed_idle(capture_pane(&session, &a.name).as_deref());
                 if dry_run {
                     println!(
                         "  DRY-RUN would AUTO-RESTART '{}' (drain-stall unfixed after {} nudges)",
+                        a.name, stuck_count
+                    );
+                } else if !confirmed_idle {
+                    eprintln!(
+                        "  … '{}' drain-stall unfixed after {} nudges but NOT confirmed idle (mid-turn or \
+                         capture unavailable) — SKIPPING the auto-restart; never kill a possibly-working \
+                         pane. Retry next sweep.",
                         a.name, stuck_count
                     );
                 } else {
@@ -6516,8 +6534,11 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     let stopped = fleet.stopfile(&a.name).exists();
                     let live = live.iter().any(|w| w == &a.name);
                     let interactive = role_is_terminal_interactive(&a.role); // never touch a human's window
+                    // Shared, unit-tested gate (`restart_pane_confirmed_idle`): a capture FAILURE (None) or
+                    // any working affordance → NOT confirmed idle → skip. Same "never restart on an unknown
+                    // or possibly-working pane" invariant the drain-stall auto-restart now enforces too.
                     let confirmed_idle =
-                        capture_pane(&session, &a.name).is_some_and(|p| !pane_shows_working(&p));
+                        restart_pane_confirmed_idle(capture_pane(&session, &a.name).as_deref());
                     if dry_run {
                         println!(
                             "  DRY-RUN would GRACEFUL-RESTART '{}' (compact-declined, pre-wall {pct}%)",
@@ -9029,6 +9050,23 @@ fn pane_shows_working(pane_text: &str) -> bool {
 /// NOT match — something is pending, so we do not claim idle. Pure + unit-tested.
 fn pane_shows_idle_prompt(pane_text: &str) -> bool {
     pane_text.lines().any(|l| l.trim() == "❯")
+}
+
+/// SAFETY GATE for a DESTRUCTIVE restart: given a pane capture taken FRESH, immediately before the kill,
+/// may the watchdog restart this window? Returns true ONLY when the capture SUCCEEDED (`Some`) AND the
+/// pane is affirmatively IDLE (`!pane_shows_working`). A capture FAILURE (`None`) OR any working
+/// affordance both return false → SKIP the restart this sweep.
+///
+/// This pins, in ONE unit-tested place shared by every destructive-restart path, the rule the operator
+/// made non-negotiable (2026-09-09: "stop killing heads-down agents — we've lost too much progress") and
+/// that github-liaison/Copilot flagged earlier (PR#1937/#1941): NEVER kill a window on an unknown or
+/// possibly-working pane. The sweep-top capture + any drain-stall recheck can be SECONDS stale by the time
+/// a restart decision is reached (a confirm-delay sleep + nudge send-keys run in between), so an agent that
+/// began a genuine turn since then must not be killed mid-work — re-read the pane HERE, at the kill site.
+/// Skipping a still-genuinely-stuck agent loses only one sweep; the next sweep retries. Pure so the safety
+/// invariant is tested and cannot silently regress in a caller.
+fn restart_pane_confirmed_idle(pane: Option<&str>) -> bool {
+    matches!(pane, Some(p) if !pane_shows_working(p))
 }
 
 /// Does the pane show Claude Code's AUTO-UPDATE banner — "Update installed · Restart to update" (or the
@@ -18481,6 +18519,21 @@ mod tests {
         // A non-busy (idle) pane is NOT trusted here → falls through to the re-arm / failed-cold-start
         // recovery (a truly dead, idle window with no work in flight is still legitimately re-armed).
         assert!(!pane_busy_means_working(false));
+    }
+
+    #[test]
+    fn restart_pane_confirmed_idle_never_restarts_on_working_or_unknown_pane() {
+        // An affirmatively IDLE pane (a bare `❯` prompt line) → confirmed idle → a destructive restart
+        // may proceed.
+        assert!(restart_pane_confirmed_idle(Some("some prior output\n❯")));
+        // A pane showing a working affordance ("esc to interrupt", no idle prompt) → NOT confirmed idle
+        // → the restart is SKIPPED (never kill a heads-down agent — operator 2026-09-09).
+        assert!(!restart_pane_confirmed_idle(Some(
+            "running the gate… (esc to interrupt)"
+        )));
+        // A CAPTURE FAILURE (None) → NOT confirmed idle → skip (never restart on an unknown pane; the
+        // PR#1937 lesson — an unsure signal must never trigger a destructive op).
+        assert!(!restart_pane_confirmed_idle(None));
     }
 
     #[test]
