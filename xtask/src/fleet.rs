@@ -3152,6 +3152,129 @@ fn unknown_fleet_cmd_refs(text: &str, valid: &std::collections::BTreeSet<String>
         .collect()
 }
 
+/// A parsed `cargo xtask fleet …` invocation from a code span: the resolved command PATH (always starts
+/// with `fleet`, then any NESTED subcommand/positional tokens as written) and the `--flag` long names it
+/// uses. This is the raw parse; `valid_flags_for_path` decides which path segments are real subcommands
+/// and what flags are valid there.
+#[derive(Debug, PartialEq, Eq)]
+struct FleetInvocation {
+    path: Vec<String>,
+    flags: Vec<String>,
+}
+
+/// Parse every `cargo xtask fleet …` invocation inside a backtick code span (same span-restriction as
+/// [`fleet_cmd_refs`] — prose is never scanned). For each, capture the command PATH (the lowercase-kebab
+/// tokens after `fleet` up to the first flag/value — nested subcommands like `pr create` are included as
+/// written) and the `--flag` LONG names used (`--body-file` → `body-file`; a `--flag=value` or trailing
+/// `<placeholder>` is trimmed). Descent into subcommand tokens stops at the first `--flag` or non-kebab
+/// token (a positional value/placeholder), after which remaining `--flags` are still collected. An
+/// invocation runs from its `cargo xtask fleet ` to the next `cargo xtask` in the span (or span end), so
+/// multiple commands in one fenced block are parsed independently. Pure + unit-tested.
+fn fleet_cmd_invocations(text: &str) -> Vec<FleetInvocation> {
+    const PREFIX: &str = "cargo xtask fleet ";
+    let mut out = Vec::new();
+    for (i, span) in text.split('`').enumerate() {
+        if i % 2 == 0 {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(rel) = span[from..].find(PREFIX) {
+            let start = from + rel + PREFIX.len();
+            // This invocation ends where the next `cargo xtask` begins (or at span end) — so flags from a
+            // following command in the same fenced block never bleed into this one.
+            let end = span[start..]
+                .find("cargo xtask")
+                .map(|e| start + e)
+                .unwrap_or(span.len());
+            from = end.max(start + 1);
+            let mut path = vec!["fleet".to_string()];
+            let mut flags = Vec::new();
+            let mut can_descend = true;
+            for raw in span[start..end].split_whitespace() {
+                // Strip shell line-continuation backslashes / surrounding quotes so `send \` and
+                // `--body "..."` tokenize cleanly.
+                let tok = raw.trim_matches(['\\', '"', '\'']);
+                if let Some(flag) = tok.strip_prefix("--") {
+                    let name: String = flag
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                        .collect();
+                    if !name.is_empty() {
+                        flags.push(name);
+                    }
+                    can_descend = false; // flags started — no more subcommand tokens.
+                } else if can_descend
+                    && !tok.is_empty()
+                    && tok.starts_with(|c: char| c.is_ascii_lowercase())
+                    && tok.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                {
+                    // A lowercase-kebab token before any flag: a candidate nested-subcommand segment.
+                    // `valid_flags_for_path` re-checks whether it is REALLY a subcommand (stopping at the
+                    // first that is not), so a positional value that happens to look kebab is harmless.
+                    path.push(tok.to_string());
+                } else {
+                    can_descend = false; // a value/placeholder ends subcommand descent.
+                }
+            }
+            out.push(FleetInvocation { path, flags });
+        }
+    }
+    out
+}
+
+/// The set of valid `--flag` long names for the command reached by following `path` (e.g.
+/// `["fleet","pr","create"]`) from the real `cargo xtask` clap tree. DERIVED from the tree (never a
+/// hardcoded list), so a renamed/removed flag is caught automatically. Includes:
+/// - the GLOBAL args from the crate root (e.g. `--profile`, defined `global = true` on the top-level
+///   `Cli`) — these apply to every subcommand, so validating without them would false-positive;
+/// - every arg declared on each resolved command along the path;
+/// - the universal `help`.
+///
+/// Resolution is LENIENT: descent stops at the first path segment that is not a real subcommand (a
+/// positional value written kebab-style), and root-level args are always accepted — so the lint errs
+/// toward MISSING a bogus flag over false-flagging a valid one. `root` is the built `Cli` command
+/// (`<crate::Cli as clap::CommandFactory>::command()`), passed in so the pure resolver is unit-testable.
+fn valid_flags_for_path(
+    root: &clap::Command,
+    path: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut flags = std::collections::BTreeSet::new();
+    flags.insert("help".to_string());
+    let collect = |cmd: &clap::Command, into: &mut std::collections::BTreeSet<String>| {
+        for a in cmd.get_arguments() {
+            if let Some(l) = a.get_long() {
+                into.insert(l.to_string());
+            }
+        }
+    };
+    collect(root, &mut flags); // root globals (e.g. --profile) apply everywhere.
+    let mut cmd = root;
+    for seg in path {
+        let Some(next) = cmd.find_subcommand(seg) else {
+            break; // not a real subcommand (a positional value) — stop descending.
+        };
+        cmd = next;
+        collect(cmd, &mut flags);
+    }
+    flags
+}
+
+/// Every `cargo xtask fleet … --flag` in `text` whose `--flag` is NOT valid for its resolved command —
+/// the FLAG-level twin of [`unknown_fleet_cmd_refs`] (#8322 was itself a removed FLAG, `gate --files`).
+/// Returns `(command-path, flag)` pairs, sorted + de-duped. `root` is the built `Cli` command. Pure.
+fn unknown_fleet_cmd_flags(text: &str, root: &clap::Command) -> Vec<(String, String)> {
+    let mut out = std::collections::BTreeSet::new();
+    for inv in fleet_cmd_invocations(text) {
+        let valid = valid_flags_for_path(root, &inv.path);
+        for f in &inv.flags {
+            if !valid.contains(f) {
+                out.insert((inv.path.join(" "), f.clone()));
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// Lint the tracked charter (`fleet/AGENTS-fleet.md` + every `fleet/loops/*.md`) for STALE
 /// `cargo xtask fleet <sub>` references — the drift a subcommand rename/removal leaves in a role body
 /// (#8322's stale `xtask gate --files` class), which silently misleads every agent that re-reads its
@@ -3161,6 +3284,9 @@ fn unknown_fleet_cmd_refs(text: &str, valid: &std::collections::BTreeSet<String>
 /// self-updates as the CLI evolves.
 fn lint_loops(fleet: &Fleet) {
     let valid = valid_fleet_subcommands();
+    // The full built `cargo xtask` clap tree — so flag validation sees GLOBAL args (e.g. --profile) and
+    // NESTED subcommands (`pr create`, `batch-*`). Built once, reused per file.
+    let root = <crate::Cli as clap::CommandFactory>::command();
     let mut files: Vec<std::path::PathBuf> = vec![fleet.src.join("AGENTS-fleet.md")];
     if let Ok(rd) = std::fs::read_dir(fleet.src.join("loops")) {
         let mut loops: Vec<_> = rd
@@ -3185,14 +3311,21 @@ fn lint_loops(fleet: &Fleet) {
             );
             total_stale += 1;
         }
+        for (path, flag) in unknown_fleet_cmd_flags(&text, &root) {
+            eprintln!(
+                "  ✗ {}: `cargo xtask {path} --{flag}` — '--{flag}' is not a valid flag for `{path}` (renamed/removed?)",
+                f.display()
+            );
+            total_stale += 1;
+        }
     }
     if total_stale == 0 {
         println!(
-            "fleet lint-loops: ok — every `cargo xtask fleet <sub>` reference across {checked} charter file(s) resolves to a real subcommand."
+            "fleet lint-loops: ok — every `cargo xtask fleet <sub> [--flag]` reference across {checked} charter file(s) resolves to a real subcommand + flag."
         );
     } else {
         eprintln!(
-            "fleet lint-loops: {total_stale} STALE fleet-subcommand reference(s) across {checked} charter file(s) — fix the role body/contract (or the subcommand name). Valid set is derived from the clap FleetCmd enum."
+            "fleet lint-loops: {total_stale} STALE fleet-command reference(s) across {checked} charter file(s) — fix the role body/contract (or the subcommand/flag name). Valid set is derived from the clap CLI tree."
         );
         std::process::exit(1);
     }
@@ -18698,6 +18831,73 @@ mod tests {
         assert!(valid.contains("lint-loops"));
         // A made-up name is absent.
         assert!(!valid.contains("frobnicate"));
+    }
+
+    #[test]
+    fn fleet_cmd_invocations_parses_path_and_flags_per_span() {
+        // Simple sub + flags; value tokens (`x`, `note`) are skipped, not treated as flags/subs.
+        assert_eq!(
+            fleet_cmd_invocations("`cargo xtask fleet send --to x --kind note`"),
+            vec![FleetInvocation {
+                path: vec!["fleet".into(), "send".into()],
+                flags: vec!["to".into(), "kind".into()],
+            }]
+        );
+        // Nested subcommand path (`pr create`) is captured so flags validate against the RIGHT command.
+        let inv = fleet_cmd_invocations("`cargo xtask fleet pr create --title t --base main`");
+        assert_eq!(inv[0].path, vec!["fleet", "pr", "create"]);
+        assert_eq!(inv[0].flags, vec!["title".to_string(), "base".to_string()]);
+        // A positional value (agent name) after the sub is captured in path but harmless; flags still read.
+        assert_eq!(
+            fleet_cmd_invocations("`cargo xtask fleet inbox v-x --processed m`")[0].flags,
+            vec!["processed".to_string()]
+        );
+        // Two invocations in one span do NOT bleed flags into each other.
+        let inv = fleet_cmd_invocations("`cargo xtask fleet send --to x` `cargo xtask fleet sync`");
+        assert_eq!(inv.len(), 2);
+        assert!(inv[1].flags.is_empty());
+        // Prose (outside a code span) is not parsed.
+        assert!(fleet_cmd_invocations("run cargo xtask fleet send --to x in prose").is_empty());
+    }
+
+    #[test]
+    fn valid_flags_for_path_includes_globals_and_descends_real_subcommands() {
+        let root = <crate::Cli as clap::CommandFactory>::command();
+        let send = valid_flags_for_path(&root, &["fleet".to_string(), "send".to_string()]);
+        assert!(send.contains("to"));
+        assert!(send.contains("kind"));
+        assert!(send.contains("profile")); // the top-level global arg applies to every subcommand
+        assert!(send.contains("help"));
+        assert!(!send.contains("frobnicate"));
+        // A non-subcommand path segment stops descent: root globals remain, but `send`'s flags are absent.
+        let bogus = valid_flags_for_path(&root, &["fleet".to_string(), "nosuchsub".to_string()]);
+        assert!(bogus.contains("profile"));
+        assert!(!bogus.contains("to"));
+    }
+
+    #[test]
+    fn unknown_fleet_cmd_flags_flags_only_bogus_flags() {
+        let root = <crate::Cli as clap::CommandFactory>::command();
+        // Real flags on real (incl. nested) commands + the global --profile → nothing flagged.
+        assert!(
+            unknown_fleet_cmd_flags(
+                "`cargo xtask fleet send --to x --kind note --body-file f`",
+                &root
+            )
+            .is_empty()
+        );
+        assert!(
+            unknown_fleet_cmd_flags("`cargo xtask fleet inbox v-x --processed m`", &root)
+                .is_empty()
+        );
+        assert!(
+            unknown_fleet_cmd_flags("`cargo xtask fleet status --profile dev`", &root).is_empty()
+        );
+        // NEGATIVE CONTROL: a bogus flag IS flagged — proves the lint is not vacuously passing.
+        assert_eq!(
+            unknown_fleet_cmd_flags("`cargo xtask fleet send --frobnicate`", &root),
+            vec![("fleet send".to_string(), "frobnicate".to_string())]
+        );
     }
 
     #[test]
