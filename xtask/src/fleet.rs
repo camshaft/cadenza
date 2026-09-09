@@ -7028,22 +7028,21 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         }
 
         // Don't interrupt a real tick: if the pane shows Claude working ("esc to interrupt"), the loop
-        // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop.
-        //
-        // BUT this pane-busy guard is only trustworthy for an agent that has EVER stamped a heartbeat.
-        // A genuine tick stamps its heartbeat at step 1 (`fleet heartbeat`) BEFORE any long work, so a
-        // has-looped agent with a busy pane is genuinely mid-tick. A NEVER-heartbeated agent past the
-        // cold-start window, by contrast, is FLAILING (e.g. stuck retrying a failed command) — its busy
-        // pane is not progress, and skipping it here is exactly the false-positive that let the
-        // origin/trunk-flail mints sit forever (corpus-bugfix's capture). So: honor the busy pane only
-        // when the agent has stamped a heartbeat at least once; a never-heartbeated agent re-arms even
-        // if the pane looks busy. (`busy pane + zero heartbeats ever` = stuck, not a long tick.)
-        // Only trust the pane when the agent has looped before (never-heartbeated → pane can't be
-        // trusted). Reuse the single capture taken above (`pane_working`), no second tmux read.
-        let pane_busy = hb_age.is_some() && pane_working;
-        if pane_busy_means_working(hb_age.is_some(), pane_busy) {
+        // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop. TRUST the
+        // busy pane as liveness REGARDLESS of heartbeat presence (operator directive 2026-09-09: "stop
+        // killing heads-down agents — we've lost too much progress"). The old gate additionally required
+        // `hb_age.is_some()` and treated a never-heartbeated + busy pane as FLAILING → re-armed it; but a
+        // host REBOOT can wipe the heartbeat touch-file WHILE an agent is minutes deep in a genuine turn,
+        // so that gate was aborting real work (the "lost progress"/"memory wipe" the operator repeatedly
+        // hit). A busy pane is now ALWAYS left alone here — never re-armed/restarted. The narrow dead-loop
+        // cases that merely MASQUERADE as busy are already handled ABOVE by the evidence-based wedge paths
+        // (update-banner; frozen-token backgrounded-wait), which carry affirmative dead-loop proof rather
+        // than judging on heartbeat-absence alone. Reuse the single capture taken above (`pane_working`),
+        // no second tmux read.
+        let pane_busy = pane_working;
+        if pane_busy_means_working(pane_busy) {
             println!(
-                "  = {} heartbeat stale but pane shows work in flight — left alone",
+                "  = {} heartbeat stale but pane shows work in flight — left alone (trusted regardless of heartbeat; never interrupt a heads-down agent)",
                 a.name
             );
             continue;
@@ -8574,14 +8573,25 @@ fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
 }
 
 /// Whether a busy-looking pane should be TRUSTED as "genuinely mid-tick, leave alone" for a stale
-/// agent. Pure so the invariant is unit-tested. A pane only counts as real work if the agent has EVER
-/// stamped a heartbeat (`hb_ever` = `heartbeat_age_secs(...).is_some()`): a genuine tick stamps its
-/// heartbeat at step 1 before any long work, so a has-looped agent with a busy pane is mid-tick. A
-/// never-heartbeated agent past the cold-start window with a busy pane is FLAILING (stuck retrying),
-/// not working — so its pane must NOT be trusted, else it's skipped forever (the origin/trunk-flail
-/// false-positive). Returns true ⇒ honor the busy pane and skip re-arm; false ⇒ ignore the pane.
-fn pane_busy_means_working(hb_ever: bool, pane_busy: bool) -> bool {
-    hb_ever && pane_busy
+/// agent. Pure so the invariant is unit-tested. A busy pane ("esc to interrupt") is ALWAYS trusted as
+/// real work in flight — the watchdog must NEVER re-arm/restart it — REGARDLESS of whether the agent
+/// has ever stamped a heartbeat (operator directive 2026-09-09: "We're killing agent windows way too
+/// aggressively … we've lost too much progress repeatedly"; "I'm fine to actively ping them … but
+/// killing them gets really annoying cause they lose everything if they're heads down").
+///
+/// This REMOVES the old `hb_ever && pane_busy` FLAILING carve-out (never-heartbeated + busy → re-arm),
+/// which was interrupting genuine work: a host REBOOT can wipe the heartbeat touch-file while an agent
+/// is minutes deep in a real turn, and the old gate then read it as never-heartbeated + busy = FLAILING
+/// and re-armed it, aborting the turn (the "lost progress"/"memory wipe" the operator repeatedly hit).
+/// A busy pane is unforgeable liveness; trust it. The narrow dead-loop cases that only MASQUERADE as
+/// busy (a stale "esc to interrupt" footer behind Claude Code's update banner; a hung backgrounded-wait
+/// with a FROZEN token count) are caught by the evidence-based wedge paths that run BEFORE this guard —
+/// those carry affirmative proof the loop is dead, so they are NOT "the never-heartbeated branch alone".
+///
+/// Returns true ⇒ honor the busy pane and skip re-arm; false ⇒ pane is idle (not working) so the
+/// re-arm / failed-cold-start recovery may proceed (a truly dead, idle window with no work in flight).
+fn pane_busy_means_working(pane_busy: bool) -> bool {
+    pane_busy
 }
 
 /// Whether an agent looks like it's in a silent DRAIN-STALL the watchdog should flag: it has unconsumed
@@ -18460,17 +18470,17 @@ mod tests {
     }
 
     #[test]
-    fn pane_busy_is_trusted_only_when_the_agent_has_ever_heartbeated() {
-        // A has-looped agent (heartbeat stamped ≥once) with a busy pane is genuinely mid-tick → trust
-        // the pane, skip re-arm (never interrupt real work).
-        assert!(pane_busy_means_working(true, true));
-        // A has-looped agent whose pane is idle → not working → don't skip on this guard.
-        assert!(!pane_busy_means_working(true, false));
-        // A NEVER-heartbeated agent (past cold-start) with a BUSY pane is FLAILING, not working — the
-        // origin/trunk-flail false-positive. Its pane must NOT be trusted, so re-arm proceeds.
-        assert!(!pane_busy_means_working(false, true));
-        // Never-heartbeated + idle pane: also not "working"; re-arm proceeds.
-        assert!(!pane_busy_means_working(false, false));
+    fn pane_busy_is_trusted_regardless_of_heartbeat() {
+        // A busy pane ("esc to interrupt") is ALWAYS trusted as real work in flight → leave alone, never
+        // re-arm/restart, whether or not the agent has ever stamped a heartbeat. This pins the operator
+        // directive 2026-09-09 ("stop killing heads-down agents — we've lost too much progress"): a host
+        // REBOOT can wipe the heartbeat touch-file while an agent is deep in a genuine turn, and the old
+        // FLAILING carve-out (never-heartbeated + busy → re-arm) was aborting that real work. The gate no
+        // longer looks at heartbeat presence at all — a busy pane alone suffices to skip the re-arm.
+        assert!(pane_busy_means_working(true));
+        // A non-busy (idle) pane is NOT trusted here → falls through to the re-arm / failed-cold-start
+        // recovery (a truly dead, idle window with no work in flight is still legitimately re-armed).
+        assert!(!pane_busy_means_working(false));
     }
 
     #[test]
