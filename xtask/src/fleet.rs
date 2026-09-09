@@ -484,6 +484,15 @@ pub enum FleetCmd {
     /// an explicit `$FLEET_HUB` or the default git-common-dir derivation. Read-only; run it to confirm
     /// which hub an agent is talking to (e.g. verifying the hub before/after the eventual cutover).
     Hub,
+    /// Lint the tracked role bodies + contract (`fleet/loops/*.md`, `fleet/AGENTS-fleet.md`) for STALE
+    /// `cargo xtask fleet <sub>` references — a subcommand token that is no longer a real `fleet`
+    /// subcommand (the drift a rename/removal leaves behind, e.g. #8322's stale `xtask gate --files`
+    /// after the in-process gate was deleted). The valid set is DERIVED from the clap `FleetCmd` enum
+    /// (never a hardcoded list), so a renamed subcommand is caught automatically. Read-only; prints `ok`
+    /// (exit 0) when every reference resolves, or lists each stale ref + its file (exit 1) so it can be
+    /// wired into a gate. Threat model is the sole loop-body owner's own rename oversight — a bad ref
+    /// silently misleads every agent every tick, so this pins the fleet-command surface of the charter.
+    LintLoops,
     /// (Re)install the fleet's git hooks into the hub's shared hooks dir, WITHOUT a full `up`. `up`
     /// installs them too, but this lets the operator/concierge deploy (or refresh) them on demand —
     /// e.g. to activate the trunk-clobber logger immediately without restarting the fleet. Idempotent
@@ -1324,6 +1333,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
         FleetCmd::Hub => hub(&fleet),
+        FleetCmd::LintLoops => lint_loops(&fleet),
         FleetCmd::InstallHooks => install_git_hooks(&fleet),
         FleetCmd::Add {
             name,
@@ -3084,6 +3094,107 @@ fn hub(fleet: &Fleet) {
         Some(v) if !v.is_empty() => println!("  $FLEET_HUB:     {}", v.to_string_lossy()),
         Some(_) => println!("  $FLEET_HUB:     (set but empty — ignored)"),
         None => println!("  $FLEET_HUB:     (unset)"),
+    }
+}
+
+/// The set of valid `fleet` subcommand names, DERIVED from the clap `FleetCmd` enum (never a hardcoded
+/// list) — so renaming/removing a variant automatically changes what `lint_loops` accepts, and a role
+/// body referencing the old name is flagged without anyone remembering to update a parallel list. Clap's
+/// kebab-cased subcommand names (`gate-local`, `set-interval`, …) are exactly the tokens a charter writes.
+fn valid_fleet_subcommands() -> std::collections::BTreeSet<String> {
+    <FleetCmd as clap::Subcommand>::augment_subcommands(clap::Command::new("fleet"))
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
+}
+
+/// Extract every `fleet` SUBCOMMAND token written as `cargo xtask fleet <sub>` INSIDE a backtick code
+/// span (inline `` `…` `` or a ```` ``` ````-fenced block) of a charter markdown file. Restricting to
+/// code spans is deliberate and load-bearing: a PROSE mention like "`cargo xtask fleet` and its manifest"
+/// closes the span right after `fleet` (no in-span token follows), so it is never misread as a
+/// `fleet and` invocation. Splitting on '`' yields span CONTENTS at ODD indices when backticks are
+/// balanced (they are in well-formed markdown — inline spans and triple-fences each contribute an even
+/// count); an accidental unbalanced backtick only UNDER-collects (misses a real ref), never false-adds a
+/// prose word. A `<placeholder>`/flag/space after `fleet ` stops the token scan and is ignored. Pure +
+/// unit-tested.
+fn fleet_cmd_refs(text: &str) -> std::collections::BTreeSet<String> {
+    const PREFIX: &str = "cargo xtask fleet ";
+    let mut out = std::collections::BTreeSet::new();
+    for (i, span) in text.split('`').enumerate() {
+        if i % 2 == 0 {
+            continue; // even index = OUTSIDE a code span (prose) — never scanned.
+        }
+        for m in span.match_indices(PREFIX) {
+            let rest = &span[m.0 + PREFIX.len()..];
+            let tok: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            // A subcommand token is kebab-lowercase and STARTS WITH A LETTER, >= 2 chars. Requiring a
+            // leading letter drops a `--flag` (e.g. `cargo xtask fleet --help`, which is a valid flag on
+            // the group command, NOT a subcommand); a `<placeholder>`/space/bare-`fleet` yields an
+            // empty/short token and is dropped too.
+            if tok.len() >= 2 && tok.starts_with(|c: char| c.is_ascii_lowercase()) {
+                out.insert(tok);
+            }
+        }
+    }
+    out
+}
+
+/// The `cargo xtask fleet <sub>` references in `text` whose subcommand is NOT in `valid` — i.e. STALE
+/// refs a rename/removal left behind. Sorted + de-duped (BTreeSet). Pure so the drift check is testable
+/// without touching the filesystem.
+fn unknown_fleet_cmd_refs(text: &str, valid: &std::collections::BTreeSet<String>) -> Vec<String> {
+    fleet_cmd_refs(text)
+        .into_iter()
+        .filter(|r| !valid.contains(r))
+        .collect()
+}
+
+/// Lint the tracked charter (`fleet/AGENTS-fleet.md` + every `fleet/loops/*.md`) for STALE
+/// `cargo xtask fleet <sub>` references — the drift a subcommand rename/removal leaves in a role body
+/// (#8322's stale `xtask gate --files` class), which silently misleads every agent that re-reads its
+/// charter each tick. Reads from `fleet.src` (this worktree's tracked `fleet/`, the source that
+/// materializes to the hub). Prints `ok` (exit 0) when every reference resolves, else lists each stale
+/// ref + file and exits 1 (so it can be wired into a gate). The valid set is clap-derived, so this
+/// self-updates as the CLI evolves.
+fn lint_loops(fleet: &Fleet) {
+    let valid = valid_fleet_subcommands();
+    let mut files: Vec<std::path::PathBuf> = vec![fleet.src.join("AGENTS-fleet.md")];
+    if let Ok(rd) = std::fs::read_dir(fleet.src.join("loops")) {
+        let mut loops: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+            .collect();
+        loops.sort();
+        files.extend(loops);
+    }
+    let mut total_stale = 0usize;
+    let mut checked = 0usize;
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue; // a missing charter file is not a lint failure — just skip it.
+        };
+        checked += 1;
+        for s in unknown_fleet_cmd_refs(&text, &valid) {
+            eprintln!(
+                "  ✗ {}: `cargo xtask fleet {s}` — '{s}' is not a fleet subcommand (renamed/removed?)",
+                f.display()
+            );
+            total_stale += 1;
+        }
+    }
+    if total_stale == 0 {
+        println!(
+            "fleet lint-loops: ok — every `cargo xtask fleet <sub>` reference across {checked} charter file(s) resolves to a real subcommand."
+        );
+    } else {
+        eprintln!(
+            "fleet lint-loops: {total_stale} STALE fleet-subcommand reference(s) across {checked} charter file(s) — fix the role body/contract (or the subcommand name). Valid set is derived from the clap FleetCmd enum."
+        );
+        std::process::exit(1);
     }
 }
 
@@ -18534,6 +18645,59 @@ mod tests {
         // A CAPTURE FAILURE (None) → NOT confirmed idle → skip (never restart on an unknown pane; the
         // PR#1937 lesson — an unsure signal must never trigger a destructive op).
         assert!(!restart_pane_confirmed_idle(None));
+    }
+
+    #[test]
+    fn fleet_cmd_refs_extracts_in_span_subcommands_and_ignores_prose() {
+        // In-span refs captured; kebab preserved; flags/args after the token are ignored.
+        let refs = fleet_cmd_refs(
+            "run `cargo xtask fleet gate-local` then `cargo xtask fleet send --to x --kind note`",
+        );
+        assert!(refs.contains("gate-local"));
+        assert!(refs.contains("send"));
+        assert_eq!(refs.len(), 2);
+        // A bare-command PROSE mention closes the span right after `fleet`, so no in-span token follows
+        // → NOT read as a `fleet and` invocation.
+        assert!(
+            fleet_cmd_refs("the `cargo xtask fleet` and its manifest drive everything").is_empty()
+        );
+        // A `<placeholder>` after `fleet ` stops the token scan at '<' → ignored.
+        assert!(fleet_cmd_refs("general form: `cargo xtask fleet <sub>`").is_empty());
+        // A `--flag` on the GROUP command (e.g. `--help`) is not a subcommand — the leading-letter rule
+        // drops it (this false-positive was caught dogfooding lint-loops on perf-agent.md).
+        assert!(fleet_cmd_refs("see `cargo xtask fleet --help` for the list").is_empty());
+        // Text OUTSIDE any code span is never scanned (a naked command in prose is not a ref).
+        assert!(fleet_cmd_refs("do not type cargo xtask fleet frobnicate in prose").is_empty());
+    }
+
+    #[test]
+    fn unknown_fleet_cmd_refs_flags_only_tokens_absent_from_the_valid_set() {
+        let valid: std::collections::BTreeSet<String> = ["send", "inbox", "gate-local"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // A known ref → no complaint.
+        assert!(unknown_fleet_cmd_refs("`cargo xtask fleet send`", &valid).is_empty());
+        // A stale/renamed ref → flagged (and only it).
+        assert_eq!(
+            unknown_fleet_cmd_refs(
+                "`cargo xtask fleet send` `cargo xtask fleet frobnicate`",
+                &valid
+            ),
+            vec!["frobnicate".to_string()]
+        );
+    }
+
+    #[test]
+    fn valid_fleet_subcommands_are_derived_from_the_clap_enum() {
+        let valid = valid_fleet_subcommands();
+        // Real subcommands are present — including the one we just added, proving the set tracks the enum
+        // rather than a hardcoded list (a renamed variant would drop out automatically).
+        assert!(valid.contains("send"));
+        assert!(valid.contains("gate-local"));
+        assert!(valid.contains("lint-loops"));
+        // A made-up name is absent.
+        assert!(!valid.contains("frobnicate"));
     }
 
     #[test]
