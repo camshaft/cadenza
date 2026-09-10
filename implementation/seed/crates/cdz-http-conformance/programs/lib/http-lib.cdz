@@ -1,0 +1,68 @@
+// Shared HTTP-outpost guest library (DESIGN-http-outpost.md §7; operator: "a reusable library for routers and
+// reducers … shouldn't have to keep redefining these types"). Every http-outpost guest — handlers + the root
+// router — used to redefine the same HTTP domain types, the request-list boundary literal, the method-code
+// map, and the effect/terminal builders. This module owns them so a guest keeps only its own logic. Composed
+// via a guest's `libs` manifest (the mkCadenzaGuest multi-file path), alongside `reducer-lib` (whose Outcome
+// the effect/terminal builders close with).
+import { Outcome } from "reducer-lib"
+
+// The HTTP domain types shared across the outpost guests (same shapes as the userspace contracts:
+// http-request / http-response, and the router's dispatch/deny).
+type Method = | Get | Post | Put | Delete | Patch | Head | Options
+type Header = | Header(Record(name: String, value: String))
+type Request =
+  | Request(Record(method: Method, path: String, query: String, headers: List(Header), body: Bytes))
+type Response =
+  | Response(Record(status: Int64, headers: List(Header), body: Bytes))
+// One baked route entry: the (method, path) key + the target handler's ProgramHash bytes.
+type Route =
+  | Route(Record(method: Method, path: String, handler: Bytes))
+type DispatchEffect =
+  | DispatchEffect(Record(subprogram: Bytes, input: Bytes))
+type Deny =
+  | Deny(Record(status: Int64, reason: Bytes))
+
+// The contract-ids the guests tag their effect/terminal payloads with. Exactly Hash::LEN = 33 bytes. These
+// are PLACEHOLDER markers today — but centralized HERE (they were duplicated in every guest), so swapping them
+// for the COMPUTED userspace-contract ids (http-dispatch / http-response / http-deny `descriptor().id`) is a
+// one-place change, not a per-guest edit.
+def dispatch-contract() = b"cdz.http.dispatch................"
+def http-response-schema() = b"cdz-platform.http.response......."
+def deny-schema() = b"cdz-platform.http.deny..........."
+
+// The empty request list at the world-boundary record shape — annotated so an empty `[]` (which alone is
+// `List Any`, uncrossable) is concrete at the host boundary. Every guest that emits no requests uses this.
+def no-requests() =
+  ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64))))
+
+// Method → its wire code (Int64), for baked-table matching (runtime String-eq on the method is declined).
+def method-code(m: Method) =
+  (match m with | Get => 1 | Post => 2 | Put => 3 | Delete => 4 | Patch => 5 | Head => 6 | Options => 7)
+
+// Close the fold with an http-response terminal carrying an already-encoded Response payload (used when the
+// caller already has the encoded bytes, e.g. a router folding a handler's response through unchanged).
+def respond-encoded(response: Bytes) =
+  { requests = no-requests(),
+    outcome = Outcome.Close({ schema = http-response-schema(), reason = response }) }
+
+// Build a Response + close with it.
+def respond(status: Int64, headers: List(Header), body: Bytes) =
+  respond-encoded(Value.encode(Response.Response({ status = status, headers = headers, body = body })))
+
+// Close with a deny terminal (a 4xx/5xx the edge renders).
+def deny(status: Int64, reason: Bytes) =
+  { requests = no-requests(),
+    outcome = Outcome.Close({ schema = deny-schema(),
+                              reason = Value.encode(Deny.Deny({ status = status, reason = reason })) }) }
+
+// Emit a dispatch effect naming a handler ProgramHash + the request input; continue (awaiting the response).
+def dispatch(handler: Bytes, input: Bytes) =
+  { requests = [ { contract = dispatch-contract(),
+                   payload = Value.encode(DispatchEffect.DispatchEffect({ subprogram = handler, input = input })),
+                   token = b"root-dispatch",
+                   deadlineNanos = (None : Option(UInt64)) } ],
+    outcome = Outcome.Continue }
+
+export { Method.*, Header.*, Request.*, Response.*, Route.*, DispatchEffect.*, Deny.*,
+         dispatch-contract, http-response-schema, deny-schema, no-requests, method-code,
+         respond-encoded, respond, deny, dispatch }
