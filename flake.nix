@@ -6821,6 +6821,20 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/router-dynamic/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The ROOT ROUTER governing program (guests/root-router/reducer.cdz, DESIGN drive-contract inc-4):
+            # the dumb gateway drives THIS program per request; it decodes the request + shipped table, matches,
+            # and EMITS a `dispatch` effect (spawn the matched handler + hand it the request) — the LOOPING shape
+            # (Continue on on-message, Close on on-response with the handler's response) that supersedes the
+            # one-shot router-dynamic. Stateless (table in the RouteQuery payload) → INLINE world, no host-state,
+            # so it lowers to VALID wasm (unlike router-stateful). Building it via mkCadenzaGuest IS the gate that
+            # it stays valid Cadenza + a valid reducer component; the runtime-composition e2e (drive it through
+            # RootDriver over the wasm store, dispatching a real handler) is a follow-on slice (CDZ_HTTP_ROOT_
+            # ROUTER_WASM, wired inert below until consumed).
+            cdzHttpGatewayRootRouter = mkCadenzaGuest {
+              pname = "cdz-http-gateway-root-router";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/root-router/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6863,6 +6877,7 @@
               CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
               CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
               CDZ_HTTP_ROUTER_DYNAMIC_WASM=${cdzHttpGatewayRouterDynamic} \
+              CDZ_HTTP_ROOT_ROUTER_WASM=${cdzHttpGatewayRootRouter} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7334,6 +7349,8 @@
             # cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
             # The dynamic stateless router (live table-in-payload, routing-as-a-fold, no host-state) compiles.
             cdz-http-gateway-router-dynamic = cdzHttpGatewayRouterDynamic;
+            # The root router governing program (dumb-gateway inc-4: decode + match + EMIT a dispatch effect).
+            cdz-http-gateway-root-router = cdzHttpGatewayRootRouter;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
