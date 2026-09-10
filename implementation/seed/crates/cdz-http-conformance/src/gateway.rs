@@ -146,6 +146,7 @@ mod tests {
             status: Some(200),
             body: Some(b"hello from a wasm handler".to_vec()),
             body_contains: Some("wasm".into()),
+            ..Default::default()
         };
         assert!(ok.check(resp.status, &resp.body).is_ok());
         let wrong = Expect {
