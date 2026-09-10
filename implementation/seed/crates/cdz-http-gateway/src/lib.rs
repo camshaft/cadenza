@@ -36,6 +36,11 @@ pub mod runner;
 /// that replaces the one-shot [`runner`]; generic over any reducer + a pluggable effect resolver.
 pub mod loop_driver;
 
+/// The gateway's effect resolver (design drive-contract §2, redirect inc-3b): routes an effect a looping
+/// program emits (by contract-id) to its gateway action — v0 handles `control.send` (envelope + forward up
+/// the control link); `dispatch`/timers are later slices. The [`loop_driver::EffectResolver`] the edge uses.
+pub mod effects;
+
 /// The per-connection WebSocket session driver (design §6): folds `ws-event`s through a session reducer
 /// and collects the `ws-send` frames it pushes. Socket-independent (generic over [`cdz_platform::ProgramStore`]);
 /// the hyper WebSocket upgrade + framing that feeds it is a later slice.
