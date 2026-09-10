@@ -213,3 +213,88 @@ mod tests {
         assert!(opened.is_none());
     }
 }
+
+#[cfg(all(test, feature = "host"))]
+mod host_e2e {
+    use super::*;
+    use crate::wasm::{spawn_epoch_ticker, wasm_store};
+    use cdz_platform::{BlobStore, InMemoryBlobStore, ProgramStore};
+    use std::sync::Arc;
+
+    /// THE WS END-TO-END PAYOFF (`DESIGN-http-outpost.md` §6): a REAL content-addressed wasm ws-session guest
+    /// driven through [`WsSession`] over the wasmtime store — a `Connect`/`Frame`/`Disconnect` folded by the
+    /// guest, its `ws-send` push decoded back. This proves the LAST unproven seam of the outpost: BOTH ws
+    /// codec directions across the Cadenza<->Rust boundary at once — the guest `Value.decode`s the gateway's
+    /// [`encode_ws_event`](crate::codec::encode_ws_event) (forward), and the gateway
+    /// [`decode_ws_send`](crate::codec::decode_ws_send)s the guest's `Value.encode`d push (reverse) — AND
+    /// reconciles the guest's raw 33-byte `ws-send` contract-id marker with the session's `send_contract`
+    /// (a request-emitting guest, unlike the http handlers which answer via a `Break` reason). The guest
+    /// component imports the value-heap runtime (`cadenza:runtime/heap@…`), which the host COMPOSES from the
+    /// CAS by hash, so the runtime + its NFC dep are seeded alongside the guest. All three paths come from
+    /// env vars the fleet nix check sets; the test skips cleanly when any is unset so `cargo test
+    /// --features host` passes without them.
+    #[tokio::test]
+    async fn wasm_ws_session_echoes_a_frame() {
+        let (Ok(guest_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_WS_ECHO_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_ws_session_echoes_a_frame: CDZ_HTTP_WS_ECHO_WASM/RUNTIME_WASM/NFC_WASM unset — \
+                 skipping (the nix check sets all three)"
+            );
+            return;
+        };
+        let guest = std::fs::read(&guest_path).expect("read ws-echo guest wasm");
+
+        // Seed the value-heap runtime + its NFC dep (so the host composes the guest's `cadenza:runtime/heap`
+        // import by hash) and the ws-session guest itself into the content store.
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(Bytes::from(std::fs::read(dep).expect("read dep component")))
+                .await;
+        }
+        cas.put(Bytes::from(guest.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&guest);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // The guest emits its `ws-send` push on the raw 33-byte marker `b"cdz-platform.ws.send............."`
+        // (Hash::LEN); the host surfaces an emitted request's contract as
+        // `ContractId::from_hash(Hash::from_bytes(<those 33 bytes>))`, which `ContractId::try_from` of the
+        // same 33 bytes reproduces exactly — so the session's `r.id == send_contract` filter keeps the push.
+        let send_contract = ContractId::try_from(&b"cdz-platform.ws.send............."[..])
+            .expect("33-byte ws-send marker");
+        // The guest dispatches on the DECODED event, ignoring the event contract-id, so any id serves here.
+        let event_contract = ContractId::of(b"cdz-platform.ws.event");
+
+        let (mut session, on_connect) = WsSession::open(
+            store.as_ref(),
+            program,
+            b"ws-sess-1",
+            Bytes::from_static(b"conn-1"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"router"),
+            event_contract,
+            send_contract,
+        )
+        .await
+        .expect("ws session opens");
+        assert!(on_connect.is_empty(), "the guest pushes nothing on Connect");
+        assert!(session.is_open());
+
+        // A frame is echoed straight back as one push, carrying the connection id + the frame bytes.
+        let pushes = session.on_frame(Bytes::from_static(b"hello ws")).await;
+        assert_eq!(pushes.len(), 1, "the guest echoes one frame back");
+        assert_eq!(pushes[0].conn, Bytes::from_static(b"conn-1"));
+        assert_eq!(pushes[0].data, Bytes::from_static(b"hello ws"));
+        assert!(session.is_open(), "an echo keeps the session open");
+
+        // Disconnect: the guest `Break`s, closing the session.
+        let _ = session.close().await;
+        assert!(!session.is_open(), "the guest Breaks on Disconnect");
+    }
+}
