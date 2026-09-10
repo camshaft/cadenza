@@ -22,7 +22,13 @@ mod contract_value;
 // `contracts/<name>.cdz` (real Cadenza validated by the `cdz` binary at codegen time). Plain Cadenza-AST
 // builder calls — no compiler dependency ships. Regenerate after editing a source; `cargo xtask codegen
 // --check` gates staleness.
-mod contracts;
+//
+// PUBLIC: a consumer reaches a contract's canonical computed id via
+// `cdz_platform::contracts::<name>::contract().id()` — the same descriptor-derived id a Cadenza guest
+// projects (design §5, operator computed-ids directive). Kernel contracts are also surfaced through the
+// pub `*_contract()` wrapper fns; userspace contracts (the http-outpost effect/frame ids) have no wrapper,
+// so the module itself must be public for the gateway + the control-plane frame-dispatch tag to reach them.
+pub mod contracts;
 mod deliver;
 mod event_registry;
 mod genesis;
