@@ -6761,6 +6761,17 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/ws-echo/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The ROUTER governing program (guests/router/reducer.cdz, DESIGN-http-outpost.md §4, P2): routing
+            # lifted into a wasm reducer — it Value.decodes an http-request and folds (method, path) against a
+            # baked-in route table (a nested match) to a routing Decision (Route(handler, contract) | NotFound).
+            # Building it via mkCadenzaGuest is the compile gate (valid Cadenza + compiles to a reducer
+            # component); the wiring/e2e slice (gateway consults the router reducer, then spawns the decided
+            # handler) consumes it via CDZ_HTTP_ROUTER_WASM and is a follow-on.
+            cdzHttpGatewayRouterHandler = mkCadenzaGuest {
+              pname = "cdz-http-gateway-router-handler";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/router/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6800,6 +6811,7 @@
               CDZ_HTTP_POC_WASM=${cdzHttpGatewayPocHandler} \
               CDZ_HTTP_ECHO_WASM=${cdzHttpGatewayEchoHandler} \
               CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
+              CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7198,6 +7210,8 @@
             cdz-http-gateway-echo-handler = cdzHttpGatewayEchoHandler;
             # The WebSocket session echo guest (per-connection ws-event fold -> ws-send push) compiles.
             cdz-http-gateway-ws-echo-handler = cdzHttpGatewayWsEchoHandler;
+            # The router governing program (routing-as-a-fold: http-request -> baked route table -> Decision).
+            cdz-http-gateway-router-handler = cdzHttpGatewayRouterHandler;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
