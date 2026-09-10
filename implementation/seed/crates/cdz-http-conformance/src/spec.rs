@@ -5,8 +5,9 @@
 //!
 //! The value shape (see `runs/README.md`):
 //!   { config = { root-router = "<name>", programs = [ { name, program }, … ] },
-//!     requests = [ { http = { method, path }, expect = { status?, body?, body-contains? } }, … ] }
-//! (control steps + prime-replies + headers/body + retry-until-match are added in following slices.)
+//!     requests = [ { http = { method, path, headers = [ { name, value } ]?, body = b"…"? },
+//!                    expect = { status?, body?, body-contains? } }, … ] }
+//! (control steps + prime-replies + retry-until-match are added in following slices.)
 
 use cdz_http_protocol::value;
 
@@ -43,11 +44,14 @@ pub enum Step {
     },
 }
 
-/// An HTTP request to make at the gateway.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An HTTP request to make at the gateway. `headers` are `(name, value)` pairs; `body` is the request body
+/// bytes (e.g. a `POST` payload). Both default to empty/none (a bare `GET` needs neither).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
 }
 
 /// The inline assertion on an HTTP response. A `None` field asserts nothing.
@@ -158,9 +162,27 @@ fn parse_config(arenas: &value::Arenas, id: value::ValueId) -> Option<Config> {
 fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
     // Only the `http` step for now; a step is a record with an `http` field + an optional `expect`.
     let http = value::record_field(arenas, id, "http")?;
+    let headers = match value::record_field(arenas, http, "headers") {
+        Some(hs) => value::read_list(arenas, hs)?
+            .iter()
+            .map(|&h| {
+                Some((
+                    value::read_str(arenas, value::record_field(arenas, h, "name")?)?,
+                    value::read_str(arenas, value::record_field(arenas, h, "value")?)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    let body = match value::record_field(arenas, http, "body") {
+        Some(b) => Some(value::read_bytes(arenas, b)?.to_vec()),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
+        headers,
+        body,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
@@ -234,6 +256,40 @@ mod tests {
         assert_eq!(expect.status, Some(200));
         assert_eq!(expect.body.as_deref(), Some(&b"hello"[..]));
         assert_eq!(expect.body_contains, None);
+    }
+
+    #[test]
+    fn parses_http_request_headers_and_body() {
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        // http = { method="POST", path="/echo", headers=[{name="x-a",value="1"}], body=b"hi" }
+        let m = str_leaf(&mut b, "POST");
+        let path = str_leaf(&mut b, "/echo");
+        let hn = str_leaf(&mut b, "x-a");
+        let hv = str_leaf(&mut b, "1");
+        let hdr = record(&mut b, vec![("name", hn), ("value", hv)]);
+        let headers = list_value(&mut b, vec![hdr]);
+        let body = bytes_leaf(&mut b, b"hi");
+        let http = record(
+            &mut b,
+            vec![
+                ("body", body),
+                ("headers", headers),
+                ("method", m),
+                ("path", path),
+            ],
+        );
+        let step = record(&mut b, vec![("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { request, .. } = &spec.requests[0];
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/echo");
+        assert_eq!(request.headers, vec![("x-a".to_string(), "1".to_string())]);
+        assert_eq!(request.body.as_deref(), Some(&b"hi"[..]));
     }
 
     #[test]

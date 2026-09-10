@@ -162,6 +162,7 @@ mod tests {
             request: HttpRequest {
                 method: "GET".into(),
                 path: path.into(),
+                ..Default::default()
             },
             expect,
         }
