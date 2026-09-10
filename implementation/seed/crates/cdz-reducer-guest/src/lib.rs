@@ -19,3 +19,14 @@ pub mod request_wire;
 /// component -> encode the `{artifacts, diagnostics}` response envelope.
 #[cfg(feature = "target-rcdzc")]
 pub mod rcdzc_target;
+
+// The reducer-world `guest` export — the wasm component boundary (built for wasm32-unknown-unknown by
+// cargo-component, WASI-free). `bindings` is the cargo-component-generated glue (`src/bindings.rs`,
+// DO-NOT-EDIT); `guest` implements `on-message` by wrapping the active target's handler in a `close` step.
+// BOTH are `wasm32`-only: the native member build (+ B2's unit tests) never compiles the export shims, so
+// the workspace gate is unaffected; the wasm build + the B3 compile->instantiate->run round-trip validate them.
+#[cfg(target_arch = "wasm32")]
+#[allow(warnings)]
+mod bindings;
+#[cfg(target_arch = "wasm32")]
+mod guest;
