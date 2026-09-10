@@ -15,7 +15,10 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["rlib"]
+# rlib for the native member build + its unit tests (B2); cdylib for the wasm component build (B3, via
+# cargo-component). A native `cargo build --workspace` builds the rlib (+ a harmless native cdylib);
+# `cargo component build --target wasm32-unknown-unknown` builds the reducer-world component.
+crate-type = ["rlib", "cdylib"]
 
 [features]
 # Exactly one target feature is active per build. nix stamps N components by selecting one per target (B3).
@@ -24,6 +27,9 @@ default = ["target-rcdzc"]
 target-rcdzc = ["dep:rcdzc"]
 
 [dependencies]
+# The wit-bindgen runtime the cargo-component-generated `src/bindings.rs` links against (the reducer-world
+# `guest` export glue). Present for the native build too (harmless — the export shims are unused symbols).
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 # The compile-boundary vocabulary: the kinded `Artifact`, the `{artifacts, diagnostics}` `CompileOutput`,
 # the response envelope codec (`encode_compile_output`), and the `Target` enum.
 cadenza-compile-abi = { path = "../cadenza-compile-abi" }
@@ -37,3 +43,22 @@ rcdzc = { path = "../rcdzc", default-features = false, optional = true }
 # The front-end reader — TESTS ONLY (bridges source text -> AST bytes to build a compile request), exactly
 # as rcdzc-wasm's tests do. Never a build-path dep: a guest receives AST bytes, not source.
 cadenza-syntax = { path = "../cadenza-syntax" }
+
+# cargo-component: this crate is a reducer-world GUEST component. Targets the platform reducer ABI's
+# `pure-reducer-world` (the compute floor: only `run` imported) straight from cdz-platform's authoritative
+# `world.wit` — single source of truth, no duplicated WIT. Built for wasm32-unknown-unknown (WASI-FREE:
+# operator "i don't want wasi, no" — unknown-unknown's std OS layer is stubbed inline, so the component
+# imports only the reducer world and instantiates on the platform's pure linker).
+[package.metadata.component]
+package = "cadenza:reducer-guest"
+
+[package.metadata.component.target]
+path = "../cdz-platform/wit"
+world = "pure-reducer-world"
+
+[profile.release]
+# Small, deterministic component output — matches the runtime/guest convention.
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
