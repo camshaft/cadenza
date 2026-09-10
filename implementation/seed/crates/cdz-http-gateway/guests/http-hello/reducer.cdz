@@ -53,7 +53,12 @@ def on-message(_msg) =
   // annotate it to the world's request-record type so the boundary is concrete (the inert handlers then
   // infer the same element type).
   { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
-    outcome = Outcome.Close({ schema = b"cdz-platform.http.response", reason = Value.encode(resp) }) }
+    // The Close `schema` must be a valid contract-id — the host's step decode requires exactly Hash::LEN
+    // (33 = 1 tag byte + 32 digest) bytes (a wrong-length marker → MalformedContractId → the host panics
+    // decoding the step). The edge/router read the RESPONSE off the reason, not this schema, so a 33-byte
+    // placeholder suffices for the PoC; the real http-response contract-id rides the route table's
+    // `contract` field later.
+    outcome = Outcome.Close({ schema = b"cdz-platform.http.response.......", reason = Value.encode(resp) }) }
 
 def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
   { requests = [], outcome = Outcome.Continue }

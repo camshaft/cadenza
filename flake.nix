@@ -6775,6 +6775,13 @@
               # allocator into `itest-alloc` (the jemalloc C build no longer enters this closure). Heavier
               # (compiles wasmtime/cranelift) but keeps the wasm handler path fleet-gated; the default steps
               # above keep the wasmtime-free spine covered on their own.
+              #
+              # The three CDZ_HTTP_*_WASM vars feed the end-to-end wasm test (poc_wasm_handler_served_over_a_socket):
+              # the compiled PoC handler component + the value-heap runtime + its NFC dep, seeded into the CAS so
+              # the host composes the handler's `cadenza:runtime/heap` import. Unset → the test skips.
+              CDZ_HTTP_POC_WASM=${cdzHttpGatewayPocHandler} \
+              CDZ_HTTP_RUNTIME_WASM=${runtime} \
+              CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
               cargo clippy --offline --locked --all-targets --features host -- -D warnings
               echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, default AND --features host, contracts overlay staged)" > "$out"

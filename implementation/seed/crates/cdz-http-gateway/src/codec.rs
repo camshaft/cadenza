@@ -165,7 +165,7 @@ fn encode_header(b: &mut Builder, h: &Header) -> StructId {
 #[must_use]
 pub fn decode_request(bytes: &[u8]) -> Option<HttpRequest> {
     let arenas = cadenza_ast::codec::decode(bytes)?;
-    let rec = as_ascribed(&arenas, arenas.root)?; // `Request` ctor is elided → the record directly
+    let rec = unascribe(&arenas, arenas.root); // `Request` ctor is elided → the (possibly ascribed) record
     let method = read_method(&arenas, record_field(&arenas, rec, "method")?)?;
     let path = read_str(&arenas, record_field(&arenas, rec, "path")?)?;
     let query = read_str(&arenas, record_field(&arenas, rec, "query")?)?;
@@ -184,7 +184,7 @@ pub fn decode_request(bytes: &[u8]) -> Option<HttpRequest> {
 #[must_use]
 pub fn decode_response(bytes: &[u8]) -> Option<HttpResponse> {
     let arenas = cadenza_ast::codec::decode(bytes)?;
-    let rec = as_ascribed(&arenas, arenas.root)?; // `Response` ctor is elided → the record directly
+    let rec = unascribe(&arenas, arenas.root); // `Response` ctor is elided → the (possibly ascribed) record
     let status = u16::try_from(read_uint(&arenas, record_field(&arenas, rec, "status")?)?).ok()?;
     let headers = read_headers(&arenas, record_field(&arenas, rec, "headers")?)?;
     let body = read_bytes(&arenas, record_field(&arenas, rec, "body")?)?;
@@ -274,9 +274,20 @@ fn as_ascribed(arenas: &Arenas, id: StructId) -> Option<StructId> {
     (inner.len() == 2).then_some(inner[0])
 }
 
-/// The value of a record's field named `name`, via the native-record reader.
+/// Strip an optional ascription `(: <value> <ty>)`, returning the inner value (or `id` unchanged if not
+/// ascribed). The guest `Value.encode` ascribes EVERY constructed node with its type — the top-level value
+/// AND each nested one (e.g. every `Header` list element is `(: #record… Header)`) — whereas the platform's
+/// payload-boundary `encode_ascribed` ascribes only the root. Reading either form means being tolerant of an
+/// ascription anywhere a value/record is expected, so this is applied wherever a field/element is read.
+fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
+    as_ascribed(arenas, id).unwrap_or(id)
+}
+
+/// The value of a record's field named `name`, via the native-record reader. Strips an optional ascription
+/// on `id` first (a `Value.encode`d record node is `(: #record… Ty)`), so it reads both the bare and the
+/// ascribed record form.
 fn record_field(arenas: &Arenas, id: StructId, name: &str) -> Option<StructId> {
-    let fields = arenas.compound_form_of(id, CompoundCtor::Record)?;
+    let fields = arenas.compound_form_of(unascribe(arenas, id), CompoundCtor::Record)?;
     fields.iter().find_map(|&f| {
         let kv = arenas.as_form(f, "=")?;
         (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])
@@ -288,9 +299,10 @@ fn read_list(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     arenas.compound_form_of(id, CompoundCtor::List)
 }
 
-/// The [`Method`] of a `(Ctor unit)` value — the head constructor name, mapped to a method.
+/// The [`Method`] of a `(Ctor unit)` value — the head constructor name, mapped to a method. Strips an
+/// optional ascription (`Value.encode` renders the variant as `(: (Ctor unit) Method)`).
 fn read_method(arenas: &Arenas, id: StructId) -> Option<Method> {
-    match arenas.get(id) {
+    match arenas.get(unascribe(arenas, id)) {
         Struct::List(items) => Method::from_ctor(arenas.as_name(*items.first()?)?),
         Struct::Atom(_) => None,
     }

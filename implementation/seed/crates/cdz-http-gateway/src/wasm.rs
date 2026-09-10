@@ -98,4 +98,97 @@ mod tests {
         assert!(ticker.is_some(), "a wasm store drives an epoch ticker");
         ticker.unwrap().abort();
     }
+
+    /// THE END-TO-END PAYOFF (DESIGN-http-outpost.md §7): a REAL content-addressed wasm handler served over
+    /// a real socket — edge -> router -> wasmtime spawn -> fold -> http-response -> socket. The handler
+    /// component imports the value-heap runtime (`cadenza:runtime/heap@…+<hash>`), which the host COMPOSES
+    /// from the CAS by hash, so the runtime + its NFC dep must be seeded alongside the guest (the itest's
+    /// resolve_deps/cas.put pattern). All three component paths come from env vars the fleet nix check sets
+    /// (the PoC handler = mkCadenzaGuest, runtime = packages.runtime, nfc = packages.nfc); the test skips
+    /// cleanly when any is unset so `cargo test --features host` passes without them.
+    #[tokio::test]
+    async fn poc_wasm_handler_served_over_a_socket() {
+        use crate::codec::Method;
+        use crate::edge::HttpEdge;
+        use crate::gateway::{Gateway, Route, Router};
+        use crate::runner::HandlerRunner;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use http_body_util::{BodyExt, Empty};
+        use hyper::Request;
+        use hyper_util::rt::TokioIo;
+
+        let (Ok(guest_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "poc_wasm_handler_served_over_a_socket: CDZ_HTTP_POC_WASM/RUNTIME_WASM/NFC_WASM unset — \
+                 skipping (the nix check sets all three)"
+            );
+            return;
+        };
+        let guest = std::fs::read(&guest_path).expect("read PoC handler wasm");
+
+        // Seed the value-heap runtime + its NFC dep (so the host composes the guest's `cadenza:runtime/heap`
+        // import by hash) and the handler component itself into the content store.
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(guest.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&guest);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        let runner = HandlerRunner::new(
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"router"),
+            ContractId::of(b"cdz-platform.http.request"),
+        );
+        let gateway = Gateway::new(
+            Router::new(vec![Route::new(Method::Get, "/", program)]),
+            runner,
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Empty<bytes::Bytes>>(TokioIo::new(stream))
+                .await
+                .expect("handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let resp = sender
+            .send_request(
+                Request::builder()
+                    .method(hyper::Method::GET)
+                    .uri("/")
+                    .header("host", "test")
+                    .body(Empty::<bytes::Bytes>::new())
+                    .expect("request"),
+            )
+            .await
+            .expect("send");
+        let status = resp.status().as_u16();
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+
+        assert_eq!(status, 200, "the wasm PoC handler answers 200");
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"hello from a wasm handler")
+        );
+    }
 }
