@@ -1,0 +1,49 @@
+// The HTTP-outpost inbound-request contract (design/DESIGN-http-outpost.md §5): the event interface an
+// HTTP handler module folds. The native HTTP edge parses each inbound request into a `Request` value and
+// delivers it as the handler session's first `on_message`; the handler decodes it against this schema,
+// computes an `http-response`, and answers on close. Everything on the platform is a typed,
+// content-addressed contract — an HTTP request maps onto this contract-id (tenet 1). Userspace (this dir):
+// a Cadenza reducer consumes it via self-reflection; no Rust binding is generated. The edge stays
+// protocol-neutral — MCP/HTML/REST are all just a `body: Bytes` a handler interprets.
+//
+// A header is a single-constructor `| Header(Record(...))` (the proven contract idiom, cf. state-set's
+// `| Set(Record(...))`), not a bare `type Header = Record(...)` record-alias — that names a type
+// CONSTRUCTOR, not a record type (CDZ0203), so it does not typecheck.
+type Method = | Get | Post | Put | Delete | Patch | Head | Options
+type Header  = | Header(Record(name: String, value: String))
+type Request =
+  | Request(Record(method: Method,
+                   path: String,
+                   query: String,
+                   headers: List(Header),
+                   body: Bytes))
+
+// --- conformance proof: a fully-literal request value, ascribed against the schema type ---
+def a-request() -> Request =
+  Request.Request({ method = Method.Get,
+                    path = "/",
+                    query = "q=1",
+                    headers = [Header.Header({ name = "accept", value = "*/*" })],
+                    body = b"" })
+
+@test
+def request-conforms() =
+  match a-request() with
+  | Request.Request(r) =>
+    (match r.headers with
+     | [h] =>
+       (match h with
+        | Header.Header(x) =>
+          if (r.path == "/") and (r.query == "q=1") and (x.name == "accept") and (x.value == "*/*")
+          then unit else trap("http-request field mismatch"))
+     | _ => trap("expected exactly one header"))
+
+@test
+def method-get-conforms() =
+  match a-request() with
+  | Request.Request(r) => (match r.method with | Get => unit | _ => trap("expected Method.Get"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.http.request", "Request", "Request")
+export { Method.*, Header.*, Request.*, descriptor }

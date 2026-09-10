@@ -1,0 +1,39 @@
+// The HTTP-outpost outbound-response contract (design/DESIGN-http-outpost.md §5): the value an HTTP handler
+// module produces. A handler folds an `http-request` (§ http-request.cdz) and answers with a `Response`,
+// carried on the session's closing `Break` reason (or a `deliver`-response before close for a handler that
+// emits effects first — D6). The native HTTP edge decodes it against this schema and serializes it to the
+// socket. Userspace (this dir): a Cadenza reducer consumes it via self-reflection; no Rust binding is
+// generated. The `body: Bytes` is protocol-neutral — an HTML handler puts HTML bytes with a
+// `content-type: text/html` header; an MCP handler puts a JSON-RPC document; the edge does not interpret it.
+//
+// `Header` mirrors http-request's — a single-constructor `| Header(Record(...))` (the proven contract idiom),
+// not a bare record-alias (which names a type constructor, CDZ0203, and does not typecheck).
+type Header   = | Header(Record(name: String, value: String))
+type Response =
+  | Response(Record(status: Int64,
+                    headers: List(Header),
+                    body: Bytes))
+
+// --- conformance proof: a fully-literal response value, ascribed against the schema type ---
+def a-response() -> Response =
+  Response.Response({ status = 200,
+                      headers = [Header.Header({ name = "content-type", value = "text/plain" })],
+                      body = b"hello from a wasm handler" })
+
+@test
+def response-conforms() =
+  match a-response() with
+  | Response.Response(r) =>
+    (match r.headers with
+     | [h] =>
+       (match h with
+        | Header.Header(x) =>
+          if (r.status == 200) and (x.name == "content-type") and (x.value == "text/plain")
+             and (r.body == b"hello from a wasm handler")
+          then unit else trap("http-response field mismatch"))
+     | _ => trap("expected exactly one header"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.http.response", "Response", "Response")
+export { Header.*, Response.*, descriptor }
