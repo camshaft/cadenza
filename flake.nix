@@ -2782,6 +2782,66 @@
             install -Dm755 target/release/cdz-http-control-mock "$out/bin/cdz-http-control-mock"
           '';
 
+        # The `cdz-http-gateway` SERVER BINARY — the stock gateway, the third SUT process the conformance
+        # driver spawns (`nix build .#cdz-http-gateway` → result/bin/…). Built with `--features host`: the
+        # `[[bin]]` target declares `required-features = ["host"]` (the wasmtime handler store), so the bin
+        # can only build with it — even though boot-from-control's serve path is the wasmtime-free spine.
+        # Needs the cdz-platform contracts overlay (cdz-platform dep, src/contracts not committed #5250), cmake
+        # (the cdz-cas-http path-dep's aws-lc-rs TLS), and the wit/ dir (host bindgen). Fileset mirrors the
+        # gateway check's path closure. Heavy (compiles wasmtime/cranelift) but that is what the bin requires.
+        cdzHttpGatewayBin =
+          let
+            vendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-gateway/Cargo.lock;
+            };
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-gateway/src
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.toml
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.lock
+                ./implementation/seed/crates/cdz-cas-http/src
+                ./implementation/seed/crates/cdz-cas-http/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
+                ./implementation/seed/crates/cdz-platform/src
+                ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./implementation/seed/crates/cdz-platform/wit
+                ./rust-toolchain.toml
+              ];
+            };
+          in
+          pkgs.runCommand "cdz-http-gateway"
+            {
+              nativeBuildInputs = [ rustToolchain pkgs.cmake ];
+              RUST_MIN_STACK = "67108864";
+              meta.mainProgram = "cdz-http-gateway";
+            } ''
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cp -r --no-preserve=mode,ownership ${src} repo
+            chmod -R u+w repo
+            cd repo
+            # OVERLAY: stage cdz-platform's build-time-generated contract schemas (not committed, #5250).
+            mkdir -p implementation/seed/crates/cdz-platform/src/contracts
+            cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+            export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${vendor}"
+            EOF
+            cd implementation/seed/crates/cdz-http-gateway
+            cargo build --release --offline --locked --features host --bin cdz-http-gateway
+            install -Dm755 target/release/cdz-http-gateway "$out/bin/cdz-http-gateway"
+          '';
+
         # wasmAbiSexpSrc: the AUTHORITATIVE hand-authored wasm-abi.sexp, staged at its repo-relative path so the
         # bin's CDZ_REPO_ROOT join resolves it. Scoped to the ONE file → cdzWasmAbi/oracle rotate only when the
         # sexp changes. It lives at the TOP-LEVEL `data/` (OUTSIDE the rust compiler tree — language-independent,
@@ -6364,6 +6424,11 @@
         # The deployable mock control server binary: `nix build .#cdz-http-control-mock` → result/bin/… (vertical
         # gateway-conformance). One of the three SUT processes the conformance driver spawns; see `cdzHttpControlMockBin`.
         packages.cdz-http-control-mock = cdzHttpControlMockBin;
+
+        # The deployable stock gateway binary (DEFAULT features — the boot-from-control spine): `nix build
+        # .#cdz-http-gateway` → result/bin/… (vertical gateway-conformance, from v-gateway-rewrite's crate). The
+        # third SUT process the conformance driver spawns; see `cdzHttpGatewayBin`.
+        packages.cdz-http-gateway = cdzHttpGatewayBin;
 
         # S3: run a project's tests through nix, cached per-input (skip unchanged). `.#example-project-tests`
         # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
