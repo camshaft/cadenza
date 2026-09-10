@@ -345,4 +345,88 @@ mod tests {
         .await;
         assert!(!d.is_match(), "POST / is not a route (only GET /)");
     }
+
+    /// P2c PROOF: the gateway's [`RouterReducer`](crate::gateway::RouterReducer) CONSULTS the real router
+    /// guest over the wasmtime store and maps its decision to a spawnable handler — the full host-side of
+    /// "routing is a governing program." Binds the guest's baked handler markers to real handler
+    /// `ProgramHash`es; asserts `GET /` → the root-bound hash + the http-request contract, `POST /echo` →
+    /// the echo-bound hash, and an unlisted route → `None` (→ the gateway's 404). Seeds runtime + NFC; skips
+    /// cleanly when any env var is unset.
+    #[tokio::test]
+    async fn router_reducer_consults_the_real_guest() {
+        use crate::codec::Method;
+        use crate::gateway::RouterReducer;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use std::collections::HashMap;
+
+        let (Ok(router_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "router_reducer_consults_the_real_guest: CDZ_HTTP_ROUTER_WASM/RUNTIME_WASM/NFC_WASM unset \
+                 — skipping (the nix check sets all three)"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read router guest wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let router_program = ProgramHash::of(&router);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // Bind the guest's baked handler markers to the real handler hashes this deployment would spawn.
+        let root_handler = ProgramHash::of(b"the-root-handler-component");
+        let echo_handler = ProgramHash::of(b"the-echo-handler-component");
+        let mut handlers = HashMap::new();
+        handlers.insert(
+            bytes::Bytes::from_static(b"cdz-http.handler.root............"),
+            root_handler,
+        );
+        handlers.insert(
+            bytes::Bytes::from_static(b"cdz-http.handler.echo............"),
+            echo_handler,
+        );
+        let request_contract =
+            ContractId::try_from(&b"cdz-platform.http.request........"[..]).unwrap();
+        let rr = RouterReducer::new(
+            router_program,
+            ContractId::of(b"cdz-platform.http.request"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"gateway"),
+            handlers,
+        );
+
+        // GET / → the root-bound handler hash + the http-request contract the decision carries.
+        assert_eq!(
+            rr.match_route(store.as_ref(), b"q1", Method::Get, "/")
+                .await,
+            Some((root_handler, request_contract)),
+            "the gateway consults the guest and binds GET / to the root handler"
+        );
+        // POST /echo → the echo-bound handler hash.
+        assert_eq!(
+            rr.match_route(store.as_ref(), b"q2", Method::Post, "/echo")
+                .await,
+            Some((echo_handler, request_contract))
+        );
+        // GET /nope → no route.
+        assert!(
+            rr.match_route(store.as_ref(), b"q3", Method::Get, "/nope")
+                .await
+                .is_none(),
+            "an unlisted route is not usable"
+        );
+    }
 }

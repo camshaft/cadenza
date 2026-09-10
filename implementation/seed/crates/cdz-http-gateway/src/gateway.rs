@@ -11,9 +11,14 @@
 //! the control link. This module is the socket-independent core — the tokio/hyper edge (P1c-2) binds it
 //! to a listener, and a mock control server (P1c-3) seeds the table for end-to-end tests.
 
-use crate::codec::{Header, HttpRequest, HttpResponse, Method};
+use crate::codec::{Header, HttpRequest, HttpResponse, Method, decode_decision, encode_request};
 use crate::runner::HandlerRunner;
-use cdz_platform::{ContractId, ProgramHash, ProgramStore};
+use bytes::Bytes;
+use cdz_platform::{
+    ContractId, HostId, Message, Origin, Outcome, ProgramHash, ProgramStore, ReducerId,
+    ReducerKind, SpawnContext,
+};
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// The default per-request wall-clock ceiling (30s): a handler fold that has not produced a response within
@@ -96,6 +101,102 @@ impl Router {
             .iter()
             .find(|r| r.method == method && r.path == path)
             .map(|r| (r.handler, r.contract))
+    }
+}
+
+/// Routing lifted into a GOVERNING PROGRAM (`DESIGN-http-outpost.md` §4, P2): instead of matching a
+/// `(method, path)` against a static in-process [`Router`] table, the gateway CONSULTS a router-reducer wasm
+/// guest (`guests/router/reducer.cdz`) — it folds the request and answers a routing [`RouteDecision`]. This
+/// is the host side of that consultation, generic over [`ProgramStore`] (a wasmtime router in production, a
+/// native reducer in tests).
+///
+/// The router's decision names the handler by a stable SYMBOLIC marker (the guest bakes markers, not
+/// content hashes it cannot know) plus the contract-id the handler folds; `handlers` binds each marker to
+/// the real spawnable [`ProgramHash`] of the deployed handler component (the deployment binding — later the
+/// control link ships the markers alongside the handler blobs the CAS resolves). A decision whose handler
+/// marker is unbound, or the no-match sentinel (empty handler), routes to `None` (→ the gateway's 404).
+pub struct RouterReducer {
+    /// The router governing program (a content-addressed wasm reducer in the store).
+    program: ProgramHash,
+    /// The contract-id delivered as the request's `Message.id` when the router folds it.
+    request_contract: ContractId,
+    host: HostId,
+    /// The `ReducerId` stamped as the request's origin when delivered to the router.
+    origin: ReducerId,
+    /// Binds each decision handler-marker to the real [`ProgramHash`] the gateway spawns for that route.
+    handlers: HashMap<Bytes, ProgramHash>,
+}
+
+impl RouterReducer {
+    /// A router that consults `program`, delivering requests on `request_contract` from `host`/`origin`, and
+    /// binds decision handler-markers to spawnable handler hashes via `handlers`.
+    #[must_use]
+    pub fn new(
+        program: ProgramHash,
+        request_contract: ContractId,
+        host: HostId,
+        origin: ReducerId,
+        handlers: HashMap<Bytes, ProgramHash>,
+    ) -> Self {
+        Self {
+            program,
+            request_contract,
+            host,
+            origin,
+            handlers,
+        }
+    }
+
+    /// Consult the router for `(method, path)`: spawn a fresh router instance, deliver the request, read its
+    /// closing [`RouteDecision`], and map a matched decision's handler-marker to the bound
+    /// `(ProgramHash, ContractId)`. `None` on no route (the no-match sentinel), an unbound handler-marker, a
+    /// router that could not instantiate / did not `Break` with a decodable decision, or a malformed
+    /// contract-id — every one is a "no usable route" the gateway answers `404`.
+    pub async fn match_route(
+        &self,
+        store: &dyn ProgramStore,
+        request_id: &[u8],
+        method: Method,
+        path: &str,
+    ) -> Option<(ProgramHash, ContractId)> {
+        let req = HttpRequest {
+            method,
+            path: path.to_string(),
+            query: String::new(),
+            headers: vec![],
+            body: Bytes::new(),
+        };
+        let mut router = store
+            .spawn(
+                self.program,
+                SpawnContext {
+                    id: ReducerId::of(request_id),
+                    kind: ReducerKind::Ordinary,
+                    limits: None,
+                },
+            )
+            .await?;
+        let (_requests, outcome) = router
+            .on_message(Message {
+                id: self.request_contract,
+                payload: encode_request(&req),
+                from: Origin {
+                    reducer: self.origin,
+                    host: self.host,
+                },
+                continuation_token: Bytes::new(),
+            })
+            .await;
+        let Outcome::Break { reason, .. } = outcome else {
+            return None; // a router that does not close with a decision routes nowhere
+        };
+        let decision = decode_decision(&reason)?;
+        if !decision.is_match() {
+            return None; // the no-match sentinel (empty handler)
+        }
+        let handler = *self.handlers.get(&decision.handler)?; // unbound marker → no usable route
+        let contract = ContractId::try_from(decision.contract.as_ref()).ok()?;
+        Some((handler, contract))
     }
 }
 
@@ -250,6 +351,45 @@ mod tests {
         }
     }
 
+    /// A native stand-in for the router governing program: decodes the request and closes with a
+    /// [`RouteDecision`](crate::codec::RouteDecision) — `GET /ping` → the `h-ping` marker, `GET /unbound` →
+    /// an `h-unbound` marker (deliberately not bound in the test's handler map), anything else → the empty
+    /// no-match sentinel. Lets [`RouterReducer`] be exercised without wasm.
+    struct NativeRouter;
+    #[async_trait]
+    impl Reducer for NativeRouter {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            use crate::codec::{RouteDecision, decode_request, encode_decision};
+            let decision = match decode_request(&m.payload) {
+                Some(req) if req.method == Method::Get && req.path == "/ping" => RouteDecision {
+                    handler: Bytes::from_static(b"h-ping"),
+                    contract: Bytes::from_static(b"cdz-platform.http.request........"),
+                },
+                Some(req) if req.method == Method::Get && req.path == "/unbound" => RouteDecision {
+                    handler: Bytes::from_static(b"h-unbound"),
+                    contract: Bytes::from_static(b"cdz-platform.http.request........"),
+                },
+                _ => RouteDecision {
+                    handler: Bytes::new(),
+                    contract: Bytes::new(),
+                },
+            };
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz-platform.http.route"),
+                    reason: encode_decision(&decision),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
     fn runner() -> HandlerRunner {
         HandlerRunner::new(HostId::of(b"test-host"), ReducerId::of(b"test-router"))
     }
@@ -267,6 +407,67 @@ mod tests {
             headers: vec![],
             body: Bytes::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_router_reducer_consults_the_guest_and_binds_the_handler() {
+        let router_prog = ProgramHash::of(b"native-router");
+        let ping_handler = ProgramHash::of(b"ping-handler");
+        let mut store = Store::new();
+        store.register(router_prog, || Box::new(NativeRouter));
+
+        let mut handlers = HashMap::new();
+        handlers.insert(Bytes::from_static(b"h-ping"), ping_handler);
+        let rr = RouterReducer::new(
+            router_prog,
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            handlers,
+        );
+
+        // A matched route → the bound handler hash + the decision's contract-id.
+        let matched = rr.match_route(&store, b"q1", Method::Get, "/ping").await;
+        assert_eq!(
+            matched,
+            Some((
+                ping_handler,
+                ContractId::try_from(&b"cdz-platform.http.request........"[..]).unwrap()
+            )),
+            "a matched route binds the marker to the real handler hash + carries the contract-id"
+        );
+
+        // The no-match sentinel (empty handler) → None.
+        assert!(
+            rr.match_route(&store, b"q2", Method::Get, "/nope")
+                .await
+                .is_none(),
+            "the no-match sentinel routes nowhere"
+        );
+
+        // A matched decision whose handler-marker is NOT bound in the map → None (no usable route).
+        assert!(
+            rr.match_route(&store, b"q3", Method::Get, "/unbound")
+                .await
+                .is_none(),
+            "an unbound handler-marker is not a usable route"
+        );
+
+        // An unknown router program (cannot instantiate) → None.
+        let orphan = RouterReducer::new(
+            ProgramHash::of(b"absent-router"),
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            HashMap::new(),
+        );
+        assert!(
+            orphan
+                .match_route(&store, b"q4", Method::Get, "/ping")
+                .await
+                .is_none(),
+            "a router that cannot instantiate routes nowhere"
+        );
     }
 
     #[tokio::test]
