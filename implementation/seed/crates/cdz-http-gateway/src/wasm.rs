@@ -192,4 +192,157 @@ mod tests {
             bytes::Bytes::from_static(b"hello from a wasm handler")
         );
     }
+
+    /// P2 RUNTIME PROOF (DESIGN-http-outpost.md §4): the ROUTER governing program (guests/router/reducer.cdz)
+    /// folds real requests on the wasmtime store — routing-as-a-fold executes, and the Rust codec reads the
+    /// router's `Value.encode`d `Decision` back (a cross-compiler pin of `decode_decision`). Each request
+    /// spawns a fresh router instance (a one-shot fold: `on_message` → `Break` with the decision). Asserts the
+    /// baked table: `GET /` → the root handler marker, `POST /echo` → the echo marker, an unlisted route →
+    /// the empty-handler no-match sentinel. (The handler markers are the guest's baked PLACEHOLDERS; the
+    /// gateway-consults-router wiring slice reconciles them with real handler `ProgramHash`es.) Seeds the
+    /// value-heap runtime + NFC alongside the guest; skips cleanly when any env var is unset.
+    #[tokio::test]
+    async fn wasm_router_folds_the_baked_route_table() {
+        use crate::codec::{HttpRequest, Method, RouteDecision, decode_decision, encode_request};
+        use cdz_platform::{
+            ContractId, HostId, Message, Origin, Outcome, ProgramHash, ReducerId, ReducerKind,
+            SpawnContext,
+        };
+
+        let (Ok(router_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_router_folds_the_baked_route_table: CDZ_HTTP_ROUTER_WASM/RUNTIME_WASM/NFC_WASM unset \
+                 — skipping (the nix check sets all three)"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read router guest wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&router);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // The router dispatches on the decoded request; the delivered contract-id is immaterial to it.
+        let request_contract = ContractId::of(b"cdz-platform.http.request");
+
+        // Fold one request through a FRESH router instance (a one-shot fold) → its routing decision.
+        async fn route(
+            store: &dyn ProgramStore,
+            program: ProgramHash,
+            request_contract: ContractId,
+            id: &[u8],
+            method: Method,
+            path: &str,
+        ) -> RouteDecision {
+            let req = HttpRequest {
+                method,
+                path: path.to_string(),
+                query: String::new(),
+                headers: vec![],
+                body: bytes::Bytes::new(),
+            };
+            let mut reducer = store
+                .spawn(
+                    program,
+                    SpawnContext {
+                        id: ReducerId::of(id),
+                        kind: ReducerKind::Ordinary,
+                        limits: None,
+                    },
+                )
+                .await
+                .expect("router instantiates");
+            let (_requests, outcome) = reducer
+                .on_message(Message {
+                    id: request_contract,
+                    payload: encode_request(&req),
+                    from: Origin {
+                        reducer: ReducerId::of(b"gateway"),
+                        host: HostId::of(b"edge-host"),
+                    },
+                    continuation_token: bytes::Bytes::new(),
+                })
+                .await;
+            match outcome {
+                Outcome::Break { reason, .. } => {
+                    decode_decision(&reason).expect("router's decision decodes")
+                }
+                Outcome::Continue => panic!("the router must Break with a routing decision"),
+            }
+        }
+
+        // GET / → the root handler, folding the http-request contract (the guest's baked markers).
+        let d = route(
+            store.as_ref(),
+            program,
+            request_contract,
+            b"r1",
+            Method::Get,
+            "/",
+        )
+        .await;
+        assert!(d.is_match(), "GET / matches a route");
+        assert_eq!(
+            d.handler,
+            bytes::Bytes::from_static(b"cdz-http.handler.root............")
+        );
+        assert_eq!(
+            d.contract,
+            bytes::Bytes::from_static(b"cdz-platform.http.request........")
+        );
+
+        // POST /echo → the echo handler.
+        let d = route(
+            store.as_ref(),
+            program,
+            request_contract,
+            b"r2",
+            Method::Post,
+            "/echo",
+        )
+        .await;
+        assert!(d.is_match(), "POST /echo matches a route");
+        assert_eq!(
+            d.handler,
+            bytes::Bytes::from_static(b"cdz-http.handler.echo............")
+        );
+
+        // GET /nope → no route: the empty-handler no-match sentinel (→ the gateway's 404 floor).
+        let d = route(
+            store.as_ref(),
+            program,
+            request_contract,
+            b"r3",
+            Method::Get,
+            "/nope",
+        )
+        .await;
+        assert!(!d.is_match(), "an unlisted path is the no-match sentinel");
+
+        // A method mismatch on a known path is also no-match (POST / is not routed; only GET / is).
+        let d = route(
+            store.as_ref(),
+            program,
+            request_contract,
+            b"r4",
+            Method::Post,
+            "/",
+        )
+        .await;
+        assert!(!d.is_match(), "POST / is not a route (only GET /)");
+    }
 }

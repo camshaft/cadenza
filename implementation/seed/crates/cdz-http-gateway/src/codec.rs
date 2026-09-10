@@ -123,6 +123,27 @@ pub struct WsSend {
     pub data: Bytes,
 }
 
+/// The router governing program's routing decision (`guests/router/reducer.cdz` `Decision`): the handler
+/// component to spawn (a `ProgramHash`'s bytes) + the contract-id it folds (a `ContractId`'s bytes). A
+/// SINGLE-constructor sum → a plain record value; an EMPTY `handler` is the no-match sentinel (the router's
+/// stand-in for "no route" — the gateway answers its 404 floor), since the guest compiler cannot
+/// `Value.encode` a multi-ctor `Route | NotFound` sum. `handler`/`contract` stay raw `Bytes` here (the codec
+/// layer is `cdz-platform`-free; the gateway maps them to the typed ids).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteDecision {
+    pub handler: Bytes,
+    pub contract: Bytes,
+}
+
+impl RouteDecision {
+    /// Whether the router matched a route: a non-empty `handler`. An empty `handler` is the no-match
+    /// sentinel (→ the gateway's 404 floor).
+    #[must_use]
+    pub fn is_match(&self) -> bool {
+        !self.handler.is_empty()
+    }
+}
+
 // --- encode ----------------------------------------------------------------------------------------------
 
 /// Encode an [`HttpRequest`] into the canonical binary-AST payload a handler's `on_message` receives.
@@ -267,6 +288,20 @@ pub fn encode_ws_send(send: &WsSend) -> Bytes {
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
 
+/// Encode a [`RouteDecision`] into canonical binary-AST bytes — the form the router guest's
+/// `Value.encode(Decision.Decision({ handler, contract }))` produces: `Decision` is single-ctor → the record
+/// directly, under the root ascription.
+#[must_use]
+pub fn encode_decision(decision: &RouteDecision) -> Bytes {
+    let mut b = Builder::new();
+    let handler = bytes_leaf(&mut b, &decision.handler);
+    let contract = bytes_leaf(&mut b, &decision.contract);
+    let rec = record(&mut b, vec![("handler", handler), ("contract", contract)]);
+    let root = ascribe(&mut b, rec, "Decision");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 // --- decode ----------------------------------------------------------------------------------------------
 
 /// Decode a canonical binary-AST payload into an [`HttpRequest`], or `None` if it is malformed / not a
@@ -358,6 +393,20 @@ pub fn decode_ws_send(bytes: &[u8]) -> Option<WsSend> {
     Some(WsSend {
         conn: read_bytes(&arenas, record_field(&arenas, rec, "conn")?)?,
         data: read_bytes(&arenas, record_field(&arenas, rec, "data")?)?,
+    })
+}
+
+/// Decode the router governing program's closing-`Break` reason bytes into a [`RouteDecision`], or `None` if
+/// malformed. `Decision` is single-ctor → the record directly (after the optional ascription); an empty
+/// `handler` (the no-match sentinel) decodes to a `RouteDecision` whose [`is_match`](RouteDecision::is_match)
+/// is `false`.
+#[must_use]
+pub fn decode_decision(bytes: &[u8]) -> Option<RouteDecision> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(RouteDecision {
+        handler: read_bytes(&arenas, record_field(&arenas, rec, "handler")?)?,
+        contract: read_bytes(&arenas, record_field(&arenas, rec, "contract")?)?,
     })
 }
 
@@ -681,6 +730,27 @@ mod tests {
             data: Bytes::from_static(b"pong"),
         };
         assert_eq!(decode_ws_send(&encode_ws_send(&send)).unwrap(), send);
+    }
+
+    #[test]
+    fn route_decision_round_trips() {
+        // A match: a non-empty handler + contract.
+        let matched = RouteDecision {
+            handler: Bytes::from_static(b"cdz-http.handler.root............"),
+            contract: Bytes::from_static(b"cdz-platform.http.request........"),
+        };
+        let decoded = decode_decision(&encode_decision(&matched)).expect("decision decodes");
+        assert_eq!(decoded, matched);
+        assert!(decoded.is_match());
+
+        // No match: the empty-handler sentinel decodes back and reads as not-a-match.
+        let no_match = RouteDecision {
+            handler: Bytes::new(),
+            contract: Bytes::new(),
+        };
+        let decoded = decode_decision(&encode_decision(&no_match)).expect("sentinel decodes");
+        assert_eq!(decoded, no_match);
+        assert!(!decoded.is_match());
     }
 
     /// CROSS-COMPILER PIN: decode ws-event / ws-send frames the actual compiler produced (`cdz run` over
