@@ -13,6 +13,7 @@
 
 pub mod abi;
 pub mod closure_hash_wire;
+pub mod compile_output_wire;
 pub mod diagnostics_wire;
 pub mod doc_wire;
 pub mod effect_bind_wire;
@@ -48,6 +49,7 @@ pub use abi::{
     Severity, WRAP_HOLE, component_name_artifact, entry_artifact, wrap_prefix_suffix,
 };
 pub use closure_hash_wire::{decode_closure_hash, encode_closure_hash};
+pub use compile_output_wire::{decode_compile_output, encode_compile_output};
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use doc_wire::{DocAnswer, decode_doc, encode_doc};
 pub use export_types_wire::{
