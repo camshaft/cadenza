@@ -51,6 +51,26 @@ impl Router {
         Self { routes }
     }
 
+    /// Build a router from an `http-route-table` control frame (the payload the control server ships,
+    /// `http-route-table.cdz`) — decode it and map each route's `handler` bytes to a [`ProgramHash`].
+    /// `None` if the frame is malformed or any `handler` is not a valid hash (`Hash::LEN` bytes). The
+    /// per-route `contract` id is not yet used by the router (the runner folds a fixed request contract-id
+    /// for now); wiring per-route contracts is a follow-up.
+    #[must_use]
+    pub fn from_route_table(frame: &[u8]) -> Option<Router> {
+        let routes = crate::codec::decode_route_table(frame)?
+            .into_iter()
+            .map(|r| {
+                Some(Route {
+                    method: r.method,
+                    path: r.path,
+                    handler: ProgramHash::try_from(r.handler.as_ref()).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Router::new(routes))
+    }
+
     /// The handler for `(method, path)`, or `None` if no route matches.
     #[must_use]
     pub fn match_route(&self, method: Method, path: &str) -> Option<ProgramHash> {
@@ -235,6 +255,44 @@ mod tests {
 
         let resp = gw.serve(&store, b"req-4", &get("/")).await;
         assert_eq!(resp.status, 500);
+    }
+
+    #[test]
+    fn builds_a_router_from_a_route_table_frame() {
+        use crate::codec::{RouteFrame, encode_route_table};
+        let h1 = ProgramHash::of(b"handler-one");
+        let h2 = ProgramHash::of(b"handler-two");
+        let frame = encode_route_table(&[
+            RouteFrame {
+                method: Method::Get,
+                path: "/".to_string(),
+                handler: Bytes::copy_from_slice(h1.hash().as_bytes()),
+                contract: Bytes::from_static(b"contract-1"),
+            },
+            RouteFrame {
+                method: Method::Post,
+                path: "/mcp".to_string(),
+                handler: Bytes::copy_from_slice(h2.hash().as_bytes()),
+                contract: Bytes::from_static(b"contract-2"),
+            },
+        ]);
+        let router = Router::from_route_table(&frame).expect("route table builds a router");
+        assert_eq!(router.match_route(Method::Get, "/"), Some(h1));
+        assert_eq!(router.match_route(Method::Post, "/mcp"), Some(h2));
+        assert_eq!(router.match_route(Method::Get, "/mcp"), None);
+    }
+
+    #[test]
+    fn a_route_table_with_a_bad_handler_hash_is_rejected() {
+        use crate::codec::{RouteFrame, encode_route_table};
+        // A too-short handler is not a valid ProgramHash (Hash::LEN) → the whole frame is rejected.
+        let frame = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: Bytes::from_static(b"too-short"),
+            contract: Bytes::from_static(b"c"),
+        }]);
+        assert!(Router::from_route_table(&frame).is_none());
     }
 
     #[test]

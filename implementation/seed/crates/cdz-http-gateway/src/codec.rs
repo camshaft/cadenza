@@ -95,6 +95,18 @@ pub struct HttpResponse {
     pub body: Bytes,
 }
 
+/// One entry of an `http-route-table` frame (`http-route-table.cdz` `Route`): a `(method, path)` route
+/// served by the handler addressed by `handler` (a `ProgramHash`'s bytes), folding the contract `contract`
+/// (a `ContractId`'s bytes). `handler`/`contract` stay raw `Bytes` here — the codec layer is
+/// `cdz-platform`-free; the router (`gateway`) maps them to the typed ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteFrame {
+    pub method: Method,
+    pub path: String,
+    pub handler: Bytes,
+    pub contract: Bytes,
+}
+
 // --- encode ----------------------------------------------------------------------------------------------
 
 /// Encode an [`HttpRequest`] into the canonical binary-AST payload a handler's `on_message` receives.
@@ -158,6 +170,37 @@ fn encode_header(b: &mut Builder, h: &Header) -> StructId {
     record(b, vec![("name", name), ("value", value)])
 }
 
+/// Encode a route table into the canonical binary-AST frame the control server ships (`http-route-table`
+/// `RouteTable`). `RouteTable`/`Route` are single-constructor sums, so both elide their ctors — the value
+/// is the `#list` of `Route` records directly, under the root ascription.
+#[must_use]
+pub fn encode_route_table(routes: &[RouteFrame]) -> Bytes {
+    let mut b = Builder::new();
+    let entries: Vec<StructId> = routes
+        .iter()
+        .map(|r| {
+            let u = unit(&mut b);
+            let method = bare_ctor(&mut b, r.method.ctor(), vec![u]);
+            let path = str_leaf(&mut b, &r.path);
+            let handler = bytes_leaf(&mut b, &r.handler);
+            let contract = bytes_leaf(&mut b, &r.contract);
+            record(
+                &mut b,
+                vec![
+                    ("method", method),
+                    ("path", path),
+                    ("handler", handler),
+                    ("contract", contract),
+                ],
+            )
+        })
+        .collect();
+    let list = list_value(&mut b, entries);
+    let root = ascribe(&mut b, list, "RouteTable");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 // --- decode ----------------------------------------------------------------------------------------------
 
 /// Decode a canonical binary-AST payload into an [`HttpRequest`], or `None` if it is malformed / not a
@@ -193,6 +236,28 @@ pub fn decode_response(bytes: &[u8]) -> Option<HttpResponse> {
         headers,
         body,
     })
+}
+
+/// Decode an `http-route-table` frame into its [`RouteFrame`]s, or `None` if malformed. `RouteTable` is a
+/// single-constructor sum wrapping `List(Route)`, so (after the optional root ascription) the value is the
+/// `#list` of `Route` records directly; each `Route` is likewise a single-ctor record. Ascription-tolerant
+/// (via `record_field`/`read_method`), so it reads both the platform-boundary form (root ascribed only) and
+/// the guest `Value.encode` form (every node ascribed).
+#[must_use]
+pub fn decode_route_table(bytes: &[u8]) -> Option<Vec<RouteFrame>> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let list = unascribe(&arenas, arenas.root); // `RouteTable` ctor elided → the `#list` of routes
+    read_list(&arenas, list)?
+        .iter()
+        .map(|&r| {
+            Some(RouteFrame {
+                method: read_method(&arenas, record_field(&arenas, r, "method")?)?,
+                path: read_str(&arenas, record_field(&arenas, r, "path")?)?,
+                handler: read_bytes(&arenas, record_field(&arenas, r, "handler")?)?,
+                contract: read_bytes(&arenas, record_field(&arenas, r, "contract")?)?,
+            })
+        })
+        .collect()
 }
 
 /// Read a `List(Header)` value into a `Vec<Header>`, or `None` if not a list / a member is malformed.
@@ -441,5 +506,51 @@ mod tests {
         let resp = decode_response(include_bytes!("../tests/fixtures/response.bin"))
             .expect("compiler-produced response decodes");
         assert_eq!(resp, sample_response());
+    }
+
+    fn sample_route_table() -> Vec<RouteFrame> {
+        vec![
+            RouteFrame {
+                method: Method::Get,
+                path: "/".to_string(),
+                handler: Bytes::from_static(b"h1"),
+                contract: Bytes::from_static(b"c1"),
+            },
+            RouteFrame {
+                method: Method::Post,
+                path: "/mcp".to_string(),
+                handler: Bytes::from_static(b"h2"),
+                contract: Bytes::from_static(b"c2"),
+            },
+        ]
+    }
+
+    #[test]
+    fn route_table_round_trips() {
+        let table = sample_route_table();
+        let decoded = decode_route_table(&encode_route_table(&table)).expect("route table decodes");
+        assert_eq!(decoded, table);
+    }
+
+    #[test]
+    fn empty_route_table_round_trips() {
+        let decoded = decode_route_table(&encode_route_table(&[])).expect("empty table decodes");
+        assert!(decoded.is_empty());
+    }
+
+    /// CROSS-COMPILER PIN: decode a route-table frame the actual compiler produced (`cdz run` over a literal
+    /// `RouteTable`), proving the codec matches the compiler's `Value.encode`.
+    #[test]
+    fn decodes_compiler_produced_route_table() {
+        let table = decode_route_table(include_bytes!("../tests/fixtures/route-table.bin"))
+            .expect("compiler-produced route table decodes");
+        assert_eq!(table, sample_route_table());
+    }
+
+    #[test]
+    fn malformed_route_table_is_none() {
+        assert!(decode_route_table(b"garbage").is_none());
+        // A response's bytes are not a route table (no per-route records) → None.
+        assert!(decode_route_table(&encode_response(&sample_response())).is_none());
     }
 }
