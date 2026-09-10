@@ -3,10 +3,12 @@
 //! [`CasServer`](crate::CasServer) backend is a swappable trait object, so this drops in behind the same
 //! HTTP wire with no protocol change.
 //!
-//! Each blob is one file under `root`, named by the **content digest** (tag-normalized to `Blob`, rendered
-//! base62 — the same string form as the wire, never hex). Keying on the digest (not the tagged hash) makes
-//! the store tag-agnostic exactly like [`InMemoryBlobStore`](cdz_platform::InMemoryBlobStore): a component
-//! PUT under its `Blob` hash resolves a GET by its `Program` hash over the same bytes.
+//! Each blob is one file named by the **content digest** (tag-normalized to `Blob`, rendered base62 — the
+//! same string form as the wire, never hex), stored two levels deep by the first two base62 characters:
+//! `root/{c0}/{c1}/{full-name}`. The fan-out keeps any single directory bounded (≤62 entries per level) so
+//! a listing never explodes as the store grows. Keying on the digest (not the tagged hash) makes the store
+//! tag-agnostic exactly like [`InMemoryBlobStore`](cdz_platform::InMemoryBlobStore): a component PUT under
+//! its `Blob` hash resolves a GET by its `Program` hash over the same bytes.
 //!
 //! I/O is async (`tokio::fs`) so a fetch never blocks the runtime — the whole point of the async
 //! [`BlobStore`] trait (a disk/network backend awaits without stalling the event loop). Writes are atomic
@@ -45,11 +47,18 @@ impl DiskBlobStore {
 
     /// The file path for `hash`: keyed on the 32-byte digest (tag ignored), tag-normalized to `Blob` and
     /// rendered base62 — so the same bytes map to one file however their hash is tagged.
+    ///
+    /// Sharded two levels deep by the first two base62 characters — `root/{c0}/{c1}/{full-name}` — so no
+    /// single directory holds every blob and a listing stays bounded (≤62 entries per level, ≤3844 leaf
+    /// dirs). The leaf is the FULL base62 name (self-describing — the hash is recoverable from the leaf
+    /// alone). base62 is ASCII, so slicing the first two chars is byte-safe, and a `Hash` text is a fixed
+    /// 45 chars, so both shard chars always exist.
     fn path_for(&self, hash: &Hash) -> PathBuf {
         let mut bytes = [0u8; Hash::LEN];
         bytes[0] = HashTag::Blob as u8;
         bytes[1..].copy_from_slice(hash.digest());
-        self.root.join(Hash::from_bytes(bytes).to_string())
+        let name = Hash::from_bytes(bytes).to_string();
+        self.root.join(&name[0..1]).join(&name[1..2]).join(&name)
     }
 
     /// Write `bytes` to `path` atomically: skip if already present (content-addressed → idempotent), else
@@ -57,6 +66,11 @@ impl DiskBlobStore {
     async fn write_atomic(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         if tokio::fs::try_exists(path).await.unwrap_or(false) {
             return Ok(());
+        }
+        // Create the two-level shard directory lazily (the temp file below lives in it, so the rename stays
+        // within the shard dir → intra-filesystem/atomic).
+        if let Some(shard_dir) = path.parent() {
+            tokio::fs::create_dir_all(shard_dir).await?;
         }
         let seq = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
         let file_name = path
@@ -165,6 +179,31 @@ mod tests {
         let h2 = store.put(Bytes::from_static(b"same")).await;
         assert_eq!(h1, h2);
         assert_eq!(store.get(h1).await, Some(Bytes::from_static(b"same")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn stores_under_a_two_level_base62_shard() {
+        let dir = scratch("shard");
+        let store = DiskBlobStore::open(&dir).expect("open");
+        let bytes = Bytes::from_static(b"shard me by first two chars");
+        let hash = store.put(bytes.clone()).await;
+
+        // The blob lands at root/{c0}/{c1}/{full-base62-name}, keyed on the Blob-tagged digest.
+        let mut norm = [0u8; Hash::LEN];
+        norm[0] = HashTag::Blob as u8;
+        norm[1..].copy_from_slice(hash.digest());
+        let name = Hash::from_bytes(norm).to_string();
+        let expected = dir.join(&name[0..1]).join(&name[1..2]).join(&name);
+        assert!(
+            expected.is_file(),
+            "blob should be sharded two levels deep at {expected:?}"
+        );
+        // No blob file sits directly in root (the fan-out, not a flat layout).
+        assert!(!dir.join(&name).exists(), "must not be stored flat in root");
+        // …and it still round-trips through the sharded path.
+        assert_eq!(store.get(hash).await, Some(bytes));
+        assert!(store.has(hash).await);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
