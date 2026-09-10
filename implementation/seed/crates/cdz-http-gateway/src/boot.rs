@@ -23,24 +23,34 @@
 //! follow-on slices).
 
 use crate::drive::drive;
-use crate::resolver::GatewayResolver;
+use crate::resolver::{ControlCtx, GatewayResolver};
+use crate::session::{ControlSink, Sessions};
 use bytes::Bytes;
-use cdz_http_protocol::{ControlConfig, ControlFrame, FrameCodec, decode_control_config, value};
+use cdz_http_protocol::{
+    ControlConfig, ControlFrame, ControlUp, FrameCodec, Header, RequestContext,
+    decode_control_config, value,
+};
 use cdz_platform::{
     ContractId, Delivered, HostId, Message as ReducerMessage, Origin, ProgramHash, ProgramStore,
-    ReducerId, ReducerKind, SpawnContext, TokioRuntime,
+    ReducerId, ReducerKind, SpawnContext, Str, TokioRuntime,
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
+
+/// A process-wide counter minting a distinct session id per driven HTTP request, so a `control.send`'s
+/// `ControlUp`/`ControlDown` can be attributed to the request that emitted it (routing back is by
+/// `correlation`, but the session id lets the control server distinguish concurrent requests).
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 
 /// How deep a `http.dispatch` chain (router → handler → sub-handler → …) may recurse before a dispatch is
 /// answered "missing" — a fixed bound so a cyclic/runaway dispatch cannot recurse forever. Not control-shipped
@@ -77,6 +87,14 @@ pub struct GatewayState {
     root_router: ProgramHash,
     /// The canonical contract-ids the gateway routes effects + terminal breaks by (§5).
     ids: Ids,
+    /// The write half of the live control link a handler's `control.send` is forwarded UP through (§3). Tied
+    /// to the connection this config arrived on; a redial rebuilds the state with a fresh sink.
+    control_sink: ControlSink,
+    /// The pending-`control.send` registry: routes the control server's `ControlDown` response back into the
+    /// awaiting reducer (shared with the control-link read task).
+    sessions: Sessions,
+    /// The `control.send` effect's canonical contract-id (§5) — a request on this id is forwarded UP.
+    control_send: ContractId,
 }
 
 /// The gateway's readiness slot: `None` = not yet configured (serve `503`), `Some` = the config control last
@@ -127,13 +145,20 @@ pub async fn run(listen_addr: &str, control_addr: &str) -> Result<(), BootError>
     //    serve loop reads it per request. Everything but the two launch addresses lives HERE, from control.
     let state: SharedState = Arc::new(RwLock::new(None));
 
+    // The pending-`control.send` registry — shared for the process's life (survives redials) between the
+    // control-link read task (which routes `ControlDown` responses) and the driven reducers (which register).
+    let sessions = Sessions::new();
+
     // 3. Dial control in the background and keep the link open for the gateway's whole life (§3), applying
     //    each config it ships. Retries on dial failure/link drop so a slow-to-start control just delays
     //    readiness (503 meanwhile) rather than killing the gateway.
-    tokio::spawn(control_link(control_addr.to_string(), Arc::clone(&state)));
+    tokio::spawn(control_link(
+        control_addr.to_string(),
+        Arc::clone(&state),
+        sessions,
+    ));
 
-    // 4. Serve immediately: `503` until ready, then the configured behavior (the drive loop is the next
-    //    slice; a configured gateway floors `200` until then).
+    // 4. Serve immediately: `503` until ready, then drive the control-shipped root router per request.
     serve(listener, state).await
 }
 
@@ -145,27 +170,42 @@ type ControlLink = tokio_tungstenite::WebSocketStream<TcpStream>;
 /// [`ControlConfig`] into `state` — the first makes the gateway ready, a later one live-swaps the applied
 /// config (on-the-fly reconfig). On a dial failure or a dropped link it backs off and redials, so the
 /// gateway keeps serving `503` while control is unreachable rather than exiting. Runs for the process's life.
-async fn control_link(control_addr: String, state: SharedState) {
+async fn control_link(control_addr: String, state: SharedState, sessions: Sessions) {
     let codec = control_frame_codec();
     loop {
         match dial_control(&control_addr).await {
-            Ok(mut ws) => {
+            Ok(ws) => {
+                // Split the one ws into a read half (frames DOWN) and a write half (frames UP). A
+                // `control.send` reaches the write half via an unbounded mpsc: the resolver pushes a
+                // `ControlUp` into `up_tx` (fire-and-forget), and the writer task below drains it to the ws —
+                // so a handler's effect never blocks the drive loop on the socket.
+                let (mut write, mut read) = ws.split();
+                let (up_tx, mut up_rx) = tokio::sync::mpsc::unbounded_channel::<ControlUp>();
+                let writer = tokio::spawn(async move {
+                    let codec = control_frame_codec();
+                    while let Some(up) = up_rx.recv().await {
+                        let frame = codec.encode(&ControlFrame::Up(up));
+                        if write.send(Message::Binary(frame.to_vec())).await.is_err() {
+                            break; // link write half is gone — stop; the read loop will redial.
+                        }
+                    }
+                });
+
                 // Read every frame control pushes and DEMUX IT BY CONTRACT ID (the computed-id frame
-                // dispatch): the same link carries config AND messages destined for handlers, so we branch
-                // on the decoded `ControlFrame`, never assume every frame is a config. A closed or errored
-                // link breaks out to redial.
-                while let Some(Ok(msg)) = ws.next().await {
+                // dispatch): the same link carries config, session-addressed messages, and (unexpectedly) up
+                // frames. A closed or errored link breaks out to redial.
+                while let Some(Ok(msg)) = read.next().await {
                     let Some(bytes) = frame_bytes(&msg) else {
                         continue; // ping/pong/close — no payload to demux
                     };
                     match classify_frame(&codec, bytes) {
                         Some(ControlFrame::Config(config)) => {
                             // Build the drive context from the config (CAS store + root-router hash +
-                            // canonical ids) and live-swap it in: the first config makes us ready; a later
-                            // one reconfigures on the fly (only the two launch addresses are baked in). A
-                            // config we cannot apply (bad hash, or no wasm engine in the light spine build)
-                            // leaves us `None` ⇒ still `503`.
-                            match ready_state(&config) {
+                            // canonical ids + THIS link's write half + the session registry) and live-swap it
+                            // in: the first config makes us ready; a later one reconfigures on the fly (only
+                            // the two launch addresses are baked in). A config we cannot apply (bad hash, or no
+                            // wasm engine in the light spine build) leaves us `None` ⇒ still `503`.
+                            match ready_state(&config, up_tx.clone(), sessions.clone()) {
                                 Some(next) => {
                                     if let Ok(mut slot) = state.write() {
                                         *slot = Some(next);
@@ -177,16 +217,18 @@ async fn control_link(control_addr: String, state: SharedState) {
                             }
                         }
                         Some(ControlFrame::Down(down)) => {
-                            // A response/push targeted at a session — route it to the handler running for
-                            // that session. The session registry is populated by the request-drive slice;
-                            // until then there is no live session to route to.
-                            dispatch_down(down);
+                            // A control-server response addressed by `correlation` to the handler that emitted
+                            // a `control.send` — fold its payload back into that reducer's `on_response` (§3).
+                            // An unmatched correlation (already answered, or a push with no waiter) is dropped.
+                            sessions.route_response(&down.correlation, down.payload);
                         }
                         // The gateway SENDS `Up` frames (a handler's `control.send`); receiving one down the
                         // link is unexpected. An unknown/undecodable frame is likewise ignored, not fatal.
                         Some(ControlFrame::Up(_)) | None => {}
                     }
                 }
+                // Link dropped — stop the writer (its ws write half is dead) before redialing.
+                writer.abort();
             }
             Err(e) => {
                 // Control unreachable or handshake failed — stay up (503) and retry.
@@ -246,38 +288,40 @@ fn classify_frame(codec: &FrameCodec, bytes: &[u8]) -> Option<ControlFrame> {
         .or_else(|| decode_control_config(bytes).map(ControlFrame::Config))
 }
 
-/// Route a [`ControlDown`](cdz_http_protocol::ControlDown) — a response/push control addressed to a session
-/// (§3) — to the handler running for that `session`, injected into its mailbox and folded as `on_response`
-/// (a `control.send` answer, correlated by `correlation`) or `on_notification` (an unsolicited push). The
-/// session registry that maps `session` → its live mailbox is populated by the request-drive slice; until a
-/// session is live there is nothing to route to, so an unmatched frame is dropped.
-fn dispatch_down(down: cdz_http_protocol::ControlDown) {
-    let _ = down;
-    // TARGET (drive slice): look `down.session` up in the session registry and `send` the payload into that
-    // reducer's mailbox as a `Response`/`Notification`. No live sessions exist until the drive loop registers
-    // them, so this is a no-op today — NOT a config path, a genuine session-routing seam.
-}
-
-/// Build the drive context (§1/§4/§5) from a control-shipped config: the wasm-backed program store over the
-/// config's CAS, the root-router hash, and the canonical contract-ids. `None` if the config is unusable — a
+/// Build the drive context (§1/§3/§4/§5) from a control-shipped config: the wasm-backed program store over
+/// the config's CAS, the root-router hash, the canonical contract-ids, and the control back-channel (the
+/// live link's write half `sink` + the shared `sessions` registry). `None` if the config is unusable — a
 /// malformed root-router hash, or (in the light non-`host` spine build) no wasm engine to run programs.
 #[cfg(feature = "host")]
-fn ready_state(config: &ControlConfig) -> Option<GatewayState> {
+fn ready_state(
+    config: &ControlConfig,
+    sink: ControlSink,
+    sessions: Sessions,
+) -> Option<GatewayState> {
     let root_router = ProgramHash::try_from(config.root_router.as_ref()).ok()?;
     let store = crate::wasm::build_store(config.cas_url.as_str(), &config.cas_credential)
         .map_err(|e| eprintln!("gateway: wasm program store init failed: {e}"))
         .ok()?;
+    let ids = canonical_ids();
+    let control_send = cdz_platform::contracts::control_send::contract().id();
     Some(GatewayState {
         store,
         root_router,
-        ids: canonical_ids(),
+        ids,
+        control_sink: sink,
+        sessions,
+        control_send,
     })
 }
 
 /// The light spine (no `host` feature) has no wasm engine, so it can never drive a program — it stays
 /// unconfigured (⇒ `503`). Only the real gateway binary (which enables `host`) becomes ready.
 #[cfg(not(feature = "host"))]
-fn ready_state(_config: &ControlConfig) -> Option<GatewayState> {
+fn ready_state(
+    _config: &ControlConfig,
+    _sink: ControlSink,
+    _sessions: Sessions,
+) -> Option<GatewayState> {
     None
 }
 
@@ -339,7 +383,7 @@ async fn handle(state: Option<GatewayState>, req: Request<Incoming>) -> Response
 /// resolver (fire-and-forget effects, §2), and turn its terminal `Break` into the response — `http.response`
 /// ⇒ the answer (§6), `http.deny` ⇒ `403`, anything else / no terminal ⇒ `500`.
 async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Full<Bytes>> {
-    let Some(payload) = encode_request(req).await else {
+    let Some((payload, request)) = encode_request(req).await else {
         return status(
             StatusCode::BAD_REQUEST,
             b"cdz-http-gateway: could not read request\n",
@@ -351,6 +395,28 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
         limits: None,
     };
     let Some(reducer) = gw.store.spawn(gw.root_router, ctx).await else {
+        // Make the spawn failure ACTIONABLE rather than an opaque 502: probe whether the component is even in
+        // the CAS, so the log distinguishes a fetch/seeding gap from an instantiate/dependency failure.
+        let present = gw.store.contains(gw.root_router).await;
+        let hash: String = gw
+            .root_router
+            .hash()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if present {
+            eprintln!(
+                "gateway: root router {hash} is in the CAS but FAILED TO INSTANTIATE — likely a \
+                 dependency component (e.g. the value-heap runtime a Cadenza guest imports) is not \
+                 seeded in the CAS, or a linker/world mismatch"
+            );
+        } else {
+            eprintln!(
+                "gateway: root router {hash} is NOT in the CAS — the fetch failed; check the config's \
+                 cas_url/credential and that the program + its full dependency closure are seeded"
+            );
+        }
         return status(
             StatusCode::BAD_GATEWAY,
             b"cdz-http-gateway: root router program unavailable\n",
@@ -362,11 +428,29 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
         from: edge_origin(),
         continuation_token: Bytes::new(),
     });
-    let resolver = GatewayResolver::new(
+    // A distinct session id per driven request, so a `control.send`'s ControlUp/ControlDown is attributable
+    // to this request (the response routes back by `correlation`; the session id distinguishes concurrency).
+    let session = Bytes::from(
+        NEXT_SESSION
+            .fetch_add(1, Ordering::Relaxed)
+            .to_be_bytes()
+            .to_vec(),
+    );
+    // Drive with the control back-channel wired (§3): a handler's `control.send` is forwarded UP and its
+    // response folds back via the shared session registry, stamped with this request's context + session.
+    let resolver = GatewayResolver::new_with_control(
         Arc::clone(&gw.store),
         gw.ids.dispatch,
         gw.ids.request,
         DISPATCH_DEPTH,
+        ControlCtx {
+            sink: gw.control_sink.clone(),
+            sessions: gw.sessions.clone(),
+            control_send: gw.control_send,
+            session,
+            request: Arc::new(request),
+            program: gw.root_router,
+        },
     );
     let out = drive::<TokioRuntime>(reducer, opening, move |r, tx| {
         Arc::clone(&resolver).carry::<TokioRuntime>(r, tx)
@@ -394,9 +478,11 @@ fn edge_origin() -> Origin {
     }
 }
 
-/// Marshal an incoming HTTP request into a bare `http-request` value (§4) — the driven program's opening
-/// event. Reads the whole body (buffered v0). `None` on an unsupported method or a body-read failure.
-async fn encode_request(req: Request<Incoming>) -> Option<Bytes> {
+/// Marshal an incoming HTTP request into (the bare `http-request` value the driven program folds as its
+/// opening event, §4) plus (the [`RequestContext`] a `control.send` carries UP so the control server can
+/// route without re-parsing the payload, §3). Reads the whole body (buffered v0). `None` on an unsupported
+/// method or a body-read failure.
+async fn encode_request(req: Request<Incoming>) -> Option<(Bytes, RequestContext)> {
     let (parts, body) = req.into_parts();
     let method = method_value_kind(&parts.method)?;
     let path = parts.uri.path().to_string();
@@ -411,7 +497,19 @@ async fn encode_request(req: Request<Incoming>) -> Option<Bytes> {
         })
         .collect();
     let body = body.collect().await.ok()?.to_bytes();
-    Some(encode_request_value(method, &path, &query, &headers, &body))
+    let payload = encode_request_value(method, &path, &query, &headers, &body);
+    let context = RequestContext {
+        method: Str::from(parts.method.as_str()),
+        path: Str::from(path.as_str()),
+        headers: headers
+            .iter()
+            .map(|(name, value)| Header {
+                name: Str::from(name.as_str()),
+                value: Str::from(value.as_str()),
+            })
+            .collect(),
+    };
+    Some((payload, context))
 }
 
 /// The `http.request` `Method` variant for a hyper [`Method`], or `None` for one the contract has no case for
