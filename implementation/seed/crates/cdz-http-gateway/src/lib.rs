@@ -37,9 +37,17 @@ pub mod runner;
 pub mod loop_driver;
 
 /// The gateway's effect resolver (design drive-contract §2, redirect inc-3b): routes an effect a looping
-/// program emits (by contract-id) to its gateway action — v0 handles `control.send` (envelope + forward up
-/// the control link); `dispatch`/timers are later slices. The [`loop_driver::EffectResolver`] the edge uses.
+/// program emits (by contract-id) to its gateway action — `control.send` (envelope + forward up the control
+/// link), `dispatch` (fetch + drive a subprogram from the CAS), and timers (any request with a deadline —
+/// arm it, fold `Err(Timeout)`). The [`loop_driver::EffectResolver`] the edge uses.
 pub mod effects;
+
+/// The per-request root-router drive (design drive-contract §1, redirect inc-3c): spawn the root router from
+/// the store, drive its loop with a [`effects::GatewayResolver`] (dispatch enabled over the store) delivering
+/// the `http-request`, and decode the terminal `Break` as an `http-response`. The looping replacement for the
+/// one-shot [`runner`]; socket-independent (the dumb edge wires it to the socket + control link in a later
+/// slice).
+pub mod root_driver;
 
 /// The per-connection WebSocket session driver (design §6): folds `ws-event`s through a session reducer
 /// and collects the `ws-send` frames it pushes. Socket-independent (generic over [`cdz_platform::ProgramStore`]);
