@@ -34,13 +34,32 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), String> {
-    let spec_path = std::env::args()
-        .nth(1)
-        .ok_or("usage: cdz-http-conformance <run-spec.bin>")?;
+    // `--parse-only <spec>`: decode the compiled run-spec + print its summary, then stop — no SUTs spawned.
+    // This is how the nix rig proves a `cdz convert`-encoded run-spec round-trips through the parser (that the
+    // ML surface + the parser agree on the value shape) without needing the SUT binaries.
+    let mut args = std::env::args().skip(1);
+    let mut parse_only = false;
+    let mut spec_path = None;
+    for arg in args.by_ref() {
+        match arg.as_str() {
+            "--parse-only" => parse_only = true,
+            other => spec_path = Some(other.to_string()),
+        }
+    }
+    let spec_path = spec_path.ok_or("usage: cdz-http-conformance [--parse-only] <run-spec.bin>")?;
+
     let spec_bytes =
         std::fs::read(&spec_path).map_err(|e| format!("reading run-spec {spec_path}: {e}"))?;
     let spec = parse_run_spec(&spec_bytes)
         .ok_or_else(|| format!("run-spec {spec_path} is not a valid binary-AST run value"))?;
+
+    if parse_only {
+        eprintln!(
+            "cdz-http-conformance: parsed {spec_path}: {}",
+            spec.summary()
+        );
+        return Ok(());
+    }
 
     let bins = HarnessBins::resolve_from_env()?;
 
