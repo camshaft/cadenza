@@ -144,6 +144,35 @@ impl RouteDecision {
     }
 }
 
+/// A handler-to-control message on its way UP the control link (`DESIGN-http-outpost-drive-contract.md` §3,
+/// the bidirectional-messaging directive): a looping program emits a `cdz.control.send` effect with an OPAQUE
+/// payload, and the gateway wraps it in this envelope, stamping PROVENANCE (`program` = the emitting
+/// program's `ProgramHash` bytes, `session` = the connection/session id it ran for) so the control server
+/// knows where it came from. The gateway never inspects `payload` — it is a pure opaque router. A single-
+/// constructor record on the wire (binary-AST, self-describing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlUp {
+    /// The emitting program's `ProgramHash` bytes.
+    pub program: Bytes,
+    /// The connection/session id the program ran for.
+    pub session: Bytes,
+    /// The program's opaque message payload (never inspected by the gateway).
+    pub payload: Bytes,
+}
+
+/// A control-to-handler message pushed DOWN the control link (`DESIGN-http-outpost-drive-contract.md` §3):
+/// the control server addresses a message to a specific handler session; the gateway ROUTES it by
+/// `session` to that reducer instance and folds it as an `on_notification` (the handler decides what to do).
+/// The gateway reads only `session` (the addressing), never `payload`. A single-constructor record on the
+/// wire (binary-AST).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlDown {
+    /// The target session id the gateway routes this message to.
+    pub session: Bytes,
+    /// The control server's opaque message payload (never inspected by the gateway).
+    pub payload: Bytes,
+}
+
 /// The gateway's ENTIRE boot configuration, shipped by the control server on connect (`DESIGN-http-outpost.md`
 /// §2/§3 + the dumb-gateway redirect): the gateway holds no table and no local files — it learns everything
 /// from the control server. `cas_url` + `cas_credential` are how it reaches the content-addressed store
@@ -275,6 +304,38 @@ pub fn encode_route_query(request: &[u8], table: &[u8]) -> Bytes {
     let table = bytes_leaf(&mut b, table);
     let rec = record(&mut b, vec![("request", request), ("table", table)]);
     let root = ascribe(&mut b, rec, "RouteQuery");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Encode a [`ControlUp`] envelope (handler → control) — single-ctor record, fields name-sorted, root-ascribed.
+#[must_use]
+pub fn encode_control_up(msg: &ControlUp) -> Bytes {
+    let mut b = Builder::new();
+    let payload = bytes_leaf(&mut b, &msg.payload);
+    let program = bytes_leaf(&mut b, &msg.program);
+    let session = bytes_leaf(&mut b, &msg.session);
+    let rec = record(
+        &mut b,
+        vec![
+            ("payload", payload),
+            ("program", program),
+            ("session", session),
+        ],
+    );
+    let root = ascribe(&mut b, rec, "ControlUp");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Encode a [`ControlDown`] envelope (control → handler) — single-ctor record, fields name-sorted, ascribed.
+#[must_use]
+pub fn encode_control_down(msg: &ControlDown) -> Bytes {
+    let mut b = Builder::new();
+    let payload = bytes_leaf(&mut b, &msg.payload);
+    let session = bytes_leaf(&mut b, &msg.session);
+    let rec = record(&mut b, vec![("payload", payload), ("session", session)]);
+    let root = ascribe(&mut b, rec, "ControlDown");
     let arenas = b.finish(root);
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
@@ -460,6 +521,29 @@ pub fn decode_route_query(bytes: &[u8]) -> Option<(Bytes, Bytes)> {
     let request = read_bytes(&arenas, record_field(&arenas, rec, "request")?)?;
     let table = read_bytes(&arenas, record_field(&arenas, rec, "table")?)?;
     Some((request, table))
+}
+
+/// Decode a [`ControlUp`] envelope, or `None` if malformed — the inverse of [`encode_control_up`].
+#[must_use]
+pub fn decode_control_up(bytes: &[u8]) -> Option<ControlUp> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(ControlUp {
+        program: read_bytes(&arenas, record_field(&arenas, rec, "program")?)?,
+        session: read_bytes(&arenas, record_field(&arenas, rec, "session")?)?,
+        payload: read_bytes(&arenas, record_field(&arenas, rec, "payload")?)?,
+    })
+}
+
+/// Decode a [`ControlDown`] envelope, or `None` if malformed — the inverse of [`encode_control_down`].
+#[must_use]
+pub fn decode_control_down(bytes: &[u8]) -> Option<ControlDown> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(ControlDown {
+        session: read_bytes(&arenas, record_field(&arenas, rec, "session")?)?,
+        payload: read_bytes(&arenas, record_field(&arenas, rec, "payload")?)?,
+    })
 }
 
 /// Decode a [`ControlConfig`] boot-config frame, or `None` if malformed — the inverse of
@@ -843,6 +927,45 @@ mod tests {
             decode_control_config(&encode_control_config(&no_auth)).unwrap(),
             no_auth
         );
+    }
+
+    #[test]
+    fn control_envelopes_round_trip() {
+        let up = ControlUp {
+            program: Bytes::from_static(b"cdz-router.root................."),
+            session: Bytes::from_static(b"conn-42"),
+            payload: Bytes::from_static(b"opaque handler->control bytes"),
+        };
+        assert_eq!(decode_control_up(&encode_control_up(&up)).unwrap(), up);
+        let down = ControlDown {
+            session: Bytes::from_static(b"conn-42"),
+            payload: Bytes::from_static(b"opaque control->handler push"),
+        };
+        assert_eq!(
+            decode_control_down(&encode_control_down(&down)).unwrap(),
+            down
+        );
+        // Empty payload/session (edge cases) still round-trip.
+        let empty = ControlDown {
+            session: Bytes::new(),
+            payload: Bytes::new(),
+        };
+        assert_eq!(
+            decode_control_down(&encode_control_down(&empty)).unwrap(),
+            empty
+        );
+    }
+
+    #[test]
+    fn a_malformed_control_envelope_is_none() {
+        assert!(decode_control_up(b"garbage").is_none());
+        assert!(decode_control_down(b"garbage").is_none());
+        // A down envelope lacks `program`, so it is not a valid up envelope.
+        let down = encode_control_down(&ControlDown {
+            session: Bytes::from_static(b"s"),
+            payload: Bytes::from_static(b"p"),
+        });
+        assert!(decode_control_up(&down).is_none());
     }
 
     #[test]
