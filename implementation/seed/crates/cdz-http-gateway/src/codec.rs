@@ -246,6 +246,22 @@ pub fn encode_route_table(routes: &[RouteFrame]) -> Bytes {
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
 
+/// Encode a `RouteQuery` — the per-request envelope the gateway delivers to the DYNAMIC (stateless) router
+/// guest (`guests/router-dynamic`): the encoded `http-request` bytes + the current route-table frame bytes.
+/// The router is a pure function of `(request, table)` (the table rides in the message, not KV state — the
+/// P3b pivot), so the gateway holds the live table and passes it per request. `RouteQuery` is a
+/// single-constructor sum → the record directly (fields name-sorted), under the root ascription.
+#[must_use]
+pub fn encode_route_query(request: &[u8], table: &[u8]) -> Bytes {
+    let mut b = Builder::new();
+    let request = bytes_leaf(&mut b, request);
+    let table = bytes_leaf(&mut b, table);
+    let rec = record(&mut b, vec![("request", request), ("table", table)]);
+    let root = ascribe(&mut b, rec, "RouteQuery");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 /// Encode a [`WsEvent`] into the canonical binary-AST payload a per-connection WS session's `on_message`
 /// receives. `Event` is a multi-constructor sum, so the value is the bare-name `(<Ctor> #record…)` form
 /// (not elided), under the root ascription.

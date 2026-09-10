@@ -6802,6 +6802,17 @@
               entry = "reducer";
               libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
             };
+            # The DYNAMIC router governing program (guests/router-dynamic/reducer.cdz, DESIGN §3/§4, P3b PIVOT):
+            # routing-as-a-fold over a LIVE table WITHOUT host-state — the gateway holds the route-table frame
+            # (from control_link) and passes it in the message as a `RouteQuery{request, table}`; the router is a
+            # pure fn recursing over (table, request) -> Decision. Stateless → an INLINE world (no witWorld/libs),
+            # so it VALIDATES + instantiates (unlike router-stateful, which the compiler-bug blocks). The runtime
+            # e2e drives it via CDZ_HTTP_ROUTER_DYNAMIC_WASM.
+            cdzHttpGatewayRouterDynamic = mkCadenzaGuest {
+              pname = "cdz-http-gateway-router-dynamic";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/router-dynamic/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6844,6 +6855,7 @@
               CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
               CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
               CDZ_HTTP_ROUTER_STATEFUL_WASM=${cdzHttpGatewayRouterStateful} \
+              CDZ_HTTP_ROUTER_DYNAMIC_WASM=${cdzHttpGatewayRouterDynamic} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7248,6 +7260,8 @@
             cdz-http-gateway-kv-probe = cdzHttpGatewayKvProbe;
             # The stateful router governing program (live route table in KV state) compiles.
             cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
+            # The dynamic stateless router (live table-in-payload, routing-as-a-fold, no host-state) compiles.
+            cdz-http-gateway-router-dynamic = cdzHttpGatewayRouterDynamic;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
