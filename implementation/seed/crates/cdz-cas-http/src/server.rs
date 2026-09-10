@@ -127,6 +127,7 @@ impl CasServer {
     async fn handle(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
         let (parts, body) = req.into_parts();
         let key = parts.uri.path().trim_start_matches('/');
+        tracing::debug!(method = %parts.method, path = %parts.uri.path(), "cas request");
 
         // POST is the server-assigned write, targeting the ROOT (`/`) — the address is computed + returned,
         // not supplied by the caller. `POST /{something}` is not a route (405).
@@ -158,7 +159,10 @@ impl CasServer {
                         .expect("a 200 blob response with static headers is always valid"),
                     Ok(None) => floor(StatusCode::NOT_FOUND, "not found"),
                     // A backend failure (disk/network/S3) is NOT a miss — surface it as 500.
-                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "blob store backend error");
+                        floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error")
+                    }
                 }
             }
             Method::HEAD => {
@@ -172,7 +176,10 @@ impl CasServer {
                         .body(Full::new(Bytes::new()))
                         .expect("a static 200 HEAD response is always valid"),
                     Ok(false) => floor(StatusCode::NOT_FOUND, "not found"),
-                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "blob store backend error");
+                        floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error")
+                    }
                 }
             }
             Method::PUT => {
@@ -197,7 +204,10 @@ impl CasServer {
                     // Empty body — the caller already knows the address (it's the key it PUT to).
                     Ok(_) => created(&hash, Bytes::new()),
                     // The store failed to persist — surface it (the caller must know the write didn't land).
-                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "blob store backend error");
+                        floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error")
+                    }
                 }
             }
             _ => floor(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
@@ -222,7 +232,10 @@ impl CasServer {
         let hash = Hash::of(HashTag::Blob, &bytes);
         match self.store.put(bytes).await {
             Ok(_) => created(&hash, Bytes::from(hash.to_string())),
-            Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+            Err(err) => {
+                tracing::warn!(error = %err, "blob store backend error");
+                floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error")
+            }
         }
     }
 

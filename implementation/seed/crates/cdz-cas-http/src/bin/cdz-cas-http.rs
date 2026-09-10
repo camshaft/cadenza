@@ -12,6 +12,15 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install the tracing subscriber: fmt output filtered by RUST_LOG (default: this crate at info). A
+    // library never does this; the deployable binary does, so its logs are visible + debuggable.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("cdz_cas_http=info")),
+        )
+        .init();
+
     let config = match config_path().as_deref() {
         // `-` reads the binary-AST config from stdin (pipe it in).
         Some("-") => {
@@ -48,13 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = Arc::new(server);
 
     let listener = TcpListener::bind(addr).await?;
-    eprintln!(
-        "cdz-cas-http: listening on {addr} (writes {})",
-        if config.write_credential.is_some() {
-            "enabled"
-        } else {
-            "disabled"
-        }
+    tracing::info!(
+        %addr,
+        reads = if config.read_credential.is_some() { "gated" } else { "open" },
+        writes = if config.write_credential.is_some() { "enabled" } else { "disabled" },
+        mem_cache = config.mem_cache_bytes.is_some(),
+        disk_cache = config.disk_cache.is_some(),
+        s3 = config.s3.is_some(),
+        "cdz-cas-http listening"
     );
     server.serve(listener).await?;
     Ok(())
