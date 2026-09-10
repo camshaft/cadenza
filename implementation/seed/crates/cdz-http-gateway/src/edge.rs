@@ -166,14 +166,27 @@ impl HttpEdge {
     }
 }
 
+/// The raw `ws-send` contract-id marker a v0 session guest tags its pushes with: the ASCII string
+/// `cdz-platform.ws.send` right-padded with `.` to exactly `Hash::LEN` (33) bytes. A Cadenza guest cannot
+/// compute a tagged blake3 contract-id at the value level, so v0 fixes a literal 33-byte marker both sides
+/// agree on (`guests/ws-echo/reducer.cdz`'s `ws-send-contract` emits these exact bytes); the real kernel
+/// supplies a proper contract-id later (P5). The host surfaces an emitted request's contract as
+/// `ContractId::from_hash(Hash::from_bytes(<these 33 bytes>))`, which `ContractId::try_from` reproduces — so
+/// [`ws_send_contract`] below (built from the SAME bytes) is exactly the id the session filters pushes on.
+const WS_SEND_CONTRACT_MARKER: &[u8; cdz_platform::Hash::LEN] =
+    b"cdz-platform.ws.send.............";
+
 /// The fixed contract-ids + node identity a ws session's events carry in v0 (a session guest decodes
 /// `on_message` by payload and tags its pushes with the `ws-send` id; a live control/trust model supplies
-/// these later). `send-contract` MUST match the id a session tags its `ws-send` requests with.
+/// these later). `send-contract` MUST match the id a session tags its `ws-send` requests with — for a wasm
+/// guest that is the raw [`WS_SEND_CONTRACT_MARKER`] bytes, NOT `ContractId::of(...)` (which would hash the
+/// string to different bytes and silently drop the guest's pushes).
 fn ws_event_contract() -> cdz_platform::ContractId {
     cdz_platform::ContractId::of(b"cdz-platform.ws.event")
 }
 fn ws_send_contract() -> cdz_platform::ContractId {
-    cdz_platform::ContractId::of(b"cdz-platform.ws.send")
+    cdz_platform::ContractId::try_from(&WS_SEND_CONTRACT_MARKER[..])
+        .expect("the ws-send marker is exactly Hash::LEN bytes")
 }
 
 /// Drive one WebSocket connection: await the upgrade, frame the connection, open a per-connection
@@ -580,6 +593,108 @@ mod tests {
             .expect("send frame");
         let echoed = ws.next().await.expect("a frame").expect("ok frame");
         assert_eq!(echoed, Message::Binary(b"hello ws".to_vec()));
+        let _ = ws.close(None).await;
+    }
+
+    /// A guard on the raw `ws-send` marker the edge filters a session's pushes on: exactly `Hash::LEN` bytes
+    /// (the const's type already enforces this at compile time; assert it explicitly too) and the documented
+    /// `cdz-platform.ws.send` prefix, so an accidental edit that drifts from `guests/ws-echo/reducer.cdz`'s
+    /// `ws-send-contract` literal fails here rather than silently dropping every wasm-guest push.
+    #[test]
+    fn the_ws_send_marker_is_a_hash_len_prefixed_id() {
+        assert_eq!(WS_SEND_CONTRACT_MARKER.len(), cdz_platform::Hash::LEN);
+        assert!(WS_SEND_CONTRACT_MARKER.starts_with(b"cdz-platform.ws.send"));
+        // The edge builds its filter id from these exact bytes — the same reconstruction the host applies to
+        // a guest's emitted 33-byte contract, so a real wasm guest's pushes match.
+        assert_eq!(
+            ws_send_contract(),
+            ContractId::try_from(&WS_SEND_CONTRACT_MARKER[..]).unwrap()
+        );
+    }
+}
+
+#[cfg(all(test, feature = "host"))]
+mod host_e2e {
+    use super::*;
+    use crate::gateway::{Gateway, Route, Router};
+    use crate::runner::HandlerRunner;
+    use crate::wasm::{spawn_epoch_ticker, wasm_store};
+    use cdz_platform::{
+        BlobStore, ContractId, HostId, InMemoryBlobStore, ProgramHash, ProgramStore, ReducerId,
+    };
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    /// THE FULL WEBSOCKET STACK, END-TO-END, WITH A REAL WASM SESSION GUEST (`DESIGN-http-outpost.md` §6):
+    /// a real ws client connects over a socket → the edge's RFC-6455 upgrade → `run_ws_session` → a
+    /// per-connection [`WsSession`](crate::ws::WsSession) folding the content-addressed wasm ws-echo guest
+    /// (`guests/ws-echo/reducer.cdz`) on the wasmtime store → the guest's `ws-send` push framed back to the
+    /// client. This is the ws analogue of `wasm::tests::poc_wasm_handler_served_over_a_socket`, and it is the
+    /// test that exercises the edge's `ws_send_contract()` against a guest emitting the RAW 33-byte marker —
+    /// the path the #8602 native e2e could not cover (its `WsEcho` used the edge's own `ContractId::of` id
+    /// symmetrically, so a `ContractId::of`/raw-marker mismatch would have gone unnoticed there). The guest
+    /// imports the value-heap runtime, which the host composes from the CAS by hash, so runtime + NFC are
+    /// seeded alongside. Skips cleanly when any env var is unset so `cargo test --features host` passes
+    /// without them (the fleet nix check sets all three).
+    #[tokio::test]
+    async fn wasm_ws_endpoint_echoes_over_a_real_socket() {
+        let (Ok(guest_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_WS_ECHO_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_ws_endpoint_echoes_over_a_real_socket: CDZ_HTTP_WS_ECHO_WASM/RUNTIME_WASM/NFC_WASM \
+                 unset — skipping (the nix check sets all three)"
+            );
+            return;
+        };
+        let guest = std::fs::read(&guest_path).expect("read ws-echo guest wasm");
+
+        // Seed the value-heap runtime + its NFC dep (so the host composes the guest's `cadenza:runtime/heap`
+        // import by hash) and the ws-session guest itself into the content store.
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(Bytes::from(std::fs::read(dep).expect("read dep component")))
+                .await;
+        }
+        cas.put(Bytes::from(guest.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&guest);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // Route a ws endpoint at GET /ws to the wasm session guest. (The route's http contract-id is unused
+        // by a ws session; the edge folds ws-events, tagged with the fixed ws contract-ids.)
+        let gateway = Gateway::new(
+            Router::new(vec![Route::new(
+                Method::Get,
+                "/ws",
+                program,
+                ContractId::of(b"cdz-platform.ws.event"),
+            )]),
+            HandlerRunner::new(HostId::of(b"cdz-http-gateway"), ReducerId::of(b"ws-router")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut ws, _resp) = tokio_tungstenite::client_async(format!("ws://{addr}/ws"), stream)
+            .await
+            .expect("ws client handshake");
+        ws.send(Message::Binary(b"hello wasm ws".to_vec()))
+            .await
+            .expect("send frame");
+        let echoed = ws.next().await.expect("a frame").expect("ok frame");
+        assert_eq!(
+            echoed,
+            Message::Binary(b"hello wasm ws".to_vec()),
+            "the wasm ws-echo guest's push must reach the client — proves the edge's ws_send_contract() \
+             matches the guest's raw 33-byte marker"
+        );
         let _ = ws.close(None).await;
     }
 }
