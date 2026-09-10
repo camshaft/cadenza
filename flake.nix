@@ -6960,6 +6960,47 @@
               cargo fmt --check
               echo "ok: cdz-cas-http (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
             '';
+            # cdz-http-protocol (vertical gateway-conformance): the excluded standalone control-plane
+            # wire-contract crate's dedicated check — test + clippy + fmt. LIGHTEST of the http-outpost checks:
+            # its only path-dep is `cadenza-ast` (a foundational leaf, no workspace path-deps), and it deps NO
+            # cdz-platform, so there is NO contracts overlay and NO cmake/aws-lc — just the crate + cadenza-ast.
+            cdzHttpProtocolVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-protocol/Cargo.lock;
+            };
+            cdzHttpProtocolSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.lock
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzHttpProtocolCheck = pkgs.runCommand "cdz-http-protocol"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpProtocolSrc} repo
+              chmod -R u+w repo
+              cd repo
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpProtocolVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-protocol
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-http-protocol (excluded standalone crate — test + clippy + fmt)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7351,6 +7392,10 @@
             # (an excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-cas-http`
             # or `nix flake check`).
             cdz-cas-http = cdzCasHttpCheck;
+            # cdz-http-protocol (vertical gateway-conformance): the excluded standalone control-plane
+            # wire-contract crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in `local-gate`
+            # (an excluded crate must not burden the merge gate); run via `nix build .#checks.<sys>.cdz-http-protocol`.
+            cdz-http-protocol = cdzHttpProtocolCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.

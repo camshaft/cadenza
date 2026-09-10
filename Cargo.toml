@@ -65,6 +65,13 @@ exclude = [
     # `[workspace]` table; builds + tests standalone (`cargo test` from its own dir); gated by its own
     # dedicated CI job (`nix build .#checks.<sys>.cdz-cas-http`).
     "implementation/seed/crates/cdz-cas-http",
+    # `cdz-http-protocol` (the http-outpost control-plane wire contract, DESIGN-http-outpost-conformance-
+    # harness.md §4) is excluded to keep the whole http-outpost crate family uniformly isolated from the
+    # routine seed build/gate — an edit here is a `gate-local` cache-hit, so conformance-harness iteration
+    # stays fast (same discipline as cdz-http-gateway / cdz-cas-http). It is LIGHT (path-deps only the member
+    # `cadenza-ast` + `bytes`, no wasmtime/hyper), which an excluded crate may do (cdz-smith precedent). Own
+    # `[workspace]` table + committed lock; gated by `nix build .#checks.<sys>.cdz-http-protocol`.
+    "implementation/seed/crates/cdz-http-protocol",
 ]
 
 [profile.dev]
