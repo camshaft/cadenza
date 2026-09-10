@@ -71,5 +71,18 @@ async fn run() -> Result<(), String> {
         spec.config.programs.iter().map(|p| p.program.clone()),
     );
 
-    run_scenario(&bins, &spec, &manifest).await
+    // The dependency-closure component store (the value-heap runtime + nfc, by content hash) the guests import;
+    // the driver seeds it into the CAS so the gateway can spawn + compose a guest.
+    let component_store = std::env::var_os("CDZ_HARNESS_COMPONENT_STORE").ok_or_else(|| {
+        "CDZ_HARNESS_COMPONENT_STORE is not set (the nix rig provides the component store dir)"
+            .to_string()
+    })?;
+
+    run_scenario(
+        &bins,
+        &spec,
+        &manifest,
+        std::path::Path::new(&component_store),
+    )
+    .await
 }
