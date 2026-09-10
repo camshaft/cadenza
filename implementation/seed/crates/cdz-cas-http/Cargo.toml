@@ -42,14 +42,17 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 # The HTTP CLIENT (HttpBlobStore dial-out): a shared, pooled reqwest::Client with TLS + connection reuse
-# (operator mandate: outbound HTTP clients use reqwest, not a fresh conn per fetch). `default-features =
-# false` + the `-no-provider` rustls-tls feature pins the crypto provider to RING (installed as the
-# process default via the `rustls` dep below) — NOT aws-lc-rs (cmake/nasm) nor native-tls (openssl), so
-# the whole TLS closure builds with a C compiler alone and the offline vendored nix check stays buildable.
+# (operator mandate: outbound HTTP clients use reqwest, not a fresh conn per fetch). NOTE: reqwest 0.12's
+# `rustls-tls` feature pulls the RING provider (`__rustls-ring`), NOT aws-lc-rs — the only way to select
+# aws-lc-rs is a `-no-provider` reqwest feature + installing the aws-lc-rs CryptoProvider as the process
+# default (see client.rs). We use the AWS-LC (aws-lc-rs) crypto (org-preferred). `aws-lc-sys` builds its
+# bundled C via cmake, so the dedicated nix check adds `cmake` to its build inputs; on aarch64 it ships
+# PREGENERATED bindings (no libclang/nasm) and non-FIPS needs no go — cmake + the stdenv C compiler is the
+# whole delta, so the offline vendored build stays hermetic.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }
-# The ring-backed rustls CryptoProvider the client installs as the process default (matches reqwest's
-# `-no-provider` TLS). `ring` (not aws-lc-rs) keeps the build C-compiler-only.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# rustls with the aws-lc-rs provider (installed as the process default in client.rs to match reqwest's
+# `-no-provider` TLS). `aws_lc_rs` (not `ring`) pulls aws-lc-sys, whose C build needs cmake.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 # To impl the platform's `#[async_trait] BlobStore` for the HTTP-backed client.
 async-trait = "0.1"
 # Structured debug/warn tracing (enable via RUST_LOG=cdz_cas_http=trace) — the client warns on a

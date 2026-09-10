@@ -4,11 +4,12 @@
 //!
 //! ## Transport
 //! A shared, pooled [`reqwest::Client`] (operator mandate: outbound HTTP clients use reqwest with TLS +
-//! connection reuse — not a fresh connection per fetch). TLS is **rustls with the ring provider** (NOT
-//! aws-lc-rs / native-tls), pinned via the `-no-provider` reqwest feature + installing
-//! [`rustls::crypto::ring`] as the process default — so the whole TLS closure builds with a C compiler
-//! alone (no cmake/nasm/openssl), which keeps the offline vendored nix check buildable. The `Client` is
-//! cheap to `clone` (an `Arc` inside), so `HttpBlobStore` stays `Clone` and one connection pool is shared.
+//! connection reuse — not a fresh connection per fetch). TLS is rustls with the AWS-LC (aws-lc-rs) crypto
+//! provider, installed as the process default (reqwest 0.12's own `rustls-tls` feature would pull ring, so
+//! aws-lc-rs is selected via a `-no-provider` reqwest feature + the explicit install below). `aws-lc-sys`
+//! builds its bundled C via cmake, so the dedicated nix check carries `cmake` in its build inputs (aarch64
+//! ships pregenerated bindings → no libclang/nasm). The `Client` is cheap to `clone` (an `Arc` inside), so
+//! `HttpBlobStore` stays `Clone` and one connection pool is shared.
 //!
 //! ## Two channels, on purpose
 //! The `BlobStore` trait is deterministic and carries NO `Result` — a well-formed backend "absorbs
@@ -34,14 +35,14 @@ use cdz_platform::{BlobStore, Hash, HashTag};
 use reqwest::{Method, StatusCode};
 use std::sync::Once;
 
-/// Install the ring-backed rustls [`CryptoProvider`](rustls::crypto::CryptoProvider) as the process
-/// default, once. reqwest's `-no-provider` rustls TLS resolves its provider from the process default, so
-/// this pins **ring** (not aws-lc-rs, whose C build needs cmake/nasm and would break the offline nix
-/// check). Idempotent: a prior install by another crate is fine — we ignore the `Err`.
-fn ensure_ring_crypto_provider() {
+/// Install the aws-lc-rs rustls [`CryptoProvider`](rustls::crypto::CryptoProvider) as the process default,
+/// once. reqwest's `-no-provider` rustls TLS resolves its provider from the process default; reqwest 0.12's
+/// own `rustls-tls` feature would instead pull ring, so selecting aws-lc-rs requires this explicit install.
+/// Idempotent: a prior install by another crate is fine — we ignore the `Err`.
+fn ensure_crypto_provider() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 }
 
@@ -59,18 +60,19 @@ pub struct HttpBlobStore {
 impl HttpBlobStore {
     /// A client against `base_url` (scheme + host + port [+ optional path prefix], no trailing slash), no
     /// credentials. Add them with [`with_read_credential`](Self::with_read_credential) /
-    /// [`with_write_credential`](Self::with_write_credential). Builds a pooled reqwest client with the ring
-    /// TLS provider.
+    /// [`with_write_credential`](Self::with_write_credential). Builds a pooled reqwest client with the
+    /// aws-lc-rs TLS provider (installed as the process default).
     ///
     /// # Panics
-    /// If the reqwest client fails to build — which, with the ring provider installed and default settings,
-    /// cannot happen in practice (a misconfiguration is a programmer error, not a runtime condition).
+    /// If the reqwest client fails to build — which, with the aws-lc-rs provider installed and default
+    /// settings, cannot happen in practice (a misconfiguration is a programmer error, not a runtime
+    /// condition).
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
-        ensure_ring_crypto_provider();
+        ensure_crypto_provider();
         let client = reqwest::Client::builder()
             .build()
-            .expect("building a default reqwest client (ring provider installed) cannot fail");
+            .expect("building a default reqwest client (aws-lc-rs provider installed) cannot fail");
         Self {
             base_url: base_url.into(),
             client,

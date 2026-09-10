@@ -6927,7 +6927,10 @@
             };
             cdzCasHttpCheck = pkgs.runCommand "cdz-cas-http"
               {
-                nativeBuildInputs = [ rustToolchain ];
+                # `cmake` builds aws-lc-sys's bundled C (the aws-lc-rs crypto provider reqwest's rustls-tls
+                # uses). On aarch64 aws-lc-sys ships pregenerated bindings (no libclang/nasm) and non-FIPS
+                # needs no go, so cmake + the stdenv C compiler is the whole delta; the build stays hermetic.
+                nativeBuildInputs = [ rustToolchain pkgs.cmake ];
                 # Mirror the per-crate cargoTest env: a generous wall-clock + deep-stack floor so a correct
                 # test never false-reds under fleet build load.
                 CDZ_RUN_TIMEOUT_SECS = "300";
