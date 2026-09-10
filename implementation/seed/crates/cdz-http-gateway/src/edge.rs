@@ -10,9 +10,11 @@
 //! (design D3); the handler contract (§5) is unaffected either way.
 
 use crate::codec::{Header, HttpRequest, HttpResponse, Method};
+use crate::effects::ControlSink;
 use crate::gateway::Gateway;
+use crate::root_driver::RootDriver;
 use bytes::Bytes;
-use cdz_platform::ProgramStore;
+use cdz_platform::{ProgramHash, ProgramStore};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -21,6 +23,7 @@ use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// The default per-request body-size ceiling (1 MiB) — the edge reads at most this many bytes of a request
@@ -29,10 +32,33 @@ use tokio::net::TcpListener;
 /// [`HttpEdge::with_max_body_bytes`].
 pub const DEFAULT_MAX_BODY_BYTES: usize = 1 << 20;
 
-/// The HTTP edge: a [`Gateway`] + the [`ProgramStore`] its handlers instantiate from, bound to a listener.
-/// `Send + Sync` (behind an `Arc`) so each accepted connection is served on its own task.
+/// The per-request wall-clock ceiling for the DUMB serving path (design §10): a root-router drive that never
+/// resolves (an effect future that never lands — one the drive-loop fold ceiling does not catch because it
+/// burns no folds) is abandoned here, so a stuck request cannot pin the connection or the node. The legacy
+/// [`Gateway`] path carries its own timeout ([`Gateway::with_request_timeout`]).
+pub const DEFAULT_DUMB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How the edge serves an ordinary (non-ws) HTTP request.
+enum HttpServe {
+    /// The legacy model: a [`Gateway`] matches a route table / router guest and folds one handler
+    /// (`Router`/`RouterReducer`/`DynamicRouter`). Retired once the dumb path fully subsumes it.
+    Gateway(Gateway),
+    /// The DUMB model (`DESIGN-http-outpost-drive-contract.md`, redirect inc-3c): the edge holds no route
+    /// table — per request it drives the control-configured ROOT ROUTER, which routes internally by emitting
+    /// effects. Holds the [`RootDriver`], the root-router [`ProgramHash`], the wall-clock timeout, and the
+    /// [`ControlSink`] a `control.send` effect forwards to.
+    Dumb {
+        driver: RootDriver,
+        root_router: ProgramHash,
+        request_timeout: Duration,
+        control: Arc<dyn ControlSink>,
+    },
+}
+
+/// The HTTP edge: an [`HttpServe`] routing strategy + the [`ProgramStore`] its programs instantiate from,
+/// bound to a listener. `Send + Sync` (behind an `Arc`) so each accepted connection is served on its own task.
 pub struct HttpEdge {
-    gateway: Gateway,
+    serve: HttpServe,
     store: Arc<dyn ProgramStore>,
     /// A monotonic per-request counter seeding the correlation/session id. v0: a counter (distinct per
     /// request is all the runner needs to give each session a fresh id); the unguessable-token scheme the
@@ -44,11 +70,36 @@ pub struct HttpEdge {
 }
 
 impl HttpEdge {
-    /// An edge serving `gateway` over handlers instantiated from `store`, with the default body-size limit.
+    /// An edge serving `gateway` over programs instantiated from `store` (the legacy routing model), with the
+    /// default body-size limit.
     #[must_use]
     pub fn new(gateway: Gateway, store: Arc<dyn ProgramStore>) -> Self {
         Self {
-            gateway,
+            serve: HttpServe::Gateway(gateway),
+            store,
+            next_id: AtomicU64::new(0),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+        }
+    }
+
+    /// A DUMB edge (redirect inc-3c): per request it drives `root_router` from `store` via `driver`,
+    /// forwarding a `control.send` effect to `control`. Holds no route table — the root router routes
+    /// internally. Uses the default body-size limit + [`DEFAULT_DUMB_REQUEST_TIMEOUT`]. WebSocket upgrades are
+    /// floored `404` in this mode until the dumb ws path lands (a later slice).
+    #[must_use]
+    pub fn dumb(
+        driver: RootDriver,
+        root_router: ProgramHash,
+        control: Arc<dyn ControlSink>,
+        store: Arc<dyn ProgramStore>,
+    ) -> Self {
+        Self {
+            serve: HttpServe::Dumb {
+                driver,
+                root_router,
+                request_timeout: DEFAULT_DUMB_REQUEST_TIMEOUT,
+                control,
+            },
             store,
             next_id: AtomicU64::new(0),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -137,10 +188,51 @@ impl HttpEdge {
         };
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let response = self
-            .gateway
-            .serve(self.store.as_ref(), &id.to_be_bytes(), &request)
-            .await;
+        let session = id.to_be_bytes();
+        let response = match &self.serve {
+            HttpServe::Gateway(gateway) => {
+                gateway.serve(self.store.as_ref(), &session, &request).await
+            }
+            HttpServe::Dumb {
+                driver,
+                root_router,
+                request_timeout,
+                control,
+            } => {
+                // Drive the root router; a drive that never resolves is abandoned at the wall-clock ceiling
+                // (dropping the future cancels it + releases the session) → 504, mirroring the gateway path.
+                let drive = driver.serve(
+                    Arc::clone(&self.store),
+                    *root_router,
+                    &session,
+                    Arc::clone(control),
+                    &request,
+                );
+                match tokio::time::timeout(*request_timeout, drive).await {
+                    // The root router's own answer (its normal + error responses are its business).
+                    Ok(Ok(resp)) => resp,
+                    // A runtime failure driving the router (no such root program / did-not-close / runaway /
+                    // malformed close) is the edge's last-resort 500 floor — the router never produced a
+                    // usable response.
+                    Ok(Err(_)) => HttpResponse {
+                        status: 500,
+                        headers: vec![Header {
+                            name: "content-type".to_string(),
+                            value: "text/plain; charset=utf-8".to_string(),
+                        }],
+                        body: Bytes::from_static(b"internal server error"),
+                    },
+                    Err(_elapsed) => HttpResponse {
+                        status: 504,
+                        headers: vec![Header {
+                            name: "content-type".to_string(),
+                            value: "text/plain; charset=utf-8".to_string(),
+                        }],
+                        body: Bytes::from_static(b"gateway timeout"),
+                    },
+                }
+            }
+        };
         to_hyper_response(response)
     }
 
@@ -150,6 +242,11 @@ impl HttpEdge {
     /// (a guest routing source consults the router reducer here); the loop runs on its own task after hyper
     /// finishes the upgrade.
     async fn handle_ws_upgrade(&self, req: &mut Request<Incoming>) -> Response<Full<Bytes>> {
+        // The dumb model routes ws upgrades through the root router too (a `ws-upgrade` decision → a session
+        // subprogram); that path is a later slice, so in dumb mode a ws upgrade is floored `404` for now.
+        let HttpServe::Gateway(gateway) = &self.serve else {
+            return floor_response(404, "not found");
+        };
         let path = req.uri().path().to_string();
         let Some(key) = req.headers().get(hyper::header::SEC_WEBSOCKET_KEY).cloned() else {
             return floor_response(400, "missing sec-websocket-key");
@@ -158,8 +255,7 @@ impl HttpEdge {
         // route's http contract-id is unused here — a ws session folds ws-events, not http-requests.) The
         // connection sequence seeds both the router consult and the session id.
         let conn_seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let Some((program, _contract)) = self
-            .gateway
+        let Some((program, _contract)) = gateway
             .match_route(
                 self.store.as_ref(),
                 &conn_seq.to_be_bytes(),
@@ -434,6 +530,57 @@ mod tests {
         let status = resp.status().as_u16();
         let body = resp.into_body().collect().await.expect("body").to_bytes();
         (status, body)
+    }
+
+    /// A no-op [`ControlSink`] for the dumb-edge tests (they do not exercise `control.send`).
+    struct NullSink;
+    #[async_trait]
+    impl ControlSink for NullSink {
+        async fn send(&self, _msg: crate::codec::ControlUp) {}
+    }
+
+    /// Stand up a DUMB edge (drives `root` as the root router per request) on an ephemeral port; return its
+    /// address. `root` is registered iff `present` — an absent root exercises the `500` floor.
+    async fn spawn_dumb_edge(present: bool) -> std::net::SocketAddr {
+        let root = ProgramHash::of(b"dumb-root-router");
+        let mut store = Store::new();
+        if present {
+            store.register(root, || Box::new(PathEchoHandler));
+        }
+        let driver = RootDriver::new(
+            HostId::of(b"dumb-edge-host"),
+            ContractId::of(b"cdz-platform.http.request"),
+            ContractId::of(b"cdz-platform.http.request"),
+        );
+        let edge = Arc::new(HttpEdge::dumb(
+            driver,
+            root,
+            Arc::new(NullSink),
+            Arc::new(store),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+        addr
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_serves_by_driving_the_root_router() {
+        // No route table on the edge — the root router (here, one that answers directly) is driven per
+        // request; its 200 comes back over a real socket, on ANY path (routing is the router's business).
+        let addr = spawn_dumb_edge(true).await;
+        let (status, body) = get(addr, "/anything").await;
+        assert_eq!(status, 200);
+        assert_eq!(body, Bytes::from_static(b"/anything"));
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_floors_a_missing_root_router() {
+        // A misconfigured edge whose root-router hash names no program floors 500 (the drive fails to
+        // instantiate — a runtime failure, not a router response).
+        let addr = spawn_dumb_edge(false).await;
+        let (status, _body) = get(addr, "/anything").await;
+        assert_eq!(status, 500);
     }
 
     #[tokio::test]
