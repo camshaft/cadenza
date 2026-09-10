@@ -30,3 +30,18 @@ publish = false
 cadenza-ast = { path = "../cadenza-ast" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — the request/response `body` and the encoded payloads.
 bytes = "1"
+# The platform's reducer contract: the `ProgramStore`/`Reducer` traits + `SpawnContext`/`Message`/`Outcome`/
+# the typed `*Id`s the runner drives (design §0.1 — the gateway reuses the platform as a library). DEFAULT
+# features only: this is the light trait/types layer (blake3/bytes/async-trait/tokio/cadenza-ast) — NOT the
+# heavy `host` (wasmtime) feature, which a later slice adds for the concrete `WasmProgramStore`. Keeping
+# `host` off here is exactly why this crate is a standalone `[workspace]` (see Cargo comment / root exclude).
+cdz-platform = { path = "../cdz-platform" }
+
+[dev-dependencies]
+# The native test `ProgramStore` (`cdz_platform::testing::program::Store`) + a Rust `Reducer` let the runner
+# be exercised end-to-end WITHOUT wasmtime or a compiled Cadenza guest — the hermetic P1b fold test.
+cdz-platform = { path = "../cdz-platform", features = ["testing"] }
+# `#[tokio::test]` to drive the async `spawn`/`on_message`; `async-trait` to impl the platform's
+# `#[async_trait] Reducer` for the test handlers.
+tokio = { version = "1", features = ["rt", "macros"] }
+async-trait = "0.1"
