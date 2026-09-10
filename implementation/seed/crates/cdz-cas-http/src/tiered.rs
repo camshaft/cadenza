@@ -52,6 +52,10 @@ impl BlobStore for TieredBlobStore {
         };
         // Deepest FIRST: the durable floor must accept the write, else the put failed (nothing persisted).
         let hash = deepest.put(bytes.clone()).await?;
+        tracing::debug!(
+            layers = self.layers.len(),
+            "tiered put: durable, writing through caches"
+        );
         // Then warm the shallower cache layers, best-effort — a cache-fill failure doesn't fail the put,
         // since the bytes are already durable in the deepest layer.
         for upper in uppers {
@@ -65,6 +69,7 @@ impl BlobStore for TieredBlobStore {
         for (i, layer) in self.layers.iter().enumerate() {
             match layer.get(hash).await {
                 Ok(Some(bytes)) => {
+                    tracing::debug!(tier = i, "tiered get: hit");
                     // Read-through: warm every shallower layer, best-effort.
                     for upper in &self.layers[..i] {
                         let _ = upper.put(bytes.clone()).await;
@@ -74,7 +79,10 @@ impl BlobStore for TieredBlobStore {
                 Ok(None) => {}
                 // A layer error isn't a miss, but it mustn't hide a deeper hit — remember it and fall
                 // through to the deeper (more durable) layers.
-                Err(err) => last_err = Some(err),
+                Err(err) => {
+                    tracing::warn!(tier = i, error = %err, "tiered get: layer error, falling through");
+                    last_err = Some(err);
+                }
             }
         }
         // Every layer missed or errored: surface an error if any layer couldn't determine its answer,

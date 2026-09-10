@@ -60,9 +60,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 # To impl the platform's `#[async_trait] BlobStore` for the HTTP-backed client.
 async-trait = "0.1"
-# Structured debug/warn tracing (enable via RUST_LOG=cdz_cas_http=trace) — the client warns on a
-# transient/auth fetch failure it must absorb into the `BlobStore` trait's `Option`/no-`Result` shape.
+# Structured tracing — instrument the server/tiers (enable via RUST_LOG, e.g. RUST_LOG=cdz_cas_http=debug).
 tracing = "0.1"
+# The tracing subscriber the BINARY installs (fmt output + RUST_LOG EnvFilter). A library never installs a
+# subscriber, but the deployable server does so its logs are visible/debuggable.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The S3 durable-floor tier (src/s3.rs), behind the `s3` feature (off by default). aws-config supplies the
 # default credential provider chain — it honors the machine's configured AWS profiles (~/.aws/config +
 # credentials, AWS_PROFILE, env vars, SSO, IMDS); aws-sdk-s3 is the client. Optional + feature-gated so the
