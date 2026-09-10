@@ -12,6 +12,9 @@ use std::net::SocketAddr;
 /// The run-spec parser — decode a conformance run's binary-AST value into a [`spec::RunSpec`].
 pub mod spec;
 
+/// Process orchestration — spawn each SUT bin, wait for its ready line, kill it on drop.
+pub mod process;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).
