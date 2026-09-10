@@ -90,3 +90,10 @@ hyper = { version = "1", features = ["client"] }
 name = "cdz-http-gateway"
 path = "src/bin/cdz-http-gateway.rs"
 required-features = ["host"]
+
+# The deploy-baking tool: compute a compiled component's ProgramHash so the deploy step can bake real
+# handler hashes into the (baked-table) router source before `cdz compile`. NO `host` feature — it only
+# hashes bytes (`ProgramHash::of`), so it stays in the light build (no wasmtime).
+[[bin]]
+name = "cdz-http-programhash"
+path = "src/bin/cdz-http-programhash.rs"
