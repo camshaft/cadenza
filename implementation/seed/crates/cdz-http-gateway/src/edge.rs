@@ -139,6 +139,44 @@ impl HttpEdge {
     }
 }
 
+/// Whether `headers` are a WebSocket upgrade request (RFC 6455): `Connection: Upgrade`, `Upgrade: websocket`,
+/// a `Sec-WebSocket-Key`, and `Sec-WebSocket-Version: 13`. The edge routes such a request to a per-connection
+/// [`WsSession`](crate::ws::WsSession) (the framing/upgrade wiring is a later slice); a non-upgrade request is
+/// the ordinary request→response path.
+#[must_use]
+pub fn is_websocket_upgrade(headers: &hyper::HeaderMap) -> bool {
+    use hyper::header::{CONNECTION, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE};
+    // A comma-separated header lists `want` as one of its tokens (case-insensitive).
+    let lists = |name: hyper::header::HeaderName, want: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(want)))
+    };
+    lists(CONNECTION, "upgrade")
+        && lists(UPGRADE, "websocket")
+        && headers.contains_key(SEC_WEBSOCKET_KEY)
+        && headers
+            .get(SEC_WEBSOCKET_VERSION)
+            .and_then(|v| v.to_str().ok())
+            == Some("13")
+}
+
+/// The `101 Switching Protocols` response completing the WebSocket handshake for request key `key` (RFC
+/// 6455: `Sec-WebSocket-Accept = base64(sha1(key + magic-GUID))`, via tungstenite's `derive_accept_key`).
+#[must_use]
+pub fn switching_protocols(key: &hyper::header::HeaderValue) -> Response<Full<Bytes>> {
+    use hyper::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, UPGRADE};
+    let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+    Response::builder()
+        .status(hyper::StatusCode::SWITCHING_PROTOCOLS)
+        .header(CONNECTION, "Upgrade")
+        .header(UPGRADE, "websocket")
+        .header(SEC_WEBSOCKET_ACCEPT, accept)
+        .body(Full::new(Bytes::new()))
+        .expect("a static 101 handshake response is always valid")
+}
+
 /// The [`Method`] for a hyper method, or `None` for one the `http-request` contract does not model (the
 /// edge answers those `501`).
 fn method_from_hyper(m: &hyper::Method) -> Option<Method> {
@@ -347,5 +385,34 @@ mod tests {
         // CONNECT/TRACE are not modelled by the http-request contract → the edge answers 501.
         assert_eq!(method_from_hyper(&hyper::Method::CONNECT), None);
         assert_eq!(method_from_hyper(&hyper::Method::TRACE), None);
+    }
+
+    #[test]
+    fn detects_and_completes_a_websocket_handshake() {
+        use hyper::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        h.insert("connection", HeaderValue::from_static("Upgrade"));
+        h.insert("upgrade", HeaderValue::from_static("websocket"));
+        h.insert(
+            "sec-websocket-key",
+            HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="),
+        );
+        h.insert("sec-websocket-version", HeaderValue::from_static("13"));
+        assert!(is_websocket_upgrade(&h));
+
+        // The RFC 6455 §1.3 example: this key derives exactly this accept.
+        let resp = switching_protocols(h.get("sec-websocket-key").unwrap());
+        assert_eq!(resp.status(), hyper::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            resp.headers().get("sec-websocket-accept").unwrap(),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+
+        // A plain request is not an upgrade; nor is one missing the v13 version token.
+        let mut plain = HeaderMap::new();
+        plain.insert("host", HeaderValue::from_static("x"));
+        assert!(!is_websocket_upgrade(&plain));
+        h.remove("sec-websocket-version");
+        assert!(!is_websocket_upgrade(&h));
     }
 }

@@ -52,6 +52,10 @@ tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# WebSocket endpoints (P4, design §6): the handshake key derivation (`derive_accept_key`) + the framing
+# (`WebSocketStream` over the upgraded connection). `default-features = false` — no TLS/connect; the gateway
+# only serves an already-upgraded server socket, not dials out.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 # Only to NAME `wasmtime::Error` in wasm_store's return type; behind the `host` feature (the engine comes
 # via cdz-platform/host). Matches the workspace's wasmtime (cdz-platform/cdz-run/rcdzc) so no new lock line.
 wasmtime = { version = "37", default-features = false, optional = true }
