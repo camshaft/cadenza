@@ -6751,6 +6751,16 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/http-echo/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The WebSocket SESSION guest (guests/ws-echo/reducer.cdz, DESIGN-http-outpost.md §6): a per-
+            # connection session reducer that Value.decodes each `ws-event` and echoes every `Frame` back as
+            # a `ws-send` push. Building it via mkCadenzaGuest is the compile gate (valid Cadenza + compiles to
+            # the reducer component); the runtime-composition ws e2e (drive it through the ws edge / WsSession
+            # with the value-heap runtime seeded) consumes it via CDZ_HTTP_WS_ECHO_WASM and is a follow-on slice.
+            cdzHttpGatewayWsEchoHandler = mkCadenzaGuest {
+              pname = "cdz-http-gateway-ws-echo-handler";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/ws-echo/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6789,6 +6799,7 @@
               # the host composes the handler's `cadenza:runtime/heap` import. Unset → the test skips.
               CDZ_HTTP_POC_WASM=${cdzHttpGatewayPocHandler} \
               CDZ_HTTP_ECHO_WASM=${cdzHttpGatewayEchoHandler} \
+              CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7185,6 +7196,8 @@
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.
             cdz-http-gateway-echo-handler = cdzHttpGatewayEchoHandler;
+            # The WebSocket session echo guest (per-connection ws-event fold -> ws-send push) compiles.
+            cdz-http-gateway-ws-echo-handler = cdzHttpGatewayWsEchoHandler;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
