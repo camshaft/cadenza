@@ -11,7 +11,9 @@
 //! the control link. This module is the socket-independent core — the tokio/hyper edge (P1c-2) binds it
 //! to a listener, and a mock control server (P1c-3) seeds the table for end-to-end tests.
 
-use crate::codec::{Header, HttpRequest, HttpResponse, Method, decode_decision, encode_request};
+use crate::codec::{
+    Header, HttpRequest, HttpResponse, Method, decode_decision, encode_request, encode_route_query,
+};
 use crate::runner::HandlerRunner;
 use bytes::Bytes;
 use cdz_platform::{
@@ -19,6 +21,7 @@ use cdz_platform::{
     ReducerKind, SpawnContext,
 };
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// The default per-request wall-clock ceiling (30s): a handler fold that has not produced a response within
@@ -200,17 +203,126 @@ impl RouterReducer {
     }
 }
 
-/// How the gateway resolves a `(method, path)` to a handler: either a STATIC in-process [`Router`] table
-/// (v0's config-seeded stand-in) or a [`RouterReducer`] — routing lifted into a governing-program guest (the
-/// P2 thesis). The serving path resolves through this uniformly; `Static` ignores the store/request-id.
+/// Routing lifted into a governing program over a LIVE route table (`DESIGN-http-outpost.md` §3/§4, P3b): the
+/// gateway HOLDS the current route-table frame (shipped over the control link, [`crate::control_link`]) and
+/// consults the STATELESS [`router-dynamic`](../guests) guest, passing it the request AND the table together
+/// as a `RouteQuery` — so the router is a pure function of `(request, table)`, no per-router state. A route-
+/// table UPDATE is [`set_table`](DynamicRouter::set_table); the next request folds the new table.
+///
+/// This is the P3 counterpart of [`RouterReducer`] (which consults a router whose table is BAKED at compile
+/// time): same decision decode + marker→[`ProgramHash`] binding, but the table is data-in-payload, not baked.
+/// The table lives behind a [`Mutex`] so the control link can swap it live while the edge serves concurrently
+/// (the frame is cloned out under the lock, never held across an `.await`).
+pub struct DynamicRouter {
+    /// The stateless router governing program (a content-addressed wasm reducer in the store).
+    program: ProgramHash,
+    /// The contract-id delivered as the `RouteQuery`'s `Message.id` (the guest dispatches on the payload).
+    query_contract: ContractId,
+    host: HostId,
+    origin: ReducerId,
+    /// Binds each decision handler-marker to the real [`ProgramHash`] the gateway spawns for that route.
+    handlers: HashMap<Bytes, ProgramHash>,
+    /// The live route-table frame the router folds each request against; swapped by [`set_table`].
+    table: Mutex<Bytes>,
+}
+
+impl DynamicRouter {
+    /// A dynamic router consulting `program` with the initial route-table `frame`, delivering `RouteQuery`s
+    /// from `host`/`origin` on `query_contract`, and binding decision handler-markers via `handlers`.
+    #[must_use]
+    pub fn new(
+        program: ProgramHash,
+        query_contract: ContractId,
+        host: HostId,
+        origin: ReducerId,
+        handlers: HashMap<Bytes, ProgramHash>,
+        frame: Bytes,
+    ) -> Self {
+        Self {
+            program,
+            query_contract,
+            host,
+            origin,
+            handlers,
+            table: Mutex::new(frame),
+        }
+    }
+
+    /// Swap the live route-table frame — a control-link table update. The next [`match_route`] folds it.
+    pub fn set_table(&self, frame: Bytes) {
+        *self.table.lock().expect("route table lock") = frame;
+    }
+
+    /// Consult the router for `(method, path)` against the current live table: build a `RouteQuery{request,
+    /// table}`, spawn a fresh router instance, read its closing [`RouteDecision`], and map a matched
+    /// decision's handler-marker to the bound `(ProgramHash, ContractId)`. `None` on no route / unbound
+    /// marker / a router that could not instantiate or did not `Break` decodably / a malformed contract-id.
+    pub async fn match_route(
+        &self,
+        store: &dyn ProgramStore,
+        request_id: &[u8],
+        method: Method,
+        path: &str,
+    ) -> Option<(ProgramHash, ContractId)> {
+        let req = HttpRequest {
+            method,
+            path: path.to_string(),
+            query: String::new(),
+            headers: vec![],
+            body: Bytes::new(),
+        };
+        // Clone the current table frame out under the lock — never hold the lock across the `.await`.
+        let payload = {
+            let table = self.table.lock().expect("route table lock");
+            encode_route_query(&encode_request(&req), &table)
+        };
+        let mut router = store
+            .spawn(
+                self.program,
+                SpawnContext {
+                    id: ReducerId::of(request_id),
+                    kind: ReducerKind::Ordinary,
+                    limits: None,
+                },
+            )
+            .await?;
+        let (_requests, outcome) = router
+            .on_message(Message {
+                id: self.query_contract,
+                payload,
+                from: Origin {
+                    reducer: self.origin,
+                    host: self.host,
+                },
+                continuation_token: Bytes::new(),
+            })
+            .await;
+        let Outcome::Break { reason, .. } = outcome else {
+            return None;
+        };
+        let decision = decode_decision(&reason)?;
+        if !decision.is_match() {
+            return None;
+        }
+        let handler = *self.handlers.get(&decision.handler)?;
+        let contract = ContractId::try_from(decision.contract.as_ref()).ok()?;
+        Some((handler, contract))
+    }
+}
+
+/// How the gateway resolves a `(method, path)` to a handler: a STATIC in-process [`Router`] table (v0's
+/// config-seeded stand-in), a [`RouterReducer`] (routing lifted into a guest with a BAKED table, the P2
+/// thesis), or a [`DynamicRouter`] (a guest over a LIVE table the gateway holds, P3). The serving path
+/// resolves through this uniformly; `Static` ignores the store/request-id.
 enum Routing {
     Static(Router),
     Guest(RouterReducer),
+    Dynamic(DynamicRouter),
 }
 
 impl Routing {
-    /// Resolve `(method, path)` to `(handler, contract)`. `Static` is a synchronous table lookup; `Guest`
-    /// consults the router reducer over `store` (spawning it under `request_id`).
+    /// Resolve `(method, path)` to `(handler, contract)`. `Static` is a synchronous table lookup; `Guest`/
+    /// `Dynamic` consult a router guest over `store` (spawning it under `request_id`).
     async fn resolve(
         &self,
         store: &dyn ProgramStore,
@@ -221,6 +333,7 @@ impl Routing {
         match self {
             Routing::Static(router) => router.match_route(method, path),
             Routing::Guest(reducer) => reducer.match_route(store, request_id, method, path).await,
+            Routing::Dynamic(router) => router.match_route(store, request_id, method, path).await,
         }
     }
 }
@@ -253,6 +366,18 @@ impl Gateway {
     pub fn with_router_reducer(router: RouterReducer, runner: HandlerRunner) -> Self {
         Self {
             routing: Routing::Guest(router),
+            runner,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// A gateway routing through a [`DynamicRouter`] governing program over a LIVE table (P3) — it consults
+    /// the stateless router guest per request, passing the table the gateway holds (control-link updatable).
+    /// Otherwise identical to [`new`](Gateway::new).
+    #[must_use]
+    pub fn with_dynamic_router(router: DynamicRouter, runner: HandlerRunner) -> Self {
+        Self {
+            routing: Routing::Dynamic(router),
             runner,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
@@ -433,6 +558,49 @@ mod tests {
         }
     }
 
+    /// A native stand-in for the DYNAMIC router guest: decodes the `RouteQuery{request, table}`, decodes both
+    /// payloads, and closes with the first table route matching the request's `(method, path)` — or the empty
+    /// no-match sentinel. Lets [`DynamicRouter`] be exercised (incl. live [`set_table`](DynamicRouter::set_table))
+    /// without wasm.
+    struct NativeDynRouter;
+    #[async_trait]
+    impl Reducer for NativeDynRouter {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            use crate::codec::{
+                RouteDecision, decode_request, decode_route_query, decode_route_table,
+                encode_decision,
+            };
+            let decision = (|| {
+                let (req_bytes, table_bytes) = decode_route_query(&m.payload)?;
+                let req = decode_request(&req_bytes)?;
+                let hit = decode_route_table(&table_bytes)?
+                    .into_iter()
+                    .find(|r| r.method == req.method && r.path == req.path)?;
+                Some(RouteDecision {
+                    handler: hit.handler,
+                    contract: hit.contract,
+                })
+            })()
+            .unwrap_or(RouteDecision {
+                handler: Bytes::new(),
+                contract: Bytes::new(),
+            });
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz-platform.http.route"),
+                    reason: encode_decision(&decision),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
     fn runner() -> HandlerRunner {
         HandlerRunner::new(HostId::of(b"test-host"), ReducerId::of(b"test-router"))
     }
@@ -510,6 +678,71 @@ mod tests {
                 .await
                 .is_none(),
             "a router that cannot instantiate routes nowhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_router_holds_a_live_table_and_reroutes() {
+        use crate::codec::{RouteFrame, encode_route_table};
+        let prog = ProgramHash::of(b"native-dyn-router");
+        let echo_h = ProgramHash::of(b"echo-handler");
+        let v2_h = ProgramHash::of(b"v2-handler");
+        let mut store = Store::new();
+        store.register(prog, || Box::new(NativeDynRouter));
+
+        let req_contract = Bytes::from_static(b"cdz-platform.http.request........");
+        let mut handlers = HashMap::new();
+        handlers.insert(Bytes::from_static(b"m-echo"), echo_h);
+        handlers.insert(Bytes::from_static(b"m-v2"), v2_h);
+
+        let table1 = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/echo".to_string(),
+            handler: Bytes::from_static(b"m-echo"),
+            contract: req_contract.clone(),
+        }]);
+        let dr = DynamicRouter::new(
+            prog,
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            handlers,
+            table1,
+        );
+
+        // The initial live table routes GET /echo → the echo handler; /v2 is not yet a route.
+        assert_eq!(
+            dr.match_route(&store, b"q1", Method::Get, "/echo").await,
+            Some((
+                echo_h,
+                ContractId::try_from(&b"cdz-platform.http.request........"[..]).unwrap()
+            ))
+        );
+        assert!(
+            dr.match_route(&store, b"q2", Method::Get, "/v2")
+                .await
+                .is_none()
+        );
+
+        // LIVE UPDATE: swap the table (now routing GET /v2). The next request folds the new table.
+        dr.set_table(encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/v2".to_string(),
+            handler: Bytes::from_static(b"m-v2"),
+            contract: req_contract.clone(),
+        }]));
+        assert_eq!(
+            dr.match_route(&store, b"q3", Method::Get, "/v2")
+                .await
+                .map(|(h, _)| h),
+            Some(v2_h),
+            "a live table update reroutes the next request"
+        );
+        assert!(
+            dr.match_route(&store, b"q4", Method::Get, "/echo")
+                .await
+                .is_none(),
+            "the superseded route is gone after the update"
         );
     }
 
