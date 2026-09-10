@@ -2289,7 +2289,9 @@
           in
           builtins.listToAttrs (
             recurseCdz "implementation/seed/crates/cdz-platform/contracts"
-            ++ topCdz "implementation/seed/crates/cdz-platform/guests");
+            ++ topCdz "implementation/seed/crates/cdz-platform/guests"
+            # The http-outpost guest library (v-gateway-conformance): so a guest's `from "http-lib"` resolves.
+            ++ topCdz "implementation/seed/crates/cdz-http-conformance/programs/lib");
         # The library stems a source file imports — every `from "<stem>"` occurrence (liberal: a match not in
         # libStemToPath, e.g. a stray docstring mention, is filtered out by the closure operator below).
         importStemsOf = relPath:
@@ -7179,11 +7181,28 @@
                 in map
                   (name: {
                     inherit name;
-                    value = mkCadenzaGuest {
-                      pname = "cdz-http-conformance-${name}";
-                      src = categoryDir + "/${name}/reducer.cdz";
-                      componentName = "cadenza:platform/guest";
-                    };
+                    value =
+                      let
+                        guestDir = categoryDir + "/${name}";
+                        # A guest carries a `libs` manifest (one repo-relative lib source path per line) beside
+                        # its reducer.cdz — the shared modules it imports (reducer-lib + http-lib). Absent ⇒
+                        # single-file. closeLibs transitively closes it over the import graph (http-lib pulls in
+                        # reducer-lib); cadenzaWorldArgs supplies the shared reducer-world witWorld artifact so
+                        # the guest need not redefine the WIT world inline (operator: reuse the mechanism).
+                        libsFile = guestDir + "/libs";
+                        libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
+                          (builtins.filter (s: s != "")
+                            (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
+                        multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
+                          libs = closeLibs libLines;
+                          entry = "reducer";
+                        };
+                      in
+                      mkCadenzaGuest ({
+                        pname = "cdz-http-conformance-${name}";
+                        src = guestDir + "/reducer.cdz";
+                        componentName = "cadenza:platform/guest";
+                      } // cadenzaWorldArgs "reducer-world" // multiFileArgs);
                   })
                   (builtins.filter
                     (n: (builtins.readDir categoryDir).${n} == "directory")
