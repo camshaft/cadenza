@@ -11,9 +11,12 @@
 //!    encode/decode against `cadenza-ast`, in the exact canonical form the compiler's `Value.encode`/
 //!    `Value.decode` produce (so a value the gateway emits is decodable by a Cadenza guest, and a guest's
 //!    response decodes here).
-//!  - P1b: the wasmtime handler-runner (drive a reducer component through the WIT world, fold a request,
-//!    read the response off the closing `Break`).
+//!  - **P1b (here): [`runner`]** — the per-request handler runner: instantiate a fresh session via a
+//!    [`cdz_platform::ProgramStore`], deliver the request as `on_message`, read the `http-response` off
+//!    the closing `Break`. Generic over the store, so it drives the wasmtime-backed store in production and
+//!    a native test store in tests.
 //!  - P1c: the tokio HTTP edge + a mock control server for end-to-end tests.
 //!  - P1d: per-request resource bounds, 404/500 floors, no-cross-request-state-leak.
 
 pub mod codec;
+pub mod runner;
