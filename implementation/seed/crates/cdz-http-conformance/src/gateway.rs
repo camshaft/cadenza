@@ -43,9 +43,14 @@ impl GatewayClient {
         let method = Method::from_bytes(req.method.as_bytes())
             .map_err(|e| format!("invalid method {:?}: {e}", req.method))?;
         let url = format!("{}{}", self.base, req.path);
-        let resp = self
-            .http
-            .request(method, &url)
+        let mut builder = self.http.request(method, &url);
+        for (name, value) in &req.headers {
+            builder = builder.header(name, value);
+        }
+        if let Some(body) = &req.body {
+            builder = builder.body(body.clone());
+        }
+        let resp = builder
             .send()
             .await
             .map_err(|e| format!("gateway request {} {}: {e}", req.method, req.path))?;
@@ -100,6 +105,7 @@ mod tests {
             .send(&HttpRequest {
                 method: "GET".into(),
                 path: "/".into(),
+                ..Default::default()
             })
             .await
             .expect("request succeeds");
@@ -115,6 +121,7 @@ mod tests {
             .send(&HttpRequest {
                 method: "GET".into(),
                 path: "/nope".into(),
+                ..Default::default()
             })
             .await
             .expect("request succeeds (a 404 is a captured response, not a transport error)");
@@ -130,6 +137,7 @@ mod tests {
             .send(&HttpRequest {
                 method: "GET".into(),
                 path: "/".into(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -148,12 +156,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_applies_request_headers_and_body() {
+        // A capture stub: record the raw request bytes, reply 200, hand the request back.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            loop {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(50),
+                    sock.read(&mut tmp),
+                )
+                .await
+                {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+                    Ok(Err(_)) => break,
+                }
+            }
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            let _ = tx.send(buf);
+        });
+        GatewayClient::new(addr)
+            .send(&HttpRequest {
+                method: "POST".into(),
+                path: "/echo".into(),
+                headers: vec![("x-test".into(), "v".into())],
+                body: Some(b"payload".to_vec()),
+            })
+            .await
+            .expect("request succeeds");
+        let req = String::from_utf8_lossy(&rx.await.unwrap()).to_ascii_lowercase();
+        assert!(req.starts_with("post /echo "), "request line: {req:?}");
+        assert!(req.contains("x-test: v"), "missing header: {req:?}");
+        assert!(req.ends_with("payload"), "body not sent: {req:?}");
+    }
+
+    #[tokio::test]
     async fn a_bad_method_is_a_clear_error() {
         let client = GatewayClient::new("127.0.0.1:1".parse().unwrap());
         let err = client
             .send(&HttpRequest {
                 method: "not a method".into(),
                 path: "/".into(),
+                ..Default::default()
             })
             .await
             .expect_err("an invalid method errs before any request");
