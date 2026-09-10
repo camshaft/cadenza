@@ -103,7 +103,7 @@ fn main() {
     }
 
     let mut names: Vec<String> = Vec::with_capacity(sources.len());
-    for (src, cadenza_only) in &sources {
+    for (src, _cadenza_only) in &sources {
         let name = src
             .file_stem()
             .and_then(|s| s.to_str())
@@ -115,14 +115,13 @@ fn main() {
                 std::process::exit(1);
             })
             .to_string();
-        // Only a KERNEL contract emits Rust + is declared in `contracts/mod.rs`.
-        if !cadenza_only {
-            names.push(name.clone());
-        }
-        // Userspace: no Rust binding — a Cadenza guest consumes it via self-reflection, the host never does.
-        if *cadenza_only {
-            continue;
-        }
+        // Both KERNEL and USERSPACE contracts emit a Rust binding + a `contracts/mod.rs` entry, so a Rust
+        // consumer (the HTTP-outpost gateway's effect resolver + the control-plane frame-dispatch tag) gets
+        // the SAME canonical computed contract-id — `crate::contracts::<name>::contract().id()` — that a
+        // Cadenza guest derives from the contract's descriptor (design §5 + the operator computed-ids
+        // directive: stop hard-coding ids and stop re-declaring schemas). Additive: the kernel emit is
+        // unchanged; userspace contracts (previously guest-only, no Rust binding) now also project one.
+        names.push(name.clone());
 
         let src_str = src.to_str().expect("a UTF-8 contract path");
         let staged = stage.join(src.file_name().expect("a contract file name"));
@@ -153,7 +152,11 @@ fn main() {
         let identity = contract_identity(&cdz, &stage, staged_str, &name);
         let body = format_tokens(render_schema(&arenas, &decls, &name, identity.as_ref()));
         let source = format!("{}{body}", contract_banner(&name));
-        let out = out_dir.join(format!("{name}.rs"));
+        // The module ident is `name.replace('-', "_")` (see `render_contracts_mod`), so the file must be
+        // named to match — a hyphenated contract (userspace: `ws-send`, `http-dispatch`, …) becomes
+        // `ws_send.rs` / `http_dispatch.rs`, or `pub mod ws_send;` would not find its file. (Kernel
+        // contracts are single words, so this never bit until userspace contracts began emitting.)
+        let out = out_dir.join(format!("{}.rs", name.replace('-', "_")));
         write_generated(&out, &source);
         println!(
             "xtask codegen: wrote {} ({} type declarations, from {})",
