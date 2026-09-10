@@ -54,7 +54,7 @@ pub async fn run_scenario(
         .collect::<Result<_, String>>()?;
 
     // 2. CAS with writes enabled so the driver can publish by hash; a client bearing the seed credential.
-    let cas = spawn_cas(&bins.cas, LOOPBACK, None, Some(SEED_CREDENTIAL)).await?;
+    let cas = spawn_cas(&bins.cas, &cas_config(LOOPBACK, SEED_CREDENTIAL)).await?;
     let cas_url = format!("http://{}", cas.addr);
     let cas_client = CasClient::new(cas.addr).with_write_credential(SEED_CREDENTIAL);
     for (_, program) in &resolved {
@@ -97,6 +97,22 @@ pub async fn run_scenario(
     //    and their processes die — only when this function returns).
     let outcomes = run_http_steps(&gateway_client, &spec.requests).await;
     verdict(&outcomes)
+}
+
+/// Build the CAS's binary-AST `ServerConfig` document: bind `listen` (`127.0.0.1:0` for an ephemeral port)
+/// and enable the write path with `write_credential` (so the driver can seed by hash). No store tier ⇒ the
+/// CAS defaults to a single in-memory store (fresh per run). A `#record` with `cdz_cas_http::config`'s field
+/// names; the CAS decodes it ascription-tolerantly, so the value toolkit's root ascription is fine.
+fn cas_config(listen: &str, write_credential: &str) -> bytes::Bytes {
+    use cdz_http_protocol::value;
+    let mut b = value::ValueBuilder::new();
+    let listen = value::str_leaf(&mut b, listen);
+    let write = value::str_leaf(&mut b, write_credential);
+    let rec = value::record(
+        &mut b,
+        vec![("listen", listen), ("write-credential", write)],
+    );
+    value::finish(b, rec, "ServerConfig")
 }
 
 /// `Ok(())` when the admin reply is `Ok`, else an error naming the command + the mock's message.
