@@ -5,12 +5,12 @@
 //! computed ids of `cdz_platform::contracts::*`, injected at construction — never hard-coded markers) and
 //! never inspects a payload beyond the envelope a given effect needs.
 //!
-//! This slice implements the **`http.dispatch`** effect — how a root router hands a matched request to a
-//! subprogram: decode the `Dispatch { subprogram, input }` payload, fetch + spawn the subprogram from the
-//! store by its `ProgramHash`, RECURSIVELY drive it (so a handler may itself dispatch, bounded by a
-//! recursion budget), and fold its terminal `Break` reason back to the emitter as the dispatch answer. Any
-//! other contract-id is answered `Err(MissingHandler)` for now; `control.send` (forward up the control
-//! link), `ws.send`, and timers (a request with a `deadline`) layer on once their sinks exist.
+//! Effects handled: **`http.dispatch`** — decode `Dispatch { subprogram, input }`, fetch + spawn the
+//! subprogram from the store by its `ProgramHash`, RECURSIVELY drive it (a handler may itself dispatch,
+//! bounded by a recursion budget), and fold its terminal `Break` reason back as the dispatch answer.
+//! **`control.send`** (§3) — forward the opaque payload UP the control link and register the emitter so the
+//! `ControlDown` response folds back. A **per-request `deadline`** — arm a `Timeout` if no answer arrives in
+//! time. Any other contract-id is answered `Err(MissingHandler)`; `ws.send` layers on once its sink exists.
 //!
 //! `http.response` / `http.deny` are NOT effects here — a program emits them as its terminal `Break`
 //! (schema = that contract-id), which the edge decodes into an HTTP response; the resolver never sees them.
@@ -26,6 +26,7 @@ use cdz_platform::{
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The control-link back-channel a `control.send` effect uses (design §3), threaded through the drive tree.
 /// Cloned per dispatched subprogram with only `program` updated (the emitting handler's hash), so a
@@ -116,6 +117,24 @@ impl GatewayResolver {
     /// it as `move |req, tx| resolver.clone().carry::<R>(req, tx)`.
     pub fn carry<R: Runtime>(self: Arc<Self>, request: Request, mailbox: R::Sender) -> CarryFuture {
         Box::pin(async move {
+            // Arm the per-request deadline (§1/§2): if no answer arrives within `d`, inject `Err(Timeout)`
+            // correlated by `continuation_token`, so a fire-and-forget effect that never answers — a
+            // `control.send` whose `ControlDown` never comes — cannot leave the reducer waiting forever.
+            // Whichever of the answer or the timeout folds first resolves the token; the loser is a no-op (the
+            // reducer already resolved it, or the mailbox closed on `Break`). No explicit cancel needed: a late
+            // real answer to an already-resolved token is ignored — exactly the "deadline elapsed, no late
+            // answer" semantics. (NOTE: this protects fire-and-forget effects; a slow `http.dispatch` does not
+            // benefit yet because `run_dispatch` awaits the child drive inline — the shared `run_mailbox_loop`
+            // dispatches serially — so the deadline fires but the loop is busy until the child returns. Making
+            // dispatch itself fire-and-forget, per design §1, is a separate follow-on.)
+            if let Some(deadline) = request.deadline {
+                arm_deadline::<R>(
+                    deadline,
+                    request.id,
+                    request.continuation_token.clone(),
+                    &mailbox,
+                );
+            }
             if request.id == self.dispatch_id && self.depth > 0 {
                 let answer = self.run_dispatch::<R>(&request.payload).await;
                 let payload = answer.ok_or(Error::MissingHandler);
@@ -243,11 +262,27 @@ fn reply<R: Runtime>(
     );
 }
 
+/// Arm a per-request deadline: after `deadline`, inject `Err(Timeout)` for `id`/`continuation_token` into the
+/// emitting reducer's mailbox (§1/§2). Detached — the drive loop never awaits it; a fire after the reducer
+/// has already resolved the token (or closed its mailbox on `Break`) is a harmless no-op.
+fn arm_deadline<R: Runtime>(
+    deadline: Duration,
+    id: ContractId,
+    continuation_token: Bytes,
+    mailbox: &R::Sender,
+) {
+    let mailbox = mailbox.clone();
+    R::spawn(async move {
+        R::sleep(deadline).await;
+        reply::<R>(&mailbox, id, continuation_token, Err(Error::Timeout));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use cdz_platform::{Notification, Outcome, Reducer, TokioRuntime};
+    use cdz_platform::{Notification, Outcome, Reducer, Str, TokioRuntime};
     use std::collections::HashMap;
 
     // --- a native ProgramStore: spawn a reducer by ProgramHash from a factory table -----------------------
@@ -409,5 +444,74 @@ mod tests {
         .await;
         // The dispatch answer was Err → the router folded an empty reason (unwrap_or_default) and broke.
         assert_eq!(out, Some((resp_id(), Bytes::new())));
+    }
+
+    fn control_send_id() -> ContractId {
+        ContractId::of(b"cdz-platform.control.send")
+    }
+
+    /// A reducer that emits ONE `control.send` with a short deadline, then breaks on whatever its answer is —
+    /// echoing whether the answer was the deadline `Timeout` (the round-trip never completed) or a real reply.
+    struct ControlSendThenBreak;
+    #[async_trait]
+    impl Reducer for ControlSendThenBreak {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            (
+                vec![Request {
+                    id: control_send_id(),
+                    payload: Bytes::from_static(b"ping"),
+                    continuation_token: Bytes::from_static(b"c1"),
+                    deadline: Some(Duration::from_millis(20)),
+                }],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+            let reason = if matches!(r.payload, Err(Error::Timeout)) {
+                Bytes::from_static(b"timed-out")
+            } else {
+                Bytes::from_static(b"unexpected")
+            };
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: resp_id(),
+                    reason,
+                },
+            )
+        }
+        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_control_send_with_a_deadline_and_no_response_folds_a_timeout() {
+        // A control.send is fire-and-forget: forwarded UP, then the reducer waits for a ControlDown. With no
+        // control server to answer, the per-request deadline is what unwedges it — after 20ms the gateway
+        // injects Err(Timeout), which the reducer folds and breaks. Proves the deadline protects a
+        // fire-and-forget effect whose response never comes.
+        let store = NativeStore::with(Vec::new());
+        let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<ControlUp>();
+        let control = ControlCtx {
+            sink: up_tx,
+            sessions: Sessions::new(),
+            control_send: control_send_id(),
+            session: Bytes::from_static(b"sess-test"),
+            request: Arc::new(RequestContext {
+                method: Str::from("GET"),
+                path: Str::from("/"),
+                headers: Vec::new(),
+            }),
+            program: ProgramHash::of(b"test-program"),
+        };
+        let resolver =
+            GatewayResolver::new_with_control(store, dispatch_id(), request_id(), 8, control);
+        let reducer: Box<dyn Reducer> = Box::new(ControlSendThenBreak);
+        let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx)
+        })
+        .await;
+        assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));
     }
 }
