@@ -49,7 +49,10 @@ cdz-platform = { path = "../cdz-platform" }
 # hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
 # request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
-hyper = { version = "1", features = ["server", "http1"] }
+# `client` (alongside server/http1) is for the HTTP CAS client (src/cas_http.rs, the dumb-gateway redirect):
+# the gateway fetches programs/deps by hash from a content-addressed store over HTTP. Used non-test, so it
+# lives here (the dev-deps line still unions `client` for the test HTTP clients — harmless duplication).
+hyper = { version = "1", features = ["server", "http1", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 # WebSocket endpoints (P4, design §6): the handshake key derivation (`derive_accept_key`) + the framing
@@ -62,6 +65,8 @@ futures-util = { version = "0.3", default-features = false }
 # Only to NAME `wasmtime::Error` in wasm_store's return type; behind the `host` feature (the engine comes
 # via cdz-platform/host). Matches the workspace's wasmtime (cdz-platform/cdz-run/rcdzc) so no new lock line.
 wasmtime = { version = "37", default-features = false, optional = true }
+# To impl `cdz_platform::BlobStore` (an `#[async_trait]` trait) for the HTTP CAS client (src/cas_http.rs).
+async-trait = "0.1"
 
 [dev-dependencies]
 # The native test `ProgramStore` (`cdz_platform::testing::program::Store`) + a Rust `Reducer` let the
