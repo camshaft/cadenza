@@ -65,11 +65,13 @@ pub mod control_link;
 #[cfg(feature = "host")]
 pub mod wasm;
 
-/// The HTTP content-addressed store client (design §3, dumb-gateway redirect) — behind the `host` feature.
-/// A [`cdz_platform::BlobStore`] backed by an HTTP CAS (control-server-supplied URL + credential): the
-/// gateway fetches programs + deps by hash, content-verified, in place of a local/in-memory store.
-#[cfg(feature = "host")]
-pub mod cas_http;
+/// The HTTP content-addressed store client (design §3, dumb-gateway redirect): a [`cdz_platform::BlobStore`]
+/// backed by an HTTP CAS (control-server-supplied URL + credential), so the gateway fetches programs + deps
+/// by hash, content-verified, in place of a local/in-memory store. Re-exported from the SHARED
+/// `cdz-cas-http` crate (vertical `v-cas-http`) — one client, one wire, base62 keys, digest-verified on 200
+/// — rather than a gateway-local hand-rolled client. Construct `HttpBlobStore::new(cas_url)
+/// .with_read_credential(cas_credential)` and hand it to the wasm store wherever it takes a `BlobStore`.
+pub use cdz_cas_http::HttpBlobStore;
 
 /// The mock control server (design §3) — behind the `host` feature (it assembles a wasmtime-backed edge).
 /// Ships a route table + handler blobs and builds a ready-to-serve [`edge::HttpEdge`] from them, standing

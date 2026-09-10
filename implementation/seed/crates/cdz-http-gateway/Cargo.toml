@@ -45,13 +45,19 @@ bytes = "1"
 # heavy `host` (wasmtime) feature, which a later slice adds for the concrete `WasmProgramStore`. Keeping
 # `host` off here is exactly why this crate is a standalone `[workspace]` (see Cargo comment / root exclude).
 cdz-platform = { path = "../cdz-platform" }
+# The SHARED HTTP CAS client (vertical v-cas-http): `HttpBlobStore` IS a `cdz_platform::BlobStore` over an
+# HTTP content-addressed store (base62 keys, digest-verified on 200), so the gateway fetches programs + deps
+# by hash from the control-server-supplied CAS URL. Excluded→excluded path-dep (it deps cdz-platform DEFAULT
+# features — no host/wasmtime). Replaces the crate's former hand-rolled `HttpCas` (one client, one wire);
+# transport moves to reqwest+ring internally in a later v-cas-http slice with NO change to this call site.
+cdz-cas-http = { path = "../cdz-cas-http" }
 # The native HTTP edge (P1c-2, src/edge.rs): a hyper HTTP/1 server. hyper is runtime-agnostic (driven via
 # hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
 # request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
-# `client` (alongside server/http1) is for the HTTP CAS client (src/cas_http.rs, the dumb-gateway redirect):
-# the gateway fetches programs/deps by hash from a content-addressed store over HTTP. Used non-test, so it
-# lives here (the dev-deps line still unions `client` for the test HTTP clients — harmless duplication).
+# `server`/`http1` back the native edge; `client` is unioned by the dev-deps line for the test HTTP clients
+# (the live-socket e2e tests dial the edge). The HTTP CAS client now lives in the shared `cdz-cas-http` crate
+# (its own hyper dep), not here — this crate no longer dials out on its own in non-test code.
 hyper = { version = "1", features = ["server", "http1", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
@@ -65,7 +71,8 @@ futures-util = { version = "0.3", default-features = false }
 # Only to NAME `wasmtime::Error` in wasm_store's return type; behind the `host` feature (the engine comes
 # via cdz-platform/host). Matches the workspace's wasmtime (cdz-platform/cdz-run/rcdzc) so no new lock line.
 wasmtime = { version = "37", default-features = false, optional = true }
-# To impl `cdz_platform::BlobStore` (an `#[async_trait]` trait) for the HTTP CAS client (src/cas_http.rs).
+# `#[async_trait]` for the crate's own async traits (the effect resolver's `EffectResolver`/`ControlSink`,
+# the ws session, and the native-reducer test doubles that impl `cdz_platform`'s async `Reducer`/`BlobStore`).
 async-trait = "0.1"
 
 [dev-dependencies]
