@@ -255,6 +255,94 @@ fn read_str(arenas: &Arenas, id: StructId) -> Option<Str> {
     value::read_str(arenas, id).map(Str::from)
 }
 
+// --- frame dispatch (contract-hash-tagged envelope) ------------------------------------------------------
+// The control link is a single bidirectional message stream carrying ALL three frame types. Rather than
+// disambiguate by record SHAPE (fragile — two frames could share a shape), each frame travels inside an
+// envelope tagged with its contract-id, and the receiver dispatches by that tag (operator directive: "the
+// control-link protocol should use contract hashes for dispatch so the receiver dispatches by content type").
+//
+// The tag values ARE the canonical COMPUTED contract-ids — the same ones a Cadenza guest derives from the
+// contract's `descriptor().id`, and that the userspace-contract codegen (§5, #8673) emits for Rust as
+// `contracts::{control_config,control_up,control_down}::contract().id()`. This crate stays dep-minimal
+// (cadenza-ast + bytes + cdz-str — NOT the heavy cdz-platform runtime; see the Cargo.toml header), so the
+// ids are INJECTED by the consumer that already reaches them (the mock control server + the gateway both dep
+// cdz-platform). The codec is therefore id-agnostic + fully testable in isolation, and forward-compatible
+// with a later light `cdz-platform-contracts` extraction: only the id SOURCE moves, never this envelope.
+
+/// One control-link message: exactly one of the three frames. Encoded/decoded through a [`FrameCodec`],
+/// which tags it with its contract-id so the peer dispatches by content type, not by guessing at shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlFrame {
+    /// A boot / reconfigure config (control → gateway).
+    Config(ControlConfig),
+    /// A handler's `control.send` on its way up (gateway → control).
+    Up(ControlUp),
+    /// A response or unsolicited push (control → gateway).
+    Down(ControlDown),
+}
+
+/// The contract-hash-tagged frame codec. Holds the three canonical computed contract-ids (the frame tags),
+/// injected by the consumer from `contracts::{control_config,control_up,control_down}::contract().id()`
+/// (the crate stays dep-minimal + id-agnostic — see the section note). Cheap to `Clone` (three `Bytes`).
+#[derive(Debug, Clone)]
+pub struct FrameCodec {
+    config_id: Bytes,
+    up_id: Bytes,
+    down_id: Bytes,
+}
+
+impl FrameCodec {
+    /// A codec tagging frames with the given canonical contract-ids. Each id is the 33-byte `ContractId` of
+    /// the corresponding frame contract (`cdz-platform.control.{config,up,down}`) — supply
+    /// `contracts::control_config::contract().id()` (etc.) as `Bytes`.
+    #[must_use]
+    pub fn new(config_id: Bytes, up_id: Bytes, down_id: Bytes) -> Self {
+        Self {
+            config_id,
+            up_id,
+            down_id,
+        }
+    }
+
+    /// Encode a [`ControlFrame`] into a tagged envelope: a record `{ contract, payload }` (fields
+    /// name-sorted, root-ascribed `"ControlFrame"`) where `contract` is the frame's contract-id and
+    /// `payload` is the frame's own encoded value (from `encode_control_*`). One nesting; no re-encode.
+    #[must_use]
+    pub fn encode(&self, frame: &ControlFrame) -> Bytes {
+        let (id, payload) = match frame {
+            ControlFrame::Config(c) => (&self.config_id, encode_control_config(c)),
+            ControlFrame::Up(u) => (&self.up_id, encode_control_up(u)),
+            ControlFrame::Down(d) => (&self.down_id, encode_control_down(d)),
+        };
+        let mut b = Builder::new();
+        let contract = bytes_leaf(&mut b, id);
+        let payload = bytes_leaf(&mut b, &payload);
+        let rec = record(&mut b, vec![("contract", contract), ("payload", payload)]);
+        finish(b, rec, "ControlFrame")
+    }
+
+    /// Decode a tagged envelope, dispatching by the `contract` tag to the matching frame decoder. `None` if
+    /// the envelope is malformed, the tag matches none of the three known frame contract-ids (an unknown /
+    /// future frame type), or the tagged payload fails to decode as that frame. Dispatch is by TAG, never by
+    /// the payload's shape.
+    #[must_use]
+    pub fn decode(&self, bytes: &[u8]) -> Option<ControlFrame> {
+        let arenas = value::decode(bytes)?;
+        let rec = unascribe(&arenas, arenas.root);
+        let contract = read_bytes(&arenas, record_field(&arenas, rec, "contract")?)?;
+        let payload = read_bytes(&arenas, record_field(&arenas, rec, "payload")?)?;
+        if contract == self.config_id {
+            decode_control_config(&payload).map(ControlFrame::Config)
+        } else if contract == self.up_id {
+            decode_control_up(&payload).map(ControlFrame::Up)
+        } else if contract == self.down_id {
+            decode_control_down(&payload).map(ControlFrame::Down)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +461,82 @@ mod tests {
             root_router: Bytes::new(),
         });
         assert!(decode_control_down(&config).is_none());
+    }
+
+    // --- frame dispatch ---
+    // Three distinct 33-byte test tags (real ids are `contracts::control_*::contract().id()`; the codec is
+    // id-agnostic, so synthetic tags exercise it fully).
+    const CONFIG_TAG: &[u8; 33] = b"test.control.config.tag..........";
+    const UP_TAG: &[u8; 33] = b"test.control.up.tag..............";
+    const DOWN_TAG: &[u8; 33] = b"test.control.down.tag............";
+
+    fn test_codec() -> FrameCodec {
+        FrameCodec::new(
+            Bytes::from_static(CONFIG_TAG),
+            Bytes::from_static(UP_TAG),
+            Bytes::from_static(DOWN_TAG),
+        )
+    }
+
+    #[test]
+    fn every_frame_round_trips_through_the_tagged_envelope() {
+        let codec = test_codec();
+        let frames = [
+            ControlFrame::Config(ControlConfig {
+                cas_url: Str::from("http://cas.local:9000"),
+                cas_credential: Bytes::from_static(b"tok"),
+                root_router: Bytes::from_static(b"cdz-router.root................."),
+            }),
+            ControlFrame::Up(ControlUp {
+                program: Bytes::from_static(b"h"),
+                session: Bytes::from_static(b"s"),
+                correlation: Bytes::from_static(b"c"),
+                payload: Bytes::from_static(b"opaque"),
+                request: sample_request_context(),
+            }),
+            ControlFrame::Down(ControlDown {
+                session: Bytes::from_static(b"s"),
+                correlation: Bytes::from_static(b"c"),
+                payload: Bytes::from_static(b"PONG"),
+            }),
+        ];
+        for frame in frames {
+            assert_eq!(codec.decode(&codec.encode(&frame)), Some(frame));
+        }
+    }
+
+    #[test]
+    fn dispatch_is_by_tag_not_by_shape() {
+        // A codec that does not know the DOWN tag cannot decode a Down frame the first codec produced — even
+        // though the payload is a perfectly well-formed ControlDown. Dispatch keys on the tag, so an unknown
+        // tag is `None` (a future / foreign frame type), never a mis-decode.
+        let codec = test_codec();
+        let down = ControlFrame::Down(ControlDown {
+            session: Bytes::from_static(b"s"),
+            correlation: Bytes::new(),
+            payload: Bytes::from_static(b"push"),
+        });
+        let wire = codec.encode(&down);
+        let stranger = FrameCodec::new(
+            Bytes::from_static(CONFIG_TAG),
+            Bytes::from_static(UP_TAG),
+            Bytes::from_static(b"a.completely.different.down.tag.."),
+        );
+        assert_eq!(stranger.decode(&wire), None);
+        // The original codec still round-trips it.
+        assert_eq!(codec.decode(&wire), Some(down));
+    }
+
+    #[test]
+    fn a_malformed_envelope_is_none() {
+        let codec = test_codec();
+        assert!(codec.decode(b"not an envelope").is_none());
+        // A bare frame value (no envelope) has no `contract` field → None.
+        let bare = encode_control_down(&ControlDown {
+            session: Bytes::from_static(b"s"),
+            correlation: Bytes::new(),
+            payload: Bytes::new(),
+        });
+        assert!(codec.decode(&bare).is_none());
     }
 }
