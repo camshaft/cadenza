@@ -1,0 +1,35 @@
+# cdz-http-conformance — the conformance-harness DRIVER (DESIGN-http-outpost-conformance-harness.md §3.2),
+# the cdz-platform-itest analogue for the http-outpost. It spins up the 3 SUT processes (CAS + mock control
+# server + the gateway) on loopback sockets, executes a declarative run-spec's requests against them
+# (control injections via the mock's binary-AST admin channel + real HTTP requests at the gateway), and
+# asserts observable outcomes — verdict = exit code.
+#
+# This crate carries the harness `programs/` guest tree (compiled by nix, not cargo). STANDALONE `[workspace]`
+# — EXCLUDED from the seed workspace (root Cargo.toml `exclude`), like its http-outpost siblings: it pulls the
+# tokio/hyper client stack. It path-deps the excluded cdz-http-control-mock (reusing its binary-AST admin
+# frames + its servers in-process for tests) + cdz-http-protocol; excluded→excluded is fine (cdz-smith precedent).
+[workspace]
+
+[package]
+name = "cdz-http-conformance"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The mock control server: reuse its binary-AST AdminCommand/AdminReply frames (the driver ENCODES commands
+# + DECODES replies) and, in tests, run its servers in-process. In production the driver spawns the mock BIN.
+cdz-http-control-mock = { path = "../cdz-http-control-mock" }
+# The control-plane wire frames + the shared binary-AST value toolkit (decode captured ControlUp observations).
+cdz-http-protocol = { path = "../cdz-http-protocol" }
+# `Str` — the canonical text type; the admin frames the driver builds carry Str fields (program names, urls).
+cdz-str = { path = "../cdz-str" }
+# Every byte buffer is bytes::Bytes (spec §12).
+bytes = "1"
+# The driver's HTTP client: POST binary-AST AdminCommand bodies to the mock's admin endpoint + (later) make
+# real HTTP requests at the gateway. hyper HTTP/1 client driven via hyper-util's TokioIo; http-body-util for
+# the Full request body + collecting responses. tokio is the runtime + child-process spawner.
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
