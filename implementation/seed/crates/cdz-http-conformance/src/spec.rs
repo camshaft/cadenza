@@ -61,6 +61,56 @@ pub struct Expect {
     pub body_contains: Option<String>,
 }
 
+impl Expect {
+    /// Check an HTTP response against this assertion. `Ok(())` if every present field holds; `Err(reason)`
+    /// with a human-readable diagnostic on the first field that fails (so a failing scenario names WHAT
+    /// diverged). A `None` field asserts nothing, so an empty [`Expect`] always passes.
+    ///
+    /// # Errors
+    /// The status, exact body, or `body-contains` substring assertion does not hold.
+    pub fn check(&self, status: u16, body: &[u8]) -> Result<(), String> {
+        if let Some(want) = self.status
+            && status != want
+        {
+            return Err(format!("status: expected {want}, got {status}"));
+        }
+        if let Some(want) = &self.body
+            && body != want.as_slice()
+        {
+            return Err(format!(
+                "body: expected {} bytes ({}), got {} bytes ({})",
+                want.len(),
+                preview(want),
+                body.len(),
+                preview(body),
+            ));
+        }
+        if let Some(sub) = &self.body_contains {
+            let hay = String::from_utf8_lossy(body);
+            if !hay.contains(sub.as_str()) {
+                return Err(format!(
+                    "body-contains: {sub:?} not found in body ({})",
+                    preview(body)
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A short, escaped preview of a body for a failure diagnostic (bodies can be large / binary): the first
+/// 64 bytes, lossy-decoded, with a trailing ellipsis when truncated.
+fn preview(bytes: &[u8]) -> String {
+    const MAX: usize = 64;
+    let shown = &bytes[..bytes.len().min(MAX)];
+    let text = String::from_utf8_lossy(shown);
+    if bytes.len() > MAX {
+        format!("{text:?}…")
+    } else {
+        format!("{text:?}")
+    }
+}
+
 /// Decode a run-spec's binary-AST bytes into a [`RunSpec`], or `None` if malformed / missing a required field.
 #[must_use]
 pub fn parse_run_spec(bytes: &[u8]) -> Option<RunSpec> {
@@ -187,6 +237,35 @@ mod tests {
         let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0];
         assert_eq!(expect, &Expect::default());
+    }
+
+    #[test]
+    fn expect_checks_each_field_and_reports_the_first_miss() {
+        let e = Expect {
+            status: Some(200),
+            body: Some(b"hello".to_vec()),
+            body_contains: Some("ell".into()),
+        };
+        assert!(e.check(200, b"hello").is_ok());
+        // Status mismatch is named.
+        assert!(e.check(404, b"hello").unwrap_err().contains("status"));
+        // Exact-body mismatch is named.
+        assert!(e.check(200, b"HELLO").unwrap_err().contains("body"));
+        // body-contains miss is named.
+        let contains = Expect {
+            status: None,
+            body: None,
+            body_contains: Some("wasm".into()),
+        };
+        assert!(
+            contains
+                .check(200, b"plain")
+                .unwrap_err()
+                .contains("body-contains")
+        );
+        assert!(contains.check(200, b"a wasm handler").is_ok());
+        // An empty Expect asserts nothing.
+        assert!(Expect::default().check(500, b"anything").is_ok());
     }
 
     #[test]

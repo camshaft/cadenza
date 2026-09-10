@@ -18,6 +18,9 @@ pub mod process;
 /// Per-server spawners — typed handles (CAS / mock / gateway) with their parsed bound addresses.
 pub mod servers;
 
+/// The gateway HTTP client — make a run-spec's `http` requests + capture the response for `Expect`.
+pub mod gateway;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).
