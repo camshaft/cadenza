@@ -593,4 +593,112 @@ mod tests {
             "the cancelled effect never completed its forward"
         );
     }
+
+    // --- dispatch-chain recursion budget -----------------------------------------------------------------
+
+    /// A `Leaf` handler closes with a fixed response.
+    struct Leaf;
+    #[async_trait]
+    impl Reducer for Leaf {
+        async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz.http.response"),
+                    reason: Bytes::from_static(b"leaf-response"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    /// A `Relay` dispatches its first message to `target`, then closes with the answer — or, if the dispatch
+    /// came back `Err` (e.g. the recursion budget was exhausted), with a `depth-exhausted` marker so a bounded
+    /// chain is observable at the top.
+    struct Relay {
+        target: Bytes,
+    }
+    #[async_trait]
+    impl Reducer for Relay {
+        async fn on_message(&mut self, m: Message) -> (Vec<PRequest>, Outcome) {
+            use crate::codec::{DispatchEffect, encode_dispatch};
+            (
+                vec![PRequest {
+                    id: dispatch_contract(),
+                    payload: encode_dispatch(&DispatchEffect {
+                        subprogram: self.target.clone(),
+                        input: m.payload,
+                    }),
+                    continuation_token: Bytes::from_static(b"relay"),
+                    deadline: None,
+                }],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<PRequest>, Outcome) {
+            let reason = match r.payload {
+                Ok(bytes) => bytes,
+                Err(_) => Bytes::from_static(b"depth-exhausted"),
+            };
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz.http.response"),
+                    reason,
+                },
+            )
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    /// Drive a top `Relay → mid Relay → leaf` dispatch chain with the given recursion budget, returning the
+    /// reason the top router closes with. The store holds `mid` (dispatches to `leaf`) + `leaf`; the top
+    /// router is driven directly and dispatches to `mid`.
+    async fn drive_top(max_depth: usize) -> Bytes {
+        use cdz_platform::testing::program::Store;
+        let leaf = ProgramHash::of(b"leaf");
+        let mid = ProgramHash::of(b"mid");
+        let leaf_bytes = Bytes::copy_from_slice(leaf.hash().as_bytes());
+        let mid_bytes = Bytes::copy_from_slice(mid.hash().as_bytes());
+        let mut store = Store::new();
+        store.register(leaf, || Box::new(Leaf));
+        store.register(mid, move || {
+            Box::new(Relay {
+                target: leaf_bytes.clone(),
+            })
+        });
+        let store: Arc<dyn ProgramStore> = Arc::new(store);
+
+        let resolver = GatewayResolver::new(
+            Bytes::from_static(b"top"),
+            Bytes::from_static(b"sess"),
+            Arc::new(CapturingSink::default()),
+        )
+        .with_dispatch(store, ContractId::of(b"cdz.http.request"), max_depth);
+        let mut top = Relay { target: mid_bytes };
+        drive_loop(&mut top, msg(), &resolver, 100)
+            .await
+            .map(|(_, r)| r)
+            .expect("the top router closes")
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_chain_folds_through_multiple_levels() {
+        // top → mid → leaf, all within a generous budget: the leaf's response folds back up the whole chain.
+        assert_eq!(drive_top(4).await, Bytes::from_static(b"leaf-response"));
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_chain_is_bounded_by_max_depth() {
+        // With a budget of 1, top dispatches mid (depth 1) but mid's dispatch of leaf is at depth 0 → cut off
+        // (Err(MissingHandler)), so the leaf is NEVER reached and the bound is observable at the top.
+        assert_eq!(drive_top(1).await, Bytes::from_static(b"depth-exhausted"));
+    }
 }
