@@ -28,6 +28,12 @@
 //! from the design). Modules are added one landable slice at a time as the drive loop, effect resolver,
 //! boot-from-control, live-swap, and CasRef body resolution land.
 
+/// A cancellation scope for a session's spawned effect tasks (a dispatched child drive, a deadline timer):
+/// [`drive`] aborts whatever is still running when the session ends, so an abandoned request leaves no orphan
+/// handler firing side effects. A small gateway-local utility (gateway-side cancellation, keeping the shared
+/// `cdz-platform` API surface minimal — operator decision).
+pub mod cancel;
+
 /// The per-session reducer drive (design §1): run a control-shipped reducer (the root router, or a
 /// subprogram it dispatches to) to its terminal `Break` over a fresh mailbox, reusing the platform's
 /// `run_mailbox_loop` with the gateway's own effect resolver. The looping execution model the edge drives.

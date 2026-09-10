@@ -14,6 +14,7 @@
 //! layered on top of this in the effect-resolver slice; `drive` itself is effect-agnostic — it just runs the
 //! loop and returns the terminal `Break`.
 
+use crate::cancel::CancelScope;
 use cdz_platform::{ContractId, Delivered, Reducer, Request, Runtime, run_mailbox_loop};
 
 /// Drive `reducer` to its terminal `Break`: deliver `first` as its opening event, and resolve every request
@@ -27,18 +28,25 @@ use cdz_platform::{ContractId, Delivered, Reducer, Request, Runtime, run_mailbox
 pub async fn drive<R: Runtime>(
     mut reducer: Box<dyn Reducer>,
     first: Delivered,
-    mut carry: impl AsyncFnMut(Request, R::Sender),
+    mut carry: impl FnMut(Request, R::Sender, &CancelScope),
 ) -> Option<(ContractId, bytes::Bytes)> {
     let (sender, mut receiver) = R::channel();
     // The opening event: the http-request delivered as an `on_message`, a subprogram's dispatched input, …
     R::send(&sender, first);
-    // Reuse the platform's mailbox loop; the per-request dispatch is the closure below. Each request gets its
-    // own clone of the mailbox sender so the resolver can inject the answer back later without blocking.
+    // The cancel scope for THIS session's spawned effect tasks (a dispatched child drive, a deadline timer):
+    // `carry` wraps each spawned task through it, and when this drive ends — the reducer `Break`s, or its
+    // mailbox closes — the scope drops and ABORTS any still-running task. So an abandoned/timed-out request
+    // leaves no orphan handler still driving or firing `control.send` side effects (design §1/§6). Recursive:
+    // a cancelled child-drive task drops its own inner scope, cancelling its grandchildren in turn.
+    let scope = CancelScope::new();
+    // Reuse the platform's mailbox loop; `carry` dispatches each emitted request FIRE-AND-FORGET (it spawns
+    // the work under `scope` and returns immediately, injecting any answer back through `sender` later), so
+    // the loop never blocks awaiting an effect. Each request gets its own clone of the mailbox sender.
     run_mailbox_loop::<R>(
         &mut reducer,
         &mut receiver,
         async move |request: Request| {
-            carry(request, sender.clone()).await;
+            carry(request, sender.clone(), &scope);
         },
     )
     .await
@@ -93,7 +101,7 @@ mod tests {
             Box::new(BreakNow),
             opening(b"http-request", b"hello"),
             // no effects emitted, so the resolver is never invoked
-            async |_req, _tx| {},
+            |_req, _tx, _scope| {},
         )
         .await;
         assert_eq!(
@@ -140,7 +148,7 @@ mod tests {
         // The resolver injects a canned Ok answer for the emitted effect, correlated by continuation_token —
         // the fire-and-forget shape the real gateway effect resolver uses (dispatch a subprogram, forward
         // control.send, arm a timer, …), here canned to prove the loop wiring.
-        let carry = async |req: Request, tx: <TokioRuntime as Runtime>::Sender| {
+        let carry = |req: Request, tx: <TokioRuntime as Runtime>::Sender, _scope: &CancelScope| {
             TokioRuntime::send(
                 &tx,
                 Delivered::Response(Response {
