@@ -6034,15 +6034,23 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
         return; // a stopped/rested agent stays down (stop-file is the durable rest signal)
     }
     let now = now_unix();
-    if !tmux_windows(session).iter().any(|w| w == agent) {
+    // CHECKED list: a tmux FAILURE (None) must NOT read as "window is gone" — that false-empty would
+    // recreate a fresh, context-less session over a live agent (operator-reported HIGH bug 2026-09-10).
+    let win_checked = tmux_windows_checked(session);
+    let tmux_ok = win_checked.is_some();
+    let has_window = win_checked
+        .as_deref()
+        .is_some_and(|v| v.iter().any(|w| w == agent));
+    if !has_window {
         // No live window, and no stop-file → an ACTIVE agent whose window DIED / was torn down. This cron
         // runs OUT-OF-BAND (independent of the concierge), so it is the ONLY thing that can revive the
         // CONCIERGE: the concierge runs the in-tick watchdog, so a dead concierge can't self-heal via that
         // watchdog (chicken-and-egg — "who heals the healer"). Recreate the window here, thrash-guarded by
-        // the shared wedge grace. This COMPLEMENTS the in-tick watchdog's dead-window recreate (#8566),
-        // which self-heals every OTHER active agent.
+        // the shared wedge grace, and ONLY when the window list was obtained (tmux_ok). This COMPLEMENTS
+        // the in-tick watchdog's dead-window recreate (#8566), which self-heals every OTHER active agent.
         if should_recreate_missing_window(
-            false,
+            has_window,
+            tmux_ok,
             wedge_restart_age_secs(fleet, agent, now),
             WEDGE_RESTART_GRACE,
         ) {
@@ -6156,7 +6164,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             tmux_current_session()
         }
     };
-    let live = tmux_windows(&session);
+    // Use the CHECKED list so a tmux FAILURE (None) is not silently read as "no windows exist": that
+    // false-empty would make every active agent look windowless and trigger a mass recreate over live
+    // sessions (operator-reported HIGH bug). `tmux_ok` gates every recreate below; on a failed list we
+    // still run the sweep but never treat a missing window as real.
+    let live_checked = tmux_windows_checked(&session);
+    let tmux_ok = live_checked.is_some();
+    let live = live_checked.unwrap_or_default();
     let reg = fleet.load();
     let now = now_unix();
 
@@ -6284,6 +6298,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         if !has_window {
             if should_recreate_missing_window(
                 has_window,
+                tmux_ok,
                 wedge_restart_age_secs(fleet, &a.name, now),
                 WEDGE_RESTART_GRACE,
             ) {
@@ -6294,6 +6309,11 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 ensure_window(fleet, &session, a);
                 stamp_wedge_restart(fleet, &a.name);
                 wedge_restarts += 1;
+            } else if !tmux_ok {
+                eprintln!(
+                    "watchdog: '{}' not found in a window list we could NOT obtain (tmux errored) — NOT recreating (a failed list is not proof the window is dead; never spawn a fresh session over a possibly-live agent).",
+                    a.name
+                );
             }
             continue; // a just-(re)created window boots its own loop — nothing to nudge THIS sweep
         }
@@ -9679,9 +9699,21 @@ fn watchdog_skips_agent(status: &str, has_stopfile: bool) -> bool {
 /// Now the watchdog self-heals it. PRECONDITION: the caller already excluded rested agents via
 /// [`watchdog_skips_agent`], so this only ever governs an active, non-stop-filed agent — a rested agent
 /// is NEVER recreated (weekend-rest invariant preserved). Pure so the decision is unit-pinned.
-fn should_recreate_missing_window(has_window: bool, restart_age: Option<u64>, grace: u64) -> bool {
-    // Recreate iff no window AND (never recreated OR the last recreate is older than the grace).
-    !has_window && restart_age.is_none_or(|s| s >= grace)
+fn should_recreate_missing_window(
+    has_window: bool,
+    tmux_list_ok: bool,
+    restart_age: Option<u64>,
+    grace: u64,
+) -> bool {
+    // Recreate iff the window is CONFIRMED gone: the window list was obtained SUCCESSFULLY
+    // (`tmux_list_ok`) AND no window AND (never recreated OR past the grace). The `tmux_list_ok` gate is
+    // load-bearing (operator-reported HIGH bug 2026-09-10): `tmux_windows` returns an EMPTY list on a
+    // `tmux list-windows` FAILURE (server busy under a heavy load, transient error), which would make
+    // EVERY registry-active agent look windowless and trigger a mass recreate — spawning fresh,
+    // context-less sessions over agents that are alive and mid-work (it killed v-reducer-targets +
+    // loadgen-cache-builder). NEVER recreate on an unknown window state: a list we could not obtain is
+    // NOT proof the window is dead. Callers pass `tmux_windows_checked(session).is_some()`.
+    tmux_list_ok && !has_window && restart_age.is_none_or(|s| s >= grace)
 }
 
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
@@ -18718,22 +18750,35 @@ mod tests {
     #[test]
     fn should_recreate_missing_window_only_for_a_windowless_agent_past_the_grace() {
         let grace = WEDGE_RESTART_GRACE;
+        let ok = true; // tmux list obtained successfully
         // A live window → never recreate (the common case).
-        assert!(!should_recreate_missing_window(true, None, grace));
-        assert!(!should_recreate_missing_window(true, Some(0), grace));
+        assert!(!should_recreate_missing_window(true, ok, None, grace));
+        assert!(!should_recreate_missing_window(true, ok, Some(0), grace));
         // No window + never recreated → recreate (self-heal a dead/torn-down window).
-        assert!(should_recreate_missing_window(false, None, grace));
+        assert!(should_recreate_missing_window(false, ok, None, grace));
         // No window + recreated long ago (past grace) → recreate again (still dead).
         assert!(should_recreate_missing_window(
             false,
+            ok,
             Some(grace + 1),
             grace
         ));
         // No window but recreated WITHIN grace → hold (thrash-guard vs a crash-looping process).
-        assert!(!should_recreate_missing_window(false, Some(0), grace));
+        assert!(!should_recreate_missing_window(false, ok, Some(0), grace));
         assert!(!should_recreate_missing_window(
             false,
+            ok,
             Some(grace - 1),
+            grace
+        ));
+        // tmux list FAILED (tmux_list_ok=false) → NEVER recreate, even though the window "looks" missing:
+        // a failed `tmux list-windows` returns an empty list, which must NOT be read as "the window is
+        // dead" (else every live agent is mass-recreated over — the operator-reported context-destroyer).
+        assert!(!should_recreate_missing_window(false, false, None, grace));
+        assert!(!should_recreate_missing_window(
+            false,
+            false,
+            Some(grace + 1),
             grace
         ));
     }
