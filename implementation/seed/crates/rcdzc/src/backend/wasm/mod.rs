@@ -839,8 +839,21 @@ pub fn emit(
         .iter()
         .map(|e| (e.interface.clone(), e.op.clone()))
         .collect();
+    // A host op with a SPILLED compound result (`option<list<u8>>` etc.) makes the core IMPORT
+    // `"mem"."cabi_realloc"` for the result-lift retptr alloc — an extra FUNC import that shifts every
+    // DEFINED func's index +1. It MUST be in the `import_base` the GUEST FUNCS are selected against (the
+    // selection loop below), or their internal `Core::Call` abs indices land one short — calling the
+    // wrong-arity neighbouring func → "values remaining on stack" invalid wasm (the adv-cdz-invalid-wasm
+    // bug: a host-state guest that calls a heap-op recursion). Mirrors the bytes-provider path's `h + k +
+    // needs_realloc`. `0` when no spilled host result (byte-identical). The typed-interface wrapper path
+    // below relied on a LATER +1 that only reached the wrappers, not these guest bodies — folded in here so
+    // guest funcs, wrappers, and the serialized import section all agree on ONE count.
+    let needs_realloc = host_imports.iter().any(|h| h.spilled_result.is_some());
     let layout = layout
-        .with_import_base((imports.len() + host_imports.len() + extern_imports.len()) as u32)
+        .with_import_base(
+            (imports.len() + host_imports.len() + extern_imports.len() + needs_realloc as usize)
+                as u32,
+        )
         .with_host_order(host_order)
         .with_host_strings(host_strings)
         .with_static_bytes(static_bytes)
@@ -1259,14 +1272,12 @@ pub fn emit(
     // The wrappers' `def_abs` (computed inside `record_interface_export` from `layout.abs`) AND the emitted
     // core (`core_module_with_wrappers`) must BOTH see that shifted `import_base`, so bump it BEFORE building
     // the wrappers. Byte-identical when there is no compound host result.
-    let typed_needs_realloc = host_imports.iter().any(|h| h.spilled_result.is_some());
-    let typed_realloc_layout;
-    let typed_layout = if typed_needs_realloc {
-        typed_realloc_layout = layout.with_import_base(layout.import_base + 1);
-        &typed_realloc_layout
-    } else {
-        layout
-    };
+    // `layout.import_base` ALREADY accounts for the cabi_realloc import (folded in at emit-time above), so
+    // the wrapper layout is just `layout` — NO extra +1 here (that double-counted the shift for the
+    // wrappers while leaving the guest funcs one short, the adv-cdz-invalid-wasm bug). `typed_needs_realloc`
+    // still gates whether the ENVELOPE declares the realloc import (see `needs_realloc` in the host branch).
+    let typed_needs_realloc = needs_realloc;
+    let typed_layout = layout;
     if let Some(iface) = db.component_name.clone()
         && let Some(world_bytes) = db.wit_world.clone()
         && let Some((wrappers, typed)) =
