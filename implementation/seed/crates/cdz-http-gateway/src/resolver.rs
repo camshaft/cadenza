@@ -16,8 +16,9 @@
 //! (schema = that contract-id), which the edge decodes into an HTTP response; the resolver never sees them.
 
 use crate::drive::drive;
+use crate::session::{ControlSink, Sessions};
 use bytes::Bytes;
-use cdz_http_protocol::value;
+use cdz_http_protocol::{ControlUp, RequestContext, value};
 use cdz_platform::{
     ContractId, Delivered, Error, HostId, Message, Origin, ProgramHash, ProgramStore, ReducerId,
     ReducerKind, Request, Response, Runtime, SpawnContext,
@@ -25,6 +26,27 @@ use cdz_platform::{
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// The control-link back-channel a `control.send` effect uses (design §3), threaded through the drive tree.
+/// Cloned per dispatched subprogram with only `program` updated (the emitting handler's hash), so a
+/// `ControlUp` is stamped with the correct provenance at every depth. Cheap to clone (an mpsc sender, two
+/// `Arc`s, small fields).
+#[derive(Clone)]
+pub struct ControlCtx {
+    /// The write half of the control link — a `control.send` is forwarded UP through here as a `ControlUp`.
+    pub sink: ControlSink,
+    /// The pending-`control.send` registry — the emitting reducer is registered here so the control server's
+    /// `ControlDown` response folds back into it (correlated by `continuation_token`).
+    pub sessions: Sessions,
+    /// The `control.send` effect's canonical contract-id — a request on this id is forwarded, not dispatched.
+    pub control_send: ContractId,
+    /// This request's session id, stamped on each `ControlUp` so the control server can address responses.
+    pub session: Bytes,
+    /// The originating HTTP request context, so the control server can route without re-parsing the payload.
+    pub request: Arc<RequestContext>,
+    /// The `ProgramHash` of the reducer currently being driven — the `ControlUp`'s `program` provenance.
+    pub program: ProgramHash,
+}
 
 /// Routes the effects a driven program emits to their gateway actions, by canonical computed contract-id.
 /// Held behind an [`Arc`] so a dispatched subprogram is driven with a cheap child clone (recursion) and the
@@ -42,6 +64,9 @@ pub struct GatewayResolver {
     /// Remaining dispatch-recursion budget: a chain router → handler → sub-handler → … is bounded so a
     /// cyclic or runaway dispatch cannot recurse forever. `0` ⇒ no further dispatch (answered as missing).
     depth: usize,
+    /// The control-link back-channel for `control.send` (design §3), or `None` if the gateway drives without
+    /// a control link (unit tests, or a `control.send` with nowhere to go answers `MissingHandler`).
+    control: Option<ControlCtx>,
 }
 
 /// A boxed, `Send`, `'static` carry future — boxing makes the dispatch → drive → carry recursion DYNAMIC
@@ -63,6 +88,26 @@ impl GatewayResolver {
             dispatch_id,
             request_id,
             depth,
+            control: None,
+        })
+    }
+
+    /// A resolver as [`new`](Self::new) plus the control-link back-channel (design §3), so a `control.send`
+    /// effect is forwarded UP and its response folds back rather than answered `MissingHandler`.
+    #[must_use]
+    pub fn new_with_control(
+        store: Arc<dyn ProgramStore>,
+        dispatch_id: ContractId,
+        request_id: ContractId,
+        depth: usize,
+        control: ControlCtx,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            store,
+            dispatch_id,
+            request_id,
+            depth,
+            control: Some(control),
         })
     }
 
@@ -75,10 +120,21 @@ impl GatewayResolver {
                 let answer = self.run_dispatch::<R>(&request.payload).await;
                 let payload = answer.ok_or(Error::MissingHandler);
                 reply::<R>(&mailbox, request.id, request.continuation_token, payload);
+            } else if let Some(ctx) = self
+                .control
+                .as_ref()
+                .filter(|c| request.id == c.control_send)
+            {
+                // control.send (§3): forward the OPAQUE payload UP the control link as a `ControlUp`, and
+                // register the emitting reducer's mailbox so the control server's `ControlDown` response
+                // folds back as its `on_response` (correlated by `continuation_token`). FIRE-AND-FORGET —
+                // we send no reply here; the answer arrives later via the session registry. If the sink is
+                // closed (link down) the send is dropped and the reducer simply never hears back.
+                self.forward_control_send::<R>(ctx, &request, &mailbox);
             } else {
                 // Unknown effect (or dispatch budget exhausted): answer a runtime failure so the emitter's
-                // `on_response` folds it rather than blocking. control.send / ws.send / timers land here
-                // until their sinks exist.
+                // `on_response` folds it rather than blocking. ws.send / timers land here until their sinks
+                // exist; a `control.send` with no control link also lands here.
                 reply::<R>(
                     &mailbox,
                     request.id,
@@ -87,6 +143,32 @@ impl GatewayResolver {
                 );
             }
         })
+    }
+
+    /// Forward a `control.send` UP the control link (§3): register the emitting reducer's mailbox under the
+    /// effect's `continuation_token` (so the control server's `ControlDown` response folds back as its
+    /// `on_response`), then send the opaque payload UP as a [`ControlUp`] stamped with the emitting program's
+    /// hash, this request's session id, and the originating HTTP request context. Fire-and-forget: the reducer
+    /// keeps looping (`Continue`) and hears back only when the response arrives — never blocked here.
+    fn forward_control_send<R: Runtime>(
+        &self,
+        ctx: &ControlCtx,
+        request: &Request,
+        mailbox: &R::Sender,
+    ) {
+        let correlation = request.continuation_token.clone();
+        let mailbox = mailbox.clone();
+        ctx.sessions
+            .register(correlation.clone(), ctx.control_send, move |event| {
+                R::send(&mailbox, event);
+            });
+        let _ = ctx.sink.send(ControlUp {
+            program: Bytes::copy_from_slice(ctx.program.hash().as_bytes()),
+            session: ctx.session.clone(),
+            correlation,
+            payload: request.payload.clone(),
+            request: (*ctx.request).clone(),
+        });
     }
 
     /// Decode a `Dispatch { subprogram, input }` effect, spawn the subprogram from the store, drive it (with
@@ -123,12 +205,18 @@ impl GatewayResolver {
             },
             continuation_token: Bytes::new(),
         });
-        // The child drives the subprogram's own effects with one less dispatch budget.
+        // The child drives the subprogram's own effects with one less dispatch budget, and inherits the
+        // control back-channel with `program` updated to the subprogram's hash (so its `control.send`s are
+        // stamped with the right provenance).
         let child = Arc::new(Self {
             store: Arc::clone(&self.store),
             dispatch_id: self.dispatch_id,
             request_id: self.request_id,
             depth: self.depth - 1,
+            control: self.control.clone().map(|mut c| {
+                c.program = hash;
+                c
+            }),
         });
         let (_schema, reason) = drive::<R>(reducer, first, move |req, tx| {
             Arc::clone(&child).carry::<R>(req, tx)

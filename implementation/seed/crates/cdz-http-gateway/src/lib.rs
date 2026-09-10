@@ -43,6 +43,11 @@ pub mod resolver;
 /// HTTP edge, and serve. The `cdz-http-gateway` binary's startup path.
 pub mod boot;
 
+/// The control-link back-channel (design §3): the [`session::ControlSink`] a handler's `control.send` is
+/// forwarded UP through, and the [`session::Sessions`] registry that routes the control server's
+/// `ControlDown` response back into the awaiting reducer's mailbox (correlated by `continuation_token`).
+pub mod session;
+
 /// The wasmtime-backed program store (`host` feature, design §1/§4): wrap the control-supplied HTTP CAS in a
 /// [`cdz_platform::WasmProgramStore`] so the gateway instantiates a real content-addressed wasm handler per
 /// spawn. Gated so the codec/edge spine builds wasmtime-free; the gateway binary always enables `host`.
