@@ -7,10 +7,15 @@
 //! This slice implements the **`control.send`** effect (the 4th directive): a program emits it to send an
 //! opaque payload to the control server; the gateway wraps it in a [`ControlUp`](crate::codec::ControlUp)
 //! envelope stamped with the emitting program's provenance and hands it to a [`ControlSink`], then acks so
-//! the program's loop continues. Other effect classes — `dispatch` (fetch + drive a subprogram from the CAS)
-//! and timers — are later slices; an unrecognized effect answers `Err(MissingHandler)` so the program can
-//! react rather than the gateway guessing. (`http.response`/`deny` are terminal `Break` outcomes the edge
-//! reads off [`drive_loop`], not effects resolved here.)
+//! the program's loop continues; the **`dispatch`** effect (fetch + drive a subprogram from the CAS); and
+//! **timers** — any emitted `Request` with `deadline: Some(d)` (drive-contract §2: a timer is signalled by
+//! the deadline, not a dedicated contract). The gateway ARMS the deadline: a recognized effect races its
+//! answer against `d` (folds `Err(Timeout)` if it does not land in time, matching the platform's own
+//! `Request.deadline` semantics), and a request with no recognized effect is a PURE TIMER that simply fires
+//! `Err(Timeout)` after `d` — the program's scheduled wake-up. An unrecognized effect with NO deadline
+//! answers `Err(MissingHandler)` so the program can react rather than the gateway guessing.
+//! (`http.response`/`deny` are terminal `Break` outcomes the edge reads off [`drive_loop`], not effects
+//! resolved here.)
 
 use crate::codec::{ControlUp, decode_dispatch};
 use crate::loop_driver::{EffectResolver, drive_loop};
@@ -182,11 +187,29 @@ impl GatewayResolver {
             payload: Err(Error::MissingHandler),
         }
     }
-}
 
-#[async_trait]
-impl EffectResolver for GatewayResolver {
-    async fn resolve(&self, req: Request) -> Response {
+    /// The answer for a request whose deadline elapsed with no answer: `Err(Timeout)`, correlated. This is
+    /// both a bounded effect's timeout and a pure timer's fire — the program's `on_response` reads it off the
+    /// `continuation_token` and reacts (its wake-up landed / its effect gave up).
+    fn timed_out(req: &Request) -> Response {
+        Response {
+            id: req.id,
+            continuation_token: req.continuation_token.clone(),
+            payload: Err(Error::Timeout),
+        }
+    }
+
+    /// Whether this resolver performs a real effect for `id` (as opposed to a pure timer). A request whose
+    /// contract-id is not one of these carries no effect to perform; with a deadline it is a pure timer, and
+    /// with none it is [`unhandled`](Self::unhandled).
+    fn handles(&self, id: ContractId) -> bool {
+        id == control_send_contract() || id == dispatch_contract()
+    }
+
+    /// Route one effect to its gateway action, IGNORING any deadline — the deadline is armed by
+    /// [`resolve`](EffectResolver::resolve). `control.send` forwards up the link + acks; `dispatch` fetches +
+    /// drives a subprogram; anything else is `unhandled`.
+    async fn resolve_effect(&self, req: Request) -> Response {
         if req.id == control_send_contract() {
             // Wrap the program's opaque payload with provenance and forward it up the control link.
             self.control
@@ -205,6 +228,31 @@ impl EffectResolver for GatewayResolver {
     }
 }
 
+#[async_trait]
+impl EffectResolver for GatewayResolver {
+    async fn resolve(&self, req: Request) -> Response {
+        match req.deadline {
+            // No deadline: perform the effect and fold its answer (or MissingHandler) immediately.
+            None => self.resolve_effect(req).await,
+            // A deadline arms a timer for `d` (drive-contract §1/§2).
+            Some(d) if self.handles(req.id) => {
+                // A recognized effect: race its answer against the deadline — whichever lands first wins.
+                // `timeout` drops (cancels) the effect future on elapse, so no late answer ever folds.
+                match tokio::time::timeout(d, self.resolve_effect(req.clone())).await {
+                    Ok(resp) => resp,
+                    Err(_elapsed) => Self::timed_out(&req),
+                }
+            }
+            // A request with no recognized effect + a deadline is a PURE TIMER: nothing to perform, so it
+            // simply fires `Err(Timeout)` after `d` — the program's scheduled wake-up folds back.
+            Some(d) => {
+                tokio::time::sleep(d).await;
+                Self::timed_out(&req)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +261,7 @@ mod tests {
         HostId, Message, Notification, Origin, Outcome, Reducer, ReducerId, Request as PRequest,
     };
     use std::sync::Mutex;
+    use std::time::Duration;
 
     /// A `ControlSink` that captures every forwarded envelope for assertion.
     #[derive(Default)]
@@ -409,5 +458,139 @@ mod tests {
             .await;
         assert_eq!(resp.payload, Err(Error::MissingHandler));
         assert!(sink.0.lock().unwrap().is_empty(), "no envelope forwarded");
+    }
+
+    #[tokio::test]
+    async fn a_pure_timer_fires_timeout_after_its_deadline() {
+        // A program that schedules a wake-up: emit a deadline'd request on NO recognized effect contract
+        // (a pure timer), then Break once the timer fires it back as Err(Timeout).
+        struct Sleeper;
+        #[async_trait]
+        impl Reducer for Sleeper {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![PRequest {
+                        id: ContractId::of(b"cdz.timer.wake"),
+                        payload: Bytes::new(),
+                        continuation_token: Bytes::from_static(b"t1"),
+                        deadline: Some(Duration::from_millis(10)),
+                    }],
+                    Outcome::Continue,
+                )
+            }
+            async fn on_response(&mut self, r: Response) -> (Vec<PRequest>, Outcome) {
+                assert_eq!(r.payload, Err(Error::Timeout), "the timer fires as Timeout");
+                assert_eq!(r.continuation_token, Bytes::from_static(b"t1"));
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: ContractId::of(b"cdz.http.response"),
+                        reason: Bytes::from_static(b"woke"),
+                    },
+                )
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let resolver = GatewayResolver::new(
+            Bytes::new(),
+            Bytes::new(),
+            Arc::new(CapturingSink::default()),
+        );
+        let mut reducer = Sleeper;
+        let out = drive_loop(&mut reducer, msg(), &resolver, 100).await;
+        assert_eq!(out.map(|(_, r)| r), Ok(Bytes::from_static(b"woke")));
+    }
+
+    #[tokio::test]
+    async fn a_fast_effect_beats_a_generous_deadline() {
+        // A control.send with an ample deadline resolves normally (Ok ack) — a deadline does not spuriously
+        // time out an effect that answers in time.
+        struct Sender;
+        #[async_trait]
+        impl Reducer for Sender {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![PRequest {
+                        id: control_send_contract(),
+                        payload: Bytes::from_static(b"hi"),
+                        continuation_token: Bytes::from_static(b"c1"),
+                        deadline: Some(Duration::from_secs(30)),
+                    }],
+                    Outcome::Continue,
+                )
+            }
+            async fn on_response(&mut self, r: Response) -> (Vec<PRequest>, Outcome) {
+                assert!(r.payload.is_ok(), "the fast effect is acked, not timed out");
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: ContractId::of(b"cdz.http.response"),
+                        reason: Bytes::from_static(b"sent"),
+                    },
+                )
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let sink = Arc::new(CapturingSink::default());
+        let resolver = GatewayResolver::new(Bytes::new(), Bytes::new(), sink.clone());
+        let mut reducer = Sender;
+        let out = drive_loop(&mut reducer, msg(), &resolver, 100).await;
+        assert_eq!(out.map(|(_, r)| r), Ok(Bytes::from_static(b"sent")));
+        assert_eq!(sink.0.lock().unwrap().len(), 1, "the effect was forwarded");
+    }
+
+    #[tokio::test]
+    async fn a_slow_effect_times_out_and_is_cancelled() {
+        // A control.send whose forward is SLOWER than the deadline: the timer wins, the effect future is
+        // dropped (cancelled — nothing forwarded), and Err(Timeout) folds back.
+        struct SlowSink(Mutex<Vec<ControlUp>>);
+        #[async_trait]
+        impl ControlSink for SlowSink {
+            async fn send(&self, msg: ControlUp) {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.0.lock().expect("sink lock").push(msg);
+            }
+        }
+        struct Sender;
+        #[async_trait]
+        impl Reducer for Sender {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![PRequest {
+                        id: control_send_contract(),
+                        payload: Bytes::from_static(b"hi"),
+                        continuation_token: Bytes::from_static(b"c1"),
+                        deadline: Some(Duration::from_millis(10)),
+                    }],
+                    Outcome::Continue,
+                )
+            }
+            async fn on_response(&mut self, r: Response) -> (Vec<PRequest>, Outcome) {
+                assert_eq!(r.payload, Err(Error::Timeout), "the slow effect times out");
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: ContractId::of(b"cdz.http.response"),
+                        reason: Bytes::from_static(b"gave-up"),
+                    },
+                )
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let sink = Arc::new(SlowSink(Mutex::new(Vec::new())));
+        let resolver = GatewayResolver::new(Bytes::new(), Bytes::new(), sink.clone());
+        let mut reducer = Sender;
+        let out = drive_loop(&mut reducer, msg(), &resolver, 100).await;
+        assert_eq!(out.map(|(_, r)| r), Ok(Bytes::from_static(b"gave-up")));
+        assert!(
+            sink.0.lock().unwrap().is_empty(),
+            "the cancelled effect never completed its forward"
+        );
     }
 }
