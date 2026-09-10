@@ -7171,21 +7171,27 @@
             httpConformanceProgramsDir = ./implementation/seed/crates/cdz-http-conformance/programs;
             # Enumerate every guest dir (a dir with a reducer.cdz) under each category (handlers/, routers/) —
             # drop a `<category>/<name>/reducer.cdz` and it compiles, no flake edit.
-            httpConformancePrograms = builtins.concatMap
+            # program name → its compiled guest derivation ($out is the stripped .wasm file). The e2e run
+            # assembles these into CDZ_HARNESS_PROGRAMS_DIR as <name>.wasm.
+            httpConformanceProgramsByName = builtins.listToAttrs (builtins.concatMap
               (category:
                 let categoryDir = httpConformanceProgramsDir + "/${category}";
                 in map
-                  (name: mkCadenzaGuest {
-                    pname = "cdz-http-conformance-${name}";
-                    src = categoryDir + "/${name}/reducer.cdz";
-                    componentName = "cadenza:platform/guest";
+                  (name: {
+                    inherit name;
+                    value = mkCadenzaGuest {
+                      pname = "cdz-http-conformance-${name}";
+                      src = categoryDir + "/${name}/reducer.cdz";
+                      componentName = "cadenza:platform/guest";
+                    };
                   })
                   (builtins.filter
                     (n: (builtins.readDir categoryDir).${n} == "directory")
                     (builtins.attrNames (builtins.readDir categoryDir))))
               (builtins.filter
                 (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
-                (builtins.attrNames (builtins.readDir httpConformanceProgramsDir)));
+                (builtins.attrNames (builtins.readDir httpConformanceProgramsDir))));
+            httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
             cdzHttpConformanceProgramsCheck = pkgs.runCommand "cdz-http-conformance-programs"
               { guests = httpConformancePrograms; } ''
               echo "ok: http-conformance program guests compile (${toString (map (g: g.name) httpConformancePrograms)})" > "$out"
@@ -7274,6 +7280,57 @@
               done
               echo "ok: cdz-http-conformance-parse (cdz convert + --parse-only for every runs/*.ml)" > "$out"
             '';
+            # The full END-TO-END scenario run: build the driver, compile the run-spec ML → binary-AST, assemble
+            # the compiled programs, then run the driver against the three REAL SUT bins (CAS + mock + stock
+            # gateway) on loopback — the driver spawns them, seeds the CAS, injects the config/programs over the
+            # binary-AST admin channel, drives the run-spec's HTTP steps, and exits 0 iff every step's assertion
+            # held (operator: a stock gateway tested end to end, nothing internal mocked). One check per scenario.
+            mkHttpConformanceRun = { name, specFile }:
+              pkgs.runCommand "http-conformance-${name}"
+                {
+                  nativeBuildInputs = [ rustToolchain ];
+                  RUST_MIN_STACK = "67108864";
+                } ''
+                set -euo pipefail
+                export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+                cp -r --no-preserve=mode,ownership ${cdzHttpConformanceSrc} repo
+                chmod -R u+w repo
+                cd repo
+                export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+                cat > "$CARGO_HOME/config.toml" <<EOF
+                [source.crates-io]
+                replace-with = "vendored-sources"
+                [source.vendored-sources]
+                directory = "${cdzHttpConformanceVendor}"
+                EOF
+                ( cd implementation/seed/crates/cdz-http-conformance && cargo build --offline --locked --bin cdz-http-conformance )
+                driver="$PWD/implementation/seed/crates/cdz-http-conformance/target/debug/cdz-http-conformance"
+                # The run-spec: ML surface → binary-AST (the driver decodes this).
+                ${seedCompiler}/bin/cdz convert --from ml --to binary ${specFile} > "$TMPDIR/spec.bin"
+                # The programs dir: one compiled <name>.wasm per guest, the layout CDZ_HARNESS_PROGRAMS_DIR expects.
+                mkdir -p "$TMPDIR/programs"
+                ${pkgs.lib.concatStringsSep "\n                " (pkgs.lib.mapAttrsToList (n: drv: ''cp ${drv} "$TMPDIR/programs/${n}.wasm"'') httpConformanceProgramsByName)}
+                export CDZ_CAS_HTTP_BIN=${cdzCasHttpBin}/bin/cdz-cas-http
+                export CDZ_HTTP_CONTROL_MOCK_BIN=${cdzHttpControlMockBin}/bin/cdz-http-control-mock
+                export CDZ_HTTP_GATEWAY_BIN=${cdzHttpGatewayBin}/bin/cdz-http-gateway
+                export CDZ_HARNESS_PROGRAMS_DIR="$TMPDIR/programs"
+                "$driver" "$TMPDIR/spec.bin"
+                echo "ok: http-conformance '${name}' — scenario passed (exit 0)" > "$out"
+              '';
+            # Auto-discover the run-spec corpus: one `http-conformance-<name>` check per `runs/*.ml`, no manual
+            # wiring — drop a scenario `.ml` and it becomes a check (operator directive). A scenario that
+            # asserts a not-yet-implemented gateway behaviour is a FAILING acceptance test until that behaviour
+            # lands, then auto-greens (this vertical is the gateway rewrite's acceptance spec, test-first).
+            httpConformanceRunChecks = builtins.listToAttrs (map
+              (file: {
+                name = "http-conformance-${pkgs.lib.removeSuffix ".ml" file}";
+                value = mkHttpConformanceRun {
+                  name = pkgs.lib.removeSuffix ".ml" file;
+                  specFile = ./implementation/seed/crates/cdz-http-conformance/runs + "/${file}";
+                };
+              })
+              (builtins.filter (n: pkgs.lib.hasSuffix ".ml" n)
+                (builtins.attrNames (builtins.readDir ./implementation/seed/crates/cdz-http-conformance/runs))));
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7681,7 +7738,11 @@
             # The run-spec parse round-trip: every runs/*.ml compiles to binary-AST + the driver parses it.
             # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-parse`.
             cdz-http-conformance-parse = cdzHttpConformanceParseCheck;
-          }
+            # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
+            # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
+            # them, and drives the scenario against the stock gateway. STANDALONE — run via
+            # `nix build .#checks.<sys>.http-conformance-<name>`.
+          } // httpConformanceRunChecks
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
           # granularity + a precise red when one crate fails. These are cargoArtifacts-cached.

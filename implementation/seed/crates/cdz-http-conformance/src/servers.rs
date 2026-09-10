@@ -54,20 +54,22 @@ pub struct GatewayServer {
 ///
 /// # Errors
 /// The bin cannot be spawned, or it does not print its `listening on <addr>` line before the ready timeout.
-pub async fn spawn_cas(
-    bin: &Path,
-    listen: &str,
-    store_dir: Option<&str>,
-    write_credential: Option<&str>,
-) -> Result<CasServer, String> {
-    let mut envs: Vec<(&str, &str)> = Vec::new();
-    if let Some(dir) = store_dir {
-        envs.push(("CDZ_CAS_STORE_DIR", dir));
-    }
-    if let Some(cred) = write_credential {
-        envs.push(("CDZ_CAS_WRITE_CREDENTIAL", cred));
-    }
-    let mut proc = ServerProcess::spawn_with_env(bin, &[listen], &envs)?;
+pub async fn spawn_cas(bin: &Path, config: &[u8]) -> Result<CasServer, String> {
+    // The CAS bin is configured by a binary-AST `ServerConfig` document (operator: binary-AST is THE
+    // data-exchange format), not CLI flags. Write it to a temp file the bin reads via `CDZ_CAS_CONFIG`; the
+    // config carries the ephemeral listen (`127.0.0.1:0`) + the seed write credential.
+    let path = std::env::temp_dir().join(format!(
+        "cdz-cas-config-{}-{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, config)
+        .map_err(|e| format!("writing CAS config {}: {e}", path.display()))?;
+    let path = path.to_string_lossy().into_owned();
+    let mut proc = ServerProcess::spawn_with_env(bin, &[], &[("CDZ_CAS_CONFIG", &path)])?;
     let addr = proc.wait_for_ready(READY_TIMEOUT, parse_cas_ready).await?;
     Ok(CasServer { proc, addr })
 }

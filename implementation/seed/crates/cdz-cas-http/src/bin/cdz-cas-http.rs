@@ -57,8 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = Arc::new(server);
 
     let listener = TcpListener::bind(addr).await?;
+    // The REAL bound address (an ephemeral `:0` config resolves to a concrete port here). Print it on a plain
+    // stderr line so a supervising harness can learn the actual port (the conformance driver binds every SUT
+    // on `:0` and reads its port from this line — matching cdz-http-control-mock / cdz-http-gateway).
+    let bound = listener.local_addr()?;
+    eprintln!("cdz-cas-http: listening on {bound}");
     tracing::info!(
-        %addr,
+        %bound,
         reads = if config.read_credential.is_some() { "gated" } else { "open" },
         writes = if config.write_credential.is_some() { "enabled" } else { "disabled" },
         mem_cache = config.mem_cache_bytes.is_some(),
