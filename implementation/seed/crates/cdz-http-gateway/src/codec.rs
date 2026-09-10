@@ -113,10 +113,7 @@ pub struct RouteFrame {
 #[must_use]
 pub fn encode_request(req: &HttpRequest) -> Bytes {
     let mut b = Builder::new();
-    let method = {
-        let u = unit(&mut b);
-        bare_ctor(&mut b, req.method.ctor(), vec![u])
-    };
+    let method = encode_method(&mut b, req.method);
     let path = str_leaf(&mut b, &req.path);
     let query = str_leaf(&mut b, &req.query);
     let header_vals: Vec<StructId> = req
@@ -162,12 +159,23 @@ pub fn encode_response(resp: &HttpResponse) -> Bytes {
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
 
-/// A `Header` value — a single-constructor sum, so its value is the record directly (the `Header` ctor is
-/// elided).
+/// A `Method` value — the BARE `(<Ctor> unit)` form. `Value.encode` does NOT ascribe a variant value
+/// (empirically pinned: it renders `Method.Post` as `(Post unit)`, not `(: (Post unit) Method)`), and
+/// `Value.decode` reads it type-directed — so encoding it bare is what a request-reading guest decodes.
+fn encode_method(b: &mut Builder, method: Method) -> StructId {
+    let u = unit(b);
+    bare_ctor(b, method.ctor(), vec![u])
+}
+
+/// A `Header` value — a single-constructor sum (ctor elided → the record), ascribed with its nominal type
+/// name. `Value.encode` ascribes a RECORD value (`(: #record… Header)`) but NOT a variant/list/scalar; a
+/// request-reading guest's `Value.decode` rejects a bare-record header (the forward-path e2e proved the
+/// ascription is required here while the method's is not).
 fn encode_header(b: &mut Builder, h: &Header) -> StructId {
     let name = str_leaf(b, &h.name);
     let value = str_leaf(b, &h.value);
-    record(b, vec![("name", name), ("value", value)])
+    let rec = record(b, vec![("name", name), ("value", value)]);
+    ascribe(b, rec, "Header")
 }
 
 /// Encode a route table into the canonical binary-AST frame the control server ships (`http-route-table`
@@ -179,12 +187,11 @@ pub fn encode_route_table(routes: &[RouteFrame]) -> Bytes {
     let entries: Vec<StructId> = routes
         .iter()
         .map(|r| {
-            let u = unit(&mut b);
-            let method = bare_ctor(&mut b, r.method.ctor(), vec![u]);
+            let method = encode_method(&mut b, r.method);
             let path = str_leaf(&mut b, &r.path);
             let handler = bytes_leaf(&mut b, &r.handler);
             let contract = bytes_leaf(&mut b, &r.contract);
-            record(
+            let rec = record(
                 &mut b,
                 vec![
                     ("method", method),
@@ -192,7 +199,8 @@ pub fn encode_route_table(routes: &[RouteFrame]) -> Bytes {
                     ("handler", handler),
                     ("contract", contract),
                 ],
-            )
+            );
+            ascribe(&mut b, rec, "Route")
         })
         .collect();
     let list = list_value(&mut b, entries);

@@ -6743,6 +6743,14 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/http-hello/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The request-READING PoC handler (guests/http-echo/reducer.cdz): Value.decodes the delivered
+            # http-request + branches on the method — the forward-path (gateway encode -> guest Value.decode)
+            # e2e's handler. Building it is a compile gate; the e2e (control.rs) consumes it via CDZ_HTTP_ECHO_WASM.
+            cdzHttpGatewayEchoHandler = mkCadenzaGuest {
+              pname = "cdz-http-gateway-echo-handler";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/http-echo/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6780,6 +6788,7 @@
               # the compiled PoC handler component + the value-heap runtime + its NFC dep, seeded into the CAS so
               # the host composes the handler's `cadenza:runtime/heap` import. Unset → the test skips.
               CDZ_HTTP_POC_WASM=${cdzHttpGatewayPocHandler} \
+              CDZ_HTTP_ECHO_WASM=${cdzHttpGatewayEchoHandler} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7174,6 +7183,8 @@
             cdz-http-gateway = cdzHttpGatewayCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
+            # The request-reading echo handler guest (forward-path e2e's handler) compiles.
+            cdz-http-gateway-echo-handler = cdzHttpGatewayEchoHandler;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache

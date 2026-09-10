@@ -209,4 +209,71 @@ mod tests {
             .expect("send");
         assert_eq!(resp.status().as_u16(), 404, "an unshipped path is a 404");
     }
+
+    /// FORWARD-PATH PROOF: a handler that READS the request. The echo guest `Value.decode`s the delivered
+    /// `http-request` and answers a body naming the decoded method — so a 200 with `method=<M>` proves the
+    /// gateway's Rust `encode_request` produces bytes the guest's `Value.decode` accepts (the boundary in
+    /// the reading direction, which the request-ignoring PoC never exercised). Env-gated on the echo guest.
+    #[tokio::test]
+    async fn a_request_reading_handler_decodes_the_gateway_encoded_request() {
+        let (Ok(echo), Ok(rt), Ok(nfc)) = (
+            std::env::var("CDZ_HTTP_ECHO_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!("forward-path test: CDZ_HTTP_{{ECHO,RUNTIME,NFC}}_WASM unset — skipping");
+            return;
+        };
+        let read = |p: &str| Bytes::from(std::fs::read(p).expect("read component"));
+        let control = MockControlServer::new(vec![read(&rt), read(&nfc)]).route(
+            Method::Post,
+            "/m",
+            read(&echo),
+            Bytes::from_static(b"cdz-platform.http.request........."),
+        );
+        let edge = control
+            .build_edge(
+                HostId::of(b"edge-host"),
+                ReducerId::of(b"router"),
+                ContractId::of(b"cdz-platform.http.request"),
+            )
+            .await
+            .expect("edge");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(TokioIo::new(stream))
+                .await
+                .expect("handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let resp = sender
+            .send_request(
+                Request::builder()
+                    .method(hyper::Method::POST)
+                    .uri("/m")
+                    .header("host", "test")
+                    .body(Empty::<Bytes>::new())
+                    .expect("request"),
+            )
+            .await
+            .expect("send");
+        let status = resp.status().as_u16();
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(
+            status, 200,
+            "the request decoded (400 would mean Value.decode rejected it)"
+        );
+        assert_eq!(
+            body,
+            Bytes::from_static(b"method=POST"),
+            "the handler read the decoded method field"
+        );
+    }
 }
