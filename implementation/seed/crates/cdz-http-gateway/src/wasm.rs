@@ -773,4 +773,151 @@ mod tests {
             "routing is a pure fn of the passed-in table — a new table routes anew"
         );
     }
+
+    /// THE P3 CAPSTONE (DESIGN-http-outpost.md §3/§4): the WHOLE control-driven chain over a real socket with
+    /// real guests — a control server ships a route table over ws → the gateway DIALS it (`control_link`) →
+    /// builds a [`DynamicRouter`](crate::gateway::DynamicRouter) over the fetched table → a real client GET is
+    /// routed by the router-dynamic GUEST (folding the shipped table) to the bound handler, which the gateway
+    /// spawns → its response rides back to the socket. Nothing is baked: the route table comes off the wire,
+    /// routing is a wasm fold, and the handler is content-addressed. (Handler bytes are bound to the shipped
+    /// marker here; fetching them by hash from the CAS over the link is the next slice.) Skips when env unset.
+    #[tokio::test]
+    async fn control_shipped_table_routes_a_real_handler_over_a_socket() {
+        use crate::codec::{Method, RouteFrame, encode_route_table};
+        use crate::control_link::fetch_route_table;
+        use crate::edge::HttpEdge;
+        use crate::gateway::{DynamicRouter, Gateway};
+        use crate::runner::HandlerRunner;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use futures_util::SinkExt;
+        use http_body_util::{BodyExt, Empty};
+        use hyper::Request;
+        use hyper_util::rt::TokioIo;
+        use std::collections::HashMap;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (Ok(router_path), Ok(poc_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_DYNAMIC_WASM"),
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "control_shipped_table_routes_a_real_handler_over_a_socket: \
+                 CDZ_HTTP_ROUTER_DYNAMIC_WASM/POC_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read dynamic router guest");
+        let poc = std::fs::read(&poc_path).expect("read PoC handler");
+
+        // One CAS holds the router guest, the PoC handler, and the value-heap runtime + NFC.
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        cas.put(bytes::Bytes::from(poc.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let router_program = ProgramHash::of(&router);
+        let poc_program = ProgramHash::of(&poc);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // The route table the control server ships: GET / → the `root` handler marker.
+        let root_marker = bytes::Bytes::from_static(b"cdz-http.handler.root............");
+        let frame = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: root_marker.clone(),
+            contract: bytes::Bytes::from_static(b"cdz-platform.http.request........"),
+        }]);
+
+        // A stub ws control server: on connect, push the route-table frame (control server §3).
+        let ctl = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind control");
+        let ctl_addr = ctl.local_addr().expect("ctl addr");
+        let frame_for_server = frame.clone();
+        tokio::spawn(async move {
+            let (s, _) = ctl.accept().await.expect("ctl accept");
+            let mut ws = tokio_tungstenite::accept_async(s)
+                .await
+                .expect("ctl handshake");
+            let _ = ws.send(Message::Binary(frame_for_server.to_vec())).await;
+            let _ = ws.close(None).await;
+        });
+
+        // The gateway dials the control server and builds a DynamicRouter over the fetched table.
+        let frames = fetch_route_table(ctl_addr)
+            .await
+            .expect("control server ships a route table");
+        let mut handlers = HashMap::new();
+        handlers.insert(root_marker, poc_program); // bind the shipped marker → the real PoC handler
+        let dynamic = DynamicRouter::new(
+            router_program,
+            ContractId::of(b"cdz-platform.http.route-query"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"gateway"),
+            handlers,
+            encode_route_table(&frames),
+        );
+        let gateway = Gateway::with_dynamic_router(
+            dynamic,
+            HandlerRunner::new(HostId::of(b"edge-host"), ReducerId::of(b"gateway")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        async fn get(addr: std::net::SocketAddr, path: &str) -> (u16, bytes::Bytes) {
+            let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            let (mut sender, conn) =
+                hyper::client::conn::http1::handshake::<_, Empty<bytes::Bytes>>(TokioIo::new(
+                    stream,
+                ))
+                .await
+                .expect("handshake");
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let resp = sender
+                .send_request(
+                    Request::builder()
+                        .method(hyper::Method::GET)
+                        .uri(path)
+                        .header("host", "test")
+                        .body(Empty::<bytes::Bytes>::new())
+                        .expect("request"),
+                )
+                .await
+                .expect("send");
+            let status = resp.status().as_u16();
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            (status, body)
+        }
+
+        // GET / : the control-shipped table routes it (via the router guest) to the PoC handler → 200.
+        let (status, body) = get(addr, "/").await;
+        assert_eq!(
+            status, 200,
+            "the control-shipped route reaches the wasm handler"
+        );
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"hello from a wasm handler")
+        );
+
+        // GET /nope : not in the shipped table → the router's no-match → the gateway's 404 floor.
+        let (status, _) = get(addr, "/nope").await;
+        assert_eq!(status, 404, "an unrouted path is a 404 floor");
+    }
 }
