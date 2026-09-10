@@ -6792,6 +6792,11 @@
                 # path-deps cdz-platform (already below), so only its own src + manifest need adding here.
                 ./implementation/seed/crates/cdz-cas-http/src
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
+                # Path-dep: the shared control-plane wire contract (v-gateway-conformance). The gateway's
+                # boot path consumes its ControlConfig/ControlUp/ControlDown frames. It path-deps cadenza-ast
+                # + cdz-str (already staged below), so only its own src + manifest need adding here.
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src

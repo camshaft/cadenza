@@ -28,6 +28,10 @@
 //! from the design). Modules are added one landable slice at a time as the drive loop, effect resolver,
 //! boot-from-control, live-swap, and CasRef body resolution land.
 
+/// Boot-from-control (design §3/§4): dial the control server, apply the `ControlConfig` it ships, bind the
+/// HTTP edge, and serve. The `cdz-http-gateway` binary's startup path.
+pub mod boot;
+
 /// The HTTP content-addressed store client (design §3/§6): a [`cdz_platform::BlobStore`] backed by an HTTP
 /// CAS at the control-supplied URL + credential, so the gateway fetches programs, deps, and `CasRef` bodies
 /// by hash (base62 keys, digest-verified on 200). Re-exported from the shared `cdz-cas-http` crate

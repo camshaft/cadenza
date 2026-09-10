@@ -56,13 +56,24 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
 
-    // Boot-from-control (dial the control link, apply ControlConfig, serve by driving the root router,
-    // printing the bound listen addr) is wired in the boot-from-control slice of the rewrite. Until then
-    // the entry point validates its inputs and reports the gap rather than pretending to serve.
-    eprintln!(
-        "cdz-http-gateway: boot-from-control not yet wired (listen={:?} control={:?}); \
-         see DESIGN-http-outpost-drive-contract.md",
-        args.listen_addr, args.control_addr
-    );
-    ExitCode::FAILURE
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("cdz-http-gateway: could not start async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Dial control, apply the ControlConfig it ships, bind the HTTP edge, and serve (§3/§4). `run` only
+    // returns on a fatal error; a clean serve loops forever.
+    match runtime.block_on(cdz_http_gateway::boot::run(
+        &args.listen_addr,
+        &args.control_addr,
+    )) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cdz-http-gateway: boot failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
