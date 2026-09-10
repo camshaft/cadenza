@@ -9,6 +9,9 @@
 use cdz_http_control_mock::admin::{AdminCommand, AdminReply, decode_reply, encode_command};
 use std::net::SocketAddr;
 
+/// The run-spec parser — decode a conformance run's binary-AST value into a [`spec::RunSpec`].
+pub mod spec;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).

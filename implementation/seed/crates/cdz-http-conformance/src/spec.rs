@@ -1,0 +1,203 @@
+//! The run-spec PARSER (`DESIGN-http-outpost-conformance-harness.md` §3): decode a conformance run's
+//! binary-AST value (a `*.ml` Cadenza record, `cdz rewrite`-resolved + encoded) into the [`RunSpec`] the
+//! driver executes. Reads the record structure with the shared [`cdz_http_protocol::value`] toolkit — one
+//! codec, no JSON. The interpreter (process-orchestration + request execution) sits on top of this.
+//!
+//! The value shape (see `runs/README.md`):
+//!   { config = { root-router = "<name>", programs = [ { name, program }, … ] },
+//!     requests = [ { http = { method, path }, expect = { status?, body?, body-contains? } }, … ] }
+//! (control steps + prime-replies + headers/body + retry-until-match are added in following slices.)
+
+use cdz_http_protocol::value;
+
+/// A whole conformance run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSpec {
+    pub config: Config,
+    pub requests: Vec<Step>,
+}
+
+/// The SUT setup: which root router to ship + the programs to make resolvable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    /// The root-router program reference (a manifest name, or a `cdz rewrite`-resolved hash).
+    pub root_router: String,
+    /// The programs to seed into the CAS (routers + handlers), each `{ name, program }`.
+    pub programs: Vec<Program>,
+}
+
+/// One program the run makes resolvable: a `name` bound to a `program` reference (name or resolved path/hash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    pub name: String,
+    pub program: String,
+}
+
+/// One interaction in a run. (Control steps are a following slice; HTTP is the first.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// Make an HTTP request at the gateway + assert the response.
+    Http {
+        request: HttpRequest,
+        expect: Expect,
+    },
+}
+
+/// An HTTP request to make at the gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequest {
+    pub method: String,
+    pub path: String,
+}
+
+/// The inline assertion on an HTTP response. A `None` field asserts nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Expect {
+    /// Assert the exact status code.
+    pub status: Option<u16>,
+    /// Assert the exact response body bytes.
+    pub body: Option<Vec<u8>>,
+    /// Assert the response body CONTAINS this substring.
+    pub body_contains: Option<String>,
+}
+
+/// Decode a run-spec's binary-AST bytes into a [`RunSpec`], or `None` if malformed / missing a required field.
+#[must_use]
+pub fn parse_run_spec(bytes: &[u8]) -> Option<RunSpec> {
+    let arenas = value::decode(bytes)?;
+    let root = arenas.root;
+    let config = parse_config(&arenas, value::record_field(&arenas, root, "config")?)?;
+    let requests = value::read_list(&arenas, value::record_field(&arenas, root, "requests")?)?
+        .iter()
+        .map(|&s| parse_step(&arenas, s))
+        .collect::<Option<Vec<_>>>()?;
+    Some(RunSpec { config, requests })
+}
+
+fn parse_config(arenas: &value::Arenas, id: value::ValueId) -> Option<Config> {
+    let root_router = value::read_str(arenas, value::record_field(arenas, id, "root-router")?)?;
+    let programs = value::read_list(arenas, value::record_field(arenas, id, "programs")?)?
+        .iter()
+        .map(|&p| {
+            Some(Program {
+                name: value::read_str(arenas, value::record_field(arenas, p, "name")?)?,
+                program: value::read_str(arenas, value::record_field(arenas, p, "program")?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Config {
+        root_router,
+        programs,
+    })
+}
+
+fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
+    // Only the `http` step for now; a step is a record with an `http` field + an optional `expect`.
+    let http = value::record_field(arenas, id, "http")?;
+    let request = HttpRequest {
+        method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
+        path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
+    };
+    let expect = match value::record_field(arenas, id, "expect") {
+        Some(e) => parse_expect(arenas, e)?,
+        None => Expect::default(),
+    };
+    Some(Step::Http { request, expect })
+}
+
+fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
+    // Every field is optional; a present field must parse (a malformed present field → None).
+    let status = match value::record_field(arenas, id, "status") {
+        Some(s) => Some(u16::try_from(value::read_uint(arenas, s)?).ok()?),
+        None => None,
+    };
+    let body = match value::record_field(arenas, id, "body") {
+        Some(b) => Some(value::read_bytes(arenas, b)?.to_vec()),
+        None => None,
+    };
+    let body_contains = match value::record_field(arenas, id, "body-contains") {
+        Some(bc) => Some(value::read_str(arenas, bc)?),
+        None => None,
+    };
+    Some(Expect {
+        status,
+        body,
+        body_contains,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdz_http_protocol::value::{
+        ValueBuilder, bytes_leaf, finish, list_value, record, str_leaf, uint_leaf,
+    };
+
+    /// Build the binary-AST for a run-spec matching `runs/route-to-handler.ml`'s first request.
+    fn sample_run_spec_bytes() -> bytes::Bytes {
+        let mut b = ValueBuilder::new();
+        // config = { root-router = "router", programs = [ { name = "router", program = "router" } ] }
+        let rr = str_leaf(&mut b, "router");
+        let p_name = str_leaf(&mut b, "router");
+        let p_prog = str_leaf(&mut b, "router");
+        let prog = record(&mut b, vec![("name", p_name), ("program", p_prog)]);
+        let programs = list_value(&mut b, vec![prog]);
+        let config = record(&mut b, vec![("programs", programs), ("root-router", rr)]);
+        // requests = [ { http = { method = "GET", path = "/" },
+        //               expect = { status = 200, body = b"hello" } } ]
+        let m = str_leaf(&mut b, "GET");
+        let path = str_leaf(&mut b, "/");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        let st = uint_leaf(&mut b, 200);
+        let body = bytes_leaf(&mut b, b"hello");
+        let expect = record(&mut b, vec![("body", body), ("status", st)]);
+        let step = record(&mut b, vec![("expect", expect), ("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        finish(b, root, "RunSpec")
+    }
+
+    #[test]
+    fn parses_a_config_and_an_http_step_with_expect() {
+        let spec = parse_run_spec(&sample_run_spec_bytes()).expect("run-spec parses");
+        assert_eq!(spec.config.root_router, "router");
+        assert_eq!(spec.config.programs.len(), 1);
+        assert_eq!(spec.config.programs[0].name, "router");
+        assert_eq!(spec.requests.len(), 1);
+        let Step::Http { request, expect } = &spec.requests[0];
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/");
+        assert_eq!(expect.status, Some(200));
+        assert_eq!(expect.body.as_deref(), Some(&b"hello"[..]));
+        assert_eq!(expect.body_contains, None);
+    }
+
+    #[test]
+    fn a_step_with_no_expect_defaults_to_asserting_nothing() {
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "GET");
+        let path = str_leaf(&mut b, "/health");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        let step = record(&mut b, vec![("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { expect, .. } = &spec.requests[0];
+        assert_eq!(expect, &Expect::default());
+    }
+
+    #[test]
+    fn malformed_or_incomplete_is_none() {
+        assert!(parse_run_spec(b"garbage").is_none());
+        // Missing `requests` → None.
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let root = record(&mut b, vec![("config", config)]);
+        assert!(parse_run_spec(&finish(b, root, "RunSpec")).is_none());
+    }
+}
