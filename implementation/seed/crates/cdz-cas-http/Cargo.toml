@@ -37,7 +37,7 @@ bytes = "1"
 # The HTTP SERVER: a hyper HTTP/1 server serves the store. hyper is driven via hyper-util's TokioIo;
 # http-body-util supplies the `Full` body, `Limited` (the per-PUT body ceiling) + `BodyExt::collect`.
 # (No hyper `client` feature — the CLIENT is reqwest, below.)
-tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync", "fs"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"

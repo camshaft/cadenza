@@ -12,10 +12,12 @@
 
 pub mod auth;
 pub mod client;
+pub mod disk;
 pub mod error;
 pub mod server;
 
 pub use client::HttpBlobStore;
+pub use disk::DiskBlobStore;
 pub use error::CasError;
 pub use server::{CasServer, DEFAULT_MAX_BODY_BYTES};
 
