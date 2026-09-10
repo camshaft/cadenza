@@ -29,7 +29,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # The pure compiler core and the front-end reader/printer — both already proven to build for
 # wasm32-unknown-unknown (their lib cores carry no native-only dependency).
-rcdzc = { path = "../rcdzc" }
+# `default-features = false` drops rcdzc's `validate-output` feature (the host-CLI `wasmparser` output
+# self-check): the browser compiler drives the library API (`compile_component`), never the file-writing
+# `cli` path, so it needs neither the validator nor `wasmparser`'s weight in the wasm32 build.
+rcdzc = { path = "../rcdzc", default-features = false }
 cadenza-syntax = { path = "../cadenza-syntax" }
 
 # The JS <-> wasm type bridge. `wasm-pack build --target web` runs the matching wasm-bindgen CLI over

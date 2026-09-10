@@ -86,17 +86,29 @@ version = "0.1"
 default-features = false
 features = ["std"]
 
+[features]
+# `validate-output` (ON by default) links `wasmparser` for the HOST CLI output self-check (see below).
+# It is OPTIONAL so the STANDALONE BROWSER-COMPILER workspaces (`cdz-wasm`, `rcdzc-wasm`) can depend on
+# `rcdzc` with `default-features = false` and NOT pull `wasmparser` into their wasm32 build: those build
+# `rcdzc` for the browser and drive it through the LIBRARY API (`compile_component`), never the file-
+# writing `cli` path, so they need neither the validator nor its weight. The native CLI front-ends
+# (`cdz`, `rcdzc-cli`) take default features → validation on. (This also keeps `rcdzc`'s compile core
+# `wasmparser`-free under the "pure library" directive whichever way it is built.)
+default = ["validate-output"]
+validate-output = ["dep:wasmparser"]
+
 [dependencies.wasmparser]
-# OUTPUT SELF-VALIDATION at the HOST CLI boundary (`cli::run_with_specs`), NOT the compile path. The
-# hand-written wasm encoder can, on a not-yet-fixed codegen path, emit a `"component"` artifact that
-# `cdz compile` accepts but that fails validation and is then silently rejected far downstream at
-# `wasmtime::Component::new` (returns None) — the adv-cdz-invalid-wasm latent hazard. `cli` validates
-# the produced component with `wasmparser` before writing it and errors (CDZ0910) instead of shipping
-# an invalid module. Used ONLY by the `cli` host driver (which already does file I/O + is not part of
-# the Cadenza self-host port); the PORT-RELEVANT compile core (resolve/infer/lower/eval/backend) stays
-# wasmparser-free, so this does not compromise "the compiler is a pure library". `wasm-encoder` remains
-# a TESTS-ONLY byte oracle in `[dev-dependencies]` — only the read-side validator is promoted here.
+# OUTPUT SELF-VALIDATION at the HOST CLI boundary (`cli::run_with_specs`), NOT the compile path — gated
+# behind the default `validate-output` feature (above). The hand-written wasm encoder can, on a not-yet-
+# fixed codegen path, emit a `"component"` artifact that `cdz compile` accepts but that fails validation
+# and is then silently rejected far downstream at `wasmtime::Component::new` (returns None) — the
+# adv-cdz-invalid-wasm latent hazard. `cli` validates the produced component with `wasmparser` before
+# writing it and errors (CDZ0910) instead of shipping an invalid module. Used ONLY by the `cli` host
+# driver (file I/O, not part of the Cadenza self-host port); the PORT-RELEVANT compile core stays
+# `wasmparser`-free. OPTIONAL so the browser workspaces can turn it off (see `[features]`). `wasm-encoder`
+# remains a TESTS-ONLY byte oracle in `[dev-dependencies]`.
 version = "0.239"
+optional = true
 
 # BUILD-TIME ONLY (build.rs): regenerates the bundled verify_kernel.bin from verify_kernel.cdz via the
 # REAL cadenza-syntax codec (codec::encode(sexpr::read(...))) into OUT_DIR, so there is no committed

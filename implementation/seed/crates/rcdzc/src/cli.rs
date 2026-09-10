@@ -35,11 +35,50 @@ use std::process::ExitCode;
 /// error (function index + offset + reason), which the CLI surfaces verbatim so a codegen bug is
 /// pinpointed rather than opaque. A named fn so the self-check is unit-testable without a full compile,
 /// and so the ONE `wasmparser` use in the compile path is a single reviewable choke point (the
-/// port-relevant compile core never references it — `Cargo.toml`).
+/// port-relevant compile core never references it — `Cargo.toml`). `validate-output` feature only.
+#[cfg(feature = "validate-output")]
 pub(crate) fn validate_component_bytes(bytes: &[u8]) -> Result<(), String> {
     let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
     v.validate_all(bytes).map(|_| ()).map_err(|e| e.to_string())
 }
+
+/// The OUTPUT SOUNDNESS SELF-CHECK: validate every produced wasm `"component"` artifact before it is
+/// written. The hand-written encoder can, on a not-yet-fixed codegen path (e.g. a host-capability guest
+/// that calls a heap-op recursion — the adv-cdz-invalid-wasm bug), emit a component the compile ACCEPTS
+/// but that fails validation and would be silently rejected far downstream at `wasmtime::Component::new`
+/// (returns `None`, with no signal at the guest's own compile). Catch it HERE — at the CLI boundary that
+/// writes the artifact — and push a CDZ0910 error so the write loop refuses to emit the bad bytes,
+/// rather than shipping an invalid module. Only `"component"` artifacts (not `rust`/`ast`/`dwarf`);
+/// validating a small component is microseconds. Host-side only + separate from the corpus/library API,
+/// so it adds no corpus-gate surface — it protects the `cdz compile` guest-authoring path specifically.
+#[cfg(feature = "validate-output")]
+fn validate_wasm_outputs(out: &mut crate::CompileOutput) {
+    let component_kind = Target::Wasm.artifact_kind();
+    let invalid: Vec<crate::Diagnostic> = out
+        .artifacts
+        .iter()
+        .filter(|a| a.kind == component_kind)
+        .filter_map(|a| {
+            validate_component_bytes(&a.bytes).err().map(|e| crate::Diagnostic {
+                severity: Severity::Error,
+                code: Some(crate::diag::Code::InvalidWasmEmitted.code().to_string()),
+                message: format!(
+                    "internal: the compiler emitted a WebAssembly component that fails validation: \
+                     {e}. This is a codegen defect — the component would be rejected by the runtime at \
+                     instantiation, so the artifact was NOT written. Please report it."
+                ),
+                node: None,
+                fix: None,
+            })
+        })
+        .collect();
+    out.diagnostics.extend(invalid);
+}
+
+/// No-op when `validate-output` is off — the browser-compiler workspaces (`cdz-wasm`, `rcdzc-wasm`)
+/// build `rcdzc` this way and never link `wasmparser`. They drive the library API, not this write path.
+#[cfg(not(feature = "validate-output"))]
+fn validate_wasm_outputs(_out: &mut crate::CompileOutput) {}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_specs(
@@ -289,37 +328,11 @@ pub fn run_prepared_with_overflow(
         compile_with_opt_and_overflow(&inputs, &targets, opt_level, overflow)
     });
 
-    // OUTPUT SOUNDNESS SELF-CHECK: a produced wasm `"component"` artifact MUST pass validation before we
-    // write it. The hand-written encoder can, on a not-yet-fixed codegen path (e.g. a host-capability
-    // guest that calls a heap-op recursion — the adv-cdz-invalid-wasm bug), emit a component that the
-    // compile ACCEPTS but that fails `wasmparser` validation and would be silently rejected far
-    // downstream at `wasmtime::Component::new`/instantiation (which returns `None`, with no signal at the
-    // guest's own compile). Catch it HERE — at the CLI boundary that writes the artifact — and turn it
-    // into a loud CDZ0910 error that refuses to write the bad bytes, rather than shipping an invalid
-    // module. Runs only for the `"component"` kind (not `rust`/`ast`/`dwarf`); validation of a small
-    // component is microseconds. This is a host-side check (the port-relevant compile core never touches
-    // `wasmparser`, per the `Cargo.toml` note) and is separate from the corpus/library API, so it adds no
-    // corpus-gate surface — it protects the `cdz compile` guest-authoring path specifically.
-    let component_kind = Target::Wasm.artifact_kind();
-    let invalid: Vec<crate::Diagnostic> = out
-        .artifacts
-        .iter()
-        .filter(|a| a.kind == component_kind)
-        .filter_map(|a| {
-            validate_component_bytes(&a.bytes).err().map(|e| crate::Diagnostic {
-                severity: Severity::Error,
-                code: Some(crate::diag::Code::InvalidWasmEmitted.code().to_string()),
-                message: format!(
-                    "internal: the compiler emitted a WebAssembly component that fails validation: \
-                     {e}. This is a codegen defect — the component would be rejected by the runtime at \
-                     instantiation, so the artifact was NOT written. Please report it."
-                ),
-                node: None,
-                fix: None,
-            })
-        })
-        .collect();
-    out.diagnostics.extend(invalid);
+    // OUTPUT SOUNDNESS SELF-CHECK (host CLI only): a produced wasm `"component"` artifact MUST pass
+    // validation before we write it — see `validate_wasm_outputs`. Gated behind the default
+    // `validate-output` feature; the browser-compiler workspaces build with it OFF (no-op stub) so they
+    // never link `wasmparser`.
+    validate_wasm_outputs(&mut out);
 
     // `--emit-diagnostics <path>`: write the DIAGNOSTICS wire as a side artifact BEFORE reporting/writing,
     // UNCONDITIONALLY (even on an error/decline compile — the fault set is exactly what a caller wants
@@ -662,6 +675,7 @@ mod tests {
     /// it — it is what turns a silent invalid-wasm emit (a host-capability guest that calls a heap-op
     /// recursion — the adv-cdz-invalid-wasm hazard) into a loud compile error that refuses to write the
     /// bad artifact, instead of a `None` at `wasmtime::Component::new` far from the guest's compile.
+    #[cfg(feature = "validate-output")]
     #[test]
     fn output_self_check_accepts_a_valid_component_and_rejects_invalid_bytes() {
         // A trivial pure program compiles to a VALID component — the self-check must pass it.
