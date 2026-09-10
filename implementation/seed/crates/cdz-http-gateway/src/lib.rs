@@ -31,6 +31,11 @@ pub mod edge;
 pub mod gateway;
 pub mod runner;
 
+/// The per-connection WebSocket session driver (design §6): folds `ws-event`s through a session reducer
+/// and collects the `ws-send` frames it pushes. Socket-independent (generic over [`cdz_platform::ProgramStore`]);
+/// the hyper WebSocket upgrade + framing that feeds it is a later slice.
+pub mod ws;
+
 /// The wasmtime-backed handler store — behind the `host` feature (off by default so the core spine build
 /// stays wasmtime-free). Reuses `cdz-platform`'s `WasmProgramStore` (design §0.1).
 #[cfg(feature = "host")]
