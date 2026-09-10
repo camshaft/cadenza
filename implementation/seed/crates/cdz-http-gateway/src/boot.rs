@@ -10,7 +10,7 @@
 
 use crate::control::assemble_edge;
 use bytes::Bytes;
-use cdz_platform::{ContractId, HostId, ReducerId};
+use cdz_platform::{HostId, ReducerId};
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -32,8 +32,7 @@ pub fn load_deployment(dir: &Path) -> std::io::Result<(Bytes, Vec<Bytes>)> {
 }
 
 /// Boot + serve a deployment from `dir` on `addr`, blocking until an accept error. The gateway's node
-/// identity + the delivered request contract-id are v0 defaults (per-route contract-ids from the route
-/// table are a follow-up).
+/// identity is a v0 default; each route's delivered contract-id comes from the route-table frame.
 ///
 /// # Errors
 /// An I/O error loading the deployment or binding the listener, or `InvalidData` if the route-table frame
@@ -46,7 +45,6 @@ pub async fn serve(addr: SocketAddr, dir: &Path) -> std::io::Result<()> {
         &components,
         HostId::of(b"cdz-http-gateway"),
         ReducerId::of(b"router"),
-        ContractId::of(b"cdz-platform.http.request"),
     )
     .await
     .ok_or_else(|| {
