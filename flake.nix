@@ -6086,6 +6086,19 @@
 
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
+        # packages.cdz / packages.cdz-run — the delegate-WIRED front-end toolchain as installable, pinnable
+        # derivations (the SAME cdzHandWrapper/cdzRunHandWrapper that apps.cdz/apps.cdz-run run). Distinct from
+        # both neighbors: packages.seed-compiler is the BARE bin (front-end `cdz convert`/`fmt`/`query` work, but
+        # `cdz compile`/`run`/`calc` find no CDZ_COMPILE_BIN/CDZ_STORE/CDZ_RUN_BIN/CDZ_CALC_BIN and fall back to a
+        # slow/failing nix-or-cargo shell-out), and the cdz-shell-wrappers/apps.* entrypoints REBUILD-on-edit from
+        # the worktree. These are frozen store paths instead: `nix build .#cdz --out-link <path>` yields a
+        # GC-rooted, delegate-complete `cdz` to symlink onto PATH — a STABLE install that survives
+        # `nix-collect-garbage` (a bare store symlink does NOT) and re-revs with one rebuild. Every subcommand
+        # works (convert/fmt/query AND compile/run/calc/run-rust) because the wrapper bakes in the warm nix
+        # compiler + component store + rust rlibs (caller-override-honored via :-). No new build: reuses the
+        # already-defined wrappers, so this only exposes them as `packages.*`.
+        packages.cdz = cdzHandWrapper;
+        packages.cdz-run = cdzRunHandWrapper;
         # packages.cdz-shell-wrappers — the 7 all-nix entrypoint PATH wrappers (cdz/cdz-run/cdz-compile/
         # roundtrip/gate/fast-gate/cdz-help) as a single symlinkJoin, so v-fleet-tooling's window.sh can
         # `ln -sf result/bin/* ~/.local/bin` (a snapshot-PATH dir) each boot — reaching the agents' zsh
