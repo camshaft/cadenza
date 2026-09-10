@@ -701,4 +701,153 @@ mod tests {
         // (Err(MissingHandler)), so the leaf is NEVER reached and the bound is observable at the top.
         assert_eq!(drive_top(1).await, Bytes::from_static(b"depth-exhausted"));
     }
+
+    // --- control.send provenance follows the dispatch chain ----------------------------------------------
+
+    /// A reducer that emits a `control.send` (with a fixed payload) on its first message, then Breaks on the
+    /// ack — proving whatever provenance the resolver driving it holds is stamped on the forwarded envelope.
+    struct SubSender;
+    #[async_trait]
+    impl Reducer for SubSender {
+        async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+            (
+                vec![PRequest {
+                    id: control_send_contract(),
+                    payload: Bytes::from_static(b"from-sub"),
+                    continuation_token: Bytes::from_static(b"cs"),
+                    deadline: None,
+                }],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<PRequest>, Outcome) {
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz.http.response"),
+                    reason: Bytes::from_static(b"sub-done"),
+                },
+            )
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    /// A reducer that dispatches its first message to `target`, then Breaks with the answer.
+    struct DispatchTo {
+        target: Bytes,
+    }
+    #[async_trait]
+    impl Reducer for DispatchTo {
+        async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+            use crate::codec::{DispatchEffect, encode_dispatch};
+            (
+                vec![PRequest {
+                    id: dispatch_contract(),
+                    payload: encode_dispatch(&DispatchEffect {
+                        subprogram: self.target.clone(),
+                        input: Bytes::new(),
+                    }),
+                    continuation_token: Bytes::from_static(b"disp"),
+                    deadline: None,
+                }],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<PRequest>, Outcome) {
+            (
+                vec![],
+                Outcome::Break {
+                    schema: ContractId::of(b"cdz.http.response"),
+                    reason: r.payload.unwrap_or_default(),
+                },
+            )
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dispatched_subprograms_control_send_carries_its_own_provenance() {
+        use cdz_platform::testing::program::Store;
+        // A router dispatches to SubSender, which emits a control.send. The forwarded envelope must be
+        // stamped with the SUBPROGRAM's ProgramHash + the shared session — not the router's identity.
+        let sub = ProgramHash::of(b"sub");
+        let sub_bytes = Bytes::copy_from_slice(sub.hash().as_bytes());
+        let mut store = Store::new();
+        store.register(sub, || Box::new(SubSender));
+        let store: Arc<dyn ProgramStore> = Arc::new(store);
+
+        let sink = Arc::new(CapturingSink::default());
+        let resolver = GatewayResolver::new(
+            Bytes::from_static(b"router-hash"),
+            Bytes::from_static(b"sess-9"),
+            sink.clone(),
+        )
+        .with_dispatch(store, ContractId::of(b"cdz.http.request"), 4);
+        let mut router = DispatchTo {
+            target: sub_bytes.clone(),
+        };
+        let out = drive_loop(&mut router, msg(), &resolver, 100).await;
+        assert_eq!(out.map(|(_, r)| r), Ok(Bytes::from_static(b"sub-done")));
+
+        let captured = sink.0.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "the subprogram's control.send is forwarded"
+        );
+        assert_eq!(
+            captured[0].program, sub_bytes,
+            "stamped with the SUBPROGRAM's provenance, not the router's"
+        );
+        assert_eq!(
+            captured[0].session,
+            Bytes::from_static(b"sess-9"),
+            "the session is the shared connection id"
+        );
+        assert_eq!(captured[0].payload, Bytes::from_static(b"from-sub"));
+    }
+
+    #[tokio::test]
+    async fn control_send_provenance_follows_a_nested_dispatch_chain() {
+        use cdz_platform::testing::program::Store;
+        // router → mid → SubSender: the control.send SubSender emits (two dispatch levels deep) is still
+        // stamped with SubSender's own hash — provenance follows the full chain, one decrement per level.
+        let sub = ProgramHash::of(b"sub");
+        let sub_bytes = Bytes::copy_from_slice(sub.hash().as_bytes());
+        let mid = ProgramHash::of(b"mid");
+        let mid_bytes = Bytes::copy_from_slice(mid.hash().as_bytes());
+        let mut store = Store::new();
+        store.register(sub, || Box::new(SubSender));
+        {
+            let sub_bytes = sub_bytes.clone();
+            store.register(mid, move || {
+                Box::new(DispatchTo {
+                    target: sub_bytes.clone(),
+                })
+            });
+        }
+        let store: Arc<dyn ProgramStore> = Arc::new(store);
+
+        let sink = Arc::new(CapturingSink::default());
+        let resolver = GatewayResolver::new(
+            Bytes::from_static(b"router-hash"),
+            Bytes::from_static(b"sess-9"),
+            sink.clone(),
+        )
+        .with_dispatch(store, ContractId::of(b"cdz.http.request"), 8);
+        let mut router = DispatchTo { target: mid_bytes };
+        let out = drive_loop(&mut router, msg(), &resolver, 100).await;
+        assert_eq!(out.map(|(_, r)| r), Ok(Bytes::from_static(b"sub-done")));
+
+        let captured = sink.0.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].program, sub_bytes,
+            "two levels deep, provenance is still the emitting subprogram's own hash"
+        );
+    }
 }
