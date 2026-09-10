@@ -51,6 +51,26 @@ impl S3BlobStore {
         Self::with_client(Client::new(&config), bucket, prefix)
     }
 
+    /// Connect from config parts: the default credential chain (honoring configured profiles), with an
+    /// optional `region` and `endpoint` override (the latter for an S3-compatible endpoint / localstack).
+    pub async fn from_config(
+        bucket: &str,
+        prefix: &str,
+        region: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> Self {
+        ensure_aws_lc_provider();
+        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+        if let Some(region) = region {
+            loader = loader.region(aws_config::Region::new(region.to_string()));
+        }
+        if let Some(endpoint) = endpoint {
+            loader = loader.endpoint_url(endpoint.to_string());
+        }
+        let config = loader.load().await;
+        Self::with_client(Client::new(&config), bucket, prefix)
+    }
+
     /// Build from a preconfigured [`Client`] — for a custom endpoint (localstack), region, or credentials.
     #[must_use]
     pub fn with_client(

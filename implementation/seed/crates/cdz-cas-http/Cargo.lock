@@ -645,6 +645,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "bytes",
+ "cadenza-ast",
  "cdz-platform",
  "http-body-util",
  "hyper 1.11.1",

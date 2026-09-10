@@ -12,6 +12,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod config;
 pub mod disk;
 pub mod disk_cache;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod server;
 pub mod tiered;
 
 pub use client::HttpBlobStore;
+pub use config::ServerConfig;
 pub use disk::DiskBlobStore;
 pub use disk_cache::BoundedDiskCache;
 pub use error::CasError;

@@ -32,6 +32,11 @@ publish = false
 # and `InMemoryBlobStore` (the swappable default backing store). DEFAULT features only — this is the light
 # trait/types layer, NOT the heavy `host` (wasmtime) feature; the CAS server needs no runtime.
 cdz-platform = { path = "../cdz-platform" }
+# The canonical Cadenza value-model + binary-AST codec — the server config is a binary-AST document
+# (operator: binary-AST is THE data-exchange format; the caller authors config in any surface syntax and
+# converts to binary). We decode it into a `ServerConfig` and assemble the tier stack. Light path-dep
+# (default features; only num-bigint + unicode-normalization, both std) already used across the seed.
+cadenza-ast = { path = "../cadenza-ast" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — a blob's bytes, the request/response bodies.
 bytes = "1"
 # The HTTP SERVER: a hyper HTTP/1 server serves the store. hyper is driven via hyper-util's TokioIo;
