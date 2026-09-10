@@ -36,6 +36,12 @@ pub mod runner;
 /// the hyper WebSocket upgrade + framing that feeds it is a later slice.
 pub mod ws;
 
+/// The control-link client (design §2/§3, P3): dials the control server over a WebSocket and receives its
+/// route table as a `cadenza-ast` frame. Wasm-free transport (tokio + tokio-tungstenite + the frame codec),
+/// so it sits outside the `host` feature — the real ws-dialed counterpart of the in-process mock control
+/// server ([`control`]).
+pub mod control_link;
+
 /// The wasmtime-backed handler store — behind the `host` feature (off by default so the core spine build
 /// stays wasmtime-free). Reuses `cdz-platform`'s `WasmProgramStore` (design §0.1).
 #[cfg(feature = "host")]
