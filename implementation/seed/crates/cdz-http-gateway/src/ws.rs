@@ -89,7 +89,15 @@ impl WsSession {
 
     /// Deliver one `ws-event` to the session and collect the `ws-send` frames it emits (its requests on the
     /// `ws-send` contract-id, decoded). A `Break` outcome closes the session.
+    ///
+    /// A CLOSED session folds nothing further: once the reducer has `Break`ed, delivering another event
+    /// (e.g. the frame loop's final `Disconnect` after a guest closed itself on a `Frame`) would be a
+    /// spurious extra `on_message` into a session that already ended — it could emit stray pushes or, for a
+    /// guest that assumes a single close, misbehave. So a fold on a closed session is a no-op.
     async fn deliver(&mut self, event: WsEvent) -> Vec<WsSend> {
+        if !self.open {
+            return Vec::new();
+        }
         let (requests, outcome) = self
             .reducer
             .on_message(Message {
@@ -194,6 +202,76 @@ mod tests {
         // Disconnect closes the session.
         let _ = session.close().await;
         assert!(!session.is_open(), "disconnect closes the session");
+    }
+
+    #[tokio::test]
+    async fn a_closed_session_folds_no_further_events() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A session that closes itself on its first `Frame` (a guest that ends the connection mid-stream),
+        // counting every `on_message` so the test can prove no fold happens once it has closed.
+        struct BreakOnFrame(Arc<AtomicUsize>);
+        #[async_trait]
+        impl Reducer for BreakOnFrame {
+            async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                match crate::codec::decode_ws_event(&m.payload) {
+                    Some(WsEvent::Frame { .. }) => (
+                        vec![],
+                        Outcome::Break {
+                            schema: send_contract(),
+                            reason: Bytes::new(),
+                        },
+                    ),
+                    _ => (vec![], Outcome::Continue),
+                }
+            }
+            async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let program = ProgramHash::of(b"break-on-frame");
+        let mut store = Store::new();
+        let calls_for_factory = Arc::clone(&calls);
+        store.register(program, move || {
+            Box::new(BreakOnFrame(Arc::clone(&calls_for_factory)))
+        });
+
+        let (mut session, _on_connect) = WsSession::open(
+            &store,
+            program,
+            b"sess",
+            Bytes::from_static(b"conn"),
+            HostId::of(b"h"),
+            ReducerId::of(b"r"),
+            event_contract(),
+            send_contract(),
+        )
+        .await
+        .expect("session opens");
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "Connect folded once");
+        assert!(session.is_open());
+
+        // The first frame closes the session (fold #2).
+        let _ = session.on_frame(Bytes::from_static(b"bye")).await;
+        assert!(!session.is_open(), "the guest closed itself on the frame");
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+        // Any further fold on the closed session is a no-op — no push AND no extra `on_message` (the frame
+        // loop's unconditional final `close()` must not deliver a spurious `Disconnect` after a Break).
+        assert!(session.on_frame(Bytes::from_static(b"x")).await.is_empty());
+        assert!(session.close().await.is_empty());
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "a closed session must not fold any further event into the reducer"
+        );
     }
 
     #[tokio::test]
