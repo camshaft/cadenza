@@ -426,6 +426,20 @@ pub enum Code {
     /// rejection — see `is_decline`), it just now carries an identity. Does NOT cover PERMANENT design
     /// rejections (those keep their own coded semantics) nor the recursion/resource bound (CDZ0999).
     UnsupportedConstruct,
+
+    /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
+    /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
+    /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
+    /// program is well-formed and the compiler ACCEPTED it, but the bytes it produced are an invalid
+    /// module the runtime would reject far downstream at `wasmtime::Component::new`/instantiation (which
+    /// silently returns `None`). Catching it AT the compile boundary turns that silent latent hazard
+    /// (any state-holding guest that iterates hit it with no compile-time signal — the
+    /// adv-cdz-invalid-wasm bug) into a loud error that refuses to write the bad artifact. A true
+    /// ERROR (not `is_decline`), because a divergent-from-oracle emit is never a safe outcome — unlike a
+    /// decline, which safely declines to emit. Opens a distinct internal-codegen-soundness slot in the
+    /// CDZ09xx band; a build that hits it should be reported as a compiler bug, then FIXED (this is a
+    /// self-check the emit is expected to always pass).
+    InvalidWasmEmitted,
 }
 
 impl Code {
@@ -485,6 +499,7 @@ impl Code {
             Code::RenamedOp => "CDZ0603",
             Code::RecursionBound => "CDZ0999",
             Code::UnsupportedConstruct => "CDZ0900",
+            Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
 }

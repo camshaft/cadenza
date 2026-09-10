@@ -86,6 +86,18 @@ version = "0.1"
 default-features = false
 features = ["std"]
 
+[dependencies.wasmparser]
+# OUTPUT SELF-VALIDATION at the HOST CLI boundary (`cli::run_with_specs`), NOT the compile path. The
+# hand-written wasm encoder can, on a not-yet-fixed codegen path, emit a `"component"` artifact that
+# `cdz compile` accepts but that fails validation and is then silently rejected far downstream at
+# `wasmtime::Component::new` (returns None) — the adv-cdz-invalid-wasm latent hazard. `cli` validates
+# the produced component with `wasmparser` before writing it and errors (CDZ0910) instead of shipping
+# an invalid module. Used ONLY by the `cli` host driver (which already does file I/O + is not part of
+# the Cadenza self-host port); the PORT-RELEVANT compile core (resolve/infer/lower/eval/backend) stays
+# wasmparser-free, so this does not compromise "the compiler is a pure library". `wasm-encoder` remains
+# a TESTS-ONLY byte oracle in `[dev-dependencies]` — only the read-side validator is promoted here.
+version = "0.239"
+
 # BUILD-TIME ONLY (build.rs): regenerates the bundled verify_kernel.bin from verify_kernel.cdz via the
 # REAL cadenza-syntax codec (codec::encode(sexpr::read(...))) into OUT_DIR, so there is no committed
 # golden to go stale. Acyclic — cadenza-syntax does not depend on rcdzc. NOT in the compile path (the
@@ -105,9 +117,9 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # The independent byte ORACLE (tests only): licenses the hand-emitted byte path by asserting it is
 # byte-identical to the authoritative component-model encoder. NEVER in the compile path.
 wasm-encoder = "0.239"
-# The component/core validator (tests only): parses + type-checks a component to LOCALIZE a byte error
-# (`Component::from_binary`'s error is opaque). Diagnoses the resource-linking envelope during R1/R2.
-wasmparser = "0.239"
+# (`wasmparser` was PROMOTED to `[dependencies]` above — the host `cli` output self-validator uses it in
+# the non-test compile path. It stays available to tests as a normal dep, so tests keep using it as a
+# component/core validator that LOCALIZES a byte error, `Component::from_binary`'s error being opaque.)
 # The shared native runtime interface an emitted ASYNC module links against (`cdz_rt::CdzEnv`). A
 # dev-dependency so `cargo test` builds its rlib into the target dir, where the Rust-async round-trip
 # tests locate it to pass `rustc --extern cdz_rt=…`. Tests only — never in the compile path.

@@ -29,6 +29,18 @@ use std::process::ExitCode;
 /// parses `clap` args into these values and calls it, and the `cdz` front-end drives it from its OWN
 /// parsed arguments — the thin-`cdz` `!standalone` seam: `cdz` owns arg parsing; a `standalone` build
 /// calls this in-process, a `!standalone` build delegates the same values to `cdz-compile`.
+/// Validate a produced wasm `"component"` artifact — the read side of the output soundness self-check
+/// `run_with_specs` runs before writing a component (see the CDZ0910 site there). `Ok(())` iff
+/// `wasmparser` accepts the bytes as a valid component; `Err(msg)` carries the LOCALIZED validation
+/// error (function index + offset + reason), which the CLI surfaces verbatim so a codegen bug is
+/// pinpointed rather than opaque. A named fn so the self-check is unit-testable without a full compile,
+/// and so the ONE `wasmparser` use in the compile path is a single reviewable choke point (the
+/// port-relevant compile core never references it — `Cargo.toml`).
+pub(crate) fn validate_component_bytes(bytes: &[u8]) -> Result<(), String> {
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_specs(
     input_specs: &[String],
@@ -273,9 +285,41 @@ pub fn run_prepared_with_overflow(
     // stack the ambient thread happens to have. See `rcdzc::host`.
     let out_dest = out;
     let cli_out = &out_dest;
-    let out = crate::run_with_compiler_stack(|| {
+    let mut out = crate::run_with_compiler_stack(|| {
         compile_with_opt_and_overflow(&inputs, &targets, opt_level, overflow)
     });
+
+    // OUTPUT SOUNDNESS SELF-CHECK: a produced wasm `"component"` artifact MUST pass validation before we
+    // write it. The hand-written encoder can, on a not-yet-fixed codegen path (e.g. a host-capability
+    // guest that calls a heap-op recursion — the adv-cdz-invalid-wasm bug), emit a component that the
+    // compile ACCEPTS but that fails `wasmparser` validation and would be silently rejected far
+    // downstream at `wasmtime::Component::new`/instantiation (which returns `None`, with no signal at the
+    // guest's own compile). Catch it HERE — at the CLI boundary that writes the artifact — and turn it
+    // into a loud CDZ0910 error that refuses to write the bad bytes, rather than shipping an invalid
+    // module. Runs only for the `"component"` kind (not `rust`/`ast`/`dwarf`); validation of a small
+    // component is microseconds. This is a host-side check (the port-relevant compile core never touches
+    // `wasmparser`, per the `Cargo.toml` note) and is separate from the corpus/library API, so it adds no
+    // corpus-gate surface — it protects the `cdz compile` guest-authoring path specifically.
+    let component_kind = Target::Wasm.artifact_kind();
+    let invalid: Vec<crate::Diagnostic> = out
+        .artifacts
+        .iter()
+        .filter(|a| a.kind == component_kind)
+        .filter_map(|a| {
+            validate_component_bytes(&a.bytes).err().map(|e| crate::Diagnostic {
+                severity: Severity::Error,
+                code: Some(crate::diag::Code::InvalidWasmEmitted.code().to_string()),
+                message: format!(
+                    "internal: the compiler emitted a WebAssembly component that fails validation: \
+                     {e}. This is a codegen defect — the component would be rejected by the runtime at \
+                     instantiation, so the artifact was NOT written. Please report it."
+                ),
+                node: None,
+                fix: None,
+            })
+        })
+        .collect();
+    out.diagnostics.extend(invalid);
 
     // `--emit-diagnostics <path>`: write the DIAGNOSTICS wire as a side artifact BEFORE reporting/writing,
     // UNCONDITIONALLY (even on an error/decline compile — the fault set is exactly what a caller wants
@@ -610,5 +654,35 @@ mod tests {
         let other = Artifact::new("wasm", "w", vec![0, 1, 2]);
         let err = splice_ast_inputs(&[ast, other], "a").expect_err("non-ast input rejected");
         assert!(err.contains("not `ast`"), "{err}");
+    }
+
+    /// The OUTPUT SOUNDNESS SELF-CHECK (`validate_component_bytes`, the CDZ0910 guard `run_with_specs`
+    /// runs before writing a `"component"`) accepts a freshly-compiled valid component and rejects
+    /// non-component / invalid bytes. Pins the guard's wiring so a future change cannot silently drop
+    /// it — it is what turns a silent invalid-wasm emit (a host-capability guest that calls a heap-op
+    /// recursion — the adv-cdz-invalid-wasm hazard) into a loud compile error that refuses to write the
+    /// bad artifact, instead of a `None` at `wasmtime::Component::new` far from the guest's compile.
+    #[test]
+    fn output_self_check_accepts_a_valid_component_and_rejects_invalid_bytes() {
+        // A trivial pure program compiles to a VALID component — the self-check must pass it.
+        let bytes = crate::compile::compile_component(&crate::codec::encode(
+            &crate::testkit::parse("(module m (def (main) 1) (export main))"),
+        ))
+        .expect("a trivial program compiles to a component");
+        assert!(
+            validate_component_bytes(&bytes).is_ok(),
+            "a freshly-compiled component must pass the output self-check"
+        );
+        // Non-wasm / invalid bytes are rejected — the `Err` path the CLI turns into a CDZ0910 error.
+        assert!(
+            validate_component_bytes(&[]).is_err(),
+            "empty bytes are not a valid component"
+        );
+        assert!(
+            validate_component_bytes(&[0, 1, 2, 3, 4, 5, 6, 7]).is_err(),
+            "garbage bytes are not a valid component"
+        );
+        // The pinned code is stable (the corpus / tooling branch on it).
+        assert_eq!(crate::diag::Code::InvalidWasmEmitted.code(), "CDZ0910");
     }
 }
