@@ -1,0 +1,19 @@
+// The HTTP-outpost WebSocket outbound-frame contract (design/DESIGN-http-outpost.md §6): the effect a
+// per-connection WS session emits to PUSH a frame to its client (`ws/send`, the outbound half of the ws
+// transport seam). The native edge acts on it — writing `data` to the WebSocket connection `conn`. A
+// DISTINCT contract from the inbound `ws-event` so a session dispatches send-vs-receive by CONTRACT-ID
+// (cf. blob-get vs blob-put). `conn` is the connection id, `data` the frame payload (both Bytes). Userspace
+// (this dir): a Cadenza reducer emits it via self-reflection; no Rust binding is generated.
+type Send = | Send(Record(conn: Bytes, data: Bytes))
+
+def a-send() -> Send = Send.Send({ conn = b"conn-1", data = b"pong" })
+
+@test
+def send-conforms() =
+  match a-send() with
+  | Send.Send(s) => if (s.conn == b"conn-1") and (s.data == b"pong") then unit else trap("send field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.ws.send", "Send", "Send")
+export { Send.*, descriptor }
