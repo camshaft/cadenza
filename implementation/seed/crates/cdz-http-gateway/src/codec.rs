@@ -107,6 +107,22 @@ pub struct RouteFrame {
     pub contract: Bytes,
 }
 
+/// An inbound WebSocket event (`ws-event.cdz` `Event`) the edge surfaces to a per-connection session:
+/// `Connect` on upgrade, a `Frame` per inbound frame, `Disconnect` on close. `conn` is the connection id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsEvent {
+    Connect { conn: Bytes },
+    Frame { conn: Bytes, data: Bytes },
+    Disconnect { conn: Bytes },
+}
+
+/// An outbound WebSocket frame (`ws-send.cdz` `Send`) a session emits to push `data` to connection `conn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsSend {
+    pub conn: Bytes,
+    pub data: Bytes,
+}
+
 // --- encode ----------------------------------------------------------------------------------------------
 
 /// Encode an [`HttpRequest`] into the canonical binary-AST payload a handler's `on_message` receives.
@@ -209,6 +225,48 @@ pub fn encode_route_table(routes: &[RouteFrame]) -> Bytes {
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
 
+/// Encode a [`WsEvent`] into the canonical binary-AST payload a per-connection WS session's `on_message`
+/// receives. `Event` is a multi-constructor sum, so the value is the bare-name `(<Ctor> #record…)` form
+/// (not elided), under the root ascription.
+#[must_use]
+pub fn encode_ws_event(event: &WsEvent) -> Bytes {
+    let mut b = Builder::new();
+    let value = match event {
+        WsEvent::Connect { conn } => {
+            let c = bytes_leaf(&mut b, conn);
+            let rec = record(&mut b, vec![("conn", c)]);
+            bare_ctor(&mut b, "Connect", vec![rec])
+        }
+        WsEvent::Frame { conn, data } => {
+            let c = bytes_leaf(&mut b, conn);
+            let d = bytes_leaf(&mut b, data);
+            let rec = record(&mut b, vec![("conn", c), ("data", d)]);
+            bare_ctor(&mut b, "Frame", vec![rec])
+        }
+        WsEvent::Disconnect { conn } => {
+            let c = bytes_leaf(&mut b, conn);
+            let rec = record(&mut b, vec![("conn", c)]);
+            bare_ctor(&mut b, "Disconnect", vec![rec])
+        }
+    };
+    let root = ascribe(&mut b, value, "Event");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Encode a [`WsSend`] into the canonical binary-AST bytes. `Send` is a single-constructor sum → the ctor
+/// elides to the record directly, under the root ascription.
+#[must_use]
+pub fn encode_ws_send(send: &WsSend) -> Bytes {
+    let mut b = Builder::new();
+    let conn = bytes_leaf(&mut b, &send.conn);
+    let data = bytes_leaf(&mut b, &send.data);
+    let rec = record(&mut b, vec![("conn", conn), ("data", data)]);
+    let root = ascribe(&mut b, rec, "Send");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 // --- decode ----------------------------------------------------------------------------------------------
 
 /// Decode a canonical binary-AST payload into an [`HttpRequest`], or `None` if it is malformed / not a
@@ -266,6 +324,41 @@ pub fn decode_route_table(bytes: &[u8]) -> Option<Vec<RouteFrame>> {
             })
         })
         .collect()
+}
+
+/// Decode a canonical binary-AST payload into a [`WsEvent`], or `None` if malformed. `Event` is a
+/// multi-ctor sum → `(<Ctor> #record…)` (after the optional root ascription); ascription-tolerant per field.
+#[must_use]
+pub fn decode_ws_event(bytes: &[u8]) -> Option<WsEvent> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let ev = unascribe(&arenas, arenas.root); // `(<Ctor> #record)` — a multi-ctor variant is not elided
+    let Struct::List(items) = arenas.get(ev) else {
+        return None;
+    };
+    let ctor = arenas.as_name(*items.first()?)?;
+    let rec = *items.get(1)?;
+    let conn = read_bytes(&arenas, record_field(&arenas, rec, "conn")?)?;
+    match ctor {
+        "Connect" => Some(WsEvent::Connect { conn }),
+        "Disconnect" => Some(WsEvent::Disconnect { conn }),
+        "Frame" => {
+            let data = read_bytes(&arenas, record_field(&arenas, rec, "data")?)?;
+            Some(WsEvent::Frame { conn, data })
+        }
+        _ => None,
+    }
+}
+
+/// Decode a session's `ws-send` bytes into a [`WsSend`], or `None` if malformed. `Send` is single-ctor →
+/// the record directly (after the optional ascription).
+#[must_use]
+pub fn decode_ws_send(bytes: &[u8]) -> Option<WsSend> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(WsSend {
+        conn: read_bytes(&arenas, record_field(&arenas, rec, "conn")?)?,
+        data: read_bytes(&arenas, record_field(&arenas, rec, "data")?)?,
+    })
 }
 
 /// Read a `List(Header)` value into a `Vec<Header>`, or `None` if not a list / a member is malformed.
@@ -560,5 +653,65 @@ mod tests {
         assert!(decode_route_table(b"garbage").is_none());
         // A response's bytes are not a route table (no per-route records) → None.
         assert!(decode_route_table(&encode_response(&sample_response())).is_none());
+    }
+
+    #[test]
+    fn ws_event_round_trips() {
+        for ev in [
+            WsEvent::Connect {
+                conn: Bytes::from_static(b"c1"),
+            },
+            WsEvent::Frame {
+                conn: Bytes::from_static(b"c1"),
+                data: Bytes::from_static(b"hello ws"),
+            },
+            WsEvent::Disconnect {
+                conn: Bytes::from_static(b"c1"),
+            },
+        ] {
+            let decoded = decode_ws_event(&encode_ws_event(&ev)).expect("ws-event decodes");
+            assert_eq!(decoded, ev);
+        }
+    }
+
+    #[test]
+    fn ws_send_round_trips() {
+        let send = WsSend {
+            conn: Bytes::from_static(b"c1"),
+            data: Bytes::from_static(b"pong"),
+        };
+        assert_eq!(decode_ws_send(&encode_ws_send(&send)).unwrap(), send);
+    }
+
+    /// CROSS-COMPILER PIN: decode ws-event / ws-send frames the actual compiler produced (`cdz run` over
+    /// literal `Event.Frame` / `Send.Send` values), proving the codec matches the compiler's value form.
+    #[test]
+    fn decodes_compiler_produced_ws_frames() {
+        assert_eq!(
+            decode_ws_event(include_bytes!("../tests/fixtures/ws-event.bin")).expect("ws-event"),
+            WsEvent::Frame {
+                conn: Bytes::from_static(b"c1"),
+                data: Bytes::from_static(b"hello"),
+            }
+        );
+        assert_eq!(
+            decode_ws_send(include_bytes!("../tests/fixtures/ws-send.bin")).expect("ws-send"),
+            WsSend {
+                conn: Bytes::from_static(b"c1"),
+                data: Bytes::from_static(b"pong"),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_ws_is_none() {
+        assert!(decode_ws_event(b"garbage").is_none());
+        assert!(decode_ws_send(&[]).is_none());
+        // A ws-send (a bare record) is not a ws-event (needs a `(Ctor record)` head).
+        let send = encode_ws_send(&WsSend {
+            conn: Bytes::from_static(b"c"),
+            data: Bytes::from_static(b"d"),
+        });
+        assert!(decode_ws_event(&send).is_none());
     }
 }
