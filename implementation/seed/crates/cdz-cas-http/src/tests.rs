@@ -6,13 +6,9 @@
 use crate::{CasServer, HttpBlobStore};
 use bytes::Bytes;
 use cdz_platform::{Hash, HashTag};
-use http_body_util::Full;
-use hyper::header::{AUTHORIZATION, HOST};
-use hyper::{Method, Request};
-use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 const READ: &str = "read-credential";
 const WRITE: &str = "write-credential";
@@ -40,28 +36,15 @@ fn client(addr: SocketAddr) -> HttpBlobStore {
 /// A raw PUT (bypassing the client's local-hash computation) so a mismatched key / missing credential can
 /// be exercised directly against the server. Returns the response status code.
 async fn raw_put(addr: SocketAddr, key: &str, credential: Option<&str>, body: Vec<u8>) -> u16 {
-    let stream = TcpStream::connect(addr).await.expect("connect");
-    let (mut sender, conn) =
-        hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(stream))
-            .await
-            .expect("handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-    let mut builder = Request::builder()
-        .method(Method::PUT)
-        .uri(format!("/{key}"))
-        .header(HOST, addr.to_string());
+    // Install the ring provider so a bare reqwest client builds even in a raw_put-only test (HttpBlobStore
+    // installs it too; the call is idempotent).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::new();
+    let mut request = client.put(format!("http://{addr}/{key}")).body(body);
     if let Some(c) = credential {
-        builder = builder.header(AUTHORIZATION, format!("Bearer {c}"));
+        request = request.bearer_auth(c);
     }
-    let request = builder.body(Full::new(Bytes::from(body))).expect("request");
-    sender
-        .send_request(request)
-        .await
-        .expect("send")
-        .status()
-        .as_u16()
+    request.send().await.expect("send").status().as_u16()
 }
 
 #[tokio::test]

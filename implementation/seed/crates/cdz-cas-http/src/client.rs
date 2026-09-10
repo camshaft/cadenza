@@ -2,6 +2,14 @@
 //! *is* a `cdz_platform::BlobStore`, so the gateway (or any consumer) fetches components by hash from a
 //! remote store exactly as it would from an in-memory one.
 //!
+//! ## Transport
+//! A shared, pooled [`reqwest::Client`] (operator mandate: outbound HTTP clients use reqwest with TLS +
+//! connection reuse — not a fresh connection per fetch). TLS is **rustls with the ring provider** (NOT
+//! aws-lc-rs / native-tls), pinned via the `-no-provider` reqwest feature + installing
+//! [`rustls::crypto::ring`] as the process default — so the whole TLS closure builds with a C compiler
+//! alone (no cmake/nasm/openssl), which keeps the offline vendored nix check buildable. The `Client` is
+//! cheap to `clone` (an `Arc` inside), so `HttpBlobStore` stays `Clone` and one connection pool is shared.
+//!
 //! ## Two channels, on purpose
 //! The `BlobStore` trait is deterministic and carries NO `Result` — a well-formed backend "absorbs
 //! transient I/O internally" and `get` returns `Option` where `None` is *genuine absence*. But an HTTP
@@ -23,30 +31,49 @@ use crate::error::CasError;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cdz_platform::{BlobStore, Hash, HashTag};
-use http_body_util::{BodyExt, Full};
-use hyper::header::{AUTHORIZATION, HOST};
-use hyper::{Method, Request, StatusCode};
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
+use reqwest::{Method, StatusCode};
+use std::sync::Once;
 
-/// An HTTP-backed content-addressed blob store. Points at a `base_url` (e.g. `http://cas.internal:8080`,
-/// no trailing slash) and dials `{base_url}/{hash}` per request. v0 speaks plain HTTP/1 (no TLS — a TLS
-/// terminator / mesh sits in front in deployment); a raw hyper client connection is opened per request
-/// (the CAS is a low-QPS control-plane fetch, not a hot path — a pool is a later optimization).
+/// Install the ring-backed rustls [`CryptoProvider`](rustls::crypto::CryptoProvider) as the process
+/// default, once. reqwest's `-no-provider` rustls TLS resolves its provider from the process default, so
+/// this pins **ring** (not aws-lc-rs, whose C build needs cmake/nasm and would break the offline nix
+/// check). Idempotent: a prior install by another crate is fine — we ignore the `Err`.
+fn ensure_ring_crypto_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// An HTTP-backed content-addressed blob store. Points at a `base_url` (e.g. `http://cas.internal:8080` or
+/// `https://cas.internal/blobs`, no trailing slash) and requests `{base_url}/{hash}` per operation over a
+/// shared pooled [`reqwest::Client`] (TLS + keep-alive connection reuse).
 #[derive(Clone, Debug)]
 pub struct HttpBlobStore {
     base_url: String,
+    client: reqwest::Client,
     read_credential: Option<String>,
     write_credential: Option<String>,
 }
 
 impl HttpBlobStore {
-    /// A client against `base_url` (scheme + host + port, no trailing slash), no credentials. Add them with
-    /// [`with_read_credential`](Self::with_read_credential) / [`with_write_credential`](Self::with_write_credential).
+    /// A client against `base_url` (scheme + host + port [+ optional path prefix], no trailing slash), no
+    /// credentials. Add them with [`with_read_credential`](Self::with_read_credential) /
+    /// [`with_write_credential`](Self::with_write_credential). Builds a pooled reqwest client with the ring
+    /// TLS provider.
+    ///
+    /// # Panics
+    /// If the reqwest client fails to build — which, with the ring provider installed and default settings,
+    /// cannot happen in practice (a misconfiguration is a programmer error, not a runtime condition).
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
+        ensure_ring_crypto_provider();
+        let client = reqwest::Client::builder()
+            .build()
+            .expect("building a default reqwest client (ring provider installed) cannot fail");
         Self {
             base_url: base_url.into(),
+            client,
             read_credential: None,
             write_credential: None,
         }
@@ -140,8 +167,9 @@ impl HttpBlobStore {
         }
     }
 
-    /// One request/response over a fresh HTTP/1 connection: dial the `base_url` authority, send `method
-    /// /{hash}` with the optional Bearer credential + `body`, and collect the response `(status, bytes)`.
+    /// One request/response over the pooled client: `method {base_url}/{hash}` with the optional Bearer
+    /// credential and (for `PUT`) `body`, collecting the response `(status, bytes)`. A non-empty `body` is
+    /// attached (only `PUT` carries one; `GET`/`HEAD` pass `Bytes::new()`).
     async fn roundtrip(
         &self,
         method: Method,
@@ -149,54 +177,23 @@ impl HttpBlobStore {
         credential: Option<&str>,
         body: Bytes,
     ) -> Result<(StatusCode, Bytes), CasError> {
-        let uri: hyper::Uri = self
-            .base_url
-            .parse()
-            .map_err(|e| CasError::Transport(format!("bad base_url {:?}: {e}", self.base_url)))?;
-        let authority = uri
-            .authority()
-            .map(|a| a.as_str().to_string())
-            .ok_or_else(|| {
-                CasError::Transport(format!(
-                    "base_url {:?} has no host:port authority",
-                    self.base_url
-                ))
-            })?;
-
-        let stream = TcpStream::connect(authority.as_str())
-            .await
-            .map_err(|e| CasError::Transport(format!("connect {authority}: {e}")))?;
-        let (mut sender, conn) =
-            hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(stream))
-                .await
-                .map_err(|e| CasError::Transport(format!("handshake {authority}: {e}")))?;
-        // Drive the connection to completion on its own task while we await the response.
-        tokio::spawn(async move {
-            let _ = conn.await;
-        });
-
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(format!("/{hash}"))
-            .header(HOST, authority.as_str());
+        let url = format!("{}/{hash}", self.base_url.trim_end_matches('/'));
+        let mut request = self.client.request(method, url.as_str());
         if let Some(c) = credential {
-            builder = builder.header(AUTHORIZATION, format!("Bearer {c}"));
+            request = request.bearer_auth(c);
         }
-        let request = builder
-            .body(Full::new(body))
-            .map_err(|e| CasError::Transport(format!("build request: {e}")))?;
-
-        let response = sender
-            .send_request(request)
+        if !body.is_empty() {
+            request = request.body(body);
+        }
+        let response = request
+            .send()
             .await
-            .map_err(|e| CasError::Transport(format!("send request: {e}")))?;
+            .map_err(|e| CasError::Transport(format!("request to {url} failed: {e}")))?;
         let status = response.status();
         let bytes = response
-            .into_body()
-            .collect()
+            .bytes()
             .await
-            .map_err(|e| CasError::Transport(format!("read response body: {e}")))?
-            .to_bytes();
+            .map_err(|e| CasError::Transport(format!("read response body from {url}: {e}")))?;
         Ok((status, bytes))
     }
 }

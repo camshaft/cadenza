@@ -34,13 +34,22 @@ publish = false
 cdz-platform = { path = "../cdz-platform" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — a blob's bytes, the request/response bodies.
 bytes = "1"
-# The HTTP server AND client: a hyper HTTP/1 server serves the store; the `client` feature backs the
-# `HttpBlobStore` dial-out (GET/HEAD/PUT {base}/{hash}). hyper is driven via hyper-util's TokioIo;
+# The HTTP SERVER: a hyper HTTP/1 server serves the store. hyper is driven via hyper-util's TokioIo;
 # http-body-util supplies the `Full` body, `Limited` (the per-PUT body ceiling) + `BodyExt::collect`.
+# (No hyper `client` feature — the CLIENT is reqwest, below.)
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
-hyper = { version = "1", features = ["server", "http1", "client"] }
+hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# The HTTP CLIENT (HttpBlobStore dial-out): a shared, pooled reqwest::Client with TLS + connection reuse
+# (operator mandate: outbound HTTP clients use reqwest, not a fresh conn per fetch). `default-features =
+# false` + the `-no-provider` rustls-tls feature pins the crypto provider to RING (installed as the
+# process default via the `rustls` dep below) — NOT aws-lc-rs (cmake/nasm) nor native-tls (openssl), so
+# the whole TLS closure builds with a C compiler alone and the offline vendored nix check stays buildable.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }
+# The ring-backed rustls CryptoProvider the client installs as the process default (matches reqwest's
+# `-no-provider` TLS). `ring` (not aws-lc-rs) keeps the build C-compiler-only.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # To impl the platform's `#[async_trait] BlobStore` for the HTTP-backed client.
 async-trait = "0.1"
 # Structured debug/warn tracing (enable via RUST_LOG=cdz_cas_http=trace) — the client warns on a
