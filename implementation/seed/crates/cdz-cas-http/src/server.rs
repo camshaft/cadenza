@@ -13,7 +13,7 @@
 //! the capability — you cannot forge bytes for a hash), so a read credential is OPTIONAL: unset ⇒ reads are
 //! open; set ⇒ an optional network perimeter (`401` on mismatch). Writes always require a credential.
 
-use crate::auth::bearer;
+use crate::auth::{bearer, ct_eq};
 use bytes::Bytes;
 use cdz_platform::{BlobStore, Hash, HashTag};
 use http_body_util::{BodyExt, Full, Limited};
@@ -161,7 +161,9 @@ impl CasServer {
                 let Some(expected) = self.write_credential.as_deref() else {
                     return floor(StatusCode::METHOD_NOT_ALLOWED, "writes not enabled");
                 };
-                if bearer(&parts.headers) != Some(expected) {
+                let authorized = bearer(&parts.headers)
+                    .is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes()));
+                if !authorized {
                     return floor(StatusCode::UNAUTHORIZED, "unauthorized");
                 }
                 // Bound the body BEFORE storing: read at most `max_body_bytes`, else `413`.
@@ -201,7 +203,9 @@ impl CasServer {
     fn read_authorized(&self, headers: &hyper::HeaderMap) -> bool {
         match &self.read_credential {
             None => true,
-            Some(expected) => bearer(headers) == Some(expected.as_str()),
+            Some(expected) => {
+                bearer(headers).is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes()))
+            }
         }
     }
 }

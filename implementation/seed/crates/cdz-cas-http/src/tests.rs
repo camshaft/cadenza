@@ -3,9 +3,9 @@
 //! a wrong/absent hash misses, a bad credential is `401`, HEAD reflects existence, and the write path
 //! validates the content-address so a stored blob can never mismatch its key.
 
-use crate::{CasServer, HttpBlobStore};
+use crate::{CasServer, DiskBlobStore, HttpBlobStore};
 use bytes::Bytes;
-use cdz_platform::{Hash, HashTag};
+use cdz_platform::{BlobStore, Hash, HashTag};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -147,4 +147,37 @@ async fn a_read_only_server_disables_writes() {
     let store = HttpBlobStore::new(format!("http://{addr}"));
     let absent = Hash::of(HashTag::Blob, b"nope");
     assert_eq!(store.fetch(absent).await.expect("fetch"), None);
+}
+
+#[tokio::test]
+async fn serves_from_a_disk_backend_and_persists() {
+    // A CasServer over the on-disk backend, driven over HTTP by the client — proves the swappable backend
+    // composes behind the same wire, and that a published blob really lands on disk.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("cdz-cas-srv-disk-{}-{nanos}", std::process::id()));
+    let server = Arc::new(
+        CasServer::new(Box::new(DiskBlobStore::open(&dir).expect("open")))
+            .with_write_credential(WRITE.to_string()),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(server.serve(listener));
+
+    let http =
+        HttpBlobStore::new(format!("http://{addr}")).with_write_credential(WRITE.to_string());
+    let payload = Bytes::from_static(b"disk-backed over http");
+    let hash = http.publish(payload.clone()).await.expect("publish");
+    assert_eq!(
+        http.fetch(hash).await.expect("fetch"),
+        Some(payload.clone())
+    );
+
+    // The blob is actually on disk: a fresh DiskBlobStore on the same dir holds it.
+    let reopened = DiskBlobStore::open(&dir).expect("reopen");
+    assert_eq!(reopened.get(hash).await, Some(payload));
+
+    std::fs::remove_dir_all(&dir).ok();
 }
