@@ -49,6 +49,14 @@ exclude = [
     # runtime does not. Leaf crate (nothing in the seed depends on it; the compiler emits an IMPORT on it,
     # not a build dep), own `[workspace]` table, built to wasm + published to CAS on demand.
     "implementation/seed/crates/cdz-nfc",
+    # `cdz-http-gateway` (the standalone HTTP outpost, design/DESIGN-http-outpost.md) is excluded because a
+    # later increment depends on `cdz-platform` with `features = ["host"]`, which pulls the heavy wasmtime
+    # runtime; as a workspace MEMBER, cargo feature-unification would turn `cdz-platform/host` ON for the
+    # whole seed `--workspace` build, so the routine build + corpus gate would pay for wasmtime. It
+    # path-deps the members `cadenza-ast` (and later `cdz-platform`) — an excluded crate may depend on a
+    # member, as cdz-smith does. Own `[workspace]` table; builds + tests standalone (`cargo test` from its
+    # own dir); gated by its own dedicated CI job.
+    "implementation/seed/crates/cdz-http-gateway",
 ]
 
 [profile.dev]

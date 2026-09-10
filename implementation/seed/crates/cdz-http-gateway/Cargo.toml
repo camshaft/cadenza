@@ -1,0 +1,32 @@
+# cdz-http-gateway — the standalone HTTP outpost (design/DESIGN-http-outpost.md).
+#
+# An inbound HTTP/WebSocket edge served by content-addressed wasm handlers: the native edge turns each
+# request into a platform event; a wasm reducer folds an `http-request` and answers with an
+# `http-response`. Decoupled from the still-unsettled core platform (design §0.1) — it depends only on the
+# frozen reducer WIT world + the public in-memory stores in `cdz-platform`, plus `cadenza-ast` for the
+# value-form codec. Built + iterated NOW, ahead of the core kernel; the real kernel satisfies the same
+# seam later (P5) with no handler change.
+#
+# STANDALONE `[workspace]` — deliberately EXCLUDED from the seed workspace (root Cargo.toml `exclude`),
+# like cdz-smith / cdz-cad / cdz-runtime. Reason: a later increment (P1b) depends on `cdz-platform` with
+# `features = ["host"]`, which pulls the heavy wasmtime runtime; as a workspace MEMBER, cargo
+# feature-unification would turn `cdz-platform/host` ON for the whole seed `--workspace` build, so the
+# routine build/corpus-gate would pay for wasmtime. An own `[workspace]` keeps that heavy build isolated
+# to this crate's own gate. An excluded crate may still path-depend on a member (cdz-smith precedent).
+[workspace]
+
+[package]
+name = "cdz-http-gateway"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The canonical language AST + value-model codec. The `http-request`/`http-response` payloads that cross to
+# a handler are `cadenza-ast` value-form documents (design §5, the one-codec-everywhere rule), so the
+# gateway's request/response codec is built directly on `cadenza_ast::{ast, codec}` — the same forms the
+# compiler's own `Value.encode`/`Value.decode` produce, so a value the gateway emits is decodable by a
+# Cadenza guest and vice versa.
+cadenza-ast = { path = "../cadenza-ast" }
+# Every byte buffer is `bytes::Bytes` (spec §12) — the request/response `body` and the encoded payloads.
+bytes = "1"
