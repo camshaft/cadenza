@@ -1,0 +1,19 @@
+//! The standalone HTTP outpost (`design/DESIGN-http-outpost.md`).
+//!
+//! An inbound HTTP/WebSocket edge served by content-addressed wasm handlers. The native edge parses each
+//! request into an `http-request` value, a wasm reducer folds it, and the edge serializes the
+//! `http-response` the fold produces back to the socket. Nothing about HTTP reaches below the edge — the
+//! handlers are ordinary reducers, decoupled from the still-unsettled core platform (design §0.1).
+//!
+//! Built bottom-up, one increment per the design's §8 arc:
+//!  - **P1a (here): [`codec`]** — the `http-request`/`http-response` value-form codec: Rust mirrors of the
+//!    two userspace contracts (`cdz-platform/contracts/userspace/http-{request,response}.cdz`) and the
+//!    encode/decode against `cadenza-ast`, in the exact canonical form the compiler's `Value.encode`/
+//!    `Value.decode` produce (so a value the gateway emits is decodable by a Cadenza guest, and a guest's
+//!    response decodes here).
+//!  - P1b: the wasmtime handler-runner (drive a reducer component through the WIT world, fold a request,
+//!    read the response off the closing `Break`).
+//!  - P1c: the tokio HTTP edge + a mock control server for end-to-end tests.
+//!  - P1d: per-request resource bounds, 404/500 floors, no-cross-request-state-leak.
+
+pub mod codec;
