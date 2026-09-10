@@ -19,7 +19,7 @@ use crate::AdminClient;
 use crate::cas::CasClient;
 use crate::gateway::GatewayClient;
 use crate::programs::{ProgramManifest, ResolvedProgram};
-use crate::run::{HarnessBins, run_http_steps, verdict};
+use crate::run::{HarnessBins, run_steps, verdict};
 use crate::servers::{spawn_cas, spawn_gateway, spawn_mock};
 use crate::spec::RunSpec;
 use cdz_http_control_mock::admin::{AdminCommand, AdminReply};
@@ -95,7 +95,7 @@ pub async fn run_scenario(
 
     // 6. Drive the run's http steps + judge. `cas`/`mock`/`gateway` are held alive across this (they drop —
     //    and their processes die — only when this function returns).
-    let outcomes = run_http_steps(&gateway_client, &spec.requests).await;
+    let outcomes = run_steps(&gateway_client, &admin, &spec.requests).await;
     verdict(&outcomes)
 }
 
