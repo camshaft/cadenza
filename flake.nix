@@ -2849,6 +2849,44 @@
         # Needs the cdz-platform contracts overlay (cdz-platform dep, src/contracts not committed #5250), cmake
         # (the cdz-cas-http path-dep's aws-lc-rs TLS), and the wit/ dir (host bindgen). Fileset mirrors the
         # gateway check's path closure. Heavy (compiles wasmtime/cranelift) but that is what the bin requires.
+        # The http-outpost conformance guests (v-gateway-conformance), in the OUTER let so BOTH the checks
+        # (programs/parse/e2e) and `packages.cdz-http-conformance-programs` share ONE enumeration. Drop a
+        # `<category>/<name>/reducer.cdz` (+ its `libs` manifest) under programs/ and it compiles — no flake edit.
+        httpConformanceProgramsDir = ./implementation/seed/crates/cdz-http-conformance/programs;
+        # program name → its compiled guest derivation ($out is the stripped .wasm file). Each guest composes
+        # its `libs` (reducer-lib + http-lib, closed transitively) against the reducer-world witWorld artifact.
+        httpConformanceProgramsByName = builtins.listToAttrs (builtins.concatMap
+          (category:
+            let categoryDir = httpConformanceProgramsDir + "/${category}";
+            in map
+              (name: {
+                inherit name;
+                value =
+                  let
+                    guestDir = categoryDir + "/${name}";
+                    libsFile = guestDir + "/libs";
+                    libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
+                      (builtins.filter (s: s != "")
+                        (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
+                    multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
+                      libs = closeLibs libLines;
+                      entry = "reducer";
+                    };
+                  in
+                  mkCadenzaGuest ({
+                    pname = "cdz-http-conformance-${name}";
+                    src = guestDir + "/reducer.cdz";
+                    componentName = "cadenza:platform/guest";
+                  } // cadenzaWorldArgs "reducer-world" // multiFileArgs);
+              })
+              (builtins.filter
+                (n: (builtins.readDir categoryDir).${n} == "directory")
+                (builtins.attrNames (builtins.readDir categoryDir))))
+          (builtins.filter
+            (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
+            (builtins.attrNames (builtins.readDir httpConformanceProgramsDir))));
+        httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
+
         cdzHttpGatewayBin =
           let
             vendor = pkgs.rustPlatform.importCargoLock {
@@ -2900,6 +2938,63 @@
             cd implementation/seed/crates/cdz-http-gateway
             cargo build --release --offline --locked --features host --bin cdz-http-gateway
             install -Dm755 target/release/cdz-http-gateway "$out/bin/cdz-http-gateway"
+          '';
+
+        # The `cdz-http-programhash` deploy tool (operator request): compute a compiled component's ProgramHash
+        # for `cdz-http-control-admin set-program`, to seed a LIVE gateway. It lives in the cdz-http-gateway
+        # crate but is LIGHT — DEFAULT features, NO `--features host` (it uses only cdz_platform::ProgramHash,
+        # no wasmtime), so this target does not drag in the wasmtime/cranelift build. Same source closure +
+        # contracts overlay + cmake (the cdz-cas-http path-dep's aws-lc-rs TLS) as the gateway bin.
+        cdzHttpProgramhashBin =
+          let
+            vendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-gateway/Cargo.lock;
+            };
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-gateway/src
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.toml
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.lock
+                ./implementation/seed/crates/cdz-cas-http/src
+                ./implementation/seed/crates/cdz-cas-http/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
+                ./implementation/seed/crates/cdz-platform/src
+                ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+          in
+          pkgs.runCommand "cdz-http-programhash"
+            {
+              nativeBuildInputs = [ rustToolchain pkgs.cmake ];
+              RUST_MIN_STACK = "67108864";
+              meta.mainProgram = "cdz-http-programhash";
+            } ''
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cp -r --no-preserve=mode,ownership ${src} repo
+            chmod -R u+w repo
+            cd repo
+            # OVERLAY: stage cdz-platform's build-time-generated contract schemas (not committed, #5250).
+            mkdir -p implementation/seed/crates/cdz-platform/src/contracts
+            cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+            export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${vendor}"
+            EOF
+            cd implementation/seed/crates/cdz-http-gateway
+            cargo build --release --offline --locked --bin cdz-http-programhash
+            install -Dm755 target/release/cdz-http-programhash "$out/bin/cdz-http-programhash"
           '';
 
         # wasmAbiSexpSrc: the AUTHORITATIVE hand-authored wasm-abi.sexp, staged at its repo-relative path so the
@@ -6493,6 +6588,21 @@
         # third SUT process the conformance driver spawns; see `cdzHttpGatewayBin`.
         packages.cdz-http-gateway = cdzHttpGatewayBin;
 
+        # The compiled conformance guest components as a buildable bundle — a dir of <name>.wasm (http-hello /
+        # http-echo / root-router-baked) — so `nix build .#cdz-http-conformance-programs` gives a dir to POST
+        # into a LIVE CAS (operator request; seeds a live gateway, not just the ephemeral conformance driver).
+        packages.cdz-http-conformance-programs =
+          pkgs.runCommand "cdz-http-conformance-programs-bundle" { } ''
+            mkdir -p "$out"
+            ${pkgs.lib.concatStringsSep "\n            "
+              (pkgs.lib.mapAttrsToList (n: drv: ''cp ${drv} "$out/${n}.wasm"'') httpConformanceProgramsByName)}
+          '';
+
+        # The `cdz-http-programhash` deploy tool: `nix build .#cdz-http-programhash` → result/bin/… — compute a
+        # component's ProgramHash for `cdz-http-control-admin set-program`. Light (no --features host); see
+        # `cdzHttpProgramhashBin`.
+        packages.cdz-http-programhash = cdzHttpProgramhashBin;
+
         # S3: run a project's tests through nix, cached per-input (skip unchanged). `.#example-project-tests`
         # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
         packages.example-project-tests = exampleProjectTests;
@@ -7226,47 +7336,8 @@
             # dropped-in program stays valid Cadenza. (The deploy-templating of router handler hashes + the
             # seeded CAS store + the name→hash rewrite are following sub-slices; this establishes the painless
             # "drop a .cdz" compile foundation the operator asked for, decoupled from the doomed gateway crate.)
-            httpConformanceProgramsDir = ./implementation/seed/crates/cdz-http-conformance/programs;
-            # Enumerate every guest dir (a dir with a reducer.cdz) under each category (handlers/, routers/) —
-            # drop a `<category>/<name>/reducer.cdz` and it compiles, no flake edit.
-            # program name → its compiled guest derivation ($out is the stripped .wasm file). The e2e run
-            # assembles these into CDZ_HARNESS_PROGRAMS_DIR as <name>.wasm.
-            httpConformanceProgramsByName = builtins.listToAttrs (builtins.concatMap
-              (category:
-                let categoryDir = httpConformanceProgramsDir + "/${category}";
-                in map
-                  (name: {
-                    inherit name;
-                    value =
-                      let
-                        guestDir = categoryDir + "/${name}";
-                        # A guest carries a `libs` manifest (one repo-relative lib source path per line) beside
-                        # its reducer.cdz — the shared modules it imports (reducer-lib + http-lib). Absent ⇒
-                        # single-file. closeLibs transitively closes it over the import graph (http-lib pulls in
-                        # reducer-lib); cadenzaWorldArgs supplies the shared reducer-world witWorld artifact so
-                        # the guest need not redefine the WIT world inline (operator: reuse the mechanism).
-                        libsFile = guestDir + "/libs";
-                        libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
-                          (builtins.filter (s: s != "")
-                            (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
-                        multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
-                          libs = closeLibs libLines;
-                          entry = "reducer";
-                        };
-                      in
-                      mkCadenzaGuest ({
-                        pname = "cdz-http-conformance-${name}";
-                        src = guestDir + "/reducer.cdz";
-                        componentName = "cadenza:platform/guest";
-                      } // cadenzaWorldArgs "reducer-world" // multiFileArgs);
-                  })
-                  (builtins.filter
-                    (n: (builtins.readDir categoryDir).${n} == "directory")
-                    (builtins.attrNames (builtins.readDir categoryDir))))
-              (builtins.filter
-                (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
-                (builtins.attrNames (builtins.readDir httpConformanceProgramsDir))));
-            httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
+            # httpConformanceProgramsDir / httpConformanceProgramsByName / httpConformancePrograms are defined in
+            # the OUTER let (shared with packages.cdz-http-conformance-programs).
             cdzHttpConformanceProgramsCheck = pkgs.runCommand "cdz-http-conformance-programs"
               { guests = httpConformancePrograms; } ''
               echo "ok: http-conformance program guests compile (${toString (map (g: g.name) httpConformancePrograms)})" > "$out"
