@@ -6693,6 +6693,67 @@
               name = "cargo-xtask-declines";
               cargoCmd = "cargo run --locked --package xtask-mandates --profile release -- declines";
             };
+
+            # cdz-http-gateway (v-http-outpost, DESIGN-http-outpost.md) — the standalone HTTP outpost. It is
+            # an EXCLUDED crate with its OWN [workspace] (a later slice deps cdz-platform `host` → wasmtime;
+            # as a seed member that would drag wasmtime into the shared cargoArtifacts, so every per-crate
+            # check would pay). Being excluded, the seed's craneCrateCommon/`-p` machinery does NOT cover it,
+            # so it gets its own STANDALONE check here (concierge-directed 2026-09-10, option B; NOT folded
+            # into localGate — an excluded crate must not burden the merge gate; this is its dedicated CI job).
+            # Vendors its own deps from its COMMITTED lock (importCargoLock, same primitive as seedCargoVendor)
+            # and builds `--offline --locked`; stages the build-time-generated cdz-platform contract schemas
+            # over src/contracts (the SAME cdzPlatformContracts overlay craneCrateCommon uses at ~L1009, since
+            # cdz-platform's src/contracts is not committed — #5250). Runs test + clippy + fmt in one derivation.
+            cdzHttpGatewayVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-gateway/Cargo.lock;
+            };
+            cdzHttpGatewaySrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              # The path-dep closure only (no target/): cdz-http-gateway → cadenza-ast, cdz-platform;
+              # cdz-platform → cadenza-ast, cdz-contract. Plus each crate's Cargo.toml + the pinned toolchain.
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-gateway/src
+                ./implementation/seed/crates/cdz-http-gateway/tests
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.toml
+                ./implementation/seed/crates/cdz-http-gateway/Cargo.lock
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
+                ./implementation/seed/crates/cdz-platform/src
+                ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                # Mirror the per-crate cargoTest env (craneCrateCommon): a generous wall-clock + deep-stack
+                # floor so a correct test never false-reds under fleet build load.
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpGatewaySrc} repo
+              chmod -R u+w repo
+              cd repo
+              # OVERLAY: stage cdz-platform's build-time-generated contract schemas (not committed, #5250).
+              mkdir -p implementation/seed/crates/cdz-platform/src/contracts
+              cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+              # Offline vendored build against the crate's own committed lock.
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpGatewayVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-gateway
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-http-gateway (excluded standalone crate — cargo test + clippy + fmt, contracts overlay staged)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7074,6 +7135,11 @@
             # invokes `nix build .#checks.aarch64-linux.local-gate` for a single green/red over the 9
             # merge-required contexts (ruleset-10 minus test-macos) without any GH runner.
             local-gate = localGate;
+            # cdz-http-gateway (v-http-outpost): the excluded standalone crate's dedicated check (test +
+            # clippy + fmt, contracts overlay staged). STANDALONE — deliberately NOT in `local-gate` (an
+            # excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-http-gateway`
+            # or `nix flake check`).
+            cdz-http-gateway = cdzHttpGatewayCheck;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache

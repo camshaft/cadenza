@@ -32,6 +32,11 @@ Cargo.lock
 # ignored except where a crate adds its own scoped negation (cdz-runtime/cdz-nfc/the guest fixtures do).
 # The nix seed-compiler build (buildRustPackage) + `--locked` CI both need this tracked to vendor/pin.
 !/Cargo.lock
+# cdz-http-gateway is an EXCLUDED standalone [workspace] (own lock, not in the root vendor). Its
+# `checks.<sys>.cdz-http-gateway` nix check vendors its deps via `importCargoLock` from a COMMITTED lock
+# and builds `--offline --locked`, so this nested lock must be tracked (a scoped negation, as cdz-runtime
+# /cdz-nfc do). Regenerate with `cargo generate-lockfile` in the crate dir if deps change.
+!/implementation/seed/crates/cdz-http-gateway/Cargo.lock
 
 # The tracked `fleet/` source dir (role bodies, window.sh, contract) also gets used as an agent scratch
 # area — `fleet/scratch/` holds work-in-progress .patch/handoff files that are NOT source and must never
