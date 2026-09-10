@@ -26,10 +26,10 @@ cdz-http-protocol = { path = "../cdz-http-protocol" }
 cdz-str = { path = "../cdz-str" }
 # Every byte buffer is bytes::Bytes (spec §12).
 bytes = "1"
-# The driver's HTTP client: POST binary-AST AdminCommand bodies to the mock's admin endpoint + (later) make
-# real HTTP requests at the gateway. hyper HTTP/1 client driven via hyper-util's TokioIo; http-body-util for
-# the Full request body + collecting responses. tokio is the runtime + child-process spawner.
+# The driver's HTTP client: a POOLED `reqwest::Client` (held once, reused across requests — connections are
+# kept alive, NOT one-off per command) that POSTs binary-AST AdminCommand bodies to the mock's admin endpoint
+# and (later) makes real HTTP requests at the gateway. `default-features = false` — the harness is loopback
+# HTTP only, no TLS (matches the fleet's reqwest usage minus the TLS provider). tokio is the runtime +
+# child-process spawner.
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false }
