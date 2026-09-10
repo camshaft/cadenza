@@ -13,6 +13,7 @@
 pub mod auth;
 pub mod client;
 pub mod disk;
+pub mod disk_cache;
 pub mod error;
 pub mod mem_cache;
 pub mod server;
@@ -20,6 +21,7 @@ pub mod tiered;
 
 pub use client::HttpBlobStore;
 pub use disk::DiskBlobStore;
+pub use disk_cache::BoundedDiskCache;
 pub use error::CasError;
 pub use mem_cache::MemoryCache;
 pub use server::{CasServer, DEFAULT_MAX_BODY_BYTES};

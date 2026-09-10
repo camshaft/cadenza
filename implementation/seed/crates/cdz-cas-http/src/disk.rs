@@ -45,6 +45,24 @@ impl DiskBlobStore {
         })
     }
 
+    /// The root directory this store writes under (for cache tiers that scan/enumerate the on-disk blobs).
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Delete the blob for `hash` if present (a no-op if absent) — used by a size-capped cache tier to evict.
+    ///
+    /// # Errors
+    /// Propagates an I/O error other than the file being absent.
+    pub async fn delete(&self, hash: &Hash) -> std::io::Result<()> {
+        match tokio::fs::remove_file(self.path_for(hash)).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// The file path for `hash`: keyed on the 32-byte digest (tag ignored), tag-normalized to `Blob` and
     /// rendered base62 — so the same bytes map to one file however their hash is tagged.
     ///
