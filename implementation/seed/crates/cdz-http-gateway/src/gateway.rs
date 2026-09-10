@@ -103,6 +103,18 @@ impl Gateway {
         Self { router, runner }
     }
 
+    /// The `(handler, contract)` a `(method, path)` routes to, or `None` — for the edge to match a
+    /// WebSocket-upgrade request's path against the route table (the ws frame loop drives the handler as a
+    /// per-connection session rather than folding a request→response).
+    #[must_use]
+    pub fn match_route(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Option<(ProgramHash, cdz_platform::ContractId)> {
+        self.router.match_route(method, path)
+    }
+
     /// Serve one request to a response: match a route (→ `404` floor on no match), fold it through the
     /// handler (→ `500` floor on a [`FoldError`](crate::runner::FoldError)), else the handler's response.
     /// `request_id` is the unguessable per-request correlation token (seeds the handler session's id).
