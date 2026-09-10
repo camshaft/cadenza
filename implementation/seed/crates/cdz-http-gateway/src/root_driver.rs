@@ -15,7 +15,9 @@
 //! wasmtime or a compiled guest. Writing the response to the socket and routing `ControlDown` pushes to
 //! sessions are the edge slices that consume this driver.
 
-use crate::codec::{HttpRequest, HttpResponse, decode_response, encode_request};
+use crate::codec::{
+    Header, HttpRequest, HttpResponse, decode_deny, decode_response, deny_contract, encode_request,
+};
 use crate::effects::{ControlSink, GatewayResolver};
 use crate::loop_driver::{DriveEnd, drive_loop};
 use crate::runner::FoldError;
@@ -131,10 +133,28 @@ impl RootDriver {
         };
 
         match drive_loop(&mut *router, first, &resolver, self.max_folds).await {
+            // A `deny` terminal (design §2) rejects the request → a plain-text status floor; any other
+            // close reason is decoded as an `http-response` (the schema stays response-agnostic so a guest
+            // Break-ing with an http-response under any schema still serves — only `deny` is special-cased).
+            Ok((schema, reason)) if schema == deny_contract() => decode_deny(&reason)
+                .map(|d| deny_response(&d))
+                .ok_or(FoldError::MalformedResponse),
             Ok((_schema, reason)) => decode_response(&reason).ok_or(FoldError::MalformedResponse),
             Err(DriveEnd::Quiescent) => Err(FoldError::HandlerDidNotClose),
             Err(DriveEnd::FoldLimit) => Err(FoldError::Runaway),
         }
+    }
+}
+
+/// Render a [`Deny`](crate::codec::Deny) terminal as a plain-text [`HttpResponse`] the edge serves verbatim.
+fn deny_response(deny: &crate::codec::Deny) -> HttpResponse {
+    HttpResponse {
+        status: deny.status,
+        headers: vec![Header {
+            name: "content-type".to_string(),
+            value: "text/plain; charset=utf-8".to_string(),
+        }],
+        body: deny.reason.clone(),
     }
 }
 
@@ -319,6 +339,51 @@ mod tests {
             resp.headers[0].value, "/routed",
             "the handler saw the dispatched request and its response folded back through the router"
         );
+    }
+
+    #[tokio::test]
+    async fn a_deny_terminal_becomes_a_status_floor_response() {
+        use crate::codec::{Deny, deny_contract, encode_deny};
+        // A root router that REJECTS the request: Break with a `deny` (403) instead of an http-response.
+        struct Denier;
+        #[async_trait]
+        impl Reducer for Denier {
+            async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: deny_contract(),
+                        reason: encode_deny(&Deny {
+                            status: 403,
+                            reason: Bytes::from_static(b"forbidden"),
+                        }),
+                    },
+                )
+            }
+            async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let mut store = Store::new();
+        let router = ProgramHash::of(b"denier");
+        store.register(router, || Box::new(Denier));
+        let store: Arc<dyn ProgramStore> = Arc::new(store);
+
+        let resp = driver()
+            .serve(
+                store,
+                router,
+                b"s",
+                Arc::new(NullSink::default()),
+                &a_request("/secret"),
+            )
+            .await
+            .expect("a deny maps to a floor response, not an error");
+        assert_eq!(resp.status, 403);
+        assert_eq!(resp.body, Bytes::from_static(b"forbidden"));
     }
 
     #[tokio::test]

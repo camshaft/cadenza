@@ -95,6 +95,16 @@ pub struct HttpResponse {
     pub body: Bytes,
 }
 
+/// A `deny` terminal (`DESIGN-http-outpost-drive-contract.md` §2): a root router closes with this instead of
+/// an `http-response` to REJECT a request — an authorization deny, a policy block, a bad route. `status` is
+/// the HTTP status to floor with (e.g. `403`/`404`/`429`); `reason` is a short plain-text body. The edge maps
+/// it to a plain-text response, so a router expresses "no" without hand-building a full `http-response`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deny {
+    pub status: u16,
+    pub reason: Bytes,
+}
+
 /// One entry of an `http-route-table` frame (`http-route-table.cdz` `Route`): a `(method, path)` route
 /// served by the handler addressed by `handler` (a `ProgramHash`'s bytes), folding the contract `contract`
 /// (a `ContractId`'s bytes). `handler`/`contract` stay raw `Bytes` here — the codec layer is
@@ -488,6 +498,53 @@ pub fn decode_response(bytes: &[u8]) -> Option<HttpResponse> {
         headers,
         body,
     })
+}
+
+/// The 33-byte marker contract-id a program closes with to answer the HTTP request with an `http-response`
+/// (the schema the guests tag their closing `Break` with — `guests/*/reducer.cdz` emit exactly these bytes).
+/// v0 uses a fixed padded marker (a guest cannot compute a tagged contract-id at the value level); the real
+/// kernel supplies a derived id later (the schema-id fix).
+pub const HTTP_RESPONSE_MARKER: &[u8; cdz_platform::Hash::LEN] =
+    b"cdz-platform.http.response.......";
+/// The 33-byte marker contract-id a program closes with to DENY the request (`Deny` reason). v0 fixed marker.
+pub const DENY_MARKER: &[u8; cdz_platform::Hash::LEN] = b"cdz-platform.http.deny...........";
+
+/// The contract-id (schema) an `http-response` terminal close is tagged with.
+#[must_use]
+pub fn http_response_contract() -> cdz_platform::ContractId {
+    cdz_platform::ContractId::try_from(&HTTP_RESPONSE_MARKER[..])
+        .expect("the http-response marker is exactly Hash::LEN bytes")
+}
+
+/// The contract-id (schema) a `deny` terminal close is tagged with.
+#[must_use]
+pub fn deny_contract() -> cdz_platform::ContractId {
+    cdz_platform::ContractId::try_from(&DENY_MARKER[..])
+        .expect("the deny marker is exactly Hash::LEN bytes")
+}
+
+/// Encode a [`Deny`] — single-ctor record (fields name-sorted: `reason`, `status`), root-ascribed `Deny`,
+/// matching the canonical `Value.encode` form a guest would emit.
+#[must_use]
+pub fn encode_deny(deny: &Deny) -> Bytes {
+    let mut b = Builder::new();
+    let reason = bytes_leaf(&mut b, &deny.reason);
+    let status = uint_leaf(&mut b, u64::from(deny.status));
+    let rec = record(&mut b, vec![("reason", reason), ("status", status)]);
+    let root = ascribe(&mut b, rec, "Deny");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Decode a `deny` terminal's `Break` reason into a [`Deny`], or `None` if malformed. Ascription-tolerant
+/// (reads both the platform-boundary root-ascribed-only form and a guest's per-node `Value.encode` form).
+#[must_use]
+pub fn decode_deny(bytes: &[u8]) -> Option<Deny> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root); // `Deny` ctor elided → the (possibly ascribed) record
+    let status = u16::try_from(read_uint(&arenas, record_field(&arenas, rec, "status")?)?).ok()?;
+    let reason = read_bytes(&arenas, record_field(&arenas, rec, "reason")?)?;
+    Some(Deny { status, reason })
 }
 
 /// Decode an `http-route-table` frame into its [`RouteFrame`]s, or `None` if malformed. `RouteTable` is a
@@ -978,6 +1035,19 @@ mod tests {
             "the input still decodes"
         );
         assert!(decode_dispatch(b"garbage").is_none());
+    }
+
+    #[test]
+    fn deny_round_trips() {
+        let d = Deny {
+            status: 429,
+            reason: Bytes::from_static(b"too many requests"),
+        };
+        let decoded = decode_deny(&encode_deny(&d)).expect("deny decodes");
+        assert_eq!(decoded, d);
+        assert!(decode_deny(b"garbage").is_none());
+        // The two terminal markers are distinct, valid Hash::LEN contract-ids.
+        assert_ne!(deny_contract(), http_response_contract());
     }
 
     #[test]
