@@ -24,6 +24,9 @@ pub mod gateway;
 /// The CAS seeding client — publish programs by hash into the store the gateway fetches from.
 pub mod cas;
 
+/// Program resolution — a name→wasm-path manifest + the canonical `ProgramHash` computation.
+pub mod programs;
+
 /// The run-loop's scenario-execution core — bin resolution, step driving, and the pass/fail verdict.
 pub mod run;
 
