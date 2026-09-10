@@ -6889,6 +6889,7 @@
               CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
               CDZ_HTTP_ROUTER_DYNAMIC_WASM=${cdzHttpGatewayRouterDynamic} \
               CDZ_HTTP_ROOT_ROUTER_WASM=${cdzHttpGatewayRootRouter} \
+              CDZ_HTTP_ROOT_ROUTER_BAKED_WASM=${cdzHttpGatewayRootRouterBaked} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
