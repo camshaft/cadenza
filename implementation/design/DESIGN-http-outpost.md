@@ -23,7 +23,10 @@ only the one genuine operator fork (D1) as an `ask`.
 ### Lineage — this is the HTTP instance of an already-designed pattern
 
 The operator's idea maps onto prior art almost one-to-one; this doc is the concrete HTTP realization,
-not a new subsystem:
+not a new subsystem. (**Note on references:** `MembrainDev/…` paths below are **EXTERNAL** — they name
+docs in the separate *MembrainDev* repository, the operator's agent-platform requirements/design set,
+checked out locally alongside this repo; they are **not** in-tree paths. `implementation/design/…` and
+`cdz-platform/…` paths **are** in this repo.)
 
 - **`MembrainDev/.../patterns/api-gateway.md`** — "Federated API gateway (MCP and custom protocols)."
   The general pattern: *an edge reducer fronts the fleet for a foreign client over the network,
@@ -38,8 +41,8 @@ not a new subsystem:
   routing, **fetch-a-program-by-content-hash**, capability grants + `(reducer, host)` attribution,
   break-glass admin) — *"everything else is a governing program."*
 - **`implementation/design/DESIGN-hub-federation-protocol.md`** — the **host = plumbing ONLY**
-  discipline and the ws-edge seam shape (a listener surfaces `connect`/`frame`/`disconnect` as inbound
-  events; the reducer owns all protocol logic; **every frame is a `cadenza-ast` value-form document**).
+  discipline and the ws-edge seam shape (a listener surfaces `ws/connect`/`ws/frame`/`ws/disconnect` as
+  inbound events; the reducer owns all protocol logic; **every frame is a `cadenza-ast` value-form doc**).
   Treat as raw material: its `ws_listen.rs`/`cdz-kernel` anchors are the superseded `agent-harness`
   codebase; the CURRENT kernel is `cdz-platform`, which has **no network edge yet** — this design adds
   the first one.
@@ -126,7 +129,8 @@ Concretely (verified against the current tree): a handler targets **`reducer-wor
 `state`/`blobs`/`identity`/`run`; the privileged `event-reducer-world` adding `graph`/`deliver`/
 `provenance` is kernel-only and the gateway does NOT wire it). `cdz-platform`'s `host.rs` (behind
 `feature = "host"`) **already** binds this world via `wasmtime::component::bindgen!` on `wasmtime = "37"`
-with `async_support` + `wasm_component_model` + `epoch_interruption`, keys the linker imports by
+(Cargo features `runtime` + `cranelift` + `component-model` + `async`), with the `Config` set for
+`async_support(true)` + `wasm_component_model(true)` + `epoch_interruption(true)`, keys the linker imports by
 `ReducerKind` (an ordinary handler wires exactly `run`+`identity`+`blobs`+`state`), compiles+caches a
 `Component` by content digest, and drives `call_on_message`/`_on_response`/`_on_notification` async — so
 **the gateway can REUSE that host driver directly** (or copy its ~4-import subset), feeding it a
@@ -241,12 +245,14 @@ On an `http/request` event the **router** (`on_message`):
    `System::spawn` with a `Spawn` describing the handler's `ProgramHash` and a `SpawnContext { id, kind,
    limits }` (`system.rs`, `program.rs`) — same WIT world, so the handler is unchanged. Either way the
    spawn:
-   - gives the session a **fresh `InMemoryKvStore`** (`kv.rs:108`) as its `state` backend — the
+   - gives the session a **fresh `InMemoryKvStore`** (`cdz-platform::kv`) as its `state` backend — the
      operator's "local sessions with only in-memory kv stores." Per-request state is born empty and
      reclaimed when the session closes; nothing leaks between requests.
-   - clamps resources via `SpawnLimits` (`config.rs:58`) — a per-request session gets a bounded
-     fuel/memory budget (`DESIGN-per-spawn-limits-and-spawn-capability.md`), so a hostile or runaway
-     handler cannot wedge the node.
+   - clamps resources via `SpawnLimits` (`cdz-platform::config`) — a per-request session gets a bounded
+     **epoch-deadline (compute) + linear-memory-ceiling** budget (the platform bounds via
+     `epoch_interruption`/`StoreLimits`, NOT wasmtime fuel;
+     `DESIGN-per-spawn-limits-and-spawn-capability.md`), so a hostile or runaway handler cannot wedge
+     the node.
    - is created under the router's `spawn` capability (privileged; the router is a trusted governing
      program, the handlers are not — attenuation, api-gateway §authority).
 3. **Delivers the `http-request`** as the handler's first `on_message` (after its `Spawned` birth
@@ -371,9 +377,10 @@ later increments.
 - **P2 — the router as a governing program + per-connection isolation.** Lift the static match from P1
   into a **router reducer** (a shipped wasm component) holding the route table as its own state, so
   routing is a fold, not gateway code (the "bake in as little as possible" cut). Per-request handler
-  instances get bounded resources (a wasmtime fuel/memory budget — the standalone analogue of
-  `SpawnLimits`). Gate: routing across ≥2 routes through the router reducer; a hostile handler that spins
-  is bounded (fuel-trapped → 500), not able to wedge the gateway.
+  instances get bounded resources (a wasmtime **epoch-deadline + linear-memory-ceiling** budget — the
+  standalone analogue of `SpawnLimits`, the same mechanism `host.rs` arms; not fuel). Gate: routing
+  across ≥2 routes through the router reducer; a hostile handler that spins is bounded (epoch-trapped →
+  500), not able to wedge the gateway.
 - **P3 — the control link + handler download.** The gateway dials the control server (ws dial-in); the
   router folds a `route-table` frame and fetches each handler component **by hash** from a blob source
   (an in-memory/local/HTTP-backed `blobs` impl in v0; the real CAS later). Gate: a two-endpoint hermetic
