@@ -7091,6 +7091,52 @@
               { guests = httpConformancePrograms; } ''
               echo "ok: http-conformance program guests compile (${toString (map (g: g.name) httpConformancePrograms)})" > "$out"
             '';
+            # cdz-http-conformance (vertical gateway-conformance): the harness DRIVER crate's dedicated check —
+            # test + clippy + fmt. Path-deps cdz-http-control-mock (→ cdz-http-protocol → cadenza-ast + cdz-str)
+            # + tokio/hyper client. NO cdz-platform → no contracts overlay.
+            cdzHttpConformanceVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-conformance/Cargo.lock;
+            };
+            cdzHttpConformanceSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-conformance/Cargo.toml
+                ./implementation/seed/crates/cdz-http-conformance/Cargo.lock
+                ./implementation/seed/crates/cdz-http-conformance/src
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
+                ./implementation/seed/crates/cdz-http-control-mock/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzHttpConformanceCheck = pkgs.runCommand "cdz-http-conformance"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpConformanceSrc} repo
+              chmod -R u+w repo
+              cd repo
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpConformanceVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-conformance
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-http-conformance (excluded standalone crate — test + clippy + fmt)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7492,6 +7538,9 @@
             # The conformance-harness program guests all compile (auto-enumerated from programs/handlers/).
             # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-programs`.
             cdz-http-conformance-programs = cdzHttpConformanceProgramsCheck;
+            # The harness driver crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in local-gate;
+            # run via `nix build .#checks.<sys>.cdz-http-conformance`.
+            cdz-http-conformance = cdzHttpConformanceCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.
