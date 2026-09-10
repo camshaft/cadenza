@@ -35,7 +35,30 @@ FLAKE="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 mkdir -p "$BIN" "$(dirname "$ROOT")" 2>/dev/null || exit 0
 
 if timeout 300 nix build "$FLAKE#packages.aarch64-linux.cdz-shell-wrappers" --out-link "$ROOT" 2>/dev/null; then
-  ln -sf "$ROOT"/bin/* "$BIN"/ 2>/dev/null || true
+  # Link each wrapper onto PATH — but DEFER to ~/hivemind's PINNED tool whenever it provides one. The
+  # operator pins cdz/cdz-run/... via ~/hivemind/rev-tool: a nix build of a SPECIFIC origin/main commit,
+  # GC-rooted at ~/hivemind/bin/<attr>, linked onto ~/.local/bin. The per-worktree `nix run <worktree>#app`
+  # wrapper here would SHADOW that pin (and, worse, ~/.local/bin is shared across worktrees, so the wrapper
+  # only ever tracks whichever worktree refreshed LAST — not a stable tool). So for any tool hivemind pins,
+  # point ~/.local/bin at hivemind's executable instead of the wrapper. This STOPS the clobbering the
+  # operator hit, SELF-HEALS a pin a prior wrapper-link already overwrote, and auto-tracks hivemind's revs
+  # (the ~/hivemind/bin/<attr> out-link is what rev-tool updates). Tools hivemind does NOT pin
+  # (gate/fast-gate/roundtrip/lint-mandates/cdz-help) still get the flake wrapper. Generic: globs
+  # ~/hivemind/bin/*/bin/<name>, so it needs no hardcoded tool list and no-ops when ~/hivemind is absent.
+  for w in "$ROOT"/bin/*; do
+    name="$(basename "$w")"
+    # Does hivemind pin a tool by this name? (glob-loop, not `ls`: an unmatched bash glob stays literal,
+    # so `[ -x <literal> ]` is simply false — no stderr, no ls dependency.)
+    pinned=""
+    for cand in "$HOME"/hivemind/bin/*/bin/"$name"; do
+      [ -x "$cand" ] && { pinned="$cand"; break; }
+    done
+    if [ -n "$pinned" ]; then
+      ln -sf "$pinned" "$BIN/$name" 2>/dev/null || true   # hivemind's PINNED build wins over the wrapper
+    else
+      ln -sf "$w" "$BIN/$name" 2>/dev/null || true        # no hivemind pin for this tool → flake wrapper
+    fi
+  done
   date +%s > "$STAMP" 2>/dev/null || true
 fi
 
