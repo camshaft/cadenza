@@ -18,9 +18,7 @@ use crate::gateway::{Gateway, Router};
 use crate::runner::HandlerRunner;
 use crate::wasm::{spawn_epoch_ticker, wasm_store};
 use bytes::Bytes;
-use cdz_platform::{
-    BlobStore, ContractId, HostId, InMemoryBlobStore, ProgramHash, ProgramStore, ReducerId,
-};
+use cdz_platform::{BlobStore, HostId, InMemoryBlobStore, ProgramHash, ProgramStore, ReducerId};
 use std::sync::Arc;
 
 /// One route a control server ships: a `(method, path)` served by the handler `handler_wasm` (the raw
@@ -92,22 +90,10 @@ impl MockControlServer {
     /// seed the dependency components + handler blobs into a content store, build the wasmtime handler store
     /// (driving the engine epoch on a detached ticker), decode the shipped route-table frame into a
     /// [`Router`], and wire the edge. `None` if the route-table frame is malformed (a bad handler hash).
-    pub async fn build_edge(
-        &self,
-        host: HostId,
-        router_id: ReducerId,
-        request_contract: ContractId,
-    ) -> Option<Arc<HttpEdge>> {
+    pub async fn build_edge(&self, host: HostId, router_id: ReducerId) -> Option<Arc<HttpEdge>> {
         let mut components: Vec<Bytes> = self.deps.clone();
         components.extend(self.routes.iter().map(|r| r.handler_wasm.clone()));
-        assemble_edge(
-            &self.route_table_frame(),
-            &components,
-            host,
-            router_id,
-            request_contract,
-        )
-        .await
+        assemble_edge(&self.route_table_frame(), &components, host, router_id).await
     }
 }
 
@@ -122,7 +108,6 @@ pub async fn assemble_edge(
     components: &[Bytes],
     host: HostId,
     router_id: ReducerId,
-    request_contract: ContractId,
 ) -> Option<Arc<HttpEdge>> {
     let mut cas = InMemoryBlobStore::new();
     for c in components {
@@ -134,14 +119,16 @@ pub async fn assemble_edge(
     // for the edge's lifetime (a runaway handler still traps at its deadline).
     let _ = spawn_epoch_ticker(store.as_ref());
 
+    // The router carries each route's contract-id (from the frame); the runner needs only the Origin.
     let router = Router::from_route_table(frame)?;
-    let runner = HandlerRunner::new(host, router_id, request_contract);
+    let runner = HandlerRunner::new(host, router_id);
     Some(Arc::new(HttpEdge::new(Gateway::new(router, runner), store)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cdz_platform::ContractId;
     use http_body_util::{BodyExt, Empty};
     use hyper::Request;
     use hyper_util::rt::TokioIo;
@@ -167,14 +154,14 @@ mod tests {
             Method::Get,
             "/hello",
             read(&guest),
-            Bytes::from_static(b"cdz-platform.http.response........"),
+            Bytes::copy_from_slice(
+                ContractId::of(b"cdz-platform.http.request")
+                    .hash()
+                    .as_bytes(),
+            ),
         );
         let edge = control
-            .build_edge(
-                HostId::of(b"edge-host"),
-                ReducerId::of(b"router"),
-                ContractId::of(b"cdz-platform.http.request"),
-            )
+            .build_edge(HostId::of(b"edge-host"), ReducerId::of(b"router"))
             .await
             .expect("the shipped route table assembles an edge");
 
@@ -251,14 +238,14 @@ mod tests {
             Method::Post,
             "/m",
             read(&echo),
-            Bytes::from_static(b"cdz-platform.http.request........."),
+            Bytes::copy_from_slice(
+                ContractId::of(b"cdz-platform.http.request")
+                    .hash()
+                    .as_bytes(),
+            ),
         );
         let edge = control
-            .build_edge(
-                HostId::of(b"edge-host"),
-                ReducerId::of(b"router"),
-                ContractId::of(b"cdz-platform.http.request"),
-            )
+            .build_edge(HostId::of(b"edge-host"), ReducerId::of(b"router"))
             .await
             .expect("edge");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

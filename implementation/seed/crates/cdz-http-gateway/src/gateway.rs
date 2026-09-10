@@ -13,25 +13,34 @@
 
 use crate::codec::{Header, HttpRequest, HttpResponse, Method};
 use crate::runner::HandlerRunner;
-use cdz_platform::{ProgramHash, ProgramStore};
+use cdz_platform::{ContractId, ProgramHash, ProgramStore};
 
-/// One route: an exact `(method, path)` served by the handler component `handler`. Path-pattern matching
-/// (params, prefixes) is a later slice — v0 is exact-match, mirroring the design's minimal first cut.
+/// One route: an exact `(method, path)` served by the handler component `handler`, which folds the
+/// contract `contract` (the contract-id delivered as the request's `Message.id` — different handlers fold
+/// different contracts, e.g. an MCP handler vs an HTML one). Path-pattern matching (params, prefixes) is a
+/// later slice — v0 is exact-match, mirroring the design's minimal first cut.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
     pub method: Method,
     pub path: String,
     pub handler: ProgramHash,
+    pub contract: ContractId,
 }
 
 impl Route {
-    /// A route serving `handler` at exactly `(method, path)`.
+    /// A route serving `handler` (folding `contract`) at exactly `(method, path)`.
     #[must_use]
-    pub fn new(method: Method, path: impl Into<String>, handler: ProgramHash) -> Self {
+    pub fn new(
+        method: Method,
+        path: impl Into<String>,
+        handler: ProgramHash,
+        contract: ContractId,
+    ) -> Self {
         Self {
             method,
             path: path.into(),
             handler,
+            contract,
         }
     }
 }
@@ -52,10 +61,9 @@ impl Router {
     }
 
     /// Build a router from an `http-route-table` control frame (the payload the control server ships,
-    /// `http-route-table.cdz`) — decode it and map each route's `handler` bytes to a [`ProgramHash`].
-    /// `None` if the frame is malformed or any `handler` is not a valid hash (`Hash::LEN` bytes). The
-    /// per-route `contract` id is not yet used by the router (the runner folds a fixed request contract-id
-    /// for now); wiring per-route contracts is a follow-up.
+    /// `http-route-table.cdz`) — decode it and map each route's `handler`/`contract` bytes to their typed
+    /// ids. `None` if the frame is malformed or any `handler`/`contract` is not a valid hash (`Hash::LEN`
+    /// bytes).
     #[must_use]
     pub fn from_route_table(frame: &[u8]) -> Option<Router> {
         let routes = crate::codec::decode_route_table(frame)?
@@ -65,19 +73,20 @@ impl Router {
                     method: r.method,
                     path: r.path,
                     handler: ProgramHash::try_from(r.handler.as_ref()).ok()?,
+                    contract: ContractId::try_from(r.contract.as_ref()).ok()?,
                 })
             })
             .collect::<Option<Vec<_>>>()?;
         Some(Router::new(routes))
     }
 
-    /// The handler for `(method, path)`, or `None` if no route matches.
+    /// The `(handler, contract)` for `(method, path)`, or `None` if no route matches.
     #[must_use]
-    pub fn match_route(&self, method: Method, path: &str) -> Option<ProgramHash> {
+    pub fn match_route(&self, method: Method, path: &str) -> Option<(ProgramHash, ContractId)> {
         self.routes
             .iter()
             .find(|r| r.method == method && r.path == path)
-            .map(|r| r.handler)
+            .map(|r| (r.handler, r.contract))
     }
 }
 
@@ -104,10 +113,14 @@ impl Gateway {
         request_id: &[u8],
         req: &HttpRequest,
     ) -> HttpResponse {
-        let Some(handler) = self.router.match_route(req.method, &req.path) else {
+        let Some((handler, contract)) = self.router.match_route(req.method, &req.path) else {
             return floor(404, "not found");
         };
-        match self.runner.fold(store, handler, request_id, req).await {
+        match self
+            .runner
+            .fold(store, handler, contract, request_id, req)
+            .await
+        {
             Ok(resp) => resp,
             Err(_) => floor(500, "internal server error"),
         }
@@ -181,11 +194,12 @@ mod tests {
     }
 
     fn runner() -> HandlerRunner {
-        HandlerRunner::new(
-            HostId::of(b"test-host"),
-            ReducerId::of(b"test-router"),
-            ContractId::of(b"cdz-platform.http.request"),
-        )
+        HandlerRunner::new(HostId::of(b"test-host"), ReducerId::of(b"test-router"))
+    }
+
+    /// A stand-in per-route contract-id for the serve tests.
+    fn a_contract() -> ContractId {
+        ContractId::of(b"cdz-platform.http.request")
     }
 
     fn get(path: &str) -> HttpRequest {
@@ -204,7 +218,7 @@ mod tests {
         let mut store = Store::new();
         store.register(ok, || Box::new(OkHandler));
         let gw = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/", ok)]),
+            Router::new(vec![Route::new(Method::Get, "/", ok, a_contract())]),
             runner(),
         );
 
@@ -219,7 +233,7 @@ mod tests {
         let mut store = Store::new();
         store.register(ok, || Box::new(OkHandler));
         let gw = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/", ok)]),
+            Router::new(vec![Route::new(Method::Get, "/", ok, a_contract())]),
             runner(),
         );
 
@@ -233,7 +247,7 @@ mod tests {
         let mut store = Store::new();
         store.register(ok, || Box::new(OkHandler));
         let gw = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/", ok)]),
+            Router::new(vec![Route::new(Method::Get, "/", ok, a_contract())]),
             runner(),
         );
 
@@ -249,7 +263,7 @@ mod tests {
         let mut store = Store::new();
         store.register(stuck, || Box::new(StuckHandler));
         let gw = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/", stuck)]),
+            Router::new(vec![Route::new(Method::Get, "/", stuck, a_contract())]),
             runner(),
         );
 
@@ -262,23 +276,25 @@ mod tests {
         use crate::codec::{RouteFrame, encode_route_table};
         let h1 = ProgramHash::of(b"handler-one");
         let h2 = ProgramHash::of(b"handler-two");
+        let c1 = ContractId::of(b"contract-1");
+        let c2 = ContractId::of(b"contract-2");
         let frame = encode_route_table(&[
             RouteFrame {
                 method: Method::Get,
                 path: "/".to_string(),
                 handler: Bytes::copy_from_slice(h1.hash().as_bytes()),
-                contract: Bytes::from_static(b"contract-1"),
+                contract: Bytes::copy_from_slice(c1.hash().as_bytes()),
             },
             RouteFrame {
                 method: Method::Post,
                 path: "/mcp".to_string(),
                 handler: Bytes::copy_from_slice(h2.hash().as_bytes()),
-                contract: Bytes::from_static(b"contract-2"),
+                contract: Bytes::copy_from_slice(c2.hash().as_bytes()),
             },
         ]);
         let router = Router::from_route_table(&frame).expect("route table builds a router");
-        assert_eq!(router.match_route(Method::Get, "/"), Some(h1));
-        assert_eq!(router.match_route(Method::Post, "/mcp"), Some(h2));
+        assert_eq!(router.match_route(Method::Get, "/"), Some((h1, c1)));
+        assert_eq!(router.match_route(Method::Post, "/mcp"), Some((h2, c2)));
         assert_eq!(router.match_route(Method::Get, "/mcp"), None);
     }
 
@@ -290,7 +306,20 @@ mod tests {
             method: Method::Get,
             path: "/".to_string(),
             handler: Bytes::from_static(b"too-short"),
-            contract: Bytes::from_static(b"c"),
+            contract: Bytes::copy_from_slice(ContractId::of(b"c").hash().as_bytes()),
+        }]);
+        assert!(Router::from_route_table(&frame).is_none());
+    }
+
+    #[test]
+    fn a_route_table_with_a_bad_contract_hash_is_rejected() {
+        use crate::codec::{RouteFrame, encode_route_table};
+        // A valid handler but a too-short contract-id → the whole frame is rejected.
+        let frame = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: Bytes::copy_from_slice(ProgramHash::of(b"h").hash().as_bytes()),
+            contract: Bytes::from_static(b"too-short"),
         }]);
         assert!(Router::from_route_table(&frame).is_none());
     }
@@ -299,11 +328,12 @@ mod tests {
     fn first_matching_route_wins() {
         let a = ProgramHash::of(b"a");
         let b = ProgramHash::of(b"b");
+        let ca = ContractId::of(b"ca");
         let router = Router::new(vec![
-            Route::new(Method::Get, "/x", a),
-            Route::new(Method::Get, "/x", b),
+            Route::new(Method::Get, "/x", a, ca),
+            Route::new(Method::Get, "/x", b, ContractId::of(b"cb")),
         ]);
-        assert_eq!(router.match_route(Method::Get, "/x"), Some(a));
+        assert_eq!(router.match_route(Method::Get, "/x"), Some((a, ca)));
         assert_eq!(router.match_route(Method::Get, "/y"), None);
     }
 }

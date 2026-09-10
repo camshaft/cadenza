@@ -50,30 +50,25 @@ impl std::error::Error for FoldError {}
 /// Folds each inbound [`HttpRequest`] through a per-request handler session.
 ///
 /// Holds the envelope metadata every delivered request carries: the `host` (the node running the gateway)
-/// and `router` (the sender) stamped as the request's [`Origin`], and the contract-id of the `http-request`
-/// schema set as the delivered message's `id` (so a handler can dispatch on it). These are configuration,
-/// not per-request state, so one runner serves every request.
+/// and `router` (the sender) stamped as the request's [`Origin`]. The delivered message's contract-id is
+/// PER-ROUTE (passed to [`fold`](HandlerRunner::fold) from the matched route), so one runner serves every
+/// route. `host`/`router` are configuration, not per-request state.
 pub struct HandlerRunner {
     host: HostId,
     router: ReducerId,
-    request_contract: ContractId,
 }
 
 impl HandlerRunner {
-    /// A runner stamping requests with `host`/`router` as their [`Origin`] and `request_contract` as the
-    /// delivered message's contract-id.
+    /// A runner stamping requests with `host`/`router` as their [`Origin`].
     #[must_use]
-    pub fn new(host: HostId, router: ReducerId, request_contract: ContractId) -> Self {
-        Self {
-            host,
-            router,
-            request_contract,
-        }
+    pub fn new(host: HostId, router: ReducerId) -> Self {
+        Self { host, router }
     }
 
-    /// Instantiate a fresh session of `program`, deliver `req` as its `on_message`, and return the
-    /// `http-response` it closes with. `request_id` is the unguessable per-request correlation token — it
-    /// seeds the session's [`ReducerId`], so each request gets a distinct instance with its own state.
+    /// Instantiate a fresh session of `program`, deliver `req` as its `on_message` (with contract-id
+    /// `request_contract`, the matched route's), and return the `http-response` it closes with.
+    /// `request_id` is the unguessable per-request correlation token — it seeds the session's
+    /// [`ReducerId`], so each request gets a distinct instance with its own state.
     ///
     /// # Errors
     /// [`FoldError::UnknownProgram`] if the store cannot instantiate `program`;
@@ -83,6 +78,7 @@ impl HandlerRunner {
         &self,
         store: &dyn ProgramStore,
         program: ProgramHash,
+        request_contract: ContractId,
         request_id: &[u8],
         req: &HttpRequest,
     ) -> Result<HttpResponse, FoldError> {
@@ -100,7 +96,7 @@ impl HandlerRunner {
 
         let (_requests, outcome) = reducer
             .on_message(Message {
-                id: self.request_contract,
+                id: request_contract,
                 payload: encode_request(req),
                 from: Origin {
                     reducer: self.router,
@@ -128,11 +124,13 @@ mod tests {
     use cdz_platform::{Notification, Reducer, Request, Response};
 
     fn runner() -> HandlerRunner {
-        HandlerRunner::new(
-            HostId::of(b"test-host"),
-            ReducerId::of(b"test-router"),
-            ContractId::of(b"cdz-platform.http.request"),
-        )
+        HandlerRunner::new(HostId::of(b"test-host"), ReducerId::of(b"test-router"))
+    }
+
+    /// A stand-in request contract-id for the fold tests (the runner delivers it as the Message.id; these
+    /// handlers decode by payload, so the exact id is immaterial).
+    fn a_contract() -> ContractId {
+        ContractId::of(b"cdz-platform.http.request")
     }
 
     fn a_request() -> HttpRequest {
@@ -225,7 +223,7 @@ mod tests {
         store.register(program, || Box::new(EchoHandler));
 
         let resp = runner()
-            .fold(&store, program, b"req-1", &a_request())
+            .fold(&store, program, a_contract(), b"req-1", &a_request())
             .await
             .expect("handler responds");
 
@@ -240,7 +238,13 @@ mod tests {
     async fn unknown_program_is_an_error() {
         let store = Store::new(); // nothing registered
         let err = runner()
-            .fold(&store, ProgramHash::of(b"absent"), b"req-2", &a_request())
+            .fold(
+                &store,
+                ProgramHash::of(b"absent"),
+                a_contract(),
+                b"req-2",
+                &a_request(),
+            )
             .await
             .unwrap_err();
         assert_eq!(err, FoldError::UnknownProgram);
@@ -252,7 +256,7 @@ mod tests {
         let program = ProgramHash::of(b"never");
         store.register(program, || Box::new(NeverCloses));
         let err = runner()
-            .fold(&store, program, b"req-3", &a_request())
+            .fold(&store, program, a_contract(), b"req-3", &a_request())
             .await
             .unwrap_err();
         assert_eq!(err, FoldError::HandlerDidNotClose);
@@ -264,7 +268,7 @@ mod tests {
         let program = ProgramHash::of(b"garbage");
         store.register(program, || Box::new(GarbageReason));
         let err = runner()
-            .fold(&store, program, b"req-4", &a_request())
+            .fold(&store, program, a_contract(), b"req-4", &a_request())
             .await
             .unwrap_err();
         assert_eq!(err, FoldError::MalformedResponse);
@@ -283,9 +287,12 @@ mod tests {
         let mut second = a_request();
         second.path = "/b".to_string();
 
-        let r1 = runner().fold(&store, program, b"r1", &first).await.unwrap();
+        let r1 = runner()
+            .fold(&store, program, a_contract(), b"r1", &first)
+            .await
+            .unwrap();
         let r2 = runner()
-            .fold(&store, program, b"r2", &second)
+            .fold(&store, program, a_contract(), b"r2", &second)
             .await
             .unwrap();
         assert_eq!(r1.headers[0].value, "/a");

@@ -146,13 +146,14 @@ mod tests {
             Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
         let _ticker = spawn_epoch_ticker(store.as_ref());
 
-        let runner = HandlerRunner::new(
-            HostId::of(b"edge-host"),
-            ReducerId::of(b"router"),
-            ContractId::of(b"cdz-platform.http.request"),
-        );
+        let runner = HandlerRunner::new(HostId::of(b"edge-host"), ReducerId::of(b"router"));
         let gateway = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/", program)]),
+            Router::new(vec![Route::new(
+                Method::Get,
+                "/",
+                program,
+                ContractId::of(b"cdz-platform.http.request"),
+            )]),
             runner,
         );
         let edge = Arc::new(HttpEdge::new(gateway, store));

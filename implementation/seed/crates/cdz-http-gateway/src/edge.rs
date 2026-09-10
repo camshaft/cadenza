@@ -205,10 +205,14 @@ mod tests {
         let runner = HandlerRunner::new(
             HostId::of(b"edge-test-host"),
             ReducerId::of(b"edge-test-router"),
-            ContractId::of(b"cdz-platform.http.request"),
         );
         let gateway = Gateway::new(
-            Router::new(vec![Route::new(Method::Get, "/echo", handler)]),
+            Router::new(vec![Route::new(
+                Method::Get,
+                "/echo",
+                handler,
+                ContractId::of(b"cdz-platform.http.request"),
+            )]),
             runner,
         );
         let edge = Arc::new(HttpEdge::new(gateway, Arc::new(store)));
