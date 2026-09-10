@@ -1775,6 +1775,38 @@
           '';
         };
 
+        # ── B3 (v-reducer-targets): rcdzc as a run-callable reducer-world GUEST component ──────────────
+        # Builds cdz-reducer-guest (feature target-rcdzc) to a wasm COMPONENT via cargo-component, for
+        # wasm32-unknown-unknown — WASI-FREE (operator 2026-09-10 "i don't want wasi, no"): Rust's
+        # unknown-unknown std stubs its OS layer inline rather than importing WASI, so the component imports
+        # ONLY the cadenza:platform reducer world (verified `wasm-tools component wit`: 0 wasi imports) and
+        # instantiates on the platform PURE linker. `wasm-tools strip -a` canonicalizes (drops the
+        # tool-version `producers`) for a reproducible content address; `hashOf` gives the CAS hash the
+        # platform's `run(program-hash, contract-id, input)` invokes it by. Reuses the seed workspace
+        # src+vendor (cdz-reducer-guest is a root MEMBER, built `-p` for wasm — no standalone lock); its
+        # `[package.metadata.component.target]` points at cdz-platform/wit (present in seedSrc).
+        reducerGuestRcdzc = pkgs.stdenvNoCC.mkDerivation {
+          pname = "reducer-guest-rcdzc";
+          version = "0.0.0";
+          src = seedSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
+          dontFixup = true; # a single wasm component — fixup's `strip` would truncate it.
+          buildPhase = ''
+            runHook preBuild
+            export RUSTC_BOOTSTRAP=1
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo component build --release --target wasm32-unknown-unknown \
+              -p cdz-reducer-guest --features target-rcdzc --locked
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            wasm-tools strip -a \
+              target/wasm32-unknown-unknown/release/cdz_reducer_guest.wasm -o "$out"
+            runHook postInstall
+          '';
+        };
+
         # Full-CI-in-nix increment 3: the NATIVE half of the GHA `rcdzc-wasm` job (cargo test + clippy +
         # fmt in the rcdzc-wasm crate dir). The job's OTHER half — the wasm32-wasip1 build — is already
         # the `rcdzcWasm` derivation above, so `nix flake check` covers the whole job via two checks. This
@@ -6470,6 +6502,10 @@
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
+        # B3 (v-reducer-targets): the rcdzc reducer-world guest component + its CAS hash (the program-hash
+        # the platform's `run` invokes it by). WASI-free wasm32-unknown-unknown component (see the derivation).
+        packages.reducer-guest-rcdzc = reducerGuestRcdzc;
+        packages.reducer-guest-rcdzc-hash = hashOf reducerGuestRcdzc "reducer-guest-rcdzc-hash";
 
         # S2: build a Cadenza project through nix (the S1 compiler on Project.cdz → wasm).
         # `.#example-project` is the gate-witness demo, built by the in-flake `buildCadenzaProject`
