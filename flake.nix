@@ -6835,6 +6835,17 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/root-router/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The OPERATOR-MANDATED root router (guests/root-router-baked/reducer.cdz, A/B decision 2026-09-10):
+            # the routing table + handler hashes are BAKED IN and COMPILED ahead of time, shipped by hash; the
+            # gateway drives it with a BARE http-request (no RouteQuery envelope). Supersedes the router-dynamic
+            # /RouteQuery shape once its templated runtime e2e lands. Building it IS the gate that the baked-
+            # table + bare-request shape stays valid Cadenza + a valid reducer component (handler hashes here are
+            # placeholder markers the deploy tooling replaces with the real deployed hashes before compiling).
+            cdzHttpGatewayRootRouterBaked = mkCadenzaGuest {
+              pname = "cdz-http-gateway-root-router-baked";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/root-router-baked/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -7351,6 +7362,8 @@
             cdz-http-gateway-router-dynamic = cdzHttpGatewayRouterDynamic;
             # The root router governing program (dumb-gateway inc-4: decode + match + EMIT a dispatch effect).
             cdz-http-gateway-root-router = cdzHttpGatewayRootRouter;
+            # The operator-mandated baked-table + bare-request root router (routing compiled INTO the program).
+            cdz-http-gateway-root-router-baked = cdzHttpGatewayRootRouterBaked;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
