@@ -32,7 +32,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # The compiler core — the SAME crate the native kernel used, now targeted to wasm. Its heavy deps are
 # tests-only (proven), so the wasm build is just the compile path.
-rcdzc = { path = "../rcdzc" }
+# `default-features = false` drops rcdzc's host-CLI `validate-output` feature (`wasmparser`): the
+# compiler-as-wasm drives the library API, not the file-writing `cli` path, so it needs no output
+# validator in the wasm32 build.
+rcdzc = { path = "../rcdzc", default-features = false }
 
 [dev-dependencies]
 # The front-end reader — TESTS ONLY (bridges source text → AST bytes to feed `compile_ast`, the same
