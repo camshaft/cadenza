@@ -144,6 +144,23 @@ impl RouteDecision {
     }
 }
 
+/// The gateway's ENTIRE boot configuration, shipped by the control server on connect (`DESIGN-http-outpost.md`
+/// §2/§3 + the dumb-gateway redirect): the gateway holds no table and no local files — it learns everything
+/// from the control server. `cas_url` + `cas_credential` are how it reaches the content-addressed store
+/// (`GET {cas_url}/{hash}` with `Authorization: Bearer {cas_credential}`); `root_router` is the `ProgramHash`
+/// of the ROOT ROUTER program the gateway fetches from that CAS and calls per request (routing lives inside
+/// that program, not the gateway). A later control push re-sends `root_router` (a new router — applied live)
+/// or a fresh `ControlConfig` (credential rotation). A single-constructor record value on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlConfig {
+    /// The base URL of the content-addressed store the gateway fetches programs (+ their deps) from by hash.
+    pub cas_url: String,
+    /// The credential the gateway presents to the CAS (`Authorization: Bearer …`).
+    pub cas_credential: Bytes,
+    /// The `ProgramHash` (its 33 raw bytes) of the root router program the gateway calls per request.
+    pub root_router: Bytes,
+}
+
 // --- encode ----------------------------------------------------------------------------------------------
 
 /// Encode an [`HttpRequest`] into the canonical binary-AST payload a handler's `on_message` receives.
@@ -258,6 +275,27 @@ pub fn encode_route_query(request: &[u8], table: &[u8]) -> Bytes {
     let table = bytes_leaf(&mut b, table);
     let rec = record(&mut b, vec![("request", request), ("table", table)]);
     let root = ascribe(&mut b, rec, "RouteQuery");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Encode a [`ControlConfig`] — the boot-config frame the control server ships the gateway on connect. A
+/// single-constructor sum → the record directly (fields name-sorted), under the root ascription.
+#[must_use]
+pub fn encode_control_config(config: &ControlConfig) -> Bytes {
+    let mut b = Builder::new();
+    let cas_url = str_leaf(&mut b, &config.cas_url);
+    let cas_credential = bytes_leaf(&mut b, &config.cas_credential);
+    let root_router = bytes_leaf(&mut b, &config.root_router);
+    let rec = record(
+        &mut b,
+        vec![
+            ("cas-credential", cas_credential),
+            ("cas-url", cas_url),
+            ("root-router", root_router),
+        ],
+    );
+    let root = ascribe(&mut b, rec, "ControlConfig");
     let arenas = b.finish(root);
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
@@ -422,6 +460,19 @@ pub fn decode_route_query(bytes: &[u8]) -> Option<(Bytes, Bytes)> {
     let request = read_bytes(&arenas, record_field(&arenas, rec, "request")?)?;
     let table = read_bytes(&arenas, record_field(&arenas, rec, "table")?)?;
     Some((request, table))
+}
+
+/// Decode a [`ControlConfig`] boot-config frame, or `None` if malformed — the inverse of
+/// [`encode_control_config`]. Single-ctor → the record directly (after the optional ascription).
+#[must_use]
+pub fn decode_control_config(bytes: &[u8]) -> Option<ControlConfig> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(ControlConfig {
+        cas_url: read_str(&arenas, record_field(&arenas, rec, "cas-url")?)?,
+        cas_credential: read_bytes(&arenas, record_field(&arenas, rec, "cas-credential")?)?,
+        root_router: read_bytes(&arenas, record_field(&arenas, rec, "root-router")?)?,
+    })
 }
 
 /// Decode the router governing program's closing-`Break` reason bytes into a [`RouteDecision`], or `None` if
@@ -770,6 +821,35 @@ mod tests {
         // The embedded payloads still decode as their own forms after the round-trip through the envelope.
         assert!(decode_request(&r).is_some());
         assert_eq!(decode_route_table(&t).unwrap(), sample_route_table());
+    }
+
+    #[test]
+    fn control_config_round_trips() {
+        let config = ControlConfig {
+            cas_url: "https://cas.example.internal:8443/blobs".to_string(),
+            cas_credential: Bytes::from_static(b"bearer-token-abc123"),
+            root_router: Bytes::from_static(b"cdz-router.root................."),
+        };
+        let decoded =
+            decode_control_config(&encode_control_config(&config)).expect("config decodes");
+        assert_eq!(decoded, config);
+        // An empty credential (dev / no-auth CAS) still round-trips.
+        let no_auth = ControlConfig {
+            cas_url: "http://localhost:9000".to_string(),
+            cas_credential: Bytes::new(),
+            root_router: Bytes::from_static(b"cdz-router.root................."),
+        };
+        assert_eq!(
+            decode_control_config(&encode_control_config(&no_auth)).unwrap(),
+            no_auth
+        );
+    }
+
+    #[test]
+    fn a_malformed_control_config_is_none() {
+        assert!(decode_control_config(b"not a config").is_none());
+        // A route table is not a config (missing the config fields) → None.
+        assert!(decode_control_config(&encode_route_table(&sample_route_table())).is_none());
     }
 
     #[test]
