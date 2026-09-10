@@ -43,6 +43,12 @@ pub mod resolver;
 /// HTTP edge, and serve. The `cdz-http-gateway` binary's startup path.
 pub mod boot;
 
+/// The wasmtime-backed program store (`host` feature, design §1/§4): wrap the control-supplied HTTP CAS in a
+/// [`cdz_platform::WasmProgramStore`] so the gateway instantiates a real content-addressed wasm handler per
+/// spawn. Gated so the codec/edge spine builds wasmtime-free; the gateway binary always enables `host`.
+#[cfg(feature = "host")]
+pub mod wasm;
+
 /// The HTTP content-addressed store client (design §3/§6): a [`cdz_platform::BlobStore`] backed by an HTTP
 /// CAS at the control-supplied URL + credential, so the gateway fetches programs, deps, and `CasRef` bodies
 /// by hash (base62 keys, digest-verified on 200). Re-exported from the shared `cdz-cas-http` crate

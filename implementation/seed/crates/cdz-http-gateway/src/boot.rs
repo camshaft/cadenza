@@ -1,27 +1,88 @@
 //! Boot-from-control (`DESIGN-http-outpost-drive-contract.md` §3/§4) — the dumb gateway's startup path.
 //!
-//! The gateway is told ONLY where to serve HTTP and where the control server is. [`run`] dials a single
-//! persistent WebSocket to control, reads the [`ControlConfig`] control ships on connect (CAS url +
-//! credential + root-router `ProgramHash`), builds the content-addressed store client from it, binds the
-//! HTTP listener, and serves.
+//! The gateway is launched knowing ONLY two things: where to serve HTTP and where the control server is.
+//! **Everything else — the CAS url + credential, the root-router `ProgramHash`, and any future knob — ships
+//! from the control server** in the [`ControlConfig`] it pushes over the persistent link, so the gateway is
+//! reconfigured ON THE FLY (a pushed config live-swaps the applied one; nothing but the two addresses is
+//! baked into the process). [`run`] binds the HTTP listener FIRST so the edge is up immediately, then dials
+//! the control link in the background and applies each config it ships.
 //!
-//! This is the FIRST boot slice (the bootable stub the conformance harness's driver spins up): it dials
-//! control, applies the config, and serves HTTP floors, keeping the control link open. Driving the
-//! control-shipped root-router program per request (fetch it from the CAS by hash, run its mailbox drive
-//! loop, dispatch to handlers, resolve effects) + live-swapping the router on a pushed config are the next
-//! slices; until then every request gets the boot floor below.
+//! **Readiness (operator directive):** until control has shipped a config, the gateway has no program to run,
+//! so every request is answered a specific **`503 Service Unavailable`** (`waiting for control` — the edge is
+//! up but not yet configured), NOT a misleading `200`. Once a config arrives the gateway is ready; a later
+//! pushed config live-swaps it without dropping readiness or restarting.
+//!
+//! **Serving (once configured):** each request drives the control-shipped **root-router program** — spawn it
+//! from the CAS by hash, deliver the request as a bare `http-request` value (§4), drive it over a fresh
+//! mailbox through [`crate::drive`] + the [`crate::resolver`] effect resolver (§1/§2), and turn its terminal
+//! `Break` into the HTTP response (§6): `http.response` ⇒ the answer, `http.deny` ⇒ `403`, else ⇒ `500`.
+//!
+//! **Control link (§3):** the one persistent ws is a bidirectional bus, DEMUXED by contract-id — `Config`
+//! (re)configures (live-swap), `Down` is a session-addressed message routed to the running handler (the
+//! session registry that closes that loop, plus `control.send`/`ws.send`/timers and `CasRef` bodies, are the
+//! follow-on slices).
 
-use crate::HttpBlobStore;
+use crate::drive::drive;
+use crate::resolver::GatewayResolver;
 use bytes::Bytes;
-use cdz_http_protocol::{ControlConfig, ControlFrame, FrameCodec, decode_control_config};
+use cdz_http_protocol::{ControlConfig, ControlFrame, FrameCodec, decode_control_config, value};
+use cdz_platform::{
+    ContractId, Delivered, HostId, Message as ReducerMessage, Origin, ProgramHash, ProgramStore,
+    ReducerId, ReducerKind, SpawnContext, TokioRuntime,
+};
 use futures_util::StreamExt;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper::{Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
+
+/// How deep a `http.dispatch` chain (router → handler → sub-handler → …) may recurse before a dispatch is
+/// answered "missing" — a fixed bound so a cyclic/runaway dispatch cannot recurse forever. Not control-shipped
+/// (a safety limit, not policy); the resolver decrements it per hop.
+const DISPATCH_DEPTH: usize = 16;
+
+/// The canonical contract-ids (§5) the gateway routes by — the descriptor-derived ids of the platform's
+/// `http.*` contracts (same derivation the guest + control server use, never ad-hoc markers). Computed once
+/// when a config is applied. Only the `host` build resolves a config to a ready state, so in the light spine
+/// build it is constructed nowhere (its fields are still read on the drive path).
+#[cfg_attr(not(feature = "host"), allow(dead_code))]
+#[derive(Clone)]
+struct Ids {
+    /// `http.dispatch` — a root router's "spawn this subprogram and hand it this input" effect.
+    dispatch: ContractId,
+    /// `http.request` — the schema the gateway delivers an incoming request under (the driven program's
+    /// opening `on_message`).
+    request: ContractId,
+    /// `http.response` — the terminal `Break` schema a program answers a request with (§6).
+    response: ContractId,
+    /// `http.deny` — the terminal `Break` schema a program rejects a request with.
+    deny: ContractId,
+}
+
+/// The gateway's applied drive context — everything control's config resolves to (§1/§4/§5). Held in a
+/// live-swappable [`SharedState`] slot: `None` until control configures us (⇒ `503`), then the drive context
+/// built from the latest config control pushed. Cheaply cloneable (the store is an `Arc`), so the serve loop
+/// snapshots it per request without holding the lock across the drive.
+#[derive(Clone)]
+pub struct GatewayState {
+    /// The wasm-backed program store over the control-supplied CAS: fetches + instantiates a program by hash.
+    store: Arc<dyn ProgramStore>,
+    /// The control-shipped root-router `ProgramHash` — the program driven for every request (§4).
+    root_router: ProgramHash,
+    /// The canonical contract-ids the gateway routes effects + terminal breaks by (§5).
+    ids: Ids,
+}
+
+/// The gateway's readiness slot: `None` = not yet configured (serve `503`), `Some` = the config control last
+/// pushed. Shared between the control-link task (which swaps it on every pushed config — live reconfig) and
+/// the HTTP serve loop (which reads it per request). A plain `RwLock` since a read is a cheap clone-out.
+type SharedState = Arc<RwLock<Option<GatewayState>>>;
 
 /// A boot failure — the gateway could not reach control, was shipped no/invalid config, or could not bind
 /// its HTTP port. The binary reports it and exits non-zero so the harness driver sees the boot failed.
@@ -29,10 +90,6 @@ use tokio_tungstenite::tungstenite::Message;
 pub enum BootError {
     /// The TCP dial or WebSocket handshake to the control server failed.
     ControlDial(String),
-    /// The control link closed before shipping a config frame.
-    NoConfig,
-    /// The first frame control shipped was not a decodable [`ControlConfig`].
-    BadConfig,
     /// Binding or serving the HTTP listener failed.
     Listen(std::io::Error),
 }
@@ -41,8 +98,6 @@ impl std::fmt::Display for BootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BootError::ControlDial(e) => write!(f, "could not dial control server: {e}"),
-            BootError::NoConfig => write!(f, "control link closed before shipping a ControlConfig"),
-            BootError::BadConfig => write!(f, "control shipped an undecodable ControlConfig frame"),
             BootError::Listen(e) => write!(f, "HTTP listener error: {e}"),
         }
     }
@@ -50,64 +105,109 @@ impl std::fmt::Display for BootError {
 
 impl std::error::Error for BootError {}
 
-/// Boot the gateway: dial `control_addr`, apply the `ControlConfig` control ships on connect, and serve
-/// HTTP on `listen_addr` until the listener errors. `listen_addr`/`control_addr` are `host:port` strings
-/// (a `:0` listen port binds an ephemeral port — the bound address is printed to stderr for the harness).
+/// Boot the gateway: bind HTTP on `listen_addr` immediately, dial `control_addr` in the background, apply
+/// every `ControlConfig` control ships (live reconfig), and serve until the listener errors.
+/// `listen_addr`/`control_addr` are `host:port` strings (a `:0` listen port binds an ephemeral port — the
+/// bound address is printed to stderr for the harness driver). Until control ships a config, requests are
+/// answered `503` (the edge is up but not yet configured).
 ///
 /// # Errors
-/// Returns [`BootError`] if control is unreachable, ships no/invalid config, or the HTTP port cannot be bound.
+/// Returns [`BootError::Listen`] only if the HTTP port cannot be bound. Control being momentarily
+/// unreachable is NOT fatal — the gateway serves `503` and the control task retries until control answers.
 pub async fn run(listen_addr: &str, control_addr: &str) -> Result<(), BootError> {
-    // 1. Dial the persistent control link and apply the config it ships on connect.
-    let (config, control_ws) = dial_control(control_addr).await?;
-    let _cas = HttpBlobStore::new(config.cas_url.as_str())
-        .with_read_credential(String::from_utf8_lossy(&config.cas_credential).into_owned());
-
-    // Keep the control link OPEN for the gateway's whole life (§3): a persistent bidirectional bus. This
-    // stub drains it (consuming keepalives + any pushed frames) so the connection stays established; folding
-    // pushed config/root-router updates (live-swap) and demuxing ControlDown to sessions are later slices.
-    tokio::spawn(async move {
-        let mut ws = control_ws;
-        while let Some(Ok(_frame)) = ws.next().await {}
-    });
-
-    // 2. Bind the HTTP edge and announce the bound address (the driver passes :0 and reads the real port).
+    // 1. Bind the HTTP edge FIRST so the gateway is reachable immediately, and announce the bound address
+    //    (the driver passes :0 and reads the real port). Requests before control configures us get `503`.
     let listener = TcpListener::bind(listen_addr)
         .await
         .map_err(BootError::Listen)?;
     let bound = listener.local_addr().map_err(BootError::Listen)?;
     eprintln!("gateway: listen={bound} control={control_addr}");
 
-    // 3. Serve. Routing (drive the root-router program) is the next slice; the stub floors every request.
-    serve(listener).await
+    // 2. The readiness slot: `None` until control ships a config. The control task fills + live-swaps it; the
+    //    serve loop reads it per request. Everything but the two launch addresses lives HERE, from control.
+    let state: SharedState = Arc::new(RwLock::new(None));
+
+    // 3. Dial control in the background and keep the link open for the gateway's whole life (§3), applying
+    //    each config it ships. Retries on dial failure/link drop so a slow-to-start control just delays
+    //    readiness (503 meanwhile) rather than killing the gateway.
+    tokio::spawn(control_link(control_addr.to_string(), Arc::clone(&state)));
+
+    // 4. Serve immediately: `503` until ready, then the configured behavior (the drive loop is the next
+    //    slice; a configured gateway floors `200` until then).
+    serve(listener, state).await
 }
 
-/// The control link, once dialed and configured: the applied [`ControlConfig`] plus the still-open ws.
-/// `client_async` over a raw `TcpStream` (no TLS/connect feature) yields `WebSocketStream<TcpStream>`.
+/// The control link, once dialed: the still-open ws. `client_async` over a raw `TcpStream` (no TLS/connect
+/// feature) yields `WebSocketStream<TcpStream>`.
 type ControlLink = tokio_tungstenite::WebSocketStream<TcpStream>;
 
-/// Dial the control server over a WebSocket and read the `ControlConfig` it ships as its first data frame
-/// on connect (§3). Returns the decoded config and the still-open link (kept alive for the gateway's life).
-async fn dial_control(control_addr: &str) -> Result<(ControlConfig, ControlLink), BootError> {
+/// The persistent control-link task (§3): dial control, then read every frame it pushes, applying each
+/// [`ControlConfig`] into `state` — the first makes the gateway ready, a later one live-swaps the applied
+/// config (on-the-fly reconfig). On a dial failure or a dropped link it backs off and redials, so the
+/// gateway keeps serving `503` while control is unreachable rather than exiting. Runs for the process's life.
+async fn control_link(control_addr: String, state: SharedState) {
+    let codec = control_frame_codec();
+    loop {
+        match dial_control(&control_addr).await {
+            Ok(mut ws) => {
+                // Read every frame control pushes and DEMUX IT BY CONTRACT ID (the computed-id frame
+                // dispatch): the same link carries config AND messages destined for handlers, so we branch
+                // on the decoded `ControlFrame`, never assume every frame is a config. A closed or errored
+                // link breaks out to redial.
+                while let Some(Ok(msg)) = ws.next().await {
+                    let Some(bytes) = frame_bytes(&msg) else {
+                        continue; // ping/pong/close — no payload to demux
+                    };
+                    match classify_frame(&codec, bytes) {
+                        Some(ControlFrame::Config(config)) => {
+                            // Build the drive context from the config (CAS store + root-router hash +
+                            // canonical ids) and live-swap it in: the first config makes us ready; a later
+                            // one reconfigures on the fly (only the two launch addresses are baked in). A
+                            // config we cannot apply (bad hash, or no wasm engine in the light spine build)
+                            // leaves us `None` ⇒ still `503`.
+                            match ready_state(&config) {
+                                Some(next) => {
+                                    if let Ok(mut slot) = state.write() {
+                                        *slot = Some(next);
+                                    }
+                                }
+                                None => eprintln!(
+                                    "gateway: config not applicable; staying unconfigured"
+                                ),
+                            }
+                        }
+                        Some(ControlFrame::Down(down)) => {
+                            // A response/push targeted at a session — route it to the handler running for
+                            // that session. The session registry is populated by the request-drive slice;
+                            // until then there is no live session to route to.
+                            dispatch_down(down);
+                        }
+                        // The gateway SENDS `Up` frames (a handler's `control.send`); receiving one down the
+                        // link is unexpected. An unknown/undecodable frame is likewise ignored, not fatal.
+                        Some(ControlFrame::Up(_)) | None => {}
+                    }
+                }
+            }
+            Err(e) => {
+                // Control unreachable or handshake failed — stay up (503) and retry.
+                eprintln!("gateway: control link down ({e}); retrying");
+            }
+        }
+        // Back off before redialing so a persistently-unreachable control does not busy-spin.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Dial the control server over a WebSocket (§3), returning the still-open link. Frames are read by the
+/// caller ([`control_link`]).
+async fn dial_control(control_addr: &str) -> Result<ControlLink, BootError> {
     let stream = TcpStream::connect(control_addr)
         .await
         .map_err(|e| BootError::ControlDial(e.to_string()))?;
-    let (mut ws, _resp) = tokio_tungstenite::client_async(format!("ws://{control_addr}/"), stream)
+    let (ws, _resp) = tokio_tungstenite::client_async(format!("ws://{control_addr}/"), stream)
         .await
         .map_err(|e| BootError::ControlDial(e.to_string()))?;
-    let codec = control_frame_codec();
-    // The config is the first DATA frame control pushes on connect; skip protocol control frames.
-    loop {
-        match ws.next().await {
-            Some(Ok(Message::Binary(bytes))) => {
-                return Ok((decode_boot_config(&codec, &bytes)?, ws));
-            }
-            Some(Ok(Message::Text(text))) => {
-                return Ok((decode_boot_config(&codec, text.as_bytes())?, ws));
-            }
-            Some(Ok(_)) => continue, // ping/pong/other control frame — keep waiting for the config
-            _ => return Err(BootError::NoConfig), // stream error or closed before any data frame
-        }
-    }
+    Ok(ws)
 }
 
 /// The control-link frame codec, tagging each frame by its CANONICAL COMPUTED contract-id — the descriptor
@@ -125,45 +225,296 @@ fn control_frame_codec() -> FrameCodec {
     )
 }
 
-/// Decode the boot [`ControlConfig`] from control's first frame, accepting BOTH the tagged [`ControlFrame`]
-/// envelope (the computed-id frame-dispatch protocol) AND a bare `ControlConfig` (the pre-flip form). This
-/// is the rolling-upgrade step: the gateway handles both while the control server's send-side flips from
-/// bare to enveloped, so neither side breaks the other at the flip. Once control always sends enveloped,
-/// the bare fallback is dropped.
-fn decode_boot_config(codec: &FrameCodec, bytes: &[u8]) -> Result<ControlConfig, BootError> {
-    if let Some(ControlFrame::Config(config)) = codec.decode(bytes) {
-        return Ok(config);
+/// The payload bytes of a ws message that carries a control frame — a binary or text data frame; `None` for
+/// a ping/pong/close (nothing to demux).
+fn frame_bytes(msg: &Message) -> Option<&[u8]> {
+    match msg {
+        Message::Binary(b) => Some(b.as_ref()),
+        Message::Text(t) => Some(t.as_bytes()),
+        _ => None,
     }
-    decode_control_config(bytes).ok_or(BootError::BadConfig)
 }
 
-/// The HTTP accept loop: one hyper HTTP/1 connection per socket, each request served the boot floor.
-async fn serve(listener: TcpListener) -> Result<(), BootError> {
+/// Classify a control frame by its CANONICAL COMPUTED contract-id (§5): the [`FrameCodec`] matches the
+/// frame's id tag against the `control.{config,up,down}` descriptor ids and returns the typed [`ControlFrame`]
+/// — so the read loop DEMUXES config vs a session-addressed message (§3) rather than assuming every frame is
+/// a config. Falls back to a bare (untagged) `ControlConfig` for a pre-flip control server (the rolling-
+/// upgrade step; dropped once control always sends enveloped). `None` for an undecodable/unknown frame.
+fn classify_frame(codec: &FrameCodec, bytes: &[u8]) -> Option<ControlFrame> {
+    codec
+        .decode(bytes)
+        .or_else(|| decode_control_config(bytes).map(ControlFrame::Config))
+}
+
+/// Route a [`ControlDown`](cdz_http_protocol::ControlDown) — a response/push control addressed to a session
+/// (§3) — to the handler running for that `session`, injected into its mailbox and folded as `on_response`
+/// (a `control.send` answer, correlated by `correlation`) or `on_notification` (an unsolicited push). The
+/// session registry that maps `session` → its live mailbox is populated by the request-drive slice; until a
+/// session is live there is nothing to route to, so an unmatched frame is dropped.
+fn dispatch_down(down: cdz_http_protocol::ControlDown) {
+    let _ = down;
+    // TARGET (drive slice): look `down.session` up in the session registry and `send` the payload into that
+    // reducer's mailbox as a `Response`/`Notification`. No live sessions exist until the drive loop registers
+    // them, so this is a no-op today — NOT a config path, a genuine session-routing seam.
+}
+
+/// Build the drive context (§1/§4/§5) from a control-shipped config: the wasm-backed program store over the
+/// config's CAS, the root-router hash, and the canonical contract-ids. `None` if the config is unusable — a
+/// malformed root-router hash, or (in the light non-`host` spine build) no wasm engine to run programs.
+#[cfg(feature = "host")]
+fn ready_state(config: &ControlConfig) -> Option<GatewayState> {
+    let root_router = ProgramHash::try_from(config.root_router.as_ref()).ok()?;
+    let store = crate::wasm::build_store(config.cas_url.as_str(), &config.cas_credential)
+        .map_err(|e| eprintln!("gateway: wasm program store init failed: {e}"))
+        .ok()?;
+    Some(GatewayState {
+        store,
+        root_router,
+        ids: canonical_ids(),
+    })
+}
+
+/// The light spine (no `host` feature) has no wasm engine, so it can never drive a program — it stays
+/// unconfigured (⇒ `503`). Only the real gateway binary (which enables `host`) becomes ready.
+#[cfg(not(feature = "host"))]
+fn ready_state(_config: &ControlConfig) -> Option<GatewayState> {
+    None
+}
+
+/// The canonical contract-ids (§5): the descriptor-derived ids of the platform's `http.*` contracts — the
+/// SAME derivation the guest programs + control server use, so a routed effect/break matches without markers.
+/// Only the `host` build resolves a config to a ready state, so this is `host`-gated.
+#[cfg(feature = "host")]
+fn canonical_ids() -> Ids {
+    fn id(c: cdz_platform::Contract) -> ContractId {
+        c.id()
+    }
+    Ids {
+        dispatch: id(cdz_platform::contracts::http_dispatch::contract()),
+        request: id(cdz_platform::contracts::http_request::contract()),
+        response: id(cdz_platform::contracts::http_response::contract()),
+        deny: id(cdz_platform::contracts::http_deny::contract()),
+    }
+}
+
+/// The HTTP accept loop: one hyper HTTP/1 connection per socket. Each request is answered from a snapshot of
+/// the current readiness `state` — `503` until control configures us, else the control-shipped root router's
+/// response.
+async fn serve(listener: TcpListener, state: SharedState) -> Result<(), BootError> {
     loop {
         let (stream, _peer) = listener.accept().await.map_err(BootError::Listen)?;
         let io = TokioIo::new(stream);
+        let state = Arc::clone(&state);
         tokio::spawn(async move {
             // A connection-level error is the client's business, not the edge's — drop it and keep serving.
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(
                     io,
-                    service_fn(|_req| async { Ok::<_, Infallible>(boot_floor()) }),
+                    service_fn(move |req: Request<Incoming>| {
+                        // Snapshot readiness at request time (cheap clone-out; guard dropped before the drive).
+                        let ready = state.read().ok().and_then(|s| s.clone());
+                        async move { Ok::<_, Infallible>(handle(ready, req).await) }
+                    }),
                 )
                 .await;
         });
     }
 }
 
-/// The stub's response until routing is wired: a `200` announcing the gateway booted from control. Replaced
-/// by driving the control-shipped root router (route → dispatch → handler response, with 404/500/504 floors)
-/// in the next slice.
-fn boot_floor() -> Response<Full<Bytes>> {
+/// Answer one request: `503` until control configures us (the operator-requested "waiting for control"
+/// status, never a misleading `200`), else drive the control-shipped root router (§1/§4) and turn its
+/// terminal `Break` into the HTTP response (§6).
+async fn handle(state: Option<GatewayState>, req: Request<Incoming>) -> Response<Full<Bytes>> {
+    let Some(gw) = state else {
+        return status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            b"cdz-http-gateway: waiting for control (no program configured yet)\n",
+        );
+    };
+    drive_request(&gw, req).await
+}
+
+/// Drive the control-shipped root router for one HTTP request (§1): marshal the request into a bare
+/// `http-request` value, spawn the router from the CAS, drive it over a fresh mailbox with the gateway effect
+/// resolver (fire-and-forget effects, §2), and turn its terminal `Break` into the response — `http.response`
+/// ⇒ the answer (§6), `http.deny` ⇒ `403`, anything else / no terminal ⇒ `500`.
+async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Full<Bytes>> {
+    let Some(payload) = encode_request(req).await else {
+        return status(
+            StatusCode::BAD_REQUEST,
+            b"cdz-http-gateway: could not read request\n",
+        );
+    };
+    let ctx = SpawnContext {
+        id: ReducerId::of(gw.root_router.hash().as_bytes()),
+        kind: ReducerKind::Ordinary,
+        limits: None,
+    };
+    let Some(reducer) = gw.store.spawn(gw.root_router, ctx).await else {
+        return status(
+            StatusCode::BAD_GATEWAY,
+            b"cdz-http-gateway: root router program unavailable\n",
+        );
+    };
+    let opening = Delivered::Message(ReducerMessage {
+        id: gw.ids.request,
+        payload,
+        from: edge_origin(),
+        continuation_token: Bytes::new(),
+    });
+    let resolver = GatewayResolver::new(
+        Arc::clone(&gw.store),
+        gw.ids.dispatch,
+        gw.ids.request,
+        DISPATCH_DEPTH,
+    );
+    let out = drive::<TokioRuntime>(reducer, opening, move |r, tx| {
+        Arc::clone(&resolver).carry::<TokioRuntime>(r, tx)
+    })
+    .await;
+    match out {
+        Some((schema, reason)) if schema == gw.ids.response => decode_response(&reason),
+        Some((schema, _)) if schema == gw.ids.deny => {
+            status(StatusCode::FORBIDDEN, b"cdz-http-gateway: denied\n")
+        }
+        // The program closed without a terminal http-response/deny, or a fold panicked → a gateway error.
+        _ => status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: no response from program\n",
+        ),
+    }
+}
+
+/// The synthetic edge [`Origin`] a driven request is delivered from — the gateway edge, so the program sees
+/// an unforgeable provenance envelope (§0) even for the opening request.
+fn edge_origin() -> Origin {
+    Origin {
+        reducer: ReducerId::of(b"cdz-http-gateway.edge"),
+        host: HostId::of(b"cdz-http-gateway"),
+    }
+}
+
+/// Marshal an incoming HTTP request into a bare `http-request` value (§4) — the driven program's opening
+/// event. Reads the whole body (buffered v0). `None` on an unsupported method or a body-read failure.
+async fn encode_request(req: Request<Incoming>) -> Option<Bytes> {
+    let (parts, body) = req.into_parts();
+    let method = method_value_kind(&parts.method)?;
+    let path = parts.uri.path().to_string();
+    let query = parts.uri.query().unwrap_or("").to_string();
+    let headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .filter_map(|(n, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (n.as_str().to_string(), v.to_string()))
+        })
+        .collect();
+    let body = body.collect().await.ok()?.to_bytes();
+    Some(encode_request_value(method, &path, &query, &headers, &body))
+}
+
+/// The `http.request` `Method` variant for a hyper [`Method`], or `None` for one the contract has no case for
+/// (e.g. `CONNECT`/`TRACE`/an extension method) — the gateway answers such a request `400` rather than guess.
+fn method_value_kind(method: &Method) -> Option<&'static str> {
+    Some(match *method {
+        Method::GET => "Get",
+        Method::POST => "Post",
+        Method::PUT => "Put",
+        Method::DELETE => "Delete",
+        Method::PATCH => "Patch",
+        Method::HEAD => "Head",
+        Method::OPTIONS => "Options",
+        _ => return None,
+    })
+}
+
+/// Build the `Request.Request` value (§4) from its parts, using the platform's canonical `http-request`
+/// contract builders so it type-ascribes against the schema the driven program decodes.
+fn encode_request_value(
+    method: &'static str,
+    path: &str,
+    query: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Bytes {
+    use cdz_platform::contracts::http_request as reqc;
+    let mut b = value::ValueBuilder::new();
+    // A nullary `Method` variant is `(Ctor unit)`.
+    let unit = value::unit(&mut b);
+    let method = value::bare_ctor(&mut b, method, vec![unit]);
+    let path = value::str_leaf(&mut b, path);
+    let query = value::str_leaf(&mut b, query);
+    let header_values: Vec<value::ValueId> = headers
+        .iter()
+        .map(|(name, val)| {
+            let name = value::str_leaf(&mut b, name);
+            let value = value::str_leaf(&mut b, val);
+            reqc::header_header(&mut b, reqc::HeaderHeader { name, value })
+        })
+        .collect();
+    let headers = value::list_value(&mut b, header_values);
+    let body = value::bytes_leaf(&mut b, body);
+    let request = reqc::request_request(
+        &mut b,
+        reqc::RequestRequest {
+            method,
+            path,
+            query,
+            headers,
+            body,
+        },
+    );
+    value::finish(b, request, "Request")
+}
+
+/// Turn a program's terminal `http.response` `Break` reason — a `Response.Response` value (§6) — into the
+/// HTTP response: `status` (`Int64`) + `headers` (`List(Header)`) + `body` (`Bytes`, inline v0). A malformed
+/// value or an unrepresentable status/header ⇒ a `500` (the program answered nonsense).
+fn decode_response(reason: &[u8]) -> Response<Full<Bytes>> {
+    let Some(arenas) = value::decode(reason) else {
+        return status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: undecodable program response\n",
+        );
+    };
+    let root = arenas.root;
+    let code = value::record_field(&arenas, root, "status")
+        .and_then(|f| value::read_uint(&arenas, f))
+        .and_then(|u| u16::try_from(u).ok())
+        .and_then(|u| StatusCode::from_u16(u).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let body = value::record_field(&arenas, root, "body")
+        .and_then(|f| value::read_bytes(&arenas, f))
+        .unwrap_or_default();
+    let mut builder = Response::builder().status(code);
+    if let Some(headers) =
+        value::record_field(&arenas, root, "headers").and_then(|f| value::read_list(&arenas, f))
+    {
+        for &h in headers {
+            if let (Some(name), Some(val)) = (
+                value::record_field(&arenas, h, "name").and_then(|f| value::read_str(&arenas, f)),
+                value::record_field(&arenas, h, "value").and_then(|f| value::read_str(&arenas, f)),
+            ) {
+                builder = builder.header(name, val);
+            }
+        }
+    }
+    builder.body(Full::new(body)).unwrap_or_else(|_| {
+        status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: invalid response headers\n",
+        )
+    })
+}
+
+/// A static-body response with `code` and a plain-text `body` — the gateway's own floors (`503`/`400`/`403`/
+/// `500`), distinct from a program's answer.
+fn status(code: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
     Response::builder()
-        .status(StatusCode::OK)
-        .body(Full::new(Bytes::from_static(
-            b"cdz-http-gateway: booted from control (routing not yet wired)\n",
-        )))
-        .expect("static boot-floor response is valid")
+        .status(code)
+        .body(Full::new(Bytes::from_static(body)))
+        .expect("a static-body response is valid")
 }
 
 #[cfg(test)]
@@ -181,22 +532,53 @@ mod tests {
     }
 
     #[test]
-    fn decode_boot_config_accepts_both_the_tagged_envelope_and_the_bare_config() {
+    fn an_unconfigured_gateway_answers_503_waiting_for_control() {
+        // The "waiting for control" status when no config has been applied — a pure-leaf check of the floor
+        // (the full serve/drive path is proven by the scripted conformance harness, design §7).
+        assert_eq!(
+            status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                b"cdz-http-gateway: waiting for control (no program configured yet)\n"
+            )
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn classify_frame_demuxes_config_and_down_by_contract_id_with_a_bare_fallback() {
+        use cdz_http_protocol::ControlDown;
         let codec = control_frame_codec();
         let config = sample_config();
 
-        // The bare pre-flip form (control server's current send-side): `encode_control_config`.
+        // A bare (pre-flip, untagged) ControlConfig is still accepted AS a Config frame (rolling upgrade).
         let bare = encode_control_config(&config);
-        assert_eq!(decode_boot_config(&codec, &bare).unwrap(), config);
-
-        // The tagged form (control server's post-flip send-side): a `ControlFrame::Config` envelope.
-        let enveloped = codec.encode(&ControlFrame::Config(config.clone()));
-        assert_eq!(decode_boot_config(&codec, &enveloped).unwrap(), config);
-
-        // Neither → a boot config error, not a panic.
         assert!(matches!(
-            decode_boot_config(&codec, b"not a config"),
-            Err(BootError::BadConfig)
+            classify_frame(&codec, &bare),
+            Some(ControlFrame::Config(c)) if c == config
         ));
+
+        // A tagged Config frame → demuxed to Config by its contract-id tag.
+        let enveloped = codec.encode(&ControlFrame::Config(config.clone()));
+        assert!(matches!(
+            classify_frame(&codec, &enveloped),
+            Some(ControlFrame::Config(c)) if c == config
+        ));
+
+        // A tagged Down frame → demuxed to Down (NOT mistaken for a config) — the branch that routes a
+        // control message to a session's handler.
+        let down = ControlDown {
+            session: Bytes::from_static(b"sess-1"),
+            correlation: Bytes::from_static(b"c1"),
+            payload: Bytes::from_static(b"opaque"),
+        };
+        let down_frame = codec.encode(&ControlFrame::Down(down.clone()));
+        assert!(matches!(
+            classify_frame(&codec, &down_frame),
+            Some(ControlFrame::Down(d)) if d == down
+        ));
+
+        // Garbage → no frame (dropped, not a panic).
+        assert!(classify_frame(&codec, b"not a frame").is_none());
     }
 }
