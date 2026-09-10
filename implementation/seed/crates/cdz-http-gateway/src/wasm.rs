@@ -1199,4 +1199,178 @@ mod tests {
             "a route table carrying the real handler hash serves it with no marker binding"
         );
     }
+
+    /// inc-4b — THE DUMB PATH E2E OVER REAL WASM: the ROOT ROUTER guest (`guests/root-router`) drives the
+    /// whole request → routing → dispatch → handler → response chain, every step a real wasm reducer on the
+    /// wasmtime store. The router guest decodes a `RouteQuery{request, table}`, matches the shipped table,
+    /// and EMITS a `dispatch` effect naming the PoC handler's real `ProgramHash`; the [`GatewayResolver`]
+    /// (dispatch enabled over the store) fetches + drives that handler and folds its `http-response` back to
+    /// the router, which closes with it. Proves the request-emitting router guest works end-to-end composed
+    /// through [`drive_loop`] + the effect resolver — the runtime counterpart of the #8642 compile gate.
+    #[tokio::test]
+    async fn wasm_root_router_dispatches_to_a_real_handler() {
+        use crate::codec::{
+            HttpRequest, Method, RouteFrame, decode_response, encode_request, encode_route_query,
+            encode_route_table,
+        };
+        use crate::effects::{ControlSink, GatewayResolver};
+        use crate::loop_driver::drive_loop;
+        use cdz_platform::{
+            ContractId, HostId, Message, Origin, ProgramHash, ReducerId, ReducerKind, SpawnContext,
+        };
+
+        // A no-op control sink (this path exercises dispatch, not control.send).
+        struct NullSink;
+        #[async_trait::async_trait]
+        impl ControlSink for NullSink {
+            async fn send(&self, _msg: crate::codec::ControlUp) {}
+        }
+
+        let (Ok(rr_path), Ok(poc_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROOT_ROUTER_WASM"),
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_root_router_dispatches_to_a_real_handler: \
+                 CDZ_HTTP_ROOT_ROUTER_WASM/POC_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let rr = std::fs::read(&rr_path).expect("read root-router guest wasm");
+        let poc = std::fs::read(&poc_path).expect("read poc handler wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(rr.clone())).await;
+        cas.put(bytes::Bytes::from(poc.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        let rr_prog = ProgramHash::of(&rr);
+        let poc_prog = ProgramHash::of(&poc);
+        // The route table carries the PoC handler's REAL ProgramHash bytes (the control server ships real
+        // hashes it knows); the router passes it through into the dispatch effect.
+        let poc_hash = bytes::Bytes::copy_from_slice(poc_prog.hash().as_bytes());
+        let req_contract = bytes::Bytes::from_static(b"cdz-platform.http.request........");
+        let table = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: poc_hash,
+            contract: req_contract.clone(),
+        }]);
+        let query = encode_route_query(
+            &encode_request(&HttpRequest {
+                method: Method::Get,
+                path: "/".to_string(),
+                query: String::new(),
+                headers: vec![],
+                body: bytes::Bytes::new(),
+            }),
+            &table,
+        );
+
+        // Drive the root router: on match it emits a `dispatch`, which the resolver resolves by fetching +
+        // driving the PoC handler from the same store and folding its response back.
+        let resolver = GatewayResolver::new(
+            bytes::Bytes::copy_from_slice(rr_prog.hash().as_bytes()),
+            bytes::Bytes::from_static(b"session-rr"),
+            Arc::new(NullSink),
+        )
+        .with_dispatch(
+            Arc::clone(&store),
+            ContractId::try_from(&req_contract[..]).expect("req contract id"),
+            8,
+        );
+
+        let mut router = store
+            .spawn(
+                rr_prog,
+                SpawnContext {
+                    id: ReducerId::of(b"rr-1"),
+                    kind: ReducerKind::Ordinary,
+                    limits: None,
+                },
+            )
+            .await
+            .expect("root router instantiates");
+        let (_schema, reason) = drive_loop(
+            &mut *router,
+            Message {
+                id: ContractId::of(b"cdz-platform.http.route-query"),
+                payload: query,
+                from: Origin {
+                    reducer: ReducerId::of(b"edge"),
+                    host: HostId::of(b"edge-host"),
+                },
+                continuation_token: bytes::Bytes::new(),
+            },
+            &resolver,
+            4096,
+        )
+        .await
+        .expect("the root router dispatches + closes with the handler's response");
+
+        let resp = decode_response(&reason).expect("http-response decodes");
+        assert_eq!(resp.status, 200, "the dispatched PoC handler answered");
+        assert_eq!(
+            resp.body,
+            bytes::Bytes::from_static(b"hello from a wasm handler"),
+            "the root router guest routed GET / to the PoC handler and folded its response back"
+        );
+
+        // A path with no route → the router closes with a 404 deny (no dispatch).
+        let miss_query = encode_route_query(
+            &encode_request(&HttpRequest {
+                method: Method::Get,
+                path: "/nope".to_string(),
+                query: String::new(),
+                headers: vec![],
+                body: bytes::Bytes::new(),
+            }),
+            &table,
+        );
+        let mut router2 = store
+            .spawn(
+                rr_prog,
+                SpawnContext {
+                    id: ReducerId::of(b"rr-2"),
+                    kind: ReducerKind::Ordinary,
+                    limits: None,
+                },
+            )
+            .await
+            .expect("root router instantiates");
+        let (schema, reason) = drive_loop(
+            &mut *router2,
+            Message {
+                id: ContractId::of(b"cdz-platform.http.route-query"),
+                payload: miss_query,
+                from: Origin {
+                    reducer: ReducerId::of(b"edge"),
+                    host: HostId::of(b"edge-host"),
+                },
+                continuation_token: bytes::Bytes::new(),
+            },
+            &resolver,
+            4096,
+        )
+        .await
+        .expect("the root router closes on a no-match");
+        assert_eq!(
+            schema,
+            crate::codec::deny_contract(),
+            "an unrouted path closes with a deny terminal"
+        );
+        let deny = crate::codec::decode_deny(&reason).expect("deny decodes");
+        assert_eq!(deny.status, 404);
+    }
 }
