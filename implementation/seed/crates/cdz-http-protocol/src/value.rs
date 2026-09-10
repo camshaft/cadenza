@@ -98,10 +98,23 @@ fn as_ascribed(arenas: &Arenas, id: StructId) -> Option<StructId> {
     (inner.len() == 2).then_some(inner[0])
 }
 
-/// Strip an optional ascription, returning the inner value (or `id` unchanged if not ascribed).
+/// Strip an optional root ascription `(: value ty)` AND any reader comment wrappers `(comment "…" form)` /
+/// `(comment-after "…" form)`, returning the underlying value. A run-spec compiled from ML surface by
+/// `cdz convert --to binary` carries a doc comment above its root value as a `(comment …)` wrapper (and
+/// values may be ascribed); peeling both — to a fixpoint, since they can nest in any order — lets the
+/// structural readers see the value regardless. A value built by [`ValueBuilder`] (no comment nodes) is
+/// unaffected. Named `unascribe` for compatibility; it now also peels comments.
 #[must_use]
 pub fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
-    as_ascribed(arenas, id).unwrap_or(id)
+    let mut id = id;
+    loop {
+        let peeled = arenas.peel_comments(id);
+        let next = as_ascribed(arenas, peeled).unwrap_or(peeled);
+        if next == id {
+            return id;
+        }
+        id = next;
+    }
 }
 
 /// The value of a record's field named `name` (ascription-tolerant on `id`).
@@ -114,10 +127,10 @@ pub fn record_field(arenas: &Arenas, id: StructId, name: &str) -> Option<StructI
     })
 }
 
-/// The members of a `#list(…)` value, or `None` if `id` is not a list.
+/// The members of a `#list(…)` value, or `None` if `id` is not a list (ascription/comment-tolerant).
 #[must_use]
 pub fn read_list(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
-    arenas.compound_form_of(id, CompoundCtor::List)
+    arenas.compound_form_of(unascribe(arenas, id), CompoundCtor::List)
 }
 
 /// The head constructor name of a `(<Ctor> …)` value (ascription-tolerant), or `None` if not a ctor form.
@@ -139,16 +152,16 @@ pub fn ctor_payload(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     }
 }
 
-/// A `String` leaf's text.
+/// A `String` leaf's text (ascription/comment-tolerant).
 #[must_use]
 pub fn read_str(arenas: &Arenas, id: StructId) -> Option<String> {
-    arenas.as_str(id).map(str::to_string)
+    arenas.as_str(unascribe(arenas, id)).map(str::to_string)
 }
 
-/// A `Bytes` leaf's bytes.
+/// A `Bytes` leaf's bytes (ascription/comment-tolerant).
 #[must_use]
 pub fn read_bytes(arenas: &Arenas, id: StructId) -> Option<Bytes> {
-    match arenas.get(id) {
+    match arenas.get(unascribe(arenas, id)) {
         Struct::Atom(leaf) => match arenas.leaf(*leaf) {
             Leaf::Bytes(bytes) => Some(Bytes::copy_from_slice(bytes)),
             _ => None,
@@ -157,14 +170,46 @@ pub fn read_bytes(arenas: &Arenas, id: StructId) -> Option<Bytes> {
     }
 }
 
-/// An integer leaf's value as a `u64`, or `None` if not an integer / negative / too large.
+/// An integer leaf's value as a `u64`, or `None` if not an integer / negative / too large
+/// (ascription/comment-tolerant).
 #[must_use]
 pub fn read_uint(arenas: &Arenas, id: StructId) -> Option<u64> {
-    match arenas.get(id) {
+    match arenas.get(unascribe(arenas, id)) {
         Struct::Atom(leaf) => match arenas.leaf(*leaf) {
             Leaf::Int { value, .. } => value.to_u128().and_then(|u| u64::try_from(u).ok()),
             _ => None,
         },
         Struct::List(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run-spec compiled from ML surface by `cdz convert --to binary` carries doc comments as reader
+    /// `(comment "…" form)` wrappers around the values they annotate. The structural readers must see
+    /// through them — a comment on the root record AND on a field's value are both transparent here.
+    #[test]
+    fn readers_see_through_reader_comment_wrappers() {
+        let mut b = Builder::new();
+        // A field value wrapped in a comment: (comment "field doc" "hello").
+        let hello = str_leaf(&mut b, "hello");
+        let c1 = str_leaf(&mut b, "field doc");
+        let commented_value = bare_ctor(&mut b, "comment", vec![c1, hello]);
+        let n = uint_leaf(&mut b, 200);
+        let rec = record(&mut b, vec![("field", commented_value), ("n", n)]);
+        // The whole record wrapped in a comment: (comment "scenario doc" #record(...)) — like cdz's output.
+        let c2 = str_leaf(&mut b, "scenario doc");
+        let commented_root = bare_ctor(&mut b, "comment", vec![c2, rec]);
+        let bytes = cadenza_ast::codec::encode(&b.finish(commented_root));
+
+        let arenas = decode(&bytes).expect("decodes");
+        // record_field sees through the comment on the root; read_str through the comment on the value.
+        let field =
+            record_field(&arenas, arenas.root, "field").expect("finds field past root comment");
+        assert_eq!(read_str(&arenas, field).as_deref(), Some("hello"));
+        let n = record_field(&arenas, arenas.root, "n").expect("finds n");
+        assert_eq!(read_uint(&arenas, n), Some(200));
     }
 }
