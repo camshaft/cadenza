@@ -2789,6 +2789,59 @@
             install -Dm755 target/release/cdz-http-control-mock "$out/bin/cdz-http-control-mock"
           '';
 
+        # The `cdz-http-control-admin` CLI (#8709) — an ad-hoc client to drive a LIVE mock control server:
+        # register a program name -> ProgramHash, set/push the root router, reset, or read captured control-ups
+        # (`nix build .#cdz-http-control-admin` -> result/bin/…). It lives in the conformance DRIVER crate
+        # (cdz-http-conformance) but is a thin binary-AST admin client over the SAME codec the driver uses, so
+        # like the mock it path-deps only cdz-http-{control-mock,protocol} + cdz-contract (-> cadenza-ast +
+        # cdz-str): NO cdz-platform, NO contracts overlay, NO host feature — a light offline build.
+        cdzHttpControlAdminBin =
+          let
+            vendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-conformance/Cargo.lock;
+            };
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-conformance/src
+                ./implementation/seed/crates/cdz-http-conformance/Cargo.toml
+                ./implementation/seed/crates/cdz-http-conformance/Cargo.lock
+                ./implementation/seed/crates/cdz-http-control-mock/src
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+          in
+          pkgs.runCommand "cdz-http-control-admin"
+            {
+              nativeBuildInputs = [ rustToolchain ];
+              RUST_MIN_STACK = "67108864";
+              meta.mainProgram = "cdz-http-control-admin";
+            } ''
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cp -r --no-preserve=mode,ownership ${src} repo
+            chmod -R u+w repo
+            cd repo
+            export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${vendor}"
+            EOF
+            cd implementation/seed/crates/cdz-http-conformance
+            cargo build --release --offline --locked --bin cdz-http-control-admin
+            install -Dm755 target/release/cdz-http-control-admin "$out/bin/cdz-http-control-admin"
+          '';
+
         # The `cdz-http-gateway` SERVER BINARY — the stock gateway, the third SUT process the conformance
         # driver spawns (`nix build .#cdz-http-gateway` → result/bin/…). Built with `--features host`: the
         # `[[bin]]` target declares `required-features = ["host"]` (the wasmtime handler store), so the bin
@@ -6431,6 +6484,9 @@
         # The deployable mock control server binary: `nix build .#cdz-http-control-mock` → result/bin/… (vertical
         # gateway-conformance). One of the three SUT processes the conformance driver spawns; see `cdzHttpControlMockBin`.
         packages.cdz-http-control-mock = cdzHttpControlMockBin;
+        # The ad-hoc admin CLI to drive a live mock control server (#8709). `nix build
+        # .#cdz-http-control-admin` -> result/bin/cdz-http-control-admin.
+        packages.cdz-http-control-admin = cdzHttpControlAdminBin;
 
         # The deployable stock gateway binary (DEFAULT features — the boot-from-control spine): `nix build
         # .#cdz-http-gateway` → result/bin/… (vertical gateway-conformance, from v-gateway-rewrite's crate). The
