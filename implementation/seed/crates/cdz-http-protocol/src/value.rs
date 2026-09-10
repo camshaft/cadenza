@@ -84,6 +84,12 @@ pub fn uint_leaf(b: &mut Builder, value: u64) -> StructId {
     })
 }
 
+/// A boolean leaf (`Leaf::Bool` — the encoding a surface `true` / `false` produces, distinct from a
+/// `Leaf::Name` bare identifier). The inverse of [`read_bool`].
+pub fn bool_leaf(b: &mut Builder, value: bool) -> StructId {
+    b.atom_leaf(Leaf::Bool(value))
+}
+
 // --- readers (exact inverses; total) -------------------------------------------------------------------
 
 /// Decode binary-AST bytes into an [`Arenas`], or `None` if malformed.
@@ -183,6 +189,13 @@ pub fn read_uint(arenas: &Arenas, id: StructId) -> Option<u64> {
     }
 }
 
+/// A boolean leaf's value (ascription/comment-tolerant). A surface `true` / `false` encodes as a
+/// `Leaf::Bool` — NOT a `Leaf::Name` — so it must be read through [`Arenas::as_bool`], not `as_name`.
+#[must_use]
+pub fn read_bool(arenas: &Arenas, id: StructId) -> Option<bool> {
+    arenas.as_bool(unascribe(arenas, id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +224,28 @@ mod tests {
         assert_eq!(read_str(&arenas, field).as_deref(), Some("hello"));
         let n = record_field(&arenas, arenas.root, "n").expect("finds n");
         assert_eq!(read_uint(&arenas, n), Some(200));
+    }
+
+    #[test]
+    fn bool_leaf_round_trips_and_is_not_a_name() {
+        // A `Leaf::Bool` reads back via read_bool; as_name does NOT see it (the trap the harness parser hit).
+        let mut b = Builder::new();
+        let t = bool_leaf(&mut b, true);
+        let f = bool_leaf(&mut b, false);
+        let rec = record(&mut b, vec![("t", t), ("f", f)]);
+        let bytes = cadenza_ast::codec::encode(&b.finish(rec));
+        let arenas = decode(&bytes).expect("decodes");
+        let tf = record_field(&arenas, arenas.root, "t").unwrap();
+        let ff = record_field(&arenas, arenas.root, "f").unwrap();
+        assert_eq!(read_bool(&arenas, tf), Some(true));
+        assert_eq!(read_bool(&arenas, ff), Some(false));
+        // A bool is not a name, and a non-bool (a str "true") is not a bool.
+        assert_eq!(arenas.as_name(unascribe(&arenas, tf)), None);
+        let mut b2 = Builder::new();
+        let s = str_leaf(&mut b2, "true");
+        let rec2 = record(&mut b2, vec![("s", s)]);
+        let arenas2 = decode(&cadenza_ast::codec::encode(&b2.finish(rec2))).unwrap();
+        let sf = record_field(&arenas2, arenas2.root, "s").unwrap();
+        assert_eq!(read_bool(&arenas2, sf), None, "a string is not a bool");
     }
 }
