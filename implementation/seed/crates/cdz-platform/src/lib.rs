@@ -77,7 +77,7 @@ pub use spawned::{Spawned, spawned_contract};
 pub use cdz_str::Str;
 pub use system::{
     ArgProbeSink, Delivery, Links, NoDelivery, NoProvenance, NodeDeliverySlot, Provenance,
-    ReducerKind, RejectedSink, RunSink, Spawn, System, SystemError, TaskSystem,
+    ReducerKind, RejectedSink, RunSink, Spawn, System, SystemError, TaskSystem, run_mailbox_loop,
 };
 pub use timer::{FireAfter, Fired, timer_contract};
 
