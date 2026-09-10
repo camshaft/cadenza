@@ -1,0 +1,20 @@
+// The HTTP-outpost CONTROL-SEND effect contract (DESIGN-http-outpost-conformance-harness.md §4): the effect a
+// handler emits to send a message UP to the control server. `payload` is the handler's OPAQUE message bytes;
+// the gateway wraps it in a `ControlUp` envelope (stamping provenance + request context) and forwards it —
+// the gateway never inspects the payload. Userspace (this dir): the handler emits it on this contract's
+// COMPUTED id (via `descriptor().id`, no baked marker) and the gateway's effect resolver routes on the same
+// descriptor-derived id. No Rust binding is generated.
+type ControlSend = | ControlSend(Record(payload: Bytes))
+
+def a-control-send() -> ControlSend = ControlSend.ControlSend({ payload = b"handler->control bytes" })
+
+@test
+def control-send-conforms() =
+  match a-control-send() with
+  | ControlSend.ControlSend(c) =>
+    if c.payload == b"handler->control bytes" then unit else trap("control-send field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.control.send", "ControlSend", "ControlSend")
+export { ControlSend.*, descriptor }

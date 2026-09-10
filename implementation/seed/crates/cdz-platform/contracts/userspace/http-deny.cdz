@@ -1,0 +1,20 @@
+// The HTTP-outpost DENY terminal contract (DESIGN-http-outpost-conformance-harness.md §4): the terminal a
+// root-router program closes with to REJECT a request (auth/policy/no-route) instead of returning an
+// `http-response`. `status` is the HTTP status to floor with (e.g. 403/404/429); `reason` a short plain-text
+// body. The gateway maps a close tagged with this contract's COMPUTED id to a plain-text status response.
+// Userspace (this dir): the guest closes with `descriptor().id` as the schema (no baked marker); the gateway
+// recognizes the same descriptor-derived id. No Rust binding is generated.
+type Deny = | Deny(Record(status: Int64, reason: Bytes))
+
+def a-deny() -> Deny = Deny.Deny({ status = 404, reason = b"not found" })
+
+@test
+def deny-conforms() =
+  match a-deny() with
+  | Deny.Deny(d) =>
+    if (d.status == 404) and (d.reason == b"not found") then unit else trap("deny field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.http.deny", "Deny", "Deny")
+export { Deny.*, descriptor }
