@@ -36,9 +36,9 @@ fn client(addr: SocketAddr) -> HttpBlobStore {
 /// A raw PUT (bypassing the client's local-hash computation) so a mismatched key / missing credential can
 /// be exercised directly against the server. Returns the response status code.
 async fn raw_put(addr: SocketAddr, key: &str, credential: Option<&str>, body: Vec<u8>) -> u16 {
-    // Install the ring provider so a bare reqwest client builds even in a raw_put-only test (HttpBlobStore
-    // installs it too; the call is idempotent).
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Install the aws-lc-rs provider so a bare reqwest client builds even in a raw_put-only test
+    // (HttpBlobStore installs it too; the call is idempotent).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let client = reqwest::Client::new();
     let mut request = client.put(format!("http://{addr}/{key}")).body(body);
     if let Some(c) = credential {
