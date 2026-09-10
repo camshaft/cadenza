@@ -7083,6 +7083,10 @@
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-str/src
                 ./implementation/seed/crates/cdz-str/Cargo.toml
+                # cdz-contract (path-dep): the driver computes each program's canonical ProgramHash from its
+                # compiled bytes via Hash::of(HashTag::Program, …). Light (cadenza-ast + blake3).
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./rust-toolchain.toml
               ];
             };

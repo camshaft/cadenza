@@ -24,6 +24,11 @@ cdz-http-control-mock = { path = "../cdz-http-control-mock" }
 cdz-http-protocol = { path = "../cdz-http-protocol" }
 # `Str` — the canonical text type; the admin frames the driver builds carry Str fields (program names, urls).
 cdz-str = { path = "../cdz-str" }
+# The content-hash primitive (Hash / HashTag) — dep-minimal (cadenza-ast + blake3). The driver computes each
+# program's ProgramHash from its compiled bytes with `Hash::of(HashTag::Program, …)`, the SAME call the
+# deploy tool (cdz-http-programhash) + the mock's route table use, so the CAS path key (base62 text) and the
+# raw 33-byte ProgramHash the mock ships in ControlConfig are one canonical hash, computed once.
+cdz-contract = { path = "../cdz-contract" }
 # Every byte buffer is bytes::Bytes (spec §12).
 bytes = "1"
 # The driver's HTTP client: a POOLED `reqwest::Client` (held once, reused across requests — connections are
