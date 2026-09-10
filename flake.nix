@@ -6772,6 +6772,22 @@
               src = ./implementation/seed/crates/cdz-http-gateway/guests/router/reducer.cdz;
               componentName = "cadenza:platform/guest";
             };
+            # The P3 state-import BUILD-PATH probe (guests/kv-probe/reducer.cdz, DESIGN-http-outpost.md §3/§4):
+            # the FIRST http-outpost guest to hold STATE across folds via the platform `state` KV capability —
+            # the mechanism the stateful router (P3b) needs. Unlike the stateless inline guests, a host-import-
+            # calling guest binds the external `reducer-world` witWorld (which carries `import state`) + pulls
+            # the shared `reducer-lib` scaffolding, so this passes `witWorld`/`witWorldName`/`entry`/`libs`
+            # (reducer-lib imports nothing → a single lib, no transitive closure). Building it is the compile
+            # gate; a runtime e2e drives the put/get round-trip through the wasm store via CDZ_HTTP_KV_PROBE_WASM.
+            cdzHttpGatewayKvProbe = mkCadenzaGuest {
+              pname = "cdz-http-gateway-kv-probe";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/kv-probe/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+              witWorld = "${worldArtifacts}/reducer-world.bin";
+              witWorldName = "reducer-world";
+              entry = "reducer";
+              libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6812,6 +6828,7 @@
               CDZ_HTTP_ECHO_WASM=${cdzHttpGatewayEchoHandler} \
               CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
               CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
+              CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7212,6 +7229,8 @@
             cdz-http-gateway-ws-echo-handler = cdzHttpGatewayWsEchoHandler;
             # The router governing program (routing-as-a-fold: http-request -> baked route table -> Decision).
             cdz-http-gateway-router-handler = cdzHttpGatewayRouterHandler;
+            # The P3 state-import build-path probe (first state/KV-holding http-outpost guest) compiles.
+            cdz-http-gateway-kv-probe = cdzHttpGatewayKvProbe;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
