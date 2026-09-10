@@ -3,16 +3,20 @@
 //!
 //! - [`HarnessBins`] resolves the three SUT bin paths from the environment the nix harness rig sets (the
 //!   driver spawns REAL processes — operator: nothing internal mocked).
-//! - [`run_http_steps`] executes each `http` step against the gateway (via [`GatewayClient`]) and records a
-//!   per-step [`StepOutcome`] (the request + its `Expect` result).
+//! - [`run_steps`] executes each step (an `http` request at the gateway, or a `control` injection at the mock)
+//!   and records a per-step [`StepOutcome`].
 //! - [`verdict`] folds the outcomes into a pass/fail with a diagnostic naming every failing step.
 //!
 //! The process orchestration + CAS seeding that stand up the gateway before this runs are the final assembly
 //! (they need the nix rig's bin paths + compiled `programs/`); the step-driving + judgement here is the part
 //! that is pure given a gateway address, so it is unit-tested against an in-process HTTP stub.
 
+use crate::AdminClient;
 use crate::gateway::GatewayClient;
-use crate::spec::Step;
+use crate::spec::{ControlStep, Step};
+use bytes::Bytes;
+use cdz_http_control_mock::admin::{AdminCommand, AdminReply};
+use cdz_str::Str;
 use std::path::PathBuf;
 
 /// The three SUT bin paths, resolved from the environment the nix harness rig sets before invoking the
@@ -73,18 +77,39 @@ pub struct StepOutcome {
     pub result: Result<(), String>,
 }
 
-/// Execute each of a run-spec's `http` steps against the live `gateway`, in order, collecting a per-step
-/// [`StepOutcome`]. Every step is attempted (a failing step does not abort the run — the full outcome list
-/// lets a report show all divergences at once). A transport error and an `Expect` miss both land as an
-/// `Err` outcome; the caller distinguishes them by the message if needed.
-pub async fn run_http_steps(gateway: &GatewayClient, steps: &[Step]) -> Vec<StepOutcome> {
+/// Execute each of a run-spec's steps in order, collecting a per-step [`StepOutcome`]: an `http` step makes a
+/// request at the `gateway` + checks its `Expect`; a `control` step drives the `admin` channel (live root-router
+/// swap / push-down). Every step is attempted (a failing step does not abort the run — the full outcome list
+/// lets a report show all divergences at once). A transport error, an `Expect` miss, and a rejected control
+/// command all land as an `Err` outcome.
+pub async fn run_steps(
+    gateway: &GatewayClient,
+    admin: &AdminClient,
+    steps: &[Step],
+) -> Vec<StepOutcome> {
     let mut outcomes = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let Step::Http { request, expect } = step;
-        let description = format!("{} {}", request.method, request.path);
-        let result = match gateway.send(request).await {
-            Ok(resp) => expect.check(resp.status, &resp.body),
-            Err(e) => Err(e),
+        let (description, result) = match step {
+            Step::Http { request, expect } => {
+                let description = format!("{} {}", request.method, request.path);
+                let result = match gateway.send(request).await {
+                    Ok(resp) => expect.check(resp.status, &resp.body),
+                    Err(e) => Err(e),
+                };
+                (description, result)
+            }
+            Step::Control(control) => {
+                let (description, command) = control_command(control);
+                let result = match admin.send(&command).await {
+                    Ok(AdminReply::Ok) => Ok(()),
+                    Ok(AdminReply::Error { message }) => {
+                        Err(format!("control command rejected by the mock: {message}"))
+                    }
+                    Ok(other) => Err(format!("control command: unexpected reply {other:?}")),
+                    Err(e) => Err(e),
+                };
+                (description, result)
+            }
         };
         outcomes.push(StepOutcome {
             index: i + 1,
@@ -93,6 +118,25 @@ pub async fn run_http_steps(gateway: &GatewayClient, steps: &[Step]) -> Vec<Step
         });
     }
     outcomes
+}
+
+/// Map a [`ControlStep`] to its human description + the [`AdminCommand`] that drives it at the mock.
+fn control_command(control: &ControlStep) -> (String, AdminCommand) {
+    match control {
+        ControlStep::PushRootRouter(name) => (
+            format!("control push-root-router {name}"),
+            AdminCommand::PushRootRouter {
+                program: Str::from(name.as_str()),
+            },
+        ),
+        ControlStep::PushDown { session, payload } => (
+            format!("control push-down ({} byte payload)", payload.len()),
+            AdminCommand::PushDown {
+                session: Bytes::copy_from_slice(session.as_deref().unwrap_or(&[])),
+                payload: Bytes::copy_from_slice(payload),
+            },
+        ),
+    }
 }
 
 /// The run's verdict: `Ok(())` iff every step passed, else `Err` with a `;`-joined summary of each failing
@@ -173,6 +217,8 @@ mod tests {
         // The stub answers 200 "ok" to everything; step 1 expects that (pass), step 2 expects 404 (fail).
         let addr = looping_http_stub("200 OK", b"ok").await;
         let gateway = GatewayClient::new(addr);
+        // Control steps go to the admin; these are http-only, so a never-contacted bogus admin is fine.
+        let admin = AdminClient::new("127.0.0.1:1".parse().unwrap());
         let steps = vec![
             http_step(
                 "/",
@@ -190,7 +236,7 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_http_steps(&gateway, &steps).await;
+        let outcomes = run_steps(&gateway, &admin, &steps).await;
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes[0].result.is_ok(), "step 1 should pass");
         assert!(outcomes[1].result.is_err(), "step 2 should fail");
@@ -206,6 +252,8 @@ mod tests {
     async fn an_all_passing_run_has_an_ok_verdict() {
         let addr = looping_http_stub("200 OK", b"hello").await;
         let gateway = GatewayClient::new(addr);
+        // Control steps go to the admin; these are http-only, so a never-contacted bogus admin is fine.
+        let admin = AdminClient::new("127.0.0.1:1".parse().unwrap());
         let steps = vec![
             http_step(
                 "/a",
@@ -222,8 +270,79 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_http_steps(&gateway, &steps).await;
+        let outcomes = run_steps(&gateway, &admin, &steps).await;
         assert!(verdict(&outcomes).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_control_step_drives_the_mock_admin() {
+        use bytes::Bytes;
+        use cdz_http_control_mock::MockState;
+        use cdz_http_control_mock::admin::AdminCommand;
+        use cdz_http_control_mock::server::{AdminCtx, serve_admin};
+        use cdz_http_control_mock::ws::new_sessions;
+        use cdz_str::Str;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        // Boot the mock's admin server in-process (the driver spawns the bin in production).
+        let state = Arc::new(Mutex::new(MockState::new(HashMap::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let admin_addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_admin(
+            listener,
+            AdminCtx {
+                state,
+                sessions: new_sessions(),
+                cas_url: Str::from("http://127.0.0.1:9/cas"),
+                cas_credential: Bytes::new(),
+            },
+        ));
+        let admin = AdminClient::new(admin_addr);
+        // Register a program so push-root-router resolves.
+        admin
+            .send(&AdminCommand::SetProgram {
+                name: Str::from("router-b"),
+                hash: Bytes::from_static(b"a-33-byte-program-hash-goes-here."),
+            })
+            .await
+            .unwrap();
+
+        // A gateway is required by the signature but never contacted (no http steps here).
+        let gateway = GatewayClient::new("127.0.0.1:1".parse().unwrap());
+
+        // A push-root-router control step drives the admin + succeeds.
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &[Step::Control(ControlStep::PushRootRouter(
+                "router-b".into(),
+            ))],
+        )
+        .await;
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            outcomes[0].result.is_ok(),
+            "push-root-router should succeed: {:?}",
+            outcomes[0].result
+        );
+        assert!(
+            outcomes[0]
+                .description
+                .contains("push-root-router router-b")
+        );
+
+        // Pushing an UNREGISTERED root router surfaces the mock's rejection as an Err outcome.
+        let bad = run_steps(
+            &gateway,
+            &admin,
+            &[Step::Control(ControlStep::PushRootRouter("nope".into()))],
+        )
+        .await;
+        assert!(
+            bad[0].result.is_err(),
+            "unregistered program must be rejected"
+        );
     }
 
     #[test]

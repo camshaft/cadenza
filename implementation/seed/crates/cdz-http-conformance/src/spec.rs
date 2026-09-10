@@ -6,8 +6,10 @@
 //! The value shape (see `runs/README.md`):
 //!   { config = { root-router = "<name>", programs = [ { name, program }, … ] },
 //!     requests = [ { http = { method, path, headers = [ { name, value } ]?, body = b"…"? },
-//!                    expect = { status?, body?, body-contains? } }, … ] }
-//! (control steps + prime-replies + retry-until-match are added in following slices.)
+//!                    expect = { status?, body?, body-contains? } }
+//!                | { control = { push-root-router = "<name>" } }
+//!                | { control = { push-down = { session = b"…"?, payload = b"…" } } }, … ] }
+//! (prime-replies + retry-until-match are added in following slices.)
 
 use cdz_http_protocol::value;
 
@@ -34,13 +36,28 @@ pub struct Program {
     pub program: String,
 }
 
-/// One interaction in a run. (Control steps are a following slice; HTTP is the first.)
+/// One interaction in a run: an HTTP request at the gateway, or a control-plane injection at the mock control
+/// server (a live root-router swap / an unsolicited push — the http-outpost's hot-reconfigure surface).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// Make an HTTP request at the gateway + assert the response.
     Http {
         request: HttpRequest,
         expect: Expect,
+    },
+    /// Drive the mock control server (over its admin channel), interleaved between HTTP requests.
+    Control(ControlStep),
+}
+
+/// A control-plane injection at the mock control server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlStep {
+    /// Live-swap the root router to an (already-registered) program name (`push-root-router`).
+    PushRootRouter(String),
+    /// Push an unsolicited `ControlDown` to a session (`push-down`); `None` session ⇒ empty (broadcast).
+    PushDown {
+        session: Option<Vec<u8>>,
+        payload: Vec<u8>,
     },
 }
 
@@ -160,7 +177,10 @@ fn parse_config(arenas: &value::Arenas, id: value::ValueId) -> Option<Config> {
 }
 
 fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
-    // Only the `http` step for now; a step is a record with an `http` field + an optional `expect`.
+    // A step is either an `http` request (+ optional `expect`) or a `control` injection.
+    if let Some(control) = value::record_field(arenas, id, "control") {
+        return Some(Step::Control(parse_control(arenas, control)?));
+    }
     let http = value::record_field(arenas, id, "http")?;
     let headers = match value::record_field(arenas, http, "headers") {
         Some(hs) => value::read_list(arenas, hs)?
@@ -189,6 +209,21 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         None => Expect::default(),
     };
     Some(Step::Http { request, expect })
+}
+
+/// Parse a `control = { … }` injection: `{ push-root-router = "<name>" }` or
+/// `{ push-down = { session = b"…"?, payload = b"…" } }`.
+fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlStep> {
+    if let Some(name) = value::record_field(arenas, id, "push-root-router") {
+        return Some(ControlStep::PushRootRouter(value::read_str(arenas, name)?));
+    }
+    let pd = value::record_field(arenas, id, "push-down")?;
+    let session = match value::record_field(arenas, pd, "session") {
+        Some(s) => Some(value::read_bytes(arenas, s)?.to_vec()),
+        None => None,
+    };
+    let payload = value::read_bytes(arenas, value::record_field(arenas, pd, "payload")?)?.to_vec();
+    Some(ControlStep::PushDown { session, payload })
 }
 
 fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
@@ -250,7 +285,9 @@ mod tests {
         assert_eq!(spec.config.programs.len(), 1);
         assert_eq!(spec.config.programs[0].name, "router");
         assert_eq!(spec.requests.len(), 1);
-        let Step::Http { request, expect } = &spec.requests[0];
+        let Step::Http { request, expect } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "/");
         assert_eq!(expect.status, Some(200));
@@ -285,7 +322,9 @@ mod tests {
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
         let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
-        let Step::Http { request, .. } = &spec.requests[0];
+        let Step::Http { request, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/echo");
         assert_eq!(request.headers, vec![("x-a".to_string(), "1".to_string())]);
@@ -305,7 +344,9 @@ mod tests {
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
         let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
-        let Step::Http { expect, .. } = &spec.requests[0];
+        let Step::Http { expect, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
         assert_eq!(expect, &Expect::default());
     }
 
@@ -345,6 +386,39 @@ mod tests {
         assert!(contains.check(200, b"a wasm handler").is_ok());
         // An empty Expect asserts nothing.
         assert!(Expect::default().check(500, b"anything").is_ok());
+    }
+
+    #[test]
+    fn parses_control_steps() {
+        // requests = [ { control = { push-root-router = "r2" } },
+        //              { control = { push-down = { session = b"s", payload = b"p" } } } ]
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let name = str_leaf(&mut b, "r2");
+        let prr = record(&mut b, vec![("push-root-router", name)]);
+        let step1 = record(&mut b, vec![("control", prr)]);
+        let sess = bytes_leaf(&mut b, b"s");
+        let payload = bytes_leaf(&mut b, b"p");
+        let pd_inner = record(&mut b, vec![("payload", payload), ("session", sess)]);
+        let pd = record(&mut b, vec![("push-down", pd_inner)]);
+        let step2 = record(&mut b, vec![("control", pd)]);
+        let requests = list_value(&mut b, vec![step1, step2]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        assert_eq!(spec.requests.len(), 2);
+        assert_eq!(
+            spec.requests[0],
+            Step::Control(ControlStep::PushRootRouter("r2".into()))
+        );
+        assert_eq!(
+            spec.requests[1],
+            Step::Control(ControlStep::PushDown {
+                session: Some(b"s".to_vec()),
+                payload: b"p".to_vec(),
+            })
+        );
     }
 
     #[test]
