@@ -6,56 +6,45 @@
 //! endpoint, and DECODES the [`AdminReply`]. (The process-orchestration, the ML run-spec interpreter, and the
 //! gateway HTTP client are following pieces; this is the reusable control-injection + observation client.)
 
-use bytes::Bytes;
 use cdz_http_control_mock::admin::{AdminCommand, AdminReply, decode_reply, encode_command};
-use http_body_util::{BodyExt, Full};
-use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 
-/// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP/1.
+/// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
+/// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
+/// Cheap to `Clone` (the client shares its connection pool).
 #[derive(Debug, Clone)]
 pub struct AdminClient {
-    addr: SocketAddr,
+    endpoint: String,
+    http: reqwest::Client,
 }
 
 impl AdminClient {
     /// A client targeting the mock's admin endpoint at `addr`.
     #[must_use]
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr }
+        Self {
+            endpoint: format!("http://{addr}/admin"),
+            http: reqwest::Client::new(),
+        }
     }
 
-    /// Send an [`AdminCommand`] and return the mock's [`AdminReply`]. Errs (a `String`) on any transport /
-    /// decode failure so the driver can surface it as a scenario setup error.
+    /// Send an [`AdminCommand`] and return the mock's [`AdminReply`], reusing the pooled connection. Errs (a
+    /// `String`) on any transport / decode failure so the driver can surface it as a scenario setup error.
     ///
     /// # Errors
-    /// Any connect/handshake/HTTP/decode failure, or a non-2xx status from the mock.
+    /// Any transport failure, a non-2xx status from the mock, or a reply that fails to decode.
     pub async fn send(&self, cmd: &AdminCommand) -> Result<AdminReply, String> {
-        let stream = tokio::net::TcpStream::connect(self.addr)
-            .await
-            .map_err(|e| format!("admin connect {}: {e}", self.addr))?;
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-            .await
-            .map_err(|e| format!("admin handshake: {e}"))?;
-        tokio::spawn(conn);
-        let req = hyper::Request::builder()
-            .method(hyper::Method::POST)
-            .uri("/admin")
-            .body(Full::new(encode_command(cmd)))
-            .map_err(|e| format!("admin request build: {e}"))?;
-        let resp = sender
-            .send_request(req)
+        let resp = self
+            .http
+            .post(&self.endpoint)
+            .body(encode_command(cmd))
+            .send()
             .await
             .map_err(|e| format!("admin send: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("admin status {}", resp.status()));
         }
-        let body: Bytes = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| format!("admin body: {e}"))?
-            .to_bytes();
+        let body = resp.bytes().await.map_err(|e| format!("admin body: {e}"))?;
         decode_reply(&body).ok_or_else(|| "admin reply decode failed".to_string())
     }
 }
@@ -63,6 +52,7 @@ impl AdminClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use cdz_http_control_mock::MockState;
     use cdz_http_control_mock::server::{AdminCtx, serve_admin};
     use cdz_http_control_mock::ws::new_sessions;
