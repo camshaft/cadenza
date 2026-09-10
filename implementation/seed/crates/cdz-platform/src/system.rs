@@ -557,18 +557,21 @@ impl<R: Runtime> Shared<R> {
                     .spawn(program, SpawnContext { id, kind, limits })
                     .await
                 {
-                    while let Some(event) = R::recv(&mut inbox).await {
-                        let (requests, outcome) =
-                            match std::panic::AssertUnwindSafe(fold(&mut reducer, event))
-                                .catch_unwind()
-                                .await
-                            {
-                                Ok(folded) => folded,
-                                // A panic in a fold is an uncontrolled crash: stop draining and fall through
-                                // to the `Crashed` notification below (`break_reason` stays `None`).
-                                Err(_panic) => break,
-                            };
-                        for request in requests {
+                    // Drive the mailbox with the REUSABLE loop core (`run_mailbox_loop`), supplying the
+                    // platform's per-request dispatch as this closure. The HTTP-outpost gateway reuses the
+                    // same `run_mailbox_loop` with its OWN dispatch, rather than copying the loop (operator
+                    // directive: refactor for pluggability, don't copy/paste). Dispatch is FIRE-AND-FORGET:
+                    // it carries out each request and later injects the answer back into the mailbox as a
+                    // `Delivered::Response` (`shared.send`), never awaited inline. `break_reason` becomes the
+                    // returned `Break` reason (`None` on a mailbox close or a caught fold panic → `Crashed`).
+                    // The dispatch closure OWNS its captures — a cloned `shared`, the moved `timers`/
+                    // `rolling`, Copy `id`/`kind` — so the spawned per-reducer future stays `Send` for any
+                    // lifetime (a borrowed capture makes the higher-ranked `Send` bound unsatisfiable).
+                    let shared = Arc::clone(&shared);
+                    break_reason = run_mailbox_loop::<R>(
+                        &mut reducer,
+                        &mut inbox,
+                        async move |request: Request| {
                             if request.id == deliver_contract() {
                                 // Delivering an event into another reducer's log is the one privileged act (§4):
                                 // honored only from an event reducer. An ordinary reducer's deliver is routed for
@@ -686,12 +689,9 @@ impl<R: Runtime> Shared<R> {
                                     }),
                                 );
                             }
-                        }
-                        if let Outcome::Break { schema, reason } = outcome {
-                            break_reason = Some((schema, reason));
-                            break;
-                        }
-                    }
+                        },
+                    )
+                    .await;
                 }
                 // Tell every watcher how this reducer ended, then leave the graph (§7): a clean Break is an
                 // `Exited` carrying its typed reason; any other end — a fold that panicked (caught above), the
@@ -713,6 +713,41 @@ impl<R: Runtime> Shared<R> {
             });
         })
     }
+}
+
+/// The reusable mailbox drive core (`design/DESIGN-http-outpost-drive-contract.md` §1). Drain a reducer's
+/// mailbox, [`fold`] each delivered event through its matching entry point, and hand every request it emits
+/// to `dispatch` — FIRE-AND-FORGET: `dispatch` carries the request out and, when an answer arrives, injects
+/// it back into the mailbox as a `Delivered::Response` correlated by `continuation_token`, never blocking
+/// this loop. Returns the reducer's `Break` reason (`Some((schema, reason))`), or `None` if the mailbox
+/// closed or a fold panicked (an uncontrolled crash).
+///
+/// This is the ONE loop shape the platform ([`TaskSystem`]) and other drivers (the HTTP-outpost gateway)
+/// SHARE: each supplies its own per-request `dispatch` — deliver/timer/run/ordinary-effect routing for the
+/// platform, the outpost effect vocabulary for the gateway — reusing this core rather than copying it
+/// (operator directive 2026-09-10: refactor `system.rs` for pluggability, don't copy/paste the loop).
+pub async fn run_mailbox_loop<R: Runtime>(
+    reducer: &mut Box<dyn Reducer>,
+    inbox: &mut R::Receiver,
+    mut dispatch: impl AsyncFnMut(Request),
+) -> Option<(ContractId, Bytes)> {
+    while let Some(event) = R::recv(inbox).await {
+        let (requests, outcome) = match std::panic::AssertUnwindSafe(fold(reducer, event))
+            .catch_unwind()
+            .await
+        {
+            Ok(folded) => folded,
+            // A panic in a fold is an uncontrolled crash: stop draining, report no Break reason.
+            Err(_panic) => return None,
+        };
+        for request in requests {
+            dispatch(request).await;
+        }
+        if let Outcome::Break { schema, reason } = outcome {
+            return Some((schema, reason));
+        }
+    }
+    None
 }
 
 /// Fold one delivered event through a reducer's matching entry point.
