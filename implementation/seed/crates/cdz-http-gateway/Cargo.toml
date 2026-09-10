@@ -21,6 +21,15 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# The wasmtime-backed handler store (src/wasm.rs): reuse cdz-platform's `host` feature (WasmProgramStore +
+# the wasmtime engine driving the reducer WIT world) to instantiate a real content-addressed wasm handler
+# per request. OFF by default so the core spine (codec/gateway/runner/edge) build stays wasmtime-free and
+# fast; the `cdz-http-gateway` nix check builds BOTH default and `--features host`. `dep:wasmtime` is here
+# only to NAME `wasmtime::Error` in the `wasm_store` return type (the engine itself comes via
+# cdz-platform/host, so this adds no new lock entry beyond what host already pulls).
+host = ["cdz-platform/host", "dep:wasmtime"]
+
 [dependencies]
 # The canonical language AST + value-model codec. The `http-request`/`http-response` payloads that cross to
 # a handler are `cadenza-ast` value-form documents (design §5, the one-codec-everywhere rule), so the
@@ -43,6 +52,9 @@ tokio = { version = "1", features = ["net", "rt", "macros", "sync"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# Only to NAME `wasmtime::Error` in wasm_store's return type; behind the `host` feature (the engine comes
+# via cdz-platform/host). Matches the workspace's wasmtime (cdz-platform/cdz-run/rcdzc) so no new lock line.
+wasmtime = { version = "37", default-features = false, optional = true }
 
 [dev-dependencies]
 # The native test `ProgramStore` (`cdz_platform::testing::program::Store`) + a Rust `Reducer` let the

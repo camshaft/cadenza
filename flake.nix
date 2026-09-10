@@ -6752,7 +6752,12 @@
               cargo test --offline --locked
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
-              echo "ok: cdz-http-gateway (excluded standalone crate — cargo test + clippy + fmt, contracts overlay staged)" > "$out"
+              # NOTE: the `host` feature (src/wasm.rs, the wasmtime-backed WasmProgramStore) is NOT gated here
+              # yet — cdz-platform's `host` feature bundles `dep:tikv-jemallocator`, whose jemalloc C build
+              # fails in this minimal sandbox (`configure: cannot determine return type of strerror_r`). It
+              # is locally verified (`cargo test --features host`, green); fleet-gating it waits on cdz-platform
+              # splitting the itest-only jemalloc allocator out of `host` (asked; then add a --features host step).
+              echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
             '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";

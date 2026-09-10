@@ -20,9 +20,18 @@
 //!  - **P1c-2 (here): [`edge`]** — the native `hyper` HTTP/1 edge: bind a port, parse each request into an
 //!    [`HttpRequest`], serve it through the [`gateway::Gateway`], serialize the response. Host plumbing only.
 //!    (P1c-3 seeds the route table from a mock control server.)
+//!  - **P1c-3 (in progress): [`wasm`]** (behind the `host` feature) — the wasmtime-backed handler store:
+//!    reuse `cdz-platform`'s `WasmProgramStore` to instantiate a real content-addressed wasm handler per
+//!    request (fresh in-memory `state`), no core platform. The mock control server + compiled-guest e2e
+//!    build on this.
 //!  - P1d: per-request resource bounds (epoch deadline + memory ceiling), no-cross-request-state-leak.
 
 pub mod codec;
 pub mod edge;
 pub mod gateway;
 pub mod runner;
+
+/// The wasmtime-backed handler store — behind the `host` feature (off by default so the core spine build
+/// stays wasmtime-free). Reuses `cdz-platform`'s `WasmProgramStore` (design §0.1).
+#[cfg(feature = "host")]
+pub mod wasm;
