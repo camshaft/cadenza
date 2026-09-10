@@ -7075,6 +7075,8 @@
                 ./implementation/seed/crates/cdz-http-conformance/Cargo.toml
                 ./implementation/seed/crates/cdz-http-conformance/Cargo.lock
                 ./implementation/seed/crates/cdz-http-conformance/src
+                # The run-spec corpus (ML surface); the parse check compiles each to binary-AST + parses it.
+                ./implementation/seed/crates/cdz-http-conformance/runs
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
                 ./implementation/seed/crates/cdz-http-control-mock/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
@@ -7112,6 +7114,38 @@
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
               echo "ok: cdz-http-conformance (excluded standalone crate — test + clippy + fmt)" > "$out"
+            '';
+            # The run-spec PARSE round-trip check (vertical gateway-conformance): the first harness-rig slice.
+            # For every `runs/*.ml`, compile the ML surface to binary-AST with the seed compiler
+            # (`cdz convert --from ml --to binary`, the same step the platform harness-runs use) and assert the
+            # driver's `--parse-only` mode decodes it — i.e. the ML run-spec corpus and the Rust parser agree on
+            # the value shape, in CI, without needing the (heavy, wasmtime) SUT binaries. The full end-to-end
+            # scenario run (spawn CAS+mock+gateway) is the next rig slice.
+            cdzHttpConformanceParseCheck = pkgs.runCommand "cdz-http-conformance-parse"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpConformanceSrc} repo
+              chmod -R u+w repo
+              cd repo
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpConformanceVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-conformance
+              cargo build --offline --locked --bin cdz-http-conformance
+              driver="$PWD/target/debug/cdz-http-conformance"
+              for spec in runs/*.ml; do
+                name="$(basename "$spec" .ml)"
+                ${seedCompiler}/bin/cdz convert --from ml --to binary "$spec" > "$TMPDIR/$name.bin"
+                "$driver" --parse-only "$TMPDIR/$name.bin"
+              done
+              echo "ok: cdz-http-conformance-parse (cdz convert + --parse-only for every runs/*.ml)" > "$out"
             '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
@@ -7517,6 +7551,9 @@
             # The harness driver crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in local-gate;
             # run via `nix build .#checks.<sys>.cdz-http-conformance`.
             cdz-http-conformance = cdzHttpConformanceCheck;
+            # The run-spec parse round-trip: every runs/*.ml compiles to binary-AST + the driver parses it.
+            # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-parse`.
+            cdz-http-conformance-parse = cdzHttpConformanceParseCheck;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
