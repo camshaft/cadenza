@@ -6732,6 +6732,17 @@
                 ./rust-toolchain.toml
               ];
             };
+            # The inline-PoC HTTP handler (guests/http-hello/reducer.cdz, DESIGN-http-outpost.md §7): a real
+            # content-addressed wasm reducer that folds an http-request -> a 200 http-response. Building it via
+            # mkCadenzaGuest IS the fleet gate that it stays valid Cadenza + compiles to the reducer component
+            # (self-contained inline reducer-world → no witWorld; `--component-name cadenza:platform/guest`
+            # binds the guest export). The full runtime-composition e2e (drive it through WasmProgramStore with
+            # the value-heap runtime + NFC seeded into the CAS) is a follow-on slice.
+            cdzHttpGatewayPocHandler = mkCadenzaGuest {
+              pname = "cdz-http-gateway-poc-handler";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/http-hello/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -7154,6 +7165,8 @@
             # excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-http-gateway`
             # or `nix flake check`).
             cdz-http-gateway = cdzHttpGatewayCheck;
+            # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
+            cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
