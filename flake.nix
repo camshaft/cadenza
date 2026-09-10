@@ -6719,6 +6719,11 @@
                 ./implementation/seed/crates/cdz-http-gateway/tests
                 ./implementation/seed/crates/cdz-http-gateway/Cargo.toml
                 ./implementation/seed/crates/cdz-http-gateway/Cargo.lock
+                # Path-dep: the shared HTTP CAS client (v-cas-http). cdz-http-gateway re-exports its
+                # `HttpBlobStore` as the gateway's CAS client (replacing the former hand-rolled one). It
+                # path-deps cdz-platform (already below), so only its own src + manifest need adding here.
+                ./implementation/seed/crates/cdz-cas-http/src
+                ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
