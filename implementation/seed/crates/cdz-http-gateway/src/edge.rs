@@ -13,7 +13,7 @@ use crate::codec::{Header, HttpRequest, HttpResponse, Method};
 use crate::gateway::Gateway;
 use bytes::Bytes;
 use cdz_platform::ProgramStore;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -22,6 +22,12 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
+
+/// The default per-request body-size ceiling (1 MiB) — the edge reads at most this many bytes of a request
+/// body before answering `413`, so a large/unbounded upload cannot exhaust the node's memory (design §10:
+/// the edge bounds foreign input; a per-request fold cannot exhaust the node). Tune with
+/// [`HttpEdge::with_max_body_bytes`].
+pub const DEFAULT_MAX_BODY_BYTES: usize = 1 << 20;
 
 /// The HTTP edge: a [`Gateway`] + the [`ProgramStore`] its handlers instantiate from, bound to a listener.
 /// `Send + Sync` (behind an `Arc`) so each accepted connection is served on its own task.
@@ -32,17 +38,28 @@ pub struct HttpEdge {
     /// request is all the runner needs to give each session a fresh id); the unguessable-token scheme the
     /// design reserves arrives with the in-platform trust model (auth is an external proxy in v0, D1).
     next_id: AtomicU64,
+    /// The per-request body-size ceiling (bytes); a body exceeding it is answered `413` before it reaches a
+    /// handler ([`DEFAULT_MAX_BODY_BYTES`] unless overridden).
+    max_body_bytes: usize,
 }
 
 impl HttpEdge {
-    /// An edge serving `gateway` over handlers instantiated from `store`.
+    /// An edge serving `gateway` over handlers instantiated from `store`, with the default body-size limit.
     #[must_use]
     pub fn new(gateway: Gateway, store: Arc<dyn ProgramStore>) -> Self {
         Self {
             gateway,
             store,
             next_id: AtomicU64::new(0),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         }
+    }
+
+    /// Set the per-request body-size ceiling (bytes) — a request body larger than this is answered `413`.
+    #[must_use]
+    pub fn with_max_body_bytes(mut self, max_body_bytes: usize) -> Self {
+        self.max_body_bytes = max_body_bytes;
+        self
     }
 
     /// Accept connections on `listener` forever, serving each on its own task. Returns only on an accept
@@ -71,7 +88,8 @@ impl HttpEdge {
 
     /// Map one hyper request onto an [`HttpRequest`], serve it through the gateway, and map the
     /// [`HttpResponse`] back. An unrepresentable method (outside the 7 the contract models) is a `501`
-    /// floor; a body-read error is a `400`; both are edge floors that never reach a handler.
+    /// floor; a body over the size ceiling is a `413`; another body-read error is a `400`; each is an edge
+    /// floor that never reaches a handler.
     async fn handle(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
         let (parts, body) = req.into_parts();
         let Some(method) = method_from_hyper(&parts.method) else {
@@ -91,8 +109,17 @@ impl HttpEdge {
                 })
             })
             .collect();
-        let body = match body.collect().await {
+        // Bound the body: read at most `max_body_bytes` before answering `413`, so a large/unbounded upload
+        // cannot exhaust node memory (`Limited` errors with a `LengthLimitError` once the ceiling is passed).
+        let body = match Limited::new(body, self.max_body_bytes).collect().await {
             Ok(collected) => collected.to_bytes(),
+            Err(err)
+                if err
+                    .downcast_ref::<http_body_util::LengthLimitError>()
+                    .is_some() =>
+            {
+                return floor_response(413, "payload too large");
+            }
             Err(_) => return floor_response(400, "bad request body"),
         };
         let request = HttpRequest {
@@ -258,6 +285,56 @@ mod tests {
         let addr = spawn_edge().await;
         let (status, _body) = get(addr, "/nope").await;
         assert_eq!(status, 404);
+    }
+
+    /// Send one POST with a body over a real TCP connection and return the status.
+    async fn post(addr: std::net::SocketAddr, path: &str, body: Vec<u8>) -> u16 {
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut sender, conn) = client_http1::handshake::<_, Full<Bytes>>(TokioIo::new(stream))
+            .await
+            .expect("handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let req = Request::builder()
+            .method(hyper::Method::POST)
+            .uri(path)
+            .header("host", "test")
+            .body(Full::new(Bytes::from(body)))
+            .expect("request");
+        sender
+            .send_request(req)
+            .await
+            .expect("send")
+            .status()
+            .as_u16()
+    }
+
+    #[tokio::test]
+    async fn an_oversized_body_is_a_413() {
+        // An edge with an 8-byte body ceiling. The limit is enforced in the edge BEFORE routing, so it
+        // holds regardless of the route; a native handler keeps this test wasm-free.
+        let handler = ProgramHash::of(b"path-echo");
+        let mut store = Store::new();
+        store.register(handler, || Box::new(PathEchoHandler));
+        let gateway = Gateway::new(
+            Router::new(vec![Route::new(
+                Method::Post,
+                "/up",
+                handler,
+                ContractId::of(b"cdz-platform.http.request"),
+            )]),
+            HandlerRunner::new(HostId::of(b"h"), ReducerId::of(b"r")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, Arc::new(store)).with_max_body_bytes(8));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        // Over the ceiling → 413, before the request ever reaches a handler.
+        assert_eq!(post(addr, "/up", vec![b'x'; 100]).await, 413);
+        // Under the ceiling → the body is accepted and the request routes to the handler (200).
+        assert_eq!(post(addr, "/up", b"tiny".to_vec()).await, 200);
     }
 
     #[test]
