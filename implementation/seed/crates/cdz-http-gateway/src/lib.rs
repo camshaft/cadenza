@@ -35,3 +35,9 @@ pub mod runner;
 /// stays wasmtime-free). Reuses `cdz-platform`'s `WasmProgramStore` (design §0.1).
 #[cfg(feature = "host")]
 pub mod wasm;
+
+/// The mock control server (design §3) — behind the `host` feature (it assembles a wasmtime-backed edge).
+/// Ships a route table + handler blobs and builds a ready-to-serve [`edge::HttpEdge`] from them, standing
+/// in for the real ws-dialed control server for end-to-end tests.
+#[cfg(feature = "host")]
+pub mod control;
