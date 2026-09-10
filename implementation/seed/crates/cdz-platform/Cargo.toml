@@ -32,7 +32,15 @@ testing = ["dep:bach"]
 # default per-crate closure never build the heavy runtime — only an explicit `--features host` build (and a
 # dedicated CI job) does. wasmtime is already a workspace dependency (cdz-run/rcdzc), so this adds no new
 # lock entries. Async, so a disk/network-backed host import never blocks the host thread (spec §3/§9).
-host = ["dep:wasmtime", "dep:tikv-jemallocator"]
+# `host` is the wasm-runtime LIBRARY (wasmtime) only — the itest-executable's jemalloc allocator is a
+# SEPARATE `itest-alloc` feature (below), so a host-as-a-library consumer (e.g. the standalone
+# cdz-http-gateway) gets wasmtime WITHOUT the tikv-jemalloc-sys C build (its jemalloc `configure` fails in a
+# minimal check sandbox). The itest bin re-adds it via its required-features, so its behavior is unchanged.
+host = ["dep:wasmtime"]
+# The cdz-platform-itest EXECUTABLE's global allocator (jemalloc) — itest-only (see the itest [[bin]] and the
+# tikv-jemallocator dep note). Split out of `host` (v-http-outpost 2026-09-10, concierge-directed) purely so
+# enabling `host` as a library does not drag the jemalloc C build; the itest still gets it via required-features.
+itest-alloc = ["dep:tikv-jemallocator"]
 
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
@@ -70,8 +78,9 @@ wasmtime = { version = "37", default-features = false, features = [
     "component-model",
     "async",
 ], optional = true }
-# jemalloc as the global allocator for the integration-test EXECUTABLE only (behind `host`, off by default,
-# so the routine workspace build/gate never pulls it — same gating as wasmtime). The itest binary drives a
+# jemalloc as the global allocator for the integration-test EXECUTABLE only (behind the `itest-alloc` feature,
+# off by default, so the routine workspace build/gate never pulls it — and `host` as a library does not, so a
+# host consumer avoids the jemalloc C build). The itest binary drives a
 # whole platform run + wasmtime + the bach observation log, which is allocation-heavy; jemalloc cuts its
 # allocator overhead and fragmentation (operator suggestion 2026-08-23). Allocator choice is invisible to the
 # observation log (seq/time/id are logical, address-independent), so it does not affect Bach determinism.
@@ -89,9 +98,10 @@ wat = "1"
 # platform under the bach simulator, and prints the observation log for a checker (design/cadenza-platform.md
 # §9). It needs the `testing` utilities (the harness + observation log) and the `host` (the wasm program
 # store that instantiates the blobs), so it is gated on both features — the routine light build pulls in
-# neither the harness nor wasmtime; a `--features "testing host"` build (the nix host check) builds it.
+# neither the harness nor wasmtime; a `--features "testing host itest-alloc"` build (the nix host check)
+# builds it. `itest-alloc` (split out of `host`) gives it the jemalloc #[global_allocator] exactly as before.
 [[bin]]
 name = "cdz-platform-itest"
 path = "src/bin/cdz-platform-itest.rs"
-required-features = ["testing", "host"]
+required-features = ["testing", "host", "itest-alloc"]
 
