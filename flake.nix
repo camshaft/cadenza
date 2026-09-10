@@ -691,6 +691,11 @@
           cdz-num = "implementation/seed/crates/cdz-num";
           cdz-rt = "implementation/seed/crates/cdz-rt";
           cdz-run = "implementation/seed/crates/cdz-run";
+          # cdz-reducer-guest (v-reducer-targets B2): the ONE generic reducer-world guest wrapper — pure
+          # bytes->bytes target handlers (rcdzc.compile now; sexpr/ml later), native-tested. A ROOT member
+          # (crates/* glob), so it MUST register here + get a clippy/test crane below or member-registration-
+          # assert reds every gate. B3 builds it to a wasm component per target (its own wasm build, not here).
+          cdz-reducer-guest = "implementation/seed/crates/cdz-reducer-guest";
           cdz-rust-render = "implementation/seed/crates/cdz-rust-render";
           # cdz-world-artifact: the isolated WIT-world → KIND_WIT_WORLD binary-AST utility, shelled out to by
           # the `worldArtifacts` derivation (and `cargo xtask world-artifact`). A ROOT workspace member (no own
@@ -6551,6 +6556,9 @@
               clippy-cdz-str = mkCrateClippyCrane { crate = "cdz-str"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
+              # cdz-reducer-guest (v-reducer-targets B2): pure target handlers; tests use inline-string sources
+              # (no spec/semantics fixture) → no extraSrc. Its closure (via rcdzc) is walked live by crateClosure.
+              clippy-cdz-reducer-guest = mkCrateClippyCrane { crate = "cdz-reducer-guest"; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
               clippy-cdz-rust-run = mkCrateClippyCrane { crate = "cdz-rust-run"; };
               clippy-cdz-world-artifact = mkCrateClippyCrane { crate = "cdz-world-artifact"; };
@@ -6616,6 +6624,9 @@
               test-cdz-str = mkCrateTestCrane { crate = "cdz-str"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
+              # cdz-reducer-guest (v-reducer-targets B2): 4 unit tests (request round-trip + rcdzc handler e2e),
+              # inline-string sources → no extraSrc. Its rcdzc-inclusive closure is walked live by crateClosure.
+              test-cdz-reducer-guest = mkCrateTestCrane { crate = "cdz-reducer-guest"; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };

@@ -1,0 +1,39 @@
+# cdz-reducer-guest — ONE generic reducer-world GUEST wrapper, parameterized per-target by a cargo feature
+# (operator directive 2026-09-10, brief `v-reducer-targets-brief.md`: "no crate per wasm target … generate
+# on the fly in the nix flake … they all export the same interface"). Each target decodes its request
+# payload, runs its inner function, and returns the result as the guest's `close` reason. This crate holds
+# the target HANDLERS (pure bytes-in/bytes-out, native-testable — B2); the wit-bindgen `guest` export + the
+# wasm componentization are wired by the nix flake per-target (B3). Design: design/DESIGN-reducer-targets.md.
+#
+# A WORKSPACE MEMBER (native-gated by the standard workspace battery) for B2 — the handlers are pure Rust
+# tested natively. B3 builds it to a wasm component per target (the standalone-lock / componentization work,
+# mirroring rcdzc-wasm), where the crate-type gains `cdylib`.
+[package]
+name = "cdz-reducer-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Exactly one target feature is active per build. nix stamps N components by selecting one per target (B3).
+default = ["target-rcdzc"]
+# The rcdzc compile target: a kinded-input bundle -> a wasm component + diagnostics envelope.
+target-rcdzc = ["dep:rcdzc"]
+
+[dependencies]
+# The compile-boundary vocabulary: the kinded `Artifact`, the `{artifacts, diagnostics}` `CompileOutput`,
+# the response envelope codec (`encode_compile_output`), and the `Target` enum.
+cadenza-compile-abi = { path = "../cadenza-compile-abi" }
+# The canonical binary-AST codec the request/response wires are built over.
+cadenza-ast = { path = "../cadenza-ast" }
+# The compiler — the rcdzc target's inner function (`rcdzc::compile`). `default-features = false` drops the
+# host-CLI `validate-output` feature (`wasmparser`): a guest drives the library API, not the file-writing CLI.
+rcdzc = { path = "../rcdzc", default-features = false, optional = true }
+
+[dev-dependencies]
+# The front-end reader — TESTS ONLY (bridges source text -> AST bytes to build a compile request), exactly
+# as rcdzc-wasm's tests do. Never a build-path dep: a guest receives AST bytes, not source.
+cadenza-syntax = { path = "../cadenza-syntax" }

@@ -507,6 +507,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-reducer-guest"
+version = "0.0.0"
+dependencies = [
+ "cadenza-ast",
+ "cadenza-compile-abi",
+ "cadenza-syntax",
+ "rcdzc",
+]
+
+[[package]]
 name = "cdz-rt"
 version = "0.0.0"
 
