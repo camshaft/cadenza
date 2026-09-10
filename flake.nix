@@ -6789,19 +6789,22 @@
               libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
             };
             # The STATEFUL router governing program (guests/router-stateful/reducer.cdz, DESIGN §3/§4, P3b):
-            # routing-as-a-fold whose route table is LIVE STATE (vs the P2 router's baked table). A persistent
-            # session: a route-table frame → state.put; each http-request → state.get + decode + match →
-            # Decision. Same host-import build recipe as kv-probe (reducer-world witWorld + reducer-lib). The
-            # runtime e2e drives it as a persistent instance via CDZ_HTTP_ROUTER_STATEFUL_WASM.
-            cdzHttpGatewayRouterStateful = mkCadenzaGuest {
-              pname = "cdz-http-gateway-router-stateful";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/router-stateful/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-              witWorld = "${worldArtifacts}/reducer-world.bin";
-              witWorldName = "reducer-world";
-              entry = "reducer";
-              libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
-            };
+            # routing-as-a-fold whose route table is LIVE STATE (vs the P2 router's baked table). Landed
+            # compile-only (#8615) — it triggers the adv-cdz-invalid-wasm compiler bug (host-state + a called
+            # heap-op recursion emits INVALID wasm). Its build is DISABLED here: v-cdz-wasm-codegen is landing
+            # a `cdz compile` output-validation error (CDZ0910) that makes this derivation FAIL to build loudly,
+            # which would turn the whole cdz-http-gateway check red. Re-enable (uncomment + re-wire the env
+            # below + the checks attr) once v-cdz-wasm-codegen lands the codegen FIX so it emits valid wasm.
+            # The stateless `router-dynamic` pivot is unaffected and covers the routing-as-a-fold thesis.
+            # cdzHttpGatewayRouterStateful = mkCadenzaGuest {
+            #   pname = "cdz-http-gateway-router-stateful";
+            #   src = ./implementation/seed/crates/cdz-http-gateway/guests/router-stateful/reducer.cdz;
+            #   componentName = "cadenza:platform/guest";
+            #   witWorld = "${worldArtifacts}/reducer-world.bin";
+            #   witWorldName = "reducer-world";
+            #   entry = "reducer";
+            #   libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
+            # };
             # The DYNAMIC router governing program (guests/router-dynamic/reducer.cdz, DESIGN §3/§4, P3b PIVOT):
             # routing-as-a-fold over a LIVE table WITHOUT host-state — the gateway holds the route-table frame
             # (from control_link) and passes it in the message as a `RouteQuery{request, table}`; the router is a
@@ -6854,7 +6857,6 @@
               CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
               CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
               CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
-              CDZ_HTTP_ROUTER_STATEFUL_WASM=${cdzHttpGatewayRouterStateful} \
               CDZ_HTTP_ROUTER_DYNAMIC_WASM=${cdzHttpGatewayRouterDynamic} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
@@ -7258,8 +7260,10 @@
             cdz-http-gateway-router-handler = cdzHttpGatewayRouterHandler;
             # The P3 state-import build-path probe (first state/KV-holding http-outpost guest) compiles.
             cdz-http-gateway-kv-probe = cdzHttpGatewayKvProbe;
-            # The stateful router governing program (live route table in KV state) compiles.
-            cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
+            # The stateful router governing program (live route table in KV state) — DISABLED: triggers the
+            # adv-cdz-invalid-wasm compiler bug (#8615), so `cdz compile`'s new CDZ0910 output-validation makes
+            # it fail to build. Re-enable once v-cdz-wasm-codegen lands the codegen fix (see the derivation above).
+            # cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
             # The dynamic stateless router (live table-in-payload, routing-as-a-fold, no host-state) compiles.
             cdz-http-gateway-router-dynamic = cdzHttpGatewayRouterDynamic;
           }
