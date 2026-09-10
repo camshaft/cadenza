@@ -78,19 +78,25 @@ impl HttpEdge {
                     async move { Ok::<_, Infallible>(edge.handle(req).await) }
                 });
                 // A per-connection serve error (a client hang-up, a malformed frame) is that connection's
-                // business, not the edge's — log-free drop, keep accepting.
+                // business, not the edge's — log-free drop, keep accepting. `.with_upgrades()` lets a
+                // WebSocket upgrade complete (so `hyper::upgrade::on` in the ws path resolves).
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(io, service)
+                    .with_upgrades()
                     .await;
             });
         }
     }
 
     /// Map one hyper request onto an [`HttpRequest`], serve it through the gateway, and map the
-    /// [`HttpResponse`] back. An unrepresentable method (outside the 7 the contract models) is a `501`
-    /// floor; a body over the size ceiling is a `413`; another body-read error is a `400`; each is an edge
-    /// floor that never reaches a handler.
-    async fn handle(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
+    /// [`HttpResponse`] back. A WebSocket-upgrade request is handed to the per-connection ws path instead;
+    /// an unrepresentable method (outside the 7 the contract models) is a `501` floor; a body over the size
+    /// ceiling is a `413`; another body-read error is a `400`; each is an edge floor that never reaches a
+    /// handler.
+    async fn handle(&self, mut req: Request<Incoming>) -> Response<Full<Bytes>> {
+        if is_websocket_upgrade(req.headers()) {
+            return self.handle_ws_upgrade(&mut req);
+        }
         let (parts, body) = req.into_parts();
         let Some(method) = method_from_hyper(&parts.method) else {
             return floor_response(501, "not implemented");
@@ -137,6 +143,102 @@ impl HttpEdge {
             .await;
         to_hyper_response(response)
     }
+
+    /// Handle a WebSocket-upgrade request: route its path (upgrades are `GET`), and on a match complete the
+    /// handshake (`101`) while spawning the per-connection frame loop over the upgraded connection. `404`
+    /// if no route matches, `400` if the request lacks a `Sec-WebSocket-Key`. Returns immediately; the loop
+    /// runs on its own task once hyper finishes the upgrade.
+    fn handle_ws_upgrade(&self, req: &mut Request<Incoming>) -> Response<Full<Bytes>> {
+        let path = req.uri().path().to_string();
+        let Some(key) = req.headers().get(hyper::header::SEC_WEBSOCKET_KEY).cloned() else {
+            return floor_response(400, "missing sec-websocket-key");
+        };
+        // A ws upgrade is a GET; the matched route's handler is driven as a per-connection session. (The
+        // route's http contract-id is unused here — a ws session folds ws-events, not http-requests.)
+        let Some((program, _contract)) = self.gateway.match_route(Method::Get, &path) else {
+            return floor_response(404, "not found");
+        };
+        let on_upgrade = hyper::upgrade::on(req);
+        let store = Arc::clone(&self.store);
+        let conn_seq = self.next_id.fetch_add(1, Ordering::Relaxed);
+        tokio::spawn(run_ws_session(on_upgrade, store, program, conn_seq));
+        switching_protocols(&key)
+    }
+}
+
+/// The fixed contract-ids + node identity a ws session's events carry in v0 (a session guest decodes
+/// `on_message` by payload and tags its pushes with the `ws-send` id; a live control/trust model supplies
+/// these later). `send-contract` MUST match the id a session tags its `ws-send` requests with.
+fn ws_event_contract() -> cdz_platform::ContractId {
+    cdz_platform::ContractId::of(b"cdz-platform.ws.event")
+}
+fn ws_send_contract() -> cdz_platform::ContractId {
+    cdz_platform::ContractId::of(b"cdz-platform.ws.send")
+}
+
+/// Drive one WebSocket connection: await the upgrade, frame the connection, open a per-connection
+/// [`WsSession`](crate::ws::WsSession), and pump inbound frames → `on_frame` → the session's `ws-send`
+/// pushes, until the session closes or the socket does. Best-effort — any error ends the connection.
+async fn run_ws_session(
+    on_upgrade: hyper::upgrade::OnUpgrade,
+    store: Arc<dyn ProgramStore>,
+    program: cdz_platform::ProgramHash,
+    conn_seq: u64,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let Ok(upgraded) = on_upgrade.await else {
+        return;
+    };
+    let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        TokioIo::new(upgraded),
+        tokio_tungstenite::tungstenite::protocol::Role::Server,
+        None,
+    )
+    .await;
+
+    let conn = Bytes::copy_from_slice(&conn_seq.to_be_bytes());
+    let session_id = conn_seq.to_be_bytes();
+    let Some((mut session, initial)) = crate::ws::WsSession::open(
+        store.as_ref(),
+        program,
+        &session_id,
+        conn,
+        cdz_platform::HostId::of(b"cdz-http-gateway"),
+        cdz_platform::ReducerId::of(b"ws-router"),
+        ws_event_contract(),
+        ws_send_contract(),
+    )
+    .await
+    else {
+        return;
+    };
+    for push in initial {
+        if ws.send(Message::Binary(push.data.to_vec())).await.is_err() {
+            return;
+        }
+    }
+
+    while session.is_open() {
+        let data = match ws.next().await {
+            Some(Ok(Message::Binary(data))) => Bytes::from(data),
+            Some(Ok(Message::Text(text))) => Bytes::from(text.into_bytes()),
+            // Ping/Pong are handled by tungstenite; a Close or end-of-stream ends the session.
+            Some(Ok(Message::Close(_))) | None => break,
+            Some(Ok(_)) => continue,
+            Some(Err(_)) => break,
+        };
+        for push in session.on_frame(data).await {
+            if ws.send(Message::Binary(push.data.to_vec())).await.is_err() {
+                return;
+            }
+        }
+    }
+    for push in session.close().await {
+        let _ = ws.send(Message::Binary(push.data.to_vec())).await;
+    }
+    let _ = ws.close(None).await;
 }
 
 /// Whether `headers` are a WebSocket upgrade request (RFC 6455): `Connection: Upgrade`, `Upgrade: websocket`,
@@ -414,5 +516,70 @@ mod tests {
         assert!(!is_websocket_upgrade(&plain));
         h.remove("sec-websocket-version");
         assert!(!is_websocket_upgrade(&h));
+    }
+
+    /// A native WebSocket session that echoes each inbound frame back as a `ws-send` (tagged with the
+    /// `ws-send` contract-id the edge filters on).
+    struct WsEcho;
+    #[async_trait]
+    impl Reducer for WsEcho {
+        async fn on_message(&mut self, m: Message) -> (Vec<PRequest>, Outcome) {
+            use crate::codec::{WsEvent, WsSend, decode_ws_event, encode_ws_send};
+            match decode_ws_event(&m.payload) {
+                Some(WsEvent::Frame { conn, data }) => (
+                    vec![PRequest {
+                        id: ws_send_contract(),
+                        payload: encode_ws_send(&WsSend { conn, data }),
+                        continuation_token: Bytes::new(),
+                        deadline: None,
+                    }],
+                    Outcome::Continue,
+                ),
+                _ => (vec![], Outcome::Continue),
+            }
+        }
+        async fn on_response(&mut self, _r: PResponse) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    /// THE WEBSOCKET E2E: a real ws client connects to a ws endpoint over a socket, sends a frame, and gets
+    /// it echoed — exercising the edge's upgrade handshake → per-connection WsSession → frame loop. A native
+    /// WsEcho session keeps this wasm-free.
+    #[tokio::test]
+    async fn a_websocket_endpoint_echoes_over_a_real_socket() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let session = ProgramHash::of(b"ws-echo");
+        let mut store = Store::new();
+        store.register(session, || Box::new(WsEcho));
+        let gateway = Gateway::new(
+            Router::new(vec![Route::new(
+                Method::Get,
+                "/ws",
+                session,
+                ContractId::of(b"cdz-platform.ws.event"),
+            )]),
+            HandlerRunner::new(HostId::of(b"h"), ReducerId::of(b"r")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, Arc::new(store)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut ws, _resp) = tokio_tungstenite::client_async(format!("ws://{addr}/ws"), stream)
+            .await
+            .expect("ws client handshake");
+        ws.send(Message::Binary(b"hello ws".to_vec()))
+            .await
+            .expect("send frame");
+        let echoed = ws.next().await.expect("a frame").expect("ok frame");
+        assert_eq!(echoed, Message::Binary(b"hello ws".to_vec()));
+        let _ = ws.close(None).await;
     }
 }

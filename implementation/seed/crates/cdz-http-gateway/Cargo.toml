@@ -56,6 +56,9 @@ http-body-util = "0.1"
 # (`WebSocketStream` over the upgraded connection). `default-features = false` — no TLS/connect; the gateway
 # only serves an already-upgraded server socket, not dials out.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# Stream/Sink combinators (`StreamExt::next`, `SinkExt::send`) to pump the ws frame loop over the
+# `WebSocketStream` (a Stream + Sink of ws messages).
+futures-util = { version = "0.3", default-features = false }
 # Only to NAME `wasmtime::Error` in wasm_store's return type; behind the `host` feature (the engine comes
 # via cdz-platform/host). Matches the workspace's wasmtime (cdz-platform/cdz-run/rcdzc) so no new lock line.
 wasmtime = { version = "37", default-features = false, optional = true }

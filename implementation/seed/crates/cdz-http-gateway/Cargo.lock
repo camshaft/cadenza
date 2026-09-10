@@ -211,6 +211,7 @@ dependencies = [
  "bytes",
  "cadenza-ast",
  "cdz-platform",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
