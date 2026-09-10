@@ -79,25 +79,44 @@ impl ServerProcess {
             .take()
             .ok_or_else(|| "server stderr already consumed".to_string())?;
         let mut lines = BufReader::new(stderr).lines();
-        let found = tokio::time::timeout(timeout, async {
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if let Some(v) = parse(&line) {
-                            return Ok(v);
-                        }
-                    }
-                    Ok(None) => {
-                        return Err(
-                            "server closed stderr / exited before its ready line".to_string()
-                        );
-                    }
-                    Err(e) => return Err(format!("reading server stderr: {e}")),
-                }
+        // Retain the stderr seen before the ready line so a server that dies during boot reports WHY (its own
+        // error) — not just "closed before ready". Timeout is enforced per read (a computed remaining budget)
+        // so `recent` stays owned here + is available on both the timeout and the closed-stderr paths.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut recent: Vec<String> = Vec::new();
+        let found = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "timed out waiting for server ready line{}",
+                    fmt_recent(&recent)
+                ));
             }
-        })
-        .await
-        .map_err(|_| "timed out waiting for server ready line".to_string())??;
+            match tokio::time::timeout(remaining, lines.next_line()).await {
+                Err(_) => {
+                    return Err(format!(
+                        "timed out waiting for server ready line{}",
+                        fmt_recent(&recent)
+                    ));
+                }
+                Ok(Ok(Some(line))) => {
+                    if let Some(v) = parse(&line) {
+                        break v;
+                    }
+                    recent.push(line);
+                    if recent.len() > 50 {
+                        recent.remove(0);
+                    }
+                }
+                Ok(Ok(None)) => {
+                    return Err(format!(
+                        "server closed stderr / exited before its ready line{}",
+                        fmt_recent(&recent)
+                    ));
+                }
+                Ok(Err(e)) => return Err(format!("reading server stderr: {e}")),
+            }
+        };
         // Drain the rest of stderr in the background: the pipe has a bounded buffer, and a server that keeps
         // logging after boot would eventually block on a full pipe if nothing reads it.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
@@ -111,6 +130,16 @@ impl ServerProcess {
     /// The kill signal / wait fails at the OS level.
     pub async fn kill(&mut self) -> Result<(), String> {
         self.child.kill().await.map_err(|e| format!("kill: {e}"))
+    }
+}
+
+/// Format the stderr lines seen before a failed ready-wait, for the error message — empty string when there
+/// was none (so a clean "closed before ready" stays terse), else the captured lines under a label.
+fn fmt_recent(recent: &[String]) -> String {
+    if recent.is_empty() {
+        String::new()
+    } else {
+        format!(" — server stderr:\n{}", recent.join("\n"))
     }
 }
 
@@ -186,6 +215,28 @@ mod tests {
             .await;
         assert!(r.is_err(), "expected a timeout error, got {r:?}");
         // Dropping `proc` here kills the lingering `sleep` (kill_on_drop).
+    }
+
+    #[tokio::test]
+    async fn a_dying_server_surfaces_its_stderr_in_the_error() {
+        // A server that prints an error to stderr then exits before its ready line: the error must include
+        // that stderr so the failure is diagnosable (not a bare "closed before ready").
+        let mut proc = ServerProcess::spawn(
+            Path::new("/bin/sh"),
+            &["-c", "echo 'fatal: bad config at line 3' 1>&2; exit 1"],
+        )
+        .expect("spawn sh");
+        let r: Result<SocketAddr, _> = proc
+            .wait_for_ready(Duration::from_secs(5), |line| {
+                field_after_eq(line, "admin").and_then(|v| v.parse().ok())
+            })
+            .await;
+        let err = r.expect_err("a dying server errs");
+        assert!(err.contains("closed stderr"), "got: {err}");
+        assert!(
+            err.contains("fatal: bad config at line 3"),
+            "error should surface the server's stderr, got: {err}"
+        );
     }
 
     #[tokio::test]
