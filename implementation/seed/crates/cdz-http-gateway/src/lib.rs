@@ -1,86 +1,36 @@
-//! The standalone HTTP outpost (`design/DESIGN-http-outpost.md`).
+//! The HTTP outpost gateway — a **dumb** gateway that boots from a control server and drives a
+//! control-shipped, content-addressed Cadenza program as its router.
 //!
-//! An inbound HTTP/WebSocket edge served by content-addressed wasm handlers. The native edge parses each
-//! request into an `http-request` value, a wasm reducer folds it, and the edge serializes the
-//! `http-response` the fold produces back to the socket. Nothing about HTTP reaches below the edge — the
-//! handlers are ordinary reducers, decoupled from the still-unsettled core platform (design §0.1).
+//! Authoritative design: `implementation/design/DESIGN-http-outpost-drive-contract.md` (+ the original
+//! `DESIGN-http-outpost.md` and the conformance harness doc). The gateway holds NOTHING of its own routing
+//! logic:
 //!
-//! Built bottom-up, one increment per the design's §8 arc:
-//!  - **P1a (here): [`codec`]** — the `http-request`/`http-response` value-form codec: Rust mirrors of the
-//!    two userspace contracts (`cdz-platform/contracts/userspace/http-{request,response}.cdz`) and the
-//!    encode/decode against `cadenza-ast`, in the exact canonical form the compiler's `Value.encode`/
-//!    `Value.decode` produce (so a value the gateway emits is decodable by a Cadenza guest, and a guest's
-//!    response decodes here).
-//!  - **P1b (here): [`runner`]** — the per-request handler runner: instantiate a fresh session via a
-//!    [`cdz_platform::ProgramStore`], deliver the request as `on_message`, read the `http-response` off
-//!    the closing `Break`. Generic over the store, so it drives the wasmtime-backed store in production and
-//!    a native test store in tests.
-//!  - **P1c-1: [`gateway`]** — the router + request-serving core: match an [`HttpRequest`] against a route
-//!    table to a handler, fold it through the runner, synthesize the `404`/`500` floors.
-//!  - **P1c-2 (here): [`edge`]** — the native `hyper` HTTP/1 edge: bind a port, parse each request into an
-//!    [`HttpRequest`], serve it through the [`gateway::Gateway`], serialize the response. Host plumbing only.
-//!    (P1c-3 seeds the route table from a mock control server.)
-//!  - **P1c-3 (in progress): [`wasm`]** (behind the `host` feature) — the wasmtime-backed handler store:
-//!    reuse `cdz-platform`'s `WasmProgramStore` to instantiate a real content-addressed wasm handler per
-//!    request (fresh in-memory `state`), no core platform. The mock control server + compiled-guest e2e
-//!    build on this.
-//!  - P1d: per-request resource bounds (epoch deadline + memory ceiling), no-cross-request-state-leak.
+//!  - It is launched knowing only where the control server is. It dials a single **persistent,
+//!    bidirectional** WebSocket to control (§3) and applies the `ControlConfig` control ships on connect
+//!    (a CAS URL + credential + the root-router `ProgramHash`).
+//!  - It resolves programs from the **content-addressed store** by hash ([`HttpBlobStore`], the shared
+//!    `cdz-cas-http` client), and drives the root-router program as a **looping reducer** on the
+//!    `system.rs` mailbox / fire-and-forget event-loop model (§1) — never a serial await-each-effect loop.
+//!  - Routing is BAKED INTO the compiled root-router program and shipped by hash (§4); a route change
+//!    recompiles the router and pushes a new hash (a live swap of the configured hash, no restart).
+//!  - The program emits **effects** the gateway routes by contract-id (§2, payload opaque): `http.dispatch`
+//!    (spawn + drive a subprogram by hash), `http.response` (answer; body `Inline | CasRef(hash)`, §6),
+//!    `ws.send`, `http.deny`, `control.send` (opaque payload forwarded UP the control link), and timers
+//!    (any request with a `deadline`).
+//!
+//! Wire frames (`ControlConfig` / `ControlUp` / `ControlDown` + the value-form codec) live in the shared
+//! `cdz-http-protocol` crate and are consumed here — the gateway does not define its own copy.
+//!
+//! Behavior is proven by the scripted `v-gateway-conformance` integration harness (ML-surface run specs
+//! driving CAS + `cdz-http-control-mock` + this gateway over real sockets), NOT rust `#[test]`s (§7).
+//!
+//! This crate is a clean rewrite (operator directive 2026-09-10: nuke the prior implementation and rebuild
+//! from the design). Modules are added one landable slice at a time as the drive loop, effect resolver,
+//! boot-from-control, live-swap, and CasRef body resolution land.
 
-pub mod codec;
-pub mod edge;
-pub mod gateway;
-pub mod runner;
-
-/// The looping-reducer drive loop (design drive-contract §1, redirect inc-3): drive a program across turns —
-/// fold inputs, resolve each emitted effect, fold the answer back — until it `Break`s. The execution model
-/// that replaces the one-shot [`runner`]; generic over any reducer + a pluggable effect resolver.
-pub mod loop_driver;
-
-/// The gateway's effect resolver (design drive-contract §2, redirect inc-3b): routes an effect a looping
-/// program emits (by contract-id) to its gateway action — `control.send` (envelope + forward up the control
-/// link), `dispatch` (fetch + drive a subprogram from the CAS), and timers (any request with a deadline —
-/// arm it, fold `Err(Timeout)`). The [`loop_driver::EffectResolver`] the edge uses.
-pub mod effects;
-
-/// The per-request root-router drive (design drive-contract §1, redirect inc-3c): spawn the root router from
-/// the store, drive its loop with a [`effects::GatewayResolver`] (dispatch enabled over the store) delivering
-/// the `http-request`, and decode the terminal `Break` as an `http-response`. The looping replacement for the
-/// one-shot [`runner`]; socket-independent (the dumb edge wires it to the socket + control link in a later
-/// slice).
-pub mod root_driver;
-
-/// The per-connection WebSocket session driver (design §6): folds `ws-event`s through a session reducer
-/// and collects the `ws-send` frames it pushes. Socket-independent (generic over [`cdz_platform::ProgramStore`]);
-/// the hyper WebSocket upgrade + framing that feeds it is a later slice.
-pub mod ws;
-
-/// The control-link client (design §2/§3, P3): dials the control server over a WebSocket and receives its
-/// route table as a `cadenza-ast` frame. Wasm-free transport (tokio + tokio-tungstenite + the frame codec),
-/// so it sits outside the `host` feature — the real ws-dialed counterpart of the in-process mock control
-/// server ([`control`]).
-pub mod control_link;
-
-/// The wasmtime-backed handler store — behind the `host` feature (off by default so the core spine build
-/// stays wasmtime-free). Reuses `cdz-platform`'s `WasmProgramStore` (design §0.1).
-#[cfg(feature = "host")]
-pub mod wasm;
-
-/// The HTTP content-addressed store client (design §3, dumb-gateway redirect): a [`cdz_platform::BlobStore`]
-/// backed by an HTTP CAS (control-server-supplied URL + credential), so the gateway fetches programs + deps
-/// by hash, content-verified, in place of a local/in-memory store. Re-exported from the SHARED
-/// `cdz-cas-http` crate (vertical `v-cas-http`) — one client, one wire, base62 keys, digest-verified on 200
-/// — rather than a gateway-local hand-rolled client. Construct `HttpBlobStore::new(cas_url)
-/// .with_read_credential(cas_credential)` and hand it to the wasm store wherever it takes a `BlobStore`.
+/// The HTTP content-addressed store client (design §3/§6): a [`cdz_platform::BlobStore`] backed by an HTTP
+/// CAS at the control-supplied URL + credential, so the gateway fetches programs, deps, and `CasRef` bodies
+/// by hash (base62 keys, digest-verified on 200). Re-exported from the shared `cdz-cas-http` crate
+/// (`v-cas-http`) — one client, one wire. Construct
+/// `HttpBlobStore::new(cas_url).with_read_credential(cas_credential)`.
 pub use cdz_cas_http::HttpBlobStore;
-
-/// The mock control server (design §3) — behind the `host` feature (it assembles a wasmtime-backed edge).
-/// Ships a route table + handler blobs and builds a ready-to-serve [`edge::HttpEdge`] from them, standing
-/// in for the real ws-dialed control server for end-to-end tests. Also home to [`control::assemble_edge`],
-/// the shared boot step (frame + components → edge).
-#[cfg(feature = "host")]
-pub mod control;
-
-/// Deployment boot — behind the `host` feature. Stands up the gateway as a runnable server from a local
-/// deployment directory (a `route-table.bin` frame + `*.wasm` components); the `cdz-http-gateway` binary.
-#[cfg(feature = "host")]
-pub mod boot;

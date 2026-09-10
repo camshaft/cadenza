@@ -6764,7 +6764,9 @@
               cargoCmd = "cargo run --locked --package xtask-mandates --profile release -- declines";
             };
 
-            # cdz-http-gateway (v-http-outpost, DESIGN-http-outpost.md) — the standalone HTTP outpost. It is
+            # cdz-http-gateway (v-gateway-rewrite, DESIGN-http-outpost-drive-contract.md) — the dumb HTTP outpost
+            # gateway (clean rewrite; the prior guest-e2e #[test] machinery was nuked, behavior now lives in the
+            # v-gateway-conformance integration harness). It is
             # an EXCLUDED crate with its OWN [workspace] (a later slice deps cdz-platform `host` → wasmtime;
             # as a seed member that would drag wasmtime into the shared cargoArtifacts, so every per-crate
             # check would pay). Being excluded, the seed's craneCrateCommon/`-p` machinery does NOT cover it,
@@ -6783,7 +6785,6 @@
               # cdz-platform → cadenza-ast, cdz-contract. Plus each crate's Cargo.toml + the pinned toolchain.
               fileset = pkgs.lib.fileset.unions [
                 ./implementation/seed/crates/cdz-http-gateway/src
-                ./implementation/seed/crates/cdz-http-gateway/tests
                 ./implementation/seed/crates/cdz-http-gateway/Cargo.toml
                 ./implementation/seed/crates/cdz-http-gateway/Cargo.lock
                 # Path-dep: the shared HTTP CAS client (v-cas-http). cdz-http-gateway re-exports its
@@ -6807,115 +6808,6 @@
                 ./implementation/seed/crates/cdz-platform/wit
                 ./rust-toolchain.toml
               ];
-            };
-            # The inline-PoC HTTP handler (guests/http-hello/reducer.cdz, DESIGN-http-outpost.md §7): a real
-            # content-addressed wasm reducer that folds an http-request -> a 200 http-response. Building it via
-            # mkCadenzaGuest IS the fleet gate that it stays valid Cadenza + compiles to the reducer component
-            # (self-contained inline reducer-world → no witWorld; `--component-name cadenza:platform/guest`
-            # binds the guest export). The full runtime-composition e2e (drive it through WasmProgramStore with
-            # the value-heap runtime + NFC seeded into the CAS) is a follow-on slice.
-            cdzHttpGatewayPocHandler = mkCadenzaGuest {
-              pname = "cdz-http-gateway-poc-handler";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/http-hello/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The request-READING PoC handler (guests/http-echo/reducer.cdz): Value.decodes the delivered
-            # http-request + branches on the method — the forward-path (gateway encode -> guest Value.decode)
-            # e2e's handler. Building it is a compile gate; the e2e (control.rs) consumes it via CDZ_HTTP_ECHO_WASM.
-            cdzHttpGatewayEchoHandler = mkCadenzaGuest {
-              pname = "cdz-http-gateway-echo-handler";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/http-echo/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The WebSocket SESSION guest (guests/ws-echo/reducer.cdz, DESIGN-http-outpost.md §6): a per-
-            # connection session reducer that Value.decodes each `ws-event` and echoes every `Frame` back as
-            # a `ws-send` push. Building it via mkCadenzaGuest is the compile gate (valid Cadenza + compiles to
-            # the reducer component); the runtime-composition ws e2e (drive it through the ws edge / WsSession
-            # with the value-heap runtime seeded) consumes it via CDZ_HTTP_WS_ECHO_WASM and is a follow-on slice.
-            cdzHttpGatewayWsEchoHandler = mkCadenzaGuest {
-              pname = "cdz-http-gateway-ws-echo-handler";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/ws-echo/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The ROUTER governing program (guests/router/reducer.cdz, DESIGN-http-outpost.md §4, P2): routing
-            # lifted into a wasm reducer — it Value.decodes an http-request and folds (method, path) against a
-            # baked-in route table (a nested match) to a routing Decision (Route(handler, contract) | NotFound).
-            # Building it via mkCadenzaGuest is the compile gate (valid Cadenza + compiles to a reducer
-            # component); the wiring/e2e slice (gateway consults the router reducer, then spawns the decided
-            # handler) consumes it via CDZ_HTTP_ROUTER_WASM and is a follow-on.
-            cdzHttpGatewayRouterHandler = mkCadenzaGuest {
-              pname = "cdz-http-gateway-router-handler";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/router/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The P3 state-import BUILD-PATH probe (guests/kv-probe/reducer.cdz, DESIGN-http-outpost.md §3/§4):
-            # the FIRST http-outpost guest to hold STATE across folds via the platform `state` KV capability —
-            # the mechanism the stateful router (P3b) needs. Unlike the stateless inline guests, a host-import-
-            # calling guest binds the external `reducer-world` witWorld (which carries `import state`) + pulls
-            # the shared `reducer-lib` scaffolding, so this passes `witWorld`/`witWorldName`/`entry`/`libs`
-            # (reducer-lib imports nothing → a single lib, no transitive closure). Building it is the compile
-            # gate; a runtime e2e drives the put/get round-trip through the wasm store via CDZ_HTTP_KV_PROBE_WASM.
-            cdzHttpGatewayKvProbe = mkCadenzaGuest {
-              pname = "cdz-http-gateway-kv-probe";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/kv-probe/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-              witWorld = "${worldArtifacts}/reducer-world.bin";
-              witWorldName = "reducer-world";
-              entry = "reducer";
-              libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
-            };
-            # The STATEFUL router governing program (guests/router-stateful/reducer.cdz, DESIGN §3/§4, P3b):
-            # routing-as-a-fold whose route table is LIVE STATE (vs the P2 router's baked table). Landed
-            # compile-only (#8615) — it triggers the adv-cdz-invalid-wasm compiler bug (host-state + a called
-            # heap-op recursion emits INVALID wasm). Its build is DISABLED here: v-cdz-wasm-codegen is landing
-            # a `cdz compile` output-validation error (CDZ0910) that makes this derivation FAIL to build loudly,
-            # which would turn the whole cdz-http-gateway check red. Re-enable (uncomment + re-wire the env
-            # below + the checks attr) once v-cdz-wasm-codegen lands the codegen FIX so it emits valid wasm.
-            # The stateless `router-dynamic` pivot is unaffected and covers the routing-as-a-fold thesis.
-            # cdzHttpGatewayRouterStateful = mkCadenzaGuest {
-            #   pname = "cdz-http-gateway-router-stateful";
-            #   src = ./implementation/seed/crates/cdz-http-gateway/guests/router-stateful/reducer.cdz;
-            #   componentName = "cadenza:platform/guest";
-            #   witWorld = "${worldArtifacts}/reducer-world.bin";
-            #   witWorldName = "reducer-world";
-            #   entry = "reducer";
-            #   libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
-            # };
-            # The DYNAMIC router governing program (guests/router-dynamic/reducer.cdz, DESIGN §3/§4, P3b PIVOT):
-            # routing-as-a-fold over a LIVE table WITHOUT host-state — the gateway holds the route-table frame
-            # (from control_link) and passes it in the message as a `RouteQuery{request, table}`; the router is a
-            # pure fn recursing over (table, request) -> Decision. Stateless → an INLINE world (no witWorld/libs),
-            # so it VALIDATES + instantiates (unlike router-stateful, which the compiler-bug blocks). The runtime
-            # e2e drives it via CDZ_HTTP_ROUTER_DYNAMIC_WASM.
-            cdzHttpGatewayRouterDynamic = mkCadenzaGuest {
-              pname = "cdz-http-gateway-router-dynamic";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/router-dynamic/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The ROOT ROUTER governing program (guests/root-router/reducer.cdz, DESIGN drive-contract inc-4):
-            # the dumb gateway drives THIS program per request; it decodes the request + shipped table, matches,
-            # and EMITS a `dispatch` effect (spawn the matched handler + hand it the request) — the LOOPING shape
-            # (Continue on on-message, Close on on-response with the handler's response) that supersedes the
-            # one-shot router-dynamic. Stateless (table in the RouteQuery payload) → INLINE world, no host-state,
-            # so it lowers to VALID wasm (unlike router-stateful). Building it via mkCadenzaGuest IS the gate that
-            # it stays valid Cadenza + a valid reducer component; the runtime-composition e2e (drive it through
-            # RootDriver over the wasm store, dispatching a real handler) is a follow-on slice (CDZ_HTTP_ROOT_
-            # ROUTER_WASM, wired inert below until consumed).
-            cdzHttpGatewayRootRouter = mkCadenzaGuest {
-              pname = "cdz-http-gateway-root-router";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/root-router/reducer.cdz;
-              componentName = "cadenza:platform/guest";
-            };
-            # The OPERATOR-MANDATED root router (guests/root-router-baked/reducer.cdz, A/B decision 2026-09-10):
-            # the routing table + handler hashes are BAKED IN and COMPILED ahead of time, shipped by hash; the
-            # gateway drives it with a BARE http-request (no RouteQuery envelope). Supersedes the router-dynamic
-            # /RouteQuery shape once its templated runtime e2e lands. Building it IS the gate that the baked-
-            # table + bare-request shape stays valid Cadenza + a valid reducer component (handler hashes here are
-            # placeholder markers the deploy tooling replaces with the real deployed hashes before compiling).
-            cdzHttpGatewayRootRouterBaked = mkCadenzaGuest {
-              pname = "cdz-http-gateway-root-router-baked";
-              src = ./implementation/seed/crates/cdz-http-gateway/guests/root-router-baked/reducer.cdz;
-              componentName = "cadenza:platform/guest";
             };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
@@ -6947,25 +6839,12 @@
               cargo test --offline --locked
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
-              # --features host builds the wasmtime-backed WasmProgramStore path (src/wasm.rs). Now buildable
-              # in the sandbox: cdz-platform's `host` is wasmtime-only since #8587 split the itest-only jemalloc
-              # allocator into `itest-alloc` (the jemalloc C build no longer enters this closure). Heavier
-              # (compiles wasmtime/cranelift) but keeps the wasm handler path fleet-gated; the default steps
-              # above keep the wasmtime-free spine covered on their own.
-              #
-              # The three CDZ_HTTP_*_WASM vars feed the end-to-end wasm test (poc_wasm_handler_served_over_a_socket):
-              # the compiled PoC handler component + the value-heap runtime + its NFC dep, seeded into the CAS so
-              # the host composes the handler's `cadenza:runtime/heap` import. Unset → the test skips.
-              CDZ_HTTP_POC_WASM=${cdzHttpGatewayPocHandler} \
-              CDZ_HTTP_ECHO_WASM=${cdzHttpGatewayEchoHandler} \
-              CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
-              CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
-              CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
-              CDZ_HTTP_ROUTER_DYNAMIC_WASM=${cdzHttpGatewayRouterDynamic} \
-              CDZ_HTTP_ROOT_ROUTER_WASM=${cdzHttpGatewayRootRouter} \
-              CDZ_HTTP_ROOT_ROUTER_BAKED_WASM=${cdzHttpGatewayRootRouterBaked} \
-              CDZ_HTTP_RUNTIME_WASM=${runtime} \
-              CDZ_HTTP_NFC_WASM=${nfc} \
+              # --features host builds the wasmtime-backed handler-store path. Now buildable in the sandbox:
+              # cdz-platform's `host` is wasmtime-only since #8587 split the itest-only jemalloc allocator into
+              # `itest-alloc` (the jemalloc C build no longer enters this closure). Heavier (compiles wasmtime/
+              # cranelift) but keeps the wasm handler path fleet-gated; the default steps above cover the
+              # wasmtime-free spine. Behavior is proven by the v-gateway-conformance integration harness (its
+              # own programs/ tree), not seeded guest e2e #[test]s here (clean-rewrite, drive-contract §7).
               cargo test --offline --locked --features host
               cargo clippy --offline --locked --all-targets --features host -- -D warnings
               echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, default AND --features host, contracts overlay staged)" > "$out"
@@ -7600,26 +7479,6 @@
             # The harness driver crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in local-gate;
             # run via `nix build .#checks.<sys>.cdz-http-conformance`.
             cdz-http-conformance = cdzHttpConformanceCheck;
-            # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
-            cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
-            # The request-reading echo handler guest (forward-path e2e's handler) compiles.
-            cdz-http-gateway-echo-handler = cdzHttpGatewayEchoHandler;
-            # The WebSocket session echo guest (per-connection ws-event fold -> ws-send push) compiles.
-            cdz-http-gateway-ws-echo-handler = cdzHttpGatewayWsEchoHandler;
-            # The router governing program (routing-as-a-fold: http-request -> baked route table -> Decision).
-            cdz-http-gateway-router-handler = cdzHttpGatewayRouterHandler;
-            # The P3 state-import build-path probe (first state/KV-holding http-outpost guest) compiles.
-            cdz-http-gateway-kv-probe = cdzHttpGatewayKvProbe;
-            # The stateful router governing program (live route table in KV state) — DISABLED: triggers the
-            # adv-cdz-invalid-wasm compiler bug (#8615), so `cdz compile`'s new CDZ0910 output-validation makes
-            # it fail to build. Re-enable once v-cdz-wasm-codegen lands the codegen fix (see the derivation above).
-            # cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
-            # The dynamic stateless router (live table-in-payload, routing-as-a-fold, no host-state) compiles.
-            cdz-http-gateway-router-dynamic = cdzHttpGatewayRouterDynamic;
-            # The root router governing program (dumb-gateway inc-4: decode + match + EMIT a dispatch effect).
-            cdz-http-gateway-root-router = cdzHttpGatewayRootRouter;
-            # The operator-mandated baked-table + bare-request root router (routing compiled INTO the program).
-            cdz-http-gateway-root-router-baked = cdzHttpGatewayRootRouterBaked;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
