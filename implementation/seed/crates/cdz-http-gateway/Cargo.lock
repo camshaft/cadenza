@@ -258,6 +258,7 @@ dependencies = [
  "bytes",
  "cadenza-ast",
  "cdz-cas-http",
+ "cdz-http-protocol",
  "cdz-platform",
  "futures-util",
  "http-body-util",
@@ -266,6 +267,15 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "wasmtime",
+]
+
+[[package]]
+name = "cdz-http-protocol"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "cadenza-ast",
+ "cdz-str",
 ]
 
 [[package]]

@@ -51,6 +51,12 @@ cdz-platform = { path = "../cdz-platform" }
 # features — no host/wasmtime). Replaces the crate's former hand-rolled `HttpCas` (one client, one wire);
 # transport moves to reqwest+ring internally in a later v-cas-http slice with NO change to this call site.
 cdz-cas-http = { path = "../cdz-cas-http" }
+# The SHARED control-plane wire contract (vertical v-gateway-conformance): the `ControlConfig`/`ControlUp`/
+# `ControlDown` binary-AST frames the gateway exchanges with the control server over its persistent link,
+# plus the `value` codec toolkit. The gateway CONSUMES these frames (dials control, applies the config it
+# ships) rather than defining its own copy — one wire, shared with the conformance harness + mock control
+# server. Excluded→excluded path-dep (light: cadenza-ast + bytes + cdz-str, no heavy deps).
+cdz-http-protocol = { path = "../cdz-http-protocol" }
 # The native HTTP edge (P1c-2, src/edge.rs): a hyper HTTP/1 server. hyper is runtime-agnostic (driven via
 # hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
 # request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
