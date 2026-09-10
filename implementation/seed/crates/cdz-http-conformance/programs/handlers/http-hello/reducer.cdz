@@ -6,7 +6,8 @@
 // the existing mechanism"): the reducer-world WIT boundary comes from the `reducer-world` witWorld artifact
 // (not a redefined inline world), the HTTP types + the `respond` terminal builder from `http-lib`, and the
 // inert on-response / on-notification from `reducer-lib`. See the `libs` manifest beside this file.
-import { Header, respond } from "http-lib"
+import { respond } from "http-lib"
+import { Header } from "http-response"
 import { on-response, on-notification } from "reducer-lib"
 
 def on-message(_msg) =
