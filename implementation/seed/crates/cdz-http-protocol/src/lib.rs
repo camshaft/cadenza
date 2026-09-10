@@ -24,6 +24,7 @@
 
 use bytes::Bytes;
 use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
+use cdz_str::Str;
 use std::sync::Arc;
 
 // --- the Rust mirrors of the control-plane frames --------------------------------------------------------
@@ -31,8 +32,8 @@ use std::sync::Arc;
 /// One HTTP header (`name`, `value`) — reused in the request context a [`ControlUp`] carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
-    pub name: String,
-    pub value: String,
+    pub name: Str,
+    pub value: Str,
 }
 
 /// As much of the originating HTTP request as the gateway attaches to a [`ControlUp`], so the control
@@ -41,8 +42,8 @@ pub struct Header {
 /// request headers the gateway chose to forward.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RequestContext {
-    pub method: String,
-    pub path: String,
+    pub method: Str,
+    pub path: Str,
     pub headers: Vec<Header>,
 }
 
@@ -54,7 +55,7 @@ pub struct RequestContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlConfig {
     /// The base URL of the content-addressed store the gateway fetches programs (+ their deps) from.
-    pub cas_url: String,
+    pub cas_url: Str,
     /// The credential the gateway presents to the CAS (`Authorization: Bearer …`; empty ⇒ no auth).
     pub cas_credential: Bytes,
     /// The `ProgramHash` (its 33 raw bytes) of the root-router program the gateway calls per request.
@@ -323,9 +324,9 @@ fn read_list(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     arenas.compound_form_of(id, CompoundCtor::List)
 }
 
-/// A `String` leaf's text.
-fn read_str(arenas: &Arenas, id: StructId) -> Option<String> {
-    arenas.as_str(id).map(str::to_string)
+/// A `String` leaf's text, as a [`Str`] (O(1)-clone, shares the wire bytes).
+fn read_str(arenas: &Arenas, id: StructId) -> Option<Str> {
+    arenas.as_str(id).map(Str::from)
 }
 
 /// A `Bytes` leaf's bytes.
@@ -345,16 +346,16 @@ mod tests {
 
     fn sample_request_context() -> RequestContext {
         RequestContext {
-            method: "POST".to_string(),
-            path: "/emit".to_string(),
+            method: Str::from("POST"),
+            path: Str::from("/emit"),
             headers: vec![
                 Header {
-                    name: "accept".to_string(),
-                    value: "*/*".to_string(),
+                    name: Str::from("accept"),
+                    value: Str::from("*/*"),
                 },
                 Header {
-                    name: "x-trace".to_string(),
-                    value: "abc".to_string(),
+                    name: Str::from("x-trace"),
+                    value: Str::from("abc"),
                 },
             ],
         }
@@ -363,7 +364,7 @@ mod tests {
     #[test]
     fn control_config_round_trips() {
         let config = ControlConfig {
-            cas_url: "https://cas.example.internal:8443/blobs".to_string(),
+            cas_url: Str::from("https://cas.example.internal:8443/blobs"),
             cas_credential: Bytes::from_static(b"bearer-token-abc123"),
             root_router: Bytes::from_static(b"cdz-router.root................."),
         };
@@ -373,7 +374,7 @@ mod tests {
         );
         // An empty credential (dev / no-auth CAS) still round-trips.
         let no_auth = ControlConfig {
-            cas_url: "http://localhost:9000".to_string(),
+            cas_url: Str::from("http://localhost:9000"),
             cas_credential: Bytes::new(),
             root_router: Bytes::from_static(b"cdz-router.root................."),
         };
@@ -452,7 +453,7 @@ mod tests {
         assert!(decode_control_up(&down).is_none());
         // A config is not a down envelope (no `session`).
         let config = encode_control_config(&ControlConfig {
-            cas_url: "x".to_string(),
+            cas_url: Str::from("x"),
             cas_credential: Bytes::new(),
             root_router: Bytes::new(),
         });

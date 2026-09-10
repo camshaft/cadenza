@@ -671,6 +671,12 @@
           # read a member's manifest). The other crates/* dirs absent from this map are standalone [workspace]s.
           cdz-contract = "implementation/seed/crates/cdz-contract";
           cdz-platform = "implementation/seed/crates/cdz-platform";
+          # cdz-str (2026-09-10): `Str` extracted out of cdz-platform into its own foundational leaf crate
+          # (deps only `bytes`) so any crate uses the canonical text type without the platform runtime;
+          # cdz-platform re-exports it. A ROOT workspace member — MUST be registered here (like cdz-contract)
+          # or the crane deps-layer omits its Cargo.toml and the workspace fails to load; also needs its
+          # clippy/test crane (testCrateCoverageAssert requires every member have a per-crate test).
+          cdz-str = "implementation/seed/crates/cdz-str";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-corpus-grade = "implementation/seed/crates/cdz-corpus-grade";
           # corpus-case-titles (#7646): the pure, cdz-FREE corpus-case-title parse helper (reads the sexpr
@@ -6349,6 +6355,7 @@
               clippy-corpus-case-titles = mkCrateClippyCrane { crate = "corpus-case-titles"; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
+              clippy-cdz-str = mkCrateClippyCrane { crate = "cdz-str"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
@@ -6413,6 +6420,7 @@
               test-corpus-case-titles = mkCrateTestCrane { crate = "corpus-case-titles"; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
+              test-cdz-str = mkCrateTestCrane { crate = "cdz-str"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
@@ -6730,6 +6738,10 @@
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cdz-platform/src
                 ./implementation/seed/crates/cdz-platform/Cargo.toml
+                # cdz-platform re-exports `Str` from the extracted cdz-str crate (path-dep), so its src +
+                # manifest must be staged for the offline --locked build.
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
                 # cdz-platform's `host` code (host.rs, behind --features host) runs `wasmtime … bindgen!`
                 # over wit/world.wit, so the WIT dir must be in the source or the generated `cadenza::…`
                 # bindings module is unresolved (the default build skips host.rs, so it needs no wit).
@@ -6925,6 +6937,8 @@
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cdz-platform/src
                 ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
                 ./rust-toolchain.toml
               ];
             };
@@ -6975,6 +6989,8 @@
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.lock
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
                 ./rust-toolchain.toml
               ];
             };

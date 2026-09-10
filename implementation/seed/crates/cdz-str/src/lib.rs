@@ -1,14 +1,18 @@
 //! `Str` — a cheaply-clonable, `Bytes`-backed UTF-8 string (`design/cadenza-platform.md` §12).
 //!
 //! Everywhere a value would otherwise be a `String` (or `Arc<str>`) — an id, a name, a reason, a
-//! target — the platform uses [`Str`]. Why: those text values are cloned constantly as they thread
+//! target — the fleet uses [`Str`]. Why: those text values are cloned constantly as they thread
 //! through routing, dispatch, and results, and a `String` clone is an allocation + copy; a `Str` clone
 //! is an O(1) `Bytes` refcount bump. It also gives text and bytes ONE representation, so a value crosses
 //! the text/binary boundary without re-allocating.
 //!
 //! We build our own newtype (over `bytes::Bytes`) rather than pull a third-party str-bytes crate, so the
-//! platform owns this type outright (operator directive 2026-08-20). Invariant: the wrapped `Bytes` is
+//! fleet owns this type outright (operator directive 2026-08-20). Invariant: the wrapped `Bytes` is
 //! always valid UTF-8 — every constructor establishes it, so [`Str::as_str`] is a zero-cost view.
+//!
+//! This crate is the extracted home of `Str` (out of `cdz-platform`, 2026-09-10) so any crate can use the
+//! canonical text type without depending on the platform runtime; `cdz-platform` re-exports it
+//! (`pub use cdz_str::Str`), so `cdz_platform::Str` keeps resolving unchanged.
 
 use bytes::Bytes;
 use std::borrow::Borrow;

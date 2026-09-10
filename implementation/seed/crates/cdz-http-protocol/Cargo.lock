@@ -28,6 +28,14 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "cadenza-ast",
+ "cdz-str",
+]
+
+[[package]]
+name = "cdz-str"
+version = "0.0.0"
+dependencies = [
+ "bytes",
 ]
 
 [[package]]

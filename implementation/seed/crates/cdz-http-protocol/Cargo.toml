@@ -35,3 +35,7 @@ publish = false
 cadenza-ast = { path = "../cadenza-ast" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — hashes, credentials, opaque payloads, session ids.
 bytes = "1"
+# `Str` — the canonical Bytes-backed UTF-8 text type (spec §12). Every text field of a frame (a url, a
+# method, a path, a header name/value) is a `Str`, not a `String`: an O(1)-clone view that shares its bytes
+# with the wire, matching the rest of the fleet (operator 2026-09-10 "use the Str data structure everywhere").
+cdz-str = { path = "../cdz-str" }
