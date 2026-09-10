@@ -6725,6 +6725,10 @@
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cdz-platform/src
                 ./implementation/seed/crates/cdz-platform/Cargo.toml
+                # cdz-platform's `host` code (host.rs, behind --features host) runs `wasmtime … bindgen!`
+                # over wit/world.wit, so the WIT dir must be in the source or the generated `cadenza::…`
+                # bindings module is unresolved (the default build skips host.rs, so it needs no wit).
+                ./implementation/seed/crates/cdz-platform/wit
                 ./rust-toolchain.toml
               ];
             };
@@ -6755,12 +6759,14 @@
               cargo test --offline --locked
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
-              # NOTE: the `host` feature (src/wasm.rs, the wasmtime-backed WasmProgramStore) is NOT gated here
-              # yet — cdz-platform's `host` feature bundles `dep:tikv-jemallocator`, whose jemalloc C build
-              # fails in this minimal sandbox (`configure: cannot determine return type of strerror_r`). It
-              # is locally verified (`cargo test --features host`, green); fleet-gating it waits on cdz-platform
-              # splitting the itest-only jemalloc allocator out of `host` (asked; then add a --features host step).
-              echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
+              # --features host builds the wasmtime-backed WasmProgramStore path (src/wasm.rs). Now buildable
+              # in the sandbox: cdz-platform's `host` is wasmtime-only since #8587 split the itest-only jemalloc
+              # allocator into `itest-alloc` (the jemalloc C build no longer enters this closure). Heavier
+              # (compiles wasmtime/cranelift) but keeps the wasm handler path fleet-gated; the default steps
+              # above keep the wasmtime-free spine covered on their own.
+              cargo test --offline --locked --features host
+              cargo clippy --offline --locked --all-targets --features host -- -D warnings
+              echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, default AND --features host, contracts overlay staged)" > "$out"
             '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
