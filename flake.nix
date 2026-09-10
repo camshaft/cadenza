@@ -6864,6 +6864,64 @@
               cargo clippy --offline --locked --all-targets --features host -- -D warnings
               echo "ok: cdz-http-gateway (excluded standalone crate — test + clippy + fmt, default AND --features host, contracts overlay staged)" > "$out"
             '';
+            # cdz-cas-http (vertical cas-http, brief: CAS-over-HTTP store) — a content-addressed blob store
+            # served over HTTP + its matching HTTP-backed BlobStore client. Like cdz-http-gateway it is an
+            # EXCLUDED crate with its OWN [workspace] (it pulls the hyper/tokio HTTP stack, which a seed member
+            # would drag into the shared cargoArtifacts), so it gets its own STANDALONE check here (NOT folded
+            # into localGate — an excluded crate must not burden the merge gate; this is its dedicated CI job).
+            # SIMPLER than the gateway's: NO wasm guests, NO `--features host` (it needs only cdz-platform's
+            # light BlobStore/Hash layer, no wasmtime) — just test + clippy + fmt (default), with the same
+            # build-time-generated cdz-platform contracts overlay staged over src/contracts (#5250).
+            cdzCasHttpVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-cas-http/Cargo.lock;
+            };
+            cdzCasHttpSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              # The path-dep closure only: cdz-cas-http → cdz-platform; cdz-platform → cadenza-ast,
+              # cdz-contract. Plus each crate's Cargo.toml + the pinned toolchain. No cdz-platform/wit —
+              # the default (host-free) build skips host.rs, so it needs no WIT bindgen.
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-cas-http/src
+                ./implementation/seed/crates/cdz-cas-http/Cargo.toml
+                ./implementation/seed/crates/cdz-cas-http/Cargo.lock
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-contract/src
+                ./implementation/seed/crates/cdz-contract/Cargo.toml
+                ./implementation/seed/crates/cdz-platform/src
+                ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzCasHttpCheck = pkgs.runCommand "cdz-cas-http"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                # Mirror the per-crate cargoTest env: a generous wall-clock + deep-stack floor so a correct
+                # test never false-reds under fleet build load.
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzCasHttpSrc} repo
+              chmod -R u+w repo
+              cd repo
+              # OVERLAY: stage cdz-platform's build-time-generated contract schemas (not committed, #5250).
+              mkdir -p implementation/seed/crates/cdz-platform/src/contracts
+              cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
+              # Offline vendored build against the crate's own committed lock.
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzCasHttpVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-cas-http
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-cas-http (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7250,6 +7308,11 @@
             # excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-http-gateway`
             # or `nix flake check`).
             cdz-http-gateway = cdzHttpGatewayCheck;
+            # cdz-cas-http (vertical cas-http): the excluded standalone CAS-over-HTTP crate's dedicated check
+            # (test + clippy + fmt, contracts overlay staged). STANDALONE — deliberately NOT in `local-gate`
+            # (an excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-cas-http`
+            # or `nix flake check`).
+            cdz-cas-http = cdzCasHttpCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.
