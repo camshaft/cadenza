@@ -1,0 +1,37 @@
+// The HTTP-outpost WebSocket inbound-event contract (design/DESIGN-http-outpost.md §6): the events the
+// native edge surfaces to a per-connection WS session (which the router spawns on upgrade). The connection
+// session folds these through `on_message` — `Connect` on the upgrade, a `Frame` per inbound WebSocket
+// frame, `Disconnect` on close — mirroring the federation ws transport seam (`ws/connect`/`ws/frame`/
+// `ws/disconnect`), which an HTTP outpost's WS endpoint reuses verbatim (design §6). `conn` is the
+// connection id (an unguessable token, as Bytes); `data` is the frame payload. A `cadenza-ast` value-form
+// contract like http-request/response, so it carries over the control link + cross-node unchanged.
+// Userspace (this dir): a Cadenza reducer consumes it via self-reflection; no Rust binding is generated.
+type Event =
+  | Connect(Record(conn: Bytes))
+  | Frame(Record(conn: Bytes, data: Bytes))
+  | Disconnect(Record(conn: Bytes))
+
+// --- conformance proofs: a fully-literal value of each event kind, ascribed against the schema type ---
+def a-connect() -> Event = Event.Connect({ conn = b"conn-1" })
+def a-frame() -> Event = Event.Frame({ conn = b"conn-1", data = b"hello ws" })
+def a-disconnect() -> Event = Event.Disconnect({ conn = b"conn-1" })
+
+@test
+def frame-conforms() =
+  match a-frame() with
+  | Event.Frame(f) => if (f.conn == b"conn-1") and (f.data == b"hello ws") then unit else trap("frame field mismatch")
+  | _ => trap("expected an Event.Frame")
+
+@test
+def connect-and-disconnect-conform() =
+  (match a-connect() with
+   | Event.Connect(c) => if c.conn == b"conn-1" then unit else trap("connect conn mismatch")
+   | _ => trap("expected an Event.Connect"));
+  (match a-disconnect() with
+   | Event.Disconnect(d) => if d.conn == b"conn-1" then unit else trap("disconnect conn mismatch")
+   | _ => trap("expected an Event.Disconnect"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.ws.event", "Event", "Event")
+export { Event.*, descriptor }
