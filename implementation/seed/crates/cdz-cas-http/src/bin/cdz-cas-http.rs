@@ -1,57 +1,69 @@
-//! The `cdz-cas-http` server binary — serves a content-addressed store over HTTP.
-//!
-//! Usage: `cdz-cas-http [listen-addr]` (default `127.0.0.1:8080`). Configured from the environment:
-//! - `CDZ_CAS_STORE_DIR` — if set, blobs are persisted on disk under this directory (survives restart, for
-//!   deploy tooling); unset ⇒ an in-memory store (lost on restart). The backend is a swappable `BlobStore`
-//!   trait object either way, so the HTTP wire is identical.
-//! - `CDZ_CAS_READ_CREDENTIAL` — if set, `GET`/`HEAD` require `Authorization: Bearer {it}`; unset ⇒ open
-//!   reads (the store is unpermissioned, the hash is the capability).
-//! - `CDZ_CAS_WRITE_CREDENTIAL` — required to enable the `PUT` write path; unset ⇒ a read-only server
-//!   (`PUT` ⇒ `405`).
+//! The `cdz-cas-http` server binary — configured by a **binary-AST config document**, not CLI flags
+//! (operator: binary-AST is THE data-exchange format). Give the config as the first argument (or via
+//! `CDZ_CAS_CONFIG`): a file path, or `-` to read it from STDIN (pipe the binary-AST bytes in). The config
+//! is a cadenza-ast binary the caller produced from any surface syntax (`cdz convert --to bin`). With no
+//! config, the server defaults to a single in-memory store on `127.0.0.1:8080`. See [`cdz_cas_http::config`]
+//! for the record schema (listen, credentials, and the mem/disk/S3 tiers).
 
-use cdz_cas_http::{CasServer, DiskBlobStore};
-use cdz_platform::{BlobStore, InMemoryBlobStore};
-use std::net::SocketAddr;
+use cdz_cas_http::{CasServer, ServerConfig};
+use std::io::Read;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let addr: SocketAddr = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string())
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = match config_path().as_deref() {
+        // `-` reads the binary-AST config from stdin (pipe it in).
+        Some("-") => {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("read config from stdin: {e}"))?;
+            ServerConfig::decode(&bytes)?
+        }
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| format!("read config {path}: {e}"))?;
+            ServerConfig::decode(&bytes)?
+        }
+        None => ServerConfig::default(),
+    };
+
+    let addr: std::net::SocketAddr = config
+        .listen_addr()
         .parse()
-        .expect("listen address must be host:port");
+        .map_err(|e| format!("bad listen address {:?}: {e}", config.listen_addr()))?;
 
-    // On-disk when CDZ_CAS_STORE_DIR is set (persistent across restart), else in-memory.
-    let (store, backend): (Box<dyn BlobStore>, String) = match std::env::var("CDZ_CAS_STORE_DIR") {
-        Ok(dir) => (
-            Box::new(DiskBlobStore::open(&dir)?),
-            format!("on-disk at {dir}"),
-        ),
-        Err(_) => (Box::new(InMemoryBlobStore::new()), "in-memory".to_string()),
-    };
-
+    // Assemble the configured tier stack (mem → disk → S3), then serve it.
+    let store = config.build_store().await?;
     let mut server = CasServer::new(store);
-    if let Ok(read) = std::env::var("CDZ_CAS_READ_CREDENTIAL") {
-        server = server.with_read_credential(read);
+    if let Some(read) = &config.read_credential {
+        server = server.with_read_credential(read.clone());
     }
-    let writes_enabled = if let Ok(write) = std::env::var("CDZ_CAS_WRITE_CREDENTIAL") {
-        server = server.with_write_credential(write);
-        true
-    } else {
-        false
-    };
+    if let Some(write) = &config.write_credential {
+        server = server.with_write_credential(write.clone());
+    }
+    if let Some(max) = config.max_body_bytes {
+        server = server.with_max_body_bytes(max);
+    }
     let server = Arc::new(server);
 
     let listener = TcpListener::bind(addr).await?;
     eprintln!(
-        "cdz-cas-http: listening on {addr} (store {backend}, writes {})",
-        if writes_enabled {
+        "cdz-cas-http: listening on {addr} (writes {})",
+        if config.write_credential.is_some() {
             "enabled"
         } else {
             "disabled"
         }
     );
-    server.serve(listener).await
+    server.serve(listener).await?;
+    Ok(())
+}
+
+/// The config source: the first CLI argument, else `CDZ_CAS_CONFIG`, else `None` (run with defaults). A
+/// value of `-` means "read the config from stdin".
+fn config_path() -> Option<String> {
+    std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("CDZ_CAS_CONFIG").ok())
 }
