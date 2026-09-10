@@ -77,6 +77,11 @@ exclude = [
     # seed build/gate. Own `[workspace]` table; path-deps the excluded cdz-http-protocol + the member cdz-str;
     # gated by its own dedicated check.
     "implementation/seed/crates/cdz-http-control-mock",
+    # `cdz-http-conformance` (the conformance-harness home) holds the `programs/` guest tree (compiled by nix,
+    # not cargo) + will hold the rust driver crate (a later slice). Excluded so the `crates/*` glob does not
+    # try to load it as a seed member (it has no member Cargo.toml yet, and the driver, when added, is a heavy
+    # excluded crate like its siblings). nix reads the programs/ tree directly.
+    "implementation/seed/crates/cdz-http-conformance",
 ]
 
 [profile.dev]

@@ -1,0 +1,73 @@
+// A request-READING PoC handler (DESIGN-http-outpost.md §7): unlike http-hello (which ignores the
+// request), this one `Value.decode`s the delivered `http-request` and branches on a decoded field — so it
+// proves the FORWARD codec path (the gateway's Rust `encode_request` produces bytes the guest's
+// `Value.decode` accepts, the Cadenza<->Rust boundary in the reading direction). It answers 200 with a body
+// naming the decoded method (GET/POST/…), or 400 if the request does not decode.
+//
+// Self-contained like http-hello: inline `reducer-world` + own Method/Header/Request/Response/Outcome/Error
+// types; `Value.decode(_) : Option(Request)` decodes type-directed, `Value.encode` renders the response.
+world reducer-world =
+  | export guest =
+    | on-message : (msg : {contract: list(u8),
+                           sender: {reducer: list(u8), host: list(u8)},
+                           payload: list(u8),
+                           token: list(u8)})
+                 -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                     outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-response : (resp : {contract: list(u8),
+                             token: list(u8),
+                             answer: result(list(u8), variant(timeout, missing-handler, schema-violation, faulted))})
+                  -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                      outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-notification : (note : {contract: list(u8), payload: list(u8)})
+                      -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                          outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+
+type Outcome =
+  | Continue
+  | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+type Method = | Get | Post | Put | Delete | Patch | Head | Options
+type Header  = | Header(Record(name: String, value: String))
+type Request =
+  | Request(Record(method: Method,
+                   path: String,
+                   query: String,
+                   headers: List(Header),
+                   body: Bytes))
+type Response =
+  | Response(Record(status: Int64,
+                    headers: List(Header),
+                    body: Bytes))
+
+// Build a 200 response whose body names the decoded method — proof the request decoded + a field was read.
+def respond(body) =
+  let resp = Response.Response({ status = 200, headers = [], body = body }) in
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Close({ schema = b"cdz-platform.http.response.......", reason = Value.encode(resp) }) }
+
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(r)) =>
+     (match r.method with
+      | Get => respond(b"method=GET")
+      | Post => respond(b"method=POST")
+      | Put => respond(b"method=PUT")
+      | Delete => respond(b"method=DELETE")
+      | Patch => respond(b"method=PATCH")
+      | Head => respond(b"method=HEAD")
+      | Options => respond(b"method=OPTIONS"))
+   | None =>
+     let resp = Response.Response({ status = 400, headers = [], body = b"undecodable http-request" }) in
+     { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+       outcome = Outcome.Close({ schema = b"cdz-platform.http.response.......", reason = Value.encode(resp) }) })
+
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Continue }
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
