@@ -552,14 +552,8 @@ mod tests {
         async fn send(&self, _msg: crate::codec::ControlUp) {}
     }
 
-    /// Stand up a DUMB edge (drives `root` as the root router per request) on an ephemeral port; return its
-    /// address. `root` is registered iff `present` — an absent root exercises the `500` floor.
-    async fn spawn_dumb_edge(present: bool) -> std::net::SocketAddr {
-        let root = ProgramHash::of(b"dumb-root-router");
-        let mut store = Store::new();
-        if present {
-            store.register(root, || Box::new(PathEchoHandler));
-        }
+    /// Stand up a DUMB edge driving `root` over `store` on an ephemeral port; return its address.
+    async fn spawn_dumb_edge_over(store: Store, root: ProgramHash) -> std::net::SocketAddr {
         let driver = RootDriver::new(
             HostId::of(b"dumb-edge-host"),
             ContractId::of(b"cdz-platform.http.request"),
@@ -575,6 +569,17 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(edge.serve(listener));
         addr
+    }
+
+    /// Stand up a DUMB edge whose root router answers directly ([`PathEchoHandler`]); `root` is registered
+    /// iff `present` — an absent root exercises the `500` floor.
+    async fn spawn_dumb_edge(present: bool) -> std::net::SocketAddr {
+        let root = ProgramHash::of(b"dumb-root-router");
+        let mut store = Store::new();
+        if present {
+            store.register(root, || Box::new(PathEchoHandler));
+        }
+        spawn_dumb_edge_over(store, root).await
     }
 
     #[tokio::test]
@@ -691,6 +696,104 @@ mod tests {
             Bytes::from_static(b"1"),
             "each request is a fresh session"
         );
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_routes_via_a_dispatching_root_router_over_a_socket() {
+        // The full dumb path over a real socket: a root router that DISPATCHES the request to a handler
+        // subprogram (from the same CAS), folds the handler's response, and closes with it. No route table
+        // on the edge — routing IS the router's fold, the handler IS a dispatched subprogram.
+        use crate::codec::{DispatchEffect, encode_dispatch};
+        use crate::effects::dispatch_contract;
+
+        struct DispatchRouter {
+            handler: Bytes,
+        }
+        #[async_trait]
+        impl Reducer for DispatchRouter {
+            async fn on_message(&mut self, m: Message) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![PRequest {
+                        id: dispatch_contract(),
+                        payload: encode_dispatch(&DispatchEffect {
+                            subprogram: self.handler.clone(),
+                            input: m.payload,
+                        }),
+                        continuation_token: Bytes::from_static(b"d1"),
+                        deadline: None,
+                    }],
+                    Outcome::Continue,
+                )
+            }
+            async fn on_response(&mut self, r: PResponse) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: ContractId::of(b"cdz-platform.http.response"),
+                        reason: r.payload.unwrap_or_default(),
+                    },
+                )
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+
+        let handler_hash = ProgramHash::of(b"path-echo");
+        let root = ProgramHash::of(b"dispatch-root");
+        let mut store = Store::new();
+        store.register(handler_hash, || Box::new(PathEchoHandler));
+        let handler_bytes = Bytes::copy_from_slice(handler_hash.hash().as_bytes());
+        store.register(root, move || {
+            Box::new(DispatchRouter {
+                handler: handler_bytes.clone(),
+            })
+        });
+        let addr = spawn_dumb_edge_over(store, root).await;
+        let (status, body) = get(addr, "/foo").await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            Bytes::from_static(b"/foo"),
+            "the dispatched handler saw the request and its response came back over the socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_serves_a_deny_terminal_as_a_status_floor_over_a_socket() {
+        // A root router that REJECTS the request (a `deny` terminal) → its status/reason floor over the socket.
+        use crate::codec::{Deny, deny_contract, encode_deny};
+
+        struct Denier;
+        #[async_trait]
+        impl Reducer for Denier {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: deny_contract(),
+                        reason: encode_deny(&Deny {
+                            status: 403,
+                            reason: Bytes::from_static(b"forbidden"),
+                        }),
+                    },
+                )
+            }
+            async fn on_response(&mut self, _r: PResponse) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+
+        let root = ProgramHash::of(b"denier-root");
+        let mut store = Store::new();
+        store.register(root, || Box::new(Denier));
+        let addr = spawn_dumb_edge_over(store, root).await;
+        let (status, body) = get(addr, "/secret").await;
+        assert_eq!(status, 403);
+        assert_eq!(body, Bytes::from_static(b"forbidden"));
     }
 
     #[tokio::test]
