@@ -109,7 +109,7 @@ pub async fn assemble_edge(
     host: HostId,
     router_id: ReducerId,
 ) -> Option<Arc<HttpEdge>> {
-    let mut cas = InMemoryBlobStore::new();
+    let cas = InMemoryBlobStore::new();
     for c in components {
         cas.put(c.clone()).await;
     }

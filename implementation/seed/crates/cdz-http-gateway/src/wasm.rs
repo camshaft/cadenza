@@ -132,7 +132,7 @@ mod tests {
 
         // Seed the value-heap runtime + its NFC dep (so the host composes the guest's `cadenza:runtime/heap`
         // import by hash) and the handler component itself into the content store.
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -222,7 +222,7 @@ mod tests {
         };
         let router = std::fs::read(&router_path).expect("read router guest wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -372,7 +372,7 @@ mod tests {
         };
         let router = std::fs::read(&router_path).expect("read router guest wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -463,7 +463,7 @@ mod tests {
         let poc = std::fs::read(&poc_path).expect("read PoC handler wasm");
 
         // One CAS holds the router guest, the PoC handler, and the value-heap runtime + NFC both import.
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -574,7 +574,7 @@ mod tests {
         };
         let guest = std::fs::read(&guest_path).expect("read kv-probe guest wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -653,7 +653,7 @@ mod tests {
         };
         let guest = std::fs::read(&guest_path).expect("read dynamic router guest wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -812,7 +812,7 @@ mod tests {
         let poc = std::fs::read(&poc_path).expect("read PoC handler");
 
         // One CAS holds the router guest, the PoC handler, and the value-heap runtime + NFC.
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -958,7 +958,7 @@ mod tests {
         let poc = std::fs::read(&poc_path).expect("read PoC handler");
         let echo = std::fs::read(&echo_path).expect("read echo handler");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -1128,7 +1128,7 @@ mod tests {
         let router = std::fs::read(&router_path).expect("read dynamic router");
         let poc = std::fs::read(&poc_path).expect("read PoC handler");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -1241,7 +1241,7 @@ mod tests {
         let rr = std::fs::read(&rr_path).expect("read root-router guest wasm");
         let poc = std::fs::read(&poc_path).expect("read poc handler wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),
@@ -1425,7 +1425,7 @@ mod tests {
         };
         let rr = std::fs::read(&rr_path).expect("read baked root-router guest wasm");
 
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(bytes::Bytes::from(
                 std::fs::read(dep).expect("read dep component"),

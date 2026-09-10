@@ -411,7 +411,7 @@ async fn graph_calls_are_recorded_with_args_result_and_order_and_pass_through() 
 async fn blob_calls_are_recorded_with_hash_length_and_outcome() {
     let who = origin(b"agent-2");
     let log = ObservationLog::new();
-    let mut blobs = RecordingBlobStore::new(InMemoryBlobStore::new(), who, log.clone(), tick_clock);
+    let blobs = RecordingBlobStore::new(InMemoryBlobStore::new(), who, log.clone(), tick_clock);
 
     let bytes = Bytes::from_static(b"hello observation log");
     let hash = blobs.put(bytes.clone()).await;
@@ -477,7 +477,7 @@ fn one_log_orders_two_reducers_deterministically_under_bach() {
             let alice = origin(b"alice");
             let bob = origin(b"bob");
             let mut a = RecordingKvStore::new(InMemoryKvStore::new(), alice, log.clone(), clock);
-            let mut b = RecordingBlobStore::new(InMemoryBlobStore::new(), bob, log.clone(), clock);
+            let b = RecordingBlobStore::new(InMemoryBlobStore::new(), bob, log.clone(), clock);
 
             // Interleave the two reducers' store calls against the one log.
             a.put(Bytes::from_static(b"x"), Bytes::from_static(b"1"))

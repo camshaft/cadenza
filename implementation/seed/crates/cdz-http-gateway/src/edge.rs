@@ -1024,7 +1024,7 @@ mod host_e2e {
 
         // Seed the value-heap runtime + its NFC dep (so the host composes the guest's `cadenza:runtime/heap`
         // import by hash) and the ws-session guest itself into the content store.
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         for dep in [&runtime_path, &nfc_path] {
             cas.put(Bytes::from(std::fs::read(dep).expect("read dep component")))
                 .await;
