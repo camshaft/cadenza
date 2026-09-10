@@ -1,0 +1,58 @@
+// The HTTP-outpost route-table contract (design/DESIGN-http-outpost.md §3/§5): the payload the control
+// server ships an HTTP outpost on connect (and on live updates) — the list of routes the router folds into
+// its route table. Each route maps a `(method, path)` to a handler addressed by its content hash
+// (`ProgramHash`, carried as Bytes) plus the contract-id (Bytes) the handler folds. Shipping a new version
+// of a route is publishing a new handler hash and sending an updated table — no adapter redeploy (the
+// outposts "swap by hash" property). A `cadenza-ast` value-form contract like http-request/response, so it
+// carries over the control link (and cross-node) unchanged. Userspace (this dir): a Cadenza reducer (the
+// router) consumes it via self-reflection; no Rust binding is generated.
+//
+// `Method` mirrors http-request's sum (the same 7 methods); `Route`/`RouteTable` use the proven
+// single-constructor `| C(Record(...))` / `| C(List(...))` idioms (a bare record/list alias names a type
+// constructor, CDZ0203). `handler`/`contract` are Bytes (a content hash / contract-id, as elsewhere).
+type Method = | Get | Post | Put | Delete | Patch | Head | Options
+type Route =
+  | Route(Record(method: Method,
+                 path: String,
+                 handler: Bytes,
+                 contract: Bytes))
+type RouteTable = | RouteTable(List(Route))
+
+// --- conformance proof: a fully-literal two-route table, ascribed against the schema type ---
+def a-route-table() -> RouteTable =
+  RouteTable.RouteTable([Route.Route({ method = Method.Get,
+                                       path = "/",
+                                       handler = b"handler-hash-1",
+                                       contract = b"http-request-id" }),
+                         Route.Route({ method = Method.Post,
+                                       path = "/mcp",
+                                       handler = b"handler-hash-2",
+                                       contract = b"http-request-id" })])
+
+@test
+def route-table-conforms() =
+  match a-route-table() with
+  | RouteTable.RouteTable(routes) =>
+    (match routes with
+     | [first, second] =>
+       (match first with
+        | Route.Route(r) =>
+          if (r.path == "/") and (r.handler == b"handler-hash-1")
+          then (match second with
+                | Route.Route(s) => if s.path == "/mcp" then unit else trap("second route path mismatch"))
+          else trap("first route field mismatch"))
+     | _ => trap("expected exactly two routes"))
+
+@test
+def route-method-conforms() =
+  match a-route-table() with
+  | RouteTable.RouteTable(routes) =>
+    (match routes with
+     | [first, _] =>
+       (match first with | Route.Route(r) => (match r.method with | Get => unit | _ => trap("expected Method.Get")))
+     | _ => trap("expected two routes"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.http.route-table", "RouteTable", "RouteTable")
+export { Method.*, Route.*, RouteTable.*, descriptor }
