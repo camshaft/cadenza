@@ -21,6 +21,9 @@ pub mod servers;
 /// The gateway HTTP client — make a run-spec's `http` requests + capture the response for `Expect`.
 pub mod gateway;
 
+/// The CAS seeding client — publish programs by hash into the store the gateway fetches from.
+pub mod cas;
+
 /// The run-loop's scenario-execution core — bin resolution, step driving, and the pass/fail verdict.
 pub mod run;
 
