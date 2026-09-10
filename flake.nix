@@ -7062,6 +7062,35 @@
               cargo fmt --check
               echo "ok: cdz-http-control-mock (excluded standalone crate — test + clippy + fmt)" > "$out"
             '';
+            # ── conformance-harness Cadenza program AUTO-INJECTION (DESIGN-http-outpost-conformance-harness.md
+            # §6): the harness `programs/` tree of Cadenza guests, AUTO-ENUMERATED (drop a `.cdz` dir → it
+            # compiles; no per-guest flake edit), mirroring the platform `cadenzaGuests` pattern. Each guest
+            # builds to a wasm reducer component via `mkCadenzaGuest`; building them all IS the gate that a
+            # dropped-in program stays valid Cadenza. (The deploy-templating of router handler hashes + the
+            # seeded CAS store + the name→hash rewrite are following sub-slices; this establishes the painless
+            # "drop a .cdz" compile foundation the operator asked for, decoupled from the doomed gateway crate.)
+            httpConformanceProgramsDir = ./implementation/seed/crates/cdz-http-conformance/programs;
+            # Enumerate every guest dir (a dir with a reducer.cdz) under each category (handlers/, routers/) —
+            # drop a `<category>/<name>/reducer.cdz` and it compiles, no flake edit.
+            httpConformancePrograms = builtins.concatMap
+              (category:
+                let categoryDir = httpConformanceProgramsDir + "/${category}";
+                in map
+                  (name: mkCadenzaGuest {
+                    pname = "cdz-http-conformance-${name}";
+                    src = categoryDir + "/${name}/reducer.cdz";
+                    componentName = "cadenza:platform/guest";
+                  })
+                  (builtins.filter
+                    (n: (builtins.readDir categoryDir).${n} == "directory")
+                    (builtins.attrNames (builtins.readDir categoryDir))))
+              (builtins.filter
+                (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
+                (builtins.attrNames (builtins.readDir httpConformanceProgramsDir)));
+            cdzHttpConformanceProgramsCheck = pkgs.runCommand "cdz-http-conformance-programs"
+              { guests = httpConformancePrograms; } ''
+              echo "ok: http-conformance program guests compile (${toString (map (g: g.name) httpConformancePrograms)})" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7460,6 +7489,9 @@
             # cdz-http-control-mock (vertical gateway-conformance): the mock control server crate's dedicated
             # check. STANDALONE — NOT in local-gate; run via `nix build .#checks.<sys>.cdz-http-control-mock`.
             cdz-http-control-mock = cdzHttpControlMockCheck;
+            # The conformance-harness program guests all compile (auto-enumerated from programs/handlers/).
+            # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-programs`.
+            cdz-http-conformance-programs = cdzHttpConformanceProgramsCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.
