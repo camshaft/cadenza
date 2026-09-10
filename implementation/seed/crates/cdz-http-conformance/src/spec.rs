@@ -245,7 +245,7 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         None => None,
     };
     let retry_until_match = match value::record_field(arenas, id, "retry-until-match") {
-        Some(r) => read_bool(arenas, r)?,
+        Some(r) => value::read_bool(arenas, r)?,
         None => false,
     };
     Some(Expect {
@@ -256,21 +256,11 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
     })
 }
 
-/// Read a boolean value — the bare names `true` / `false` (how a Cadenza bool literal encodes). `None` if the
-/// value is neither (a malformed field).
-fn read_bool(arenas: &value::Arenas, id: value::ValueId) -> Option<bool> {
-    match arenas.as_name(value::unascribe(arenas, id)) {
-        Some("true") => Some(true),
-        Some("false") => Some(false),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use cdz_http_protocol::value::{
-        ValueBuilder, bytes_leaf, finish, list_value, record, str_leaf, uint_leaf,
+        ValueBuilder, bool_leaf, bytes_leaf, finish, list_value, record, str_leaf, uint_leaf,
     };
 
     /// Build the binary-AST for a run-spec matching `runs/route-to-handler.ml`'s first request.
@@ -407,6 +397,53 @@ mod tests {
         assert!(contains.check(200, b"a wasm handler").is_ok());
         // An empty Expect asserts nothing.
         assert!(Expect::default().check(500, b"anything").is_ok());
+    }
+
+    #[test]
+    fn parses_retry_until_match_bool() {
+        // `retry-until-match = true` encodes as a `Leaf::Bool` (NOT a `Leaf::Name`) — the shape a
+        // `cdz convert`-compiled run-spec actually carries. This asserts the parser reads that leaf (the
+        // earlier as_name-based reader silently mis-parsed a real bool, failing the whole run-spec decode).
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "GET");
+        let path = str_leaf(&mut b, "/");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        let st = uint_leaf(&mut b, 200);
+        let retry = bool_leaf(&mut b, true);
+        let expect = record(&mut b, vec![("retry-until-match", retry), ("status", st)]);
+        let step = record(&mut b, vec![("expect", expect), ("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { expect, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
+        assert!(
+            expect.retry_until_match,
+            "retry-until-match bool should parse as true"
+        );
+
+        // A `false` bool parses to false (distinct from an absent field, which also defaults false).
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "GET");
+        let path = str_leaf(&mut b, "/");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        let retry = bool_leaf(&mut b, false);
+        let expect = record(&mut b, vec![("retry-until-match", retry)]);
+        let step = record(&mut b, vec![("expect", expect), ("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { expect, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
+        assert!(!expect.retry_until_match);
     }
 
     #[test]
