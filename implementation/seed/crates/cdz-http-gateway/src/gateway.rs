@@ -14,6 +14,15 @@
 use crate::codec::{Header, HttpRequest, HttpResponse, Method};
 use crate::runner::HandlerRunner;
 use cdz_platform::{ContractId, ProgramHash, ProgramStore};
+use std::time::Duration;
+
+/// The default per-request wall-clock ceiling (30s): a handler fold that has not produced a response within
+/// it is abandoned and answered `504`. The wasm store's epoch deadline traps a CPU-*spinning* fold, but a
+/// fold that legitimately YIELDS (an `await` that never resolves — e.g. a handler blocked on a slow host
+/// call) burns no epoch and would otherwise hold the connection forever; this bounds that (design §10: the
+/// edge bounds foreign work so one request cannot exhaust the node). Tune with
+/// [`Gateway::with_request_timeout`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One route: an exact `(method, path)` served by the handler component `handler`, which folds the
 /// contract `contract` (the contract-id delivered as the request's `Message.id` — different handlers fold
@@ -94,13 +103,29 @@ impl Router {
 pub struct Gateway {
     router: Router,
     runner: HandlerRunner,
+    /// The per-request wall-clock ceiling; a fold exceeding it is answered `504`
+    /// ([`DEFAULT_REQUEST_TIMEOUT`] unless overridden).
+    request_timeout: Duration,
 }
 
 impl Gateway {
-    /// A gateway routing through `router` and folding matched requests with `runner`.
+    /// A gateway routing through `router` and folding matched requests with `runner`, with the default
+    /// per-request timeout.
     #[must_use]
     pub fn new(router: Router, runner: HandlerRunner) -> Self {
-        Self { router, runner }
+        Self {
+            router,
+            runner,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// Set the per-request wall-clock ceiling — a fold that has not produced a response within it is
+    /// abandoned and answered `504`.
+    #[must_use]
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
     }
 
     /// The `(handler, contract)` a `(method, path)` routes to, or `None` — for the edge to match a
@@ -116,9 +141,10 @@ impl Gateway {
     }
 
     /// Serve one request to a response: match a route (→ `404` floor on no match), fold it through the
-    /// handler (→ `500` floor on a [`FoldError`](crate::runner::FoldError)), else the handler's response.
-    /// `request_id` is the unguessable per-request correlation token (seeds the handler session's id).
-    /// Infallible at this layer — every path yields an [`HttpResponse`] (the edge always answers the socket).
+    /// handler (→ `500` floor on a [`FoldError`](crate::runner::FoldError), `504` if the fold exceeds the
+    /// request timeout), else the handler's response. `request_id` is the unguessable per-request
+    /// correlation token (seeds the handler session's id). Infallible at this layer — every path yields an
+    /// [`HttpResponse`] (the edge always answers the socket).
     pub async fn serve(
         &self,
         store: &dyn ProgramStore,
@@ -128,13 +154,14 @@ impl Gateway {
         let Some((handler, contract)) = self.router.match_route(req.method, &req.path) else {
             return floor(404, "not found");
         };
-        match self
-            .runner
-            .fold(store, handler, contract, request_id, req)
-            .await
-        {
-            Ok(resp) => resp,
-            Err(_) => floor(500, "internal server error"),
+        let fold = self.runner.fold(store, handler, contract, request_id, req);
+        // A fold that never completes (an `await` that never resolves — one the epoch deadline does not
+        // trap because it burns no CPU) is abandoned at the ceiling; dropping the future cancels the fold
+        // and releases its session, so a stuck handler cannot pin the connection or the node.
+        match tokio::time::timeout(self.request_timeout, fold).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(_)) => floor(500, "internal server error"),
+            Err(_elapsed) => floor(504, "gateway timeout"),
         }
     }
 }
@@ -196,6 +223,24 @@ mod tests {
     impl Reducer for StuckHandler {
         async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
             (vec![], Outcome::Continue)
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (vec![], Outcome::Continue)
+        }
+    }
+
+    /// A handler whose `on_message` never resolves (awaits forever without burning CPU) → the gateway must
+    /// abandon the fold at the request timeout and synthesize a `504` floor. Models a handler blocked on an
+    /// `await` the epoch deadline cannot trap.
+    struct HangsForever;
+    #[async_trait]
+    impl Reducer for HangsForever {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            std::future::pending::<()>().await;
+            unreachable!("pending never resolves")
         }
         async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
             (vec![], Outcome::Continue)
@@ -281,6 +326,42 @@ mod tests {
 
         let resp = gw.serve(&store, b"req-4", &get("/")).await;
         assert_eq!(resp.status, 500);
+    }
+
+    #[tokio::test]
+    async fn a_fold_exceeding_the_request_timeout_is_a_504_floor() {
+        let hangs = ProgramHash::of(b"hangs-forever");
+        let mut store = Store::new();
+        store.register(hangs, || Box::new(HangsForever));
+        let gw = Gateway::new(
+            Router::new(vec![Route::new(Method::Get, "/", hangs, a_contract())]),
+            runner(),
+        )
+        .with_request_timeout(std::time::Duration::from_millis(50));
+
+        let resp = gw.serve(&store, b"req-timeout", &get("/")).await;
+        assert_eq!(
+            resp.status, 504,
+            "a fold that never resolves is abandoned at the timeout with a 504"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handler_within_the_timeout_still_serves_its_response() {
+        // A generous timeout does not disturb a prompt handler (guards against the timeout floor firing on
+        // the happy path).
+        let ok = ProgramHash::of(b"ok-handler");
+        let mut store = Store::new();
+        store.register(ok, || Box::new(OkHandler));
+        let gw = Gateway::new(
+            Router::new(vec![Route::new(Method::Get, "/", ok, a_contract())]),
+            runner(),
+        )
+        .with_request_timeout(std::time::Duration::from_secs(5));
+
+        let resp = gw.serve(&store, b"req-ok", &get("/")).await;
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, Bytes::from_static(b"ok"));
     }
 
     #[test]
