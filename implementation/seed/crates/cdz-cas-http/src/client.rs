@@ -204,7 +204,7 @@ impl HttpBlobStore {
 /// trait's deterministic `Option`/`bool` shape (+ a `tracing` breadcrumb) — see the module docs.
 #[async_trait]
 impl BlobStore for HttpBlobStore {
-    async fn put(&mut self, bytes: Bytes) -> Hash {
+    async fn put(&self, bytes: Bytes) -> Hash {
         // The content hash is a pure function of the bytes, so we always know what to return; a failed PUT
         // is logged (the trait can't surface it) and the hash is returned regardless — the deterministic
         // "put absorbs transient I/O" contract. Callers wanting the real outcome use `publish`.

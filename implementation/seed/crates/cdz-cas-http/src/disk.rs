@@ -73,7 +73,7 @@ impl DiskBlobStore {
 
 #[async_trait]
 impl BlobStore for DiskBlobStore {
-    async fn put(&mut self, bytes: Bytes) -> Hash {
+    async fn put(&self, bytes: Bytes) -> Hash {
         let hash = Hash::of(HashTag::Blob, &bytes);
         let path = self.path_for(&hash);
         // `put` returns no `Result` (the trait is deterministic — a fallible backend absorbs I/O). On a
@@ -120,7 +120,7 @@ mod tests {
     #[tokio::test]
     async fn round_trips_keys_on_digest_and_reports_absence() {
         let dir = scratch("rt");
-        let mut store = DiskBlobStore::open(&dir).expect("open");
+        let store = DiskBlobStore::open(&dir).expect("open");
         let bytes = Bytes::from_static(b"persisted blob");
 
         let hash = store.put(bytes.clone()).await;
@@ -145,7 +145,7 @@ mod tests {
     async fn blobs_persist_across_reopen() {
         let dir = scratch("persist");
         let hash = {
-            let mut store = DiskBlobStore::open(&dir).expect("open");
+            let store = DiskBlobStore::open(&dir).expect("open");
             store.put(Bytes::from_static(b"survives restart")).await
         };
         // A fresh store on the same dir still holds the blob (the "survives a restart" property).
@@ -160,7 +160,7 @@ mod tests {
     #[tokio::test]
     async fn put_is_idempotent_by_content() {
         let dir = scratch("idem");
-        let mut store = DiskBlobStore::open(&dir).expect("open");
+        let store = DiskBlobStore::open(&dir).expect("open");
         let h1 = store.put(Bytes::from_static(b"same")).await;
         let h2 = store.put(Bytes::from_static(b"same")).await;
         assert_eq!(h1, h2);

@@ -500,7 +500,7 @@ impl Harness {
                 // Seed the content-addressed store with the run's opaque blobs, then let the factory build
                 // the program store over it (a wasm store loads components from here by hash; a native store
                 // ignores it and instantiates by the same hashes).
-                let mut cas = InMemoryBlobStore::new();
+                let cas = InMemoryBlobStore::new();
                 for bytes in blobs.into_values() {
                     cas.put(bytes).await;
                 }

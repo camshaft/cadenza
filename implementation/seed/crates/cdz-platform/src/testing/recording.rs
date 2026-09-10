@@ -147,7 +147,7 @@ impl<B> RecordingBlobStore<B> {
 
 #[async_trait]
 impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
-    async fn put(&mut self, bytes: Bytes) -> Hash {
+    async fn put(&self, bytes: Bytes) -> Hash {
         // The stored bytes are addressed by the hash, so the record keeps the hash and the byte length,
         // not the bytes again. Capture the length before the bytes move into the backend.
         let len = bytes.len();

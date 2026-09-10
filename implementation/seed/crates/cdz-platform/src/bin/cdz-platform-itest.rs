@@ -519,7 +519,7 @@ fn pure_run_phase(
         use bach::ext::*;
         let cell = cell_in;
         async move {
-            let mut cas = InMemoryBlobStore::new();
+            let cas = InMemoryBlobStore::new();
             for (_label, component) in &deps {
                 cas.put(component.clone()).await;
             }

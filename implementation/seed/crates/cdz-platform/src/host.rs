@@ -2459,7 +2459,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_a_program_by_its_blob_addressed_bytes_and_declines_gracefully() {
         // Seed the CAS with some bytes as an ordinary blob — the way an input program blob is seeded.
-        let mut cas = InMemoryBlobStore::new();
+        let cas = InMemoryBlobStore::new();
         let bytes = b"not a valid wasm component".to_vec();
         let blob = cas.put(Bytes::from(bytes.clone())).await;
         // The program is the Program-tagged view of those same bytes; it shares the blob's digest, so the

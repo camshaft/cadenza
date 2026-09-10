@@ -25,7 +25,6 @@ use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 
 /// The default per-PUT body-size ceiling (16 MiB) — a component (wasm) is the typical blob, well under this;
 /// a larger upload is answered `413` before it reaches the store, so a foreign upload cannot exhaust node
@@ -36,12 +35,15 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 16 << 20;
 /// a client/proxy may cache it indefinitely.
 const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 
-/// The HTTP CAS server: a swappable [`BlobStore`] behind a lock (`BlobStore::put` is `&mut self`, and each
-/// accepted connection is served on its own task behind an `Arc`) plus the optional Bearer credentials.
+/// The HTTP CAS server: a swappable [`BlobStore`] plus the optional Bearer credentials. Held behind an
+/// `Arc` and served on a task per connection; the store needs NO external lock because `BlobStore` methods
+/// (incl. `put`) take `&self` (interior mutability) — so concurrent requests don't serialize on the store.
 pub struct CasServer {
     /// The backing store — a trait object so the backend (in-memory now, on-disk/S3 later) is swappable
-    /// per the brief. Behind a `tokio::sync::Mutex` because `put` needs `&mut` while the server is shared.
-    store: Mutex<Box<dyn BlobStore>>,
+    /// per the brief. `Arc<dyn BlobStore>` (not `Mutex<Box<…>>`): every method is `&self`, so requests share
+    /// the store concurrently with no lock (reads never block; the backend's own interior mutability, e.g.
+    /// InMemoryBlobStore's `RwLock`, guards writes).
+    store: Arc<dyn BlobStore>,
     /// The read credential. `None` ⇒ reads are open (the store is unpermissioned); `Some` ⇒ `GET`/`HEAD`
     /// require `Authorization: Bearer {this}`, else `401`.
     read_credential: Option<String>,
@@ -59,7 +61,7 @@ impl CasServer {
     #[must_use]
     pub fn new(store: Box<dyn BlobStore>) -> Self {
         Self {
-            store: Mutex::new(store),
+            store: Arc::from(store),
             read_credential: None,
             write_credential: None,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -132,7 +134,7 @@ impl CasServer {
                 if !self.read_authorized(&parts.headers) {
                     return floor(StatusCode::UNAUTHORIZED, "unauthorized");
                 }
-                match self.store.lock().await.get(hash).await {
+                match self.store.get(hash).await {
                     Some(bytes) => Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, "application/octet-stream")
@@ -146,7 +148,7 @@ impl CasServer {
                 if !self.read_authorized(&parts.headers) {
                     return floor(StatusCode::UNAUTHORIZED, "unauthorized");
                 }
-                if self.store.lock().await.has(hash).await {
+                if self.store.has(hash).await {
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(CACHE_CONTROL, IMMUTABLE_CACHE)
@@ -187,7 +189,7 @@ impl CasServer {
                         "hash mismatch: body does not match the key",
                     );
                 }
-                self.store.lock().await.put(bytes).await;
+                self.store.put(bytes).await;
                 Response::builder()
                     .status(StatusCode::CREATED)
                     .header(LOCATION, format!("/{hash}"))
