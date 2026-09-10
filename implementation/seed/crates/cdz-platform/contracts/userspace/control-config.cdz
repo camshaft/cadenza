@@ -1,0 +1,25 @@
+// The CONTROL-LINK boot-config frame contract (DESIGN-http-outpost-conformance-harness.md §4): the frame the
+// control server ships the gateway on connect (and re-ships to live-swap the root router). `casUrl` +
+// `casCredential` are how the gateway reaches the content-addressed store; `rootRouter` is the ProgramHash
+// bytes of the root-router program it fetches + drives. Userspace (this dir): its COMPUTED contract-id is the
+// dispatch tag on the control link — the receiver dispatches a DOWN frame by contract-id (Config => apply/
+// live-swap vs Down => route-to-session) instead of assuming a fixed type. The frame BODY is encoded/decoded
+// by cdz-http-protocol; this contract's id is the envelope tag both sides match on.
+type ControlConfig = | ControlConfig(Record(casUrl: String, casCredential: Bytes, rootRouter: Bytes))
+
+def a-control-config() -> ControlConfig =
+  ControlConfig.ControlConfig({ casUrl = "http://cas.example/blobs", casCredential = b"bearer-tok",
+                                rootRouter = b"a-33-byte-program-hash-goes-here." })
+
+@test
+def control-config-conforms() =
+  match a-control-config() with
+  | ControlConfig.ControlConfig(c) =>
+    if (c.casUrl == "http://cas.example/blobs") and (c.casCredential == b"bearer-tok")
+       and (c.rootRouter == b"a-33-byte-program-hash-goes-here.")
+    then unit else trap("control-config field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.control.config", "ControlConfig", "ControlConfig")
+export { ControlConfig.*, descriptor }
