@@ -1,0 +1,49 @@
+# cdz-http-control-mock — the harness mock control server (DESIGN-http-outpost-conformance-harness.md §3.3).
+#
+# A standalone process the conformance driver spins up as one of the 3 SUT servers. It has two faces:
+#   - CONTROL-PLANE (gateway-facing): the real bidirectional ws protocol the gateway dials — ships a
+#     `ControlConfig` on connect, pushes root-router live-swaps, receives `ControlUp`, sends
+#     correlation-matched `ControlDown` (the frames come from `cdz-http-protocol`).
+#   - ADMIN (driver-facing): a plain HTTP/JSON surface the driver pokes to INJECT state (set/live-swap the
+#     root router, prime control.send replies, push down) and OBSERVE outcomes (captured `ControlUp`s with
+#     handler id + correlation + request context, connections, an ordered event log).
+# "Mock" = its behavior is test-driven via the admin surface, NOT that it is fake — it speaks the real
+# gateway-facing protocol, so a STOCK gateway is exercised end-to-end (operator: nothing internal mocked).
+#
+# STANDALONE `[workspace]` — EXCLUDED from the seed workspace (root Cargo.toml `exclude`), like the other
+# http-outpost crates: it pulls the tokio/hyper/tungstenite stack, which must stay out of the routine seed
+# build/gate. It path-deps the excluded `cdz-http-protocol` (the wire frames) + the member `cdz-str`.
+[workspace]
+
+[package]
+name = "cdz-http-control-mock"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The control-plane wire frames (ControlConfig / ControlUp / ControlDown) + the shared binary-AST value
+# toolkit (`cdz_http_protocol::value`) the admin frames encode with.
+cdz-http-protocol = { path = "../cdz-http-protocol" }
+# `Str` — the canonical text type; program names + urls in the mock's state are `Str`.
+cdz-str = { path = "../cdz-str" }
+# Every byte buffer is `bytes::Bytes` (spec §12) — hashes, credentials, opaque payloads, session/correlation.
+bytes = "1"
+# The admin server is a hyper HTTP/1 server carrying binary-AST AdminCommand/AdminReply BODIES (NOT JSON —
+# HTTP is only the byte transport). tokio is the runtime; hyper-util's TokioIo drives hyper; http-body-util
+# collects the request body + supplies the `Full` response body.
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+# The control-plane face: the gateway dials this ws server. `tokio-tungstenite` accepts the ws connection +
+# frames it; `default-features = false` + `handshake` — no TLS/connect, it only serves an accepted socket.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# Stream/Sink combinators to pump the ws frame loop (`StreamExt::next`, `SinkExt::send`).
+futures-util = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+# The live-socket admin tests dial the server with a hyper HTTP/1 client; the control-plane tests dial the
+# ws server with a tungstenite client (the `connect`/client side, off by default above).
+hyper = { version = "1", features = ["client"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake", "connect"] }

@@ -72,6 +72,11 @@ exclude = [
     # `cadenza-ast` + `bytes`, no wasmtime/hyper), which an excluded crate may do (cdz-smith precedent). Own
     # `[workspace]` table + committed lock; gated by `nix build .#checks.<sys>.cdz-http-protocol`.
     "implementation/seed/crates/cdz-http-protocol",
+    # `cdz-http-control-mock` (the conformance-harness mock control server) is excluded for the same reason as
+    # its http-outpost siblings: it pulls the tokio/hyper/tungstenite stack that must stay out of the routine
+    # seed build/gate. Own `[workspace]` table; path-deps the excluded cdz-http-protocol + the member cdz-str;
+    # gated by its own dedicated check.
+    "implementation/seed/crates/cdz-http-control-mock",
 ]
 
 [profile.dev]
