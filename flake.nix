@@ -2726,7 +2726,12 @@
             directory = "${vendor}"
             EOF
             cd implementation/seed/crates/cdz-cas-http
-            cargo build --release --offline --locked --bin cdz-cas-http
+            # `--features s3` builds in the durable S3 tier (aws-config + aws-sdk-s3, off by default). This is
+            # the DEPLOYABLE server binary, so it ships EVERY tier — the runtime binary-AST config record
+            # decides which are active (mem/disk/s3); without `s3` an `s3`-tier config errors S3Unsupported.
+            # The lean default (no aws-sdk) is still what cdzCasHttpCheck compiles for the corpus gate.
+            # aws-lc-sys's bundled C build needs the cmake already in nativeBuildInputs.
+            cargo build --release --offline --locked --features s3 --bin cdz-cas-http
             install -Dm755 target/release/cdz-cas-http "$out/bin/cdz-cas-http"
           '';
 
