@@ -28,10 +28,15 @@ pub enum FoldError {
     /// misconfiguration).
     UnknownProgram,
     /// The handler returned `Outcome::Continue` rather than closing with a response. A one-shot HTTP
-    /// handler is expected to `Break` with its `http-response`.
+    /// handler is expected to `Break` with its `http-response`; a looping program went quiescent with no
+    /// pending effect and never produced one.
     HandlerDidNotClose,
     /// The handler closed, but its `Break` reason did not decode as a valid `http-response`.
     MalformedResponse,
+    /// A looping program kept emitting effects past the drive-loop ceiling without ever closing — a
+    /// runaway. Bounded so a misbehaving program cannot spin the driver forever (only reachable via the
+    /// looping [`RootDriver`](crate::root_driver::RootDriver), not the one-shot `fold`).
+    Runaway,
 }
 
 impl fmt::Display for FoldError {
@@ -40,6 +45,7 @@ impl fmt::Display for FoldError {
             FoldError::UnknownProgram => "handler program is not instantiable (unknown hash)",
             FoldError::HandlerDidNotClose => "handler did not close with a response",
             FoldError::MalformedResponse => "handler's close reason is not a valid http-response",
+            FoldError::Runaway => "program exceeded the drive-loop ceiling without closing",
         };
         f.write_str(s)
     }
