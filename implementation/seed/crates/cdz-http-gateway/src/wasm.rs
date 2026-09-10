@@ -622,4 +622,155 @@ mod tests {
             Outcome::Continue => panic!("kv-probe must Break with the value read back from state"),
         }
     }
+
+    /// P3b PIVOT PROOF: the DYNAMIC (stateless) router guest routes over a LIVE table passed in the message,
+    /// driven through the real wasm store — routing-as-a-fold without host-state, so it actually INSTANTIATES
+    /// + runs (unlike the KV-state router, which the compiler bug blocks). The gateway would hold the table
+    /// and send a `RouteQuery{request, table}`; here the test builds that envelope directly. Asserts the
+    /// decoded routing decision matches the shipped table (GET /echo → echo handler; GET /nope → no-match),
+    /// and that swapping the table changes the route (the "live table" property). Seeds runtime + NFC.
+    #[tokio::test]
+    async fn wasm_dynamic_router_routes_over_a_passed_in_table() {
+        use crate::codec::{
+            HttpRequest, Method, RouteFrame, decode_decision, encode_request, encode_route_query,
+            encode_route_table,
+        };
+        use cdz_platform::{
+            ContractId, HostId, Message, Origin, Outcome, ProgramHash, ReducerId, ReducerKind,
+            SpawnContext,
+        };
+
+        let (Ok(guest_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_DYNAMIC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_dynamic_router_routes_over_a_passed_in_table: \
+                 CDZ_HTTP_ROUTER_DYNAMIC_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let guest = std::fs::read(&guest_path).expect("read dynamic router guest wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(guest.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&guest);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        let echo_handler = bytes::Bytes::from_static(b"cdz-http.handler.echo............");
+        let req_contract = bytes::Bytes::from_static(b"cdz-platform.http.request........");
+        let request = |m: Method, p: &str| {
+            encode_request(&HttpRequest {
+                method: m,
+                path: p.to_string(),
+                query: String::new(),
+                headers: vec![],
+                body: bytes::Bytes::new(),
+            })
+        };
+
+        // Route one (request, table) query through a fresh instance (a one-shot fold → Break decision).
+        async fn route(
+            store: &dyn ProgramStore,
+            program: ProgramHash,
+            id: &[u8],
+            query: bytes::Bytes,
+        ) -> crate::codec::RouteDecision {
+            let mut r = store
+                .spawn(
+                    program,
+                    SpawnContext {
+                        id: ReducerId::of(id),
+                        kind: ReducerKind::Ordinary,
+                        limits: None,
+                    },
+                )
+                .await
+                .expect("dynamic router instantiates");
+            let (_reqs, outcome) = r
+                .on_message(Message {
+                    id: ContractId::of(b"cdz-platform.http.route-query"),
+                    payload: query,
+                    from: Origin {
+                        reducer: ReducerId::of(b"gateway"),
+                        host: HostId::of(b"edge-host"),
+                    },
+                    continuation_token: bytes::Bytes::new(),
+                })
+                .await;
+            let Outcome::Break { reason, .. } = outcome else {
+                panic!("the router must Break with a routing decision");
+            };
+            decode_decision(&reason).expect("decision decodes")
+        }
+
+        // A table routing GET /echo → the echo handler.
+        let table = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/echo".to_string(),
+            handler: echo_handler.clone(),
+            contract: req_contract.clone(),
+        }]);
+
+        // GET /echo → matched to the echo handler + its contract.
+        let d = route(
+            store.as_ref(),
+            program,
+            b"q1",
+            encode_route_query(&request(Method::Get, "/echo"), &table),
+        )
+        .await;
+        assert_eq!(d.handler, echo_handler, "the live table routes GET /echo");
+        assert_eq!(d.contract, req_contract);
+
+        // GET /nope → no route in the table → the no-match sentinel.
+        let d = route(
+            store.as_ref(),
+            program,
+            b"q2",
+            encode_route_query(&request(Method::Get, "/nope"), &table),
+        )
+        .await;
+        assert!(!d.is_match(), "an unlisted path is the no-match sentinel");
+
+        // POST /echo → method mismatch (table has GET /echo only) → no match.
+        let d = route(
+            store.as_ref(),
+            program,
+            b"q3",
+            encode_route_query(&request(Method::Post, "/echo"), &table),
+        )
+        .await;
+        assert!(!d.is_match(), "POST /echo does not match GET /echo");
+
+        // LIVE TABLE: a DIFFERENT table (routing GET /v2) → the SAME guest routes by whatever it's handed.
+        let v2_handler = bytes::Bytes::from_static(b"cdz-http.handler.v2..............");
+        let table2 = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/v2".to_string(),
+            handler: v2_handler.clone(),
+            contract: req_contract.clone(),
+        }]);
+        let d = route(
+            store.as_ref(),
+            program,
+            b"q4",
+            encode_route_query(&request(Method::Get, "/v2"), &table2),
+        )
+        .await;
+        assert_eq!(
+            d.handler, v2_handler,
+            "routing is a pure fn of the passed-in table — a new table routes anew"
+        );
+    }
 }
