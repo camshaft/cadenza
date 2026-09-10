@@ -6848,7 +6848,10 @@
             };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
-                nativeBuildInputs = [ rustToolchain ];
+                # `cmake` builds aws-lc-sys's bundled C — pulled transitively via the cdz-cas-http path-dep's
+                # reqwest+rustls+aws-lc-rs TLS stack (#8653). On aarch64 that's the whole delta (pregenerated
+                # bindings, non-FIPS → no libclang/nasm/go). rustToolchain covers the rest.
+                nativeBuildInputs = [ rustToolchain pkgs.cmake ];
                 # Mirror the per-crate cargoTest env (craneCrateCommon): a generous wall-clock + deep-stack
                 # floor so a correct test never false-reds under fleet build load.
                 CDZ_RUN_TIMEOUT_SECS = "300";
