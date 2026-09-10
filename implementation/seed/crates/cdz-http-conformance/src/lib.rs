@@ -30,6 +30,9 @@ pub mod programs;
 /// The run-loop's scenario-execution core — bin resolution, step driving, and the pass/fail verdict.
 pub mod run;
 
+/// The end-to-end scenario assembly — spawn the SUTs, seed + configure, drive the steps, judge.
+pub mod scenario;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).
