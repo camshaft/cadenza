@@ -33,6 +33,12 @@
 /// `run_mailbox_loop` with the gateway's own effect resolver. The looping execution model the edge drives.
 pub mod drive;
 
+/// The gateway effect resolver (design §2): route the effects a driven program emits — `http.dispatch`
+/// (spawn + drive a subprogram from the CAS, fold its response back), and (later) `control.send` / `ws.send`
+/// / timers — by their canonical computed contract-id. The concrete `carry` the [`drive`] loop hands each
+/// request.
+pub mod resolver;
+
 /// Boot-from-control (design §3/§4): dial the control server, apply the `ControlConfig` it ships, bind the
 /// HTTP edge, and serve. The `cdz-http-gateway` binary's startup path.
 pub mod boot;
