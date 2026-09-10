@@ -98,23 +98,45 @@ impl MockControlServer {
         router_id: ReducerId,
         request_contract: ContractId,
     ) -> Option<Arc<HttpEdge>> {
-        let mut cas = InMemoryBlobStore::new();
-        for dep in &self.deps {
-            cas.put(dep.clone()).await;
-        }
-        for r in &self.routes {
-            cas.put(r.handler_wasm.clone()).await;
-        }
-        let cas: Arc<dyn BlobStore> = Arc::new(cas);
-        let store: Arc<dyn ProgramStore> = Arc::new(wasm_store(cas).ok()?);
-        // Detached ticker: dropping the handle does not abort the task, so the engine epoch keeps advancing
-        // for the edge's lifetime (a runaway handler still traps at its deadline).
-        let _ = spawn_epoch_ticker(store.as_ref());
-
-        let router = Router::from_route_table(&self.route_table_frame())?;
-        let runner = HandlerRunner::new(host, router_id, request_contract);
-        Some(Arc::new(HttpEdge::new(Gateway::new(router, runner), store)))
+        let mut components: Vec<Bytes> = self.deps.clone();
+        components.extend(self.routes.iter().map(|r| r.handler_wasm.clone()));
+        assemble_edge(
+            &self.route_table_frame(),
+            &components,
+            host,
+            router_id,
+            request_contract,
+        )
+        .await
     }
+}
+
+/// Assemble a ready-to-serve [`HttpEdge`] from a `route-table` `frame` and the `components` it references —
+/// the gateway's boot step, whatever the source of the frame + blobs (an in-process mock, or a deployment's
+/// local content store). Seeds every component into a fresh content store (by content hash — the value-heap
+/// runtime + NFC + each handler; the host composes each handler's `cadenza:runtime/heap` import from it),
+/// builds the wasmtime handler store (driving the engine epoch on a detached ticker), decodes the frame into
+/// a [`Router`], and wires the edge. `None` if the frame is malformed (a bad handler hash).
+pub async fn assemble_edge(
+    frame: &[u8],
+    components: &[Bytes],
+    host: HostId,
+    router_id: ReducerId,
+    request_contract: ContractId,
+) -> Option<Arc<HttpEdge>> {
+    let mut cas = InMemoryBlobStore::new();
+    for c in components {
+        cas.put(c.clone()).await;
+    }
+    let cas: Arc<dyn BlobStore> = Arc::new(cas);
+    let store: Arc<dyn ProgramStore> = Arc::new(wasm_store(cas).ok()?);
+    // Detached ticker: dropping the handle does not abort the task, so the engine epoch keeps advancing
+    // for the edge's lifetime (a runaway handler still traps at its deadline).
+    let _ = spawn_epoch_ticker(store.as_ref());
+
+    let router = Router::from_route_table(frame)?;
+    let runner = HandlerRunner::new(host, router_id, request_contract);
+    Some(Arc::new(HttpEdge::new(Gateway::new(router, runner), store)))
 }
 
 #[cfg(test)]

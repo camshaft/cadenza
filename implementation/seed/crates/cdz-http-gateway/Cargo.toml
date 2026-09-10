@@ -48,7 +48,7 @@ cdz-platform = { path = "../cdz-platform" }
 # The native HTTP edge (P1c-2, src/edge.rs): a hyper HTTP/1 server. hyper is runtime-agnostic (driven via
 # hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
 # request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
-tokio = { version = "1", features = ["net", "rt", "macros", "sync"] }
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
@@ -64,3 +64,10 @@ cdz-platform = { path = "../cdz-platform", features = ["testing"] }
 async-trait = "0.1"
 # The `client` feature (unioned onto the dep above) + `Empty` body for the live-socket e2e test's HTTP client.
 hyper = { version = "1", features = ["client"] }
+
+# The deployable binary — serves a deployment dir (route-table.bin + *.wasm components) over HTTP. Behind
+# the `host` feature (it drives the wasmtime handler store), so a default build never pulls wasmtime.
+[[bin]]
+name = "cdz-http-gateway"
+path = "src/bin/cdz-http-gateway.rs"
+required-features = ["host"]

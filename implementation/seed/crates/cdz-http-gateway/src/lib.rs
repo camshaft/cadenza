@@ -38,6 +38,12 @@ pub mod wasm;
 
 /// The mock control server (design §3) — behind the `host` feature (it assembles a wasmtime-backed edge).
 /// Ships a route table + handler blobs and builds a ready-to-serve [`edge::HttpEdge`] from them, standing
-/// in for the real ws-dialed control server for end-to-end tests.
+/// in for the real ws-dialed control server for end-to-end tests. Also home to [`control::assemble_edge`],
+/// the shared boot step (frame + components → edge).
 #[cfg(feature = "host")]
 pub mod control;
+
+/// Deployment boot — behind the `host` feature. Stands up the gateway as a runnable server from a local
+/// deployment directory (a `route-table.bin` frame + `*.wasm` components); the `cdz-http-gateway` binary.
+#[cfg(feature = "host")]
+pub mod boot;
