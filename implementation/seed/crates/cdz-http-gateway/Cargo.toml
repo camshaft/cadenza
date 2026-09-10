@@ -36,12 +36,19 @@ bytes = "1"
 # heavy `host` (wasmtime) feature, which a later slice adds for the concrete `WasmProgramStore`. Keeping
 # `host` off here is exactly why this crate is a standalone `[workspace]` (see Cargo comment / root exclude).
 cdz-platform = { path = "../cdz-platform" }
+# The native HTTP edge (P1c-2, src/edge.rs): a hyper HTTP/1 server. hyper is runtime-agnostic (driven via
+# hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
+# request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
+tokio = { version = "1", features = ["net", "rt", "macros", "sync"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
-# The native test `ProgramStore` (`cdz_platform::testing::program::Store`) + a Rust `Reducer` let the runner
-# be exercised end-to-end WITHOUT wasmtime or a compiled Cadenza guest — the hermetic P1b fold test.
+# The native test `ProgramStore` (`cdz_platform::testing::program::Store`) + a Rust `Reducer` let the
+# runner/gateway be exercised WITHOUT wasmtime or a compiled Cadenza guest.
 cdz-platform = { path = "../cdz-platform", features = ["testing"] }
-# `#[tokio::test]` to drive the async `spawn`/`on_message`; `async-trait` to impl the platform's
-# `#[async_trait] Reducer` for the test handlers.
-tokio = { version = "1", features = ["rt", "macros"] }
+# `async-trait` to impl the platform's `#[async_trait] Reducer` for the test handlers.
 async-trait = "0.1"
+# The `client` feature (unioned onto the dep above) + `Empty` body for the live-socket e2e test's HTTP client.
+hyper = { version = "1", features = ["client"] }
