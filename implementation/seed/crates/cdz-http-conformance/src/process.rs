@@ -31,12 +31,32 @@ impl ServerProcess {
     /// # Errors
     /// The program cannot be spawned (not found, not executable, …).
     pub fn spawn(program: &Path, args: &[&str]) -> Result<Self, String> {
-        let child = Command::new(program)
-            .args(args)
+        Self::spawn_with_env(program, args, &[])
+    }
+
+    /// Like [`spawn`], additionally setting the given environment variables on the child (e.g. the CAS's
+    /// `CDZ_CAS_STORE_DIR` / `CDZ_CAS_WRITE_CREDENTIAL`, which it reads only at startup). The child otherwise
+    /// inherits the parent environment.
+    ///
+    /// [`spawn`]: ServerProcess::spawn
+    ///
+    /// # Errors
+    /// The program cannot be spawned (not found, not executable, …).
+    pub fn spawn_with_env(
+        program: &Path,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let child = cmd
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", program.display()))?;
         Ok(Self { child })

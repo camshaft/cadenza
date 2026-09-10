@@ -15,6 +15,9 @@ pub mod spec;
 /// Process orchestration — spawn each SUT bin, wait for its ready line, kill it on drop.
 pub mod process;
 
+/// Per-server spawners — typed handles (CAS / mock / gateway) with their parsed bound addresses.
+pub mod servers;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).
