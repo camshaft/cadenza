@@ -913,6 +913,231 @@ fn reducer_full_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
+/// The FULL 3-member reducer world (as [`reducer_full_world_bytes`], FQ export interface
+/// `cadenza:platform/guest`) PLUS a `state` IMPORT whose `get` op has a SPILLED compound result
+/// (`get : list<u8> -> option<list<u8>>`) — the exact reducer-world shape that made a host-state guest
+/// route through the typed-interface emit path AND import `cabi_realloc`. Used to pin the #8658 fix (a
+/// guest granting `state` + calling a recursion must emit VALID wasm; pre-fix its internal call's abs index
+/// was one short because `import_base` omitted cabi_realloc → wrong-arity target → invalid module).
+fn reducer_full_world_with_state_get_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let step = |b: &mut Builder| {
+        let request = {
+            let rc = bytes_field(b, "contract");
+            let rp = bytes_field(b, "payload");
+            let rt = bytes_field(b, "token");
+            let rd = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(b, "deadline-nanos", ot)
+            };
+            record(b, vec![rc, rp, rt, rd])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let cs = bytes_field(b, "schema");
+            let cr = bytes_field(b, "reason");
+            record(b, vec![cs, cr])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let sr = field(b, "requests", requests_list);
+        let so = field(b, "outcome", outcome);
+        record(b, vec![sr, so])
+    };
+    let mk_member = |b: &mut Builder, mname: &str, pname: &str, param_ty| {
+        let step_ty = step(b);
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name(pname);
+        let param_node = b.list(vec![param_h, pn, param_ty]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name(mname);
+        b.list(vec![member_h, mn, func])
+    };
+    let message = {
+        let sender = {
+            let sr = bytes_field(&mut b, "reducer");
+            let sh = bytes_field(&mut b, "host");
+            record(&mut b, vec![sr, sh])
+        };
+        let mc = bytes_field(&mut b, "contract");
+        let ms = field(&mut b, "sender", sender);
+        let mp = bytes_field(&mut b, "payload");
+        let mt = bytes_field(&mut b, "token");
+        record(&mut b, vec![mc, ms, mp, mt])
+    };
+    let response = {
+        let rc = bytes_field(&mut b, "contract");
+        let rt = bytes_field(&mut b, "token");
+        let answer = {
+            let ok_ty = list_u8(&mut b);
+            let err_ty = {
+                let vh = b.atom_leaf(Leaf::Str("variant".into()));
+                let mut cases = vec![vh];
+                for c in ["timeout", "missing-handler", "schema-violation", "faulted"] {
+                    let n = b.name(c);
+                    cases.push(b.list(vec![n]));
+                }
+                b.list(cases)
+            };
+            let rh = b.atom_leaf(Leaf::Str("result".into()));
+            let a_ty = b.list(vec![rh, ok_ty, err_ty]);
+            field(&mut b, "answer", a_ty)
+        };
+        record(&mut b, vec![rc, rt, answer])
+    };
+    let notification = {
+        let nc = bytes_field(&mut b, "contract");
+        let np = bytes_field(&mut b, "payload");
+        record(&mut b, vec![nc, np])
+    };
+    let on_message = mk_member(&mut b, "on-message", "m", message);
+    let on_response = mk_member(&mut b, "on-response", "r", response);
+    let on_notification = mk_member(&mut b, "on-notification", "n", notification);
+    let exp_h = b.name("export");
+    let iname = b.name("cadenza:platform/guest");
+    let export = b.list(vec![exp_h, iname, on_message, on_response, on_notification]);
+    // import cadenza:platform/state { get: func(key: list<u8>) -> option<list<u8>> } — the spilled result.
+    let get = {
+        let key_ty = list_u8(&mut b);
+        let opt_bytes = {
+            let inner = list_u8(&mut b);
+            let oh = b.atom_leaf(Leaf::Str("option".into()));
+            b.list(vec![oh, inner])
+        };
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let kn = b.name("key");
+        let param_node = b.list(vec![param_h, kn, key_ty]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, opt_bytes]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("get");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let state_name = b.name("cadenza:platform/state");
+    let state_import = b.list(vec![imp_h, state_name, get]);
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, export, state_import]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// REGRESSION (adv-cdz-invalid-wasm, #8658): a reducer-world guest that GRANTS the `state` host capability
+/// (whose `get` op has a SPILLED `option<list<u8>>` result → the core imports `cabi_realloc`) AND calls a
+/// REAL (recursive, non-inlinable) helper whose result feeds a match-arm's returned record MUST emit VALID
+/// wasm. Pre-#8658, `import_base` omitted the cabi_realloc import when selecting the GUEST FUNCS, so the
+/// guest's internal `Core::Call` to `find` resolved its callee's absolute wasm index one short — targeting a
+/// wrong-arity neighbouring defined func → "values remaining on stack at end of block", an invalid module
+/// `cdz compile` accepted. This is the exact shape of the field bug (`router-stateful`, #8615); it routes
+/// through the TYPED-INTERFACE emit path (record-param export interface + host spilled result), unlike the
+/// kv bytes-provider path which already counted cabi_realloc. A `find`-index regression re-invalidates this.
+#[test]
+fn a_host_state_reducer_calling_a_recursion_emits_valid_wasm() {
+    use crate::testkit::parse;
+    // 3 world export members (on-message/on-response/on-notification) — on-message grants `state` and, on the
+    // Some arm, calls the RECURSIVE `find` and puts its result in the Close record's `reason`. on-response/
+    // on-notification are inert (their param types match the world so the guest fully implements it).
+    let src = "(module m \
+      (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+      (type Err Timeout MissingHandler SchemaViolation Faulted) \
+      (effect state (op get (-> Bytes (Option Bytes)))) \
+      (def (find (: xs (List Bytes)) (: p Bytes)) \
+        (match xs \
+          ((list) p) \
+          ((list h (.. t)) (if (= h p) h (find t p))))) \
+      (def (on-message (: m (Record (contract Bytes) \
+                                    (sender (Record (reducer Bytes) (host Bytes))) \
+                                    (payload Bytes) (token Bytes)))) \
+        (host (state) \
+          (match (state.get (. m payload)) \
+            ((Option.Some v) (record (= requests (list)) \
+                                     (= outcome (Outcome.Close (record (= schema (. m contract)) \
+                                                                       (= reason (find (list v) v))))))) \
+            (Option.None (record (= requests (list)) (= outcome Outcome.Continue)))))) \
+      (def (on-response (: r (Record (contract Bytes) (token Bytes) (answer (Result Bytes Err))))) \
+        (record (= requests (list)) (= outcome Outcome.Continue))) \
+      (def (on-notification (: n (Record (contract Bytes) (payload Bytes)))) \
+        (record (= requests (list)) (= outcome Outcome.Continue))) \
+      (export on-message on-response on-notification))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_full_world_with_state_get_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a host-state reducer that calls a recursion must emit (not decline): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the host-state + recursion reducer emits a component");
+    // THE PIN: pre-#8658 this component FAILED validation ("values remaining on stack") because on-message's
+    // `find` call targeted the wrong-arity func (import_base one short). It must validate now.
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the host-state-plus-recursion reducer's component validates (import_base counts cabi_realloc)",
+    );
+}
+
 /// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
 /// export interface declares all three members (on-message/on-response/on-notification) — must DECLINE
 /// cleanly, not silently fall through to a raw heap-handle export (`on-message: u32 -> u32`) the platform
