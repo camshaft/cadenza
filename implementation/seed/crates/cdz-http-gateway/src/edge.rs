@@ -106,6 +106,19 @@ impl HttpEdge {
         }
     }
 
+    /// Set the DUMB path's per-request wall-clock timeout (a drive that does not resolve within it is
+    /// abandoned → `504`). No-op on a legacy [`Gateway`]-mode edge (that path carries its own timeout).
+    #[must_use]
+    pub fn with_dumb_request_timeout(mut self, timeout: Duration) -> Self {
+        if let HttpServe::Dumb {
+            request_timeout, ..
+        } = &mut self.serve
+        {
+            *request_timeout = timeout;
+        }
+        self
+    }
+
     /// Set the per-request body-size ceiling (bytes) — a request body larger than this is answered `413`.
     #[must_use]
     pub fn with_max_body_bytes(mut self, max_body_bytes: usize) -> Self {
@@ -581,6 +594,103 @@ mod tests {
         let addr = spawn_dumb_edge(false).await;
         let (status, _body) = get(addr, "/anything").await;
         assert_eq!(status, 500);
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_times_out_a_never_resolving_root_router() {
+        // A root router whose drive never resolves (an effect/await that never lands — burns no folds, so
+        // the fold ceiling does not catch it) is abandoned at the wall-clock timeout → 504.
+        struct HangsForever;
+        #[async_trait]
+        impl Reducer for HangsForever {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            async fn on_response(&mut self, _r: PResponse) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let root = ProgramHash::of(b"hangs");
+        let mut store = Store::new();
+        store.register(root, || Box::new(HangsForever));
+        let driver = RootDriver::new(
+            HostId::of(b"dumb-edge-host"),
+            ContractId::of(b"cdz-platform.http.request"),
+            ContractId::of(b"cdz-platform.http.request"),
+        );
+        let edge = Arc::new(
+            HttpEdge::dumb(driver, root, Arc::new(NullSink), Arc::new(store))
+                .with_dumb_request_timeout(Duration::from_millis(50)),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+        let (status, _body) = get(addr, "/anything").await;
+        assert_eq!(status, 504);
+    }
+
+    #[tokio::test]
+    async fn dumb_edge_gives_each_request_a_fresh_root_session() {
+        // Per-request isolation: the dumb edge spawns a FRESH root-router instance per request, so
+        // per-instance state never leaks between requests. A router counting its own folds answers "1"
+        // every time — never "2".
+        struct CountingRouter {
+            count: u32,
+        }
+        #[async_trait]
+        impl Reducer for CountingRouter {
+            async fn on_message(&mut self, _m: Message) -> (Vec<PRequest>, Outcome) {
+                self.count += 1;
+                let resp = HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: Bytes::from(self.count.to_string().into_bytes()),
+                };
+                (
+                    vec![],
+                    Outcome::Break {
+                        schema: ContractId::of(b"cdz-platform.http.response"),
+                        reason: encode_response(&resp),
+                    },
+                )
+            }
+            async fn on_response(&mut self, _r: PResponse) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<PRequest>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let root = ProgramHash::of(b"counting-router");
+        let mut store = Store::new();
+        store.register(root, || Box::new(CountingRouter { count: 0 }));
+        let driver = RootDriver::new(
+            HostId::of(b"dumb-edge-host"),
+            ContractId::of(b"cdz-platform.http.request"),
+            ContractId::of(b"cdz-platform.http.request"),
+        );
+        let edge = Arc::new(HttpEdge::dumb(
+            driver,
+            root,
+            Arc::new(NullSink),
+            Arc::new(store),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+        let (s1, b1) = get(addr, "/a").await;
+        let (s2, b2) = get(addr, "/b").await;
+        assert_eq!((s1, s2), (200, 200));
+        assert_eq!(b1, Bytes::from_static(b"1"));
+        assert_eq!(
+            b2,
+            Bytes::from_static(b"1"),
+            "each request is a fresh session"
+        );
     }
 
     #[tokio::test]
