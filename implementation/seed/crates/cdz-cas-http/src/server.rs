@@ -150,27 +150,29 @@ impl CasServer {
                     return floor(StatusCode::UNAUTHORIZED, "unauthorized");
                 }
                 match self.store.get(hash).await {
-                    Some(bytes) => Response::builder()
+                    Ok(Some(bytes)) => Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, "application/octet-stream")
                         .header(CACHE_CONTROL, IMMUTABLE_CACHE)
                         .body(Full::new(bytes))
                         .expect("a 200 blob response with static headers is always valid"),
-                    None => floor(StatusCode::NOT_FOUND, "not found"),
+                    Ok(None) => floor(StatusCode::NOT_FOUND, "not found"),
+                    // A backend failure (disk/network/S3) is NOT a miss — surface it as 500.
+                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
                 }
             }
             Method::HEAD => {
                 if !self.read_authorized(&parts.headers) {
                     return floor(StatusCode::UNAUTHORIZED, "unauthorized");
                 }
-                if self.store.has(hash).await {
-                    Response::builder()
+                match self.store.has(hash).await {
+                    Ok(true) => Response::builder()
                         .status(StatusCode::OK)
                         .header(CACHE_CONTROL, IMMUTABLE_CACHE)
                         .body(Full::new(Bytes::new()))
-                        .expect("a static 200 HEAD response is always valid")
-                } else {
-                    floor(StatusCode::NOT_FOUND, "not found")
+                        .expect("a static 200 HEAD response is always valid"),
+                    Ok(false) => floor(StatusCode::NOT_FOUND, "not found"),
+                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
                 }
             }
             Method::PUT => {
@@ -191,9 +193,12 @@ impl CasServer {
                         "hash mismatch: body does not match the key",
                     );
                 }
-                self.store.put(bytes).await;
-                // Empty body — the caller already knows the address (it's the key it PUT to).
-                created(&hash, Bytes::new())
+                match self.store.put(bytes).await {
+                    // Empty body — the caller already knows the address (it's the key it PUT to).
+                    Ok(_) => created(&hash, Bytes::new()),
+                    // The store failed to persist — surface it (the caller must know the write didn't land).
+                    Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+                }
             }
             _ => floor(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         }
@@ -215,8 +220,10 @@ impl CasServer {
             Err(resp) => return resp,
         };
         let hash = Hash::of(HashTag::Blob, &bytes);
-        self.store.put(bytes).await;
-        created(&hash, Bytes::from(hash.to_string()))
+        match self.store.put(bytes).await {
+            Ok(_) => created(&hash, Bytes::from(hash.to_string())),
+            Err(_) => floor(StatusCode::INTERNAL_SERVER_ERROR, "blob store error"),
+        }
     }
 
     /// Whether a request bearing `headers` may read: open when no read credential is configured, else the

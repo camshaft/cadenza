@@ -45,7 +45,7 @@ mod spawned;
 mod system;
 mod timer;
 
-pub use blob_store::{BlobStore, InMemoryBlobStore};
+pub use blob_store::{BlobStore, BlobStoreError, InMemoryBlobStore};
 pub use config::{ResourceLimits, SpawnLimits};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};

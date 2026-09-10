@@ -44,3 +44,20 @@ impl fmt::Display for CasError {
 }
 
 impl std::error::Error for CasError {}
+
+/// Map the rich HTTP-client [`CasError`] onto the platform's [`BlobStoreError`] so `HttpBlobStore`'s
+/// `BlobStore` impl can propagate failures with `?` (the raw `fetch`/`exists`/`publish` keep the detail).
+impl From<CasError> for cdz_platform::BlobStoreError {
+    fn from(err: CasError) -> Self {
+        use cdz_platform::BlobStoreError as E;
+        match err {
+            CasError::Unauthorized => E::Unauthorized,
+            // A hash mismatch is a content-address violation — the returned bytes can't be trusted.
+            mismatch @ CasError::HashMismatch { .. } => E::Corrupt(mismatch.to_string()),
+            // An unexpected status or a transport failure is an I/O-class problem talking to the store.
+            other @ (CasError::UnexpectedStatus(_) | CasError::Transport(_)) => {
+                E::Io(other.to_string())
+            }
+        }
+    }
+}

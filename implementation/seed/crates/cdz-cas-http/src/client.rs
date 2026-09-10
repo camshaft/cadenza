@@ -31,7 +31,7 @@
 use crate::error::CasError;
 use async_trait::async_trait;
 use bytes::Bytes;
-use cdz_platform::{BlobStore, Hash, HashTag};
+use cdz_platform::{BlobStore, BlobStoreError, Hash, HashTag};
 use reqwest::{Method, StatusCode};
 use std::sync::Once;
 
@@ -200,40 +200,20 @@ impl HttpBlobStore {
     }
 }
 
-/// The composable `BlobStore` face: an HTTP CAS is a drop-in `BlobStore`. A [`CasError`] is folded into the
-/// trait's deterministic `Option`/`bool` shape (+ a `tracing` breadcrumb) — see the module docs.
+/// The composable `BlobStore` face: an HTTP CAS is a drop-in `BlobStore`. Each method delegates to the raw
+/// `Result`-returning method and maps [`CasError`] → [`BlobStoreError`] via `?` — so a transport/auth
+/// failure PROPAGATES to the caller (no longer silently folded into a miss).
 #[async_trait]
 impl BlobStore for HttpBlobStore {
-    async fn put(&self, bytes: Bytes) -> Hash {
-        // The content hash is a pure function of the bytes, so we always know what to return; a failed PUT
-        // is logged (the trait can't surface it) and the hash is returned regardless — the deterministic
-        // "put absorbs transient I/O" contract. Callers wanting the real outcome use `publish`.
-        match self.publish(bytes.clone()).await {
-            Ok(hash) => hash,
-            Err(err) => {
-                tracing::error!(error = %err, "cas-http put failed; returning content hash regardless");
-                Hash::of(HashTag::Blob, &bytes)
-            }
-        }
+    async fn put(&self, bytes: Bytes) -> Result<Hash, BlobStoreError> {
+        Ok(self.publish(bytes).await?)
     }
 
-    async fn get(&self, hash: Hash) -> Option<Bytes> {
-        match self.fetch(hash).await {
-            Ok(found) => found,
-            Err(err) => {
-                tracing::warn!(error = %err, %hash, "cas-http get failed; treating as a miss");
-                None
-            }
-        }
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError> {
+        Ok(self.fetch(hash).await?)
     }
 
-    async fn has(&self, hash: Hash) -> bool {
-        match self.exists(hash).await {
-            Ok(present) => present,
-            Err(err) => {
-                tracing::warn!(error = %err, %hash, "cas-http has failed; treating as absent");
-                false
-            }
-        }
+    async fn has(&self, hash: Hash) -> Result<bool, BlobStoreError> {
+        Ok(self.exists(hash).await?)
     }
 }

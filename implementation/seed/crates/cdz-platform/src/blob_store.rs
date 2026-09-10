@@ -28,6 +28,36 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+/// Why a [`BlobStore`] operation failed. **Absence is NOT an error** — [`get`](BlobStore::get) returns
+/// `Ok(None)` for a genuine miss; an `Err` means the store could not DETERMINE the answer (a transport/I-O
+/// failure, a rejected credential, or bytes that don't match their hash). A single CONCRETE type (not an
+/// associated `type Error`) so `dyn BlobStore` stays object-safe; each backend maps its own failure into a
+/// variant.
+#[derive(Debug, Clone)]
+pub enum BlobStoreError {
+    /// A transport / I-O failure talking to the backend (disk, network, S3) — possibly transient.
+    Io(String),
+    /// A credential was missing or rejected by the backend.
+    Unauthorized,
+    /// The backend returned bytes that do not match the requested hash — a content-address violation. The
+    /// bytes are discarded (you cannot forge bytes for a hash).
+    Corrupt(String),
+}
+
+impl std::fmt::Display for BlobStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(msg) => write!(f, "blob store I/O error: {msg}"),
+            Self::Unauthorized => {
+                write!(f, "blob store unauthorized: credential missing or rejected")
+            }
+            Self::Corrupt(msg) => write!(f, "blob store content-address violation: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for BlobStoreError {}
+
 /// A content-addressed blob store: hash <-> bytes. The one store of §8; backends (in-memory, disk, S3)
 /// implement this and are swapped by reference. `Send + Sync` so it can be shared across the runtime's
 /// concurrent tasks behind an `Arc`.
@@ -35,24 +65,25 @@ use std::sync::RwLock;
 pub trait BlobStore: Send + Sync {
     /// Store `bytes` and return their content hash (tagged [`Blob`](HashTag::Blob) — the content-address
     /// kind). Idempotent by construction: the hash is derived from the bytes, so putting the same bytes twice
-    /// yields the same hash and simply re-stores identical content. (No `Result`: a well-formed backend's put
-    /// is a pure function of its input; a fallible backend absorbs transient I/O internally, e.g. by retry —
-    /// this layer stays deterministic per §8/§9.)
+    /// yields the same hash and simply re-stores identical content. Returns a [`BlobStoreError`] if the
+    /// backend could not persist the bytes (a real disk/network/S3 backend genuinely fails — the caller,
+    /// e.g. an HTTP CAS server, needs to know rather than silently drop the write).
     ///
     /// Takes `&self`: a backend uses INTERIOR MUTABILITY for its writable state so a shared store (behind an
     /// `Arc`) can serve concurrent `put`/`get`/`has` without an external lock. `&mut self` would force every
     /// caller — a concurrent HTTP CAS server, say — to wrap the store in a `Mutex` that falsely serializes
     /// even reads.
-    async fn put(&self, bytes: Bytes) -> Hash;
+    async fn put(&self, bytes: Bytes) -> Result<Hash, BlobStoreError>;
 
-    /// Fetch the bytes whose content matches `hash`, or `None` if the store does not hold them. Matching is
-    /// on the [`digest`](Hash::digest) only — `hash`'s tag is ignored — so content put under one kind is
-    /// fetched by a hash of any kind over the same bytes (§8). `None` is genuine absence, not a transient
-    /// failure.
-    async fn get(&self, hash: Hash) -> Option<Bytes>;
+    /// Fetch the bytes whose content matches `hash`, or `Ok(None)` if the store genuinely does not hold
+    /// them. Matching is on the [`digest`](Hash::digest) only — `hash`'s tag is ignored — so content put
+    /// under one kind is fetched by a hash of any kind over the same bytes (§8). `Ok(None)` is genuine
+    /// absence; an `Err` means the store could not determine whether it holds the bytes (transport/I-O/auth).
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError>;
 
-    /// Whether content matching `hash` (by digest, ignoring the tag) is present in the store.
-    async fn has(&self, hash: Hash) -> bool;
+    /// Whether content matching `hash` (by digest, ignoring the tag) is present. `Err` on a failure to
+    /// determine it (transport/I-O/auth).
+    async fn has(&self, hash: Hash) -> Result<bool, BlobStoreError>;
 }
 
 /// An in-memory [`BlobStore`] — a hash-map behind a `RwLock` for interior mutability. For tests and
@@ -95,7 +126,8 @@ impl InMemoryBlobStore {
 
 #[async_trait]
 impl BlobStore for InMemoryBlobStore {
-    async fn put(&self, bytes: Bytes) -> Hash {
+    // An in-memory map never fails (a poisoned lock is a bug, not a store error), so every op is `Ok`.
+    async fn put(&self, bytes: Bytes) -> Result<Hash, BlobStoreError> {
         let hash = Hash::of(HashTag::Blob, &bytes);
         // Key on the content digest, not the tagged hash, so a lookup by any kind of hash over the same
         // bytes resolves (§8). O(1) Bytes clone into the map, under a brief write lock.
@@ -103,24 +135,26 @@ impl BlobStore for InMemoryBlobStore {
             .write()
             .expect("blob store lock not poisoned")
             .insert(*hash.digest(), bytes);
-        hash
+        Ok(hash)
     }
 
-    async fn get(&self, hash: Hash) -> Option<Bytes> {
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError> {
         // Match on the digest, ignoring the tag; `cloned()` on a Bytes is an O(1) refcount bump, not a copy.
         // A read lock, so concurrent gets don't block each other.
-        self.blobs
+        Ok(self
+            .blobs
             .read()
             .expect("blob store lock not poisoned")
             .get(hash.digest())
-            .cloned()
+            .cloned())
     }
 
-    async fn has(&self, hash: Hash) -> bool {
-        self.blobs
+    async fn has(&self, hash: Hash) -> Result<bool, BlobStoreError> {
+        Ok(self
+            .blobs
             .read()
             .expect("blob store lock not poisoned")
-            .contains_key(hash.digest())
+            .contains_key(hash.digest()))
     }
 }
 
@@ -133,12 +167,12 @@ mod tests {
     async fn put_returns_the_content_hash_and_get_round_trips() {
         let store = InMemoryBlobStore::new();
         let bytes = Bytes::from_static(b"the hash is the capability");
-        let h = store.put(bytes.clone()).await;
+        let h = store.put(bytes.clone()).await.unwrap();
         // put returns the content hash of exactly those bytes.
         assert_eq!(h, Hash::of(HashTag::Blob, &bytes));
         // get by that hash returns the same bytes.
-        assert_eq!(store.get(h).await, Some(bytes));
-        assert!(store.has(h).await);
+        assert_eq!(store.get(h).await.unwrap(), Some(bytes));
+        assert!(store.has(h).await.unwrap());
     }
 
     #[tokio::test]
@@ -147,7 +181,7 @@ mod tests {
         // a Program hash over the same bytes — the addressing the wasm program store relies on (§8).
         let store = InMemoryBlobStore::new();
         let bytes = Bytes::from_static(b"a reducer component");
-        let blob = store.put(bytes.clone()).await;
+        let blob = store.put(bytes.clone()).await.unwrap();
         let program = Hash::of(HashTag::Program, &bytes); // same digest, different (Program) tag
         assert_ne!(
             blob, program,
@@ -155,31 +189,31 @@ mod tests {
         );
         assert_eq!(blob.digest(), program.digest());
         assert_eq!(
-            store.get(program).await,
+            store.get(program).await.unwrap(),
             Some(bytes),
             "fetched by the Program-tagged hash"
         );
-        assert!(store.has(program).await);
+        assert!(store.has(program).await.unwrap());
     }
 
     #[tokio::test]
     async fn get_and_has_report_absence() {
         let store = InMemoryBlobStore::new();
         let absent = Hash::of(HashTag::Blob, b"never stored");
-        assert_eq!(store.get(absent).await, None);
-        assert!(!store.has(absent).await);
+        assert_eq!(store.get(absent).await.unwrap(), None);
+        assert!(!store.has(absent).await.unwrap());
     }
 
     #[tokio::test]
     async fn put_is_idempotent_by_content() {
         let store = InMemoryBlobStore::new();
-        let h1 = store.put(Bytes::from_static(b"same")).await;
-        let h2 = store.put(Bytes::from_static(b"same")).await;
+        let h1 = store.put(Bytes::from_static(b"same")).await.unwrap();
+        let h2 = store.put(Bytes::from_static(b"same")).await.unwrap();
         // same bytes -> same hash, and only one blob is held.
         assert_eq!(h1, h2);
         assert_eq!(store.len(), 1);
         // distinct bytes -> a distinct hash + a second blob.
-        let h3 = store.put(Bytes::from_static(b"different")).await;
+        let h3 = store.put(Bytes::from_static(b"different")).await.unwrap();
         assert_ne!(h1, h3);
         assert_eq!(store.len(), 2);
     }
@@ -192,13 +226,18 @@ mod tests {
             hashes.push(
                 store
                     .put(Bytes::from(format!("blob-{i}").into_bytes()))
-                    .await,
+                    .await
+                    .unwrap(),
             );
         }
         assert_eq!(store.len(), 64);
         // every stored blob is retrievable and the hashes are all distinct.
         for (i, h) in hashes.iter().enumerate() {
-            let got = store.get(*h).await.expect("stored blob must be present");
+            let got = store
+                .get(*h)
+                .await
+                .unwrap()
+                .expect("stored blob must be present");
             assert_eq!(got, Bytes::from(format!("blob-{i}").into_bytes()));
         }
     }
@@ -214,15 +253,21 @@ mod tests {
         bach::sim(|| {
             async {
                 let store = InMemoryBlobStore::new();
-                let h = store.put(Bytes::from_static(b"deterministic")).await;
+                let h = store
+                    .put(Bytes::from_static(b"deterministic"))
+                    .await
+                    .unwrap();
                 assert_eq!(h, Hash::of(HashTag::Blob, b"deterministic"));
                 assert_eq!(
-                    store.get(h).await,
+                    store.get(h).await.unwrap(),
                     Some(Bytes::from_static(b"deterministic"))
                 );
-                assert!(store.has(h).await);
+                assert!(store.has(h).await.unwrap());
                 // genuine absence under the simulator too.
-                assert_eq!(store.get(Hash::of(HashTag::Blob, b"absent")).await, None);
+                assert_eq!(
+                    store.get(Hash::of(HashTag::Blob, b"absent")).await.unwrap(),
+                    None
+                );
             }
             .group("blob-store")
             .primary()
