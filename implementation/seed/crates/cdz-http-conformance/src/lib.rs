@@ -21,6 +21,9 @@ pub mod servers;
 /// The gateway HTTP client — make a run-spec's `http` requests + capture the response for `Expect`.
 pub mod gateway;
 
+/// The run-loop's scenario-execution core — bin resolution, step driving, and the pass/fail verdict.
+pub mod run;
+
 /// A client for one mock control server's admin channel — binary-AST commands/replies over HTTP. Holds ONE
 /// pooled [`reqwest::Client`]; connections are kept alive + reused across commands (not one-off per command).
 /// Cheap to `Clone` (the client shares its connection pool).
