@@ -28,6 +28,11 @@
 //! from the design). Modules are added one landable slice at a time as the drive loop, effect resolver,
 //! boot-from-control, live-swap, and CasRef body resolution land.
 
+/// The per-session reducer drive (design §1): run a control-shipped reducer (the root router, or a
+/// subprogram it dispatches to) to its terminal `Break` over a fresh mailbox, reusing the platform's
+/// `run_mailbox_loop` with the gateway's own effect resolver. The looping execution model the edge drives.
+pub mod drive;
+
 /// Boot-from-control (design §3/§4): dial the control server, apply the `ControlConfig` it ships, bind the
 /// HTTP edge, and serve. The `cdz-http-gateway` binary's startup path.
 pub mod boot;
