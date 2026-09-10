@@ -273,4 +273,85 @@ mod tests {
         );
         assert_eq!(r.seen, 2, "both emitted effects were resolved + folded");
     }
+
+    /// A resolver that counts how many effects it was asked to resolve — to prove that requests emitted
+    /// ALONGSIDE a terminal `Break` are NOT resolved by the loop.
+    #[derive(Default)]
+    struct CountingResolver(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl EffectResolver for CountingResolver {
+        async fn resolve(&self, req: Request) -> Response {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Response {
+                id: req.id,
+                continuation_token: req.continuation_token,
+                payload: Ok(Bytes::new()),
+            }
+        }
+    }
+
+    /// A `Break` returned WITH final requests (per `Outcome`'s contract: a reducer may emit final requests
+    /// and Break in one call) terminates the loop with the Break value, and those alongside-Break requests
+    /// are NOT resolved by the loop (their responses would never fold; dispatching them is the caller's job).
+    #[tokio::test]
+    async fn final_effects_emitted_with_a_break_are_not_resolved() {
+        struct BreakWithFinalEffects;
+        #[async_trait]
+        impl Reducer for BreakWithFinalEffects {
+            async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+                // Emit a "final" effect alongside the terminal Break.
+                (vec![a_request(b"final")], brk(b"done"))
+            }
+            async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let resolver = CountingResolver::default();
+        let mut r = BreakWithFinalEffects;
+        let out = drive_loop(&mut r, msg(b"x"), &resolver, 100).await;
+        assert_eq!(
+            out.map(|(_, reason)| reason),
+            Ok(Bytes::from_static(b"done"))
+        );
+        assert_eq!(
+            resolver.0.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an effect emitted alongside the terminal Break is not resolved by the loop"
+        );
+    }
+
+    /// The same on a LATER fold: an effect resolves and folds back, then the reducer Breaks WITH another
+    /// final effect — only the first effect is resolved (the alongside-Break one is not).
+    #[tokio::test]
+    async fn a_final_effect_on_a_response_break_is_not_resolved() {
+        struct EffectThenBreakWithFinal;
+        #[async_trait]
+        impl Reducer for EffectThenBreakWithFinal {
+            async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+                (vec![a_request(b"e1")], Outcome::Continue)
+            }
+            async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+                // Break WITH a final effect alongside it.
+                (vec![a_request(b"final")], brk(b"done"))
+            }
+            async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+                (vec![], Outcome::Continue)
+            }
+        }
+        let resolver = CountingResolver::default();
+        let mut r = EffectThenBreakWithFinal;
+        let out = drive_loop(&mut r, msg(b"x"), &resolver, 100).await;
+        assert_eq!(
+            out.map(|(_, reason)| reason),
+            Ok(Bytes::from_static(b"done"))
+        );
+        assert_eq!(
+            resolver.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the mid-loop effect resolves; the effect emitted alongside the Break does not"
+        );
+    }
 }
