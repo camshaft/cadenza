@@ -144,6 +144,19 @@ impl RouteDecision {
     }
 }
 
+/// A `dispatch` effect a router program emits to hand a request off to a subprogram (`DESIGN-http-outpost-
+/// drive-contract.md` §2): `subprogram` is the handler's `ProgramHash` bytes (the gateway fetches it from the
+/// CAS + drives it), `input` is the bytes delivered to it as its first message (typically the encoded
+/// `http-request`). The subprogram's terminal `Break` reason folds back as the dispatch effect's answer. A
+/// single-constructor record on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchEffect {
+    /// The subprogram's `ProgramHash` bytes.
+    pub subprogram: Bytes,
+    /// The bytes delivered to the subprogram as its first message payload.
+    pub input: Bytes,
+}
+
 /// A handler-to-control message on its way UP the control link (`DESIGN-http-outpost-drive-contract.md` §3,
 /// the bidirectional-messaging directive): a looping program emits a `cdz.control.send` effect with an OPAQUE
 /// payload, and the gateway wraps it in this envelope, stamping PROVENANCE (`program` = the emitting
@@ -306,6 +319,29 @@ pub fn encode_route_query(request: &[u8], table: &[u8]) -> Bytes {
     let root = ascribe(&mut b, rec, "RouteQuery");
     let arenas = b.finish(root);
     Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Encode a [`DispatchEffect`] — single-ctor record (fields name-sorted), root-ascribed.
+#[must_use]
+pub fn encode_dispatch(effect: &DispatchEffect) -> Bytes {
+    let mut b = Builder::new();
+    let input = bytes_leaf(&mut b, &effect.input);
+    let subprogram = bytes_leaf(&mut b, &effect.subprogram);
+    let rec = record(&mut b, vec![("input", input), ("subprogram", subprogram)]);
+    let root = ascribe(&mut b, rec, "DispatchEffect");
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
+/// Decode a [`DispatchEffect`], or `None` if malformed — the inverse of [`encode_dispatch`].
+#[must_use]
+pub fn decode_dispatch(bytes: &[u8]) -> Option<DispatchEffect> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    Some(DispatchEffect {
+        subprogram: read_bytes(&arenas, record_field(&arenas, rec, "subprogram")?)?,
+        input: read_bytes(&arenas, record_field(&arenas, rec, "input")?)?,
+    })
 }
 
 /// Encode a [`ControlUp`] envelope (handler → control) — single-ctor record, fields name-sorted, root-ascribed.
@@ -927,6 +963,21 @@ mod tests {
             decode_control_config(&encode_control_config(&no_auth)).unwrap(),
             no_auth
         );
+    }
+
+    #[test]
+    fn dispatch_effect_round_trips() {
+        let d = DispatchEffect {
+            subprogram: Bytes::from_static(b"cdz-http.handler.echo............"),
+            input: encode_request(&sample_request()),
+        };
+        let decoded = decode_dispatch(&encode_dispatch(&d)).expect("dispatch decodes");
+        assert_eq!(decoded, d);
+        assert!(
+            decode_request(&decoded.input).is_some(),
+            "the input still decodes"
+        );
+        assert!(decode_dispatch(b"garbage").is_none());
     }
 
     #[test]
