@@ -14,14 +14,15 @@
 
 use crate::HttpBlobStore;
 use cdz_platform::{
-    BlobStore, InMemoryBlobStore, InMemoryKvStore, InMemoryReducerGraph, KvStore, ProgramStore,
-    ReducerGraph, ReducerId, WasmProgramStore,
+    BlobStore, InMemoryKvStore, InMemoryReducerGraph, KvStore, ProgramStore, ReducerGraph,
+    ReducerId, WasmProgramStore,
 };
 use std::sync::Arc;
 
-/// Build a wasm program store over the HTTP CAS at `cas_url` (authenticated with `cas_credential` on reads).
-/// The returned store instantiates a content-addressed wasm reducer per `spawn`. Each reducer is handed a
-/// fresh in-memory blob + kv scratch and one shared in-memory reducer graph.
+/// Build a wasm program store over the HTTP CAS at `cas_url`. The returned store instantiates a
+/// content-addressed wasm reducer per `spawn`. Each reducer's guest `blobs` import is backed by the shared
+/// WRITE-CAPABLE CAS (so `blobs.put` persists — e.g. a compile route publishing a component), while `kv` and
+/// the reducer graph stay in-memory scratch. `cas_credential` authenticates both reads and writes.
 ///
 /// # Errors
 /// Returns the [`wasmtime::Error`] if the wasm engine/linkers cannot be built.
@@ -33,10 +34,17 @@ pub fn build_store(
         HttpBlobStore::new(cas_url)
             .with_read_credential(String::from_utf8_lossy(cas_credential).into_owned()),
     );
-    // Per-reducer scratch: a fresh in-memory blob + kv store each. The gateway's driven programs keep their
-    // own state; nothing here is node-wide.
+    // The guest `blobs` import is backed by the SHARED, WRITE-CAPABLE CAS (not per-reducer scratch), so a
+    // handler's `blobs.put` actually persists — e.g. a compile route that runs the parser + `rcdzc` via the
+    // `run` import and publishes the compiled component, whose returned `ProgramHash` must then resolve for
+    // anyone. Reads are open; writes use the config's (write-capable) credential. `HttpBlobStore` is `Clone`
+    // (one pooled connection shared across every reducer's handle).
+    let cas_blobs = HttpBlobStore::new(cas_url)
+        .with_write_credential(String::from_utf8_lossy(cas_credential).into_owned());
     let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
-        Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>);
+        Arc::new(move |_id| Box::new(cas_blobs.clone()) as Box<dyn BlobStore>);
+    // Per-reducer `kv` stays in-memory scratch (a driven program keeps its own transient state; nothing
+    // node-wide), as does the routing graph below.
     let make_kv: Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync> =
         Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>);
     // One shared routing graph: the gateway drives a single reducer per connection over its own mailbox +
