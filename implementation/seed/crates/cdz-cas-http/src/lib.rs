@@ -16,6 +16,8 @@ pub mod disk;
 pub mod disk_cache;
 pub mod error;
 pub mod mem_cache;
+#[cfg(feature = "s3")]
+pub mod s3;
 pub mod server;
 pub mod tiered;
 
@@ -24,6 +26,8 @@ pub use disk::DiskBlobStore;
 pub use disk_cache::BoundedDiskCache;
 pub use error::CasError;
 pub use mem_cache::MemoryCache;
+#[cfg(feature = "s3")]
+pub use s3::S3BlobStore;
 pub use server::{CasServer, DEFAULT_MAX_BODY_BYTES};
 pub use tiered::TieredBlobStore;
 

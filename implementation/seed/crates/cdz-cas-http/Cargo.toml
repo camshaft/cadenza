@@ -58,6 +58,17 @@ async-trait = "0.1"
 # Structured debug/warn tracing (enable via RUST_LOG=cdz_cas_http=trace) — the client warns on a
 # transient/auth fetch failure it must absorb into the `BlobStore` trait's `Option`/no-`Result` shape.
 tracing = "0.1"
+# The S3 durable-floor tier (src/s3.rs), behind the `s3` feature (off by default). aws-config supplies the
+# default credential provider chain — it honors the machine's configured AWS profiles (~/.aws/config +
+# credentials, AWS_PROFILE, env vars, SSO, IMDS); aws-sdk-s3 is the client. Optional + feature-gated so the
+# routine build/check + the deployable binary stay S3-free and light.
+aws-config = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+
+[features]
+# The S3-backed durable BlobStore floor. OFF by default — aws-sdk-s3 is a large dependency tree; the default
+# build (including the deployable binary) stays S3-free. Enable to compile `S3BlobStore` (`--features s3`).
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 
 # The deployable server binary — serves an (in-memory v0) content-addressed store over HTTP. Read/write
 # Bearer credentials come from CDZ_CAS_READ_CREDENTIAL / CDZ_CAS_WRITE_CREDENTIAL (a write credential is
