@@ -15,6 +15,7 @@
 //! `http.response` / `http.deny` are NOT effects here — a program emits them as its terminal `Break`
 //! (schema = that contract-id), which the edge decodes into an HTTP response; the resolver never sees them.
 
+use crate::cancel::CancelScope;
 use crate::drive::drive;
 use crate::session::{ControlSink, Sessions};
 use bytes::Bytes;
@@ -23,8 +24,6 @@ use cdz_platform::{
     ContractId, Delivered, Error, HostId, Message, Origin, ProgramHash, ProgramStore, ReducerId,
     ReducerKind, Request, Response, Runtime, SpawnContext,
 };
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,10 +69,6 @@ pub struct GatewayResolver {
     control: Option<ControlCtx>,
 }
 
-/// A boxed, `Send`, `'static` carry future — boxing makes the dispatch → drive → carry recursion DYNAMIC
-/// rather than an infinitely-monomorphized type.
-type CarryFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-
 impl GatewayResolver {
     /// A resolver over `store`, routing dispatch on `dispatch_id`, delivering a subprogram's input under
     /// `request_id`, with a `depth`-deep dispatch-recursion budget.
@@ -112,56 +107,65 @@ impl GatewayResolver {
         })
     }
 
-    /// Carry out one emitted [`Request`] fire-and-forget, injecting its answer back into `mailbox` as a
-    /// `Delivered::Response` correlated by `continuation_token`. This is the `carry` [`drive`] calls; pass
-    /// it as `move |req, tx| resolver.clone().carry::<R>(req, tx)`.
-    pub fn carry<R: Runtime>(self: Arc<Self>, request: Request, mailbox: R::Sender) -> CarryFuture {
-        Box::pin(async move {
-            // Arm the per-request deadline (§1/§2): if no answer arrives within `d`, inject `Err(Timeout)`
-            // correlated by `continuation_token`, so a fire-and-forget effect that never answers — a
-            // `control.send` whose `ControlDown` never comes — cannot leave the reducer waiting forever.
-            // Whichever of the answer or the timeout folds first resolves the token; the loser is a no-op (the
-            // reducer already resolved it, or the mailbox closed on `Break`). No explicit cancel needed: a late
-            // real answer to an already-resolved token is ignored — exactly the "deadline elapsed, no late
-            // answer" semantics. (NOTE: this protects fire-and-forget effects; a slow `http.dispatch` does not
-            // benefit yet because `run_dispatch` awaits the child drive inline — the shared `run_mailbox_loop`
-            // dispatches serially — so the deadline fires but the loop is busy until the child returns. Making
-            // dispatch itself fire-and-forget, per design §1, is a separate follow-on.)
-            if let Some(deadline) = request.deadline {
-                arm_deadline::<R>(
-                    deadline,
-                    request.id,
-                    request.continuation_token.clone(),
-                    &mailbox,
-                );
-            }
-            if request.id == self.dispatch_id && self.depth > 0 {
-                let answer = self.run_dispatch::<R>(&request.payload).await;
-                let payload = answer.ok_or(Error::MissingHandler);
-                reply::<R>(&mailbox, request.id, request.continuation_token, payload);
-            } else if let Some(ctx) = self
-                .control
-                .as_ref()
-                .filter(|c| request.id == c.control_send)
-            {
-                // control.send (§3): forward the OPAQUE payload UP the control link as a `ControlUp`, and
-                // register the emitting reducer's mailbox so the control server's `ControlDown` response
-                // folds back as its `on_response` (correlated by `continuation_token`). FIRE-AND-FORGET —
-                // we send no reply here; the answer arrives later via the session registry. If the sink is
-                // closed (link down) the send is dropped and the reducer simply never hears back.
-                self.forward_control_send::<R>(ctx, &request, &mailbox);
-            } else {
-                // Unknown effect (or dispatch budget exhausted): answer a runtime failure so the emitter's
-                // `on_response` folds it rather than blocking. ws.send / timers land here until their sinks
-                // exist; a `control.send` with no control link also lands here.
-                reply::<R>(
-                    &mailbox,
-                    request.id,
-                    request.continuation_token,
-                    Err(Error::MissingHandler),
-                );
-            }
-        })
+    /// Carry out one emitted [`Request`] FIRE-AND-FORGET, then return immediately — never blocking [`drive`]'s
+    /// loop (§1). Any answer is injected back into `mailbox` as a `Delivered::Response` correlated by
+    /// `continuation_token`, on a later turn. Spawned work (a dispatched child drive, a deadline timer) is
+    /// wrapped through `scope`, so [`drive`] aborts it if this session ends before it settles. Pass it as
+    /// `move |req, tx, scope| resolver.clone().carry::<R>(req, tx, scope)`.
+    pub fn carry<R: Runtime>(
+        self: Arc<Self>,
+        request: Request,
+        mailbox: R::Sender,
+        scope: &CancelScope,
+    ) {
+        // Arm the per-request deadline (§1/§2): if no answer arrives within `d`, inject `Err(Timeout)`
+        // correlated by `continuation_token`. Whichever of the answer or the timeout folds first resolves the
+        // token; a late loser is a no-op (the reducer already resolved it, or the mailbox closed on `Break`).
+        if let Some(deadline) = request.deadline {
+            arm_deadline::<R>(
+                scope,
+                deadline,
+                request.id,
+                request.continuation_token.clone(),
+                &mailbox,
+            );
+        }
+        if request.id == self.dispatch_id && self.depth > 0 {
+            // http.dispatch (§1): SPAWN the child drive (wrapped through `scope`) and inject its terminal
+            // `Break` reason back into the emitter's mailbox as the dispatch answer — fire-and-forget, so the
+            // parent loop keeps running (other effects in flight, the deadline able to fire). If this session
+            // ends first, `scope` aborts the in-flight child drive, so no orphan handler keeps running.
+            let this = Arc::clone(&self);
+            let reply_to = mailbox.clone();
+            let payload = request.payload.clone();
+            let id = request.id;
+            let token = request.continuation_token.clone();
+            R::spawn(scope.wrap(async move {
+                let answer = this.run_dispatch::<R>(&payload).await;
+                reply::<R>(&reply_to, id, token, answer.ok_or(Error::MissingHandler));
+            }));
+        } else if let Some(ctx) = self
+            .control
+            .as_ref()
+            .filter(|c| request.id == c.control_send)
+        {
+            // control.send (§3): forward the OPAQUE payload UP the control link as a `ControlUp`, and register
+            // the emitting reducer's mailbox so the control server's `ControlDown` response folds back as its
+            // `on_response` (correlated by `continuation_token`). No reply here; the answer arrives later via
+            // the session registry. If the sink is closed (link down) the send is dropped and the reducer
+            // relies on its deadline (if any) rather than hanging.
+            self.forward_control_send::<R>(ctx, &request, &mailbox);
+        } else {
+            // Unknown effect (or dispatch budget exhausted): answer a runtime failure so the emitter's
+            // `on_response` folds it rather than blocking. `ws.send` lands here until its sink exists; a
+            // `control.send` with no control link also lands here.
+            reply::<R>(
+                &mailbox,
+                request.id,
+                request.continuation_token,
+                Err(Error::MissingHandler),
+            );
+        }
     }
 
     /// Forward a `control.send` UP the control link (§3): register the emitting reducer's mailbox under the
@@ -237,8 +241,8 @@ impl GatewayResolver {
                 c
             }),
         });
-        let (_schema, reason) = drive::<R>(reducer, first, move |req, tx| {
-            Arc::clone(&child).carry::<R>(req, tx)
+        let (_schema, reason) = drive::<R>(reducer, first, move |req, tx, scope| {
+            Arc::clone(&child).carry::<R>(req, tx, scope)
         })
         .await?;
         Some(reason)
@@ -263,19 +267,21 @@ fn reply<R: Runtime>(
 }
 
 /// Arm a per-request deadline: after `deadline`, inject `Err(Timeout)` for `id`/`continuation_token` into the
-/// emitting reducer's mailbox (§1/§2). Detached — the drive loop never awaits it; a fire after the reducer
-/// has already resolved the token (or closed its mailbox on `Break`) is a harmless no-op.
+/// emitting reducer's mailbox (§1/§2). Spawned under `scope` so it is aborted if the session ends first; a
+/// fire after the reducer has already resolved the token (or closed its mailbox on `Break`) is a harmless
+/// no-op regardless.
 fn arm_deadline<R: Runtime>(
+    scope: &CancelScope,
     deadline: Duration,
     id: ContractId,
     continuation_token: Bytes,
     mailbox: &R::Sender,
 ) {
     let mailbox = mailbox.clone();
-    R::spawn(async move {
+    R::spawn(scope.wrap(async move {
         R::sleep(deadline).await;
         reply::<R>(&mailbox, id, continuation_token, Err(Error::Timeout));
-    });
+    }));
 }
 
 #[cfg(test)]
@@ -422,8 +428,8 @@ mod tests {
             target: handler_hash,
         });
 
-        let out = drive::<TokioRuntime>(router, opening(), move |req, tx| {
-            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx)
+        let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
         .await;
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"200 hello"))));
@@ -438,8 +444,8 @@ mod tests {
         let router: Box<dyn Reducer> = Box::new(Router {
             target: ProgramHash::of(b"absent"),
         });
-        let out = drive::<TokioRuntime>(router, opening(), move |req, tx| {
-            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx)
+        let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
         .await;
         // The dispatch answer was Err → the router folded an empty reason (unwrap_or_default) and broke.
@@ -485,6 +491,79 @@ mod tests {
         }
     }
 
+    /// A subprogram that never terminates — loops on `Continue`, emits nothing, so its drive blocks on `recv`
+    /// forever. Used to prove a dispatch to a hung handler is now time-outable.
+    struct HangForever;
+    #[async_trait]
+    impl Reducer for HangForever {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_response(&mut self, _: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A router that dispatches to `target` WITH a short deadline, then breaks on the answer — echoing whether
+    /// the dispatch timed out or really answered.
+    struct RouterWithDeadline {
+        target: ProgramHash,
+    }
+    #[async_trait]
+    impl Reducer for RouterWithDeadline {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            (
+                vec![Request {
+                    id: dispatch_id(),
+                    payload: encode_dispatch(&self.target, &m.payload),
+                    continuation_token: Bytes::from_static(b"d1"),
+                    deadline: Some(Duration::from_millis(20)),
+                }],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+            let reason = if matches!(r.payload, Err(Error::Timeout)) {
+                Bytes::from_static(b"timed-out")
+            } else {
+                Bytes::from_static(b"answered")
+            };
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: resp_id(),
+                    reason,
+                },
+            )
+        }
+        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_to_a_hung_handler_is_timed_out() {
+        // Dispatch is now FIRE-AND-FORGET: the child drive runs as a spawned task, so a hung handler does NOT
+        // block the router's loop — its per-request deadline fires Err(Timeout) after 20ms and the router
+        // breaks. (With the old serial dispatch this would hang forever, the loop blocked awaiting the child.)
+        // When the router breaks, the drive's scope drops and aborts the still-running child drive.
+        let hang = ProgramHash::of(b"hang-forever");
+        let store = NativeStore::with(vec![(
+            hang,
+            Box::new(|| Box::new(HangForever) as Box<dyn Reducer>),
+        )]);
+        let resolver = GatewayResolver::new(store, dispatch_id(), request_id(), 8);
+        let router: Box<dyn Reducer> = Box::new(RouterWithDeadline { target: hang });
+        let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
+        })
+        .await;
+        assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));
+    }
+
     #[tokio::test]
     async fn a_control_send_with_a_deadline_and_no_response_folds_a_timeout() {
         // A control.send is fire-and-forget: forwarded UP, then the reducer waits for a ControlDown. With no
@@ -508,8 +587,8 @@ mod tests {
         let resolver =
             GatewayResolver::new_with_control(store, dispatch_id(), request_id(), 8, control);
         let reducer: Box<dyn Reducer> = Box::new(ControlSendThenBreak);
-        let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx| {
-            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx)
+        let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx, scope| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
         .await;
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));

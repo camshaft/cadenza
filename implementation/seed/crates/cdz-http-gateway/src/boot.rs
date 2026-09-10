@@ -452,8 +452,8 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
             program: gw.root_router,
         },
     );
-    let out = drive::<TokioRuntime>(reducer, opening, move |r, tx| {
-        Arc::clone(&resolver).carry::<TokioRuntime>(r, tx)
+    let out = drive::<TokioRuntime>(reducer, opening, move |r, tx, scope| {
+        Arc::clone(&resolver).carry::<TokioRuntime>(r, tx, scope)
     })
     .await;
     match out {
