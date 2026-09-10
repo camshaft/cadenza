@@ -1373,4 +1373,158 @@ mod tests {
         let deny = crate::codec::decode_deny(&reason).expect("deny decodes");
         assert_eq!(deny.status, 404);
     }
+
+    /// The OPERATOR-MANDATED baked-table root router (guests/root-router-baked) driven over REAL wasm with a
+    /// BARE http-request (no RouteQuery envelope) — the runtime counterpart of the #8649 compile gate. It
+    /// matches its BAKED-IN table and emits a `dispatch` naming the matched route's baked handler hash. A
+    /// capturing resolver records the dispatch target + returns a canned response (so we prove routing +
+    /// dispatch-emission + response-fold without needing the target handler to actually exist — the full
+    /// dispatch-to-a-REAL-handler e2e awaits the deploy-templating step that bakes a real hash). A no-match
+    /// closes with a 404 deny.
+    #[tokio::test]
+    async fn wasm_baked_root_router_routes_a_bare_request() {
+        use crate::codec::{
+            HttpRequest, HttpResponse, Method, decode_deny, decode_dispatch, decode_response,
+            encode_request, encode_response,
+        };
+        use crate::loop_driver::{EffectResolver, drive_loop};
+        use cdz_platform::{
+            ContractId, HostId, Message, Origin, ProgramHash, ReducerId, ReducerKind, SpawnContext,
+        };
+        use std::sync::Mutex;
+
+        // A resolver that records each dispatch's target subprogram and answers with a canned response.
+        struct CapturingDispatch {
+            targets: Mutex<Vec<bytes::Bytes>>,
+            answer: bytes::Bytes,
+        }
+        #[async_trait::async_trait]
+        impl EffectResolver for CapturingDispatch {
+            async fn resolve(&self, req: cdz_platform::Request) -> cdz_platform::Response {
+                if let Some(effect) = decode_dispatch(&req.payload) {
+                    self.targets.lock().unwrap().push(effect.subprogram);
+                }
+                cdz_platform::Response {
+                    id: req.id,
+                    continuation_token: req.continuation_token,
+                    payload: Ok(self.answer.clone()),
+                }
+            }
+        }
+
+        let (Ok(rr_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROOT_ROUTER_BAKED_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_baked_root_router_routes_a_bare_request: \
+                 CDZ_HTTP_ROOT_ROUTER_BAKED_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let rr = std::fs::read(&rr_path).expect("read baked root-router guest wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(rr.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+        let rr_prog = ProgramHash::of(&rr);
+
+        let bare = |m: Method, p: &str| {
+            encode_request(&HttpRequest {
+                method: m,
+                path: p.to_string(),
+                query: String::new(),
+                headers: vec![],
+                body: bytes::Bytes::new(),
+            })
+        };
+        let drive = |payload: bytes::Bytes, id: &'static [u8]| {
+            let store = Arc::clone(&store);
+            async move {
+                let resolver = CapturingDispatch {
+                    targets: Mutex::new(vec![]),
+                    answer: encode_response(&HttpResponse {
+                        status: 200,
+                        headers: vec![],
+                        body: bytes::Bytes::from_static(b"routed-ok"),
+                    }),
+                };
+                let mut router = store
+                    .spawn(
+                        rr_prog,
+                        SpawnContext {
+                            id: ReducerId::of(id),
+                            kind: ReducerKind::Ordinary,
+                            limits: None,
+                        },
+                    )
+                    .await
+                    .expect("baked root router instantiates");
+                let out = drive_loop(
+                    &mut *router,
+                    Message {
+                        id: ContractId::of(b"cdz-platform.http.request"),
+                        payload,
+                        from: Origin {
+                            reducer: ReducerId::of(b"edge"),
+                            host: HostId::of(b"edge-host"),
+                        },
+                        continuation_token: bytes::Bytes::new(),
+                    },
+                    &resolver,
+                    4096,
+                )
+                .await;
+                (out, resolver.targets.into_inner().unwrap())
+            }
+        };
+
+        // GET / matches the baked route → the router dispatches its baked handler hash, folds the canned
+        // response, and closes with it as an http-response.
+        let (out, targets) = drive(bare(Method::Get, "/"), b"b1").await;
+        let (schema, reason) = out.expect("the baked router closes on a match");
+        assert_eq!(
+            targets,
+            vec![bytes::Bytes::from_static(
+                b"cdz-http.handler.root..........."
+            )],
+            "GET / dispatches the baked 'root' handler hash"
+        );
+        assert_ne!(
+            schema,
+            crate::codec::deny_contract(),
+            "a match is an http-response, not a deny"
+        );
+        assert_eq!(
+            decode_response(&reason).expect("http-response").body,
+            bytes::Bytes::from_static(b"routed-ok"),
+        );
+
+        // POST /echo matches the second baked route.
+        let (_out, targets) = drive(bare(Method::Post, "/echo"), b"b2").await;
+        assert_eq!(
+            targets,
+            vec![bytes::Bytes::from_static(
+                b"cdz-http.handler.echo..........."
+            )],
+            "POST /echo dispatches the baked 'echo' handler hash"
+        );
+
+        // GET /nope is not in the baked table → a 404 deny, no dispatch.
+        let (out, targets) = drive(bare(Method::Get, "/nope"), b"b3").await;
+        let (schema, reason) = out.expect("closes on a no-match");
+        assert!(targets.is_empty(), "no dispatch for an unrouted path");
+        assert_eq!(schema, crate::codec::deny_contract());
+        assert_eq!(decode_deny(&reason).expect("deny").status, 404);
+    }
 }
