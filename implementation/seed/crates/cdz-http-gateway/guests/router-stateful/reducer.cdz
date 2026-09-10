@@ -1,0 +1,84 @@
+// The STATEFUL router governing program (DESIGN-http-outpost.md §3/§4, P3b): routing-as-a-fold whose route
+// table is LIVE STATE, not baked in (the P2 `guests/router` baked its table at compile time; concierge
+// decision 2026-09-10 homed the live/updatable table here in P3, over the control link + KV state). This is
+// the first http-outpost guest to combine a host `state` import with the routing fold — it mirrors the
+// platform's `reducer-statedispatch` idiom (dispatch by `msg.contract`, `host state in`, Value codec).
+//
+// A PERSISTENT session (spawned once, folds many messages — the state survives across folds within the
+// instance): the control link delivers the `http-route-table` frame → the router `state.put`s it under a
+// fixed key; each `http-request` → the router `state.get`s the table, decodes it, and matches (method, path)
+// to a routing Decision. A route-table UPDATE is just another table-frame fold — the next request sees the
+// new table. Requires the external `reducer-world` witWorld (for the `state` import) + `reducer-lib`.
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+// The request the router folds (mirrors http-request.cdz; the shape http-echo/router decode).
+type Method = | Get | Post | Put | Delete | Patch | Head | Options
+type Header  = | Header(Record(name: String, value: String))
+type Request =
+  | Request(Record(method: Method,
+                   path: String,
+                   query: String,
+                   headers: List(Header),
+                   body: Bytes))
+// One route-table entry (mirrors http-route-table.cdz `Route` / the Rust `RouteFrame`): the (method, path)
+// key + the handler component + the contract it folds. A single-constructor sum (→ a plain record value).
+type Route =
+  | Route(Record(method: Method, path: String, handler: Bytes, contract: Bytes))
+// The routing decision (as in the P2 router): a single-ctor record; an EMPTY `handler` is the no-match
+// sentinel (→ the gateway's 404). Single-ctor because the guest compiler declines multi-ctor Value.encode.
+type Decision =
+  | Decision(Record(handler: Bytes, contract: Bytes))
+
+// The contract-id a route-table frame is delivered on (dispatch key); anything else is treated as a request.
+def route-table-contract() = b"cdz-platform.http.route-table...."
+// The KV key the live route table is stored under (one key: get -> decode -> match; no prefix-scan needed).
+def routes-key() = b"routes"
+// The schema the routing decision closes under.
+def route-decision-schema() = b"cdz-platform.http.route.........."
+// The no-match decision (empty handler).
+def not-found() = Decision.Decision({ handler = b"", contract = b"" })
+
+// Method equality via a scalar code (matching a typed Method enum to an Int compiles; Int-eq is scalar).
+def method-code(m: Method) =
+  (match m with | Get => 1 | Post => 2 | Put => 3 | Delete => 4 | Patch => 5 | Head => 6 | Options => 7)
+
+// Find the first route matching (method-code `mc`, path bytes `p`) — recursion over the list (no List.fold).
+// Method compared by code (Int-eq), path by BYTES equality (runtime String-eq is declined; Bytes-eq lowers).
+def find(routes: List(Route), mc: Int64, p: Bytes) =
+  (match routes with
+   | [] => not-found()
+   | [head, .. rest] =>
+     (match head with
+      | Route.Route(r) =>
+        if method-code(r.method) == mc then
+          (if String.to-bytes(r.path) == p then Decision.Decision({ handler = r.handler, contract = r.contract })
+           else find(rest, mc, p))
+        else find(rest, mc, p)))
+
+// Close with a routing decision.
+def decide(decision) =
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Close({ schema = route-decision-schema(), reason = Value.encode(decision) }) }
+// Stay open after storing the table (a persistent session folds more messages).
+def stored() =
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Continue }
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == route-table-contract() then
+       // A control-link route-table frame: store it live (raw frame bytes) under the routes key.
+       (state.put(routes-key(), msg.payload) ; stored())
+     else
+       // Otherwise an http-request: decode it, get + decode the live table, match (method, path).
+       (match (Value.decode(msg.payload) : Option(Request)) with
+        | Some(Request.Request(rq)) =>
+          (match state.get(routes-key()) with
+           | Some(table) =>
+             (match (Value.decode(table) : Option(List(Route))) with
+              | Some(routes) => decide(find(routes, method-code(rq.method), String.to-bytes(rq.path)))
+              | None => decide(not-found()))
+           | None => decide(not-found()))
+        | None => decide(not-found())))
+
+export { on-message, on-response, on-notification }

@@ -6788,6 +6788,20 @@
               entry = "reducer";
               libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
             };
+            # The STATEFUL router governing program (guests/router-stateful/reducer.cdz, DESIGN §3/§4, P3b):
+            # routing-as-a-fold whose route table is LIVE STATE (vs the P2 router's baked table). A persistent
+            # session: a route-table frame → state.put; each http-request → state.get + decode + match →
+            # Decision. Same host-import build recipe as kv-probe (reducer-world witWorld + reducer-lib). The
+            # runtime e2e drives it as a persistent instance via CDZ_HTTP_ROUTER_STATEFUL_WASM.
+            cdzHttpGatewayRouterStateful = mkCadenzaGuest {
+              pname = "cdz-http-gateway-router-stateful";
+              src = ./implementation/seed/crates/cdz-http-gateway/guests/router-stateful/reducer.cdz;
+              componentName = "cadenza:platform/guest";
+              witWorld = "${worldArtifacts}/reducer-world.bin";
+              witWorldName = "reducer-world";
+              entry = "reducer";
+              libs = [ ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz ];
+            };
             cdzHttpGatewayCheck = pkgs.runCommand "cdz-http-gateway"
               {
                 nativeBuildInputs = [ rustToolchain ];
@@ -6829,6 +6843,7 @@
               CDZ_HTTP_WS_ECHO_WASM=${cdzHttpGatewayWsEchoHandler} \
               CDZ_HTTP_ROUTER_WASM=${cdzHttpGatewayRouterHandler} \
               CDZ_HTTP_KV_PROBE_WASM=${cdzHttpGatewayKvProbe} \
+              CDZ_HTTP_ROUTER_STATEFUL_WASM=${cdzHttpGatewayRouterStateful} \
               CDZ_HTTP_RUNTIME_WASM=${runtime} \
               CDZ_HTTP_NFC_WASM=${nfc} \
               cargo test --offline --locked --features host
@@ -7231,6 +7246,8 @@
             cdz-http-gateway-router-handler = cdzHttpGatewayRouterHandler;
             # The P3 state-import build-path probe (first state/KV-holding http-outpost guest) compiles.
             cdz-http-gateway-kv-probe = cdzHttpGatewayKvProbe;
+            # The stateful router governing program (live route table in KV state) compiles.
+            cdz-http-gateway-router-stateful = cdzHttpGatewayRouterStateful;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
