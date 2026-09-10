@@ -547,4 +547,79 @@ mod tests {
         let (status, _) = get(addr, "/nope").await;
         assert_eq!(status, 404, "an unrouted path is a 404 floor");
     }
+
+    /// P3 STATE-IMPORT PROOF (DESIGN-http-outpost.md §3/§4): the kv-probe guest holds STATE across the
+    /// get/put within a fold via the platform `state` capability, driven through the REAL wasm store — the
+    /// store hands the reducer a fresh `InMemoryKvStore` as its `state` backend, so this proves the whole
+    /// host-import path works end to end (the mechanism the stateful router P3b needs). The guest
+    /// `state.put(b"cell", payload)` then `state.get(b"cell")` and closes with the value read back; a correct
+    /// round-trip returns the payload verbatim. Seeds the value-heap runtime + NFC; skips when env is unset.
+    #[tokio::test]
+    async fn wasm_kv_probe_round_trips_a_value_through_state() {
+        use cdz_platform::{
+            ContractId, HostId, Message, Origin, Outcome, ProgramHash, ReducerId, ReducerKind,
+            SpawnContext,
+        };
+
+        let (Ok(guest_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_KV_PROBE_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "wasm_kv_probe_round_trips_a_value_through_state: \
+                 CDZ_HTTP_KV_PROBE_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let guest = std::fs::read(&guest_path).expect("read kv-probe guest wasm");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(guest.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let program = ProgramHash::of(&guest);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        let mut reducer = store
+            .spawn(
+                program,
+                SpawnContext {
+                    id: ReducerId::of(b"kv-sess"),
+                    kind: ReducerKind::Ordinary,
+                    limits: None,
+                },
+            )
+            .await
+            .expect("kv-probe instantiates");
+        let (_requests, outcome) = reducer
+            .on_message(Message {
+                id: ContractId::of(b"cdz-platform.kv.probe"),
+                payload: bytes::Bytes::from_static(b"round-trip-me"),
+                from: Origin {
+                    reducer: ReducerId::of(b"driver"),
+                    host: HostId::of(b"edge-host"),
+                },
+                continuation_token: bytes::Bytes::new(),
+            })
+            .await;
+
+        // The guest put the payload into state then got it back and closed with it — a correct round-trip
+        // returns the payload verbatim (proving state persisted across the put→get within the fold).
+        match outcome {
+            Outcome::Break { reason, .. } => assert_eq!(
+                reason,
+                bytes::Bytes::from_static(b"round-trip-me"),
+                "state.get returns exactly what state.put stored"
+            ),
+            Outcome::Continue => panic!("kv-probe must Break with the value read back from state"),
+        }
+    }
 }
