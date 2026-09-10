@@ -7508,6 +7508,9 @@
                 export CDZ_HTTP_CONTROL_MOCK_BIN=${cdzHttpControlMockBin}/bin/cdz-http-control-mock
                 export CDZ_HTTP_GATEWAY_BIN=${cdzHttpGatewayBin}/bin/cdz-http-gateway
                 export CDZ_HARNESS_PROGRAMS_DIR="$TMPDIR/programs"
+                # The dependency-closure store (value-heap runtime + nfc, by content hash) the guests import;
+                # the driver seeds it into the CAS so the gateway can spawn + compose a guest program.
+                export CDZ_HARNESS_COMPONENT_STORE=${componentStore}
                 "$driver" "$TMPDIR/spec.bin"
                 echo "ok: http-conformance '${name}' — scenario passed (exit 0)" > "$out"
               '';

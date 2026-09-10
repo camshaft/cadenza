@@ -24,6 +24,7 @@ use crate::servers::{spawn_cas, spawn_gateway, spawn_mock};
 use crate::spec::RunSpec;
 use cdz_http_control_mock::admin::{AdminCommand, AdminReply};
 use cdz_str::Str;
+use std::path::Path;
 
 /// The throwaway write credential the harness gives its CAS so the driver can seed over the HTTP write path
 /// (loopback only; the CAS is fresh per run).
@@ -43,6 +44,7 @@ pub async fn run_scenario(
     bins: &HarnessBins,
     spec: &RunSpec,
     programs: &ProgramManifest,
+    component_store: &Path,
 ) -> Result<(), String> {
     // 1. Resolve + hash every program the config names, BEFORE spawning anything — a bad manifest fails fast
     //    without leaving a server process running. Each carries the name to register it under.
@@ -57,6 +59,11 @@ pub async fn run_scenario(
     let cas = spawn_cas(&bins.cas, &cas_config(LOOPBACK, SEED_CREDENTIAL)).await?;
     let cas_url = format!("http://{}", cas.addr);
     let cas_client = CasClient::new(cas.addr).with_write_credential(SEED_CREDENTIAL);
+    // 2a. Seed the dependency-closure component store (the value-heap runtime + nfc, each keyed by content
+    //     hash) FIRST. A Cadenza guest is a component that IMPORTS the runtime, so the gateway's spawn
+    //     (fetch + bind_dependencies + compose from the CAS) needs those dep components present — seeding the
+    //     guest program alone leaves spawn unable to resolve the runtime (→ None → 502). Mirrors a real deploy.
+    seed_component_store(&cas_client, component_store).await?;
     for (_, program) in &resolved {
         cas_client
             .put(&program.hash_text, program.bytes.clone())
@@ -115,6 +122,33 @@ fn cas_config(listen: &str, write_credential: &str) -> bytes::Bytes {
     value::finish(b, rec, "ServerConfig")
 }
 
+/// Seed every component in the content-addressed store `dir` (a dir of `<base62-hash>.wasm` — the value-heap
+/// runtime + its nfc dependency) into the CAS, keyed by its filename hash. The CAS validates the body's digest
+/// against the key on PUT, so a mismatched filename would be rejected.
+///
+/// # Errors
+/// The store dir cannot be read, a component file cannot be read, or a PUT is rejected.
+async fn seed_component_store(cas: &CasClient, dir: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("reading component store {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("component store entry: {e}"))?
+            .path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+            continue;
+        }
+        let hash = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("component store: bad filename {}", path.display()))?;
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("reading component {}: {e}", path.display()))?;
+        cas.put(hash, bytes::Bytes::from(bytes)).await?;
+    }
+    Ok(())
+}
+
 /// `Ok(())` when the admin reply is `Ok`, else an error naming the command + the mock's message.
 fn expect_ok(reply: AdminReply, command: &str) -> Result<(), String> {
     match reply {
@@ -150,9 +184,14 @@ mod tests {
             },
             requests: vec![],
         };
-        let err = run_scenario(&bins, &spec, &ProgramManifest::new())
-            .await
-            .expect_err("unresolvable program must error before spawning");
+        let err = run_scenario(
+            &bins,
+            &spec,
+            &ProgramManifest::new(),
+            Path::new("/nonexistent/component-store"),
+        )
+        .await
+        .expect_err("unresolvable program must error before spawning");
         assert!(
             err.contains("not in the harness manifest"),
             "expected a manifest-resolution error, got: {err}"
