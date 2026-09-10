@@ -9,7 +9,8 @@
 //!                    expect = { status?, body?, body-contains? } }
 //!                | { control = { push-root-router = "<name>" } }
 //!                | { control = { push-down = { session = b"…"?, payload = b"…" } } }, … ] }
-//! (prime-replies + retry-until-match are added in following slices.)
+//! where an http `expect` may also carry `retry-until-match = true` (poll the request until it matches).
+//! (prime-replies are added in a following slice.)
 
 use cdz_http_protocol::value;
 
@@ -80,6 +81,9 @@ pub struct Expect {
     pub body: Option<Vec<u8>>,
     /// Assert the response body CONTAINS this substring.
     pub body_contains: Option<String>,
+    /// Poll the request, re-issuing it until the assertion holds or a timeout elapses — the one non-linear
+    /// primitive, for async propagation (e.g. a live root-router swap the gateway applies on a later request).
+    pub retry_until_match: bool,
 }
 
 impl RunSpec {
@@ -240,11 +244,26 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(bc) => Some(value::read_str(arenas, bc)?),
         None => None,
     };
+    let retry_until_match = match value::record_field(arenas, id, "retry-until-match") {
+        Some(r) => read_bool(arenas, r)?,
+        None => false,
+    };
     Some(Expect {
         status,
         body,
         body_contains,
+        retry_until_match,
     })
+}
+
+/// Read a boolean value — the bare names `true` / `false` (how a Cadenza bool literal encodes). `None` if the
+/// value is neither (a malformed field).
+fn read_bool(arenas: &value::Arenas, id: value::ValueId) -> Option<bool> {
+    match arenas.as_name(value::unascribe(arenas, id)) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -365,6 +384,7 @@ mod tests {
             status: Some(200),
             body: Some(b"hello".to_vec()),
             body_contains: Some("ell".into()),
+            ..Default::default()
         };
         assert!(e.check(200, b"hello").is_ok());
         // Status mismatch is named.
@@ -376,6 +396,7 @@ mod tests {
             status: None,
             body: None,
             body_contains: Some("wasm".into()),
+            ..Default::default()
         };
         assert!(
             contains

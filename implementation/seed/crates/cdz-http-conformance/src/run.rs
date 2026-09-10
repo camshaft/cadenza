@@ -92,11 +92,7 @@ pub async fn run_steps(
         let (description, result) = match step {
             Step::Http { request, expect } => {
                 let description = format!("{} {}", request.method, request.path);
-                let result = match gateway.send(request).await {
-                    Ok(resp) => expect.check(resp.status, &resp.body),
-                    Err(e) => Err(e),
-                };
-                (description, result)
+                (description, run_http_step(gateway, request, expect).await)
             }
             Step::Control(control) => {
                 let (description, command) = control_command(control);
@@ -118,6 +114,34 @@ pub async fn run_steps(
         });
     }
     outcomes
+}
+
+/// How long to keep re-issuing a `retry-until-match` request before giving up, and the pause between tries.
+const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Run one `http` step: make the request + check its `Expect`. When `expect.retry_until_match` is set, RE-ISSUE
+/// the request until the assertion holds or [`RETRY_TIMEOUT`] elapses (the non-linear primitive, for async
+/// propagation like a live root-router swap the gateway applies only on a later request); otherwise one shot.
+async fn run_http_step(
+    gateway: &GatewayClient,
+    request: &crate::spec::HttpRequest,
+    expect: &crate::spec::Expect,
+) -> Result<(), String> {
+    let attempt = async || match gateway.send(request).await {
+        Ok(resp) => expect.check(resp.status, &resp.body),
+        Err(e) => Err(e),
+    };
+    if !expect.retry_until_match {
+        return attempt().await;
+    }
+    let deadline = tokio::time::Instant::now() + RETRY_TIMEOUT;
+    let mut last = attempt().await;
+    while last.is_err() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(RETRY_INTERVAL).await;
+        last = attempt().await;
+    }
+    last.map_err(|e| format!("retry-until-match timed out after {RETRY_TIMEOUT:?}: {e}"))
 }
 
 /// Map a [`ControlStep`] to its human description + the [`AdminCommand`] that drives it at the mock.
@@ -272,6 +296,93 @@ mod tests {
         ];
         let outcomes = run_steps(&gateway, &admin, &steps).await;
         assert!(verdict(&outcomes).is_ok());
+    }
+
+    /// A stub that serves `503` for its first `fail_n` connections, then `200` + `body` — to exercise
+    /// retry-until-match polling past a transient state (like an async live-swap not yet applied).
+    async fn flipping_http_stub(fail_n: usize, body: &'static [u8]) -> SocketAddr {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        let r = sock.read(&mut buf).await.unwrap_or(0);
+                        if r == 0 || buf[..r].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let (status, b): (&str, &[u8]) = if n < fail_n {
+                        ("503 Service Unavailable", b"")
+                    } else {
+                        ("200 OK", body)
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        b.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.write_all(b).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn retry_until_match_polls_past_a_transient_failure() {
+        let admin = AdminClient::new("127.0.0.1:1".parse().unwrap());
+        // Retry: the first 2 requests get 503, then 200 "ready" — the retry step polls until it matches.
+        let addr = flipping_http_stub(2, b"ready").await;
+        let gateway = GatewayClient::new(addr);
+        let retry = vec![Step::Http {
+            request: HttpRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                ..Default::default()
+            },
+            expect: Expect {
+                status: Some(200),
+                body: Some(b"ready".to_vec()),
+                retry_until_match: true,
+                ..Default::default()
+            },
+        }];
+        let outcomes = run_steps(&gateway, &admin, &retry).await;
+        assert!(
+            outcomes[0].result.is_ok(),
+            "retry should poll past the 503s: {:?}",
+            outcomes[0].result
+        );
+
+        // Without retry, the same first-503 stub fails on the single shot.
+        let addr2 = flipping_http_stub(2, b"ready").await;
+        let gateway2 = GatewayClient::new(addr2);
+        let once = vec![Step::Http {
+            request: HttpRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                ..Default::default()
+            },
+            expect: Expect {
+                status: Some(200),
+                ..Default::default()
+            },
+        }];
+        let outcomes = run_steps(&gateway2, &admin, &once).await;
+        assert!(
+            outcomes[0].result.is_err(),
+            "no retry → the first 503 is reported"
+        );
     }
 
     #[tokio::test]
