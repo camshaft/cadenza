@@ -31,5 +31,5 @@ bytes = "1"
 # and (later) makes real HTTP requests at the gateway. `default-features = false` — the harness is loopback
 # HTTP only, no TLS (matches the fleet's reqwest usage minus the TLS provider). tokio is the runtime +
 # child-process spawner.
-tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "process", "io-util", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false }
