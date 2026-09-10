@@ -13,7 +13,7 @@
 
 use crate::HttpBlobStore;
 use bytes::Bytes;
-use cdz_http_protocol::{ControlConfig, decode_control_config};
+use cdz_http_protocol::{ControlConfig, ControlFrame, FrameCodec, decode_control_config};
 use futures_util::StreamExt;
 use http_body_util::Full;
 use hyper::service::service_fn;
@@ -94,21 +94,47 @@ async fn dial_control(control_addr: &str) -> Result<(ControlConfig, ControlLink)
     let (mut ws, _resp) = tokio_tungstenite::client_async(format!("ws://{control_addr}/"), stream)
         .await
         .map_err(|e| BootError::ControlDial(e.to_string()))?;
+    let codec = control_frame_codec();
     // The config is the first DATA frame control pushes on connect; skip protocol control frames.
     loop {
         match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => {
-                let config = decode_control_config(&bytes).ok_or(BootError::BadConfig)?;
-                return Ok((config, ws));
+                return Ok((decode_boot_config(&codec, &bytes)?, ws));
             }
             Some(Ok(Message::Text(text))) => {
-                let config = decode_control_config(text.as_bytes()).ok_or(BootError::BadConfig)?;
-                return Ok((config, ws));
+                return Ok((decode_boot_config(&codec, text.as_bytes())?, ws));
             }
             Some(Ok(_)) => continue, // ping/pong/other control frame — keep waiting for the config
             _ => return Err(BootError::NoConfig), // stream error or closed before any data frame
         }
     }
+}
+
+/// The control-link frame codec, tagging each frame by its CANONICAL COMPUTED contract-id — the descriptor
+/// ids of the `cdz-platform.control.{config,up,down}` userspace contracts, reachable now that
+/// `cdz_platform::contracts` is public. Both the gateway (here) and the control server derive the SAME ids
+/// from these contracts, so a tagged frame round-trips without markers.
+fn control_frame_codec() -> FrameCodec {
+    fn id(c: cdz_platform::Contract) -> Bytes {
+        Bytes::copy_from_slice(c.id().hash().as_bytes())
+    }
+    FrameCodec::new(
+        id(cdz_platform::contracts::control_config::contract()),
+        id(cdz_platform::contracts::control_up::contract()),
+        id(cdz_platform::contracts::control_down::contract()),
+    )
+}
+
+/// Decode the boot [`ControlConfig`] from control's first frame, accepting BOTH the tagged [`ControlFrame`]
+/// envelope (the computed-id frame-dispatch protocol) AND a bare `ControlConfig` (the pre-flip form). This
+/// is the rolling-upgrade step: the gateway handles both while the control server's send-side flips from
+/// bare to enveloped, so neither side breaks the other at the flip. Once control always sends enveloped,
+/// the bare fallback is dropped.
+fn decode_boot_config(codec: &FrameCodec, bytes: &[u8]) -> Result<ControlConfig, BootError> {
+    if let Some(ControlFrame::Config(config)) = codec.decode(bytes) {
+        return Ok(config);
+    }
+    decode_control_config(bytes).ok_or(BootError::BadConfig)
 }
 
 /// The HTTP accept loop: one hyper HTTP/1 connection per socket, each request served the boot floor.
@@ -138,4 +164,39 @@ fn boot_floor() -> Response<Full<Bytes>> {
             b"cdz-http-gateway: booted from control (routing not yet wired)\n",
         )))
         .expect("static boot-floor response is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdz_http_protocol::encode_control_config;
+    use cdz_platform::Str;
+
+    fn sample_config() -> ControlConfig {
+        ControlConfig {
+            cas_url: Str::from("http://cas.internal:9000"),
+            cas_credential: Bytes::from_static(b"bearer-abc"),
+            root_router: Bytes::from_static(b"a-33-byte-program-hash-goes-here."),
+        }
+    }
+
+    #[test]
+    fn decode_boot_config_accepts_both_the_tagged_envelope_and_the_bare_config() {
+        let codec = control_frame_codec();
+        let config = sample_config();
+
+        // The bare pre-flip form (control server's current send-side): `encode_control_config`.
+        let bare = encode_control_config(&config);
+        assert_eq!(decode_boot_config(&codec, &bare).unwrap(), config);
+
+        // The tagged form (control server's post-flip send-side): a `ControlFrame::Config` envelope.
+        let enveloped = codec.encode(&ControlFrame::Config(config.clone()));
+        assert_eq!(decode_boot_config(&codec, &enveloped).unwrap(), config);
+
+        // Neither → a boot config error, not a panic.
+        assert!(matches!(
+            decode_boot_config(&codec, b"not a config"),
+            Err(BootError::BadConfig)
+        ));
+    }
 }
