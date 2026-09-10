@@ -1,0 +1,24 @@
+// The HTTP-outpost DISPATCH effect contract (DESIGN-http-outpost-conformance-harness.md §4): the effect a
+// root-router program emits to hand a matched request off to a subprogram. `subprogram` is the target
+// handler's `ProgramHash` bytes (the gateway fetches it from the CAS + drives it), `input` the bytes
+// delivered to it as its first message (typically the encoded `http-request`); the subprogram's terminal
+// response folds back as the dispatch answer. Userspace (this dir): a Cadenza reducer emits it on this
+// contract's COMPUTED id (via `descriptor().id`, no baked marker) and the gateway's effect resolver routes
+// on the same descriptor-derived id — one source of truth. No Rust binding is generated.
+type Dispatch = | Dispatch(Record(subprogram: Bytes, input: Bytes))
+
+def a-dispatch() -> Dispatch =
+  Dispatch.Dispatch({ subprogram = b"a-33-byte-program-hash-goes-here.", input = b"the-request-bytes" })
+
+@test
+def dispatch-conforms() =
+  match a-dispatch() with
+  | Dispatch.Dispatch(d) =>
+    if (d.subprogram == b"a-33-byte-program-hash-goes-here.") and (d.input == b"the-request-bytes")
+    then unit
+    else trap("dispatch field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.http.dispatch", "Dispatch", "Dispatch")
+export { Dispatch.*, descriptor }
