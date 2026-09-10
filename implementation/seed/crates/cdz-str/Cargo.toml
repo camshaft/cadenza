@@ -1,0 +1,17 @@
+# cdz-str — `Str`, the cheaply-clonable `Bytes`-backed UTF-8 string used across the fleet
+# (`design/cadenza-platform.md` §12).
+#
+# Extracted out of `cdz-platform` (2026-09-10) so `Str` — the canonical text type — can be used by any crate
+# WITHOUT pulling the whole platform runtime. `cdz-platform` re-exports it (`pub use cdz_str::Str`), so every
+# existing `cdz_platform::Str` user is unaffected. A ROOT workspace member (foundational leaf, like
+# `cadenza-ast`): it deps only `bytes`, so it is free to sit in everyone's dep graph.
+[package]
+name = "cdz-str"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# `Str` is a newtype over `bytes::Bytes` — a clone is an O(1) refcount bump, and text/bytes share ONE
+# representation so a value crosses the text/binary boundary without re-allocating (spec §12).
+bytes = "1"

@@ -42,7 +42,6 @@ mod reducer;
 mod run;
 mod runtime;
 mod spawned;
-mod str;
 mod system;
 mod timer;
 
@@ -72,7 +71,10 @@ pub use run::{Run, RunError, RunOutput, Runner, run_contract};
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
 pub use spawned::{Spawned, spawned_contract};
-pub use str::Str;
+// `Str` (the Bytes-backed UTF-8 text type) was extracted to the standalone `cdz-str` crate (2026-09-10) so
+// any crate can use the canonical text type without depending on the platform runtime. Re-exported here so
+// `cdz_platform::Str` (and every internal `crate::Str`) keeps resolving unchanged.
+pub use cdz_str::Str;
 pub use system::{
     ArgProbeSink, Delivery, Links, NoDelivery, NoProvenance, NodeDeliverySlot, Provenance,
     ReducerKind, RejectedSink, RunSink, Spawn, System, SystemError, TaskSystem,

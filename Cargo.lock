@@ -496,6 +496,7 @@ dependencies = [
  "bytes",
  "cadenza-ast",
  "cdz-contract",
+ "cdz-str",
  "futures-core",
  "futures-util",
  "num-bigint",
@@ -537,6 +538,13 @@ dependencies = [
  "cdz-corpus-grade",
  "cdz-rust-render",
  "clap",
+]
+
+[[package]]
+name = "cdz-str"
+version = "0.0.0"
+dependencies = [
+ "bytes",
 ]
 
 [[package]]

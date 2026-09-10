@@ -1,0 +1,41 @@
+# cdz-http-protocol — the http-outpost CONTROL-PLANE wire contract (design/DESIGN-http-outpost-conformance-
+# harness.md §4).
+#
+# The single source of truth for the frames the control server and the HTTP gateway exchange over their
+# persistent bidirectional link: `ControlConfig` (control → gateway boot config), `ControlUp` (a handler's
+# `control.send` on its way UP, stamped with provenance + request context + a correlation token), and
+# `ControlDown` (control → handler, addressed by session, correlated to a pending `ControlUp` or an
+# unsolicited push). Each is a binary-AST value (the standing "binary-AST is THE data-exchange format"
+# directive), encoded with the canonical value-form primitives — the same forms the compiler's own
+# `Value.encode`/`Value.decode` produce.
+#
+# WHY A SHARED CRATE: the conformance harness's mock control server (`cdz-http-control-mock`) and the
+# (to-be-rewritten) gateway must agree on these frames byte-for-byte. Pinning them here — depending only on
+# `cadenza-ast` + `bytes`, NOT `cdz-platform`/wasmtime/hyper — lets the harness test a stable CONTRACT while
+# the gateway internals are rewritten, and keeps the frames out of any doomed implementation crate.
+#
+# STANDALONE `[workspace]` — EXCLUDED from the seed workspace (root Cargo.toml `exclude`), like
+# cdz-http-gateway / cdz-cas-http. It is light (cadenza-ast + bytes only, no heavy deps), but staying
+# excluded keeps the whole http-outpost crate family uniformly isolated from the routine seed build/gate:
+# an edit here is a `gate-local` cache-hit, so harness iteration stays fast. It path-deps the member
+# `cadenza-ast` (an excluded crate may depend on a member — cdz-smith/cdz-http-gateway precedent). Own
+# lock (committed via a scoped .gitignore negation); gated by its own `checks.<sys>.cdz-http-protocol` job.
+[workspace]
+
+[package]
+name = "cdz-http-protocol"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The canonical language AST + value-model codec. The control-plane frames ARE `cadenza-ast` value-form
+# documents (design §4), so their encode/decode is built directly on `cadenza_ast::{ast, codec}` — the same
+# forms `Value.encode`/`Value.decode` produce, so a frame the gateway emits is a well-formed Cadenza value.
+cadenza-ast = { path = "../cadenza-ast" }
+# Every byte buffer is `bytes::Bytes` (spec §12) — hashes, credentials, opaque payloads, session ids.
+bytes = "1"
+# `Str` — the canonical Bytes-backed UTF-8 text type (spec §12). Every text field of a frame (a url, a
+# method, a path, a header name/value) is a `Str`, not a `String`: an O(1)-clone view that shares its bytes
+# with the wire, matching the rest of the fleet (operator 2026-09-10 "use the Str data structure everywhere").
+cdz-str = { path = "../cdz-str" }

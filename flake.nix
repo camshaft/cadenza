@@ -671,6 +671,12 @@
           # read a member's manifest). The other crates/* dirs absent from this map are standalone [workspace]s.
           cdz-contract = "implementation/seed/crates/cdz-contract";
           cdz-platform = "implementation/seed/crates/cdz-platform";
+          # cdz-str (2026-09-10): `Str` extracted out of cdz-platform into its own foundational leaf crate
+          # (deps only `bytes`) so any crate uses the canonical text type without the platform runtime;
+          # cdz-platform re-exports it. A ROOT workspace member — MUST be registered here (like cdz-contract)
+          # or the crane deps-layer omits its Cargo.toml and the workspace fails to load; also needs its
+          # clippy/test crane (testCrateCoverageAssert requires every member have a per-crate test).
+          cdz-str = "implementation/seed/crates/cdz-str";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-corpus-grade = "implementation/seed/crates/cdz-corpus-grade";
           # corpus-case-titles (#7646): the pure, cdz-FREE corpus-case-title parse helper (reads the sexpr
@@ -6349,6 +6355,7 @@
               clippy-corpus-case-titles = mkCrateClippyCrane { crate = "corpus-case-titles"; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
+              clippy-cdz-str = mkCrateClippyCrane { crate = "cdz-str"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
@@ -6413,6 +6420,7 @@
               test-corpus-case-titles = mkCrateTestCrane { crate = "corpus-case-titles"; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
+              test-cdz-str = mkCrateTestCrane { crate = "cdz-str"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
@@ -6730,6 +6738,10 @@
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cdz-platform/src
                 ./implementation/seed/crates/cdz-platform/Cargo.toml
+                # cdz-platform re-exports `Str` from the extracted cdz-str crate (path-dep), so its src +
+                # manifest must be staged for the offline --locked build.
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
                 # cdz-platform's `host` code (host.rs, behind --features host) runs `wasmtime … bindgen!`
                 # over wit/world.wit, so the WIT dir must be in the source or the generated `cadenza::…`
                 # bindings module is unresolved (the default build skips host.rs, so it needs no wit).
@@ -6925,6 +6937,8 @@
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cdz-platform/src
                 ./implementation/seed/crates/cdz-platform/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
                 ./rust-toolchain.toml
               ];
             };
@@ -6959,6 +6973,49 @@
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
               echo "ok: cdz-cas-http (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
+            '';
+            # cdz-http-protocol (vertical gateway-conformance): the excluded standalone control-plane
+            # wire-contract crate's dedicated check — test + clippy + fmt. LIGHTEST of the http-outpost checks:
+            # its only path-dep is `cadenza-ast` (a foundational leaf, no workspace path-deps), and it deps NO
+            # cdz-platform, so there is NO contracts overlay and NO cmake/aws-lc — just the crate + cadenza-ast.
+            cdzHttpProtocolVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-protocol/Cargo.lock;
+            };
+            cdzHttpProtocolSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.lock
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzHttpProtocolCheck = pkgs.runCommand "cdz-http-protocol"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpProtocolSrc} repo
+              chmod -R u+w repo
+              cd repo
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpProtocolVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-protocol
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-http-protocol (excluded standalone crate — test + clippy + fmt)" > "$out"
             '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
@@ -7351,6 +7408,10 @@
             # (an excluded crate must not burden the merge gate; run it via `nix build .#checks.<sys>.cdz-cas-http`
             # or `nix flake check`).
             cdz-cas-http = cdzCasHttpCheck;
+            # cdz-http-protocol (vertical gateway-conformance): the excluded standalone control-plane
+            # wire-contract crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in `local-gate`
+            # (an excluded crate must not burden the merge gate); run via `nix build .#checks.<sys>.cdz-http-protocol`.
+            cdz-http-protocol = cdzHttpProtocolCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.

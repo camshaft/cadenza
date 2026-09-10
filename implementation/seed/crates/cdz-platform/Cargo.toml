@@ -52,6 +52,9 @@ cadenza-ast = { path = "../cadenza-ast" }
 # become a wasm component (operator 2026-08-23). The platform re-exports its `Hash`/`HashTag`/… and derives
 # every `Contract`'s id through it, so the hashing + declaration encoding live in one place.
 cdz-contract = { path = "../cdz-contract" }
+# `Str` — the Bytes-backed UTF-8 text type (spec §12) — was extracted to this standalone crate so any crate
+# can use it without depending on the platform runtime; the platform re-exports it (`pub use cdz_str::Str`).
+cdz-str = { path = "../cdz-str" }
 # arbitrary-precision integer, matching cadenza-ast's value model (its `Leaf::Int` is a `BigInt`), so a
 # contract value can carry a native Cadenza integer field (Int64/UInt64) rather than only opaque bytes.
 num-bigint = "0.4"
