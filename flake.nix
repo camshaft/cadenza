@@ -2735,6 +2735,53 @@
             install -Dm755 target/release/cdz-cas-http "$out/bin/cdz-cas-http"
           '';
 
+        # The `cdz-http-control-mock` SERVER BINARY — the conformance harness's mock control server, one of the
+        # three SUT processes the driver spawns (`nix build .#cdz-http-control-mock` → result/bin/…). Light: it
+        # path-deps only cdz-http-protocol (→ cadenza-ast) + cdz-str, so NO cdz-platform + NO contracts overlay
+        # (unlike the CAS/gateway bins). Built offline against its own committed lock, mirroring cdzCasHttpBin.
+        cdzHttpControlMockBin =
+          let
+            vendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock;
+            };
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-control-mock/src
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+          in
+          pkgs.runCommand "cdz-http-control-mock"
+            {
+              nativeBuildInputs = [ rustToolchain ];
+              RUST_MIN_STACK = "67108864";
+              meta.mainProgram = "cdz-http-control-mock";
+            } ''
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            cp -r --no-preserve=mode,ownership ${src} repo
+            chmod -R u+w repo
+            cd repo
+            export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${vendor}"
+            EOF
+            cd implementation/seed/crates/cdz-http-control-mock
+            cargo build --release --offline --locked --bin cdz-http-control-mock
+            install -Dm755 target/release/cdz-http-control-mock "$out/bin/cdz-http-control-mock"
+          '';
+
         # wasmAbiSexpSrc: the AUTHORITATIVE hand-authored wasm-abi.sexp, staged at its repo-relative path so the
         # bin's CDZ_REPO_ROOT join resolves it. Scoped to the ONE file → cdzWasmAbi/oracle rotate only when the
         # sexp changes. It lives at the TOP-LEVEL `data/` (OUTSIDE the rust compiler tree — language-independent,
@@ -6313,6 +6360,10 @@
         # (vertical cas-http). Built from the excluded standalone crate's own committed lock + the cdz-platform
         # contracts overlay; see `cdzCasHttpBin`.
         packages.cdz-cas-http = cdzCasHttpBin;
+
+        # The deployable mock control server binary: `nix build .#cdz-http-control-mock` → result/bin/… (vertical
+        # gateway-conformance). One of the three SUT processes the conformance driver spawns; see `cdzHttpControlMockBin`.
+        packages.cdz-http-control-mock = cdzHttpControlMockBin;
 
         # S3: run a project's tests through nix, cached per-input (skip unchanged). `.#example-project-tests`
         # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
