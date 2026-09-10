@@ -1,0 +1,41 @@
+// The CONTROL-LINK UP frame contract (DESIGN-http-outpost-conformance-harness.md §4): a handler's
+// control.send on its way up. The gateway wraps the handler's opaque `payload` with provenance + routing
+// context: `program` (which handler — its ProgramHash bytes), `session`, `correlation` (echoed on the DOWN
+// response), and `request` (the originating HTTP request context: method, path, headers). Userspace (this
+// dir): its COMPUTED contract-id tags the UP frame on the control link. Body encode/decode lives in
+// cdz-http-protocol; this contract's id is the envelope tag. `Header` mirrors http-request/http-response's
+// single-constructor idiom.
+type Header = | Header(Record(name: String, value: String))
+type RequestContext =
+  | RequestContext(Record(method: String, path: String, headers: List(Header)))
+type ControlUp =
+  | ControlUp(Record(program: Bytes,
+                     session: Bytes,
+                     correlation: Bytes,
+                     payload: Bytes,
+                     request: RequestContext))
+
+def a-control-up() -> ControlUp =
+  ControlUp.ControlUp({ program = b"a-33-byte-program-hash-goes-here.",
+                        session = b"sess-1",
+                        correlation = b"corr-1",
+                        payload = b"handler->control bytes",
+                        request = RequestContext.RequestContext({
+                          method = "POST",
+                          path = "/emit",
+                          headers = [Header.Header({ name = "content-type", value = "application/octet-stream" })] }) })
+
+@test
+def control-up-conforms() =
+  match a-control-up() with
+  | ControlUp.ControlUp(u) =>
+    (match u.request with
+     | RequestContext.RequestContext(r) =>
+       if (u.program == b"a-33-byte-program-hash-goes-here.") and (u.correlation == b"corr-1")
+          and (r.method == "POST") and (r.path == "/emit")
+       then unit else trap("control-up field mismatch"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.control.up", "ControlUp", "ControlUp")
+export { Header.*, RequestContext.*, ControlUp.*, descriptor }

@@ -1,0 +1,22 @@
+// The CONTROL-LINK DOWN frame contract (DESIGN-http-outpost-conformance-harness.md §4): a control->handler
+// message the control server pushes down, addressed by `session`. When `correlation` matches a pending
+// ControlUp it is the RESPONSE to that handler's control.send; an empty/unmatched correlation is an
+// unsolicited push (delivered as an on_notification). Userspace (this dir): its COMPUTED contract-id is the
+// control-link dispatch tag distinguishing a DOWN frame from a ControlConfig re-config. Body encode/decode
+// lives in cdz-http-protocol; this contract's id is the envelope tag both sides match on.
+type ControlDown = | ControlDown(Record(session: Bytes, correlation: Bytes, payload: Bytes))
+
+def a-control-down() -> ControlDown =
+  ControlDown.ControlDown({ session = b"sess-1", correlation = b"corr-1", payload = b"control->handler bytes" })
+
+@test
+def control-down-conforms() =
+  match a-control-down() with
+  | ControlDown.ControlDown(d) =>
+    if (d.session == b"sess-1") and (d.correlation == b"corr-1") and (d.payload == b"control->handler bytes")
+    then unit else trap("control-down field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.control.down", "ControlDown", "ControlDown")
+export { ControlDown.*, descriptor }
