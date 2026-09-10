@@ -7,14 +7,14 @@
 //! [`HttpCas`] is that client, implemented as a [`cdz_platform::BlobStore`] so it drops straight into the
 //! [`WasmProgramStore`](cdz_platform::WasmProgramStore) in place of an in-memory CAS.
 //!
-//! Wire (the interface pinned for the `v-cas-http` vertical): `GET|HEAD {base_url}/{digest}` where `{digest}`
-//! is the lower-hex of the hash's 32-byte DIGEST — keyed on the digest, NOT the full tagged hash, so it is
-//! TAG-AGNOSTIC (the same content resolves whether addressed by its `Blob`, `Program`, … hash — exactly the
-//! `BlobStore` invariant `WasmProgramStore` relies on: a program's bytes put under a `Blob` hash resolve a
-//! `Program`-hash get). `Authorization: Bearer <utf8(credential)>` when the credential is non-empty; `200`
-//! body = the raw bytes, `404` = absent, `401` = bad credential. **Content-verified:** the fetched bytes must
-//! hash (by digest) to the requested hash — the "hash is the capability" invariant (§8), so a lying or
-//! misconfigured store cannot substitute bytes.
+//! Wire (agreed with `v-cas-http`): `GET|HEAD {base_url}/{hash}` where `{hash}` is the **base62** text of a
+//! `cdz_platform::Hash` (its [`Display`] — the ONE textual form, §8; NOT hex — operator-mandated). Programs
+//! are addressed by their `ProgramHash`'s base62, deps by their own hash's base62; the store keys on that
+//! same base62 string, so tag-consistency is by convention (whoever PUT a blob used the tag the fetcher
+//! GETs with). `Authorization: Bearer <utf8(credential)>` when the credential is non-empty; `200` body = the
+//! raw bytes, `404` = absent, `401` = bad credential. **Content-verified:** the fetched bytes must hash (by
+//! digest) to the requested hash — the "hash is the capability" invariant (§8), so a lying or misconfigured
+//! store cannot substitute bytes.
 //!
 //! v0 is plain `http` (no TLS) — an internal-network CAS; `https` support is a later slice. READ-ONLY for
 //! the gateway: it holds the store behind an `Arc<dyn BlobStore>` and only ever `get`/`has`, so [`put`]
@@ -27,15 +27,6 @@ use cdz_platform::{BlobStore, Hash, HashTag};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Method, Request, Uri};
 use hyper_util::rt::TokioIo;
-
-/// Lower-hex of a hash's 32-byte digest — the tag-agnostic content key used in the CAS URL path.
-fn digest_hex(hash: Hash) -> String {
-    let mut s = String::with_capacity(64);
-    for b in hash.digest() {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
 
 /// A [`BlobStore`] backed by an HTTP content-addressed store (the control-server-supplied CAS). Read-only for
 /// the gateway (see the module docs); fetch by hash, content-verified.
@@ -78,10 +69,11 @@ impl HttpCas {
         tokio::spawn(async move {
             let _ = conn.await;
         });
-        // Keyed on the digest hex (tag-agnostic, see module docs); origin-form path + a Host header.
+        // Keyed on the hash's base62 text (its Display, §8 — operator-mandated, not hex); origin-form path
+        // + a Host header.
         let mut builder = Request::builder()
             .method(method)
-            .uri(format!("{}/{}", self.path_prefix, digest_hex(hash)))
+            .uri(format!("{}/{hash}", self.path_prefix))
             .header(hyper::header::HOST, &self.authority);
         // A non-empty credential rides as `Authorization: Bearer <token>` (a bearer token is UTF-8; a
         // non-UTF-8 credential is treated as no-auth rather than failing the fetch).
@@ -132,13 +124,18 @@ mod tests {
     use hyper::{Response, StatusCode};
     use std::sync::Arc;
 
-    /// A stub CAS HTTP server: serves the one blob it is given at `GET /{base62(hash)}` (200), everything
-    /// else 404. Optionally serves `bad_bytes` instead (to exercise content-verification rejection).
-    async fn spawn_stub_cas(blob: Bytes, serve_wrong: bool) -> std::net::SocketAddr {
+    /// A stub CAS HTTP server: serves `blob` at `GET /{key.base62}` (200), everything else 404. Optionally
+    /// serves wrong bytes instead (to exercise content-verification rejection). `key` is the hash the store
+    /// keys the blob under (its base62 Display), letting a test store under one tag and fetch under another.
+    async fn spawn_stub_cas_keyed(
+        key: Hash,
+        blob: Bytes,
+        serve_wrong: bool,
+    ) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // The store keys on the digest hex (tag-agnostic) — the same key the client requests.
-        let hash_text = digest_hex(Hash::of(HashTag::Blob, &blob));
+        // The store keys on the hash's base62 text (its Display) — the same key the client requests.
+        let hash_text = key.to_string();
         let served: Bytes = if serve_wrong {
             Bytes::from_static(b"these are not the bytes you asked for")
         } else {
@@ -177,6 +174,12 @@ mod tests {
         addr
     }
 
+    /// Store a blob keyed under its own `Blob` hash (the common case).
+    async fn spawn_stub_cas(blob: Bytes, serve_wrong: bool) -> std::net::SocketAddr {
+        let key = Hash::of(HashTag::Blob, &blob);
+        spawn_stub_cas_keyed(key, blob, serve_wrong).await
+    }
+
     #[tokio::test]
     async fn fetches_and_content_verifies_a_blob_by_hash() {
         let blob = Bytes::from_static(b"a content-addressed program component");
@@ -198,18 +201,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetched_by_a_program_tagged_hash_resolves_the_same_digest() {
-        // The gateway fetches programs by a Program-tagged hash; content-addressing is by DIGEST, so the same
-        // bytes verify regardless of the requested hash's tag.
+    async fn fetches_a_program_by_its_program_hash() {
+        // The gateway fetches programs by their Program-tagged hash; the store keys on that hash's base62
+        // (tag-consistent by convention). Content is then verified by digest.
         let blob = Bytes::from_static(b"the root router program");
         let program = Hash::of(HashTag::Program, &blob);
-        let addr = spawn_stub_cas(blob.clone(), false).await;
-        // The stub serves at the base62 of the Program-tagged hash (what the gateway requests).
+        let addr = spawn_stub_cas_keyed(program, blob.clone(), false).await;
         let cas = HttpCas::new(&format!("http://{addr}"), Bytes::new()).expect("valid url");
         assert_eq!(
             cas.get(program).await,
             Some(blob),
-            "a program fetched by its Program hash content-verifies by digest"
+            "a program fetched by its Program hash resolves + content-verifies"
         );
     }
 
