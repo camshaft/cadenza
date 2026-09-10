@@ -21,8 +21,13 @@ use cdz_platform::{
     ReducerKind, SpawnContext,
 };
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// A shared, swappable route-table frame cell: the live table a [`DynamicRouter`] folds each request against,
+/// held so a background control-link task can swap it (`*cell.lock() = new_frame`) while the edge serves.
+/// The frame is the raw `http-route-table` bytes ([`crate::codec::encode_route_table`]).
+pub type RouteTableCell = Arc<Mutex<Bytes>>;
 
 /// The default per-request wall-clock ceiling (30s): a handler fold that has not produced a response within
 /// it is abandoned and answered `504`. The wasm store's epoch deadline traps a CPU-*spinning* fold, but a
@@ -222,8 +227,9 @@ pub struct DynamicRouter {
     origin: ReducerId,
     /// Binds each decision handler-marker to the real [`ProgramHash`] the gateway spawns for that route.
     handlers: HashMap<Bytes, ProgramHash>,
-    /// The live route-table frame the router folds each request against; swapped by [`set_table`].
-    table: Mutex<Bytes>,
+    /// The live route-table frame the router folds each request against; swapped by [`set_table`] (or a
+    /// control-link task holding a clone of the [`table_cell`](DynamicRouter::table_cell)).
+    table: RouteTableCell,
 }
 
 impl DynamicRouter {
@@ -244,13 +250,20 @@ impl DynamicRouter {
             host,
             origin,
             handlers,
-            table: Mutex::new(frame),
+            table: Arc::new(Mutex::new(frame)),
         }
     }
 
     /// Swap the live route-table frame — a control-link table update. The next [`match_route`] folds it.
     pub fn set_table(&self, frame: Bytes) {
         *self.table.lock().expect("route table lock") = frame;
+    }
+
+    /// A clone of the shared route-table cell, for a background control-link task to swap the table LIVE
+    /// while the edge serves (`*cell.lock() = new_frame`) — see [`crate::control_link::run_control_link`].
+    #[must_use]
+    pub fn table_cell(&self) -> RouteTableCell {
+        Arc::clone(&self.table)
     }
 
     /// Consult the router for `(method, path)` against the current live table: build a `RouteQuery{request,
@@ -743,6 +756,60 @@ mod tests {
                 .await
                 .is_none(),
             "the superseded route is gone after the update"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_router_table_cell_is_the_live_table() {
+        // `table_cell()` aliases the router's own live table — writing a new frame to the cell (what a
+        // control-link task does) changes routing with no other coordination. This is the plumbing
+        // `control_link::run_control_link` relies on.
+        use crate::codec::{RouteFrame, encode_route_table};
+        let prog = ProgramHash::of(b"native-dyn-router");
+        let b_h = ProgramHash::of(b"b-handler");
+        let mut store = Store::new();
+        store.register(prog, || Box::new(NativeDynRouter));
+
+        let req_contract = Bytes::from_static(b"cdz-platform.http.request........");
+        let mut handlers = HashMap::new();
+        handlers.insert(Bytes::from_static(b"m-b"), b_h);
+
+        // Start with a table routing GET /a (unbound handler marker — irrelevant, /a won't be queried).
+        let dr = DynamicRouter::new(
+            prog,
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            handlers,
+            encode_route_table(&[RouteFrame {
+                method: Method::Get,
+                path: "/a".to_string(),
+                handler: Bytes::from_static(b"m-a"),
+                contract: req_contract.clone(),
+            }]),
+        );
+
+        // Swap the table THROUGH THE CELL (as a control-link task would), not via set_table.
+        let cell = dr.table_cell();
+        *cell.lock().unwrap() = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/b".to_string(),
+            handler: Bytes::from_static(b"m-b"),
+            contract: req_contract.clone(),
+        }]);
+
+        // The router now folds the cell's current table — GET /b routes, /a is gone.
+        assert_eq!(
+            dr.match_route(&store, b"q1", Method::Get, "/b")
+                .await
+                .map(|(h, _)| h),
+            Some(b_h),
+            "a write through table_cell() is seen by the router's next match"
+        );
+        assert!(
+            dr.match_route(&store, b"q2", Method::Get, "/a")
+                .await
+                .is_none()
         );
     }
 
