@@ -61,6 +61,20 @@ pub struct Expect {
     pub body_contains: Option<String>,
 }
 
+impl RunSpec {
+    /// A one-line human summary of a parsed run (root router, program count, request count) — used by the
+    /// driver's `--parse-only` mode to confirm a compiled run-spec decoded, without running it.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "root-router={:?}, {} program(s), {} request(s)",
+            self.config.root_router,
+            self.config.programs.len(),
+            self.requests.len(),
+        )
+    }
+}
+
 impl Expect {
     /// Check an HTTP response against this assertion. `Ok(())` if every present field holds; `Err(reason)`
     /// with a human-readable diagnostic on the first field that fails (so a failing scenario names WHAT
@@ -237,6 +251,15 @@ mod tests {
         let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0];
         assert_eq!(expect, &Expect::default());
+    }
+
+    #[test]
+    fn summary_reports_router_program_and_request_counts() {
+        let spec = parse_run_spec(&sample_run_spec_bytes()).unwrap();
+        let s = spec.summary();
+        assert!(s.contains("root-router=\"router\""), "got: {s}");
+        assert!(s.contains("1 program(s)"), "got: {s}");
+        assert!(s.contains("1 request(s)"), "got: {s}");
     }
 
     #[test]
