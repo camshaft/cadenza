@@ -1775,18 +1775,21 @@
           '';
         };
 
-        # ── B3 (v-reducer-targets): rcdzc as a run-callable reducer-world GUEST component ──────────────
-        # Builds cdz-reducer-guest (feature target-rcdzc) to a wasm COMPONENT via cargo-component, for
-        # wasm32-unknown-unknown — WASI-FREE (operator 2026-09-10 "i don't want wasi, no"): Rust's
-        # unknown-unknown std stubs its OS layer inline rather than importing WASI, so the component imports
-        # ONLY the cadenza:platform reducer world (verified `wasm-tools component wit`: 0 wasi imports) and
-        # instantiates on the platform PURE linker. `wasm-tools strip -a` canonicalizes (drops the
-        # tool-version `producers`) for a reproducible content address; `hashOf` gives the CAS hash the
-        # platform's `run(program-hash, contract-id, input)` invokes it by. Reuses the seed workspace
-        # src+vendor (cdz-reducer-guest is a root MEMBER, built `-p` for wasm — no standalone lock); its
-        # `[package.metadata.component.target]` points at cdz-platform/wit (present in seedSrc).
-        reducerGuestRcdzc = pkgs.stdenvNoCC.mkDerivation {
-          pname = "reducer-guest-rcdzc";
+        # ── B3/B6/B7 (v-reducer-targets): the reducer-world GUEST targets, stamped from ONE crate ───────
+        # `mkReducerGuest <target>` builds cdz-reducer-guest to a wasm COMPONENT via cargo-component, selecting
+        # exactly ONE target with `--no-default-features --features target-<T>` (rcdzc | sexpr | ml). ONE crate,
+        # N components generated on the fly in the flake (operator: "no crate per wasm target … generate on the
+        # fly in the nix flake … they all export the same interface"). Built for wasm32-unknown-unknown —
+        # WASI-FREE (operator 2026-09-10 "i don't want wasi, no"): Rust's unknown-unknown std stubs its OS layer
+        # inline rather than importing WASI, so the component imports ONLY the cadenza:platform reducer world
+        # (verified `wasm-tools component wit`: 0 wasi imports) and instantiates on the platform PURE linker.
+        # `wasm-tools strip -a` canonicalizes (drops tool-version `producers`) for a reproducible content
+        # address; `hashOf` gives the CAS program-hash the platform's `run(program-hash, contract-id, input)`
+        # invokes it by. Reuses the seed workspace src+vendor (cdz-reducer-guest is a root MEMBER, built `-p`
+        # for wasm — no standalone lock); its `[package.metadata.component.target]` points at cdz-platform/wit
+        # (present in seedSrc). rcdzc = source-AST -> component; sexpr/ml = source -> AST + parse diagnostics.
+        mkReducerGuest = target: pkgs.stdenvNoCC.mkDerivation {
+          pname = "reducer-guest-${target}";
           version = "0.0.0";
           src = seedSrc;
           nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
@@ -1796,7 +1799,7 @@
             export RUSTC_BOOTSTRAP=1
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             cargo component build --release --target wasm32-unknown-unknown \
-              -p cdz-reducer-guest --features target-rcdzc --locked
+              -p cdz-reducer-guest --no-default-features --features target-${target} --locked
             runHook postBuild
           '';
           installPhase = ''
@@ -1806,6 +1809,9 @@
             runHook postInstall
           '';
         };
+        reducerGuestRcdzc = mkReducerGuest "rcdzc";
+        reducerGuestSexpr = mkReducerGuest "sexpr";
+        reducerGuestMl = mkReducerGuest "ml";
 
         # Full-CI-in-nix increment 3: the NATIVE half of the GHA `rcdzc-wasm` job (cargo test + clippy +
         # fmt in the rcdzc-wasm crate dir). The job's OTHER half — the wasm32-wasip1 build — is already
@@ -6601,6 +6607,12 @@
         # the platform's `run` invokes it by). WASI-free wasm32-unknown-unknown component (see the derivation).
         packages.reducer-guest-rcdzc = reducerGuestRcdzc;
         packages.reducer-guest-rcdzc-hash = hashOf reducerGuestRcdzc "reducer-guest-rcdzc-hash";
+        # B6/B7: the sexpr + ml parser reducer targets (source -> AST + diagnostics), same crate, same
+        # reducer-world guest interface — stamped by mkReducerGuest. Each + its CAS program-hash.
+        packages.reducer-guest-sexpr = reducerGuestSexpr;
+        packages.reducer-guest-sexpr-hash = hashOf reducerGuestSexpr "reducer-guest-sexpr-hash";
+        packages.reducer-guest-ml = reducerGuestMl;
+        packages.reducer-guest-ml-hash = hashOf reducerGuestMl "reducer-guest-ml-hash";
 
         # S2: build a Cadenza project through nix (the S1 compiler on Project.cdz → wasm).
         # `.#example-project` is the gate-witness demo, built by the in-flake `buildCadenzaProject`

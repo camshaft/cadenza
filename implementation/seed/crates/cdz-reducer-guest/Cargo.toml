@@ -21,10 +21,16 @@ publish = false
 crate-type = ["rlib", "cdylib"]
 
 [features]
-# Exactly one target feature is active per build. nix stamps N components by selecting one per target (B3).
+# Exactly one target feature is active per build (nix builds each with `--no-default-features --features
+# target-<T>`); `default` is target-rcdzc for the native workspace member build + B2 tests. nix stamps N
+# components from this one crate by selecting one target apiece (operator: "no crate per wasm target").
 default = ["target-rcdzc"]
 # The rcdzc compile target: a kinded-input bundle -> a wasm component + diagnostics envelope.
 target-rcdzc = ["dep:rcdzc"]
+# The sexpr parser target: s-expression source bytes -> canonical AST bytes + parse diagnostics.
+target-sexpr = ["dep:cadenza-syntax"]
+# The ml parser target: ML surface source bytes -> canonical AST bytes + (error-recovering) diagnostics.
+target-ml = ["dep:cadenza-syntax"]
 
 [dependencies]
 # The wit-bindgen runtime the cargo-component-generated `src/bindings.rs` links against (the reducer-world
@@ -38,6 +44,10 @@ cadenza-ast = { path = "../cadenza-ast" }
 # The compiler — the rcdzc target's inner function (`rcdzc::compile`). `default-features = false` drops the
 # host-CLI `validate-output` feature (`wasmparser`): a guest drives the library API, not the file-writing CLI.
 rcdzc = { path = "../rcdzc", default-features = false, optional = true }
+# The front-end reader — the sexpr/ml parser targets' inner function (`sexpr::read` / `parser::read_ml`).
+# OPTIONAL: pulled in only by `target-sexpr`/`target-ml` (a build dep for those targets; also a dev-dep below
+# so rcdzc_target's tests can bridge source->AST regardless of the active feature).
+cadenza-syntax = { path = "../cadenza-syntax", optional = true }
 
 [dev-dependencies]
 # The front-end reader — TESTS ONLY (bridges source text -> AST bytes to build a compile request), exactly
@@ -56,9 +66,6 @@ package = "cadenza:reducer-guest"
 path = "../cdz-platform/wit"
 world = "pure-reducer-world"
 
-[profile.release]
-# Small, deterministic component output — matches the runtime/guest convention.
-panic = "abort"
-opt-level = "s"
-lto = true
-codegen-units = 1
+# NOTE: no `[profile.release]` here — cdz-reducer-guest is a workspace MEMBER, so cargo ignores a
+# non-root-package profile (it uses the workspace root's release profile). The component builds + strips
+# fine on the workspace profile; a member-local profile only emits a "profiles ignored" warning.
