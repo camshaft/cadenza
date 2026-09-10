@@ -412,6 +412,18 @@ pub fn decode_ws_send(bytes: &[u8]) -> Option<WsSend> {
     })
 }
 
+/// Decode a `RouteQuery` envelope into its `(request, table)` byte payloads, or `None` if malformed — the
+/// inverse of [`encode_route_query`]. `RouteQuery` is single-ctor → the record directly (after the optional
+/// ascription).
+#[must_use]
+pub fn decode_route_query(bytes: &[u8]) -> Option<(Bytes, Bytes)> {
+    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let rec = unascribe(&arenas, arenas.root);
+    let request = read_bytes(&arenas, record_field(&arenas, rec, "request")?)?;
+    let table = read_bytes(&arenas, record_field(&arenas, rec, "table")?)?;
+    Some((request, table))
+}
+
 /// Decode the router governing program's closing-`Break` reason bytes into a [`RouteDecision`], or `None` if
 /// malformed. `Decision` is single-ctor → the record directly (after the optional ascription); an empty
 /// `handler` (the no-match sentinel) decodes to a `RouteDecision` whose [`is_match`](RouteDecision::is_match)
@@ -746,6 +758,18 @@ mod tests {
             data: Bytes::from_static(b"pong"),
         };
         assert_eq!(decode_ws_send(&encode_ws_send(&send)).unwrap(), send);
+    }
+
+    #[test]
+    fn route_query_round_trips() {
+        let request = encode_request(&sample_request());
+        let table = encode_route_table(&sample_route_table());
+        let (r, t) = decode_route_query(&encode_route_query(&request, &table)).expect("decodes");
+        assert_eq!(r, request);
+        assert_eq!(t, table);
+        // The embedded payloads still decode as their own forms after the round-trip through the envelope.
+        assert!(decode_request(&r).is_some());
+        assert_eq!(decode_route_table(&t).unwrap(), sample_route_table());
     }
 
     #[test]
