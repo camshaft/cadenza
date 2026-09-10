@@ -120,11 +120,26 @@ impl CasServer {
         }
     }
 
-    /// Serve one request: parse the `{hash}` key, dispatch by method + auth. An unparseable key is a `404`
-    /// miss (it names no valid content hash), never a `400` — a client asking for garbage just misses.
+    /// Serve one request. `POST /` is a SERVER-ASSIGNED content-addressed write — the server hashes the body
+    /// and answers `201` + `Location: /{hash}`, so a caller never has to hash. Every other method addresses a
+    /// specific blob by its `{hash}` key; an unparseable key is a `404` miss (it names no valid content
+    /// hash), never a `400` — a client asking for garbage just misses.
     async fn handle(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
         let (parts, body) = req.into_parts();
         let key = parts.uri.path().trim_start_matches('/');
+
+        // POST is the server-assigned write, targeting the ROOT (`/`) — the address is computed + returned,
+        // not supplied by the caller. `POST /{something}` is not a route (405).
+        if parts.method == Method::POST {
+            if !key.is_empty() {
+                return floor(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "POST the body to / (the root); the content address is assigned and returned",
+                );
+            }
+            return self.store_assigned(&parts.headers, body).await;
+        }
+
         let Ok(hash) = key.parse::<Hash>() else {
             return floor(StatusCode::NOT_FOUND, "not found");
         };
@@ -159,26 +174,13 @@ impl CasServer {
                 }
             }
             Method::PUT => {
-                // Writes disabled unless a write credential is configured (a read-only deployment 405s).
-                let Some(expected) = self.write_credential.as_deref() else {
-                    return floor(StatusCode::METHOD_NOT_ALLOWED, "writes not enabled");
-                };
-                let authorized = bearer(&parts.headers)
-                    .is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes()));
-                if !authorized {
-                    return floor(StatusCode::UNAUTHORIZED, "unauthorized");
+                // The idempotent content-addressed ASSERT: store the body AT the given key and validate it.
+                if let Some(deny) = self.authorize_write(&parts.headers) {
+                    return deny;
                 }
-                // Bound the body BEFORE storing: read at most `max_body_bytes`, else `413`.
-                let bytes = match Limited::new(body, self.max_body_bytes).collect().await {
-                    Ok(collected) => collected.to_bytes(),
-                    Err(err)
-                        if err
-                            .downcast_ref::<http_body_util::LengthLimitError>()
-                            .is_some() =>
-                    {
-                        return floor(StatusCode::PAYLOAD_TOO_LARGE, "payload too large");
-                    }
-                    Err(_) => return floor(StatusCode::BAD_REQUEST, "bad request body"),
+                let bytes = match Self::read_body(body, self.max_body_bytes).await {
+                    Ok(bytes) => bytes,
+                    Err(resp) => return resp,
                 };
                 // Validate the content-address: the body must hash (by digest) to the key it's PUT under, so
                 // a stored blob whose bytes don't match its key can never exist.
@@ -190,14 +192,31 @@ impl CasServer {
                     );
                 }
                 self.store.put(bytes).await;
-                Response::builder()
-                    .status(StatusCode::CREATED)
-                    .header(LOCATION, format!("/{hash}"))
-                    .body(Full::new(Bytes::new()))
-                    .expect("a 201 response with a valid Location is always valid")
+                // Empty body — the caller already knows the address (it's the key it PUT to).
+                created(&hash, Bytes::new())
             }
             _ => floor(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         }
+    }
+
+    /// The `POST /` server-assigned write: authorize, read the (bounded) body, hash it, store it, and answer
+    /// `201` + `Location: /{hash}` with the base62 hash text in the body — so the caller learns the address
+    /// without ever hashing.
+    async fn store_assigned(
+        &self,
+        headers: &hyper::HeaderMap,
+        body: Incoming,
+    ) -> Response<Full<Bytes>> {
+        if let Some(deny) = self.authorize_write(headers) {
+            return deny;
+        }
+        let bytes = match Self::read_body(body, self.max_body_bytes).await {
+            Ok(bytes) => bytes,
+            Err(resp) => return resp,
+        };
+        let hash = Hash::of(HashTag::Blob, &bytes);
+        self.store.put(bytes).await;
+        created(&hash, Bytes::from(hash.to_string()))
     }
 
     /// Whether a request bearing `headers` may read: open when no read credential is configured, else the
@@ -210,6 +229,48 @@ impl CasServer {
             }
         }
     }
+
+    /// Authorize a write (`PUT`/`POST`): `None` if permitted, else the floor to return — `405` when writes
+    /// are disabled (no write credential configured, a read-only deployment) or `401` on a missing/wrong
+    /// Bearer token.
+    fn authorize_write(&self, headers: &hyper::HeaderMap) -> Option<Response<Full<Bytes>>> {
+        let Some(expected) = self.write_credential.as_deref() else {
+            return Some(floor(StatusCode::METHOD_NOT_ALLOWED, "writes not enabled"));
+        };
+        if bearer(headers).is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes())) {
+            None
+        } else {
+            Some(floor(StatusCode::UNAUTHORIZED, "unauthorized"))
+        }
+    }
+
+    /// Read at most `max` bytes of a request `body` (the per-write ceiling), or the floor to return — `413`
+    /// over the ceiling, `400` on any other read error — so a large/unbounded upload can't exhaust memory.
+    async fn read_body(body: Incoming, max: usize) -> Result<Bytes, Response<Full<Bytes>>> {
+        match Limited::new(body, max).collect().await {
+            Ok(collected) => Ok(collected.to_bytes()),
+            Err(err)
+                if err
+                    .downcast_ref::<http_body_util::LengthLimitError>()
+                    .is_some() =>
+            {
+                Err(floor(StatusCode::PAYLOAD_TOO_LARGE, "payload too large"))
+            }
+            Err(_) => Err(floor(StatusCode::BAD_REQUEST, "bad request body")),
+        }
+    }
+}
+
+/// A `201 Created` for a stored blob: `Location: /{hash}` (the canonical URL) + `body` — empty for a
+/// validated `PUT` (the caller already knows the address), or the base62 hash text for a server-assigned
+/// `POST` (so the caller learns where it landed without hashing).
+fn created(hash: &Hash, body: Bytes) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::CREATED)
+        .header(LOCATION, format!("/{hash}"))
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Full::new(body))
+        .expect("a 201 response with a valid Location is always valid")
 }
 
 /// A plain-text FLOOR response the server synthesizes without touching the store.

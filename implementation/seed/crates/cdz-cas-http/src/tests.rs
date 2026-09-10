@@ -181,3 +181,70 @@ async fn serves_from_a_disk_backend_and_persists() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A raw POST to `path`, returning `(status, Location header, body text)`.
+async fn raw_post(
+    addr: SocketAddr,
+    path: &str,
+    credential: Option<&str>,
+    body: Vec<u8>,
+) -> (u16, Option<String>, String) {
+    let client = reqwest::Client::new();
+    let mut request = client.post(format!("http://{addr}{path}")).body(body);
+    if let Some(c) = credential {
+        request = request.bearer_auth(c);
+    }
+    let resp = request.send().await.expect("send");
+    let status = resp.status().as_u16();
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let text = resp.text().await.expect("body");
+    (status, location, text)
+}
+
+#[tokio::test]
+async fn post_to_root_assigns_the_address_and_returns_it() {
+    let addr = spawn_server().await;
+    let payload = b"post me, don't make me hash".to_vec();
+    let expected = Hash::of(HashTag::Blob, &payload);
+
+    // POST to / — the server hashes the body and hands back the address; the caller never hashes.
+    let (status, location, body) = raw_post(addr, "/", Some(WRITE), payload.clone()).await;
+    assert_eq!(status, 201);
+    let loc = format!("/{expected}");
+    assert_eq!(
+        location.as_deref(),
+        Some(loc.as_str()),
+        "Location is /{{hash}}"
+    );
+    // The body carries the base62 hash text, and it parses back to the same hash.
+    assert_eq!(
+        body.parse::<Hash>().expect("body is a base62 hash"),
+        expected
+    );
+
+    // …and the blob is retrievable at the returned address.
+    let store = client(addr);
+    assert_eq!(
+        store.fetch(expected).await.expect("fetch"),
+        Some(Bytes::from(payload))
+    );
+}
+
+#[tokio::test]
+async fn post_to_a_non_root_path_is_405() {
+    let addr = spawn_server().await;
+    // POST addresses the ROOT only; a path is not a route (the address is server-assigned).
+    let (status, _, _) = raw_post(addr, "/some-path", Some(WRITE), b"x".to_vec()).await;
+    assert_eq!(status, 405);
+}
+
+#[tokio::test]
+async fn post_without_a_valid_write_credential_is_unauthorized() {
+    let addr = spawn_server().await;
+    let (status, _, _) = raw_post(addr, "/", Some("wrong"), b"x".to_vec()).await;
+    assert_eq!(status, 401);
+}
