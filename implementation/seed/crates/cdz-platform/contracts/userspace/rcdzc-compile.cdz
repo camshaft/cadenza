@@ -1,0 +1,70 @@
+// The `cdz-platform.rcdzc.compile` contract (design/DESIGN-reducer-targets.md §5): the STRONGLY-TYPED
+// request/response pair for the rcdzc compile reducer target (the `reducer-guest-rcdzc` component). A caller
+// `run`s the component with a `CompileRequest` (a kinded-input bundle) and reads back a `CompileResult` — its
+// `close` reason. One contract carries BOTH the input type (`CompileRequest`) and the output type
+// (`CompileResult`) and folds to ONE content-addressed `contract-id` (the routing tag on `run`), exactly like
+// `blob-get`. Userspace: a Cadenza reducer consumes it via self-reflection; the build-time contract projector
+// also emits a Rust binding (`crate::contracts::rcdzc_compile::contract().id()`) so a Rust caller (the
+// http-outpost compile handler) derives the SAME id — no hard-coded id literals (operator computed-ids).
+//
+// An `Artifact` is the compile-boundary vocabulary (`cadenza_compile_abi::Artifact { kind, name, bytes }`,
+// spec/capabilities/self-hosting-surface.md — a toolchain's internal values do not cross the boundary, only
+// byte sequences): `kind == "ast"` is a canonical binary-AST INPUT, `kind == "component"` a derived wasm
+// OUTPUT. The request is the SAME `&[Artifact]` bundle `rcdzc::compile` takes ("all the sidecar and inputs
+// as one message", operator). A compile `Diagnostic` is NODE-located (`node` = the AST node index it
+// concerns), NOT byte-span located like a PARSE diagnostic (cf. sexpr-parse/ml-parse) — the compiler is
+// span-free; the consumer holds the span table keyed by node. `severity` distinguishes an Error (denies a
+// component) from a Warning (accompanies one); `code` is the stable `CDZ####` (`None` for an uncoded
+// decline). A failing program is not a trap — it rides in `diagnostics` with no `component` artifact
+// (decline-don't-miscompile), so the caller reads success/failure from the decoded result.
+//
+// (The machine-readable DiagnosticFix — the agent-actionable repair route — is OMITTED from this first-cut
+// type; it is optional in the wire and belongs to the guest-wire-reconciliation slice. Tracked, not lost.)
+type Severity   = | Error | Warning
+type Artifact   = | Artifact(Record(kind: String, name: String, bytes: Bytes))
+type Diagnostic =
+  | Diagnostic(Record(severity: Severity, code: Option(String), message: String, node: Option(UInt32)))
+type CompileRequest = | Compile(List(Artifact))
+type CompileResult  = | Compiled(Record(artifacts: List(Artifact), diagnostics: List(Diagnostic)))
+
+// --- conformance proof: fully-literal request + response values, ascribed against the schema types ---
+def a-request() -> CompileRequest =
+  CompileRequest.Compile([Artifact.Artifact({ kind = "ast", name = "main", bytes = b"canonical-ast-bytes" })])
+
+def a-result() -> CompileResult =
+  CompileResult.Compiled(
+    { artifacts = [Artifact.Artifact({ kind = "component", name = "main", bytes = b"\x00asm..." })],
+      diagnostics = [Diagnostic.Diagnostic({ severity = Severity.Warning,
+                                             code = Option.Some("CDZ0102"),
+                                             message = "unused binding",
+                                             node = Option.Some(7) })] })
+
+@test
+def request-conforms() =
+  match a-request() with
+  | CompileRequest.Compile(inputs) =>
+    (match inputs with
+     | [a] => (match a with | Artifact.Artifact(x) =>
+                 if (x.kind == "ast") and (x.name == "main") and (x.bytes == b"canonical-ast-bytes")
+                 then unit else trap("rcdzc-compile request field mismatch"))
+     | _ => trap("expected exactly one input artifact"))
+
+@test
+def result-conforms() =
+  match a-result() with
+  | CompileResult.Compiled(r) =>
+    (match r.artifacts with
+     | [a] => (match a with | Artifact.Artifact(x) =>
+                 (match r.diagnostics with
+                  | [d] => (match d with | Diagnostic.Diagnostic(y) =>
+                              if (x.kind == "component") and (y.message == "unused binding")
+                                 and (y.code == Option.Some("CDZ0102")) and (y.node == Option.Some(7))
+                              then (match y.severity with | Warning => unit | _ => trap("severity mismatch"))
+                              else trap("rcdzc-compile result field mismatch"))
+                  | _ => trap("expected exactly one diagnostic")))
+     | _ => trap("expected exactly one output artifact"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.rcdzc.compile", "CompileRequest", "CompileResult")
+export { Severity.*, Artifact.*, Diagnostic.*, CompileRequest.*, CompileResult.*, descriptor }
