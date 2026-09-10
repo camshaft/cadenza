@@ -920,4 +920,179 @@ mod tests {
         let (status, _) = get(addr, "/nope").await;
         assert_eq!(status, 404, "an unrouted path is a 404 floor");
     }
+
+    /// THE P3 LIVE-UPDATE CAPSTONE (DESIGN-http-outpost.md §3): a route-table UPDATE re-routes a RUNNING
+    /// server, end to end. A control server seeds a table (GET / → the PoC handler) then LATER pushes a new
+    /// table (GET / → the ECHO handler); a persistent `run_control_link` task folds each into the gateway's
+    /// live table cell — so the SAME `GET /`, over the same server, first returns the PoC body and then the
+    /// echo body, with no restart. Proves control-shipped live routing composes over the real edge + guest.
+    #[tokio::test]
+    async fn a_live_route_table_update_reroutes_a_running_server() {
+        use crate::codec::{Method, RouteFrame, encode_route_table};
+        use crate::control_link::run_control_link;
+        use crate::edge::HttpEdge;
+        use crate::gateway::{DynamicRouter, Gateway};
+        use crate::runner::HandlerRunner;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use futures_util::SinkExt;
+        use http_body_util::{BodyExt, Empty};
+        use hyper::Request;
+        use hyper_util::rt::TokioIo;
+        use std::collections::HashMap;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (Ok(router_path), Ok(poc_path), Ok(echo_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_DYNAMIC_WASM"),
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_ECHO_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "a_live_route_table_update_reroutes_a_running_server: \
+                 CDZ_HTTP_ROUTER_DYNAMIC_WASM/POC_WASM/ECHO_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read dynamic router");
+        let poc = std::fs::read(&poc_path).expect("read PoC handler");
+        let echo = std::fs::read(&echo_path).expect("read echo handler");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        cas.put(bytes::Bytes::from(poc.clone())).await;
+        cas.put(bytes::Bytes::from(echo.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let router_program = ProgramHash::of(&router);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        let poc_marker = bytes::Bytes::from_static(b"cdz-http.handler.root............");
+        let echo_marker = bytes::Bytes::from_static(b"cdz-http.handler.echo............");
+        let req_c = bytes::Bytes::from_static(b"cdz-platform.http.request........");
+        let table_poc = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: poc_marker.clone(),
+            contract: req_c.clone(),
+        }]);
+        let table_echo = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: echo_marker.clone(),
+            contract: req_c.clone(),
+        }]);
+
+        // A stub control server: push table_poc on connect, then AWAIT a signal to push table_echo (a live
+        // update mid-run), then close.
+        let ctl = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind control");
+        let ctl_addr = ctl.local_addr().expect("ctl addr");
+        let (push_echo_tx, push_echo_rx) = tokio::sync::oneshot::channel::<()>();
+        let (tp, te) = (table_poc.clone(), table_echo.clone());
+        tokio::spawn(async move {
+            let (s, _) = ctl.accept().await.expect("ctl accept");
+            let mut ws = tokio_tungstenite::accept_async(s)
+                .await
+                .expect("ctl handshake");
+            let _ = ws.send(Message::Binary(tp.to_vec())).await;
+            let _ = push_echo_rx.await; // wait for the test to request the live update
+            let _ = ws.send(Message::Binary(te.to_vec())).await;
+            let _ = ws.close(None).await;
+        });
+
+        // Build the dynamic-router edge with an EMPTY initial table; the control link seeds + updates it.
+        let mut handlers = HashMap::new();
+        handlers.insert(poc_marker, ProgramHash::of(&poc));
+        handlers.insert(echo_marker, ProgramHash::of(&echo));
+        let dynamic = DynamicRouter::new(
+            router_program,
+            ContractId::of(b"cdz-platform.http.route-query"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"gateway"),
+            handlers,
+            bytes::Bytes::new(),
+        );
+        let cell = dynamic.table_cell();
+        let gateway = Gateway::with_dynamic_router(
+            dynamic,
+            HandlerRunner::new(HostId::of(b"edge-host"), ReducerId::of(b"gateway")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        // The persistent control link seeds + live-updates the gateway's route table.
+        tokio::spawn(run_control_link(ctl_addr, cell.clone()));
+
+        // Deterministically wait until the live cell holds `expected` (no sleep-based race).
+        async fn await_table(cell: &crate::gateway::RouteTableCell, expected: &bytes::Bytes) {
+            for _ in 0..2000 {
+                if *cell.lock().expect("lock") == *expected {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            panic!("the live route table never reached the expected frame");
+        }
+        async fn get(addr: std::net::SocketAddr, path: &str) -> (u16, bytes::Bytes) {
+            let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            let (mut sender, conn) =
+                hyper::client::conn::http1::handshake::<_, Empty<bytes::Bytes>>(TokioIo::new(
+                    stream,
+                ))
+                .await
+                .expect("handshake");
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let resp = sender
+                .send_request(
+                    Request::builder()
+                        .method(hyper::Method::GET)
+                        .uri(path)
+                        .header("host", "test")
+                        .body(Empty::<bytes::Bytes>::new())
+                        .expect("request"),
+                )
+                .await
+                .expect("send");
+            let status = resp.status().as_u16();
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            (status, body)
+        }
+
+        // Phase 1: the control link seeded table_poc → GET / reaches the PoC handler.
+        await_table(&cell, &table_poc).await;
+        let (status, body) = get(addr, "/").await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"hello from a wasm handler"),
+            "before the update, GET / routes to the PoC handler"
+        );
+
+        // Phase 2: trigger the live update; once the cell holds table_echo, the SAME GET / re-routes to the
+        // echo handler — no restart.
+        let _ = push_echo_tx.send(());
+        await_table(&cell, &table_echo).await;
+        let (status, body) = get(addr, "/").await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"method=GET"),
+            "after the live update, the same GET / routes to the echo handler"
+        );
+    }
 }
