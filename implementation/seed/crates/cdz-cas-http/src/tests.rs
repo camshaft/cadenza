@@ -177,7 +177,7 @@ async fn serves_from_a_disk_backend_and_persists() {
 
     // The blob is actually on disk: a fresh DiskBlobStore on the same dir holds it.
     let reopened = DiskBlobStore::open(&dir).expect("reopen");
-    assert_eq!(reopened.get(hash).await, Some(payload));
+    assert_eq!(reopened.get(hash).await.unwrap(), Some(payload));
 
     std::fs::remove_dir_all(&dir).ok();
 }

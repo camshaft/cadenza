@@ -18,10 +18,10 @@ use super::observation::{
     RejectedCall, RunCall,
 };
 use crate::{
-    ArgProbeSink, BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId,
-    KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash,
-    ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response,
-    RunError, RunSink, SpawnContext, Str,
+    ArgProbeSink, BlobStore, BlobStoreError, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind,
+    Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome,
+    ProgramHash, ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request,
+    Response, RunError, RunSink, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -147,28 +147,29 @@ impl<B> RecordingBlobStore<B> {
 
 #[async_trait]
 impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
-    async fn put(&self, bytes: Bytes) -> Hash {
+    async fn put(&self, bytes: Bytes) -> Result<Hash, BlobStoreError> {
         // The stored bytes are addressed by the hash, so the record keeps the hash and the byte length,
-        // not the bytes again. Capture the length before the bytes move into the backend.
+        // not the bytes again. Capture the length before the bytes move into the backend. Record only the
+        // successful op (a backend error propagates, unrecorded).
         let len = bytes.len();
-        let hash = self.inner.put(bytes).await;
+        let hash = self.inner.put(bytes).await?;
         self.record(BlobOp::Put { hash, len });
-        hash
+        Ok(hash)
     }
 
-    async fn get(&self, hash: Hash) -> Option<Bytes> {
-        let bytes = self.inner.get(hash).await;
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError> {
+        let bytes = self.inner.get(hash).await?;
         self.record(BlobOp::Get {
             hash,
             hit: bytes.is_some(),
         });
-        bytes
+        Ok(bytes)
     }
 
-    async fn has(&self, hash: Hash) -> bool {
-        let present = self.inner.has(hash).await;
+    async fn has(&self, hash: Hash) -> Result<bool, BlobStoreError> {
+        let present = self.inner.has(hash).await?;
         self.record(BlobOp::Has { hash, present });
-        present
+        Ok(present)
     }
 }
 

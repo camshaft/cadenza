@@ -17,7 +17,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cdz_platform::{BlobStore, Hash, HashTag};
+use cdz_platform::{BlobStore, BlobStoreError, Hash, HashTag};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -87,34 +87,28 @@ impl DiskBlobStore {
 
 #[async_trait]
 impl BlobStore for DiskBlobStore {
-    async fn put(&self, bytes: Bytes) -> Hash {
+    async fn put(&self, bytes: Bytes) -> Result<Hash, BlobStoreError> {
         let hash = Hash::of(HashTag::Blob, &bytes);
         let path = self.path_for(&hash);
-        // `put` returns no `Result` (the trait is deterministic — a fallible backend absorbs I/O). On a
-        // write error we log and still return the content hash, matching the HTTP client's contract.
-        if let Err(err) = self.write_atomic(&path, &bytes).await {
-            tracing::error!(error = %err, path = %path.display(), "cas-http disk put failed");
-        }
-        hash
+        self.write_atomic(&path, &bytes)
+            .await
+            .map_err(|err| BlobStoreError::Io(format!("write {}: {err}", path.display())))?;
+        Ok(hash)
     }
 
-    async fn get(&self, hash: Hash) -> Option<Bytes> {
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError> {
         match tokio::fs::read(self.path_for(&hash)).await {
-            Ok(bytes) => Some(Bytes::from(bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                // A non-absence read error (permissions, corruption) can't be surfaced through the trait's
-                // `Option`; log it and report a miss (the safe conservative behavior).
-                tracing::warn!(error = %err, %hash, "cas-http disk get failed; treating as a miss");
-                None
-            }
+            Ok(bytes) => Ok(Some(Bytes::from(bytes))),
+            // A genuine miss is `Ok(None)`; any other read error (permissions, corruption) is a real error.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(BlobStoreError::Io(format!("read blob: {err}"))),
         }
     }
 
-    async fn has(&self, hash: Hash) -> bool {
+    async fn has(&self, hash: Hash) -> Result<bool, BlobStoreError> {
         tokio::fs::try_exists(self.path_for(&hash))
             .await
-            .unwrap_or(false)
+            .map_err(|err| BlobStoreError::Io(format!("stat blob: {err}")))
     }
 }
 
@@ -137,20 +131,20 @@ mod tests {
         let store = DiskBlobStore::open(&dir).expect("open");
         let bytes = Bytes::from_static(b"persisted blob");
 
-        let hash = store.put(bytes.clone()).await;
+        let hash = store.put(bytes.clone()).await.unwrap();
         assert_eq!(hash, Hash::of(HashTag::Blob, &bytes));
-        assert_eq!(store.get(hash).await, Some(bytes.clone()));
-        assert!(store.has(hash).await);
+        assert_eq!(store.get(hash).await.unwrap(), Some(bytes.clone()));
+        assert!(store.has(hash).await.unwrap());
 
         // Digest-keying: the same content fetched by a Program-tagged hash resolves.
         let program = Hash::of(HashTag::Program, b"persisted blob");
-        assert_eq!(store.get(program).await, Some(bytes));
-        assert!(store.has(program).await);
+        assert_eq!(store.get(program).await.unwrap(), Some(bytes));
+        assert!(store.has(program).await.unwrap());
 
         // Genuine absence.
         let absent = Hash::of(HashTag::Blob, b"never stored");
-        assert_eq!(store.get(absent).await, None);
-        assert!(!store.has(absent).await);
+        assert_eq!(store.get(absent).await.unwrap(), None);
+        assert!(!store.has(absent).await.unwrap());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -160,12 +154,15 @@ mod tests {
         let dir = scratch("persist");
         let hash = {
             let store = DiskBlobStore::open(&dir).expect("open");
-            store.put(Bytes::from_static(b"survives restart")).await
+            store
+                .put(Bytes::from_static(b"survives restart"))
+                .await
+                .unwrap()
         };
         // A fresh store on the same dir still holds the blob (the "survives a restart" property).
         let reopened = DiskBlobStore::open(&dir).expect("reopen");
         assert_eq!(
-            reopened.get(hash).await,
+            reopened.get(hash).await.unwrap(),
             Some(Bytes::from_static(b"survives restart"))
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -175,10 +172,13 @@ mod tests {
     async fn put_is_idempotent_by_content() {
         let dir = scratch("idem");
         let store = DiskBlobStore::open(&dir).expect("open");
-        let h1 = store.put(Bytes::from_static(b"same")).await;
-        let h2 = store.put(Bytes::from_static(b"same")).await;
+        let h1 = store.put(Bytes::from_static(b"same")).await.unwrap();
+        let h2 = store.put(Bytes::from_static(b"same")).await.unwrap();
         assert_eq!(h1, h2);
-        assert_eq!(store.get(h1).await, Some(Bytes::from_static(b"same")));
+        assert_eq!(
+            store.get(h1).await.unwrap(),
+            Some(Bytes::from_static(b"same"))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -187,7 +187,7 @@ mod tests {
         let dir = scratch("shard");
         let store = DiskBlobStore::open(&dir).expect("open");
         let bytes = Bytes::from_static(b"shard me by first two chars");
-        let hash = store.put(bytes.clone()).await;
+        let hash = store.put(bytes.clone()).await.unwrap();
 
         // The blob lands at root/{c0}/{c1}/{full-base62-name}, keyed on the Blob-tagged digest.
         let mut norm = [0u8; Hash::LEN];
@@ -202,8 +202,8 @@ mod tests {
         // No blob file sits directly in root (the fan-out, not a flat layout).
         assert!(!dir.join(&name).exists(), "must not be stored flat in root");
         // …and it still round-trips through the sharded path.
-        assert_eq!(store.get(hash).await, Some(bytes));
-        assert!(store.has(hash).await);
+        assert_eq!(store.get(hash).await.unwrap(), Some(bytes));
+        assert!(store.has(hash).await.unwrap());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

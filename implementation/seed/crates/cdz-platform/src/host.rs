@@ -302,11 +302,26 @@ impl cadenza::platform::blobs::Host for HostState {
     async fn get(&mut self, hash: Vec<u8>) -> Option<Vec<u8>> {
         // A malformed hash (not exactly `Hash::LEN` bytes) names nothing, so it reads back as absent.
         let hash = Hash::from_bytes(<[u8; Hash::LEN]>::try_from(hash.as_slice()).ok()?);
-        self.blobs.get(hash).await.map(|bytes| bytes.to_vec())
+        // The `blobs` WIT import is infallible-shaped (`get -> option<list<u8>>`), so a backend error can't
+        // be surfaced to the guest here — `.ok().flatten()` collapses `Err`/`Ok(None)` to a miss. (Making
+        // the `blobs` WIT fallible is a separate guest-ABI change.)
+        self.blobs
+            .get(hash)
+            .await
+            .ok()
+            .flatten()
+            .map(|bytes| bytes.to_vec())
     }
 
     async fn put(&mut self, bytes: Vec<u8>) -> Vec<u8> {
-        self.blobs.put(Bytes::from(bytes)).await.as_bytes().to_vec()
+        let bytes = Bytes::from(bytes);
+        // Infallible WIT (`put -> list<u8>`): return the content hash regardless. A failed persist can't be
+        // surfaced at this boundary (a fallible `blobs` WIT would let us); the hash is a pure function of the
+        // bytes, so we can always compute it.
+        match self.blobs.put(bytes.clone()).await {
+            Ok(hash) => hash.as_bytes().to_vec(),
+            Err(_) => Hash::of(crate::HashTag::Blob, &bytes).as_bytes().to_vec(),
+        }
     }
 }
 
@@ -1134,7 +1149,9 @@ impl Instantiator {
         }
         // Compile outside the lock (Cranelift is slow); a concurrent duplicate compile of the same component
         // is harmless — the last insert wins and both yield an equivalent component.
-        let bytes = self.cas.get(hash).await?;
+        // This loader's contract is `Option` (None = can't load); a store error OR a genuine miss both read
+        // as None here (`.ok().flatten()` collapses `Err`/`Ok(None)`).
+        let bytes = self.cas.get(hash).await.ok().flatten()?;
         let component = Component::new(&self.host.engine, &bytes).ok()?;
         self.compiled
             .lock()
@@ -1255,7 +1272,8 @@ impl Instantiator {
 
     /// Whether the store holds `program`'s component bytes — a content lookup by the program hash (§8).
     async fn contains(&self, program: ProgramHash) -> bool {
-        self.cas.has(program.hash()).await
+        // A store error reads as "not present" — this bool contract can't surface it.
+        self.cas.has(program.hash()).await.unwrap_or(false)
     }
 
     /// Run `program` once as a pure function of `input` against `contract` — the capability behind the
@@ -2461,7 +2479,7 @@ mod tests {
         // Seed the CAS with some bytes as an ordinary blob — the way an input program blob is seeded.
         let cas = InMemoryBlobStore::new();
         let bytes = b"not a valid wasm component".to_vec();
-        let blob = cas.put(Bytes::from(bytes.clone())).await;
+        let blob = cas.put(Bytes::from(bytes.clone())).await.unwrap();
         // The program is the Program-tagged view of those same bytes; it shares the blob's digest, so the
         // content-keyed store resolves it (the tag is ignored).
         let program = ProgramHash::of(&bytes);

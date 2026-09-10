@@ -521,9 +521,9 @@ fn pure_run_phase(
         async move {
             let cas = InMemoryBlobStore::new();
             for (_label, component) in &deps {
-                cas.put(component.clone()).await;
+                cas.put(component.clone()).await.unwrap();
             }
-            cas.put(bytes).await;
+            cas.put(bytes).await.unwrap();
             // A pure run instantiates one program with an empty capability set — no routing — so a fresh
             // graph for the store suffices.
             let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
