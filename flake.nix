@@ -6895,6 +6895,12 @@
                 # test never false-reds under fleet build load.
                 CDZ_RUN_TIMEOUT_SECS = "300";
                 RUST_MIN_STACK = "67108864";
+                # Building an aws-sdk-s3 client (the `s3` feature's tests) eagerly loads NATIVE root CA certs,
+                # which don't exist in the hermetic sandbox → aws-smithy-http-client panics ("no valid root
+                # certificates parsed"). Point rustls-native-certs at a CA bundle so client construction
+                # succeeds; no network is made (the tests only build a client + derive keys). Production uses
+                # the machine's real system certs.
+                SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               } ''
               export HOME="$TMPDIR/home"; mkdir -p "$HOME"
               cp -r --no-preserve=mode,ownership ${cdzCasHttpSrc} repo
@@ -6915,7 +6921,12 @@
               cargo test --offline --locked
               cargo clippy --offline --locked --all-targets -- -D warnings
               cargo fmt --check
-              echo "ok: cdz-cas-http (excluded standalone crate — test + clippy + fmt, contracts overlay staged)" > "$out"
+              # The `s3` feature (src/s3.rs) pulls the aws-sdk-s3 durable-floor tier — build + test + clippy
+              # it so the S3 code stays gated. aws-lc-sys's cmake build is already covered by `cmake` above;
+              # the aws tree vendors offline like everything else (rustls + aws-lc-rs, no openssl).
+              cargo test --offline --locked --features s3
+              cargo clippy --offline --locked --all-targets --features s3 -- -D warnings
+              echo "ok: cdz-cas-http (excluded standalone crate — test + clippy + fmt, default AND --features s3, contracts overlay staged)" > "$out"
             '';
             # cdz-http-protocol (vertical gateway-conformance): the excluded standalone control-plane
             # wire-contract crate's dedicated check — test + clippy + fmt. LIGHTEST of the http-outpost checks:
