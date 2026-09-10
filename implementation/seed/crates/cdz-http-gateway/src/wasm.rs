@@ -429,4 +429,122 @@ mod tests {
             "an unlisted route is not usable"
         );
     }
+
+    /// THE P2 FINALE (DESIGN-http-outpost.md §4): routing-as-a-fold serving a REAL request over a REAL socket
+    /// with REAL guests — client → edge → the router GOVERNING PROGRAM consults its baked table → the gateway
+    /// spawns the decided handler → its http-response → socket. No static route table anywhere: the route
+    /// decision comes entirely from folding the request through the wasm router guest. The router's baked
+    /// `root` marker is bound to the PoC handler component's real `ProgramHash` (the deployment binding); both
+    /// guests + the value-heap runtime + NFC are seeded into one CAS. Skips cleanly when any env var is unset.
+    #[tokio::test]
+    async fn real_router_guest_routes_a_real_handler_over_a_socket() {
+        use crate::edge::HttpEdge;
+        use crate::gateway::{Gateway, RouterReducer};
+        use crate::runner::HandlerRunner;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use http_body_util::{BodyExt, Empty};
+        use hyper::Request;
+        use hyper_util::rt::TokioIo;
+        use std::collections::HashMap;
+
+        let (Ok(router_path), Ok(poc_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_WASM"),
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "real_router_guest_routes_a_real_handler_over_a_socket: \
+                 CDZ_HTTP_ROUTER_WASM/POC_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read router guest wasm");
+        let poc = std::fs::read(&poc_path).expect("read PoC handler wasm");
+
+        // One CAS holds the router guest, the PoC handler, and the value-heap runtime + NFC both import.
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        cas.put(bytes::Bytes::from(poc.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let router_program = ProgramHash::of(&router);
+        let poc_program = ProgramHash::of(&poc);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // Bind the router guest's baked `root` marker (it routes GET / there) to the real PoC handler hash.
+        let mut handlers = HashMap::new();
+        handlers.insert(
+            bytes::Bytes::from_static(b"cdz-http.handler.root............"),
+            poc_program,
+        );
+        let router_reducer = RouterReducer::new(
+            router_program,
+            ContractId::of(b"cdz-platform.http.request"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"gateway"),
+            handlers,
+        );
+        let gateway = Gateway::with_router_reducer(
+            router_reducer,
+            HandlerRunner::new(HostId::of(b"edge-host"), ReducerId::of(b"gateway")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        async fn get(addr: std::net::SocketAddr, path: &str) -> (u16, bytes::Bytes) {
+            let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            let (mut sender, conn) =
+                hyper::client::conn::http1::handshake::<_, Empty<bytes::Bytes>>(TokioIo::new(
+                    stream,
+                ))
+                .await
+                .expect("handshake");
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let resp = sender
+                .send_request(
+                    Request::builder()
+                        .method(hyper::Method::GET)
+                        .uri(path)
+                        .header("host", "test")
+                        .body(Empty::<bytes::Bytes>::new())
+                        .expect("request"),
+                )
+                .await
+                .expect("send");
+            let status = resp.status().as_u16();
+            let body = resp.into_body().collect().await.expect("body").to_bytes();
+            (status, body)
+        }
+
+        // GET / : the router guest folds the request, decides `root`, the gateway spawns the bound PoC
+        // handler, and its response rides back to the socket — routing-as-a-fold, end to end.
+        let (status, body) = get(addr, "/").await;
+        assert_eq!(
+            status, 200,
+            "the router-guest-routed wasm handler answers 200"
+        );
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"hello from a wasm handler")
+        );
+
+        // GET /nope : the router guest returns the no-match sentinel → the gateway's 404 floor.
+        let (status, _) = get(addr, "/nope").await;
+        assert_eq!(status, 404, "an unrouted path is a 404 floor");
+    }
 }
