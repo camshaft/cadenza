@@ -35,9 +35,10 @@ Cadenza builds.
 
 ## 1. Goal & non-goals
 
-**Goal.** A growing **conformance corpus** of **declarative scenario files**, run by a **Rust driver**
-against a **real, running HTTP gateway** wired to a real CAS store and a **mock control server**. Each
-scenario is a linear sequence of steps:
+**Goal.** A growing **conformance corpus** of **ML-surface run specs** (`*.ml`, like the platform
+`harness-runs`), run by a **Rust driver** against a **real, STOCK, running HTTP gateway** wired to a real CAS
+store and a real (behavior-mocked) control server — nothing internal to the gateway is mocked, so a pass means
+genuine end-to-end conformance. Each run is a near-linear sequence of steps:
 
 1. **arrange** — inject control-plane state (point the gateway at a root-router program, live-swap it, seed
    config, prime `control.send` responses);
@@ -90,8 +91,8 @@ else (routes, CAS location, credentials) arrives over the control link and can b
 
 ```
    ┌──────────────────────── Rust conformance driver (cdz-http-conformance) ───────────────────────────┐
-   │  reads a scenario corpus + a nix build manifest; spins up 3 child processes; executes each          │
-   │  scenario's steps against them; verdict = per-scenario pass/fail (report + exit code).              │
+   │  consumes ONE run's binary-AST spec (rewritten *.ml); spins up 3 child processes; executes its       │
+   │  requests + inline asserts, runs the optional checker over the log; verdict = exit code.             │
    │                                                                                                     │
    │      command control        ┌────────────────────┐    control-plane ws     ┌──────────────────┐    │
    │      (inject + observe) ────▶│ mock control server │◀───────────────────────│  HTTP gateway    │    │
@@ -123,100 +124,129 @@ Three SUT processes, all loopback on driver-chosen ephemeral ports:
 
 ---
 
-## 3. The test interface: declarative scenarios
+## 3. The test interface: ML-surface run specs
 
-### 3.1 What a test author writes
+Modeled directly on the platform integration tests (`implementation/seed/crates/cdz-platform/harness-runs/
+*.ml` + `mkHarnessRun`). **Each conformance run is one `*.ml` file** — a Cadenza value (ML surface)
+describing the whole run: a `config` that sets the SUT up, a `requests` list that drives it with inline
+`expect` assertions, and an optional `checker` program that judges the recorded observation log. Nix resolves
+program/contract **names** to hashes/paths via `cdz rewrite` (an AST-validated structural transform, not text
+substitution), injects the content-addressed deps, encodes to binary-AST, and feeds it to a **built-once
+driver** (the `cdz-platform-itest` analogue). Verdict = exit code. **Adding a run = dropping a `*.ml` file**
+(auto-discovered as `checks.<sys>.http-conformance-<name>`, mirroring harness-runs).
 
-A scenario is a small declarative file (one file per scenario; the corpus is a directory of them). Format is
-a human-authored, low-ceremony document — a linear list of `steps`, each either an **action** or an
-**expectation**. Illustrative (final surface syntax TBD — TOML shown; a `.sexp`/cadenza-value form is an
-option, §10):
+### 3.1 The run value
 
-```toml
-# corpus/routing/route-to-handler.toml
-name = "routes GET / to the hello handler, unmatched -> 404"
+A run is a Cadenza record (every field read by name, order-independent — like `HarnessSpec`):
 
-[[step]]  # arrange: point the gateway at a root router (by NAME; driver resolves to a ProgramHash)
-control.set_root_router = "router-hello"
+- `config` — **required**; the SUT setup:
+  - `root-router = "<program name>"` — the root router the control server ships to the gateway on connect
+    (name → `ProgramHash` via `cdz rewrite`).
+  - `programs = [ { name = "…", program = "…" }, … ]` — the Cadenza programs to make resolvable in the CAS
+    (routers + handlers), each by name; nix rewrites `program` → the built wasm path and injects its
+    content-addressed deps (runtime + nfc), so the run is **self-contained** (mirrors harness-runs `blobs` +
+    `deps`). An inline placeholder uses `bytes = b"…"`.
+  - `cas-credential = b"…"?` / `control-config = { … }?` — optional overrides; the driver fills defaults
+    (harness CAS url + a generated credential).
+  - `prime-replies = [ { match = { path = "…"?, program = "…"? }, reply = b"…" }, … ]?` — how the mock
+    replies to an incoming `control.send` (correlation-routed).
+- `requests` — an ordered list of interactions, each an action plus an optional inline `expect`:
+  - `{ http = { method = "GET", path = "/", headers = [ { name = "…", value = "…" } ]?, body = b"…"? },
+       expect = { status = 200, body = b"…"?, body-contains = "…"?, header = [ … ]?,
+                  retry-until-match = true? } }` — make an HTTP request, assert the response inline.
+    `retry-until-match` is the sole non-linear primitive: poll the request until it matches (async live-swap
+    propagation).
+  - `{ control = { push-root-router = "<program name>" } }` — live-swap the root router (no restart).
+  - `{ control = { push-down = { session = b"…"?, payload = b"…" } } }` — push an unsolicited `ControlDown`.
+- `checker` — **optional**; the blob name of a Cadenza reducer run over the completed **observation log** to
+  judge pass/fail (same shape as platform §9). The log carries the full run: each request + response, and the
+  control-plane observations (each captured `ControlUp` with its handler id + request context + correlation,
+  config served, root-router pushes, connections, disconnects). The checker `Value.decode`s the full-fidelity
+  log and emits a verdict. A run with **no** `checker` passes iff every inline `expect` held and the run
+  completed. (Operator: *inline assertions OR an optional checker that looks at what happened and judges.*)
+- `run-for` — optional; the time horizon before declaring quiescence (like harness-runs).
 
-[[step]]  # act + assert
-http.get = "/"
-expect.status = 200
-expect.body = "hello from a wasm handler"
+### 3.1.1 Examples
 
-[[step]]
-http.get = "/nope"
-expect.status = 404          # no-match -> deny(404) floor
+Route-to-handler (inline asserts, no checker):
+
+```
+{
+  config = {
+    root-router = "router-hello",
+    programs = [
+      { name = "router-hello",       program = "router-hello" },
+      { name = "handler:http-hello", program = "http-hello" }
+    ]
+  },
+  requests = [
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body = b"hello from a wasm handler" } },
+    { http = { method = "GET", path = "/nope" },
+      expect = { status = 404 } }                 # no-match -> deny(404) floor
+  ]
+}
 ```
 
-```toml
-# corpus/reconfig/live-swap.toml
-name = "control live-swaps the root router without a restart"
+Live-swap (control pushes a new router mid-run):
 
-[[step]]
-control.set_root_router = "router-hello"
-[[step]]
-http.get = "/"
-expect.body = "hello from a wasm handler"
-
-[[step]]
-control.push_root_router = "router-echo"     # live-swap
-[[step]]
-http.get = "/"
-expect.body_contains = "method=GET"
-expect.retry_until_match = true              # the ONE non-linear primitive: poll until the swap propagates
+```
+{
+  config = {
+    root-router = "router-hello",
+    programs = [ { name = "router-hello", program = "router-hello" },
+                 { name = "router-echo",  program = "router-echo" },
+                 { name = "handler:http-hello", program = "http-hello" },
+                 { name = "handler:http-echo",  program = "http-echo" } ]
+  },
+  requests = [
+    { http = { method = "GET", path = "/" }, expect = { status = 200, body = b"hello from a wasm handler" } },
+    { control = { push-root-router = "router-echo" } },
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body-contains = "method=GET", retry-until-match = true } }
+  ]
+}
 ```
 
-```toml
-# corpus/control-plane/control-send.toml
-name = "handler control.send reaches control with handler id + request context, reply folds back"
+control.send request/response, judged by a checker program:
 
-[[step]]
-control.set_root_router = "router-emits-control-send"
-control.prime_reply = { match = { path = "/emit" }, reply = "PONG" }   # correlation-routed reply
-
-[[step]]
-http.post = "/emit"
-body = "ping"
-expect.status = 200
-expect.body_contains = "PONG"                # the primed reply folded back into the handler's response
-
-[[step]]  # observe what control captured
-expect.control_up = [
-  { program = "handler:emitter", method = "POST", path = "/emit", payload = "ping" },
-]
+```
+{
+  config = {
+    root-router = "router-emitter",
+    programs = [ { name = "router-emitter",   program = "router-emitter" },
+                 { name = "handler:emitter",  program = "emitter" },
+                 { name = "control-send-check", program = "control-send-check" } ],
+    prime-replies = [ { match = { path = "/emit" }, reply = b"PONG" } ]   # correlation-routed
+  },
+  requests = [
+    { http = { method = "POST", path = "/emit", body = b"ping" },
+      expect = { status = 200, body-contains = "PONG" } }                 # primed reply folded back
+  ],
+  checker = "control-send-check"   # decodes the log; asserts a ControlUp{program=handler:emitter,
+                                    # method=POST, path=/emit, payload=b"ping"} was captured
+}
 ```
 
-The author does **not**: build any Cadenza by hand, compute any hash, encode any binary-AST frame, or manage
-sockets/processes. All of that is the driver + the nix build. Adding a scenario = dropping a file in the
-corpus directory (the driver auto-discovers them).
+The author never builds Cadenza by hand, computes a hash, encodes a frame, or manages sockets/processes —
+nix + the driver do all of it. Adding a run = dropping a `*.ml`.
 
 ### 3.2 The Rust driver (`cdz-http-conformance`)
 
-A built-once binary (the `platformItest` shape). Given a corpus path + a build manifest (§6.3), for each
-scenario it:
+A built-once binary (the `cdz-platform-itest` shape) that consumes ONE run's binary-AST spec and:
 
-1. starts CAS, control, gateway as child processes on ephemeral loopback ports (control told the CAS url +
-   cred; gateway told only the control address);
-2. waits for readiness (§6.4);
-3. resets control state (per-scenario isolation), then executes the scenario's steps in order — issuing
-   control commands to the mock (§3.3), HTTP/WS requests to the gateway, and checking each `expect`;
-4. records a verdict; on the first failed assertion the scenario fails with a diagnostic (which step, expected
-   vs actual, plus each process's captured stderr).
+1. starts CAS, control, gateway as child processes on ephemeral loopback ports (seeding the spec's programs +
+   injected deps into the CAS; control told the CAS url + cred; gateway told only the control address);
+2. waits for readiness (§6.4), then applies `config` (prime `control.set_root_router`, replies);
+3. executes `requests` in order — issuing control commands to the mock (§3.3) and HTTP/WS requests to the
+   gateway, recording an **observation log** and checking each inline `expect`;
+4. if a `checker` is named, runs it as an ordinary wasm reducer over the completed log for the verdict;
+5. exits 0 iff every inline `expect` held and the checker (if any) passed; on failure, a diagnostic (which
+   request, expected vs actual, plus each process's captured stderr).
 
-Run modes: on-demand (`cdz-http-conformance <corpus-dir>` against a nix-provided SUT) and wrappable as a nix
-`runCommand` check later (`checks.<sys>.cdz-http-gateway-conformance`), exactly like `mkHarnessRun`. Verdict
-is per-scenario (a report), aggregated to an exit code for the check.
-
-The step vocabulary (grows with the corpus; initial set):
-- `control.set_root_router <name|hash>` · `control.push_root_router <name|hash>` (live-swap) ·
-  `control.config { cas_url?, cas_credential?, root_router }` · `control.prime_reply { match, reply }` ·
-  `control.push_down { session?, payload }` · `control.disconnect { session? }`
-- `http.<method> <path>` (+ `headers`, `body`) capturing the response ·
-  `expect.{status, header, body, body_contains, retry_until_match}`
-- `expect.control_up [ { program, session?, method?, path?, payload? } ]` ·
-  `expect.connections`, `expect.events` (ordering)
-- (later) `ws.connect`, `ws.send`, `expect.ws_recv`
+Nix wraps each `*.ml` as a `runCommand` (like `mkHarnessRun`) → `checks.<sys>.http-conformance-<name>`;
+fine-grained caching (a run reruns only when its spec, a program it names, or the shared binary changes). The
+same binary also runs on-demand against a locally-built spec for author iteration.
 
 ### 3.3 How the driver commands the mock control server (internal admin channel)
 
@@ -239,8 +269,12 @@ independently pokeable):
 | connections                   | gateway sessions `{session, connected_at, config_served}`. |
 | event log                     | ordered connect / config-served / root-router-pushed / control-up / control-down / disconnect. |
 
-(If we later decide to **embed** the control endpoint in the driver process to drop a child process, this
-admin surface becomes an in-process API instead; §10.)
+**The gateway under test is the STOCK gateway binary — nothing internal is mocked** (operator: *"i want a
+stock gateway to be tested end-to-end instead of mocking anything internal. that way i definitely know things
+are working as intended"*). Only the *control server* is a mock, and even it is a real **separate process**
+speaking the real control-plane wire protocol (§4) — "mock" solely in that its behavior is test-driven via
+this admin channel, not that it is fake or embedded. The driver never reaches inside the gateway; every
+assertion is on genuine end-to-end behavior over real sockets.
 
 ---
 
@@ -334,21 +368,16 @@ hashes:
   directly if it can target these markers, else a scoped `sed`.)
 - Handler-before-router order is a natural nix derivation dependency.
 
-### 6.3 The build manifest + seeded store (what nix hands the driver)
+### 6.3 The rewritten, self-contained spec (what nix hands the driver)
 
-```json
-{
-  "binaries": { "cas": "…/bin/cdz-cas-http", "control": "…/bin/cdz-http-control-mock",
-                "gateway": "…/bin/cdz-http-gateway" },
-  "cas_store": "…/cas-seeded",                     // pre-seeded: all programs + runtime + nfc
-  "programs":  { "router-hello": "gWc…base62…",     // name -> ProgramHash
-                 "handler:http-hello": "hZ2…" }
-}
-```
-
-The driver discovers it via an env var / flag (`CDZ_OUTPOST_HARNESS=<manifest.json>`) that a devshell / `nix
-build` sets. **Non-nix fallback:** the driver also works pointed at a locally-built manifest, so an author can
-iterate without a full nix build.
+There is **no separate JSON manifest** — the rewritten `*.ml` spec is self-contained, exactly like
+harness-runs. `mkHarnessAst` (reused/adapted) rewrites each `config.programs[*].program` name → its built
+wasm `path`, rewrites `root-router`/`push-root-router`/`checker` names → the matching program, and injects a
+`deps` list of the content-addressed runtime + nfc components the guests import. The driver seeds every
+program blob + dep into the CAS store it boots (by content hash), so a guest's content-addressed imports
+resolve and the run is self-contained (mirrors the itest executable seeding `deps`). The three SUT **binary**
+paths are supplied to the driver by the `runCommand` env (built once, shared across runs). **Non-nix
+fallback:** the driver also accepts locally-built wasm paths for author iteration without a full nix build.
 
 ### 6.4 Readiness
 
@@ -360,11 +389,14 @@ Each binary exposes a cheap readiness signal: CAS `HEAD /{any}` (or `/healthz`),
 
 ## 7. Where the new code lives
 
-- **Conformance corpus** — a repo-versioned directory of declarative scenario files, e.g.
-  `implementation/seed/crates/cdz-http-gateway/harness/corpus/**.toml`. Grows freely; adding a scenario is
-  dropping a file. Not compiled by nix (it's data); the driver reads it.
+- **Conformance corpus** — a repo-versioned directory of `*.ml` run specs, e.g.
+  `implementation/seed/crates/cdz-http-gateway/harness/runs/**.ml` (mirroring `cdz-platform/harness-runs/`).
+  Grows freely; adding a run is dropping a `*.ml` file (auto-discovered → `checks.<sys>.http-conformance-<name>`).
+  **Checker programs** (Cadenza reducers that judge the observation log) live in the `programs/` tree (§6.1)
+  and compile like any other guest.
 - **The Rust driver** — `cdz-http-conformance`, a new bin (proposed: its own excluded `[workspace]` crate, or
-  a bin in the mock-control crate). Reads a scenario, spins up the SUT, executes + asserts.
+  a bin in the mock-control crate). Consumes ONE run's binary-AST spec, spins up the SUT, executes + asserts +
+  runs the checker (the `cdz-platform-itest` analogue).
 - **Mock control server** — `cdz-http-control-mock`, a new bin. **Recommendation: a new excluded crate**, so
   it survives the gateway rewrite independently. (Driver + mock may share one crate with two bins.)
 - **The control-plane wire codec.** The mock and the gateway must agree on
@@ -406,11 +438,12 @@ Then grow: WebSocket sessions, malformed frames, auth failures, reconnect/resili
    push root-router, receive `ControlUp`, send correlation-matched `ControlDown`) + admin channel (§3.3) +
    program-manifest name resolution + a nix build. Gated by its own crate check + a few Rust tests of the
    mock's *own* correctness (admin/wire translation), not gateway behavior.
-3. **Auto-enumerated program tree + deploy-templating + seeded CAS store + manifest** (§6) — the nix
-   `http-outpost-harness` package. Verifiable standalone: build it, assert the manifest resolves + the store
-   serves.
-4. **The Rust driver `cdz-http-conformance`** — scenario parser + process orchestration + step executor +
-   assertions + report. First scenarios (§8.1–2) land with it.
+3. **Auto-enumerated program tree + deploy-templating + `mkHarnessAst`-style name-rewrite + injected deps**
+   (§6) — the nix plumbing that turns a `*.ml` run into a self-contained binary-AST spec. Verifiable
+   standalone: rewrite a spec, assert names resolved + deps injected.
+4. **The Rust driver `cdz-http-conformance`** — consumes a run's binary-AST spec: process orchestration +
+   CAS-seed + step executor + inline-`expect` asserts + checker execution over the observation log + report.
+   First runs (§8.1–2) land with it, wrapped as `checks.<sys>.http-conformance-<name>` (mkHarnessRun-style).
 5. **Gateway boot-from-control** (the one gateway-side gap the harness needs; §6). Coordinate with the
    gateway-rewrite owner — the harness defines the contract (§4/§5/§6.4); the gateway implements it. If no
    active gateway owner, build the minimal boot wiring against the existing `HttpEdge::dumb` + `RootDriver` as
@@ -418,19 +451,20 @@ Then grow: WebSocket sessions, malformed frames, auth failures, reconnect/resili
 6. **Grow the corpus + migrate** the behaviors currently asserted by gateway `#[test]`s into scenarios, then
    **retire** the superseded `#[test]`s (don't keep both).
 
-## 10. Open decisions / asks (non-blocking; proceeding on the defaults)
+## 10. Decisions (settled by operator) + remaining open items
 
-- **Scenario file format** (§3.1): a human-authored declarative doc. **Default: TOML** (trivial to author +
-  parse, diff-friendly). A `.sexp`/cadenza-value form (→ binary-AST, closest to the platform-itest precedent)
-  is the alternative if we want the *scenario* itself in the canonical exchange format; I lean TOML for author
-  ergonomics since the Cadenza *programs* are already the binary-AST/wasm artifacts.
-- **Mock control server: separate process vs embedded in the driver** (§3.3): **default separate** (matches
-  "3 servers", most faithful — the gateway dials a real socket). Embedding drops a child process at the cost
-  of realism; easy to switch since both are Rust.
+**Settled by the operator (2026-09-10):**
+- **Run-spec format = the ML surface** (`*.ml` Cadenza values, like `cdz-platform/harness-runs/`), rewritten
+  by `cdz rewrite` + encoded to binary-AST — NOT TOML/Python. Config + requests + inline assertions + an
+  optional checker program (§3).
+- **Mock control server = a separate process; the gateway under test = the STOCK binary, nothing internal
+  mocked** — full end-to-end (§3.3, §2).
+
+**Remaining open (non-blocking; proceeding on the defaults):**
 - **Wire codec home** (§7): extract `ControlConfig`/`ControlUp`/`ControlDown` to a shared `cdz-http-protocol`
   crate (default) vs the mock depending on the gateway crate's `codec`. Coordinate with the gateway-rewrite
   owner when one exists.
 - **Router deploy-templating** (§6.2): reuse `cdz rewrite` if it can target source markers, else scoped `sed`.
 
-None of these block starting the mock control server (slice 2); I'll raise anything genuinely load-bearing to
-the concierge as an `ask` and keep building on the defaults.
+Neither blocks starting the mock control server (slice 2); I'll raise anything genuinely load-bearing to the
+concierge as an `ask` and keep building on the defaults.
