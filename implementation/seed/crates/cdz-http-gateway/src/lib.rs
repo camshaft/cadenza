@@ -15,8 +15,11 @@
 //!    [`cdz_platform::ProgramStore`], deliver the request as `on_message`, read the `http-response` off
 //!    the closing `Break`. Generic over the store, so it drives the wasmtime-backed store in production and
 //!    a native test store in tests.
-//!  - P1c: the tokio HTTP edge + a mock control server for end-to-end tests.
-//!  - P1d: per-request resource bounds, 404/500 floors, no-cross-request-state-leak.
+//!  - **P1c (in progress): [`gateway`]** — the router + request-serving core: match an [`HttpRequest`]
+//!    against a route table to a handler, fold it through the runner, synthesize the `404`/`500` floors.
+//!    (P1c-2 binds a tokio/hyper socket to it; P1c-3 seeds the table from a mock control server.)
+//!  - P1d: per-request resource bounds (epoch deadline + memory ceiling), no-cross-request-state-leak.
 
 pub mod codec;
+pub mod gateway;
 pub mod runner;
