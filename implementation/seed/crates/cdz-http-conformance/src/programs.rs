@@ -48,6 +48,24 @@ impl ProgramManifest {
         Self::default()
     }
 
+    /// Build a manifest for `names`, each resolved to `{dir}/{name}.wasm` — the layout the nix harness rig
+    /// produces (one compiled component per program, the file named by the program). The driver's bin uses
+    /// this to turn a run-spec's program names + the rig's programs dir into a manifest.
+    #[must_use]
+    pub fn under_dir(
+        dir: impl AsRef<Path>,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let dir = dir.as_ref();
+        let mut manifest = Self::new();
+        for name in names {
+            let name = name.into();
+            let path = dir.join(format!("{name}.wasm"));
+            manifest.insert(name, path);
+        }
+        manifest
+    }
+
     /// Register a program `name` → its compiled `.wasm` `path`.
     pub fn insert(&mut self, name: impl Into<String>, path: impl Into<PathBuf>) {
         self.paths.insert(name.into(), path.into());
@@ -128,6 +146,20 @@ mod tests {
 
         assert_eq!(manifest.path("http-hello"), Some(path.as_path()));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn under_dir_maps_each_name_to_dir_slash_name_dot_wasm() {
+        let m = ProgramManifest::under_dir("/rig/programs", ["http-hello", "root-router-baked"]);
+        assert_eq!(
+            m.path("http-hello"),
+            Some(Path::new("/rig/programs/http-hello.wasm"))
+        );
+        assert_eq!(
+            m.path("root-router-baked"),
+            Some(Path::new("/rig/programs/root-router-baked.wasm"))
+        );
+        assert_eq!(m.path("absent"), None);
     }
 
     #[test]
