@@ -47,10 +47,21 @@ fn close_empty() -> Step {
 }
 
 /// Run the active per-target handler (exactly one target feature is active per build — nix stamps one
-/// component per target). The per-target difference is only which library function is wrapped.
+/// component per target with `--no-default-features --features target-<T>`). The per-target difference is
+/// only which library function is wrapped + its payload codec.
 #[cfg(feature = "target-rcdzc")]
 fn dispatch(payload: &[u8]) -> Vec<u8> {
     crate::rcdzc_target::handle(payload)
+}
+
+#[cfg(feature = "target-sexpr")]
+fn dispatch(payload: &[u8]) -> Vec<u8> {
+    crate::sexpr_target::handle(payload)
+}
+
+#[cfg(feature = "target-ml")]
+fn dispatch(payload: &[u8]) -> Vec<u8> {
+    crate::ml_target::handle(payload)
 }
 
 crate::bindings::export!(Component with_types_in crate::bindings);

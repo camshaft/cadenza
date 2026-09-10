@@ -15,10 +15,22 @@
 
 pub mod request_wire;
 
+/// The parser targets' `{ast, diagnostics}` response wire (used by `sexpr`/`ml`; always compiled so its
+/// round-trip test guards the wire under any feature).
+pub mod parse_result_wire;
+
 /// The rcdzc compile target (feature `target-rcdzc`): decode a kinded-input bundle -> compile to a wasm
 /// component -> encode the `{artifacts, diagnostics}` response envelope.
 #[cfg(feature = "target-rcdzc")]
 pub mod rcdzc_target;
+
+/// The sexpr parser target (feature `target-sexpr`): s-expression source bytes -> AST bytes + diagnostics.
+#[cfg(feature = "target-sexpr")]
+pub mod sexpr_target;
+
+/// The ml parser target (feature `target-ml`): ML source bytes -> AST bytes + (error-recovering) diagnostics.
+#[cfg(feature = "target-ml")]
+pub mod ml_target;
 
 // The reducer-world `guest` export — the wasm component boundary (built for wasm32-unknown-unknown by
 // cargo-component, WASI-free). `bindings` is the cargo-component-generated glue (`src/bindings.rs`,
