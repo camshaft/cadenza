@@ -1095,4 +1095,108 @@ mod tests {
             "after the live update, the same GET / routes to the echo handler"
         );
     }
+
+    /// CONTENT-ADDRESSED handlers, end to end (DESIGN-http-outpost.md §3): the control-shipped route table
+    /// carries the handler's REAL `ProgramHash` (its blob is in the CAS by that hash), so the gateway resolves
+    /// + spawns it DIRECTLY with NO out-of-band marker→hash binding (`handlers` is empty). Closes the last
+    /// real design gap — routing is purely by content address. A real client GET / is routed by the router
+    /// guest to the PoC handler named by hash in the table → 200 over the socket.
+    #[tokio::test]
+    async fn content_addressed_table_routes_a_handler_by_hash_over_a_socket() {
+        use crate::codec::{Method, RouteFrame, encode_route_table};
+        use crate::edge::HttpEdge;
+        use crate::gateway::{DynamicRouter, Gateway};
+        use crate::runner::HandlerRunner;
+        use cdz_platform::{ContractId, HostId, ProgramHash, ReducerId};
+        use http_body_util::{BodyExt, Empty};
+        use hyper::Request;
+        use hyper_util::rt::TokioIo;
+        use std::collections::HashMap;
+
+        let (Ok(router_path), Ok(poc_path), Ok(runtime_path), Ok(nfc_path)) = (
+            std::env::var("CDZ_HTTP_ROUTER_DYNAMIC_WASM"),
+            std::env::var("CDZ_HTTP_POC_WASM"),
+            std::env::var("CDZ_HTTP_RUNTIME_WASM"),
+            std::env::var("CDZ_HTTP_NFC_WASM"),
+        ) else {
+            eprintln!(
+                "content_addressed_table_routes_a_handler_by_hash_over_a_socket: \
+                 CDZ_HTTP_ROUTER_DYNAMIC_WASM/POC_WASM/RUNTIME_WASM/NFC_WASM unset — skipping"
+            );
+            return;
+        };
+        let router = std::fs::read(&router_path).expect("read dynamic router");
+        let poc = std::fs::read(&poc_path).expect("read PoC handler");
+
+        let mut cas = InMemoryBlobStore::new();
+        for dep in [&runtime_path, &nfc_path] {
+            cas.put(bytes::Bytes::from(
+                std::fs::read(dep).expect("read dep component"),
+            ))
+            .await;
+        }
+        cas.put(bytes::Bytes::from(router.clone())).await;
+        cas.put(bytes::Bytes::from(poc.clone())).await;
+        let cas: Arc<dyn BlobStore> = Arc::new(cas);
+        let router_program = ProgramHash::of(&router);
+        let poc_program = ProgramHash::of(&poc);
+        let store: Arc<dyn ProgramStore> =
+            Arc::new(wasm_store(Arc::clone(&cas)).expect("wasm store"));
+        let _ticker = spawn_epoch_ticker(store.as_ref());
+
+        // The route table carries the PoC handler's REAL ProgramHash bytes — content-addressed, no marker.
+        let table = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/".to_string(),
+            handler: bytes::Bytes::copy_from_slice(poc_program.hash().as_bytes()),
+            contract: bytes::Bytes::from_static(b"cdz-platform.http.request........"),
+        }]);
+        // EMPTY marker map: resolution is purely by content address.
+        let dynamic = DynamicRouter::new(
+            router_program,
+            ContractId::of(b"cdz-platform.http.route-query"),
+            HostId::of(b"edge-host"),
+            ReducerId::of(b"gateway"),
+            HashMap::new(),
+            table,
+        );
+        let gateway = Gateway::with_dynamic_router(
+            dynamic,
+            HandlerRunner::new(HostId::of(b"edge-host"), ReducerId::of(b"gateway")),
+        );
+        let edge = Arc::new(HttpEdge::new(gateway, store));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(edge.serve(listener));
+
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Empty<bytes::Bytes>>(TokioIo::new(stream))
+                .await
+                .expect("handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let resp = sender
+            .send_request(
+                Request::builder()
+                    .method(hyper::Method::GET)
+                    .uri("/")
+                    .header("host", "test")
+                    .body(Empty::<bytes::Bytes>::new())
+                    .expect("request"),
+            )
+            .await
+            .expect("send");
+        let status = resp.status().as_u16();
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(status, 200, "the by-hash handler answers");
+        assert_eq!(
+            body,
+            bytes::Bytes::from_static(b"hello from a wasm handler"),
+            "a route table carrying the real handler hash serves it with no marker binding"
+        );
+    }
 }

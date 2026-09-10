@@ -225,7 +225,9 @@ pub struct DynamicRouter {
     query_contract: ContractId,
     host: HostId,
     origin: ReducerId,
-    /// Binds each decision handler-marker to the real [`ProgramHash`] the gateway spawns for that route.
+    /// Binds each decision handler-MARKER to the real [`ProgramHash`] the gateway spawns (a symbolic route
+    /// table). May be EMPTY for a content-addressed table: a decision whose handler bytes are themselves a
+    /// valid `ProgramHash` (§3, the handler's blob is in the CAS by that hash) resolves directly, no binding.
     handlers: HashMap<Bytes, ProgramHash>,
     /// The live route-table frame the router folds each request against; swapped by [`set_table`] (or a
     /// control-link task holding a clone of the [`table_cell`](DynamicRouter::table_cell)).
@@ -317,7 +319,15 @@ impl DynamicRouter {
         if !decision.is_match() {
             return None;
         }
-        let handler = *self.handlers.get(&decision.handler)?;
+        // Resolve the decision's handler to a spawnable [`ProgramHash`]: a configured marker→hash BINDING
+        // first (a symbolic route table), else the handler bytes ARE a content hash — the design's content-
+        // addressed table (§3), where the route table carries the handler's real `ProgramHash` and its blob
+        // is already in the CAS by that hash, so no out-of-band binding is needed. Unresolvable → no route.
+        let handler = self
+            .handlers
+            .get(&decision.handler)
+            .copied()
+            .or_else(|| ProgramHash::try_from(decision.handler.as_ref()).ok())?;
         let contract = ContractId::try_from(decision.contract.as_ref()).ok()?;
         Some((handler, contract))
     }
@@ -810,6 +820,40 @@ mod tests {
             dr.match_route(&store, b"q2", Method::Get, "/a")
                 .await
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_router_resolves_content_addressed_handlers() {
+        // The design's content-addressed table (§3): the route table carries the handler's REAL ProgramHash
+        // (its blob is in the CAS by that hash), so the gateway resolves it DIRECTLY — no marker→hash map.
+        use crate::codec::{RouteFrame, encode_route_table};
+        let prog = ProgramHash::of(b"native-dyn-router");
+        let real_handler = ProgramHash::of(b"the-handler-blob");
+        let mut store = Store::new();
+        store.register(prog, || Box::new(NativeDynRouter));
+
+        let table = encode_route_table(&[RouteFrame {
+            method: Method::Get,
+            path: "/x".to_string(),
+            handler: Bytes::copy_from_slice(real_handler.hash().as_bytes()), // the REAL hash, not a marker
+            contract: Bytes::from_static(b"cdz-platform.http.request........"),
+        }]);
+        // NO marker bindings — resolution is purely content-addressed.
+        let dr = DynamicRouter::new(
+            prog,
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            HashMap::new(),
+            table,
+        );
+        assert_eq!(
+            dr.match_route(&store, b"q1", Method::Get, "/x")
+                .await
+                .map(|(h, _)| h),
+            Some(real_handler),
+            "a route table carrying the real handler hash resolves with no marker binding"
         );
     }
 
