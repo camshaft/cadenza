@@ -41,6 +41,11 @@ wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 cadenza-compile-abi = { path = "../cadenza-compile-abi" }
 # The canonical binary-AST codec the request/response wires are built over.
 cadenza-ast = { path = "../cadenza-ast" }
+# The canonical VALUE-FORM toolkit (record/list/ctor builders + readers) the parser targets encode/decode a
+# ParseRequest/ParseResult with — the SAME codec `Value.encode`/`Value.decode` (and the http gateway) speak,
+# so the Cadenza compile-route handler reads the response back with `Value.decode : Option(ParseResult)`. A
+# shared crate (extracted out of cdz-http-protocol), NOT a copy — one codec, no drift.
+cadenza-value = { path = "../cadenza-value" }
 # The compiler — the rcdzc target's inner function (`rcdzc::compile`). `default-features = false` drops the
 # host-CLI `validate-output` feature (`wasmparser`): a guest drives the library API, not the file-writing CLI.
 rcdzc = { path = "../rcdzc", default-features = false, optional = true }
