@@ -57,6 +57,14 @@ exclude = [
     # member, as cdz-smith does. Own `[workspace]` table; builds + tests standalone (`cargo test` from its
     # own dir); gated by its own dedicated CI job.
     "implementation/seed/crates/cdz-http-gateway",
+    # `cdz-cas-http` (the content-addressed blob store served over HTTP, vertical brief cas-http) is excluded
+    # because it pulls the hyper/tokio HTTP server+client stack; as a workspace MEMBER, cargo would compile
+    # that stack into the routine seed `--workspace` build + the corpus gate, which must stay HTTP-free and
+    # fast (same rationale as cdz-http-gateway). It path-deps the member `cdz-platform` (default features —
+    # the light BlobStore/Hash layer, NOT `host`), which an excluded crate may do (cdz-smith precedent). Own
+    # `[workspace]` table; builds + tests standalone (`cargo test` from its own dir); gated by its own
+    # dedicated CI job (`nix build .#checks.<sys>.cdz-cas-http`).
+    "implementation/seed/crates/cdz-cas-http",
 ]
 
 [profile.dev]

@@ -1,0 +1,56 @@
+# cdz-cas-http — a content-addressed blob store served over HTTP (vertical brief: CAS-over-HTTP store).
+#
+# A standalone binary + library that serves a `cdz_platform` content-addressed, immutable blob store over
+# HTTP, and provides the matching HTTP-backed `BlobStore` CLIENT so the HTTP gateway (cdz-http-gateway) can
+# fetch components by hash from a remote store. It IS a `cdz_platform::BlobStore` backed by HTTP: the same
+# `Hash`/`BlobStore` contract the in-process stores use, only the bytes live behind `GET {base}/{hash}`.
+#
+# The wire (READ path, pinned by the consumer v-http-outpost):
+#   GET  {base}/{hash}  Authorization: Bearer {cred}  -> 200 + raw component bytes | 404 miss | 401
+#   HEAD {base}/{hash}                                 -> 200/404 (existence)
+# WRITE path (deploy tooling; the gateway is read-only against the store):
+#   PUT  {base}/{hash}  Authorization: Bearer {cred}   -> 201; the server validates Hash::of(body) == key,
+#                                                          so a stored blob whose bytes don't match its key
+#                                                          is impossible by construction (400 on mismatch).
+#
+# STANDALONE `[workspace]` — EXCLUDED from the seed workspace (root Cargo.toml `exclude`), like
+# cdz-http-gateway / cdz-smith / cdz-cad. Reason: this crate pulls the hyper/tokio HTTP server+client stack;
+# as a workspace MEMBER, cargo would compile that stack into the routine seed `--workspace` build + the
+# corpus gate, which must stay HTTP-free and fast. An own `[workspace]` keeps that build isolated to this
+# crate's own dedicated gate. An excluded crate may still path-depend on a member (cdz-smith precedent).
+[workspace]
+
+[package]
+name = "cdz-cas-http"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The platform's content-address primitives: the `BlobStore` trait (put/get/has), the self-describing
+# `Hash` (base62 `Display`/`FromStr` is the on-wire key), `HashTag::Blob` (the raw content-address kind),
+# and `InMemoryBlobStore` (the swappable default backing store). DEFAULT features only — this is the light
+# trait/types layer, NOT the heavy `host` (wasmtime) feature; the CAS server needs no runtime.
+cdz-platform = { path = "../cdz-platform" }
+# Every byte buffer is `bytes::Bytes` (spec §12) — a blob's bytes, the request/response bodies.
+bytes = "1"
+# The HTTP server AND client: a hyper HTTP/1 server serves the store; the `client` feature backs the
+# `HttpBlobStore` dial-out (GET/HEAD/PUT {base}/{hash}). hyper is driven via hyper-util's TokioIo;
+# http-body-util supplies the `Full` body, `Limited` (the per-PUT body ceiling) + `BodyExt::collect`.
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
+hyper = { version = "1", features = ["server", "http1", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+# To impl the platform's `#[async_trait] BlobStore` for the HTTP-backed client.
+async-trait = "0.1"
+# Structured debug/warn tracing (enable via RUST_LOG=cdz_cas_http=trace) — the client warns on a
+# transient/auth fetch failure it must absorb into the `BlobStore` trait's `Option`/no-`Result` shape.
+tracing = "0.1"
+
+# The deployable server binary — serves an (in-memory v0) content-addressed store over HTTP. Read/write
+# Bearer credentials come from CDZ_CAS_READ_CREDENTIAL / CDZ_CAS_WRITE_CREDENTIAL (a write credential is
+# required for the PUT path; reads are open when no read credential is set — the store is unpermissioned,
+# the hash is the capability, and the Bearer gate is an optional network perimeter).
+[[bin]]
+name = "cdz-cas-http"
+path = "src/bin/cdz-cas-http.rs"
