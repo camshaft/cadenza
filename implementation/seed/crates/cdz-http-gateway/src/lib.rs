@@ -31,6 +31,11 @@ pub mod edge;
 pub mod gateway;
 pub mod runner;
 
+/// The looping-reducer drive loop (design drive-contract §1, redirect inc-3): drive a program across turns —
+/// fold inputs, resolve each emitted effect, fold the answer back — until it `Break`s. The execution model
+/// that replaces the one-shot [`runner`]; generic over any reducer + a pluggable effect resolver.
+pub mod loop_driver;
+
 /// The per-connection WebSocket session driver (design §6): folds `ws-event`s through a session reducer
 /// and collects the `ws-send` frames it pushes. Socket-independent (generic over [`cdz_platform::ProgramStore`]);
 /// the hyper WebSocket upgrade + framing that feeds it is a later slice.
