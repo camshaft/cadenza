@@ -200,9 +200,35 @@ impl RouterReducer {
     }
 }
 
-/// The request-serving core: a [`Router`] plus the [`HandlerRunner`] that drives the matched handler.
+/// How the gateway resolves a `(method, path)` to a handler: either a STATIC in-process [`Router`] table
+/// (v0's config-seeded stand-in) or a [`RouterReducer`] — routing lifted into a governing-program guest (the
+/// P2 thesis). The serving path resolves through this uniformly; `Static` ignores the store/request-id.
+enum Routing {
+    Static(Router),
+    Guest(RouterReducer),
+}
+
+impl Routing {
+    /// Resolve `(method, path)` to `(handler, contract)`. `Static` is a synchronous table lookup; `Guest`
+    /// consults the router reducer over `store` (spawning it under `request_id`).
+    async fn resolve(
+        &self,
+        store: &dyn ProgramStore,
+        request_id: &[u8],
+        method: Method,
+        path: &str,
+    ) -> Option<(ProgramHash, ContractId)> {
+        match self {
+            Routing::Static(router) => router.match_route(method, path),
+            Routing::Guest(reducer) => reducer.match_route(store, request_id, method, path).await,
+        }
+    }
+}
+
+/// The request-serving core: a routing source (a static [`Router`] table or a [`RouterReducer`] governing
+/// program) plus the [`HandlerRunner`] that drives the matched handler.
 pub struct Gateway {
-    router: Router,
+    routing: Routing,
     runner: HandlerRunner,
     /// The per-request wall-clock ceiling; a fold exceeding it is answered `504`
     /// ([`DEFAULT_REQUEST_TIMEOUT`] unless overridden).
@@ -210,12 +236,23 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    /// A gateway routing through `router` and folding matched requests with `runner`, with the default
-    /// per-request timeout.
+    /// A gateway routing through the STATIC `router` table and folding matched requests with `runner`, with
+    /// the default per-request timeout.
     #[must_use]
     pub fn new(router: Router, runner: HandlerRunner) -> Self {
         Self {
-            router,
+            routing: Routing::Static(router),
+            runner,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// A gateway routing through a [`RouterReducer`] governing program (routing-as-a-fold, P2) — it consults
+    /// the router guest per request. Otherwise identical to [`new`](Gateway::new).
+    #[must_use]
+    pub fn with_router_reducer(router: RouterReducer, runner: HandlerRunner) -> Self {
+        Self {
+            routing: Routing::Guest(router),
             runner,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
@@ -230,29 +267,35 @@ impl Gateway {
     }
 
     /// The `(handler, contract)` a `(method, path)` routes to, or `None` — for the edge to match a
-    /// WebSocket-upgrade request's path against the route table (the ws frame loop drives the handler as a
-    /// per-connection session rather than folding a request→response).
-    #[must_use]
-    pub fn match_route(
+    /// WebSocket-upgrade request's path (the ws frame loop drives the handler as a per-connection session
+    /// rather than folding a request→response). Async + store-taking because a [`RouterReducer`] routing
+    /// source consults the router guest (a `Static` source ignores both); `request_id` seeds that consult.
+    pub async fn match_route(
         &self,
+        store: &dyn ProgramStore,
+        request_id: &[u8],
         method: Method,
         path: &str,
-    ) -> Option<(ProgramHash, cdz_platform::ContractId)> {
-        self.router.match_route(method, path)
+    ) -> Option<(ProgramHash, ContractId)> {
+        self.routing.resolve(store, request_id, method, path).await
     }
 
     /// Serve one request to a response: match a route (→ `404` floor on no match), fold it through the
     /// handler (→ `500` floor on a [`FoldError`](crate::runner::FoldError), `504` if the fold exceeds the
     /// request timeout), else the handler's response. `request_id` is the unguessable per-request
-    /// correlation token (seeds the handler session's id). Infallible at this layer — every path yields an
-    /// [`HttpResponse`] (the edge always answers the socket).
+    /// correlation token (seeds the handler session's id — and the router-consult, for a guest routing
+    /// source). Infallible at this layer — every path yields an [`HttpResponse`] (the edge always answers).
     pub async fn serve(
         &self,
         store: &dyn ProgramStore,
         request_id: &[u8],
         req: &HttpRequest,
     ) -> HttpResponse {
-        let Some((handler, contract)) = self.router.match_route(req.method, &req.path) else {
+        let Some((handler, contract)) = self
+            .routing
+            .resolve(store, request_id, req.method, &req.path)
+            .await
+        else {
             return floor(404, "not found");
         };
         let fold = self.runner.fold(store, handler, contract, request_id, req);
@@ -468,6 +511,37 @@ mod tests {
                 .is_none(),
             "a router that cannot instantiate routes nowhere"
         );
+    }
+
+    #[tokio::test]
+    async fn a_gateway_backed_by_a_router_reducer_serves_the_routed_handler() {
+        // The full P2 serving path with routing lifted into a governing program: the gateway consults the
+        // (native stand-in) router reducer, binds its decision to a handler, and folds it — no static table.
+        let router_prog = ProgramHash::of(b"native-router");
+        let ok_prog = ProgramHash::of(b"ok-handler");
+        let mut store = Store::new();
+        store.register(router_prog, || Box::new(NativeRouter));
+        store.register(ok_prog, || Box::new(OkHandler));
+
+        let mut handlers = HashMap::new();
+        handlers.insert(Bytes::from_static(b"h-ping"), ok_prog);
+        let rr = RouterReducer::new(
+            router_prog,
+            a_contract(),
+            HostId::of(b"h"),
+            ReducerId::of(b"gw"),
+            handlers,
+        );
+        let gw = Gateway::with_router_reducer(rr, runner());
+
+        // GET /ping → the router routes to the ok handler → its 200 "ok".
+        let resp = gw.serve(&store, b"req-1", &get("/ping")).await;
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, Bytes::from_static(b"ok"));
+
+        // GET /nope → the router returns the no-match sentinel → the gateway's 404 floor.
+        let resp = gw.serve(&store, b"req-2", &get("/nope")).await;
+        assert_eq!(resp.status, 404);
     }
 
     #[tokio::test]

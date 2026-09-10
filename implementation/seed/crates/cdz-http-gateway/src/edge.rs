@@ -95,7 +95,7 @@ impl HttpEdge {
     /// handler.
     async fn handle(&self, mut req: Request<Incoming>) -> Response<Full<Bytes>> {
         if is_websocket_upgrade(req.headers()) {
-            return self.handle_ws_upgrade(&mut req);
+            return self.handle_ws_upgrade(&mut req).await;
         }
         let (parts, body) = req.into_parts();
         let Some(method) = method_from_hyper(&parts.method) else {
@@ -146,21 +146,32 @@ impl HttpEdge {
 
     /// Handle a WebSocket-upgrade request: route its path (upgrades are `GET`), and on a match complete the
     /// handshake (`101`) while spawning the per-connection frame loop over the upgraded connection. `404`
-    /// if no route matches, `400` if the request lacks a `Sec-WebSocket-Key`. Returns immediately; the loop
-    /// runs on its own task once hyper finishes the upgrade.
-    fn handle_ws_upgrade(&self, req: &mut Request<Incoming>) -> Response<Full<Bytes>> {
+    /// if no route matches, `400` if the request lacks a `Sec-WebSocket-Key`. Returns once routing resolves
+    /// (a guest routing source consults the router reducer here); the loop runs on its own task after hyper
+    /// finishes the upgrade.
+    async fn handle_ws_upgrade(&self, req: &mut Request<Incoming>) -> Response<Full<Bytes>> {
         let path = req.uri().path().to_string();
         let Some(key) = req.headers().get(hyper::header::SEC_WEBSOCKET_KEY).cloned() else {
             return floor_response(400, "missing sec-websocket-key");
         };
         // A ws upgrade is a GET; the matched route's handler is driven as a per-connection session. (The
-        // route's http contract-id is unused here — a ws session folds ws-events, not http-requests.)
-        let Some((program, _contract)) = self.gateway.match_route(Method::Get, &path) else {
+        // route's http contract-id is unused here — a ws session folds ws-events, not http-requests.) The
+        // connection sequence seeds both the router consult and the session id.
+        let conn_seq = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let Some((program, _contract)) = self
+            .gateway
+            .match_route(
+                self.store.as_ref(),
+                &conn_seq.to_be_bytes(),
+                Method::Get,
+                &path,
+            )
+            .await
+        else {
             return floor_response(404, "not found");
         };
         let on_upgrade = hyper::upgrade::on(req);
         let store = Arc::clone(&self.store);
-        let conn_seq = self.next_id.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(run_ws_session(on_upgrade, store, program, conn_seq));
         switching_protocols(&key)
     }
