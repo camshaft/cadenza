@@ -251,23 +251,30 @@ same binary also runs on-demand against a locally-built spec for author iteratio
 ### 3.3 How the driver commands the mock control server (internal admin channel)
 
 Because both the driver and the mock are Rust, this is a driver-internal detail, not an author-facing API.
-The mock exposes a small admin surface the driver uses to inject state + read observations; a plain
-HTTP/JSON admin listener is the default (trivial to call, human-debuggable with `curl`, and keeps the mock
-independently pokeable):
+The mock exposes a small admin surface the driver uses to inject state + read observations. **Its payloads are
+binary-AST Cadenza values — NOT JSON** (operator directive: *"i want cadenza ast everywhere"* / the standing
+"binary-AST is THE data-exchange format, no exceptions" rule). One request/response endpoint over a loopback
+socket carries an `AdminCommand` value up and an `AdminReply` value back, each encoded with the same
+value-form codec as the control-plane frames (§4). Both the mock and the driver share the frame types + codec
+(a library module of the mock crate, which the driver deps), so no ad-hoc text format enters the harness.
 
-| Inject (driver → mock)        | Effect |
-|-------------------------------|--------|
-| set config / root-router      | the `ControlConfig` the mock ships on connect; a `root_router` name is resolved via the mock's `--program-manifest`. |
-| push root-router (live-swap)  | push a new root-router hash to connected gateway sessions (the #8619 cell, now holding a hash). |
-| prime `control.send` reply    | how the mock replies to an incoming `ControlUp` (echo / canned / drop); the reply echoes the `correlation` so it routes back to the exact handler invocation. |
-| push `ControlDown`            | an unsolicited control→handler message (delivered as `on_notification`). |
-| reset                         | clear injected config + captured observations (per-scenario isolation). |
+The `AdminCommand` sum (driver → mock):
 
-| Observe (mock → driver)       | Returns |
-|-------------------------------|---------|
-| captured `ControlUp`s         | each `{program (handler id), session, correlation, payload, request:{method,path,headers}, seq, ts}`. |
-| connections                   | gateway sessions `{session, connected_at, config_served}`. |
-| event log                     | ordered connect / config-served / root-router-pushed / control-up / control-down / disconnect. |
+| Command                    | Effect |
+|----------------------------|--------|
+| set config / root-router   | the `ControlConfig` the mock ships on connect; a `root_router` name is resolved via the mock's program manifest. |
+| push root-router (live-swap) | push a new root-router hash to connected gateway sessions (the #8619 cell, now holding a hash). |
+| prime `control.send` reply | how the mock replies to an incoming `ControlUp` (canned bytes / drop); the reply echoes the `correlation` so it routes back to the exact handler invocation. |
+| push `ControlDown`         | an unsolicited control→handler message (delivered as `on_notification`). |
+| reset                      | clear injected config + captured observations (per-scenario isolation). |
+
+The `AdminReply` values (mock → driver), each a binary-AST value:
+
+| Observation             | Carries |
+|-------------------------|---------|
+| captured `ControlUp`s   | the `ControlUp` list (each: `program` handler id, `session`, `correlation`, `payload`, `request` {method, path, headers}). |
+| connections             | gateway sessions (`session`, `config_served`). |
+| event log               | ordered connect / config-served / root-router-pushed / control-up / control-down / disconnect. |
 
 **The gateway under test is the STOCK gateway binary — nothing internal is mocked** (operator: *"i want a
 stock gateway to be tested end-to-end instead of mocking anything internal. that way i definitely know things
@@ -370,8 +377,8 @@ hashes:
 
 ### 6.3 The rewritten, self-contained spec (what nix hands the driver)
 
-There is **no separate JSON manifest** — the rewritten `*.ml` spec is self-contained, exactly like
-harness-runs. `mkHarnessAst` (reused/adapted) rewrites each `config.programs[*].program` name → its built
+There is **no separate manifest file** — the rewritten `*.ml` spec is self-contained (binary-AST), exactly
+like harness-runs. `mkHarnessAst` (reused/adapted) rewrites each `config.programs[*].program` name → its built
 wasm `path`, rewrites `root-router`/`push-root-router`/`checker` names → the matching program, and injects a
 `deps` list of the content-addressed runtime + nfc components the guests import. The driver seeds every
 program blob + dep into the CAS store it boots (by content hash), so a guest's content-addressed imports

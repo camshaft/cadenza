@@ -23,9 +23,16 @@
 //! `cdz-http-gateway`'s `codec.rs`), extended with the `String`/`List` support the platform set lacks.
 
 use bytes::Bytes;
-use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, StructId};
 use cdz_str::Str;
-use std::sync::Arc;
+
+/// The reusable binary-AST value-form toolkit (builders + readers). Exposed so downstream harness crates
+/// (the mock control server's admin protocol, the driver) build binary-AST frames with ONE codec.
+pub mod value;
+use value::{
+    bytes_leaf, finish, list_value, read_bytes, read_list, record, record_field, str_leaf,
+    unascribe,
+};
 
 // --- the Rust mirrors of the control-plane frames --------------------------------------------------------
 
@@ -182,7 +189,7 @@ fn encode_header(b: &mut Builder, h: &Header) -> StructId {
 /// Decode a [`ControlConfig`], or `None` if malformed — the inverse of [`encode_control_config`].
 #[must_use]
 pub fn decode_control_config(bytes: &[u8]) -> Option<ControlConfig> {
-    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let arenas = value::decode(bytes)?;
     let rec = unascribe(&arenas, arenas.root);
     Some(ControlConfig {
         cas_url: read_str(&arenas, record_field(&arenas, rec, "cas-url")?)?,
@@ -194,7 +201,7 @@ pub fn decode_control_config(bytes: &[u8]) -> Option<ControlConfig> {
 /// Decode a [`ControlUp`], or `None` if malformed — the inverse of [`encode_control_up`].
 #[must_use]
 pub fn decode_control_up(bytes: &[u8]) -> Option<ControlUp> {
-    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let arenas = value::decode(bytes)?;
     let rec = unascribe(&arenas, arenas.root);
     Some(ControlUp {
         program: read_bytes(&arenas, record_field(&arenas, rec, "program")?)?,
@@ -208,7 +215,7 @@ pub fn decode_control_up(bytes: &[u8]) -> Option<ControlUp> {
 /// Decode a [`ControlDown`], or `None` if malformed — the inverse of [`encode_control_down`].
 #[must_use]
 pub fn decode_control_down(bytes: &[u8]) -> Option<ControlDown> {
-    let arenas = cadenza_ast::codec::decode(bytes)?;
+    let arenas = value::decode(bytes)?;
     let rec = unascribe(&arenas, arenas.root);
     Some(ControlDown {
         session: read_bytes(&arenas, record_field(&arenas, rec, "session")?)?,
@@ -239,105 +246,13 @@ fn read_headers(arenas: &Arenas, id: StructId) -> Option<Vec<Header>> {
         .collect()
 }
 
-// --- the canonical value-form primitives (replicated from cdz-platform/src/contract_value.rs) ------------
+// --- the one lib-local reader ----------------------------------------------------------------------------
+// All value-form builders + readers now live in the shared `value` module; the only lib-local reader is this
+// `Str`-returning `read_str` (the toolkit's `value::read_str` returns `String`; the frames want `Str`).
 
-/// Wrap `value` in the root ascription `(: value ty)`, finish the AST, and encode it to binary-AST bytes.
-fn finish(mut b: Builder, value: StructId, ty: &str) -> Bytes {
-    let root = ascribe(&mut b, value, ty);
-    let arenas = b.finish(root);
-    Bytes::from(cadenza_ast::codec::encode(&arenas))
-}
-
-/// A root ascription `(: <value> <ty>)` — the top-level wrapper the decoder tolerates at the payload boundary.
-fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
-    let colon = b.name(":");
-    let ty = b.name(ty);
-    b.list(vec![colon, value, ty])
-}
-
-/// A record value — the native `#record((= <field> <value>)…)` compound, fields in ascending NAME order
-/// (the compiler's canonical order; the decoder reads records name-ordered).
-fn record(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
-    let mut fields = fields;
-    fields.sort_by_key(|&(name, _)| name);
-    let pairs: Vec<StructId> = fields
-        .into_iter()
-        .map(|(name, value)| {
-            let key = b.name(name);
-            b.field_pair(key, value)
-        })
-        .collect();
-    b.compound(CompoundCtor::Record, &pairs)
-}
-
-/// A `List(T)` value — the native `#list(<elem>…)` compound, elements in order (NOT sorted).
-fn list_value(b: &mut Builder, elems: Vec<StructId>) -> StructId {
-    b.compound(CompoundCtor::List, &elems)
-}
-
-/// A `Bytes` leaf.
-fn bytes_leaf(b: &mut Builder, bytes: &[u8]) -> StructId {
-    b.atom_leaf(Leaf::Bytes(Arc::from(bytes)))
-}
-
-/// A `String` leaf (`cadenza-ast` `Leaf::Str` — text, distinct from a `Leaf::Name` bare identifier).
-fn str_leaf(b: &mut Builder, s: &str) -> StructId {
-    b.atom_leaf(Leaf::Str(Arc::from(s)))
-}
-
-/// An integer leaf carrying `value`, written in decimal. (Unused by the current frames; kept alongside the
-/// other primitives so the shared set stays complete for the frames a later slice adds.)
-#[allow(dead_code)]
-fn uint_leaf(b: &mut Builder, value: u64) -> StructId {
-    b.atom_leaf(Leaf::Int {
-        value: IntValue::from_u128(u128::from(value)),
-        radix: Radix::Dec,
-    })
-}
-
-// --- the readers (exact inverses; total) -----------------------------------------------------------------
-
-/// The value inside a root ascription `(: <value> <ty>)`, ignoring the type token.
-fn as_ascribed(arenas: &Arenas, id: StructId) -> Option<StructId> {
-    let inner = arenas.as_form(id, ":")?;
-    (inner.len() == 2).then_some(inner[0])
-}
-
-/// Strip an optional ascription `(: <value> <ty>)`, returning the inner value (or `id` unchanged if not
-/// ascribed) — tolerant of an ascription anywhere a value/record is expected.
-fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
-    as_ascribed(arenas, id).unwrap_or(id)
-}
-
-/// The value of a record's field named `name`, via the native-record reader. Strips an optional ascription
-/// on `id` first, so it reads both the bare and the ascribed record form.
-fn record_field(arenas: &Arenas, id: StructId, name: &str) -> Option<StructId> {
-    let fields = arenas.compound_form_of(unascribe(arenas, id), CompoundCtor::Record)?;
-    fields.iter().find_map(|&f| {
-        let kv = arenas.as_form(f, "=")?;
-        (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])
-    })
-}
-
-/// The members of a native `#list(…)` value, or `None` if `id` is not a list.
-fn read_list(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
-    arenas.compound_form_of(id, CompoundCtor::List)
-}
-
-/// A `String` leaf's text, as a [`Str`] (O(1)-clone, shares the wire bytes).
+/// A `String` leaf's text, as a [`Str`] (O(1)-clone, shares the wire bytes). Delegates to the value toolkit.
 fn read_str(arenas: &Arenas, id: StructId) -> Option<Str> {
-    arenas.as_str(id).map(Str::from)
-}
-
-/// A `Bytes` leaf's bytes.
-fn read_bytes(arenas: &Arenas, id: StructId) -> Option<Bytes> {
-    match arenas.get(id) {
-        Struct::Atom(leaf) => match arenas.leaf(*leaf) {
-            Leaf::Bytes(bytes) => Some(Bytes::copy_from_slice(bytes)),
-            _ => None,
-        },
-        Struct::List(_) => None,
-    }
+    value::read_str(arenas, id).map(Str::from)
 }
 
 #[cfg(test)]

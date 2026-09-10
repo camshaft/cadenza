@@ -41,6 +41,10 @@ Cargo.lock
 # nix check vendors deps via `importCargoLock` from this COMMITTED lock and builds `--offline --locked`, so
 # the nested lock must be tracked (a scoped negation, as cdz-http-gateway/cdz-runtime/cdz-nfc do).
 !/implementation/seed/crates/cdz-http-protocol/Cargo.lock
+# cdz-http-control-mock is an EXCLUDED standalone [workspace] (own lock) — its dedicated
+# `checks.<sys>.cdz-http-control-mock` nix check vendors deps via `importCargoLock` from this COMMITTED lock
+# and builds `--offline --locked`, so the nested lock must be tracked (a scoped negation, as the siblings do).
+!/implementation/seed/crates/cdz-http-control-mock/Cargo.lock
 
 # The tracked `fleet/` source dir (role bodies, window.sh, contract) also gets used as an agent scratch
 # area — `fleet/scratch/` holds work-in-progress .patch/handoff files that are NOT source and must never

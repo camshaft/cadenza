@@ -7017,6 +7017,51 @@
               cargo fmt --check
               echo "ok: cdz-http-protocol (excluded standalone crate — test + clippy + fmt)" > "$out"
             '';
+            # cdz-http-control-mock (vertical gateway-conformance): the excluded standalone mock control server
+            # crate's dedicated check — test + clippy + fmt. Pulls the tokio/hyper/tungstenite stack (its own
+            # committed lock); path-deps cdz-http-protocol + cdz-str (+ cadenza-ast transitively). NO cdz-platform
+            # → no contracts overlay, no cmake.
+            cdzHttpControlMockVendor = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock;
+            };
+            cdzHttpControlMockSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/seed/crates/cdz-http-control-mock/src
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
+                ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
+                ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-ast/src
+                ./implementation/seed/crates/cadenza-ast/Cargo.toml
+                ./implementation/seed/crates/cdz-str/src
+                ./implementation/seed/crates/cdz-str/Cargo.toml
+                ./rust-toolchain.toml
+              ];
+            };
+            cdzHttpControlMockCheck = pkgs.runCommand "cdz-http-control-mock"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+                CDZ_RUN_TIMEOUT_SECS = "300";
+                RUST_MIN_STACK = "67108864";
+              } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cp -r --no-preserve=mode,ownership ${cdzHttpControlMockSrc} repo
+              chmod -R u+w repo
+              cd repo
+              export CARGO_HOME="$TMPDIR/cargo-home"; mkdir -p "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${cdzHttpControlMockVendor}"
+              EOF
+              cd implementation/seed/crates/cdz-http-control-mock
+              cargo test --offline --locked
+              cargo clippy --offline --locked --all-targets -- -D warnings
+              cargo fmt --check
+              echo "ok: cdz-http-control-mock (excluded standalone crate — test + clippy + fmt)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -7412,6 +7457,9 @@
             # wire-contract crate's dedicated check (test + clippy + fmt). STANDALONE — NOT in `local-gate`
             # (an excluded crate must not burden the merge gate); run via `nix build .#checks.<sys>.cdz-http-protocol`.
             cdz-http-protocol = cdzHttpProtocolCheck;
+            # cdz-http-control-mock (vertical gateway-conformance): the mock control server crate's dedicated
+            # check. STANDALONE — NOT in local-gate; run via `nix build .#checks.<sys>.cdz-http-control-mock`.
+            cdz-http-control-mock = cdzHttpControlMockCheck;
             # The PoC HTTP handler guest compiles to a valid wasm reducer component (building it = the gate).
             cdz-http-gateway-poc-handler = cdzHttpGatewayPocHandler;
             # The request-reading echo handler guest (forward-path e2e's handler) compiles.
