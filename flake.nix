@@ -2390,7 +2390,10 @@
             mkdir -p implementation/seed/crates/cdz-platform/src/contracts
             cp ${cdzPlatformContracts}/contracts/*.rs implementation/seed/crates/cdz-platform/src/contracts/
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
-            cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host"
+            # `itest-alloc` (split out of `host`, 2026-09-10) gives the itest bin its jemalloc #[global_allocator]
+            # exactly as before; it is now a distinct feature so `host` as a LIBRARY does not drag the jemalloc
+            # C build. The itest [[bin]] requires all three, so this build must enable itest-alloc too.
+            cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host itest-alloc"
             runHook postBuild
           '';
           installPhase = ''
