@@ -1,0 +1,51 @@
+// The `cdz-platform.sexpr.parse` contract (design/DESIGN-reducer-targets.md §5): the STRONGLY-TYPED
+// request/response pair for the sexpr-parser reducer target (the `reducer-guest-sexpr` component). A caller
+// `run`s the component with a `ParseRequest` value and reads back a `ParseResult` — its `close` reason. One
+// contract carries BOTH the input type (`ParseRequest`) and the output type (`ParseResult`) and folds to ONE
+// content-addressed `contract-id` (the routing tag on `run`), exactly like `blob-get` (input `GetRequest`,
+// output `GetResult`). Userspace: a Cadenza reducer consumes it via self-reflection; the build-time contract
+// projector also emits a Rust binding (`crate::contracts::sexpr_parse::contract().id()`) so the Rust caller
+// derives the SAME id (operator computed-ids directive: no hard-coded id literals).
+//
+// A `Diagnostic` is a single-constructor `| Diagnostic(Record(...))` (the proven contract idiom, cf.
+// http-request's `Header`), NOT a bare `type Diagnostic = Record(...)` record-alias — a bare record alias
+// names a type CONSTRUCTOR, not a record type (CDZ0203), so it does not typecheck as a `List` element.
+//
+// The `ast` payload is the CANONICAL BINARY-AST encoding of the parsed tree (`Bytes`) — binary-AST is THE
+// data-exchange format (standing directive), and an arbitrary parsed program is a dynamically-shaped AST the
+// caller decodes with `Ast.decode`. A parse `Diagnostic` is BYTE-SPAN located (`byteOffset`..+`len` into the
+// source) — sexpr reading is STRICT, so a read failure yields an empty `ast` and one diagnostic.
+type ParseRequest = | Parse(String)
+type Diagnostic   = | Diagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
+type ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(Diagnostic)))
+
+// --- conformance proof: fully-literal request + response values, ascribed against the schema types ---
+def a-request() -> ParseRequest = ParseRequest.Parse("(do (def (main) 42) (export main))")
+
+def a-result() -> ParseResult =
+  ParseResult.Parsed({ ast = b"canonical-binary-ast-bytes",
+                       diagnostics = [Diagnostic.Diagnostic({ message = "trailing input at byte 40",
+                                                              byteOffset = 40, len = 0 })] })
+
+@test
+def request-conforms() =
+  match a-request() with | ParseRequest.Parse(s) =>
+    if s == "(do (def (main) 42) (export main))" then unit else trap("sexpr-parse request mismatch")
+
+@test
+def result-conforms() =
+  match a-result() with
+  | ParseResult.Parsed(r) =>
+    (match r.diagnostics with
+     | [d] =>
+       (match d with
+        | Diagnostic.Diagnostic(x) =>
+          if (r.ast == b"canonical-binary-ast-bytes") and (x.message == "trailing input at byte 40")
+             and (x.byteOffset == 40) and (x.len == 0)
+          then unit else trap("sexpr-parse result field mismatch"))
+     | _ => trap("expected exactly one diagnostic"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.sexpr.parse", "ParseRequest", "ParseResult")
+export { ParseRequest.*, Diagnostic.*, ParseResult.*, descriptor }

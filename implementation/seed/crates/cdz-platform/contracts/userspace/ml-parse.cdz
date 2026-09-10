@@ -1,0 +1,52 @@
+// The `cdz-platform.ml.parse` contract (design/DESIGN-reducer-targets.md §5): the STRONGLY-TYPED
+// request/response pair for the ml-parser reducer target (the `reducer-guest-ml` component). A caller `run`s
+// the component with a `ParseRequest` value and reads back a `ParseResult` — its `close` reason. One contract
+// carries BOTH the input type (`ParseRequest`) and the output type (`ParseResult`) and folds to ONE
+// content-addressed `contract-id` (the routing tag on `run`), exactly like `blob-get`. Its type shape is
+// identical to `sexpr-parse`, but the contract NAME differs (`cdz-platform.ml.parse`) so it folds to a
+// DISTINCT id — a reducer dispatches sexpr-vs-ml parsing by contract-id. Userspace: a Cadenza reducer
+// consumes it via self-reflection; the build-time contract projector also emits a Rust binding
+// (`crate::contracts::ml_parse::contract().id()`) so the Rust caller derives the SAME id.
+//
+// A `Diagnostic` is a single-constructor `| Diagnostic(Record(...))` (the proven contract idiom, cf.
+// http-request's `Header`), NOT a bare `type Diagnostic = Record(...)` record-alias — a bare record alias
+// names a type CONSTRUCTOR, not a record type (CDZ0203), so it does not typecheck as a `List` element.
+//
+// The `ast` payload is the CANONICAL BINARY-AST encoding of the parsed tree (`Bytes`) — binary-AST is THE
+// data-exchange format (standing directive). A parse `Diagnostic` is BYTE-SPAN located (`byteOffset`..+`len`
+// into the source). The ML reader is ERROR-RECOVERING, so `ast` is a well-formed best-effort tree even when
+// `diagnostics` is non-empty — the caller gets both an AST AND every recovered problem, each byte-located.
+type ParseRequest = | Parse(String)
+type Diagnostic   = | Diagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
+type ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(Diagnostic)))
+
+// --- conformance proof: fully-literal request + response values, ascribed against the schema types ---
+def a-request() -> ParseRequest = ParseRequest.Parse("def main() -> Int64 = 42")
+
+def a-result() -> ParseResult =
+  ParseResult.Parsed({ ast = b"canonical-binary-ast-bytes",
+                       diagnostics = [Diagnostic.Diagnostic({ message = "expected an expression",
+                                                              byteOffset = 22, len = 0 })] })
+
+@test
+def request-conforms() =
+  match a-request() with | ParseRequest.Parse(s) =>
+    if s == "def main() -> Int64 = 42" then unit else trap("ml-parse request mismatch")
+
+@test
+def result-conforms() =
+  match a-result() with
+  | ParseResult.Parsed(r) =>
+    (match r.diagnostics with
+     | [d] =>
+       (match d with
+        | Diagnostic.Diagnostic(x) =>
+          if (r.ast == b"canonical-binary-ast-bytes") and (x.message == "expected an expression")
+             and (x.byteOffset == 22) and (x.len == 0)
+          then unit else trap("ml-parse result field mismatch"))
+     | _ => trap("expected exactly one diagnostic"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module, "cdz-platform.ml.parse", "ParseRequest", "ParseResult")
+export { ParseRequest.*, Diagnostic.*, ParseResult.*, descriptor }
