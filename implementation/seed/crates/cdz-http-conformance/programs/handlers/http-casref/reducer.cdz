@@ -1,0 +1,21 @@
+// A CAS-BACKED RESPONSE handler (DESIGN-http-outpost §6 CasRef; gateway http.response-cas terminal, #0d52d2f6):
+// on each request it publishes some bytes to the CAS via `blobs.put` (a host effect, backed by the gateway's
+// shared write-capable CAS — cdz-http-gateway wasm.rs), gets the blob's HASH, and closes with the
+// http.response-cas terminal carrying that hash instead of an inline body. The gateway then FETCHES the blob
+// from the CAS by hash and serves it. Exercises blobs.put + the CAS-fetch response path end to end.
+//
+// SELF-CONTAINED (does NOT compose http-lib): it imports the ResponseCas terminal types + descriptor directly
+// from the http-response-cas contract, so http-response's `Header` is NOT pulled into this unit — avoiding the
+// CDZ0201 collision between the two identical `Header` types. The reducer-world (witWorld) exposes the `blobs`
+// host import; reducer-lib supplies `Outcome` + the inert on-response/on-notification.
+import { ResponseCas, Header, descriptor as response-cas-descriptor } from "http-response-cas"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  host blobs in
+    (let h = blobs.put(b"cas-backed body bytes") in
+     { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+       outcome = Outcome.Close({ schema = response-cas-descriptor().id,
+                                 reason = Value.encode(ResponseCas.ResponseCas({ status = 200, headers = ([] : List(Header)), body_hash = h })) }) })
+
+export { on-message, on-response, on-notification }
