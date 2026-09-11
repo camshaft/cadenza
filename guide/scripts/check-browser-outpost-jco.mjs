@@ -64,8 +64,22 @@ if (!heapIface) fail(`runtime exposes no heap interface (root keys: ${Object.key
 // 4: INSTANTIATE the guest with the REAL heap bound; no-op stubs satisfy the other host imports
 //    (state/blobs/identity/run) that this fold path does not call. Assert the guest interface is callable.
 const stubIface = new Proxy({}, { get: () => () => undefined });
+// A Map-backed `state` host shim (design §5: IndexedDB in a browser; a Map here — the reducer is host-agnostic).
+// jco represents option<bytes> as `Uint8Array | undefined`, so get returns the stored value or undefined (None).
+const stateMap = new Map();
+const kstr = (k) => Buffer.from(k).toString("latin1");
+const stateShim = {
+  get: (k) => stateMap.get(kstr(k)),
+  put: (k, v) => { stateMap.set(kstr(k), v); },
+  delete: (k) => { stateMap.delete(kstr(k)); },
+};
 const imports = new Proxy({}, {
-  get: (_t, key) => (typeof key === "string" && key.startsWith("cadenza:runtime/heap")) ? heapIface : stubIface,
+  get: (_t, key) => {
+    if (typeof key !== "string") return stubIface;
+    if (key.startsWith("cadenza:runtime/heap")) return heapIface;
+    if (key.includes("/state")) return stateShim; // the reducer-world `state` host import
+    return stubIface;
+  },
 });
 let root;
 try {
@@ -154,23 +168,28 @@ const assertRender = (step, want, label) => {
 assertRender(ag.onMessage(msg), "hello from a cadenza reducer", "initial render");
 checks++;
 
-// 8: DOM-as-effect INBOUND / the Elm update cycle (§3.2) — a CLICK message (delivered on the dom-event
-//    contract) folds to a NEW render patch ("clicked"). This proves the reducer receives a DOM event as an
-//    ordinary on-message call and re-renders — the full event→view loop, driven headlessly (a synthetic click).
+// 8 + 9: DOM-as-effect INBOUND + STATEFUL fold (§3.2 / §5). A CLICK message (on the dom-event contract) folds
+//    to a re-render, and STATE CARRIES ACROSS events via the state host: the FIRST click renders "clicked
+//    once" (state miss → records the visit); a SECOND click sees the recorded state and renders "clicked
+//    again". This proves the reducer receives DOM events as ordinary on-message calls AND maintains state
+//    across them — the full stateful Elm event→view loop, driven headlessly (synthetic clicks, state = a Map).
 const clickMsg = {
   contract: new TextEncoder().encode("cadenza.dom.event.click"),
   sender: { reducer: empty, host: empty },
   payload: empty,
   token: empty,
 };
-assertRender(ag.onMessage(clickMsg), "clicked", "click-folded render");
+assertRender(ag.onMessage(clickMsg), "clicked once", "first click (state miss)");
+checks++;
+assertRender(ag.onMessage(clickMsg), "clicked again", "second click (state hit — carried across events)");
 checks++;
 
-if (checks !== 8) fail(`expected 8 assertions to run, ran ${checks} (vacuous-pass guard)`);
+if (checks !== 9) fail(`expected 9 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
   `browser-outpost jco check: ok — the reducer transpiles (${guestFiles.length} files), INSTANTIATES with the ` +
-  `real value-heap runtime, DRIVES on-message to a response value, and the app reducer runs the full DOM-as-` +
-  `effect loop: emits a render patch, and FOLDS a click (dom-event) message into a new render patch — all in ` +
-  `a JS engine, no browser. A Cadenza reducer drives the browser as a pure event→view fold.`,
+  `real value-heap runtime, DRIVES on-message to a response value, and runs the full STATEFUL DOM-as-effect ` +
+  `loop: emits a render patch, folds a click into a re-render, and MAINTAINS STATE ACROSS clicks (once → ` +
+  `again) via the state host — all in a JS engine, no browser. A Cadenza reducer drives the browser as a ` +
+  `stateful event→view fold.`,
 );
 process.exit(0);

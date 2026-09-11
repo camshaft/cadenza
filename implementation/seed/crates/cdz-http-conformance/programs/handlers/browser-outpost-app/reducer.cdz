@@ -23,15 +23,26 @@ def render-contract() = (b"cadenza.dom.render..............." : Bytes)
 // click; any other contract is the initial/agent message. (A real dom WIT interface pins these; marker for now.)
 def click-contract() = (b"cadenza.dom.event.click" : Bytes)
 
+// The state key under which the app persists its click history (design §5: state → IndexedDB in the browser,
+// a Map in the headless check — the reducer is host-agnostic).
+def clicked-key() = (b"browser-outpost.clicked" : Bytes)
+
 // Emit a render effect carrying the patch value, then continue.
 def render(patch: Patch) =
   { requests = [ request(render-contract(), Value.encode(patch), b"render") ],
     outcome = Outcome.Continue }
 
-// Fold a message → a render patch (the Elm `update`). A click renders "clicked"; anything else renders the
-// initial view. Branch on the message CONTRACT (Bytes-eq lowers; runtime String-eq is declined).
+// Fold a message → a render patch, MAINTAINING STATE ACROSS EVENTS via the `state` host import (§5) — the
+// core of a real app. A click reads prior state: the FIRST click renders "clicked once" and records the visit;
+// a SUBSEQUENT click sees the recorded state and renders "clicked again". Anything else renders the initial
+// view. This is the stateful Elm `update`: state (host) in, render patch (effect) out. Branch on the message
+// CONTRACT (Bytes-eq lowers; runtime String-eq is declined).
 def on-message(msg) =
-  (if msg.contract == click-contract() then render(Patch.Text("clicked"))
-   else render(Patch.Text("hello from a cadenza reducer")))
+  host state in
+    (if msg.contract == click-contract() then
+       (match state.get(clicked-key()) with
+        | Some(_) => render(Patch.Text("clicked again"))
+        | None(_) => ( state.put(clicked-key(), b"yes") ; render(Patch.Text("clicked once")) ))
+     else render(Patch.Text("hello from a cadenza reducer")))
 
 export { on-message, on-response, on-notification }
