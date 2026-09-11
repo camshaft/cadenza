@@ -172,9 +172,15 @@ type ControlLink = tokio_tungstenite::WebSocketStream<TcpStream>;
 /// gateway keeps serving `503` while control is unreachable rather than exiting. Runs for the process's life.
 async fn control_link(control_addr: String, state: SharedState, sessions: Sessions) {
     let codec = control_frame_codec();
+    // Consecutive dial failures since the last successful dial — drives the redial backoff so a
+    // persistently-unreachable control is retried with exponential (capped) spacing rather than a flat
+    // 250 ms busy-spin. Reset to 0 the moment a dial succeeds, so a transient link DROP (control was just
+    // reachable) redials promptly.
+    let mut failures: u32 = 0;
     loop {
         match dial_control(&control_addr).await {
             Ok(ws) => {
+                failures = 0;
                 // Split the one ws into a read half (frames DOWN) and a write half (frames UP). A
                 // `control.send` reaches the write half via an unbounded mpsc: the resolver pushes a
                 // `ControlUp` into `up_tx` (fire-and-forget), and the writer task below drains it to the ws —
@@ -232,12 +238,29 @@ async fn control_link(control_addr: String, state: SharedState, sessions: Sessio
             }
             Err(e) => {
                 // Control unreachable or handshake failed — stay up (503) and retry.
+                failures = failures.saturating_add(1);
                 eprintln!("gateway: control link down ({e}); retrying");
             }
         }
-        // Back off before redialing so a persistently-unreachable control does not busy-spin.
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        // Back off before redialing so a persistently-unreachable control does not busy-spin: 250 ms
+        // doubling per consecutive failure, capped, and reset to the 250 ms floor on any successful dial.
+        tokio::time::sleep(redial_backoff(failures)).await;
     }
+}
+
+/// The redial backoff for consecutive control-link dial `failures` (0 = redial after a successful dial, e.g.
+/// a transient drop): a 250 ms floor doubling per failure, capped at 5 s so a long control outage is retried
+/// steadily (~every 5 s) without busy-spinning. Pure so the schedule is unit-testable.
+fn redial_backoff(failures: u32) -> Duration {
+    const FLOOR_MS: u64 = 250;
+    const CAP_MS: u64 = 5_000;
+    // Shift the floor left by `failures`, saturating: 250, 500, 1000, 2000, 4000, then the 5 s cap. `>= 20`
+    // would overflow the u64 shift, so clamp the exponent first; the cap makes anything past ~5 identical.
+    let ms = FLOOR_MS
+        .checked_shl(failures.min(20))
+        .unwrap_or(CAP_MS)
+        .min(CAP_MS);
+    Duration::from_millis(ms)
 }
 
 /// Dial the control server over a WebSocket (§3), returning the still-open link. Frames are read by the
@@ -649,6 +672,22 @@ mod tests {
             .status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[test]
+    fn redial_backoff_doubles_from_250ms_and_caps_at_5s_without_overflow() {
+        // The schedule the persistently-unreachable-control redial follows: a 250 ms floor doubling per
+        // consecutive failure, capped at 5 s. `failures == 0` (a redial after a successful dial) is the floor.
+        assert_eq!(redial_backoff(0), Duration::from_millis(250));
+        assert_eq!(redial_backoff(1), Duration::from_millis(500));
+        assert_eq!(redial_backoff(2), Duration::from_millis(1000));
+        assert_eq!(redial_backoff(3), Duration::from_millis(2000));
+        assert_eq!(redial_backoff(4), Duration::from_millis(4000));
+        // 250 << 5 = 8000 ms clamps to the 5 s cap, and every larger count stays capped …
+        assert_eq!(redial_backoff(5), Duration::from_millis(5000));
+        assert_eq!(redial_backoff(100), Duration::from_millis(5000));
+        // … including counts past the shift width, which must clamp (not overflow-panic).
+        assert_eq!(redial_backoff(u32::MAX), Duration::from_millis(5000));
     }
 
     #[test]
