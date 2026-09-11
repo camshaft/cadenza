@@ -625,12 +625,12 @@ fn method_value_kind(method: &Method) -> Option<&'static str> {
 }
 
 /// Build the `Request.Request` value (§4) from its parts, using the platform's canonical `http-request`
-/// contract builders so it type-ascribes against the schema the driven program decodes. The ROOT ascription
-/// is RETAINED (`finish`, not `finish_value`): the GUEST's compiled Cadenza `Value.decode(Request)` is NOT
-/// ascription-invariant — it returns `None` on an ascription-free root (→ a 400 "undecodable http-request"),
-/// which #8770 hit and reverted here (the Rust-side decode-invariance of #8758 does not cover the guest's
-/// compiled decode). Until the guest decode is made ascription-invariant (v-value-codec / compiler), this
-/// terminal ascription stays. (The control-link encoders CAN drop it — their decoders unascribe.)
+/// contract builders. Emitted STRUCTURALLY via `finish_value` (no root type ascription), and the `Header`
+/// list elements are bare too: the guest's compiled `Value.decode` is now frame-tolerant at the root AND
+/// nested (v-value-codec's runtime keystone #8790 — decode by structure, not names). This re-drops the root
+/// ascription #8770 had to revert (#8775) now that the guest decode tolerates the bare form. Gated end-to-end
+/// by the request-reading conformance scenarios (echo-direct/parse/compile/cross-surface), which decode a
+/// header-bearing request in a real guest — the check that must stay green for this to hold.
 fn encode_request_value(
     method: &'static str,
     path: &str,
@@ -645,20 +645,18 @@ fn encode_request_value(
     let method = value::bare_ctor(&mut b, method, vec![unit]);
     let path = value::str_leaf(&mut b, path);
     let query = value::str_leaf(&mut b, query);
-    // Each list element must carry its own `(: <record> Header)` ascription: the guest's `Value.encode`
-    // ascribes a single-constructor RECORD value (a `Header` newtype) so `Value.decode` can disambiguate the
-    // elided `#record` back to `Header`, and its decode of `List(Header)` REQUIRES that per-element ascription.
-    // `reqc::header_header` builds the bare record (single-ctor elided, no ascription — correct for a value
-    // whose type is fixed by an enclosing ascription, e.g. a root or a same-typed field), so a list element
-    // needs the wrap. Without it, any request WITH headers fails to decode in the guest (an empty header list
-    // is unaffected — hence it hid until a header-bearing request was driven end to end).
+    // Each `List(Header)` element is the bare single-ctor record (no per-element `(: <record> Header)`
+    // ascription): the guest's compiled `Value.decode` is now frame-tolerant at NESTED positions too
+    // (v-value-codec's runtime keystone #8790 — decode by structure against the known `Header` element type,
+    // not by a per-element type name). Previously this ascription was REQUIRED (its absence caused a
+    // header-bearing request to decode to `None` in the guest — the http-echo bug); #8790 makes it
+    // unnecessary. Gated by the header-bearing request-reading conformance scenarios (echo-direct etc.).
     let header_values: Vec<value::ValueId> = headers
         .iter()
         .map(|(name, val)| {
             let name = value::str_leaf(&mut b, name);
             let value = value::str_leaf(&mut b, val);
-            let header = reqc::header_header(&mut b, reqc::HeaderHeader { name, value });
-            value::ascribe(&mut b, header, "Header")
+            reqc::header_header(&mut b, reqc::HeaderHeader { name, value })
         })
         .collect();
     let headers = value::list_value(&mut b, header_values);
@@ -673,7 +671,7 @@ fn encode_request_value(
             body,
         },
     );
-    value::finish(b, request, "Request")
+    value::finish_value(b, request)
 }
 
 /// Turn a program's terminal `http.response` `Break` reason — a `Response.Response` value (§6) — into the
