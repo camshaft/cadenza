@@ -64,6 +64,12 @@ const DISPATCH_DEPTH: usize = 16;
 /// tunable (a contract-id change then). 16 MiB.
 const MAX_REQUEST_BODY: usize = 16 << 20;
 
+/// How long the edge waits for the NEXT request-body byte before flooring `408 Request Timeout` — an IDLE
+/// timeout, reset on every received frame, NOT a total-upload cap, so a legitimate slow-but-active large
+/// upload survives (it keeps sending) while a stalled/no-send client (a slowloris vector) is floored + the
+/// connection closed. A baked safety limit (like [`DISPATCH_DEPTH`]/[`MAX_REQUEST_BODY`]).
+const BODY_READ_IDLE: Duration = Duration::from_secs(5);
+
 /// Why marshalling an incoming request failed — selects the client-error floor.
 enum RequestReadError {
     /// Unsupported method, or an unreadable/malformed body ⇒ `400`.
@@ -71,6 +77,9 @@ enum RequestReadError {
     /// The body exceeds [`MAX_REQUEST_BODY`] (by declared `Content-Length` or by actual bytes) ⇒ `413`,
     /// answered BEFORE the program is driven (§8 #5).
     TooLarge,
+    /// No body byte arrived within [`BODY_READ_IDLE`] — a stalled/slow-send client ⇒ `408 Request Timeout`
+    /// (the slowloris floor), before the program is driven.
+    Timeout,
 }
 
 /// Whether a declared `Content-Length` exceeds [`MAX_REQUEST_BODY`]. `None` (absent/unparseable length) is not
@@ -446,6 +455,13 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
                 b"cdz-http-gateway: request body exceeds the 16 MiB ceiling\n",
             );
         }
+        // §8 hardening: a stalled/slow-send body is floored 408 (slowloris), before driving.
+        Err(RequestReadError::Timeout) => {
+            return status(
+                StatusCode::REQUEST_TIMEOUT,
+                b"cdz-http-gateway: request body read timed out\n",
+            );
+        }
         Err(RequestReadError::BadRequest) => {
             return status(
                 StatusCode::BAD_REQUEST,
@@ -579,14 +595,23 @@ async fn encode_request(
     // client-visible `413` (not a mid-upload reset), then flag `TooLarge`. Memory stays constant once over.
     let mut buf: Vec<u8> = Vec::new();
     let mut over = declared_over;
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| RequestReadError::BadRequest)?;
-        if let Ok(chunk) = frame.into_data() {
-            if over || buf.len() + chunk.len() > MAX_REQUEST_BODY {
-                over = true;
-                buf = Vec::new();
-            } else {
-                buf.extend_from_slice(&chunk);
+    loop {
+        // Each frame read is bounded by the IDLE timeout: no byte within BODY_READ_IDLE ⇒ a stalled/no-send
+        // client (slowloris) ⇒ 408, before routing. A received frame resets the timer, so an active slow
+        // upload survives.
+        match tokio::time::timeout(BODY_READ_IDLE, body.frame()).await {
+            Err(_elapsed) => return Err(RequestReadError::Timeout),
+            Ok(None) => break,
+            Ok(Some(frame)) => {
+                let frame = frame.map_err(|_| RequestReadError::BadRequest)?;
+                if let Ok(chunk) = frame.into_data() {
+                    if over || buf.len() + chunk.len() > MAX_REQUEST_BODY {
+                        over = true;
+                        buf = Vec::new();
+                    } else {
+                        buf.extend_from_slice(&chunk);
+                    }
+                }
             }
         }
     }
@@ -860,6 +885,18 @@ mod tests {
             status(StatusCode::PAYLOAD_TOO_LARGE, b"too large\n").status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    #[test]
+    fn body_read_idle_floors_408_with_a_sane_idle_window() {
+        // The slowloris floor renders 408, and the baked idle is a positive, tolerant window (a legitimate
+        // active upload sends bytes far more often). The full stall→408 e2e is the §8 slow-upload conformance
+        // scenario (runs/slow-upload.ml, v-gateway-conformance's lane).
+        assert_eq!(
+            status(StatusCode::REQUEST_TIMEOUT, b"timed out\n").status(),
+            StatusCode::REQUEST_TIMEOUT
+        );
+        assert!(BODY_READ_IDLE >= Duration::from_secs(1));
     }
 
     #[test]
