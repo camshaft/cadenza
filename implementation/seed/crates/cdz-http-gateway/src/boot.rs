@@ -551,17 +551,18 @@ fn edge_origin() -> Origin {
 async fn encode_request(
     req: Request<Incoming>,
 ) -> Result<(Bytes, RequestContext), RequestReadError> {
-    let (parts, body) = req.into_parts();
+    let (parts, mut body) = req.into_parts();
     let method = method_value_kind(&parts.method).ok_or(RequestReadError::BadRequest)?;
-    // §8 #5 fast path: reject an oversized body by its DECLARED Content-Length before reading a byte.
+    // §8 #5: whether the DECLARED Content-Length already puts the body over the ceiling. We do NOT reject
+    // early on it — we still drain the body below so the client finishes uploading and receives a
+    // CLIENT-VISIBLE 413 (returning + closing the socket mid-upload surfaces as a connection reset, not the
+    // 413 — the 413-while-uploading race).
     let declared_len = parts
         .headers
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
-    if content_length_exceeds_ceiling(declared_len) {
-        return Err(RequestReadError::TooLarge);
-    }
+    let declared_over = content_length_exceeds_ceiling(declared_len);
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().unwrap_or("").to_string();
     let headers: Vec<(String, String)> = parts
@@ -573,21 +574,26 @@ async fn encode_request(
                 .map(|v| (n.as_str().to_string(), v.to_string()))
         })
         .collect();
-    // Bound the actual read at the ceiling so a missing/lying Content-Length (chunked) can neither OOM the
-    // edge nor slip past: a length-exceed ⇒ `413`, any other read failure ⇒ `400`.
-    let body = match http_body_util::Limited::new(body, MAX_REQUEST_BODY)
-        .collect()
-        .await
-    {
-        Ok(collected) => collected.to_bytes(),
-        Err(e)
-            if e.downcast_ref::<http_body_util::LengthLimitError>()
-                .is_some() =>
-        {
-            return Err(RequestReadError::TooLarge);
+    // Read the body, buffering at most `MAX_REQUEST_BODY`; if the declared length OR the actual bytes exceed
+    // the ceiling, keep DRAINING (discard) to EOF so the client's upload completes and it receives a
+    // client-visible `413` (not a mid-upload reset), then flag `TooLarge`. Memory stays constant once over.
+    let mut buf: Vec<u8> = Vec::new();
+    let mut over = declared_over;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| RequestReadError::BadRequest)?;
+        if let Ok(chunk) = frame.into_data() {
+            if over || buf.len() + chunk.len() > MAX_REQUEST_BODY {
+                over = true;
+                buf = Vec::new();
+            } else {
+                buf.extend_from_slice(&chunk);
+            }
         }
-        Err(_) => return Err(RequestReadError::BadRequest),
-    };
+    }
+    if over {
+        return Err(RequestReadError::TooLarge);
+    }
+    let body = Bytes::from(buf);
     let payload = encode_request_value(method, &path, &query, &headers, &body);
     let context = RequestContext {
         method: Str::from(parts.method.as_str()),
