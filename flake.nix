@@ -3045,6 +3045,19 @@
           base // { "root-router-baked" = bakedTemplated; };
         httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
 
+        # Per-scenario EXTERNAL guest packages (reducer-targets guests, not in this crate's programs/), seeded
+        # into the CAS by name for the scenarios that drive them. Keyed by scenario name so ONLY those scenarios
+        # depend on the heavy `rcdzc` reducer-guest builds — every other run stays uncoupled. The scenario's
+        # `config.programs` lists them by these names (the driver seeds each into the CAS by its ProgramHash);
+        # SAME-eval build so a route guest's baked delegate hashes match the seeded guests. `parse` drives
+        # reducer-guest-parse (root), which `run`s the ml parser it baked, so both must be present.
+        httpConformanceExternalGuests = {
+          parse = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+          ];
+        };
+
         cdzHttpGatewayBin =
           let
             vendor = pkgs.rustPlatform.importCargoLock {
@@ -7729,6 +7742,9 @@
                 # The programs dir: one compiled <name>.wasm per guest, the layout CDZ_HARNESS_PROGRAMS_DIR expects.
                 mkdir -p "$TMPDIR/programs"
                 ${pkgs.lib.concatStringsSep "\n                " (pkgs.lib.mapAttrsToList (n: drv: ''cp ${drv} "$TMPDIR/programs/${n}.wasm"'') httpConformanceProgramsByName)}
+                # This scenario's EXTERNAL guests (reducer-targets), if any — copied only for the scenarios that
+                # declare them, so unrelated runs don't build the heavy rcdzc guests.
+                ${pkgs.lib.concatStringsSep "\n                " (map (g: ''cp ${g.drv} "$TMPDIR/programs/${g.name}.wasm"'') (httpConformanceExternalGuests.${name} or [ ]))}
                 export CDZ_CAS_HTTP_BIN=${cdzCasHttpBin}/bin/cdz-cas-http
                 export CDZ_HTTP_CONTROL_MOCK_BIN=${cdzHttpControlMockBin}/bin/cdz-http-control-mock
                 export CDZ_HTTP_GATEWAY_BIN=${cdzHttpGatewayBin}/bin/cdz-http-gateway
