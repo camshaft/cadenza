@@ -15,15 +15,19 @@
     programs = [ { name = "browser-outpost", program = "browser-outpost" } ],
   },
   requests = [
-    // The HTML route: 200 text/html, and the page references the out-of-line JS module (keeping the HTML tiny).
+    // The HTML route: 200 text/html. Pin the FULL document body (the page IS the contract) so a future edit
+    // cannot silently change the served HTML shape — doctype, the #app mount div, and the out-of-line
+    // <script type=module src=/app.js> are all locked in.
     { http = { method = "GET", path = "/" },
       expect = { status = 200,
-                 body-contains = "src='/app.js'",
+                 body = b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><div id='app'>Loading...</div><script type='module' src='/app.js'></script></body></html>",
                  headers = [ { name = "content-type", value = "text/html" } ] } },
-    // The JavaScript route: 200 text/javascript, and the bootstrap module body round-trips to the socket.
+    // The JavaScript route: 200 text/javascript. Pin the durable bootstrap contract — it mounts into the #app
+    // element via getElementById('app') (the DOM handle the reducer's render effect will target in S2), not
+    // just the current status string.
     { http = { method = "GET", path = "/app.js" },
       expect = { status = 200,
-                 body-contains = "bootstrap module loaded",
+                 body-contains = "getElementById('app')",
                  headers = [ { name = "content-type", value = "text/javascript" } ] } },
     // An unmatched route denies 404 (the router's inline no-route branch).
     { http = { method = "GET", path = "/nope" },
