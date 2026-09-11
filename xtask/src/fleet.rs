@@ -1235,6 +1235,15 @@ pub enum FleetCmd {
         #[arg(long, default_value = "concierge")]
         agent: String,
     },
+    /// Reap LEAKED check-leases OUT OF BAND — the non-window, non-destructive lease-reclaim, decoupled from
+    /// the window-touching `watchdog`. A lease is leaked when its holder pid is DEAD (SIGKILL left the file)
+    /// or it is older than the TTL; a leaked PRIORITY lease stalls EVERY vertical's merge gate. This reap
+    /// is ALSO folded into `watchdog`, but that sweep is the one an operator may disable to stop
+    /// window-killing (2026-09-10 no-window-kill directive) — which then leaves leaked leases with no
+    /// reaper (concierge coverage-hole flag 2026-09-11). Run this on a cron (or by hand) to clear stale
+    /// leases WITHOUT any window action: it only removes dead-PID/TTL-stale `.lease` files and touches no
+    /// tmux window. Prints how many it reclaimed; safe to run frequently + spuriously (a no-op when clean).
+    ReapLeases,
     /// Wrapped PR tool — the SANCTIONED way to open a PR (operator P0 seq-198: a raw `gh pr create`
     /// leaked the ENTIRE env dump into its description). It SANITIZES the title/body against env-dump +
     /// secret material (REFUSING if found) and hands the body to `gh` as a FILE (never a shell/argv
@@ -1410,6 +1419,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             session,
             agent,
         } => compact_nudge_scan(&fleet, &session, &agent, dry_run),
+        FleetCmd::ReapLeases => reap_leases_cmd(&fleet),
         FleetCmd::Ack {
             request,
             outcome,
@@ -8558,6 +8568,20 @@ fn reap_check_leases(repo: &Path, now: u64) -> usize {
         return 0;
     };
     reap_check_leases_in(&dir, now)
+}
+
+/// `cargo xtask fleet reap-leases` — the standalone, non-window lease-reclaim (see the `ReapLeases` CLI
+/// doc). Runs the SAME `reap_check_leases` the watchdog does, but as its own command so leaked leases can
+/// be cleared even when the window-touching watchdog is disabled. Touches no tmux window; prints the count.
+fn reap_leases_cmd(fleet: &Fleet) {
+    let reaped = reap_check_leases(&fleet.repo, now_unix());
+    if reaped > 0 {
+        println!(
+            "fleet reap-leases: reclaimed {reaped} leaked check-lease(s) (dead-PID / TTL-stale) — would have stalled the merge gate."
+        );
+    } else {
+        println!("fleet reap-leases: ok — no leaked check-leases to reclaim.");
+    }
 }
 
 /// Count of LIVE `priority` check-leases (pr-sync's in-flight merge gate) held right now, reaping any
