@@ -7908,18 +7908,20 @@
   (live-objects known-leak))
 
 (case
-  "a recursive newtype escapes to the host tagged with its own name at each recursion point"
+  "a recursive newtype escapes to the host STRUCTURALLY — bare, with no per-recursion type tag"
   (doc
-    "A RECURSIVE newtype returned to the host escapes via the recursive-sum shape walker, routed on the
-           UN-stripped nominal so its OWN name tags the value (`Lst`, not the inner `Option`); the recursion
-           point (the nested `Mk None`) is tagged `Lst` too. `(type Lst (Mk (Option (Tuple Int64 Lst))))`,
-           `(Mk (Some (tuple 7 (Mk None))))` renders `(: (Some (tuple 7 (: (None unit) Lst))) Lst)`.")
+    "A RECURSIVE newtype returned to the host escapes via the recursive-sum shape walker and crosses
+           STRUCTURALLY — no `(: <value> <TypeName>)` ascription frame at the root OR at each recursion point
+           (value-codec migration 2026-09-11: decode by STRUCTURE, not names; the nominal name was
+           observability only, never load-bearing for decode). `(type Lst (Mk (Option (Tuple Int64 Lst))))`,
+           `(Mk (Some #tuple(7 (Mk None))))` now renders the bare `(Some #tuple(7 (None unit)))` — the erased
+           newtype IS its inner value at every level, decoded type-directed by the receiver.")
   (input
     (do
       (type Lst (Mk (Option (Tuple Int64 Lst))))
       (def (main) (Mk (Some #tuple(7 (Mk None)))))
       (export main)))
-  (output (: (Some #tuple(7 (: (None unit) Lst))) Lst))
+  (output (Some #tuple(7 (None unit))))
   (live-objects 0))
 
 (case
