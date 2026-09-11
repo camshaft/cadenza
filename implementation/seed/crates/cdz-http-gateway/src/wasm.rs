@@ -19,21 +19,25 @@ use cdz_platform::{
 };
 use std::sync::Arc;
 
-/// Build a wasm program store over the HTTP CAS at `cas_url`. The returned store instantiates a
-/// content-addressed wasm reducer per `spawn`. Each reducer's guest `blobs` import is backed by the shared
-/// WRITE-CAPABLE CAS (so `blobs.put` persists — e.g. a compile route publishing a component), while `kv` and
-/// the reducer graph stay in-memory scratch. `cas_credential` authenticates both reads and writes.
+/// Build a wasm program store over the HTTP CAS at `cas_url`, plus a read-capable handle to that same CAS.
+/// The returned store instantiates a content-addressed wasm reducer per `spawn`; the returned [`BlobStore`] is
+/// how the edge resolves a `CasRef` response body (§6) — a handler answers with a blob hash and the gateway
+/// fetches it here. Each reducer's guest `blobs` import is backed by the shared WRITE-CAPABLE CAS (so
+/// `blobs.put` persists — e.g. a compile route publishing a component), while `kv` and the reducer graph stay
+/// in-memory scratch. `cas_credential` authenticates both reads and writes.
 ///
 /// # Errors
 /// Returns the [`wasmtime::Error`] if the wasm engine/linkers cannot be built.
 pub fn build_store(
     cas_url: &str,
     cas_credential: &[u8],
-) -> Result<Arc<dyn ProgramStore>, wasmtime::Error> {
+) -> Result<(Arc<dyn ProgramStore>, Arc<dyn BlobStore>), wasmtime::Error> {
     let cas: Arc<dyn BlobStore> = Arc::new(
         HttpBlobStore::new(cas_url)
             .with_read_credential(String::from_utf8_lossy(cas_credential).into_owned()),
     );
+    // A read-capable handle to the same CAS the edge keeps for `CasRef` body resolution (§6).
+    let cas_bodies = Arc::clone(&cas);
     // The guest `blobs` import is backed by the SHARED, WRITE-CAPABLE CAS (not per-reducer scratch), so a
     // handler's `blobs.put` actually persists — e.g. a compile route that runs the parser + `rcdzc` via the
     // `run` import and publishes the compiled component, whose returned `ProgramHash` must then resolve for
@@ -54,5 +58,5 @@ pub fn build_store(
         Arc::new(move |_id| Arc::clone(&graph));
 
     let store = WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)?;
-    Ok(Arc::new(store))
+    Ok((Arc::new(store), cas_bodies))
 }

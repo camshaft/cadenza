@@ -15,12 +15,13 @@
 //! **Serving (once configured):** each request drives the control-shipped **root-router program** — spawn it
 //! from the CAS by hash, deliver the request as a bare `http-request` value (§4), drive it over a fresh
 //! mailbox through [`crate::drive`] + the [`crate::resolver`] effect resolver (§1/§2), and turn its terminal
-//! `Break` into the HTTP response (§6): `http.response` ⇒ the answer, `http.deny` ⇒ `403`, else ⇒ `500`.
+//! `Break` into the HTTP response (§6): `http.response` ⇒ the answer with an INLINE body, `http.response-cas`
+//! ⇒ the answer with a body FETCHED from the CAS by hash (the `CasRef` half of §6), `http.deny` ⇒ the handler's
+//! `status` + `reason`, else ⇒ `500`.
 //!
 //! **Control link (§3):** the one persistent ws is a bidirectional bus, DEMUXED by contract-id — `Config`
 //! (re)configures (live-swap), `Down` is a session-addressed message routed to the running handler (the
-//! session registry that closes that loop, plus `control.send`/`ws.send`/timers and `CasRef` bodies, are the
-//! follow-on slices).
+//! session registry that closes that loop, plus `ws.send`, is the remaining follow-on slice).
 
 use crate::drive::drive;
 use crate::resolver::{ControlCtx, GatewayResolver};
@@ -31,8 +32,8 @@ use cdz_http_protocol::{
     decode_control_config, value,
 };
 use cdz_platform::{
-    ContractId, Delivered, HostId, Message as ReducerMessage, Origin, ProgramHash, ProgramStore,
-    ReducerId, ReducerKind, SpawnContext, Str, TokioRuntime,
+    BlobStore, ContractId, Delivered, Hash, HostId, Message as ReducerMessage, Origin, ProgramHash,
+    ProgramStore, ReducerId, ReducerKind, SpawnContext, Str, TokioRuntime,
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
@@ -69,8 +70,11 @@ struct Ids {
     /// `http.request` — the schema the gateway delivers an incoming request under (the driven program's
     /// opening `on_message`).
     request: ContractId,
-    /// `http.response` — the terminal `Break` schema a program answers a request with (§6).
+    /// `http.response` — the terminal `Break` schema a program answers a request with (INLINE body, §6).
     response: ContractId,
+    /// `http.response-cas` — the terminal `Break` schema a program answers with when the body lives in the
+    /// CAS (§6 `CasRef`): the reason carries a blob hash the edge fetches + serves.
+    response_cas: ContractId,
     /// `http.deny` — the terminal `Break` schema a program rejects a request with.
     deny: ContractId,
 }
@@ -83,6 +87,9 @@ struct Ids {
 pub struct GatewayState {
     /// The wasm-backed program store over the control-supplied CAS: fetches + instantiates a program by hash.
     store: Arc<dyn ProgramStore>,
+    /// A read-capable handle to the same control-supplied CAS, for resolving a `CasRef` response body (§6):
+    /// a handler answers `http.response-cas` with a blob hash and the edge fetches the bytes here.
+    cas: Arc<dyn BlobStore>,
     /// The control-shipped root-router `ProgramHash` — the program driven for every request (§4).
     root_router: ProgramHash,
     /// The canonical contract-ids the gateway routes effects + terminal breaks by (§5).
@@ -322,13 +329,14 @@ fn ready_state(
     sessions: Sessions,
 ) -> Option<GatewayState> {
     let root_router = ProgramHash::try_from(config.root_router.as_ref()).ok()?;
-    let store = crate::wasm::build_store(config.cas_url.as_str(), &config.cas_credential)
+    let (store, cas) = crate::wasm::build_store(config.cas_url.as_str(), &config.cas_credential)
         .map_err(|e| eprintln!("gateway: wasm program store init failed: {e}"))
         .ok()?;
     let ids = canonical_ids();
     let control_send = cdz_platform::contracts::control_send::contract().id();
     Some(GatewayState {
         store,
+        cas,
         root_router,
         ids,
         control_sink: sink,
@@ -360,6 +368,7 @@ fn canonical_ids() -> Ids {
         dispatch: id(cdz_platform::contracts::http_dispatch::contract()),
         request: id(cdz_platform::contracts::http_request::contract()),
         response: id(cdz_platform::contracts::http_response::contract()),
+        response_cas: id(cdz_platform::contracts::http_response_cas::contract()),
         deny: id(cdz_platform::contracts::http_deny::contract()),
     }
 }
@@ -481,6 +490,9 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
     .await;
     match out {
         Some((schema, reason)) if schema == gw.ids.response => decode_response(&reason),
+        Some((schema, reason)) if schema == gw.ids.response_cas => {
+            decode_response_cas(&gw.cas, &reason).await
+        }
         Some((schema, reason)) if schema == gw.ids.deny => decode_deny(&reason),
         // The program closed without a terminal http-response/deny, or a fold panicked → a gateway error.
         _ => status(
@@ -635,6 +647,70 @@ fn decode_response(reason: &[u8]) -> Response<Full<Bytes>> {
     })
 }
 
+/// Turn a program's terminal `http.response-cas` `Break` reason — a `ResponseCas.ResponseCas` value
+/// (`status: Int64`, `headers: List(Header)`, `body_hash: Bytes`, §6) — into the HTTP response by FETCHING the
+/// body from the control-shipped CAS: the handler answered with a blob hash (a `CasRef`), so the edge resolves
+/// it here and serves the bytes. A malformed value or a `body_hash` that is not a 33-byte hash ⇒ `500`; a blob
+/// the CAS does not hold, or a CAS fetch failure ⇒ `502` (the handler named a body the edge could not produce).
+async fn decode_response_cas(cas: &Arc<dyn BlobStore>, reason: &[u8]) -> Response<Full<Bytes>> {
+    let Some(arenas) = value::decode(reason) else {
+        return status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: undecodable program response\n",
+        );
+    };
+    let root = arenas.root;
+    let Some(hash) = value::record_field(&arenas, root, "body_hash")
+        .and_then(|f| value::read_bytes(&arenas, f))
+        .and_then(|b| Hash::try_from(b.as_ref()).ok())
+    else {
+        return status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: response-cas has no valid body_hash\n",
+        );
+    };
+    let body = match cas.get(hash).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return status(
+                StatusCode::BAD_GATEWAY,
+                b"cdz-http-gateway: response-cas body blob absent from CAS\n",
+            );
+        }
+        Err(_) => {
+            return status(
+                StatusCode::BAD_GATEWAY,
+                b"cdz-http-gateway: response-cas body fetch failed\n",
+            );
+        }
+    };
+    // status + headers decode mirrors `decode_response` (they differ only in where `body` comes from).
+    let code = value::record_field(&arenas, root, "status")
+        .and_then(|f| value::read_uint(&arenas, f))
+        .and_then(|u| u16::try_from(u).ok())
+        .and_then(|u| StatusCode::from_u16(u).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut builder = Response::builder().status(code);
+    if let Some(headers) =
+        value::record_field(&arenas, root, "headers").and_then(|f| value::read_list(&arenas, f))
+    {
+        for &h in headers {
+            if let (Some(name), Some(val)) = (
+                value::record_field(&arenas, h, "name").and_then(|f| value::read_str(&arenas, f)),
+                value::record_field(&arenas, h, "value").and_then(|f| value::read_str(&arenas, f)),
+            ) {
+                builder = builder.header(name, val);
+            }
+        }
+    }
+    builder.body(Full::new(body)).unwrap_or_else(|_| {
+        status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"cdz-http-gateway: invalid response headers\n",
+        )
+    })
+}
+
 /// Turn a program's terminal `http.deny` `Break` reason — a `Deny.Deny` value (`status: Int64`, `reason:
 /// Bytes`, §4) — into the HTTP response: floor with the HANDLER-SUPPLIED `status` and its plain-text `reason`
 /// body ("status is the HTTP status to floor with, e.g. 403/404/429; reason a short plain-text body"). A
@@ -762,6 +838,70 @@ mod tests {
         );
         let bytes3 = value::finish(b3, deny3, "Deny");
         assert_eq!(decode_deny(&bytes3).status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn decode_response_cas_fetches_the_body_from_the_cas_by_hash_else_502() {
+        use async_trait::async_trait;
+        use cdz_platform::contracts::http_response_cas as casc;
+        use cdz_platform::{BlobStore, BlobStoreError, Hash};
+
+        // A CAS that holds exactly one blob, under a known 33-byte hash.
+        struct OneBlob {
+            hash: Hash,
+            bytes: Bytes,
+        }
+        #[async_trait]
+        impl BlobStore for OneBlob {
+            async fn put(&self, _b: Bytes) -> Result<Hash, BlobStoreError> {
+                unreachable!("decode_response_cas never puts")
+            }
+            async fn get(&self, hash: Hash) -> Result<Option<Bytes>, BlobStoreError> {
+                Ok((hash.as_bytes() == self.hash.as_bytes()).then(|| self.bytes.clone()))
+            }
+            async fn has(&self, _h: Hash) -> Result<bool, BlobStoreError> {
+                Ok(true)
+            }
+        }
+
+        let raw = [7u8; Hash::LEN];
+        let cas: Arc<dyn BlobStore> = Arc::new(OneBlob {
+            hash: Hash::from_bytes(raw),
+            bytes: Bytes::from_static(b"blob-body-from-cas"),
+        });
+
+        // Build a ResponseCas{200, [], body_hash=raw}; the edge fetches the blob and answers 200.
+        let build = |hash_bytes: &[u8]| -> Bytes {
+            let mut b = value::ValueBuilder::new();
+            let status = value::uint_leaf(&mut b, 200);
+            let headers = value::list_value(&mut b, Vec::new());
+            let body_hash = value::bytes_leaf(&mut b, hash_bytes);
+            let rc = casc::response_cas_response_cas(
+                &mut b,
+                casc::ResponseCasResponseCas {
+                    status,
+                    headers,
+                    body_hash,
+                },
+            );
+            value::finish(b, rc, "ResponseCas")
+        };
+        assert_eq!(
+            decode_response_cas(&cas, &build(&raw)).await.status(),
+            StatusCode::OK
+        );
+        // A hash the CAS does not hold → 502 (handler named a body the edge can't produce).
+        assert_eq!(
+            decode_response_cas(&cas, &build(&[9u8; Hash::LEN]))
+                .await
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+        // An undecodable reason → 500.
+        assert_eq!(
+            decode_response_cas(&cas, b"not a value").await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
