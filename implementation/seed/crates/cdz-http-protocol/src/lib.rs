@@ -30,7 +30,7 @@ use cdz_str::Str;
 /// (the mock control server's admin protocol, the driver) build binary-AST frames with ONE codec.
 pub mod value;
 use value::{
-    bytes_leaf, finish, list_value, read_bytes, read_list, record, record_field, str_leaf,
+    bytes_leaf, finish_value, list_value, read_bytes, read_list, record, record_field, str_leaf,
     unascribe,
 };
 
@@ -105,7 +105,7 @@ pub struct ControlDown {
 
 // --- encode --------------------------------------------------------------------------------------------
 
-/// Encode a [`ControlConfig`] boot frame. Single-ctor record (fields name-sorted), root-ascribed.
+/// Encode a [`ControlConfig`] boot frame. Single-ctor record (fields name-sorted), structural (no root ascription).
 #[must_use]
 pub fn encode_control_config(config: &ControlConfig) -> Bytes {
     let mut b = Builder::new();
@@ -120,11 +120,11 @@ pub fn encode_control_config(config: &ControlConfig) -> Bytes {
             ("root-router", root_router),
         ],
     );
-    finish(b, rec, "ControlConfig")
+    finish_value(b, rec)
 }
 
 /// Encode a [`ControlUp`] envelope (handler → control). Single-ctor record (fields name-sorted, `request`
-/// a nested `RequestContext` record), root-ascribed.
+/// a nested `RequestContext` record), structural (no root ascription).
 #[must_use]
 pub fn encode_control_up(msg: &ControlUp) -> Bytes {
     let mut b = Builder::new();
@@ -143,10 +143,10 @@ pub fn encode_control_up(msg: &ControlUp) -> Bytes {
             ("session", session),
         ],
     );
-    finish(b, rec, "ControlUp")
+    finish_value(b, rec)
 }
 
-/// Encode a [`ControlDown`] envelope (control → handler). Single-ctor record (fields name-sorted), ascribed.
+/// Encode a [`ControlDown`] envelope (control → handler). Single-ctor record (fields name-sorted), structural (no root ascription).
 #[must_use]
 pub fn encode_control_down(msg: &ControlDown) -> Bytes {
     let mut b = Builder::new();
@@ -161,7 +161,7 @@ pub fn encode_control_down(msg: &ControlDown) -> Bytes {
             ("session", session),
         ],
     );
-    finish(b, rec, "ControlDown")
+    finish_value(b, rec)
 }
 
 /// A `RequestContext` value — a record `{ headers, method, path }` (fields name-sorted); `headers` a
@@ -305,8 +305,9 @@ impl FrameCodec {
     }
 
     /// Encode a [`ControlFrame`] into a tagged envelope: a record `{ contract, payload }` (fields
-    /// name-sorted, root-ascribed `"ControlFrame"`) where `contract` is the frame's contract-id and
-    /// `payload` is the frame's own encoded value (from `encode_control_*`). One nesting; no re-encode.
+    /// name-sorted, structural — no type ascription, per the ascription-free codec) where `contract` is the
+    /// frame's contract-id and `payload` is the frame's own encoded value (from `encode_control_*`). One
+    /// nesting; no re-encode. Demux is by the `contract` TAG, never by shape or a type name.
     #[must_use]
     pub fn encode(&self, frame: &ControlFrame) -> Bytes {
         let (id, payload) = match frame {
@@ -318,7 +319,7 @@ impl FrameCodec {
         let contract = bytes_leaf(&mut b, id);
         let payload = bytes_leaf(&mut b, &payload);
         let rec = record(&mut b, vec![("contract", contract), ("payload", payload)]);
-        finish(b, rec, "ControlFrame")
+        finish_value(b, rec)
     }
 
     /// Decode a tagged envelope, dispatching by the `contract` tag to the matching frame decoder. `None` if
