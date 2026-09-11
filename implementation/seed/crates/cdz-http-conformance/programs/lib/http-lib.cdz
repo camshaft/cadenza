@@ -53,6 +53,14 @@ def respond-encoded(response: Bytes) =
 def respond(status: Int64, headers: List(Header), body: Bytes) =
   respond-encoded(Value.encode(Response.Response({ status = status, headers = headers, body = body })))
 
+// Answer the SELF-DESCRIBING routes manifest (the `/_routes` convention, operator's self-describing-router
+// idea; blessed by v-gateway-rewrite — a userspace ROUTER convention, ZERO gateway change): close with a 200
+// whose body is `Value.encode(rs)` — the baked `List(Route)` in binary-AST (THE data-exchange format). A
+// deploy tool GETs `/_routes`, `Value.decode`s the body as `List(Route)` against this same `Route` schema,
+// edits the table, recompiles the router, and installs it via a control push.
+def respond-routes(rs: List(Route)) =
+  respond(200, ([] : List(Header)), Value.encode(rs))
+
 // Close with a deny terminal (a 4xx/5xx the edge renders).
 def deny(status: Int64, reason: Bytes) =
   { requests = no-requests(),
@@ -79,4 +87,4 @@ def control-send(payload: Bytes) =
 
 export { Method.*, Request.*, Route.*,
          dispatch-contract, http-response-schema, deny-schema, control-send-contract,
-         no-requests, method-code, respond-encoded, respond, deny, dispatch, control-send }
+         no-requests, method-code, respond-encoded, respond, respond-routes, deny, dispatch, control-send }
