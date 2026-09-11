@@ -97,7 +97,17 @@ cd "$WORKTREE"
 # to the shared refresh-tools.sh (also called by the post-merge/post-checkout git hooks + `fleet sync`),
 # so the wrapper SET stays in sync with the flake from one place. FAIL-OPEN: it exits 0 on any failure, so
 # a launch is never blocked on the all-nix setup. (The cargo-redirect shim is a SEPARATE, policy-gated step.)
-bash "$HUB/.claude/fleet/refresh-tools.sh" 2>/dev/null || true
+#
+# THROTTLED (v-fleet-tooling 2026-09-11): pass REFRESH_MIN_INTERVAL_SEC so a RELAUNCH within the window
+# SKIPS the heavy `nix build .#cdz-shell-wrappers` (the wrappers are already fresh from the last refresh <
+# window ago; the shims persist too). The load-bearing reason: when an agent FLAPS (recreated repeatedly
+# before its first heartbeat — the concierge under heavy perf-push load, 2026-09-11), an un-throttled
+# refresh ran a nix build on EVERY relaunch, piling load onto an already-saturated box and WORSENING the
+# flap (a feedback loop). A genuine cold launch (no recent refresh → no stamp / stamp older than the
+# window) still refreshes fully, so a new agent always gets current wrappers; only rapid relaunches skip.
+# The git hooks + `fleet sync` keep the wrapper set current between launches regardless.
+REFRESH_MIN_INTERVAL_SEC="${CDZ_LAUNCH_REFRESH_THROTTLE_SEC:-600}" \
+  bash "$HUB/.claude/fleet/refresh-tools.sh" 2>/dev/null || true
 
 # The kickoff. Role bodies + contract are read from the agent's OWN worktree tracked `fleet/` (git-
 # synced with the code it works on). Runtime state (inbox, queue) is hub-anchored under .claude/fleet,
