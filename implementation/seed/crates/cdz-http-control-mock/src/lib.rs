@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 /// The driver ↔ mock admin protocol (binary-AST `AdminCommand`/`AdminReply` frames).
 pub mod admin;
+pub mod frame_ids;
 /// The admin HTTP server (driver-facing) — binary-AST bodies over hyper.
 pub mod server;
 /// The control-plane ws server (gateway-facing) — ships config, captures ControlUp, replies ControlDown.

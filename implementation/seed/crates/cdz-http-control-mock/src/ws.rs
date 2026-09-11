@@ -11,7 +11,7 @@
 
 use crate::MockState;
 use bytes::Bytes;
-use cdz_http_protocol::{decode_control_up, encode_control_config, encode_control_down};
+use cdz_http_protocol::{ControlFrame, FrameCodec};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,6 +54,7 @@ pub async fn serve_control(
     listener: TcpListener,
     state: Arc<Mutex<MockState>>,
     sessions: Sessions,
+    codec: FrameCodec,
 ) {
     let counter = Arc::new(AtomicU64::new(0));
     loop {
@@ -64,7 +65,7 @@ pub async fn serve_control(
             Bytes::from(format!("sess-{}", counter.fetch_add(1, Ordering::Relaxed)).into_bytes());
         let state = state.clone();
         let sessions = sessions.clone();
-        tokio::spawn(run_session(stream, session, state, sessions));
+        tokio::spawn(run_session(stream, session, state, sessions, codec.clone()));
     }
 }
 
@@ -75,6 +76,7 @@ async fn run_session(
     session: Bytes,
     state: Arc<Mutex<MockState>>,
     sessions: Sessions,
+    codec: FrameCodec,
 ) {
     let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
         return;
@@ -94,7 +96,7 @@ async fn run_session(
             .expect("sessions mutex poisoned")
             .insert(session.clone(), tx.clone());
         if let Some(config) = maybe_config {
-            let _ = tx.send(encode_control_config(&config));
+            let _ = tx.send(codec.encode(&ControlFrame::Config(config)));
         }
     }
 
@@ -102,11 +104,12 @@ async fn run_session(
         tokio::select! {
             inbound = source.next() => match inbound {
                 Some(Ok(Message::Binary(data))) => {
-                    if let Some(up) = decode_control_up(&data) {
+                    // The gateway writes TAGGED ControlFrame envelopes; decode via the codec + take the Up.
+                    if let Some(ControlFrame::Up(up)) = codec.decode(&data) {
                         let reply = state.lock().expect("state mutex poisoned").record_control_up(up);
                         if let Some(down) = reply {
                             // Self-send the reply onto the channel so the push arm is the sole socket writer.
-                            let _ = tx.send(encode_control_down(&down));
+                            let _ = tx.send(codec.encode(&ControlFrame::Down(down)));
                         }
                     }
                 }
@@ -149,13 +152,33 @@ mod tests {
         Bytes::from(v)
     }
 
-    async fn boot() -> (std::net::SocketAddr, Arc<Mutex<MockState>>, Sessions) {
+    // A self-consistent test codec: any distinct tags work as long as the test client + the mock share it.
+    fn tcodec() -> FrameCodec {
+        FrameCodec::new(
+            Bytes::from_static(b"test-frame-config-id"),
+            Bytes::from_static(b"test-frame-up-id"),
+            Bytes::from_static(b"test-frame-down-id"),
+        )
+    }
+
+    async fn boot() -> (
+        std::net::SocketAddr,
+        Arc<Mutex<MockState>>,
+        Sessions,
+        FrameCodec,
+    ) {
         let state = Arc::new(Mutex::new(MockState::new(HashMap::new())));
         let sessions = new_sessions();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve_control(listener, state.clone(), sessions.clone()));
-        (addr, state, sessions)
+        let codec = tcodec();
+        tokio::spawn(serve_control(
+            listener,
+            state.clone(),
+            sessions.clone(),
+            codec.clone(),
+        ));
+        (addr, state, sessions, codec)
     }
 
     async fn dial(
@@ -170,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn ships_the_config_on_connect() {
-        let (addr, state, _sessions) = boot().await;
+        let (addr, state, _sessions, codec) = boot().await;
         state
             .lock()
             .unwrap()
@@ -183,13 +206,15 @@ mod tests {
         let Message::Binary(data) = ws.next().await.unwrap().unwrap() else {
             panic!("expected a binary config frame");
         };
-        let config = cdz_http_protocol::decode_control_config(&data).expect("config decodes");
+        let Some(ControlFrame::Config(config)) = codec.decode(&data) else {
+            panic!("expected a TAGGED config frame");
+        };
         assert_eq!(config.root_router, hash("router-hello"));
     }
 
     #[tokio::test]
     async fn a_control_up_gets_a_correlation_matched_reply() {
-        let (addr, state, _sessions) = boot().await;
+        let (addr, state, _sessions, codec) = boot().await;
         // No config set → no initial frame. Prime a reply matched on path.
         state
             .lock()
@@ -220,15 +245,17 @@ mod tests {
             },
         };
         ws.send(Message::Binary(
-            cdz_http_protocol::encode_control_up(&up).to_vec(),
+            codec.encode(&ControlFrame::Up(up)).to_vec(),
         ))
         .await
         .unwrap();
-        // Receive the correlation-matched ControlDown reply.
+        // Receive the correlation-matched ControlDown reply (TAGGED).
         let Message::Binary(data) = ws.next().await.unwrap().unwrap() else {
             panic!("expected a binary reply frame");
         };
-        let down = cdz_http_protocol::decode_control_down(&data).expect("down decodes");
+        let Some(ControlFrame::Down(down)) = codec.decode(&data) else {
+            panic!("expected a TAGGED down frame");
+        };
         assert_eq!(down.correlation, Bytes::from_static(b"corr-9"));
         assert_eq!(down.payload, Bytes::from_static(b"PONG"));
         // The up was captured.
@@ -237,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_broadcast_reaches_a_connected_session() {
-        let (addr, _state, sessions) = boot().await;
+        let (addr, _state, sessions, _codec) = boot().await;
         let mut ws = dial(addr).await;
         // Give the session a moment to register, then broadcast a frame.
         for _ in 0..50 {

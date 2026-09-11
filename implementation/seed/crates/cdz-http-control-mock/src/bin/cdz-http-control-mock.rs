@@ -34,16 +34,30 @@ async fn main() {
         args.cas_url,
     );
 
+    // The tagged control-link frame codec — the gateway speaks tagged ControlFrame envelopes, so the mock must
+    // too. The 3 canonical frame ids come from the harness rig's env (the contract-declarations manifest).
+    let Some(codec) = cdz_http_control_mock::frame_ids::from_env() else {
+        eprintln!(
+            "cdz-http-control-mock: the 3 control-frame ids ({}/{}/{}) must be set to base62 contract-ids \
+             (from the contract-declarations manifest)",
+            cdz_http_control_mock::frame_ids::CONFIG_ID_VAR,
+            cdz_http_control_mock::frame_ids::UP_ID_VAR,
+            cdz_http_control_mock::frame_ids::DOWN_ID_VAR,
+        );
+        std::process::exit(1);
+    };
+
     let admin_ctx = AdminCtx {
         state: state.clone(),
         sessions: sessions.clone(),
         cas_url: Str::from(args.cas_url.as_str()),
         cas_credential: args.cas_credential,
+        codec: codec.clone(),
     };
 
     tokio::join!(
         serve_admin(admin_listener, admin_ctx),
-        serve_control(control_listener, state, sessions),
+        serve_control(control_listener, state, sessions, codec),
     );
 }
 
