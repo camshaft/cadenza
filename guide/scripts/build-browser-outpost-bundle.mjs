@@ -111,7 +111,9 @@ const apply = (step) => {
 try {
   const NFC = { nfc: (b) => enc.encode(new TextDecoder('utf-8').decode(b).normalize('NFC')) };
   const heapMod = await import('${heapUrl}');
-  const heapGetCore = async (p) => WebAssembly.compileStreaming(fetch(new URL('./heap/' + p, import.meta.url)));
+  // compile(arrayBuffer) not compileStreaming — the latter requires the server to send application/wasm, which
+  // a plain 'python3 -m http.server' may not; this works regardless of the .wasm content-type.
+  const heapGetCore = async (p) => WebAssembly.compile(await (await fetch(new URL('./heap/' + p, import.meta.url))).arrayBuffer());
   const hroot = await heapMod.instantiate(heapGetCore, { 'cadenza:nfc/normalize': NFC });
   const heapKey = Object.keys(hroot).find((k) => k.includes('heap'));
   const stateMap = new Map();
@@ -125,7 +127,7 @@ try {
     return stub;
   }});
   const appMod = await import('${appUrl}');
-  const appGetCore = async (p) => WebAssembly.compileStreaming(fetch(new URL('./browserOutpostApp/' + p, import.meta.url)));
+  const appGetCore = async (p) => WebAssembly.compile(await (await fetch(new URL('./browserOutpostApp/' + p, import.meta.url))).arrayBuffer());
   const aroot = await appMod.instantiate(appGetCore, imports);
   const g = aroot['cadenza:platform/guest'] ?? aroot.guest;
   const e = new Uint8Array();
