@@ -100,6 +100,12 @@ pub struct Expect {
     /// published via `blobs.put` (e.g. the /parse ast-hash, a /compile component hash) actually persisted it —
     /// the content-addressed "publish worked" round-trip.
     pub resolves_in_cas: bool,
+    /// On pass, store this response BODY under this name for a later step's `body_equals_capture` (a
+    /// cross-step comparison — e.g. the cross-surface invariant: ml and its sexpr form parse to the SAME hash).
+    pub capture_body_as: Option<String>,
+    /// Assert this response BODY equals a value captured by an earlier step's `capture_body_as`. A robust
+    /// structural check that pins NO machine-specific value (unlike an exact `body`).
+    pub body_equals_capture: Option<String>,
 }
 
 impl RunSpec {
@@ -306,6 +312,14 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(r) => value::read_bool(arenas, r)?,
         None => false,
     };
+    let capture_body_as = match value::record_field(arenas, id, "capture-body-as") {
+        Some(c) => Some(value::read_str(arenas, c)?),
+        None => None,
+    };
+    let body_equals_capture = match value::record_field(arenas, id, "body-equals-capture") {
+        Some(c) => Some(value::read_str(arenas, c)?),
+        None => None,
+    };
     Some(Expect {
         status,
         body,
@@ -313,6 +327,8 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         headers,
         retry_until_match,
         resolves_in_cas,
+        capture_body_as,
+        body_equals_capture,
     })
 }
 

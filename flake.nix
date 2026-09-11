@@ -3056,6 +3056,12 @@
             { name = "reducer-guest-parse"; drv = reducerGuestParse; }
             { name = "reducer-guest-ml"; drv = reducerGuestMl; }
           ];
+          # cross-surface parses BOTH an ml source and its sexpr form, so it seeds both parsers.
+          cross-surface = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-sexpr"; drv = reducerGuestSexpr; }
+          ];
         };
 
         cdzHttpGatewayBin =
