@@ -561,9 +561,12 @@ fn method_value_kind(method: &Method) -> Option<&'static str> {
 }
 
 /// Build the `Request.Request` value (§4) from its parts, using the platform's canonical `http-request`
-/// contract builders. The value is emitted structurally via `finish_value` (no ROOT type ascription — the
-/// guest decodes it against the known `http-request` schema by structure); the per-element `Header`
-/// ascription below is retained (it disambiguates a single-ctor record newtype inside a `List(Header)`).
+/// contract builders so it type-ascribes against the schema the driven program decodes. The ROOT ascription
+/// is RETAINED (`finish`, not `finish_value`): the GUEST's compiled Cadenza `Value.decode(Request)` is NOT
+/// ascription-invariant — it returns `None` on an ascription-free root (→ a 400 "undecodable http-request"),
+/// which #8770 hit and reverted here (the Rust-side decode-invariance of #8758 does not cover the guest's
+/// compiled decode). Until the guest decode is made ascription-invariant (v-value-codec / compiler), this
+/// terminal ascription stays. (The control-link encoders CAN drop it — their decoders unascribe.)
 fn encode_request_value(
     method: &'static str,
     path: &str,
@@ -606,7 +609,7 @@ fn encode_request_value(
             body,
         },
     );
-    value::finish_value(b, request)
+    value::finish(b, request, "Request")
 }
 
 /// Turn a program's terminal `http.response` `Break` reason — a `Response.Response` value (§6) — into the
