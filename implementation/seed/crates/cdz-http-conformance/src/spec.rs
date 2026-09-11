@@ -170,7 +170,12 @@ impl Expect {
         if let Some(want) = self.status
             && status != want
         {
-            return Err(format!("status: expected {want}, got {status}"));
+            // Include a body preview — an unexpected status usually carries a diagnostic body (e.g. a handler's
+            // 400 "undecodable http-request" / rendered parse diagnostics), which pins down the divergence.
+            return Err(format!(
+                "status: expected {want}, got {status} (body: {})",
+                preview(body)
+            ));
         }
         if let Some(want) = &self.body
             && body != want.as_slice()
