@@ -49,7 +49,7 @@ pub fn decode_parse_request(bytes: &[u8]) -> Option<String> {
 pub fn encode_parse_request(source: &str) -> Vec<u8> {
     let mut b = ValueBuilder::new();
     let s = value::str_leaf(&mut b, source);
-    value::finish(b, s, "ParseRequest").to_vec()
+    value::finish_value(b, s).to_vec()
 }
 
 /// Encode a canonical `ParseResult.Parsed(Record(ast, diagnostics))` value — the parser guest's response.
@@ -69,14 +69,14 @@ pub fn encode_parse_result(ast: &[u8], diagnostics: &[ParseDiag]) -> Vec<u8> {
                 &mut b,
                 vec![("message", msg), ("byteOffset", off), ("len", len)],
             );
-            // The `ParseDiagnostic` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record ParseDiagnostic)`.
-            value::ascribe(&mut b, rec, "ParseDiagnostic")
+            // Ascription-free: the bare record decodes against `ParseDiagnostic` by shape (frame-tolerant).
+            rec
         })
         .collect();
     let diags = value::list_value(&mut b, diag_values);
     let rec = value::record(&mut b, vec![("ast", ast_leaf), ("diagnostics", diags)]);
-    // The `Parsed` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record ParseResult)`.
-    value::finish(b, rec, "ParseResult").to_vec()
+    // `Parsed` ctor elided (Nominal newtype); ascription-free encode (finish_value) — decode frame-tolerant.
+    value::finish_value(b, rec).to_vec()
 }
 
 /// Decode a canonical `ParseResult` value back into `(ast bytes, diagnostics)` — the inverse of
