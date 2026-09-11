@@ -189,8 +189,7 @@ fn resolve_hash(hash: &str, artifact: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Build the canonical `CompileRoute.Compile(Record(artifacts))` value form and serialize it to the binary-AST
-/// bytes `Value.decode : Option(CompileRoute)` accepts. Each `RouteArtifact` newtype is ascribed (REQUIRED by
-/// decode); `Payload` is a multi-ctor sum so `Inline`/`CasRef` keep their constructor; record fields are
+/// bytes `Value.decode : Option(CompileRoute)` accepts. Each `RouteArtifact` newtype is ascription-free (decodes by shape via frame-tolerant Value.decode); `Payload` is a multi-ctor sum so `Inline`/`CasRef` keep their constructor; record fields are
 /// canonicalized by `value::record`. Every CAS artifact rides `CasRef(raw-33-hash)`; the entry rides
 /// `Inline(encode_name(entry))` (the codec `Str`-leaf name wire rcdzc's `decode_name` reads).
 fn encode_compile_route(arts: &[CasArtifact], entry: &str) -> Vec<u8> {
@@ -209,11 +208,12 @@ fn encode_compile_route(arts: &[CasArtifact], entry: &str) -> Vec<u8> {
 
     let artifacts = value::list_value(&mut b, elems);
     let rec = value::record(&mut b, vec![("artifacts", artifacts)]);
-    // `Compile` ctor elided (nominal newtype) — the boundary ascribes the record as `CompileRoute`.
-    value::finish(b, rec, "CompileRoute").to_vec()
+    // `Compile` ctor elided (nominal newtype); ascription-free encode (finish_value) — `Value.decode` is
+    // frame-tolerant (v-value-codec #8790), so the bare record decodes against `CompileRoute` by shape.
+    value::finish_value(b, rec).to_vec()
 }
 
-/// `RouteArtifact.RouteArtifact(Record(kind, name, payload))` → `(: #record RouteArtifact)` (ctor elided).
+/// `RouteArtifact.RouteArtifact(Record(kind, name, payload))` — ctor elided, ascription-free (decodes by shape).
 fn route_artifact(
     b: &mut ValueBuilder,
     kind: &str,
@@ -222,11 +222,11 @@ fn route_artifact(
 ) -> value::ValueId {
     let kind = value::str_leaf(b, kind);
     let name = value::str_leaf(b, name);
-    let rec = value::record(
+    // Ascription-free: the bare record decodes against `RouteArtifact` by shape (frame-tolerant Value.decode).
+    value::record(
         b,
         vec![("kind", kind), ("name", name), ("payload", payload)],
-    );
-    value::ascribe(b, rec, "RouteArtifact")
+    )
 }
 
 const USAGE: &str = "\

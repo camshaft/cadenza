@@ -29,8 +29,8 @@ pub fn encode_compile_request(inputs: &[Artifact]) -> Vec<u8> {
     let mut b = ValueBuilder::new();
     let arts: Vec<_> = inputs.iter().map(|a| artifact_value(&mut b, a)).collect();
     let list = value::list_value(&mut b, arts);
-    // `Compile` ctor elided (Nominal newtype) — the ascribed list.
-    value::finish(b, list, "CompileRequest").to_vec()
+    // `Compile` ctor elided (Nominal newtype); ascription-free encode (finish_value) — decode is frame-tolerant.
+    value::finish_value(b, list).to_vec()
 }
 
 /// Decode a canonical `CompileRequest` value back into the kinded-input bundle. TOTAL: malformed -> empty.
@@ -72,8 +72,8 @@ pub fn encode_compile_result(artifacts: &[Artifact], diagnostics: &[Diagnostic])
         &mut b,
         vec![("artifacts", artifacts), ("diagnostics", diagnostics)],
     );
-    // `Compiled` ctor elided (Nominal newtype) — the ascribed record.
-    value::finish(b, rec, "CompileResult").to_vec()
+    // `Compiled` ctor elided (Nominal newtype); ascription-free encode (finish_value) — decode is frame-tolerant.
+    value::finish_value(b, rec).to_vec()
 }
 
 /// Decode a canonical `CompileResult` value into `(artifacts, diagnostics)` — the inverse of
@@ -112,8 +112,8 @@ fn artifact_value(b: &mut ValueBuilder, a: &Artifact) -> value::ValueId {
     let kind = value::str_leaf(b, &a.kind);
     let name = value::str_leaf(b, &a.name);
     let bytes = value::bytes_leaf(b, &a.bytes);
-    let rec = value::record(b, vec![("kind", kind), ("name", name), ("bytes", bytes)]);
-    value::ascribe(b, rec, "Artifact")
+    // Ascription-free: the bare record decodes against `Artifact` by shape (frame-tolerant decode).
+    value::record(b, vec![("kind", kind), ("name", name), ("bytes", bytes)])
 }
 
 fn read_artifact(arenas: &value::Arenas, id: value::ValueId) -> Option<Artifact> {
@@ -147,7 +147,8 @@ fn diagnostic_value(b: &mut ValueBuilder, d: &Diagnostic) -> value::ValueId {
             ("node", node),
         ],
     );
-    value::ascribe(b, rec, "CompileDiagnostic")
+    // Ascription-free: decodes against `CompileDiagnostic` by shape (frame-tolerant decode).
+    rec
 }
 
 fn read_diagnostic(arenas: &value::Arenas, id: value::ValueId) -> Option<Diagnostic> {
