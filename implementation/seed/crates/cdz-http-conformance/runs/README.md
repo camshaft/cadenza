@@ -105,6 +105,9 @@ Effect vocabulary + routing:
   coverage above).
 - `request-body-decode` — a handler echoes the decoded request's `body` bytes verbatim (`POST /` with a body →
   the same bytes back), pinning the forward codec's `body` field round-trips into the guest.
+- `request-header-decode` — a handler recurses `List(Header)` for a named header (`x-probe`) and echoes its
+  value (`X-Probe: v` → body `v`; absent → `(absent)`), pinning the forward codec's `headers` field is READABLE
+  in the guest (names arrive lowercased). Completes the forward-codec field coverage (method/path/query/body/headers).
 - `live-swap` — a control `push-root-router` hot-swaps the root router (retry-until-match past propagation).
 - `control-send` — a handler's `control.send` round-trips (ControlUp → primed reply → on-response).
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
