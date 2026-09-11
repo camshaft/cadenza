@@ -87,6 +87,10 @@ A record with two fields (read by name; order-independent):
 - `capture-body-as` — `"<name>"?`: on pass, store the response body under this name for a later step.
 - `body-equals-capture` — `"<name>"?`: assert the body equals a value captured by an earlier `capture-body-as`
   (a structural cross-step check that pins no machine-specific value — e.g. the cross-surface invariant).
+- `times-out` — `true?`: assert the gateway does NOT respond within a bounded budget — i.e. the request HANGS.
+  Mutually exclusive with the response-shape fields (there is no response to check). The RED-negative for the
+  dispatch fold: a compiled router whose `on-response` never folds (the inert `Continue`) leaves the caller
+  waiting forever (see `compile-dispatch-inert-fold`).
 
 ## The scenario corpus
 
@@ -140,6 +144,10 @@ Effect vocabulary + routing:
   ProgramHashes) from its 8-module closure, root the freshly-built component (`push-root-router` from-capture,
   #8811), then dispatch: `GET /` → 200 (router folds http-hello's response through its on-response), `GET /nope`
   → 404 deny. Closes the compile-ok-but-dispatch-hangs gap (the router's fold is the exact bug-class guard).
+- `compile-dispatch-inert-fold` — the RED-negative partner of `compile-dispatch` (bidirectional guard): the SAME
+  router source with its `on-response` fold DELETED (resolves to the inert `Continue`). It `/compile`s fine and
+  serves the Close path (`GET /_routes` → 200), but a dispatch (`GET /`) HANGS — the missing fold never returns
+  the child's answer. Asserts `times-out` on `GET /`. Real fold → 200 (positive) ; inert fold → hang (this).
 
 Browser outpost (owned by the `v-browser-outpost` vertical — it drops `browser-*.ml` + their handlers/routers
 here; they auto-discover as `http-conformance-browser-*` checks):

@@ -108,6 +108,34 @@ impl GatewayClient {
         })
     }
 
+    /// Assert `req` HANGS — the gateway produces NO response within `budget`. The RED-negative for the dispatch
+    /// fold (compile-dispatch): a router whose `on-response` never folds (the inert `Continue`) leaves the
+    /// caller waiting forever, so a healthy dispatch (single-digit ms) is trivially distinguished from the hang.
+    ///
+    /// `Ok(())` iff no response arrives within `budget` (the expected hang). `Err` if a response DOES arrive
+    /// (the fold worked — not the hang case) or the request fails in transport for a non-timeout reason.
+    ///
+    /// # Errors
+    /// The gateway responded within `budget` (so the request did not hang), or a transport error occurred.
+    pub async fn expect_timeout(
+        &self,
+        req: &HttpRequest,
+        budget: std::time::Duration,
+    ) -> Result<(), String> {
+        match tokio::time::timeout(budget, self.send(req)).await {
+            Err(_elapsed) => Ok(()),
+            Ok(Ok(resp)) => Err(format!(
+                "times-out: expected the request to HANG (no response within {budget:?}), but the gateway \
+                 responded {} (body: {})",
+                resp.status,
+                crate::spec::preview(&resp.body)
+            )),
+            Ok(Err(e)) => Err(format!(
+                "times-out: expected a hang, but the request failed in transport (not a hang): {e}"
+            )),
+        }
+    }
+
     /// Send a stalled/slowloris request: declare `Content-Length: <declared>` (kept UNDER the body ceiling, so
     /// this is the idle path, not the 413 ceiling), send NO body bytes, and hold the connection open — the
     /// gateway's body-read IDLE timeout should floor it (408) rather than block forever. Reads the response with
@@ -434,6 +462,50 @@ mod tests {
                 .await,
             SettleProbe::Configured
         );
+    }
+
+    #[tokio::test]
+    async fn expect_timeout_passes_when_the_gateway_hangs() {
+        use std::time::Duration;
+        // A stub that accepts + drains the request but NEVER responds — the inert-fold hang (a compiled router
+        // whose on-response never folds). The probe budget elapses → the request hung, as expected → Ok.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_sock, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await; // hold open, never reply
+        });
+        GatewayClient::new(addr)
+            .expect_timeout(
+                &HttpRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    ..Default::default()
+                },
+                Duration::from_millis(300),
+            )
+            .await
+            .expect("a hanging gateway satisfies times-out");
+    }
+
+    #[tokio::test]
+    async fn expect_timeout_errors_when_the_gateway_responds() {
+        use std::time::Duration;
+        // A gateway that DOES respond (the fold worked) is NOT the hang case → times-out must fail, naming the
+        // status it got — so a router that (correctly) dispatches can't masquerade as the RED-negative.
+        let addr = http_stub("200 OK", b"hello from a wasm handler").await;
+        let err = GatewayClient::new(addr)
+            .expect_timeout(
+                &HttpRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    ..Default::default()
+                },
+                Duration::from_secs(2),
+            )
+            .await
+            .expect_err("a responding gateway does NOT satisfy times-out");
+        assert!(err.contains("200"), "got: {err}");
     }
 
     #[tokio::test]
