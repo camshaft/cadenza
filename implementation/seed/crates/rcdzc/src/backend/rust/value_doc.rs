@@ -1,8 +1,9 @@
 //! rcdzc-side VALUE-DOC emit — the operator seq-210 parser-elimination.
 //!
 //! Generates, per export, a Ty-GUIDED `pub fn __cdz_doc_<export>() -> String` body that builds the
-//! self-describing `(: <value> <type>)` codec doc via `cadenza_ast::Builder` + `codec::encode` (the SAME
-//! wire cdz-run's `value_codec` emits, decoded by the harness's canonical `render_binary` — render-ty #7424)
+//! BARE (structural) value-form codec doc via `cadenza_ast::Builder` + `codec::encode` — no `(: value
+//! type)` ascription frame (value-codec migration: decode by structure, not names) — the SAME wire
+//! cdz-run's `value_codec` emits, decoded by the harness's canonical `render_binary` — render-ty #7424)
 //! and returns the `CDZDOC:<hex>` marker string. The gate driver calls this (flag-gated `CDZ_VALUE_DOC`)
 //! instead of cdz-rust-render's type-note-driven `cdz_render_at` string walk: the value walk moves HERE and
 //! consults the `Ty` DIRECTLY (no sexpr note re-parse), which is what lets us delete `parse_head_type` /
@@ -35,7 +36,8 @@ use crate::diag::Reject;
 use crate::ty::Ty;
 
 /// The body of `__cdz_doc_<export>` for a result of type `result_ty`, invoked as `call_expr` (e.g.
-/// `main()`). Builds the `(: value type)` doc and returns `CDZDOC:<hex>`. `Err` (a shape not yet covered)
+/// `main()`). Builds the BARE value-form doc (no `(: value type)` frame) and returns `CDZDOC:<hex>`.
+/// `Err` (a shape not yet covered)
 /// → the caller emits no `__cdz_doc` and the driver falls back to `cdz_render_at` (safe).
 pub(super) fn emit_result_doc(
     db: &mut Db,

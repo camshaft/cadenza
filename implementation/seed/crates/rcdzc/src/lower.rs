@@ -6797,12 +6797,12 @@ mod tests {
         let ty = crate::ty::Ty::Tuple(vec![t_int(), t_int()].into());
         assert_eq!(
             render(&ty, &V::Tuple(vec![V::Int(3), V::Int(1)])),
-            "(: (tuple 3 1) (Tuple Int64 Int64))"
+            "(tuple 3 1)"
         );
         // Different runtime values reuse the SAME template — only the holes change.
         assert_eq!(
             render(&ty, &V::Tuple(vec![V::Int(4), V::Int(8)])),
-            "(: (tuple 4 8) (Tuple Int64 Int64))"
+            "(tuple 4 8)"
         );
     }
 
@@ -6811,12 +6811,12 @@ mod tests {
         let ty = crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Bool].into());
         assert_eq!(
             render(&ty, &V::Tuple(vec![V::Int(0), V::Bool(true)])),
-            "(: (tuple 0 true) (Tuple Int64 Bool))"
+            "(tuple 0 true)"
         );
         let ty2 = crate::ty::Ty::Tuple(vec![t_int(), t_int()].into());
         assert_eq!(
             render(&ty2, &V::Tuple(vec![V::Int(-5), V::Int(7)])),
-            "(: (tuple -5 7) (Tuple Int64 Int64))"
+            "(tuple -5 7)"
         );
     }
 
@@ -6825,7 +6825,7 @@ mod tests {
         let ty3 = crate::ty::Ty::Tuple(vec![t_int(), t_int(), t_int()].into());
         assert_eq!(
             render(&ty3, &V::Tuple(vec![V::Int(10), V::Int(11), V::Int(12)])),
-            "(: (tuple 10 11 12) (Tuple Int64 Int64 Int64))"
+            "(tuple 10 11 12)"
         );
         let nested = crate::ty::Ty::Tuple(
             vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()].into())].into(),
@@ -6835,7 +6835,7 @@ mod tests {
                 &nested,
                 &V::Tuple(vec![V::Int(2), V::Tuple(vec![V::Int(2), V::Int(2)])])
             ),
-            "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))"
+            "(tuple 2 (tuple 2 2))"
         );
     }
 
@@ -6849,7 +6849,7 @@ mod tests {
         // Fields in canonical (sorted) order a, b → positional [a, b].
         assert_eq!(
             render(&ty, &V::Record(vec![V::Int(3), V::Int(1)])),
-            "(: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))"
+            "(record (= a 3) (= b 1))"
         );
     }
 
