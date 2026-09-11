@@ -172,6 +172,16 @@ fn dispatch(cmd: AdminCommand, ctx: &AdminCtx) -> AdminReply {
             broadcast(&ctx.sessions, Bytes::from_static(crate::ws::CLOSE_SENTINEL));
             AdminReply::Ok
         }
+        AdminCommand::PushGarbageFrame => {
+            // Send UNDECODABLE bytes to every gateway session (not a valid tagged ControlFrame; NOT the close
+            // sentinel, so `run_session` forwards it to the socket rather than closing). The gateway's
+            // FrameCodec::decode returns None → it must tolerate the garbage (ignore/recover, not crash/hang).
+            broadcast(
+                &ctx.sessions,
+                Bytes::from_static(b"cdz-mock-garbage-control-frame-\xff\xfe-not-decodable"),
+            );
+            AdminReply::Ok
+        }
     }
 }
 

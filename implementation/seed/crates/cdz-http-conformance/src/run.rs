@@ -518,6 +518,10 @@ fn control_command(control: &ControlStep) -> (String, AdminCommand) {
             "control drop-control (force gateway redial)".to_string(),
             AdminCommand::DropControl,
         ),
+        ControlStep::PushGarbageFrame => (
+            "control push-garbage-frame (malformed control frame)".to_string(),
+            AdminCommand::PushGarbageFrame,
+        ),
     }
 }
 
