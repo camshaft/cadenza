@@ -7382,6 +7382,9 @@
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
+                # Path-dep: the compile-boundary name wire (encode_name) the cdz-http-compile-request bin uses.
+                ./implementation/seed/crates/cadenza-compile-abi/src
+                ./implementation/seed/crates/cadenza-compile-abi/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
