@@ -64,9 +64,33 @@ if (!hasGuest) fail("transpiled bindings do not reference the cadenza:platform/g
 if (!hasOnMessage) fail("transpiled bindings do not surface the reducer on-message export");
 checks++;
 
-if (checks !== 3) fail(`expected 3 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 4. INSTANTIATE the component in a JS engine and assert the reducer's guest interface surfaces as a
+//    CALLABLE on-message. Supply no-op STUB imports for every host interface the component links
+//    (state/blobs/identity/run + the value-heap runtime + nfc): instantiation only LINKS these — the guest
+//    calls them at fold time, not at instantiation — so no-op stubs satisfy the linker without hand-writing
+//    each WIT shape. This is a step up from "the module loads": it proves the reducer actually INSTANTIATES
+//    in a JS engine and its on-message export is a real callable JS function (the step before driving a fold).
+const getCore = async (p) => WebAssembly.compile(readFileSync(join(dir, p)));
+// Nested Proxy: imports[anyInterface][anyFunc] → a no-op stub, so jco's import linking is satisfied for any
+// host interface the component declares, without enumerating them.
+const stubIface = new Proxy({}, { get: () => () => undefined });
+const importsProxy = new Proxy({}, { get: () => stubIface });
+let root;
+try {
+  root = await mod.instantiate(getCore, importsProxy);
+} catch (e) {
+  fail(`component did not instantiate with stub imports: ${e && e.message ? e.message : e}`);
+}
+const guest = root["cadenza:platform/guest"] ?? root.guest;
+if (!guest || typeof guest.onMessage !== "function") {
+  fail(`instantiated root exposes no callable cadenza:platform/guest.onMessage (root keys: ${Object.keys(root).join(", ")})`);
+}
+checks++;
+
+if (checks !== 4) fail(`expected 4 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
-  `browser-outpost jco check: ok — the reducer transpiles to a loadable ES module (${fileNames.length} files) ` +
-  `exposing cadenza:platform/guest.onMessage. A Cadenza reducer is jco-loadable in a JS engine.`,
+  `browser-outpost jco check: ok — the reducer transpiles to a loadable ES module (${fileNames.length} files), ` +
+  `INSTANTIATES in a JS engine, and exposes a callable cadenza:platform/guest.onMessage. A Cadenza reducer ` +
+  `runs in a JS engine (fold-drive follow-up: real host-import shims + a message).`,
 );
 process.exit(0);
