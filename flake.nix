@@ -3072,6 +3072,19 @@
             { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
             { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
           ];
+          # parse-diagnostics: a malformed source → 400 parse diagnostic; only the ml parser is exercised.
+          parse-diagnostics = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+          ];
+          # compile-diagnostics: programs that parse but fail to COMPILE → 422 CDZ diagnostics; same 4 guests as
+          # `compile` (parse to an ast-hash, then live-swap to the compile handler which runs rcdzc).
+          compile-diagnostics = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
+            { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
+          ];
         };
 
         cdzHttpGatewayBin =
