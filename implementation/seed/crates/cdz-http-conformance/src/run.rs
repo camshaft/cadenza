@@ -162,16 +162,43 @@ pub async fn run_steps(
                 };
                 (description, result)
             }
+            // Live-swap to a RUNTIME-CAPTURED hash: register it under a synthetic name, then root that name — so a
+            // scenario can root a hash produced at run time (e.g. a router freshly built by `/compile`).
+            Step::Control(ControlStep::PushRootRouterCaptured(cap)) => {
+                let description = format!("control push-root-router {{from-capture {cap}}}");
+                let result = match captures.get(cap) {
+                    None => Err(format!(
+                        "push-root-router from-capture: no earlier step captured '{cap}'"
+                    )),
+                    Some(hash) => {
+                        let synth = format!("captured-root:{cap}");
+                        match send_expect_ok(
+                            admin,
+                            &AdminCommand::SetProgram {
+                                name: Str::from(synth.as_str()),
+                                hash: hash.clone(),
+                            },
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                send_expect_ok(
+                                    admin,
+                                    &AdminCommand::PushRootRouter {
+                                        program: Str::from(synth.as_str()),
+                                    },
+                                )
+                                .await
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                };
+                (description, result)
+            }
             Step::Control(control) => {
                 let (description, command) = control_command(control);
-                let result = match admin.send(&command).await {
-                    Ok(AdminReply::Ok) => Ok(()),
-                    Ok(AdminReply::Error { message }) => {
-                        Err(format!("control command rejected by the mock: {message}"))
-                    }
-                    Ok(other) => Err(format!("control command: unexpected reply {other:?}")),
-                    Err(e) => Err(e),
-                };
+                let result = send_expect_ok(admin, &command).await;
                 (description, result)
             }
         };
@@ -390,9 +417,29 @@ fn unique_nonce_body() -> Vec<u8> {
     .into_bytes()
 }
 
+/// Send one [`AdminCommand`] and require an `Ok` reply, mapping a rejection / unexpected reply / transport error
+/// to a scenario-step `Err`.
+async fn send_expect_ok(admin: &AdminClient, command: &AdminCommand) -> Result<(), String> {
+    match admin.send(command).await {
+        Ok(AdminReply::Ok) => Ok(()),
+        Ok(AdminReply::Error { message }) => {
+            Err(format!("control command rejected by the mock: {message}"))
+        }
+        Ok(other) => Err(format!("control command: unexpected reply {other:?}")),
+        Err(e) => Err(e),
+    }
+}
+
 /// Map a [`ControlStep`] to its human description + the [`AdminCommand`] that drives it at the mock.
+/// ([`ControlStep::PushRootRouterCaptured`] is handled separately in `run_steps` — it needs the captures + two
+/// admin commands — so it never reaches here.)
 fn control_command(control: &ControlStep) -> (String, AdminCommand) {
     match control {
+        ControlStep::PushRootRouterCaptured(cap) => (
+            format!("control push-root-router {{from-capture {cap}}}"),
+            // Unreachable (handled in run_steps); a harmless placeholder keeps the match exhaustive.
+            AdminCommand::GetControlUps,
+        ),
         ControlStep::PushRootRouter(name) => (
             format!("control push-root-router {name}"),
             AdminCommand::PushRootRouter {
@@ -768,6 +815,90 @@ mod tests {
         assert!(
             bad[0].result.is_err(),
             "unregistered program must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_root_router_from_a_captured_hash_registers_then_roots_it() {
+        use bytes::Bytes;
+        use cdz_http_control_mock::MockState;
+        use cdz_http_control_mock::server::{AdminCtx, serve_admin};
+        use cdz_http_control_mock::ws::new_sessions;
+        use cdz_str::Str;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let state = Arc::new(Mutex::new(MockState::new(HashMap::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let admin_addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_admin(
+            listener,
+            AdminCtx {
+                state,
+                sessions: new_sessions(),
+                cas_url: Str::from("http://127.0.0.1:9/cas"),
+                cas_credential: Bytes::new(),
+                codec: cdz_http_protocol::FrameCodec::new(
+                    Bytes::from_static(b"c"),
+                    Bytes::from_static(b"u"),
+                    Bytes::from_static(b"d"),
+                ),
+            },
+        ));
+        let admin = AdminClient::new(admin_addr);
+        let gateway = GatewayClient::new("127.0.0.1:1".parse().unwrap());
+
+        // A capture holding a (33-byte) hash — as if an earlier /compile step captured a freshly-built router.
+        let mut seeded: HashMap<String, Bytes> = HashMap::new();
+        seeded.insert(
+            "compiled-router".to_string(),
+            Bytes::from_static(b"a-33-byte-program-hash-goes-here."),
+        );
+        // PushRootRouterCaptured registers the captured hash under a synthetic name + roots it → Ok.
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            seeded,
+            &[Step::Control(ControlStep::PushRootRouterCaptured(
+                "compiled-router".into(),
+            ))],
+        )
+        .await;
+        assert!(
+            outcomes[0].result.is_ok(),
+            "captured-hash root should register-then-push: {:?}",
+            outcomes[0].result
+        );
+        assert!(
+            outcomes[0]
+                .description
+                .contains("from-capture compiled-router")
+        );
+
+        // An UNKNOWN capture (no earlier step captured it) is a clear Err — not a silent no-op.
+        let bad = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            HashMap::new(),
+            &[Step::Control(ControlStep::PushRootRouterCaptured(
+                "never-captured".into(),
+            ))],
+        )
+        .await;
+        assert!(
+            bad[0]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .contains("no earlier step captured"),
+            "got: {:?}",
+            bad[0].result
         );
     }
 

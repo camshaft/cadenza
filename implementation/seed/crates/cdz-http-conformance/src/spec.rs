@@ -65,8 +65,13 @@ pub enum Step {
 /// A control-plane injection at the mock control server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlStep {
-    /// Live-swap the root router to an (already-registered) program name (`push-root-router`).
+    /// Live-swap the root router to an (already-registered) program name (`push-root-router = "<name>"`).
     PushRootRouter(String),
+    /// Live-swap the root router to a RUNTIME-CAPTURED 33-byte ProgramHash — an earlier step's `capture-body-as`
+    /// (`push-root-router = { from-capture = "<name>" }`). The driver registers the captured hash under a
+    /// synthetic name (admin `SetProgram`) then pushes it, so a scenario can root a hash produced AT RUN TIME
+    /// (e.g. a router freshly built by `/compile`) — the self-hosting router-update loop.
+    PushRootRouterCaptured(String),
     /// Push an unsolicited `ControlDown` to a session (`push-down`); `None` session ⇒ empty (broadcast).
     PushDown {
         session: Option<Vec<u8>>,
@@ -363,8 +368,13 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
 /// `{ push-down = { session = b"…"?, payload = b"…" } }`, or
 /// `{ prime-reply = { match-path = "<path>"?, reply = b"…" } }`.
 fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlStep> {
-    if let Some(name) = value::record_field(arenas, id, "push-root-router") {
-        return Some(ControlStep::PushRootRouter(value::read_str(arenas, name)?));
+    if let Some(prr) = value::record_field(arenas, id, "push-root-router") {
+        // `push-root-router = "<name>"` (a registered name) OR `= { from-capture = "<name>" }` (a captured hash).
+        if let Some(name) = value::read_str(arenas, prr) {
+            return Some(ControlStep::PushRootRouter(name));
+        }
+        let cap = value::read_str(arenas, value::record_field(arenas, prr, "from-capture")?)?;
+        return Some(ControlStep::PushRootRouterCaptured(cap));
     }
     if value::record_field(arenas, id, "drop-control").is_some() {
         return Some(ControlStep::DropControl);
