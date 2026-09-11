@@ -85,6 +85,7 @@ pub struct StepOutcome {
 pub async fn run_steps(
     gateway: &GatewayClient,
     admin: &AdminClient,
+    cas: &crate::cas::CasClient,
     steps: &[Step],
 ) -> Vec<StepOutcome> {
     let mut outcomes = Vec::with_capacity(steps.len());
@@ -92,7 +93,10 @@ pub async fn run_steps(
         let (description, result) = match step {
             Step::Http { request, expect } => {
                 let description = format!("{} {}", request.method, request.path);
-                (description, run_http_step(gateway, request, expect).await)
+                (
+                    description,
+                    run_http_step(gateway, cas, request, expect).await,
+                )
             }
             Step::Control(control) => {
                 let (description, command) = control_command(control);
@@ -125,12 +129,38 @@ const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50)
 /// propagation like a live root-router swap the gateway applies only on a later request); otherwise one shot.
 async fn run_http_step(
     gateway: &GatewayClient,
+    cas: &crate::cas::CasClient,
     request: &crate::spec::HttpRequest,
     expect: &crate::spec::Expect,
 ) -> Result<(), String> {
-    let attempt = async || match gateway.send(request).await {
-        Ok(resp) => expect.check(resp.status, &resp.headers, &resp.body),
-        Err(e) => Err(e),
+    let attempt = async || {
+        let resp = gateway.send(request).await?;
+        expect.check(resp.status, &resp.headers, &resp.body)?;
+        // `resolves-in-cas`: the response body is a raw 33-byte content hash a handler published via blobs.put;
+        // base62-encode it + assert the blob resolves in the CAS (the "publish persisted" round-trip).
+        if expect.resolves_in_cas {
+            let hash = crate::base62::encode(&resp.body).ok_or_else(|| {
+                format!(
+                    "resolves-in-cas: response body is not a 33-byte hash ({} bytes)",
+                    resp.body.len()
+                )
+            })?;
+            match cas.get(&hash).await {
+                Ok(Some(bytes)) if !bytes.is_empty() => {}
+                Ok(Some(_)) => {
+                    return Err(format!(
+                        "resolves-in-cas: hash {hash} resolved to an EMPTY blob"
+                    ));
+                }
+                Ok(None) => {
+                    return Err(format!(
+                        "resolves-in-cas: hash {hash} NOT found in the CAS (the handler's publish did not persist)"
+                    ));
+                }
+                Err(e) => return Err(format!("resolves-in-cas: CAS get for {hash}: {e}")),
+            }
+        }
+        Ok(())
     };
     if !expect.retry_until_match {
         return attempt().await;
@@ -199,6 +229,11 @@ pub fn verdict(outcomes: &[StepOutcome]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A CAS client the http-only tests never contact (no resolves-in-cas), like the bogus admin.
+    fn bogus_cas() -> crate::cas::CasClient {
+        crate::cas::CasClient::new("127.0.0.1:1".parse().unwrap())
+    }
     use crate::spec::{Expect, HttpRequest, Step};
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -271,7 +306,7 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_steps(&gateway, &admin, &steps).await;
+        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), &steps).await;
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes[0].result.is_ok(), "step 1 should pass");
         assert!(outcomes[1].result.is_err(), "step 2 should fail");
@@ -305,7 +340,7 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_steps(&gateway, &admin, &steps).await;
+        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), &steps).await;
         assert!(verdict(&outcomes).is_ok());
     }
 
@@ -368,7 +403,7 @@ mod tests {
                 ..Default::default()
             },
         }];
-        let outcomes = run_steps(&gateway, &admin, &retry).await;
+        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), &retry).await;
         assert!(
             outcomes[0].result.is_ok(),
             "retry should poll past the 503s: {:?}",
@@ -389,7 +424,7 @@ mod tests {
                 ..Default::default()
             },
         }];
-        let outcomes = run_steps(&gateway2, &admin, &once).await;
+        let outcomes = run_steps(&gateway2, &admin, &bogus_cas(), &once).await;
         assert!(
             outcomes[0].result.is_err(),
             "no retry → the first 503 is reported"
@@ -442,6 +477,7 @@ mod tests {
         let outcomes = run_steps(
             &gateway,
             &admin,
+            &bogus_cas(),
             &[Step::Control(ControlStep::PushRootRouter(
                 "router-b".into(),
             ))],
@@ -463,6 +499,7 @@ mod tests {
         let bad = run_steps(
             &gateway,
             &admin,
+            &bogus_cas(),
             &[Step::Control(ControlStep::PushRootRouter("nope".into()))],
         )
         .await;

@@ -10,6 +10,7 @@ use cdz_http_control_mock::admin::{AdminCommand, AdminReply, decode_reply, encod
 use std::net::SocketAddr;
 
 /// The run-spec parser — decode a conformance run's binary-AST value into a [`spec::RunSpec`].
+pub mod base62;
 pub mod spec;
 
 /// Process orchestration — spawn each SUT bin, wait for its ready line, kill it on drop.

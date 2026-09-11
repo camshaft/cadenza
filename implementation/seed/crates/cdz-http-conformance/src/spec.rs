@@ -95,6 +95,11 @@ pub struct Expect {
     /// Poll the request, re-issuing it until the assertion holds or a timeout elapses — the one non-linear
     /// primitive, for async propagation (e.g. a live root-router swap the gateway applies on a later request).
     pub retry_until_match: bool,
+    /// After the other assertions pass, treat the response BODY as a raw 33-byte content hash, base62-encode it,
+    /// and assert the blob RESOLVES in the CAS (a follow-up GET returns non-empty). Proves a handler that
+    /// published via `blobs.put` (e.g. the /parse ast-hash, a /compile component hash) actually persisted it —
+    /// the content-addressed "publish worked" round-trip.
+    pub resolves_in_cas: bool,
 }
 
 impl RunSpec {
@@ -297,12 +302,17 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(r) => value::read_bool(arenas, r)?,
         None => false,
     };
+    let resolves_in_cas = match value::record_field(arenas, id, "resolves-in-cas") {
+        Some(r) => value::read_bool(arenas, r)?,
+        None => false,
+    };
     Some(Expect {
         status,
         body,
         body_contains,
         headers,
         retry_until_match,
+        resolves_in_cas,
     })
 }
 
