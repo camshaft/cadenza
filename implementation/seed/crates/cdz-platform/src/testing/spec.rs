@@ -80,7 +80,7 @@
 
 use super::harness::{Harness, Parent, SpawnSpec};
 use crate::contract_value::{
-    ascribe, bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
+    bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Delivered, Error, Hash, HostId, Links, Message, Notification, Origin,
@@ -1347,8 +1347,9 @@ fn rewrite_references(
             // `Value("<Type>", <value>)` — encode the given Cadenza value to the canonical binary form a guest
             // `Value.decode`s (a message/notification `payload` that is a STRUCTURED value, not opaque bytes),
             // so a reducer can decode + dispatch on it by schema (§3/§4). Resolves like the blob references
-            // (WHEREVER it appears): the value is ascribed with `<Type>` at the encode boundary — the root
-            // ascription `Value.decode` requires — and any nested blob reference in the value resolves first.
+            // (WHEREVER it appears): the value is encoded BARE — no root ascription; post value-codec
+            // migration (#8840) `Value.decode` is STRUCTURAL/type-directed — and any nested blob reference in
+            // the value resolves first.
             // The `<value>` is written in ordinary value form: a single-constructor sum ELIDES its constructor
             // (write the payload directly — `Value("Effect", b"x")`, not `Value("Effect", Perform(b"x"))`, since
             // `Effect = | Perform(Bytes)`); a multi-constructor sum keeps its constructor head
@@ -1363,21 +1364,25 @@ fn rewrite_references(
                         field: "Value reference",
                         want: "a type name and a value: Value(\"<Type>\", <value>)",
                     })?;
-                let ty = old.as_str(type_id).ok_or(SpecError::WrongType {
+                // The first arg must still be a type-name string (kept for spec-author ergonomics + error
+                // messages), but it is no longer embedded in the bytes: post value-codec migration (#8840)
+                // the value form is STRUCTURAL, so the payload is encoded BARE and the guest `Value.decode`s
+                // it type-directed against `<Type>` (the type token was decorative observability the
+                // structural decoder never read).
+                old.as_str(type_id).ok_or(SpecError::WrongType {
                     field: "Value reference",
                     want: "a type-name string as the first arg of Value(\"<Type>\", <value>)",
                 })?;
-                // Encode the value subtree standalone: copy+resolve it into a fresh arena, ascribe it with the
-                // type, and encode — the bytes a guest `Value.decode`s type-directed against `<Type>`. The copy
-                // is CANONICALIZING (`rewrite_value_canonical`, not the plain `rewrite_references`): the ML
-                // surface a run is written in heads records/lists with the string constructors `("record" …)`/
-                // `("list" …)` and keeps record fields in declaration order, but the compiler's `Value.encode`
-                // emits the NAME-headed `(record …)`/`(list …)` with fields ascending by name — so an author can
-                // write a structured payload in ordinary ML record/list syntax and it still decodes.
+                // Encode the value subtree standalone: copy+resolve it into a fresh arena and encode BARE —
+                // the bytes a guest `Value.decode`s. The copy is CANONICALIZING (`rewrite_value_canonical`,
+                // not the plain `rewrite_references`): the ML surface a run is written in heads records/lists
+                // with the string constructors `("record" …)`/`("list" …)` and keeps record fields in
+                // declaration order, but the compiler's `Value.encode` emits the NAME-headed `(record …)`/
+                // `(list …)` with fields ascending by name — so an author can write a structured payload in
+                // ordinary ML record/list syntax and it still decodes.
                 let mut vb = Builder::new();
                 let inner = rewrite_value_canonical(old, value_id, table, &mut vb)?;
-                let ascribed = ascribe(&mut vb, inner, ty);
-                let bytes = codec::encode(&vb.finish(ascribed));
+                let bytes = codec::encode(&vb.finish(inner));
                 return Ok(bytes_leaf(b, &bytes));
             }
             if let Some((&head, args)) = children.split_first()
@@ -1586,7 +1591,7 @@ mod tests {
         SpecError, read_bytes, record_field, resolve_references,
     };
     use crate::contract_value::bare_ctor;
-    use crate::contract_value::{ascribe, bytes_leaf, record, uint_leaf};
+    use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
     use crate::{
         Bytes, ContractId, Error, HostId, Links, Origin, ProgramHash, ReducerId, ReducerKind,
@@ -2743,8 +2748,9 @@ mod tests {
     }
 
     /// A `Value("<Type>", <value>)` payload resolves to the canonical binary encoding a guest `Value.decode`s:
-    /// the value ascribed with the type, `(: <value> <Type>)`, run through the codec — so a run can deliver a
-    /// STRUCTURED payload a reducer decodes by schema, not opaque bytes.
+    /// the BARE value form run through the codec (no root ascription — post value-codec migration #8840 decode
+    /// is structural/type-directed) — so a run can deliver a STRUCTURED payload a reducer decodes by schema,
+    /// not opaque bytes.
     #[test]
     fn resolve_references_encodes_a_value_payload() {
         let arenas = built(|b| {
@@ -2770,13 +2776,12 @@ mod tests {
         });
         let resolved = resolve_references(&arenas, |_| None).expect("resolve the Value reference");
         let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
-        // The bytes a guest gets: codec-encoding of the value ascribed with its type — `(: (Perform b"DEEP") Effect)`.
+        // The bytes a guest gets: codec-encoding of the BARE value — `(Perform b"DEEP")` (no root ascription).
         let want = {
             let mut vb = Builder::new();
             let deep = bytes_leaf(&mut vb, b"DEEP");
             let inner = bare_ctor(&mut vb, "Perform", vec![deep]);
-            let root = ascribe(&mut vb, inner, "Effect");
-            Bytes::from(codec::encode(&vb.finish(root)))
+            Bytes::from(codec::encode(&vb.finish(inner)))
         };
         match &spec.deliveries[0].1 {
             DeliveryEvent::Message { payload, .. } => assert_eq!(*payload, want),
@@ -2832,15 +2837,14 @@ mod tests {
         });
         let resolved = resolve_references(&arenas, |_| None).expect("resolve the Value reference");
         let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
-        // The bytes a guest gets: codec-encoding of the NAME-headed, name-SORTED record `(record (= key b"K")
-        // (= value b"V"))` ascribed with its type — built via the canonical `record()` (sorts) + `ascribe`.
+        // The bytes a guest gets: codec-encoding of the BARE NAME-headed, name-SORTED record `(record (= key
+        // b"K") (= value b"V"))` — built via the canonical `record()` (sorts); no root ascription.
         let want = {
             let mut vb = Builder::new();
             let k = bytes_leaf(&mut vb, b"K");
             let v = bytes_leaf(&mut vb, b"V");
             let rec = record(&mut vb, vec![("key", k), ("value", v)]);
-            let root = ascribe(&mut vb, rec, "SetRequest");
-            Bytes::from(codec::encode(&vb.finish(root)))
+            Bytes::from(codec::encode(&vb.finish(rec)))
         };
         match &spec.deliveries[0].1 {
             DeliveryEvent::Message { payload, .. } => assert_eq!(*payload, want),
