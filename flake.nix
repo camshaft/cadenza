@@ -6951,6 +6951,17 @@
               # cdz-reducer-guest (v-reducer-targets B2): 4 unit tests (request round-trip + rcdzc handler e2e),
               # inline-string sources → no extraSrc. Its rcdzc-inclusive closure is walked live by crateClosure.
               test-cdz-reducer-guest = mkCrateTestCrane { crate = "cdz-reducer-guest"; };
+              # reducer-guest-* COMPONENT builds (v-reducer-targets B3c gate-coverage): the wasm reducer
+              # components are only `packages.*`, so the crate clippy/test checks never build them — a
+              # component-build regression (a cargo-component/wit-bindgen break, a contract co-import collision
+              # like the ParseDiagnostic/CompileDiagnostic split, a handler compile error, a stale baked-hash
+              # rewrite) was caught ONLY by an explicit build or the live rig, never a gate. Wire each build as
+              # a check so `nix flake check` guards it. (These join the full check battery, NOT the fast per-PR
+              # localGate aggregate — the rcdzc guest is a ~1min wasm build; compile bakes the ml/rcdzc hashes.)
+              reducer-guest-rcdzc = reducerGuestRcdzc;
+              reducer-guest-sexpr = reducerGuestSexpr;
+              reducer-guest-ml = reducerGuestMl;
+              reducer-guest-compile = reducerGuestCompile;
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };
