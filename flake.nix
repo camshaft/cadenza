@@ -2832,6 +2832,8 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-str/src
@@ -2883,6 +2885,8 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
                 ./implementation/seed/crates/cdz-contract/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
@@ -3003,6 +3007,8 @@
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
@@ -3061,6 +3067,8 @@
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
@@ -7227,6 +7235,8 @@
                 # + cdz-str (already staged below), so only its own src + manifest need adding here.
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
@@ -7370,6 +7380,8 @@
               fileset = pkgs.lib.fileset.unions [
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.lock
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
@@ -7416,6 +7428,8 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-str/src
@@ -7477,6 +7491,8 @@
                 ./implementation/seed/crates/cdz-http-control-mock/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
+                ./implementation/seed/crates/cadenza-value/src
+                ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-str/src
