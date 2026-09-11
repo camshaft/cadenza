@@ -9,6 +9,11 @@ use bytes::Bytes;
 use reqwest::Method;
 use std::net::SocketAddr;
 
+/// How long the stalled/slowloris probe waits for the gateway's body-read idle timeout to floor it — set well
+/// above any plausible baked idle timeout so a real 408 is observed; if nothing arrives, that's a genuine "no
+/// idle timeout" gap surfaced as a clear error, not an indefinite hang.
+const STALLED_READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// The observable response to a gateway request: the HTTP status, the response headers (lower-cased
 /// `(name, value)` pairs, as the wire delivers them), and the full body bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +65,11 @@ impl GatewayClient {
     /// # Errors
     /// The request method is not a valid HTTP method, the request cannot be sent, or the body cannot be read.
     pub async fn send(&self, req: &HttpRequest) -> Result<GatewayResponse, String> {
+        // A stalled/slowloris client: declare a body but send no bytes + hold open, so the gateway's body-read
+        // IDLE timeout floors it (408). reqwest always sends the body it's given, so this path is raw.
+        if let Some(declared) = req.stalled_content_length {
+            return self.send_stalled_body(req, declared).await;
+        }
         let method = Method::from_bytes(req.method.as_bytes())
             .map_err(|e| format!("invalid method {:?}: {e}", req.method))?;
         let url = format!("{}{}", self.base, req.path);
@@ -98,6 +108,52 @@ impl GatewayClient {
         })
     }
 
+    /// Send a stalled/slowloris request: declare `Content-Length: <declared>` (kept UNDER the body ceiling, so
+    /// this is the idle path, not the 413 ceiling), send NO body bytes, and hold the connection open — the
+    /// gateway's body-read IDLE timeout should floor it (408) rather than block forever. Reads the response with
+    /// a generous budget (well above any plausible baked idle timeout) so a real 408 is observed; a hang (no
+    /// idle timeout) surfaces as a clear read-timeout error.
+    ///
+    /// # Errors
+    /// The connection / write fails, or no response arrives within [`STALLED_READ_BUDGET`] (the idle timeout did
+    /// not fire — a real gap, surfaced as a read-timeout error rather than hanging the harness).
+    async fn send_stalled_body(
+        &self,
+        req: &HttpRequest,
+        declared: u64,
+    ) -> Result<GatewayResponse, String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = self.base.strip_prefix("http://").unwrap_or(&self.base);
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| format!("stalled connect to {addr} timed out"))?
+        .map_err(|e| format!("stalled connect to {addr}: {e}"))?;
+        // Write ONLY the head declaring a body, then send NO body bytes + hold open — a stalled client.
+        let head = format!(
+            "{} {} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n",
+            req.method, req.path
+        );
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .map_err(|e| format!("stalled write: {e}"))?;
+        let _ = stream.flush().await;
+        let mut buf = Vec::new();
+        tokio::time::timeout(STALLED_READ_BUDGET, stream.read_to_end(&mut buf))
+            .await
+            .map_err(|_| {
+                format!(
+                    "stalled read timed out after {STALLED_READ_BUDGET:?}: the gateway did not floor the \
+                     no-send client — a body-read idle timeout (→ 408) should have fired"
+                )
+            })?
+            .map_err(|e| format!("stalled read: {e}"))?;
+        parse_raw_response(&buf)
+    }
+
     /// Probe the gateway's boot readiness with a short-budget `GET /`, classifying the outcome (see
     /// [`SettleProbe`]). The unconfigured floor answers INSTANTLY with `503 waiting for control`; anything
     /// slower-than-`budget` means the gateway accepted the connection and is DRIVING (configured) — critically,
@@ -125,9 +181,63 @@ impl GatewayClient {
     }
 }
 
+/// Parse a raw HTTP/1.1 response (status line + headers + body) into a [`GatewayResponse`] — used by the raw
+/// stalled-client path, which speaks HTTP directly rather than through `reqwest`.
+///
+/// # Errors
+/// The response has no header/body separator, or its status line is malformed / missing a numeric code.
+fn parse_raw_response(raw: &[u8]) -> Result<GatewayResponse, String> {
+    let sep = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            format!(
+                "raw response has no header/body separator ({} bytes: {:?})",
+                raw.len(),
+                String::from_utf8_lossy(&raw[..raw.len().min(80)])
+            )
+        })?;
+    let head = String::from_utf8_lossy(&raw[..sep]);
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().unwrap_or_default();
+    // Status line: `HTTP/1.1 <code> <reason>`; the code is the 2nd whitespace token.
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| format!("raw response has a malformed status line: {status_line:?}"))?;
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string()))
+        })
+        .collect();
+    let body = Bytes::copy_from_slice(&raw[sep + 4..]);
+    Ok(GatewayResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_raw_response_reads_status_headers_and_body() {
+        let raw = b"HTTP/1.1 408 Request Timeout\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nbye";
+        let r = parse_raw_response(raw).expect("parses");
+        assert_eq!(r.status, 408);
+        assert_eq!(r.body.as_ref(), b"bye");
+        assert!(
+            r.headers
+                .iter()
+                .any(|(n, v)| n == "content-type" && v == "text/plain")
+        );
+        // A malformed response (no separator) is a clear error, not a panic.
+        assert!(parse_raw_response(b"HTTP/1.1 200 OK").is_err());
+    }
     use crate::spec::Expect;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
