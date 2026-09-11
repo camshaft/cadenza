@@ -561,7 +561,9 @@ fn method_value_kind(method: &Method) -> Option<&'static str> {
 }
 
 /// Build the `Request.Request` value (§4) from its parts, using the platform's canonical `http-request`
-/// contract builders so it type-ascribes against the schema the driven program decodes.
+/// contract builders. The value is emitted structurally via `finish_value` (no ROOT type ascription — the
+/// guest decodes it against the known `http-request` schema by structure); the per-element `Header`
+/// ascription below is retained (it disambiguates a single-ctor record newtype inside a `List(Header)`).
 fn encode_request_value(
     method: &'static str,
     path: &str,
@@ -604,7 +606,7 @@ fn encode_request_value(
             body,
         },
     );
-    value::finish(b, request, "Request")
+    value::finish_value(b, request)
 }
 
 /// Turn a program's terminal `http.response` `Break` reason — a `Response.Response` value (§6) — into the
