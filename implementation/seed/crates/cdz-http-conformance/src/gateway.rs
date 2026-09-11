@@ -18,6 +18,19 @@ pub struct GatewayResponse {
     pub body: Bytes,
 }
 
+/// The result of a boot readiness probe (see [`GatewayClient::settle_probe`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleProbe {
+    /// The gateway answered the unconfigured floor (`503 waiting for control`) — control has not configured it.
+    Floor,
+    /// The gateway is configured: it answered a non-floor response, OR it accepted the connection but did not
+    /// respond within the probe budget (it is DRIVING the root router — e.g. a router that blocks awaiting a
+    /// control.send / dispatch answer — which is NOT the instant floor, so the config IS applied).
+    Configured,
+    /// The gateway is not accepting connections yet (still binding) — keep waiting.
+    Unreachable,
+}
+
 /// A client for one gateway's HTTP surface, holding a pooled [`reqwest::Client`]. Cheap to `Clone`.
 #[derive(Debug, Clone)]
 pub struct GatewayClient {
@@ -31,7 +44,12 @@ impl GatewayClient {
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             base: format!("http://{addr}"),
-            http: reqwest::Client::new(),
+            // A per-request timeout so a hung SUT (e.g. a gateway whose drive blocks awaiting an answer that
+            // never arrives) surfaces as a clear step error rather than hanging the whole harness forever.
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -78,6 +96,32 @@ impl GatewayClient {
             headers,
             body,
         })
+    }
+
+    /// Probe the gateway's boot readiness with a short-budget `GET /`, classifying the outcome (see
+    /// [`SettleProbe`]). The unconfigured floor answers INSTANTLY with `503 waiting for control`; anything
+    /// slower-than-`budget` means the gateway accepted the connection and is DRIVING (configured) — critically,
+    /// a root router that blocks awaiting a control.send / dispatch answer would hang the probe, and that is
+    /// "configured", not "not ready". A connection error means it is not up yet.
+    pub async fn settle_probe(&self, budget: std::time::Duration) -> SettleProbe {
+        let url = format!("{}/", self.base);
+        match tokio::time::timeout(budget, self.http.get(&url).send()).await {
+            Ok(Ok(resp)) => {
+                let status = resp.status().as_u16();
+                let body = resp.bytes().await.unwrap_or_default();
+                let is_floor =
+                    status == 503 && String::from_utf8_lossy(&body).contains("waiting for control");
+                if is_floor {
+                    SettleProbe::Floor
+                } else {
+                    SettleProbe::Configured
+                }
+            }
+            // A connection error (refused / not yet bound) ⇒ keep waiting; any other transport error post-
+            // connect (or our own budget elapsing) ⇒ the gateway is up + driving, i.e. configured.
+            Ok(Err(e)) if e.is_connect() => SettleProbe::Unreachable,
+            Ok(Err(_)) | Err(_) => SettleProbe::Configured,
+        }
     }
 }
 
@@ -220,6 +264,65 @@ mod tests {
         assert!(req.starts_with("post /echo "), "request line: {req:?}");
         assert!(req.contains("x-test: v"), "missing header: {req:?}");
         assert!(req.ends_with("payload"), "body not sent: {req:?}");
+    }
+
+    #[tokio::test]
+    async fn settle_probe_classifies_floor_configured_and_unreachable() {
+        use std::time::Duration;
+        // The unconfigured floor (503 + the waiting-for-control body) → Floor.
+        let floor = http_stub(
+            "503 Service Unavailable",
+            b"cdz-http-gateway: waiting for control (no program configured yet)\n",
+        )
+        .await;
+        assert_eq!(
+            GatewayClient::new(floor)
+                .settle_probe(Duration::from_secs(2))
+                .await,
+            SettleProbe::Floor
+        );
+        // A normal 200 → Configured.
+        let ok = http_stub("200 OK", b"hi").await;
+        assert_eq!(
+            GatewayClient::new(ok)
+                .settle_probe(Duration::from_secs(2))
+                .await,
+            SettleProbe::Configured
+        );
+        // A configured router's OWN 503 (different body) → Configured (not the floor).
+        let router_503 = http_stub("503 Service Unavailable", b"upstream busy").await;
+        assert_eq!(
+            GatewayClient::new(router_503)
+                .settle_probe(Duration::from_secs(2))
+                .await,
+            SettleProbe::Configured
+        );
+        // Nothing listening → Unreachable (keep waiting).
+        assert_eq!(
+            GatewayClient::new("127.0.0.1:1".parse().unwrap())
+                .settle_probe(Duration::from_millis(300))
+                .await,
+            SettleProbe::Unreachable
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_probe_treats_a_hanging_gateway_as_configured() {
+        use std::time::Duration;
+        // A stub that accepts the connection but NEVER responds (like a root router blocking on a control.send
+        // whose reply never comes) → the probe budget elapses → Configured (it is driving, not the floor).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_sock, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await; // hold the connection open, never reply
+        });
+        assert_eq!(
+            GatewayClient::new(addr)
+                .settle_probe(Duration::from_millis(300))
+                .await,
+            SettleProbe::Configured
+        );
     }
 
     #[tokio::test]

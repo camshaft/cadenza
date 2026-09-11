@@ -1,0 +1,20 @@
+// A CONTROL-PLANE-EGRESS handler (DESIGN-http-outpost.md §3): on each HTTP request it emits a `control.send`
+// effect carrying an opaque payload UP to the control server, CONTINUES (does not answer yet), and folds the
+// control server's correlated `ControlDown` RESPONSE — delivered as `on-response` — into the HTTP response.
+// This exercises the full control.send round-trip (handler → ControlUp → control → ControlDown → on-response),
+// the gateway's ControlUp/ControlDown correlation (#8720). The gateway forwards the payload OPAQUELY, so the
+// answer body is exactly what the control server replied (the harness primes it via a prime-reply control step).
+//
+// Composed from the shared libs (no inline world / redefined types): `control-send` + `respond` from `http-lib`,
+// the reducer-world boundary from the witWorld artifact, the inert on-notification from `reducer-lib`.
+import { control-send, respond } from "http-lib"
+import { Error, on-notification } from "reducer-lib"
+
+def on-message(_msg) = control-send(b"handler->control ping")
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  (match resp.answer with
+   | Ok(reply) => respond(200, [], reply)
+   | Err(_) => respond(502, [], b"control.send answer was Err"))
+
+export { on-message, on-response, on-notification }

@@ -160,6 +160,17 @@ fn control_command(control: &ControlStep) -> (String, AdminCommand) {
                 payload: Bytes::copy_from_slice(payload),
             },
         ),
+        ControlStep::PrimeReply { match_path, reply } => (
+            format!(
+                "control prime-reply (match-path {}, {} byte reply)",
+                match_path.as_deref().unwrap_or("*"),
+                reply.len()
+            ),
+            AdminCommand::PrimeReply {
+                match_path: match_path.as_deref().map(Str::from),
+                reply: Bytes::copy_from_slice(reply),
+            },
+        ),
     }
 }
 

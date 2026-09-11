@@ -60,6 +60,14 @@ pub enum ControlStep {
         session: Option<Vec<u8>>,
         payload: Vec<u8>,
     },
+    /// Prime the mock to REPLY to a handler's `control.send` (`prime-reply`): when a `ControlUp` arrives whose
+    /// request path matches `match_path` (`None` ⇒ any path), the mock answers a correlation-matched
+    /// `ControlDown` carrying `reply` — the RESPONSE to that `control.send`, folded back into the handler's
+    /// `on_response`. Set it before the HTTP request that triggers the send.
+    PrimeReply {
+        match_path: Option<String>,
+        reply: Vec<u8>,
+    },
 }
 
 /// An HTTP request to make at the gateway. `headers` are `(name, value)` pairs; `body` is the request body
@@ -234,11 +242,20 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
     Some(Step::Http { request, expect })
 }
 
-/// Parse a `control = { … }` injection: `{ push-root-router = "<name>" }` or
-/// `{ push-down = { session = b"…"?, payload = b"…" } }`.
+/// Parse a `control = { … }` injection: `{ push-root-router = "<name>" }`,
+/// `{ push-down = { session = b"…"?, payload = b"…" } }`, or
+/// `{ prime-reply = { match-path = "<path>"?, reply = b"…" } }`.
 fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlStep> {
     if let Some(name) = value::record_field(arenas, id, "push-root-router") {
         return Some(ControlStep::PushRootRouter(value::read_str(arenas, name)?));
+    }
+    if let Some(pr) = value::record_field(arenas, id, "prime-reply") {
+        let match_path = match value::record_field(arenas, pr, "match-path") {
+            Some(p) => Some(value::read_str(arenas, p)?),
+            None => None,
+        };
+        let reply = value::read_bytes(arenas, value::record_field(arenas, pr, "reply")?)?.to_vec();
+        return Some(ControlStep::PrimeReply { match_path, reply });
     }
     let pd = value::record_field(arenas, id, "push-down")?;
     let session = match value::record_field(arenas, pd, "session") {
@@ -563,6 +580,42 @@ mod tests {
             Step::Control(ControlStep::PushDown {
                 session: Some(b"s".to_vec()),
                 payload: b"p".to_vec(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_prime_reply_control_step() {
+        // requests = [ { control = { prime-reply = { match-path = "/emit", reply = b"PONG" } } },
+        //              { control = { prime-reply = { reply = b"any" } } } ]  (match-path optional)
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let mp = str_leaf(&mut b, "/emit");
+        let reply = bytes_leaf(&mut b, b"PONG");
+        let pr1 = record(&mut b, vec![("match-path", mp), ("reply", reply)]);
+        let step1 = record(&mut b, vec![("prime-reply", pr1)]);
+        let s1 = record(&mut b, vec![("control", step1)]);
+        let reply2 = bytes_leaf(&mut b, b"any");
+        let pr2 = record(&mut b, vec![("reply", reply2)]);
+        let step2 = record(&mut b, vec![("prime-reply", pr2)]);
+        let s2 = record(&mut b, vec![("control", step2)]);
+        let requests = list_value(&mut b, vec![s1, s2]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        assert_eq!(
+            spec.requests[0],
+            Step::Control(ControlStep::PrimeReply {
+                match_path: Some("/emit".into()),
+                reply: b"PONG".to_vec(),
+            })
+        );
+        assert_eq!(
+            spec.requests[1],
+            Step::Control(ControlStep::PrimeReply {
+                match_path: None,
+                reply: b"any".to_vec(),
             })
         );
     }
