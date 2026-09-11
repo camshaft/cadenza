@@ -87,10 +87,26 @@ if (!guest || typeof guest.onMessage !== "function") {
 }
 checks++;
 
-if (checks !== 4) fail(`expected 4 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 5. DRIVE A FOLD: actually CALL the reducer in the JS engine and assert it returns a well-formed step.
+//    on-notification is the inert handler ({ requests: [], outcome: continue }) — it ignores its input and
+//    is heap-light (an empty request list + a nullary Continue), so it drives under the no-op stub imports
+//    without the value-heap runtime. This proves the reducer doesn't just instantiate but EXECUTES a fold in
+//    a JS engine and returns a well-formed WIT `step`. (Driving on-message to a full RESPONSE value — which
+//    allocates on the value heap — is the next follow-up that wires the real runtime component as the heap.)
+if (typeof guest.onNotification !== "function") fail("guest exposes no callable onNotification");
+const step = guest.onNotification({ contract: new Uint8Array(), payload: new Uint8Array() });
+if (!step || typeof step !== "object") fail(`onNotification returned no step object: ${step}`);
+if (!Array.isArray(step.requests)) fail(`step.requests is not a list: ${JSON.stringify(step.requests)}`);
+if (step.requests.length !== 0) fail(`inert on-notification should emit 0 requests, got ${step.requests.length}`);
+const outcomeTag = step.outcome && step.outcome.tag;
+if (outcomeTag !== "continue") fail(`inert on-notification should continue, got outcome tag: ${outcomeTag}`);
+checks++;
+
+if (checks !== 5) fail(`expected 5 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
-  `browser-outpost jco check: ok — the reducer transpiles to a loadable ES module (${fileNames.length} files), ` +
-  `INSTANTIATES in a JS engine, and exposes a callable cadenza:platform/guest.onMessage. A Cadenza reducer ` +
-  `runs in a JS engine (fold-drive follow-up: real host-import shims + a message).`,
+  `browser-outpost jco check: ok — the reducer transpiles (${fileNames.length} files), INSTANTIATES in a JS ` +
+  `engine, exposes a callable cadenza:platform/guest, and DRIVES a fold (on-notification → {requests: [], ` +
+  `outcome: continue}). A Cadenza reducer runs AND folds in a JS engine (follow-up: drive on-message to a ` +
+  `full response value via the real value-heap runtime).`,
 );
 process.exit(0);
