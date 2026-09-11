@@ -71,8 +71,18 @@ pub async fn run_scenario(
             .await?;
     }
 
-    // 3. Mock control server, shipping the seeded CAS's url to the gateway on connect.
-    let mock = spawn_mock(&bins.mock, LOOPBACK, LOOPBACK, &cas_url, None).await?;
+    // 3. Mock control server, shipping the seeded CAS's url + WRITE credential to the gateway on connect. The
+    //    credential matters for a handler's `blobs.put` (a CasRef response, a compile/parse publish): the
+    //    gateway backs the guest `blobs` import with the control-shipped credential, and the CAS requires it
+    //    for writes — without it a `blobs.put` is rejected and a CasRef body then 502s (absent). Reads are open.
+    let mock = spawn_mock(
+        &bins.mock,
+        LOOPBACK,
+        LOOPBACK,
+        &cas_url,
+        Some(SEED_CREDENTIAL),
+    )
+    .await?;
     let admin = AdminClient::new(mock.admin_addr);
 
     // 4. Inject: register each program name → its ProgramHash, then set the root router (its name resolves to
