@@ -87,3 +87,7 @@ Effect vocabulary + routing:
 - `parse-diagnostics` — a malformed source → 400 whose body carries the parse diagnostic ("expected").
 - `compile-diagnostics` — programs that parse but fail to COMPILE → 422 with the CDZ code ("CDZ0203",
   "nothing is public").
+
+Browser outpost:
+- `browser-page` — a handler answers `200 text/html` with a full HTML document + inline JS bootstrap; the
+  gateway forwards the `content-type: text/html` header verbatim (browser-outpost S0; owned by that vertical).
