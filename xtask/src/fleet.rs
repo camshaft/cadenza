@@ -6045,15 +6045,35 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
         // No live window, and no stop-file → an ACTIVE agent whose window DIED / was torn down. This cron
         // runs OUT-OF-BAND (independent of the concierge), so it is the ONLY thing that can revive the
         // CONCIERGE: the concierge runs the in-tick watchdog, so a dead concierge can't self-heal via that
-        // watchdog (chicken-and-egg — "who heals the healer"). Recreate the window here, thrash-guarded by
-        // the shared wedge grace, and ONLY when the window list was obtained (tmux_ok). This COMPLEMENTS
-        // the in-tick watchdog's dead-window recreate (#8566), which self-heals every OTHER active agent.
+        // watchdog (chicken-and-egg — "who heals the healer"). Recreate here, ONLY when the window list was
+        // obtained (tmux_ok). This COMPLEMENTS the in-tick watchdog's dead-window recreate (#8566).
+        //
+        // The CONCIERGE must NEVER be rate-limited back to life: the shared WEDGE_RESTART_GRACE thrash-guard
+        // (meant to stop a crash-LOOP from spinning) was leaving multi-minute WINDOWLESS GAPS between
+        // recreate attempts when a freshly-recreated session died before its first heartbeat — the operator
+        // found the concierge dead in exactly such a gap (2026-09-11: window died, a 01:10 recreate stamped
+        // wedge-restart, and the 01:15 fire then NO-OP'd under the 600s guard, so it sat windowless). For a
+        // PROTECTED role, recreate on EVERY fire (grace 0). At a 5-min cron cadence that is not a spin —
+        // just "never leave the operator's only interface down longer than one interval".
+        let grace = if is_protected_role(agent) {
+            0
+        } else {
+            WEDGE_RESTART_GRACE
+        };
         if should_recreate_missing_window(
             has_window,
             tmux_ok,
             wedge_restart_age_secs(fleet, agent, now),
-            WEDGE_RESTART_GRACE,
+            grace,
         ) {
+            // FLAP DETECTION: a recent prior recreate (wedge-restart marker fresh) that DIDN'T take —
+            // i.e. we are recreating AGAIN within a couple of intervals — means the freshly-launched
+            // session is dying before its first heartbeat (a deeper problem: resource pressure, a launch
+            // fault). Surface it LOUDLY + durably so it can't hide behind the silent revival loop (a note
+            // can't reach a down concierge, so this is a stderr alarm + a stamp a human/monitor can see).
+            let flapping = is_protected_role(agent)
+                && wedge_restart_age_secs(fleet, agent, now)
+                    .is_some_and(|s| s < WEDGE_RESTART_GRACE);
             if dry_run {
                 println!(
                     "  DRY-RUN would RECREATE '{agent}' dead/torn-down window (out-of-band self-heal)"
@@ -6071,6 +6091,23 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                     "  + RECREATED '{agent}' dead/torn-down window out-of-band (active but windowless — \
                      the concierge can't self-heal via its own in-tick watchdog). (self-heal)"
                 );
+                if flapping {
+                    eprintln!(
+                        "  ‼ FLAP: '{agent}' was recreated again within {WEDGE_RESTART_GRACE}s — the prior \
+                         recreate's session DIED before its first heartbeat. Recreating anyway (never leave \
+                         it down), but a persisting flap needs a human: check host load / the launch. \
+                         (deeper cause than window management — surfacing loudly so it can't hide.)"
+                    );
+                    let alarm = fleet.root.join("concierge-flap.alarm");
+                    let _ = std::fs::write(
+                        &alarm,
+                        format!(
+                            "{}: '{agent}' recreated again within {WEDGE_RESTART_GRACE}s — fresh session \
+                             died before heartbeating. Investigate host load / launch.\n",
+                            now
+                        ),
+                    );
+                }
             }
         }
         return; // a just-(re)created window boots its own loop — nothing to compact/nudge THIS run
