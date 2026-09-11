@@ -1,31 +1,37 @@
-// The BROWSER-OUTPOST APP reducer (DESIGN-browser-outpost.md §3, milestone S2a): a reducer-world guest that,
-// on a message, EMITS a `render` EFFECT carrying a vDOM patch as a cadenza-ast VALUE, then continues. This is
-// the DOM-as-effect model (operator 2026-09-11: "expose as many browser APIs as effects … cadenza programs
-// drive the browser"): the reducer is the app's Elm `update`, the render patch is `view`'s diff. Crucially the
-// reducer emits a render REQUEST (a pure-fold effect), NOT an imperative DOM call — so the UI stays a
-// deterministic, replayable projection of fold state (design §11), and the browser host applies the patch.
+// The BROWSER-OUTPOST APP reducer (DESIGN-browser-outpost.md §3, milestones S2a/S2b): a reducer-world guest
+// that DRIVES THE BROWSER via effects (operator 2026-09-11: "expose as many browser APIs as effects … cadenza
+// programs drive the browser"). It implements the full Elm cycle as a pure fold:
+//   * OUTBOUND (S2a, §3.1): on a message it EMITS a `render` EFFECT carrying a vDOM patch as a cadenza-ast
+//     VALUE — a render REQUEST, not an imperative DOM call, so the UI is a deterministic/replayable projection.
+//   * INBOUND (S2b, §3.2): a user interaction arrives as a `message` with a `dom-event` contract (a click,
+//     an input); the reducer FOLDS it into a NEW render patch. To the reducer a DOM event and any other
+//     message are the same on-message call — they differ only by contract — which is what makes the app both
+//     user- and agent-drivable (§7) over one fold.
+// This is the HEADLESS half of the DOM loop (emit + fold, asserted by driving on-message via jco). The browser
+// host that APPLIES the patch to the real DOM and DELIVERS real DOM events is the browser-driver follow-on.
 //
-// This is the HEADLESS half of S2: the reducer EMITS the render effect, which is asserted by driving its
-// on-message via jco (browser-outpost-jco-transpile check) and inspecting the emitted step's requests — no
-// browser needed. The real dom WIT interface + the browser host that APPLIES the patch (and delivers DOM
-// events back as messages) is the browser-driver follow-on (design §3, the known browser-driver gap).
-//
-// Composed from reducer-lib only (Outcome + the `request` builder + the inert on-response/on-notification):
-// this reducer emits an effect and continues; the render is fire-and-forget for S2a (no child response folded),
-// so the inert on-response is correct here.
+// State ACROSS events (a counter, form state) is the `state` host import (browser = IndexedDB, §5); this S2b
+// slice is a pure event→view fold (no persistent state), which is what a headless drive can pin.
 import { Outcome, request, on-response, on-notification } from "reducer-lib"
 
-// A minimal vDOM patch (design §3.1): a text node for S2a. Elements/attrs/keyed edits are the S2b follow-on.
+// A minimal vDOM patch (§3.1): a text node for now. Elements/attrs/keyed edits are the S2b+ follow-on.
 type Patch = | Text(String)
 
-// The render contract a browser dom host backs (§3.1). A 33-byte marker id for this headless emit-proof; the
-// real `dom` WIT interface + capability is a platform follow-on (design §3.3).
+// The render contract a browser dom host backs (§3.1) — a marker id for the headless emit-proof.
 def render-contract() = (b"cadenza.dom.render..............." : Bytes)
+// The dom-event contract a click arrives on (§3.2) — the inbound half. A message on this contract is a user
+// click; any other contract is the initial/agent message. (A real dom WIT interface pins these; marker for now.)
+def click-contract() = (b"cadenza.dom.event.click" : Bytes)
 
-def on-message(_msg) =
-  { requests = [ request(render-contract(),
-                         Value.encode(Patch.Text("hello from a cadenza reducer")),
-                         b"render") ],
+// Emit a render effect carrying the patch value, then continue.
+def render(patch: Patch) =
+  { requests = [ request(render-contract(), Value.encode(patch), b"render") ],
     outcome = Outcome.Continue }
+
+// Fold a message → a render patch (the Elm `update`). A click renders "clicked"; anything else renders the
+// initial view. Branch on the message CONTRACT (Bytes-eq lowers; runtime String-eq is declined).
+def on-message(msg) =
+  (if msg.contract == click-contract() then render(Patch.Text("clicked"))
+   else render(Patch.Text("hello from a cadenza reducer")))
 
 export { on-message, on-response, on-notification }
