@@ -26,11 +26,11 @@
       expect = { status = 200,
                  body-contains = "getElementById('app')",
                  headers = [ { name = "content-type", value = "text/javascript" } ] } },
-    // The wasm asset routes serve the reducer/runtime COMPONENT bytes via blobs.get(ProgramHash). In THIS
-    // harness the two components are not seeded and the hashes are unsubstituted placeholder markers, so
-    // blobs.get misses -> 404 (pinning the route exists + the blobs-miss path). The LIVE deploy substitutes the
-    // real ProgramHashes + seeds the components into the CAS, so /reducer.wasm serves 200 application/wasm there.
-    { http = { method = "GET", path = "/reducer.wasm" },
+    // The AOT bundle-file routes serve each file's bytes via blobs.get(ProgramHash). In THIS harness the files
+    // are not seeded and the hashes are unsubstituted placeholder markers, so blobs.get misses -> 404 (pinning
+    // the route exists + the blobs-miss path). The LIVE deploy seeds the 8 bundle files + substitutes the 7
+    // markers, so this serves 200 text/javascript there (and the .core.wasm routes serve application/wasm).
+    { http = { method = "GET", path = "/browserOutpostApp/browserOutpostApp.js" },
       expect = { status = 404, body-contains = "not found" } },
     // An unmatched route denies 404 (the router's inline no-route branch).
     { http = { method = "GET", path = "/nope" },
