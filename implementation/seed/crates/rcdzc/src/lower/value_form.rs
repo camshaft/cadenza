@@ -343,10 +343,11 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 // 13 Map(k,v), 14 Float32, 15 Framed(head,[arg…],idx), 16 Spread[n][idx…] (a multi-payload variant's
 // tuple payload, rendered FLAT under the variant head).
 
-/// Build the shape descriptor bytes for a `Ty::Sum` result, wrapped in the outer `(: <value> <Type>)`
-/// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
-/// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
-/// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
+/// Build the shape descriptor bytes for a `Ty::Sum` (or nominal/collection/tuple/record) result — the
+/// input to the runtime `value-encode` op. The descriptor roots at the BARE value shape (value-codec
+/// migration: no `(: <value> <Type>)` ascription frame; decode by structure, not names). Handles a
+/// RECURSIVE sum: a sum decl already in the table is referenced by index (`Ref`), closing the cycle.
+/// `None` if any payload type has no renderable shape yet (a Float/Str/Bytes payload — the escape declines).
 /// Build a `Set`-ROOTED shape descriptor for `set-to-list`: the runtime `op_set_to_list` resolves the
 /// descriptor's ROOT and requires `Shape::Set(elem)` DIRECTLY (to order by the element shape), NOT the
 /// `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces. So encode the bare
@@ -407,12 +408,6 @@ pub fn bare_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>>
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
-        // A boxed sum. A MONOMORPHIC sum (`args: []`) wraps in `Named(<type name>, …)` — the bare-name
-        // `(: <value> <Type>)` frame (`(: (Neg unit) Sign)`). A GENERIC sum (`args` non-empty) must render
-        // its type ARGUMENTS too (`(: (Some "é") (Option String))`, NOT the bare `(: … Option)`), so it
-        // wraps in a PARAMETRIC `Framed(<type-node>, …)` frame built from the full type (`type_node_of`
-        // renders `(Option String)`), exactly as a `List`/`Map`/`Set` does. Without this a generic sum
-        // result dropped its type args at the boundary.
         // STRUCTURAL (value-codec migration): encode the bare inner sum value shape — no `(: value Type)`
         // Named/Framed root frame. Both a monomorphic and a generic sum drop the frame; the type token /
         // type-args were OBSERVABILITY only (decode is type-directed by the caller, never the embedded
@@ -421,45 +416,34 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let inner = builder.shape_of(db, ty)?;
             Some(builder.encode(inner))
         }
-        // A NOMINAL newtype (a recursive one that escapes): its `shape_of` ALREADY produces a
-        // `Named(<type name>, …)` root (the erased-tag frame), so encode it directly — wrapping again
-        // would double-name it. This is what carries the recursive newtype's OWN name to the host
-        // (`(: … Lst)`), where routing on the stripped inner sum would have named it `Option`.
+        // A NOMINAL newtype (a recursive one that escapes): its `shape_of` produces a transparent
+        // `Ref(inner)` (value-codec migration — the erased newtype IS its inner value, no `(: … Type)`
+        // frame), so encode it directly: it crosses as its bare inner value at every recursion level.
         crate::ty::Ty::Nominal { .. } => {
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
-        // A LIST/SET/MAP result: build the value shape, then wrap in a PARAMETRIC `Framed(<type-node>, …)`
-        // frame so the value form renders `(: (list …) (List <elem>))` etc. — the element/key/value types
-        // OBSERVABLE, matching the constant-collection value form. The type node is built RECURSIVELY from
-        // the full type (`type_node_of`), so a nested element type crosses too: `(List (List Int64))`,
-        // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
-        // recurses over nested collections, so the walker renders them; only the type node needed lifting.
+        // A LIST/SET/MAP result: the inner VALUE shape (`shape_of`) recurses over nested collections and the
+        // walker renders them; a nested element type still crosses structurally (`#list(#list(…))` etc.).
         crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
             // STRUCTURAL: bare `#list(…)` / `#set(…)` / `#map(…)` — no `(: value (List T))` frame.
             let inner = builder.shape_of(db, ty)?;
             Some(builder.encode(inner))
         }
-        // A RUNTIME-computed `BigInt`/`Rational` result: its value form is VARIABLE-length (a BigInt
-        // magnitude is however many bytes the value needs — the fixed-hole `runtime_value_form_template`
-        // cannot serve it), so it escapes via the SAME runtime `value-encode` walker as a collection. The
-        // runtime already renders `Shape::BigInt` (tag 17) / `Shape::Rational` as a `KIND_INT` leaf / a
-        // `{num,den}` record. Wrap in a `Framed(<type-node>, …)` frame so the value form is `(: N BigInt)`
-        // (the `Named` bare-name frame the constant escape uses), the type node observable.
+        // A RUNTIME-computed `BigInt`/`Rational` result: value form is VARIABLE-length (the fixed-hole
+        // `runtime_value_form_template` can't serve it), so it escapes via the runtime `value-encode` walker
+        // like a collection. The runtime renders `Shape::BigInt` (tag 17) as a `KIND_INT` leaf / `Rational`
+        // as a `{num,den}` record.
         crate::ty::Ty::BigInt | crate::ty::Ty::Rational => {
             // STRUCTURAL: bare `N` (BigInt) / `{num,den}` (Rational) leaf — no `(: N BigInt)` frame.
             let inner = builder.shape_of(db, ty)?;
             Some(builder.encode(inner))
         }
-        // A TUPLE/RECORD result whose value shape is renderable but which contains a VARIABLE-length element
-        // (a list/map/set, or a sum) — `runtime_value_form_template` returns `None` for it (no fixed-size
-        // static template), so it escapes via the same runtime `value-encode` walker as a collection. Wrap in
-        // a PARAMETRIC `Framed(<type-node>, …)` frame so the value form renders `(: (tuple …) (Tuple …))` /
-        // `(: (record …) (Record …))` with the element/field types observable. `shape_of` already recurses
-        // over the nested elements (a list element loops, a nested sum switches on its disc). A fixed-shape
-        // tuple/record (all scalar/byte/fixed-compound elements) still takes the cheaper static-template path
-        // (`runtime_value_form_template`), which the caller tries FIRST — this descriptor path is the fallback
-        // for the variable-shape case only.
+        // A TUPLE/RECORD result with a VARIABLE-length element (a list/map/set or sum) —
+        // `runtime_value_form_template` returns `None` (no fixed-size static template), so it escapes via the
+        // runtime `value-encode` walker like a collection. `shape_of` recurses over the nested elements. A
+        // fixed-shape tuple/record (all scalar/fixed-compound elements) takes the cheaper static-template
+        // path (tried FIRST by the caller); this descriptor path is the variable-shape fallback.
         crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
             // STRUCTURAL: bare `#tuple(…)` / `#record(…)` — no `(: value (Tuple …))` frame. (Variable-shape
             // fallback; the fixed-shape path in `runtime_value_form_template` is likewise bare now.)
@@ -468,115 +452,6 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         }
         _ => None,
     }
-}
-
-/// The RECURSIVE type node for a `Framed` frame's type position — mirrors `Ty::render_name` structurally
-/// so the runtime's `render_type_node` reproduces the same written type. A leaf (a scalar/nominal/nullary
-/// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
-/// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
-/// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
-///
-/// OBSOLETE post value-codec migration: the `(: value <type-node>)` frame is no longer emitted (structural
-/// encode — decode by structure, not names), so this has no live callers. Retained (`allow(dead_code)`) as
-/// the reference type-node shape in case a future observability feature needs it; a follow-up may remove it
-/// (and the `TypeNode` type) outright.
-#[allow(dead_code)]
-pub(super) fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Option<TypeNode> {
-    use crate::ty::Ty;
-    let leaf = |s: String| TypeNode {
-        head: s,
-        children: vec![],
-    };
-    Some(match ty {
-        Ty::Int(_)
-        | Ty::Bool
-        | Ty::Unit
-        | Ty::String
-        | Ty::Char
-        | Ty::Symbol
-        | Ty::BigInt
-        | Ty::Rational
-        | Ty::Float(_)
-        | Ty::Bytes => leaf(ty.render_name(ncx)),
-        Ty::List(e) => TypeNode {
-            head: "List".to_string(),
-            children: vec![type_node_of(e, ncx)?],
-        },
-        Ty::Set(e) => TypeNode {
-            head: "Set".to_string(),
-            children: vec![type_node_of(e, ncx)?],
-        },
-        Ty::Map(k, v) => TypeNode {
-            head: "Map".to_string(),
-            children: vec![type_node_of(k, ncx)?, type_node_of(v, ncx)?],
-        },
-        Ty::Tuple(elems) => {
-            let mut children = Vec::with_capacity(elems.len());
-            for e in elems.iter() {
-                children.push(type_node_of(e, ncx)?);
-            }
-            TypeNode {
-                head: "Tuple".to_string(),
-                children,
-            }
-        }
-        // A record renders as `(record (name Type) …)`: each field is itself a node `(name <type>)` — head
-        // = the field name, one child = the field's type node. `render_type_node` reproduces `(name Type)`.
-        Ty::Record(fields) => {
-            let mut children = Vec::with_capacity(fields.len());
-            for (k, t) in fields.iter() {
-                children.push(TypeNode {
-                    head: k.name.to_string(),
-                    children: vec![type_node_of(t, ncx)?],
-                });
-            }
-            TypeNode {
-                head: "record".to_string(),
-                children,
-            }
-        }
-        // A monomorphic sum renders as its bare name; a generic sum as `(Name arg…)`.
-        Ty::Sum { decl, args, .. } => {
-            let name = ncx.name_of(*decl)?.to_string();
-            if args.is_empty() {
-                leaf(name)
-            } else {
-                let mut children = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    children.push(type_node_of(a, ncx)?);
-                }
-                TypeNode {
-                    head: name,
-                    children,
-                }
-            }
-        }
-        // A monomorphic nominal renders as its bare name; a GENERIC nominal as `(Name arg…)` — INCLUDING its
-        // type-args, exactly like the generic-sum arm above. `Ty::Nominal` carries `args` (the sibling of
-        // `Ty::Sum::args`) and type-equality distinguishes nominals on `decl` AND `args` (`(Box Int64)` ≠
-        // `(Box String)`), so dropping the args would render two distinct types identically (bare `Box`) —
-        // a value-doc faithfulness loss. Baked at compile time from the fully-solved type, so the arg is
-        // always concrete (the runtime just reproduces the baked TypeNode). Was `leaf(name)` (args dropped),
-        // which diverged from the rust `doc_type_node` generic branch (#7709 `(Box Int64)`) + every other
-        // parametric arm here — the v-rust-backend proactive-audit finding, v-runtime ruling.
-        Ty::Nominal { decl, args, .. } => {
-            let name = ncx.name_of(*decl)?.to_string();
-            if args.is_empty() {
-                leaf(name)
-            } else {
-                let mut children = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    children.push(type_node_of(a, ncx)?);
-                }
-                TypeNode {
-                    head: name,
-                    children,
-                }
-            }
-        }
-        // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
-        _ => return None,
-    })
 }
 
 /// Append `v` to `out` as an unsigned LEB128 varint — the count/length/index encoding the shape-table
@@ -635,36 +510,15 @@ pub(super) enum ShapeNode {
     List(u32),
     Record(Vec<(String, u32)>),
     Sum(Vec<(String, u32)>),
-    /// OBSOLETE post value-codec migration: the compiler no longer CONSTRUCTS a `Named` root — nominal
-    /// newtypes/monomorphic sums encode bare (see `shape_of`/`sum_shape_descriptor`). Retained
-    /// (`allow(dead_code)`) so the descriptor tag-10 format stays representable (the runtime still DECODES
-    /// tag 10 for backward-compat + frame-tolerance); a follow-up may remove it. The `(: value Type)` frame
-    /// is no longer emitted (decode by structure, not names).
-    #[allow(dead_code)]
-    Named(String, u32),
     Ref(u32),
     Set(u32),
     Map(u32, u32),
-    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. OBSOLETE post
-    /// value-codec migration: the compiler no longer CONSTRUCTS `Framed` (collections/generic-sums encode
-    /// bare); retained (`allow(dead_code)`) so descriptor tag-15 stays representable (runtime still decodes
-    /// it for backward-compat). A follow-up may remove it.
-    #[allow(dead_code)]
-    Framed(TypeNode, u32),
     /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
     /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
     /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
     /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
     /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
-}
-
-/// A compile-time-built TYPE node for a `Framed` frame's type position, written to the descriptor wire as
-/// `[ head ][ n_children ]( TypeNode )*n` and rebuilt+rendered by the runtime's `render_type_node`. A leaf
-/// (a scalar/nominal) has no children; `(List Int64)` = head `List`, one child `Int64`; nests arbitrarily.
-pub(super) struct TypeNode {
-    head: String,
-    children: Vec<TypeNode>,
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum`/`Ty::Nominal` by its full INSTANTIATION (decl + a
@@ -950,9 +804,9 @@ impl ShapeTableBuilder {
             // only in the solved `Ty::Qty`), so its RUNTIME SHAPE is exactly its inner's shape — peel `Ty::Qty`
             // to the inner and recurse. This is what lets a quantity be an element of a compound Map/Set KEY (a
             // `(List (Qty Int64 meter))` / `(Tuple (Qty …) …)` key): the key comparator/hasher canonicalizes
-            // on the erased magnitude, matching how a bare flat `(Qty …)` key already hashes by its inner. The
-            // VALUE-render frame (`type_node_of`) still declines a bare Qty element (the unit-labelled type node
-            // is a later slice), so this newly enables only the descriptor/key path, not a Qty value-render.
+            // on the erased magnitude, matching how a bare flat `(Qty …)` key already hashes by its inner.
+            // (Qty VALUE-rendering — the unit-labelled surface — is a later slice; this enables the
+            // descriptor/key path only.)
             Ty::Qty { inner, .. } => self.shape_of(db, inner)?,
             // Float payload rendering is a later slice — decline (the escape falls through). Str/Bytes are
             // supported (→ `ShapeNode::Str`/`Bytes`, above); the runtime `value-encode` renders their leaves.
@@ -1008,11 +862,6 @@ impl ShapeTableBuilder {
                         leb(&mut d, *i as u64);
                     }
                 }
-                ShapeNode::Named(n, i) => {
-                    d.push(10);
-                    name(&mut d, n);
-                    leb(&mut d, *i as u64);
-                }
                 ShapeNode::Ref(i) => {
                     d.push(11);
                     leb(&mut d, *i as u64);
@@ -1025,21 +874,6 @@ impl ShapeTableBuilder {
                     d.push(13); // matches the runtime `decode_shape` tag 13 = Map
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
-                }
-                ShapeNode::Framed(type_node, i) => {
-                    // recursive TypeNode wire: [ head ][ n_children ]( TypeNode )*n — the runtime's
-                    // `decode_type_node` mirrors this depth-first walk.
-                    fn write_type_node(out: &mut Vec<u8>, tn: &TypeNode) {
-                        leb(out, tn.head.len() as u64);
-                        out.extend_from_slice(tn.head.as_bytes());
-                        leb(out, tn.children.len() as u64);
-                        for c in &tn.children {
-                            write_type_node(out, c);
-                        }
-                    }
-                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
-                    write_type_node(&mut d, type_node);
-                    leb(&mut d, *i as u64);
                 }
                 ShapeNode::Spread(idxs) => {
                     d.push(16); // matches the runtime `decode_shape` tag 16 = Spread
