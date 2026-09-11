@@ -1,0 +1,17 @@
+// A request-READING handler that echoes the decoded request's BODY bytes verbatim — pins that the forward
+// request-codec's `body` field (the gateway reads the request body and encodes it into the request value,
+// boot.rs encode_request) round-trips into a guest via `Value.decode(_ : Request)`. Complements http-echo
+// (method) and http-echo-query (query): the request body carries the arbitrary payload a handler processes,
+// and before this nothing proved a guest reads the exact request-body bytes back (echo-direct's POST sends a
+// body but the handler only inspects the method). `r.body` is already `Bytes`, so it echoes directly.
+//
+// Composed from the shared libs (see the `libs` manifest beside this file), like http-echo.
+import { Request, respond } from "http-lib"
+import { on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(r)) => respond(200, [], r.body)
+   | None => respond(400, [], b"undecodable http-request"))
+
+export { on-message, on-response, on-notification }
