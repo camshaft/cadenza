@@ -1,0 +1,3 @@
+implementation/seed/crates/cdz-platform/contracts/kernel/timer.cdz
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-http-conformance/programs/lib/http-lib.cdz

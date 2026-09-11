@@ -1,0 +1,25 @@
+// A FIRE-AFTER TIMER handler (DESIGN-http-outpost §2/§6; gateway timer wired in #8748): on each request it
+// ARMS a fire-after timer by emitting ONE request on the kernel `timer` contract carrying an
+// `Envelope.FireAfter(duration_ns)`, and CONTINUES. The gateway's resolver recognizes the timer contract, arms
+// a detached timer under the request's continuation token, and — after the duration — WAKES the handler with a
+// `Fired` event AS the response (Ok, correlated by that token). The handler folds the wake into a 200. This is
+// a REAL gateway-armed timer (LOCAL-inject — no control-link frames), pairing with the deadline/timeout path.
+//
+// Composed from the shared libs: the `Envelope` type + timer descriptor from the kernel `timer` contract,
+// reducer-lib's `request` builder (the arm is an ordinary request; the wake correlates via its continuation
+// token) + inert on-notification, and `respond` from `http-lib`.
+import { Envelope, descriptor as timer-descriptor } from "timer"
+import { respond } from "http-lib"
+import { Outcome, Error, request, on-notification } from "reducer-lib"
+
+// 100ms fire-after — the gateway wakes the handler ~100ms later with the Fired event.
+def on-message(_msg) =
+  { requests = [ request(timer-descriptor().id, Value.encode(Envelope.FireAfter(100000000)), b"timer-arm") ],
+    outcome = Outcome.Continue }
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  (match resp.answer with
+   | Ok(_) => respond(200, [], b"FIRED")
+   | Err(_) => respond(504, [], b"timer never fired"))
+
+export { on-message, on-response, on-notification }
