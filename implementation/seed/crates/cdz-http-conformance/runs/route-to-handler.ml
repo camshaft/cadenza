@@ -16,8 +16,13 @@
     ],
   },
   requests = [
+    // The dispatched handler's content-type must SURVIVE the router's on-response fold back to the socket —
+    // a distinct path from drive-root-router's DIRECT header forwarding (which pins the same text/plain on
+    // http-hello answering directly). Pins that header forwarding through the router fold isn't dropped/mangled.
     { http = { method = "GET", path = "/" },
-      expect = { status = 200, body = b"hello from a wasm handler" } },
+      expect = { status = 200,
+                 body = b"hello from a wasm handler",
+                 headers = [ { name = "content-type", value = "text/plain" } ] } },
     { http = { method = "GET", path = "/nope" },
       expect = { status = 404, body = b"not found" } },
   ],
