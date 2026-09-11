@@ -20,6 +20,6 @@
   },
   requests = [
     { http = { method = "POST", path = "/", body-nonce = true },
-      expect = { status = 502 } },
+      expect = { status = 502, body-contains = "absent from CAS" } },
   ],
 }
