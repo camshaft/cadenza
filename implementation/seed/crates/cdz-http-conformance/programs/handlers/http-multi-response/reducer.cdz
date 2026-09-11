@@ -1,0 +1,17 @@
+// A handler that answers a MULTI-header, non-200 response — pins the REVERSE (response) codec: a status the
+// handler CHOOSES (201, not 200 / not a deny terminal) + a MULTI-element List(Header) where EVERY header must
+// forward, not just the first. drive-root-router pins ONE response header on a 200; a single-header 200 can't
+// catch a first-header-only bug or a hardcoded-200, so this scenario pins those reverse-codec invariants.
+//
+// Mirrors http-hello's shape (ignores the request, answers purely in on-message); see the `libs` manifest.
+import { respond } from "http-lib"
+import { Header } from "http-response"
+import { on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  respond(201,
+          [ Header.Header({ name = "content-type", value = "text/plain" }),
+            Header.Header({ name = "x-conformance", value = "multi-header-ok" }) ],
+          b"created")
+
+export { on-message, on-response, on-notification }
