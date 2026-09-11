@@ -85,6 +85,18 @@ def control-send(payload: Bytes) =
                    deadlineNanos = (None : Option(UInt64)) } ],
     outcome = Outcome.Continue }
 
+// Like `control-send` but with a per-request DEADLINE (relative nanoseconds): if no answer arrives within
+// `deadline-nanos`, the gateway resolver injects `Err(Error.Timeout)` as the answer (it arms the deadline BEFORE
+// classifying the effect, so this fires regardless — the §1/§2 deadline behavior). The handler folds the answer
+// in on-response. Used to exercise the timeout path: emit this to a control server that never replies.
+def control-send-deadline(payload: Bytes, deadline-nanos: UInt64) =
+  { requests = [ { contract = control-send-contract(),
+                   payload = payload,
+                   token = b"await-deadline",
+                   deadlineNanos = (Some(deadline-nanos) : Option(UInt64)) } ],
+    outcome = Outcome.Continue }
+
 export { Method.*, Request.*, Route.*,
          dispatch-contract, http-response-schema, deny-schema, control-send-contract,
-         no-requests, method-code, respond-encoded, respond, respond-routes, deny, dispatch, control-send }
+         no-requests, method-code, respond-encoded, respond, respond-routes, deny, dispatch,
+         control-send, control-send-deadline }
