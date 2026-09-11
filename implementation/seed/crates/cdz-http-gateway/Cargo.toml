@@ -64,8 +64,9 @@ cdz-cas-http = { path = "../cdz-cas-http" }
 cdz-http-protocol = { path = "../cdz-http-protocol" }
 # The native HTTP edge (P1c-2, src/edge.rs): a hyper HTTP/1 server. hyper is runtime-agnostic (driven via
 # hyper-util's TokioIo); http-body-util supplies the `Full` response body + `BodyExt::collect` for the
-# request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection).
-tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync"] }
+# request body; tokio is the async runtime (net for the listener, rt to spawn a task per connection, time
+# for the body-read idle timeout that floors a slowloris/stalled upload with 408).
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "sync", "time"] }
 # `server`/`http1` back the native edge; `client` is unioned by the dev-deps line for the test HTTP clients
 # (the live-socket e2e tests dial the edge). The HTTP CAS client now lives in the shared `cdz-cas-http` crate
 # (its own hyper dep), not here — this crate no longer dials out on its own in non-test code.
