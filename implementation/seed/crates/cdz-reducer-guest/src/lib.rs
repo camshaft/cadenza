@@ -13,7 +13,10 @@
 //! Targets so far: `rcdzc.compile` (feature `target-rcdzc`). `sexpr`/`ml` parser targets add their own
 //! features + `cadenza-syntax` dep later (B6/B7) — new features, NOT new crates.
 
-pub mod request_wire;
+/// The rcdzc `compile` contract codec — request/response as CANONICAL typed values
+/// (`CompileRequest`/`CompileResult`, the encoding `Value.decode`/`Value.encode` speak; used by the rcdzc
+/// target; always compiled so its round-trip test guards the codec under any feature).
+pub mod compile_contract;
 
 /// The parser targets' `{sexpr,ml}.parse` contract codec — request/response as CANONICAL typed values
 /// (`ParseRequest`/`ParseResult`, the encoding `Value.decode`/`Value.encode` speak; used by `sexpr`/`ml`;

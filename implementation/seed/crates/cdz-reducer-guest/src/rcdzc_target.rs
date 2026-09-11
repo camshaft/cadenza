@@ -5,8 +5,7 @@
 //! guest's `on-message` wraps — the returned bytes become the `close(closed{schema, reason})` reason (B3
 //! wires the wit-bindgen export + componentization around this).
 
-use crate::request_wire::decode_compile_request;
-use cadenza_compile_abi::encode_compile_output;
+use crate::compile_contract::{decode_compile_request, encode_compile_result};
 use rcdzc::Target;
 
 /// Handle a compile request. Decodes the kinded inputs (`message.payload`), compiles to a wasm component
@@ -17,14 +16,14 @@ use rcdzc::Target;
 pub fn handle(request_payload: &[u8]) -> Vec<u8> {
     let inputs = decode_compile_request(request_payload);
     let out = rcdzc::compile(&inputs, &[Target::Wasm]);
-    encode_compile_output(&out)
+    encode_compile_result(&out.artifacts, &out.diagnostics)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request_wire::encode_compile_request;
-    use cadenza_compile_abi::{decode_compile_output, Artifact};
+    use crate::compile_contract::{decode_compile_result, encode_compile_request};
+    use cadenza_compile_abi::{Artifact, Severity};
 
     // Bridge source -> AST bytes the way the platform would feed a compile request (via cadenza-syntax's
     // codec, a dev-dep — exactly as rcdzc-wasm's tests do).
@@ -39,13 +38,12 @@ mod tests {
         // wasm component. This is the e2e-in-native form of the run round-trip (the wasm round-trip is B3).
         let ast = ast_of("(do (def (main) 42) (export main))");
         let request = encode_compile_request(&[Artifact::new(Artifact::KIND_AST, "main", ast)]);
-        let out = decode_compile_output(&handle(&request));
-        let component = out.artifact("component").unwrap_or_else(|| {
-            panic!(
-                "expected a component artifact; diags: {:?}",
-                out.diagnostics
-            )
-        });
+        let (arts, diags) = decode_compile_result(&handle(&request));
+        let component = arts
+            .iter()
+            .find(|a| a.kind == "component")
+            .map(|a| &a.bytes)
+            .unwrap_or_else(|| panic!("expected a component artifact; diags: {diags:?}"));
         assert_eq!(
             &component[..4],
             b"\0asm",
@@ -59,13 +57,13 @@ mod tests {
         // not a trap — the caller reads the failure from the decoded output.
         let ast = ast_of("(do (def (main) undefined-name) (export main))");
         let request = encode_compile_request(&[Artifact::new(Artifact::KIND_AST, "main", ast)]);
-        let out = decode_compile_output(&handle(&request));
+        let (arts, diags) = decode_compile_result(&handle(&request));
         assert!(
-            out.artifact("component").is_none(),
+            arts.iter().all(|a| a.kind != "component"),
             "a bad program yields no component"
         );
         assert!(
-            out.has_error(),
+            diags.iter().any(|d| d.severity == Severity::Error),
             "a bad program yields an error-severity diagnostic"
         );
     }
