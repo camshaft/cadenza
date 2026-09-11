@@ -95,6 +95,10 @@ pub struct HttpRequest {
     /// (e.g. a lib/contract of a reducer-world guest's compile closure) to `/parse` without embedding + drifting
     /// its text in the run-spec. Takes precedence over `body` (but not `compile_request`).
     pub body_source: Option<String>,
+    /// A request body GENERATED AT SEND TIME as this many filler bytes — so a scenario can POST a large body
+    /// (e.g. over the gateway's body ceiling → 413) without embedding a huge literal in the run-spec. Takes
+    /// precedence over `body` (but not `compile_request` / `body_source`).
+    pub body_fill: Option<u64>,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -298,6 +302,10 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(bs) => Some(value::read_str(arenas, bs)?),
         None => None,
     };
+    let body_fill = match value::record_field(arenas, http, "body-fill") {
+        Some(bf) => Some(value::read_uint(arenas, bf)?),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
@@ -305,6 +313,7 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         body,
         compile_request,
         body_source,
+        body_fill,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
