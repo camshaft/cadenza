@@ -100,6 +100,12 @@ pub struct HttpRequest {
     /// #8787) without embedding a huge literal in the run-spec. Takes precedence over `body` (but not
     /// `compile_request` / `body_source`).
     pub body_fill: Option<u64>,
+    /// Send this request over a RAW socket declaring `Content-Length: <n>` (under the body ceiling) but then send
+    /// NO body bytes + HOLD the connection open — a stalled/slowloris client. The gateway's body-read IDLE
+    /// timeout should floor it (408) rather than wait forever. The driver reads the response with a budget well
+    /// above the timeout. When set, the high-level client + other `body*` fields are bypassed; only `method` /
+    /// `path` (+ this) are used.
+    pub stalled_content_length: Option<u64>,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -307,6 +313,10 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(bf) => Some(value::read_uint(arenas, bf)?),
         None => None,
     };
+    let stalled_content_length = match value::record_field(arenas, http, "stalled-content-length") {
+        Some(s) => Some(value::read_uint(arenas, s)?),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
@@ -315,6 +325,7 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         compile_request,
         body_source,
         body_fill,
+        stalled_content_length,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
