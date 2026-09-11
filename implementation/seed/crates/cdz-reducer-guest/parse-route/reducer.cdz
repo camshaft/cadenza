@@ -1,0 +1,73 @@
+// The PARSE HTTP route handler (reducer-targets B10; operator 2026-09-11 multi-module design, relayed by
+// v-hivemind): POST a source MODULE, parse it to an AST, publish the AST to the content-addressed store, and
+// answer 200 with the AST's ProgramHash. The content-addressed half of multi-module /compile: a client parses
+// each module here to get its ast-hash, then calls the (reshaped) compile endpoint with a {module-name ->
+// ast-hash} map + an entrypoint. A Cadenza reducer-world guest: it CALLS `run` (to delegate to a parser build
+// guest, referenced by baked ProgramHash) and `blobs` (to publish the AST); NO reducer spawning.
+//
+// SYNTAX SWITCH (operator 2026-09-11 "parse sexpr as well" / "branch on content-type"): the request's
+// Content-Type selects the parser — `application/sexpr` runs the sexpr-parser guest, anything else (default)
+// runs the ml-parser guest. The two parsers share the SAME ParseRequest/ParseResult contract (the sexpr + ml
+// parse contracts are type-identical), and the guest dispatches by its OWN cargo feature, not by matching
+// msg.contract — so passing the ml.parse contract-id for both runs is a routing tag the callee ignores. (A
+// single unified cdz-platform.parse contract-id is the cleaner end-state — the A option of the pending design
+// fork; this shared-id form delivers sexpr+ml now without the sexpr/ml contract co-import collision.)
+//
+// The parser ProgramHashes are INJECTED at build time (operator 2026-09-11): the flake generates a tiny
+// `guest-hashes` module (`ml-parser-hash`/`sexpr-parser-hash` defs holding the reducer-guest-{ml,sexpr} CAS
+// hashes) and adds it to this guest's libs — so the handler IMPORTS the hashes rather than carrying textual
+// placeholders a rewrite has to patch. The handler source stays pristine + content-address-agnostic.
+//
+// Strong contracts: the parser hop is the canonical ml.parse ParseRequest/ParseResult (Value.encode/decode).
+// On a parse problem answers 400 WITH the diagnostics (render-parse-diags) — never a bare 4xx.
+import { Request, respond } from "http-lib"
+import { Header } from "http-response"
+import { descriptor as ml-parse-desc, ParseRequest, ParseResult, ParseDiagnostic } from "ml-parse"
+import { Error, on-response, on-notification } from "reducer-lib"
+import { ml-parser-hash, sexpr-parser-hash } from "guest-hashes"
+
+// Does the request ask for the s-expression syntax? `Content-Type: application/sexpr` selects the sexpr
+// parser; anything else (or absent) defaults to ML. (Header names arrive normalized lowercase from the edge.)
+def wants-sexpr(headers: List(Header)) -> Bool =
+  match headers with
+  | [] => false
+  | [h, .. rest] =>
+    (match h with
+     | Header.Header(x) =>
+       if (x.name == "content-type") and (x.value == "application/sexpr") then true
+       else wants-sexpr(rest))
+
+// Render the parse diagnostics (byte-span located) as a newline-joined message body — a 400 tells the caller
+// exactly what was wrong with the source, not a bare "parse diagnostics".
+def render-parse-diags(ds: List(ParseDiagnostic)) -> String =
+  match ds with
+  | [] => ""
+  | [d, .. rest] =>
+    (match d with
+     | ParseDiagnostic.ParseDiagnostic(x) =>
+       String.concat(x.message, String.concat("\n", render-parse-diags(rest))))
+
+def on-message(msg) =
+  host run in
+    host blobs in
+      (match (Value.decode(msg.payload) : Option(Request)) with
+       | Some(Request.Request(r)) =>
+         (match String.from-bytes(r.body) with
+          | None => respond(400, [], b"request body is not valid UTF-8")
+          | Some(source) =>
+            // Pick the parser guest by Content-Type; both share the ml.parse contract-id (the callee ignores it).
+            (let parser = if wants-sexpr(r.headers) then sexpr-parser-hash() else ml-parser-hash() in
+             (match (run.run(parser, ml-parse-desc().id,
+                             Value.encode(ParseRequest.Parse(source))) : Result(Bytes, Error)) with
+              | Ok(parse-bytes) =>
+                (match (Value.decode(parse-bytes) : Option(ParseResult)) with
+                 | Some(ParseResult.Parsed(pr)) =>
+                   (match pr.diagnostics with
+                    // A clean parse -> publish the AST to the CAS + return its ProgramHash.
+                    | [] => (let h = blobs.put(pr.ast) in respond(200, [], h))
+                    | [_, .. _] => respond(400, [], String.to-bytes(render-parse-diags(pr.diagnostics))))
+                 | None => respond(500, [], b"undecodable ParseResult"))
+              | Err(_e) => respond(500, [], b"parser run failed"))))
+       | None => respond(400, [], b"undecodable http-request"))
+
+export { on-message, on-response, on-notification }
