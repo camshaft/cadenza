@@ -2893,36 +2893,64 @@
         httpConformanceProgramsDir = ./implementation/seed/crates/cdz-http-conformance/programs;
         # program name → its compiled guest derivation ($out is the stripped .wasm file). Each guest composes
         # its `libs` (reducer-lib + http-lib, closed transitively) against the reducer-world witWorld artifact.
-        httpConformanceProgramsByName = builtins.listToAttrs (builtins.concatMap
-          (category:
-            let categoryDir = httpConformanceProgramsDir + "/${category}";
-            in map
-              (name: {
-                inherit name;
-                value =
-                  let
-                    guestDir = categoryDir + "/${name}";
-                    libsFile = guestDir + "/libs";
-                    libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
-                      (builtins.filter (s: s != "")
-                        (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
-                    multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
-                      libs = closeLibs libLines;
-                      entry = "reducer";
-                    };
-                  in
-                  mkCadenzaGuest ({
-                    pname = "cdz-http-conformance-${name}";
-                    src = guestDir + "/reducer.cdz";
-                    componentName = "cadenza:platform/guest";
-                  } // cadenzaWorldArgs "reducer-world" // multiFileArgs);
-              })
+        httpConformanceProgramsByName =
+          let
+            base = builtins.listToAttrs (builtins.concatMap
+              (category:
+                let categoryDir = httpConformanceProgramsDir + "/${category}";
+                in map
+                  (name: {
+                    inherit name;
+                    value =
+                      let
+                        guestDir = categoryDir + "/${name}";
+                        libsFile = guestDir + "/libs";
+                        libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
+                          (builtins.filter (s: s != "")
+                            (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
+                        multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
+                          libs = closeLibs libLines;
+                          entry = "reducer";
+                        };
+                      in
+                      mkCadenzaGuest ({
+                        pname = "cdz-http-conformance-${name}";
+                        src = guestDir + "/reducer.cdz";
+                        componentName = "cadenza:platform/guest";
+                      } // cadenzaWorldArgs "reducer-world" // multiFileArgs);
+                  })
+                  (builtins.filter
+                    (n: (builtins.readDir categoryDir).${n} == "directory")
+                    (builtins.attrNames (builtins.readDir categoryDir))))
               (builtins.filter
-                (n: (builtins.readDir categoryDir).${n} == "directory")
-                (builtins.attrNames (builtins.readDir categoryDir))))
-          (builtins.filter
-            (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
-            (builtins.attrNames (builtins.readDir httpConformanceProgramsDir))));
+                (c: (builtins.readDir httpConformanceProgramsDir).${c} == "directory")
+                (builtins.attrNames (builtins.readDir httpConformanceProgramsDir))));
+            # DEPLOY-TEMPLATING (operator-mandated baked-router shape): the root-router-baked source ships
+            # PLACEHOLDER handler markers; the real deploy tooling replaces them with the target handlers' REAL
+            # compiled ProgramHashes before `cdz compile`. Reproduce that here — compute http-hello/http-echo
+            # hashes via `cdz-http-programhash --escaped` (the deploy tool), substitute the placeholders in the
+            # baked router's source, then compile the templated program. So its dispatch targets the SEEDED
+            # handlers by hash (route → handler → response), exactly the production flow (a route change =
+            # recompile with the new table + push the new program hash). Overrides the placeholder build below.
+            bakedDir = httpConformanceProgramsDir + "/routers/root-router-baked";
+            bakedLibLines = builtins.filter (s: s != "")
+              (pkgs.lib.splitString "\n" (builtins.readFile (bakedDir + "/libs")));
+            bakedTemplatedSrc = pkgs.runCommand "root-router-baked-templated"
+              { nativeBuildInputs = [ pkgs.python3 ]; } ''
+              hello=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${base."http-hello"})
+              echoh=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${base."http-echo"})
+              mkdir -p "$out"
+              python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]); assert sys.argv[2] in s and sys.argv[3] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${bakedDir}/reducer.cdz" "$hello" "$echoh" > "$out/reducer.cdz"
+            '';
+            bakedTemplated = mkCadenzaGuest ({
+              pname = "cdz-http-conformance-root-router-baked";
+              src = bakedTemplatedSrc + "/reducer.cdz";
+              componentName = "cadenza:platform/guest";
+              libs = closeLibs bakedLibLines;
+              entry = "reducer";
+            } // cadenzaWorldArgs "reducer-world");
+          in
+          base // { "root-router-baked" = bakedTemplated; };
         httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
 
         cdzHttpGatewayBin =
