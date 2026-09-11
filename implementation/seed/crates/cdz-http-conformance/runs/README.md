@@ -38,6 +38,8 @@ A record with two fields (read by name; order-independent):
   - `{ control = { prime-reply = { match-path = "…"?, reply = b"…" } } }` — prime the mock to answer a
     handler's `control.send`: when a `ControlUp` whose path matches `match-path` (absent ⇒ any) arrives, the
     mock replies a correlation-matched `ControlDown` carrying `reply`. Set it before the request that sends.
+  - `{ control = { drop-control = true } }` — close the gateway's control-ws server-side, forcing it to
+    REDIAL (reconnect/resilience testing; the mock re-ships the config on reconnect).
 
 ### `http` request fields
 
@@ -98,6 +100,8 @@ Effect vocabulary + routing:
 - `cas-auth-failure` — a handler `blobs.put` with a WRONG control-shipped CAS write credential (config
   `cas-write-credential`): the CAS rejects the write (401) but the infallible-shaped `blobs.put` WIT SWALLOWS it, so
   it surfaces DOWNSTREAM — the published (unique) CasRef hash is absent → the gateway floors 502 (§8-grow auth failure).
+- `reconnect` — a `drop-control` closes the gateway's control link → it must REDIAL (#8741) + recover: a
+  baseline GET / → 200, then after the drop a retried GET / → 200 (a control blip doesn't break the data plane).
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.

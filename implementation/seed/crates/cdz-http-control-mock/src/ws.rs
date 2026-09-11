@@ -42,6 +42,11 @@ pub fn push_to(sessions: &Sessions, session: &Bytes, frame: Bytes) -> bool {
         .is_some_and(|tx| tx.send(frame).is_ok())
 }
 
+/// A distinguished outbound-channel marker that tells [`run_session`] to CLOSE its ws (admin `DropControl`).
+/// It is never a valid tagged `ControlFrame` (which the codec prefixes with a frame-id tag), so it can't
+/// collide with a real pushed frame — `run_session` intercepts it before the socket write.
+pub const CLOSE_SENTINEL: &[u8] = b"\x00\x00cdz-mock-control-close\x00\x00";
+
 /// Broadcast a frame's bytes to every connected session (a live-swap `ControlConfig`).
 pub fn broadcast(sessions: &Sessions, frame: Bytes) {
     for tx in sessions.lock().expect("sessions mutex poisoned").values() {
@@ -118,6 +123,10 @@ async fn run_session(
                 Some(Err(_)) => break,
             },
             outbound = rx.recv() => match outbound {
+                // A server-initiated CLOSE (admin `DropControl`): break the loop → drop the ws → the gateway
+                // sees the control link drop + redials. The sentinel is a distinguished, never-a-real-frame
+                // marker pushed onto the same outbound channel (so it serializes with normal pushes).
+                Some(frame) if frame.as_ref() == CLOSE_SENTINEL => break,
                 Some(frame) => {
                     // tungstenite 0.24 `Message::Binary` is `Vec<u8>`; the frame is `Bytes`.
                     if sink.send(Message::Binary(frame.to_vec())).await.is_err() {
