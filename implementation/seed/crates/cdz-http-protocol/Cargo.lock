@@ -23,11 +23,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadenza-value"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "cadenza-ast",
+]
+
+[[package]]
 name = "cdz-http-protocol"
 version = "0.0.0"
 dependencies = [
  "bytes",
  "cadenza-ast",
+ "cadenza-value",
  "cdz-str",
 ]
 
