@@ -10,6 +10,7 @@
 //! ```text
 //! cdz-contract hash <dir> [--cdz <path>] [--out <file>] [--lib <lib.cdz>]…
 //! cdz-contract id <file.cdz> [--cdz <path>] [--lib <lib.cdz>]…
+//! cdz-contract declaration <file.cdz> [--cdz <path>] [--lib <lib.cdz>]…
 //! cdz-contract blob <file>
 //! ```
 //!
@@ -39,7 +40,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Error::Usage(msg)) => {
             eprintln!(
-                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>] [--lib <lib.cdz>]...\n       cdz-contract id <file.cdz> [--cdz <path>] [--lib <lib.cdz>]...\n       cdz-contract blob <file>"
+                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>] [--lib <lib.cdz>]...\n       cdz-contract id <file.cdz> [--cdz <path>] [--lib <lib.cdz>]...\n       cdz-contract declaration <file.cdz> [--cdz <path>] [--lib <lib.cdz>]...\n       cdz-contract blob <file>"
             );
             ExitCode::from(2)
         }
@@ -69,6 +70,7 @@ fn run(args: &[String]) -> Result<(), Error> {
     match args.first().map(String::as_str) {
         Some("hash") => hash(parse_hash(&args[1..])?),
         Some("id") => id(parse_id(&args[1..])?),
+        Some("declaration") => declaration(parse_id(&args[1..])?),
         Some("blob") => blob(&args[1..]),
         Some(other) => Err(Error::Usage(format!("unknown subcommand `{other}`"))),
         None => Err(Error::Usage("no subcommand given".into())),
@@ -129,6 +131,41 @@ fn parse_id(args: &[String]) -> Result<IdArgs, Error> {
 fn id(args: IdArgs) -> Result<(), Error> {
     let (_name, id) = compile_run_descriptor(&args.cdz, &args.file, &args.libs)?;
     println!("{id}");
+    Ok(())
+}
+
+/// `cdz-contract declaration <file.cdz> [--lib <lib.cdz>]…` — write the RAW canonical declaration bytes of the
+/// contract in `<file>` to stdout (binary, no trailing newline). These are the exact bytes the contract-id is
+/// the hash of (`0x01 ++ blake3(declaration)`), read straight off the descriptor's self-describing
+/// `declaration` field (the guest's own const-folded `Ast.encode((contract …))`) — so the deploy/pin step can
+/// store a contract's declaration in the CAS keyed by its `ContractId`. As a guard, the read-back bytes are
+/// re-hashed and checked against the descriptor's `id`. Exit 1 if `<file>` is not a runnable contract or its
+/// descriptor carries no `declaration` field (an old binding predating the field).
+fn declaration(args: IdArgs) -> Result<(), Error> {
+    let value = compile_run_descriptor_value(&args.cdz, &args.file, &args.libs)?;
+    let bytes = cdz_contract::declaration_from_descriptor(&value).ok_or_else(|| {
+        Error::Failed(format!(
+            "the descriptor() of {} carries no `declaration` field (regenerate against the current contract-id lib)",
+            args.file.display()
+        ))
+    })?;
+    // The contract-id IS `0x01 ++ blake3(declaration)`, so the read-back bytes MUST hash to the descriptor's
+    // id — a self-check that the emitted bytes are the ones the id addresses.
+    let (_name, id) = cdz_contract::id_name_from_descriptor(&value).ok_or_else(|| {
+        Error::Failed(format!(
+            "the descriptor() of {} is not a contract descriptor record",
+            args.file.display()
+        ))
+    })?;
+    if cdz_contract::Hash::of(cdz_contract::HashTag::Contract, &bytes) != id {
+        return Err(Error::Failed(format!(
+            "declaration bytes of {} do not hash to its contract-id (declaration/id mismatch)",
+            args.file.display()
+        )));
+    }
+    std::io::stdout()
+        .write_all(&bytes)
+        .map_err(|e| Error::Failed(format!("writing declaration bytes: {e}")))?;
     Ok(())
 }
 
@@ -259,11 +296,11 @@ fn collect_cdz(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
 /// (`cadenza_ast::codec::decode`) and the id + name read out ([`cdz_contract::id_name_from_descriptor`]). A
 /// spawn failure, a non-zero exit from either `cdz`, an undecodable doc, or a value that is not a descriptor
 /// record is a hard error naming the source (a `.cdz` under the hashed dir must be a runnable contract).
-fn compile_run_descriptor(
+fn compile_run_descriptor_value(
     cdz: &str,
     src: &Path,
     libs: &[PathBuf],
-) -> Result<(String, cdz_contract::Hash), Error> {
+) -> Result<cadenza_ast::ast::Arenas, Error> {
     let src_str = src.to_str().ok_or_else(|| {
         Error::Failed(format!(
             "contract path {} is not valid UTF-8",
@@ -326,15 +363,26 @@ fn compile_run_descriptor(
         )));
     }
 
-    // 3) Decode the descriptor value form and read (name, contract-id) out of it.
-    let value = cadenza_ast::codec::decode(&ran.stdout).ok_or_else(|| {
+    // 3) Decode the descriptor value form; the caller reads whichever field(s) it needs out of it.
+    cadenza_ast::codec::decode(&ran.stdout).ok_or_else(|| {
         Error::Failed(format!(
             "descriptor() of {src_str} did not emit a decodable value form"
         ))
-    })?;
+    })
+}
+
+/// A contract's declared **name** and its [`contract-id`](cdz_contract::contract_id), read from its
+/// `descriptor()` return value via [`compile_run_descriptor_value`].
+fn compile_run_descriptor(
+    cdz: &str,
+    src: &Path,
+    libs: &[PathBuf],
+) -> Result<(String, cdz_contract::Hash), Error> {
+    let value = compile_run_descriptor_value(cdz, src, libs)?;
     cdz_contract::id_name_from_descriptor(&value).ok_or_else(|| {
         Error::Failed(format!(
-            "the descriptor() of {src_str} is not a contract descriptor record (id + name)"
+            "the descriptor() of {} is not a contract descriptor record (id + name)",
+            src.display()
         ))
     })
 }

@@ -37,7 +37,7 @@ def effect-conforms() =
 // check.cdz / verdict.cdz. Inert for the Rust codegen (which reads the schema, not the export clause) and for
 // a single-file compile.
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.effect", "Effect", "Ack")
 
 export { Effect.*, Ack.*, descriptor }

@@ -15,6 +15,6 @@ def control-send-conforms() =
     if c.payload == b"handler->control bytes" then unit else trap("control-send field mismatch")
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.control.send", "ControlSend", "ControlSend")
 export { ControlSend.*, descriptor }

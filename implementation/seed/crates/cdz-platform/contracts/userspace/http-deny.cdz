@@ -15,6 +15,6 @@ def deny-conforms() =
     if (d.status == 404) and (d.reason == b"not found") then unit else trap("deny field mismatch")
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.http.deny", "Deny", "Deny")
 export { Deny.*, descriptor }

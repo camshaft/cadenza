@@ -44,6 +44,6 @@ def method-get-conforms() =
   | Request.Request(r) => (match r.method with | Get => unit | _ => trap("expected Method.Get"))
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.http.request", "Request", "Request")
 export { Method.*, Header.*, Request.*, descriptor }

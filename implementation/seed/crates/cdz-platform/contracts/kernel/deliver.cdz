@@ -97,6 +97,6 @@ def notification-envelope-conforms() =
 // Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
 // contract-descriptor(Ast.module, <name>, <input>, <output>) — a reducer imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.deliver", "Envelope", "Outcome")
 export { descriptor }

@@ -53,6 +53,6 @@ def route-method-conforms() =
      | _ => trap("expected two routes"))
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.http.route-table", "RouteTable", "RouteTable")
 export { Method.*, Route.*, RouteTable.*, descriptor }

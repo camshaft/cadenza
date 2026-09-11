@@ -17,6 +17,6 @@ def control-down-conforms() =
     then unit else trap("control-down field mismatch")
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.control.down", "ControlDown", "ControlDown")
 export { ControlDown.*, descriptor }

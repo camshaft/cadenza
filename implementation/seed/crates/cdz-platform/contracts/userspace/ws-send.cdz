@@ -14,6 +14,6 @@ def send-conforms() =
   | Send.Send(s) => if (s.conn == b"conn-1") and (s.data == b"pong") then unit else trap("send field mismatch")
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.ws.send", "Send", "Send")
 export { Send.*, descriptor }

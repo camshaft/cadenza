@@ -34,6 +34,6 @@ def response-conforms() =
      | _ => trap("expected exactly one header"))
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.http.response", "Response", "Response")
 export { Header.*, Response.*, descriptor }
