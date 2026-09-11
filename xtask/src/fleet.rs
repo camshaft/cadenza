@@ -401,6 +401,7 @@ impl Fleet {
             "baseline-drift-monitor.sh",
             "drain-nudge.sh",
             "compact-nudge.sh",
+            "reap-leases.sh",
             "watchdog.sh",
         ] {
             let src = self.src.join(f);
@@ -2123,6 +2124,48 @@ fn ensure_drain_nudge_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-10-min user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
+/// 2026-09-11, concierge coverage-hole), tagged `# fleet:reap-leases` so [`reconcile_tagged_crons`] can
+/// find/heal it. Runs the HUB copy of `reap-leases.sh` → a worktree's `xtask fleet reap-leases`.
+fn reap_leases_cron_line(hub_script: &str) -> String {
+    format!("*/10 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
+}
+
+/// Ensure the `# fleet:reap-leases` per-10-min user-crontab entry exists + points at THIS hub's
+/// `reap-leases.sh`. Decouples leaked-check-lease reclaim from the window-touching `watchdog` (which an
+/// operator may disable to stop window-killing, leaving leaked leases with no reaper — concierge flag
+/// 2026-09-11). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as [`ensure_drain_nudge_cron`],
+/// and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`). Skips silently if
+/// `reap-leases.sh` isn't materialized yet or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_reap_leases_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("reap-leases.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:reap-leases",
+        reap_leases_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-5-min user-crontab line for the autonomous CONCIERGE COMPACTION heartbeat
 /// (v-fleet-tooling 2026-09-03), tagged `# fleet:compact-nudge` so [`reconcile_tagged_crons`] can find/heal
 /// it. Runs the HUB copy of `compact-nudge.sh` → a worktree's `xtask fleet compact-nudge --session main` —
@@ -2290,6 +2333,11 @@ fn up(fleet: &Fleet) {
     // structurally cannot (it runs DURING the concierge tick → always mid-tick). Independent + fail-open +
     // drift-healed; shares the watchdog's COMPACT_NUDGE_GRACE/WEDGE_RESTART_GRACE stamps so no double-action.
     ensure_compact_nudge_cron(fleet);
+    // The out-of-band LEAKED-LEASE reaper cron: `reap-leases.sh` → `xtask fleet reap-leases`, which reclaims
+    // dead-PID/TTL-stale check-leases WITHOUT touching any window — so leaked leases (a leaked priority lease
+    // stalls the whole merge gate) are cleared even when the destructive watchdog is disabled (concierge
+    // coverage-hole 2026-09-11). Independent + fail-open + drift-healed.
+    ensure_reap_leases_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -19585,6 +19633,24 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         assert!(
             line.ends_with("# fleet:drain-nudge"),
+            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
+        );
+    }
+
+    #[test]
+    fn reap_leases_cron_line_is_every_10min_silent_and_tagged() {
+        let line = reap_leases_cron_line("/hub/reap-leases.sh");
+        // Every 10 min, runs the hub script, silent, tagged for reconcile/heal.
+        assert!(
+            line.starts_with("*/10 * * * * bash /hub/reap-leases.sh"),
+            "every-10-min, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — a reap tick never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
     }
