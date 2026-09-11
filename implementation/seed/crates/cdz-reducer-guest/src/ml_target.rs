@@ -1,29 +1,29 @@
-//! The `ml.parse` reducer target — ML surface source bytes -> canonical AST bytes + diagnostics. Pure
+//! The `ml.parse` reducer target — a canonical `ParseRequest` value -> a canonical `ParseResult` value. Pure
 //! `bytes -> bytes`: the body a `pure-reducer-world` guest's `on-message` wraps (the returned envelope is the
-//! `close` reason). The ML reader is ERROR-RECOVERING (`parser::read_ml` -> `Parsed { arenas, errors }`): the
-//! arenas are ALWAYS a well-formed tree (recovery substitutes `Name` placeholders), so `ast` is non-empty
-//! even when `diagnostics` is non-empty — a caller gets a best-effort AST AND the problems, each byte-located.
+//! `close` reason). The request payload is a `ParseRequest.Parse(source)` value. The ML reader is
+//! ERROR-RECOVERING (`parser::read_ml` -> `Parsed { arenas, errors }`): the arenas are ALWAYS a well-formed
+//! tree (recovery substitutes `Name` placeholders), so `ast` is non-empty even when `diagnostics` is non-empty
+//! — a caller gets a best-effort AST AND the problems, each byte-located. Strong contracts (operator
+//! 2026-09-11): request + response are canonical typed values the Cadenza handler composes via
+//! `Value.encode`/`Value.decode`.
 
-use crate::parse_result_wire::{encode_parse_result, ParseDiag};
+use crate::parse_contract::{decode_parse_request, encode_parse_result, ParseDiag};
 
-/// Handle an ml parse request: the request payload is the raw UTF-8 source bytes. Returns the
-/// `{ast, diagnostics}` envelope — a best-effort AST plus every recovered parse error (byte-span located).
-/// Non-UTF-8 source is surfaced as a diagnostic with empty `ast` (never a trap).
-pub fn handle(source: &[u8]) -> Vec<u8> {
-    let text = match core::str::from_utf8(source) {
-        Ok(t) => t,
-        Err(_) => {
-            return encode_parse_result(
-                &[],
-                &[ParseDiag {
-                    message: "source is not valid UTF-8".to_string(),
-                    byte_offset: 0,
-                    len: 0,
-                }],
-            );
-        }
+/// Handle an ml parse request: decode the `ParseRequest` value to its source string, parse it (error-
+/// recovering), and return the `ParseResult` value — a best-effort AST plus every recovered parse error
+/// (byte-span located). A malformed request is surfaced as a diagnostic with empty `ast` (never a trap).
+pub fn handle(request: &[u8]) -> Vec<u8> {
+    let Some(source) = decode_parse_request(request) else {
+        return encode_parse_result(
+            &[],
+            &[ParseDiag {
+                message: "payload is not a valid ParseRequest value".to_string(),
+                byte_offset: 0,
+                len: 0,
+            }],
+        );
     };
-    let parsed = cadenza_syntax::parser::read_ml(text);
+    let parsed = cadenza_syntax::parser::read_ml(&source);
     let ast = cadenza_ast::codec::encode(&parsed.arenas);
     let diagnostics: Vec<ParseDiag> = parsed
         .errors
@@ -40,12 +40,13 @@ pub fn handle(source: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_result_wire::decode_parse_result;
+    use crate::parse_contract::{decode_parse_result, encode_parse_request};
 
     #[test]
     fn parses_valid_ml_to_ast() {
-        // Happy path: valid ML source -> a well-formed AST, no diagnostics.
-        let (ast, diags) = decode_parse_result(&handle(b"def main() -> Int64 = 42"));
+        // Happy path: a ParseRequest carrying valid ML source -> a well-formed AST, no diagnostics.
+        let (ast, diags) =
+            decode_parse_result(&handle(&encode_parse_request("def main() -> Int64 = 42")));
         assert!(
             diags.is_empty(),
             "clean parse has no diagnostics: {diags:?}"
@@ -57,7 +58,8 @@ mod tests {
     fn error_recovery_yields_ast_plus_byte_located_diagnostics() {
         // ML is error-recovering: even a malformed program yields a well-formed AST (placeholders) AND
         // byte-located diagnostics — the arenas are always valid (parser::Parsed invariant).
-        let (ast, diags) = decode_parse_result(&handle(b"def main() -> Int64 = "));
+        let (ast, diags) =
+            decode_parse_result(&handle(&encode_parse_request("def main() -> Int64 = ")));
         assert!(
             !ast.is_empty(),
             "error recovery still yields a well-formed AST"
@@ -69,8 +71,8 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_is_a_diagnostic_not_a_trap() {
-        let (ast, diags) = decode_parse_result(&handle(&[0xff, 0xfe]));
+    fn a_malformed_request_is_a_diagnostic_not_a_trap() {
+        let (ast, diags) = decode_parse_result(&handle(b"not a ParseRequest value"));
         assert!(ast.is_empty());
         assert_eq!(diags.len(), 1);
     }

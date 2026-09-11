@@ -15,9 +15,10 @@
 
 pub mod request_wire;
 
-/// The parser targets' `{ast, diagnostics}` response wire (used by `sexpr`/`ml`; always compiled so its
-/// round-trip test guards the wire under any feature).
-pub mod parse_result_wire;
+/// The parser targets' `{sexpr,ml}.parse` contract codec — request/response as CANONICAL typed values
+/// (`ParseRequest`/`ParseResult`, the encoding `Value.decode`/`Value.encode` speak; used by `sexpr`/`ml`;
+/// always compiled so its round-trip test guards the codec under any feature).
+pub mod parse_contract;
 
 /// The rcdzc compile target (feature `target-rcdzc`): decode a kinded-input bundle -> compile to a wasm
 /// component -> encode the `{artifacts, diagnostics}` response envelope.

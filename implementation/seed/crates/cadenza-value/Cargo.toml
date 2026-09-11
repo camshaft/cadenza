@@ -1,0 +1,24 @@
+# cadenza-value — the canonical binary-AST VALUE-FORM toolkit: builders + readers that produce and parse the
+# value forms the compiler's `Value.encode`/`Value.decode` speak (record = sorted field-pairs in a Record
+# compound; a `List` compound; `(Ctor payload)` / `(Ctor unit)`; `Str`/`Bytes`/`Int`/`Bool` leaves; the whole
+# value wrapped in a root `(: value Type)` ascription).
+#
+# Extracted out of `cdz-http-protocol` (2026-09-11) so ONE codec serves every crate that builds/reads canonical
+# Cadenza values — the http gateway's control-plane frames AND a reducer build-guest emitting its contract's
+# response as a typed value — with NO drifting copies (operator: binary-AST is THE data-exchange format, stop
+# copy-pasting these forms). `cdz-http-protocol` re-exports it (`pub use cadenza_value::*` in its `value`
+# module), so every existing `cdz_http_protocol::value::*` user is unaffected. A ROOT workspace member
+# (foundational leaf, like `cadenza-ast` / `cdz-str`): it deps only `cadenza-ast` + `bytes`, so it is free to
+# sit in everyone's dep graph, and an EXCLUDED standalone crate (cdz-http-protocol) may path-dep it (the
+# cdz-smith / cdz-http-gateway precedent — an excluded crate depending on a member).
+[package]
+name = "cadenza-value"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The canonical language AST + codec these value forms are built over (`Builder`/`Arenas`/`codec`).
+cadenza-ast = { path = "../cadenza-ast" }
+# Every byte buffer is `bytes::Bytes` — a `Bytes`/`Str` leaf, a returned payload — matching the rest of the fleet.
+bytes = "1"

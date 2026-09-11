@@ -639,6 +639,13 @@
         # `cargo test --workspace --no-run`) → ∪ `test -p C` == the old whole-workspace run.
         rootWorkspaceCrates = {
           cadenza-ast = "implementation/seed/crates/cadenza-ast";
+          # cadenza-value (v-reducer-targets 2026-09-11): the canonical binary-AST VALUE-FORM toolkit
+          # (record/list/ctor builders + readers) extracted out of cdz-http-protocol so ONE codec serves the
+          # http control-plane frames AND a reducer build-guest emitting a contract response as a typed value
+          # (no drifting copies). A ROOT foundational leaf (deps cadenza-ast + bytes), like cadenza-ast/cdz-str;
+          # cdz-reducer-guest deps it + the excluded cdz-http-protocol path-deps it. MUST register here + get a
+          # clippy/test crane below or member-registration-assert reds every gate.
+          cadenza-value = "implementation/seed/crates/cadenza-value";
           # cadenza-compile-abi (v-cdz-crate-split, approach-B extract): the dep-light compile-boundary types
           # (Target + OptLevel now; a later slice takes a single cadenza-ast dep for the Request/Query codec).
           # A ROOT workspace member (crates/* glob) → MUST be registered here or the crane deps-layer src omits
@@ -6779,6 +6786,7 @@
             # workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
             perCrateClippyCrane = {
               clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
+              clippy-cadenza-value = mkCrateClippyCrane { crate = "cadenza-value"; };
               clippy-cadenza-compile-abi = mkCrateClippyCrane { crate = "cadenza-compile-abi"; };
               clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
               # cadenza-syntax split (#5076/#5082): leaf surface crates, no tests/ dir, no spec/semantics dep.
@@ -6847,6 +6855,7 @@
             # testCrateCoverageAssert (below) so a new workspace member can't silently escape the test set.
             perCrateTestCrane = {
               test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
+              test-cadenza-value = mkCrateTestCrane { crate = "cadenza-value"; };
               # cadenza-compile-abi: runs its unit tests (7). Leaf, zero deps. REQUIRED by testCrateCoverageAssert.
               test-cadenza-compile-abi = mkCrateTestCrane { crate = "cadenza-compile-abi"; };
               test-cadenza-syntax = mkCrateTestCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
