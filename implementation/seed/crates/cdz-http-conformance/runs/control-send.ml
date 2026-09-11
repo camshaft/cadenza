@@ -8,14 +8,15 @@
 //      handler's on-response, which closes with a 200 whose body is the control server's reply.
 //   -> the HTTP response body is exactly what the control server sent DOWN, proving the round-trip + correlation.
 //
-// STATUS (test-first acceptance spec): RED — this pins a gateway bug the harness caught. The gateway does NOT
-// forward the handler's control.send: with this scenario driven end to end, the mock captures ZERO ControlUps
-// and the drive HANGS (the effect falls into the resolver's await-branch, not the control.send-forward branch).
-// dispatch (route-to-handler) + response/deny (drive-root-router) all work, so the gateway's classification of
-// THIS effect is the gap: the guest emits on control-send-descriptor().id (the canonical way, identical to the
-// working dispatch), so the guest's control-send contract-id and the gateway's cdz_platform control_send id
-// DISAGREE (a control-send-specific Cadenza-vs-Rust contract-id mismatch). Handed to v-gateway-rewrite; this
-// scenario auto-greens when the ids agree (their session-registry + classify path is otherwise ready, #8720).
+// STATUS (test-first acceptance spec): RED — pins a bug the harness caught, and the fix is in THIS vertical's
+// lane (the mock control server). ROOT CAUSE (root-caused with v-gateway-rewrite): NOT an id mismatch — the
+// control_send ids AGREE (the drive HANGS rather than 502-ing, which proves forward_control_send fired). The
+// bug is a control-link FRAME-ENCODING mismatch: the gateway writes/reads TAGGED `ControlFrame` envelopes
+// (FrameCodec, operator tagged-frame directive), but the mock reads BARE (`decode_control_up` on the raw
+// frame) → fails → 0 ControlUps captured → never replies → the handler hangs awaiting the ControlDown. FIX
+// (next unit, mine): make the mock speak the tagged FrameCodec on both faces — the driver/rig sources the 3
+// canonical frame ids (control_config/up/down, from the contract-declarations manifest) and the mock builds
+// FrameCodec::new(config,up,down), decoding inbound + sending Config/Down tagged. Auto-greens once landed.
 {
   config = {
     root-router = "http-ctl",
