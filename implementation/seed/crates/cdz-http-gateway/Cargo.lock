@@ -224,6 +224,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadenza-value"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "cadenza-ast",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -286,6 +294,7 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "cadenza-ast",
+ "cadenza-value",
  "cdz-str",
 ]
 

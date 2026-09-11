@@ -44,6 +44,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadenza-value"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "cadenza-ast",
+]
+
+[[package]]
 name = "cdz-http-control-mock"
 version = "0.0.0"
 dependencies = [
@@ -64,6 +72,7 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "cadenza-ast",
+ "cadenza-value",
  "cdz-str",
 ]
 
