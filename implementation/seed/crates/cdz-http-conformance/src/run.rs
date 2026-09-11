@@ -129,7 +129,7 @@ async fn run_http_step(
     expect: &crate::spec::Expect,
 ) -> Result<(), String> {
     let attempt = async || match gateway.send(request).await {
-        Ok(resp) => expect.check(resp.status, &resp.body),
+        Ok(resp) => expect.check(resp.status, &resp.headers, &resp.body),
         Err(e) => Err(e),
     };
     if !expect.retry_until_match {

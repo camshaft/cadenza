@@ -15,7 +15,12 @@
     ],
   },
   requests = [
+    // Also assert the RESPONSE HEADER round-trips: http-hello closes with an http-response carrying a
+    // content-type header, so the gateway's decode_response must surface it back on the socket. This
+    // exercises the RETURN header codec (a Header is the same single-ctor record newtype as on the request).
     { http = { method = "GET", path = "/" },
-      expect = { status = 200, body = b"hello from a wasm handler" } },
+      expect = { status = 200,
+                 body = b"hello from a wasm handler",
+                 headers = [ { name = "content-type", value = "text/plain" } ] } },
   ],
 }
