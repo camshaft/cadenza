@@ -128,6 +128,12 @@ pub async fn run_steps(
                     let mut r = request.clone();
                     r.body = Some(vec![b'a'; n as usize]);
                     Ok(r)
+                } else if request.body_nonce {
+                    // Generate a per-run-unique body so a handler publishing it produces a fresh CAS hash never
+                    // seen before (the auth-failure scenario: a swallowed denied write leaves it unresolvable).
+                    let mut r = request.clone();
+                    r.body = Some(unique_nonce_body());
+                    Ok(r)
                 } else {
                     Ok(request.clone())
                 };
@@ -366,6 +372,23 @@ fn read_staged_source(dir: Option<&std::path::Path>, name: &str) -> Result<Vec<u
 
 /// The env var naming the dir of staged module SOURCES (`<name>.cdz`) a scenario's `body-source` reads.
 pub const MODULE_SOURCES_DIR_VAR: &str = "CDZ_HARNESS_MODULE_SOURCES_DIR";
+
+/// A per-run-unique request body (for `body_nonce`): process id + wall-clock nanos + a monotonic counter, so
+/// the bytes — and thus any CAS hash of them — are fresh on every request of every run, never pre-present.
+fn unique_nonce_body() -> Vec<u8> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "cdz-nonce pid={} nanos={nanos} seq={}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+    .into_bytes()
+}
 
 /// Map a [`ControlStep`] to its human description + the [`AdminCommand`] that drives it at the mock.
 fn control_command(control: &ControlStep) -> (String, AdminCommand) {

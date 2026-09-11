@@ -28,6 +28,8 @@ A record with two fields (read by name; order-independent):
     handlers), each by name. In-tree guests compile from `../programs/…/reducer.cdz`; heavier reducer-target
     guests (`reducer-guest-{parse,ml,sexpr,rcdzc,compile}`) are seeded per-scenario via the flake's
     `httpConformanceExternalGuests.<scenario>` map so unrelated runs don't build them.
+  - `cas-write-credential` — `"…"?`: OVERRIDE the CAS write credential the mock ships the gateway (default ⇒ the
+    correct seed). Set WRONG to exercise the auth-failure path — the harness CAS always expects the fixed seed.
 - `requests` — an ordered list of interactions, each an `http` request OR a `control` injection:
   - `{ http = { method, path, headers = [ { name, value } ]?, body = b"…"?, compile-request = {…}? },
        expect = { … }? }`
@@ -55,6 +57,9 @@ A record with two fields (read by name; order-independent):
   lib/contract source to `/parse` without embedding + drifting its text here. (Precedence: after `compile-request`.)
 - `body-fill` — `<n>?`: generate an `n`-byte filler body AT SEND TIME — POST a large body (e.g. over the 16 MiB
   ceiling → a client-visible 413, since the gateway drains the oversized body) without a huge literal here.
+- `body-nonce` — `true?`: generate a per-run-UNIQUE body at send time (pid+nanos+counter) — for a handler
+  that publishes it, the CAS hash is fresh every run (used by the auth-failure scenario: a swallowed denied write
+  leaves a fresh hash unresolvable → a deterministic 502).
 
 ### `expect` fields (all optional; a `None` field asserts nothing)
 
@@ -90,6 +95,9 @@ Effect vocabulary + routing:
 - `oversized-body` — a request body over the 16 MiB ceiling → 413 BEFORE routing (design §8 #5): a genuine large
   upload (`body-fill`) is drained by the gateway so the client sees a real 413, not a mid-upload reset; a small
   body still routes → 200.
+- `cas-auth-failure` — a handler `blobs.put` with a WRONG control-shipped CAS write credential (config
+  `cas-write-credential`): the CAS rejects the write (401) but the infallible-shaped `blobs.put` WIT SWALLOWS it, so
+  it surfaces DOWNSTREAM — the published (unique) CasRef hash is absent → the gateway floors 502 (§8-grow auth failure).
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.
