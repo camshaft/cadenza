@@ -3062,6 +3062,16 @@
             { name = "reducer-guest-ml"; drv = reducerGuestMl; }
             { name = "reducer-guest-sexpr"; drv = reducerGuestSexpr; }
           ];
+          # compile is a two-phase live-swap run: phase 1 = reducer-guest-parse (root) `run`s the ml parser to
+          # turn source into an ast-hash; phase 2 (after a control push-root-router) = reducer-guest-compile
+          # (root) `run`s reducer-guest-rcdzc on that ast to emit + publish a wasm component. So it seeds all
+          # four (SAME-eval, so each route guest's baked delegate hash matches the seeded guest).
+          compile = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
+            { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
+          ];
         };
 
         cdzHttpGatewayBin =
@@ -7757,6 +7767,11 @@
                 export CDZ_CAS_HTTP_BIN=${cdzCasHttpBin}/bin/cdz-cas-http
                 export CDZ_HTTP_CONTROL_MOCK_BIN=${cdzHttpControlMockBin}/bin/cdz-http-control-mock
                 export CDZ_HTTP_GATEWAY_BIN=${cdzHttpGatewayBin}/bin/cdz-http-gateway
+                # The /compile route's request body is assembled at send time by this REAL deploy tool (the sole
+                # source of truth for the CompileRoute artifact-list value shape) from a captured /parse ast-hash;
+                # a light default-features bin, so wiring it into every run is cheap (the heavy rcdzc guests stay
+                # per-scenario). A run with no compile-request step simply never invokes it.
+                export CDZ_HTTP_COMPILE_REQUEST_BIN=${cdzHttpCompileRequestBin}/bin/cdz-http-compile-request
                 export CDZ_HARNESS_PROGRAMS_DIR="$TMPDIR/programs"
                 # The dependency-closure store (value-heap runtime + nfc, by content hash) the guests import;
                 # the driver seeds it into the CAS so the gateway can spawn + compose a guest program.

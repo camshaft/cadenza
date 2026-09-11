@@ -120,7 +120,14 @@ pub async fn run_scenario(
 
     // 6. Drive the run's http steps + judge. `cas`/`mock`/`gateway` are held alive across this (they drop —
     //    and their processes die — only when this function returns).
-    let outcomes = run_steps(&gateway_client, &admin, &cas_client, &spec.requests).await;
+    let outcomes = run_steps(
+        &gateway_client,
+        &admin,
+        &cas_client,
+        bins.compile_request.as_deref(),
+        &spec.requests,
+    )
+    .await;
     verdict(&outcomes)
 }
 
@@ -231,6 +238,7 @@ mod tests {
             cas: PathBuf::from("/nonexistent/cas"),
             mock: PathBuf::from("/nonexistent/mock"),
             gateway: PathBuf::from("/nonexistent/gateway"),
+            compile_request: None,
         };
         let spec = RunSpec {
             config: Config {
