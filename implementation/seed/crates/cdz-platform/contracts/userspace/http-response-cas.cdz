@@ -1,0 +1,42 @@
+// The HTTP-outpost CAS-BODY response terminal (design/DESIGN-http-outpost.md §6): the terminal a handler
+// closes with to answer a request whose body is NOT inline but lives in the CAS — the handler returns the
+// blob's HASH and the gateway fetches + serves it. This is the `CasRef` half of §6 ("body = Inline | CasRef"),
+// realized as a SEPARATE terminal (like `http-deny` is a separate terminal from `http-response`, not a status
+// variant) so the inline `http-response` contract-id is unchanged: a handler that has an inline body closes
+// with `http-response`, one whose body is already a CAS blob (e.g. a large asset it `blobs.put`, or a
+// content-addressed document) closes with THIS. `status`/`headers` mirror `http-response`; `body_hash` is the
+// 33-byte content hash (a tagged CAS `Hash` as `Bytes`) the gateway resolves via the control-shipped CAS,
+// answering `502` if the blob is absent. Userspace (this dir): a Cadenza reducer emits it via self-reflection
+// on `descriptor().id`; no Rust binding is generated.
+//
+// `Header` mirrors http-response's — a single-constructor `| Header(Record(...))` (the proven contract idiom),
+// not a bare record-alias (which names a type constructor, CDZ0203, and does not typecheck).
+type Header      = | Header(Record(name: String, value: String))
+type ResponseCas =
+  | ResponseCas(Record(status: Int64,
+                       headers: List(Header),
+                       body_hash: Bytes))
+
+// --- conformance proof: a fully-literal cas-response value, ascribed against the schema type ---
+def a-response-cas() -> ResponseCas =
+  ResponseCas.ResponseCas({ status = 200,
+                            headers = [Header.Header({ name = "content-type", value = "application/octet-stream" })],
+                            body_hash = b"a-33-byte-cas-blob-hash-goes-her" })
+
+@test
+def response-cas-conforms() =
+  match a-response-cas() with
+  | ResponseCas.ResponseCas(r) =>
+    (match r.headers with
+     | [h] =>
+       (match h with
+        | Header.Header(x) =>
+          if (r.status == 200) and (x.name == "content-type")
+             and (r.body_hash == b"a-33-byte-cas-blob-hash-goes-her")
+          then unit else trap("http-response-cas field mismatch"))
+     | _ => trap("expected exactly one header"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.response-cas", "ResponseCas", "ResponseCas")
+export { Header.*, ResponseCas.*, descriptor }
