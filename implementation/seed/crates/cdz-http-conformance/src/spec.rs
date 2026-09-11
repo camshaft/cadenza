@@ -5,7 +5,8 @@
 //!
 //! The value shape (see `runs/README.md`):
 //!   { config = { root-router = "<name>", programs = [ { name, program }, … ] },
-//!     requests = [ { http = { method, path, headers = [ { name, value } ]?, body = b"…"? },
+//!     requests = [ { http = { method, path, headers = [ { name, value } ]?, body = b"…"?,
+//!                             compile-request = { asts = [ { name, from-capture } ], entry }? },
 //!                    expect = { status?, body?, body-contains?, headers = [ { name, value } ]? } }
 //!                | { control = { push-root-router = "<name>" } }
 //!                | { control = { push-down = { session = b"…"?, payload = b"…" } } }, … ] }
@@ -71,13 +72,38 @@ pub enum ControlStep {
 }
 
 /// An HTTP request to make at the gateway. `headers` are `(name, value)` pairs; `body` is the request body
-/// bytes (e.g. a `POST` payload). Both default to empty/none (a bare `GET` needs neither).
+/// bytes (e.g. a `POST` payload). All default to empty/none (a bare `GET` needs none).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
+    /// A request body BUILT AT SEND TIME by the `cdz-http-compile-request` deploy tool from earlier steps'
+    /// captured `/parse` ast-hashes (the `/compile` route's artifact-list body). Mutually exclusive with `body`
+    /// (this takes precedence). Built at send time — not at spec-parse time — so each ast-hash stays a LIVE
+    /// captured value, never a pinned machine-specific constant. `Box`ed to keep the (rare) compile-request
+    /// path off the size of every ordinary `HttpRequest`.
+    pub compile_request: Option<Box<CompileRequestSpec>>,
+}
+
+/// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
+/// real `cdz-http-compile-request` builder (the single source of truth for the `CompileRoute` value shape), so
+/// the harness never re-encodes the artifact-list form itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileRequestSpec {
+    /// One `--ast <name>=<hash>` per module: the module `name` + the capture holding its raw 33-byte ast-hash.
+    pub asts: Vec<CompileAst>,
+    /// The entrypoint module name (`--entry`); must be one of the `asts` names.
+    pub entry: String,
+}
+
+/// One AST artifact of a [`CompileRequestSpec`]: a module `name` bound to the `from_capture` capture holding
+/// its raw 33-byte `/parse` ast-hash (an earlier step's `capture-body-as`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileAst {
+    pub name: String,
+    pub from_capture: String,
 }
 
 /// The inline assertion on an HTTP response. A `None` field asserts nothing.
@@ -240,11 +266,16 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(b) => Some(value::read_bytes(arenas, b)?.to_vec()),
         None => None,
     };
+    let compile_request = match value::record_field(arenas, http, "compile-request") {
+        Some(cr) => Some(Box::new(parse_compile_request(arenas, cr)?)),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
         headers,
         body,
+        compile_request,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
@@ -275,6 +306,24 @@ fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlSt
     };
     let payload = value::read_bytes(arenas, value::record_field(arenas, pd, "payload")?)?.to_vec();
     Some(ControlStep::PushDown { session, payload })
+}
+
+/// Parse a `compile-request = { asts = [ { name, from-capture }, … ], entry = "<name>" }` body-source.
+fn parse_compile_request(arenas: &value::Arenas, id: value::ValueId) -> Option<CompileRequestSpec> {
+    let asts = value::read_list(arenas, value::record_field(arenas, id, "asts")?)?
+        .iter()
+        .map(|&a| {
+            Some(CompileAst {
+                name: value::read_str(arenas, value::record_field(arenas, a, "name")?)?,
+                from_capture: value::read_str(
+                    arenas,
+                    value::record_field(arenas, a, "from-capture")?,
+                )?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let entry = value::read_str(arenas, value::record_field(arenas, id, "entry")?)?;
+    Some(CompileRequestSpec { asts, entry })
 }
 
 fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
@@ -414,6 +463,48 @@ mod tests {
         assert_eq!(request.path, "/echo");
         assert_eq!(request.headers, vec![("x-a".to_string(), "1".to_string())]);
         assert_eq!(request.body.as_deref(), Some(&b"hi"[..]));
+    }
+
+    #[test]
+    fn parses_a_compile_request_body_source() {
+        // http = { method="POST", path="/compile",
+        //          compile-request = { asts = [ { name="main", from-capture="main-ast" } ], entry="main" } }
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "POST");
+        let path = str_leaf(&mut b, "/compile");
+        let an = str_leaf(&mut b, "main");
+        let fc = str_leaf(&mut b, "main-ast");
+        let ast = record(&mut b, vec![("from-capture", fc), ("name", an)]);
+        let asts = list_value(&mut b, vec![ast]);
+        let entry = str_leaf(&mut b, "main");
+        let cr = record(&mut b, vec![("asts", asts), ("entry", entry)]);
+        let http = record(
+            &mut b,
+            vec![("compile-request", cr), ("method", m), ("path", path)],
+        );
+        let step = record(&mut b, vec![("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { request, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
+        assert_eq!(request.path, "/compile");
+        assert_eq!(
+            request.body, None,
+            "no inline body — the body is built at send time"
+        );
+        let cr = request
+            .compile_request
+            .as_ref()
+            .expect("a compile-request body-source");
+        assert_eq!(cr.entry, "main");
+        assert_eq!(cr.asts.len(), 1);
+        assert_eq!(cr.asts[0].name, "main");
+        assert_eq!(cr.asts[0].from_capture, "main-ast");
     }
 
     #[test]

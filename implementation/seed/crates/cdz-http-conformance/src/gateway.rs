@@ -257,6 +257,7 @@ mod tests {
                 path: "/echo".into(),
                 headers: vec![("x-test".into(), "v".into())],
                 body: Some(b"payload".to_vec()),
+                ..Default::default()
             })
             .await
             .expect("request succeeds");
