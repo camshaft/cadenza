@@ -9,7 +9,13 @@
 //! - a `List(T)` → `#list(<elem>…)`, elements in order.
 //! - a constructor application `(<Ctor> <payload>…)`; a nullary variant carries the `unit` atom.
 //! - `String` → a `Str` leaf; `Bytes` → a `Bytes` leaf; an integer → an `Int` leaf (decimal).
-//! - the whole payload is wrapped at the encode boundary in a root ascription `(: <value> <Type>)`.
+//!
+//! Values decode purely by STRUCTURE, never by a type/field NAME: a record is a `#record`, a list a
+//! `#list`, a variant a `(<Ctor> …)`. Encode via [`finish_value`] (the bare canonical form, no type
+//! tag). A legacy [`finish`]/[`ascribe`] wraps the payload in a root ascription `(: <value> <Type>)`,
+//! but that token is decorative — the readers peel it via [`unascribe`] and ignore it — and encode
+//! sites are being migrated off it (operator directive 2026-09-11: no type-ascription in the codec
+//! path). New sites use [`finish_value`].
 
 use bytes::Bytes;
 use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
@@ -21,7 +27,26 @@ pub use cadenza_ast::ast::{Arenas, Builder as ValueBuilder, StructId as ValueId}
 
 // --- builders ------------------------------------------------------------------------------------------
 
+/// Finish the AST at `value` and encode it to binary-AST bytes — **structurally, with NO root
+/// ascription wrapper**. This is the ascription-free encode entry point: the payload is the bare
+/// canonical value form, decoded purely by STRUCTURE (a record is a `#record`, a list is a `#list`,
+/// a variant is a `(<Ctor> …)` — never by a type/field NAME carried in a `(: value Type)` tag). It is
+/// the drop-in replacement for [`finish`]: the structural readers below (`record_field`, `read_list`,
+/// `read_ctor`, …) return the SAME value whether or not a root ascription is present, because they
+/// already peel one via [`unascribe`]. New encode sites should call this; existing `finish(…, ty)`
+/// sites migrate onto it as their type token is retired (operator directive 2026-09-11: eliminate
+/// type-ascription in the encode/decode path — decode by structure, not names).
+#[must_use]
+pub fn finish_value(b: Builder, value: StructId) -> Bytes {
+    let arenas = b.finish(value);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 /// Wrap `value` in the root ascription `(: value ty)`, finish the AST, and encode it to binary-AST bytes.
+///
+/// LEGACY: the `ty` token is decorative — every reader below decodes by structure and ignores it (see
+/// [`unascribe`]). Prefer [`finish_value`], which omits the wrapper entirely; this remains only for
+/// call sites not yet migrated off their type token.
 #[must_use]
 pub fn finish(mut b: Builder, value: StructId, ty: &str) -> Bytes {
     let root = ascribe(&mut b, value, ty);
@@ -224,6 +249,95 @@ mod tests {
         assert_eq!(read_str(&arenas, field).as_deref(), Some("hello"));
         let n = record_field(&arenas, arenas.root, "n").expect("finds n");
         assert_eq!(read_uint(&arenas, n), Some(200));
+    }
+
+    /// The core mandate premise: decode is invariant to the root ascription. Encode the SAME value
+    /// both ways — ascription-free via [`finish_value`] and legacy-ascribed via [`finish`] — and assert
+    /// every structural reader returns the IDENTICAL result on both. Also pin that the ascription-free
+    /// form carries NO wrapper (its decoded root IS the record directly, needing no `unascribe`), while
+    /// the legacy form's root is the `(: …)` list that `unascribe` peels. This is what makes migrating
+    /// an encode site off its type token safe: the readers never looked at the token.
+    #[test]
+    fn structural_decode_is_invariant_to_root_ascription() {
+        // Build a nested value: a record with a string field, an int field, a list, and a variant —
+        // covering record/list/ctor/str/int readers in one shape.
+        fn build(b: &mut Builder) -> StructId {
+            let name = str_leaf(b, "widget");
+            let count = uint_leaf(b, 42);
+            let e0 = uint_leaf(b, 1);
+            let e1 = uint_leaf(b, 2);
+            let items = list_value(b, vec![e0, e1]);
+            let payload = uint_leaf(b, 7);
+            let tag = bare_ctor(b, "Some", vec![payload]);
+            record(
+                b,
+                vec![
+                    ("name", name),
+                    ("count", count),
+                    ("items", items),
+                    ("tag", tag),
+                ],
+            )
+        }
+
+        let mut ba = Builder::new();
+        let va = build(&mut ba);
+        let free = finish_value(ba, va); // ascription-free
+
+        let mut bb = Builder::new();
+        let vb = build(&mut bb);
+        let ascribed = finish(bb, vb, "Widget"); // legacy ascribed
+
+        assert_ne!(
+            free, ascribed,
+            "the two encodings differ in bytes (one carries the tag)"
+        );
+
+        let af = decode(&free).expect("ascription-free decodes");
+        let ax = decode(&ascribed).expect("ascribed decodes");
+
+        // Structural invariance: every reader agrees across the two encodings.
+        for a in [&af, &ax] {
+            assert_eq!(
+                read_str(a, record_field(a, a.root, "name").unwrap()).as_deref(),
+                Some("widget")
+            );
+            assert_eq!(
+                read_uint(a, record_field(a, a.root, "count").unwrap()),
+                Some(42)
+            );
+            let items = read_list(a, record_field(a, a.root, "items").unwrap()).unwrap();
+            let got: Vec<u64> = items.iter().map(|&e| read_uint(a, e).unwrap()).collect();
+            assert_eq!(got, vec![1, 2]);
+            let tag = record_field(a, a.root, "tag").unwrap();
+            assert_eq!(read_ctor(a, tag), Some("Some"));
+            assert_eq!(read_uint(a, ctor_payload(a, tag).unwrap()[0]), Some(7));
+        }
+
+        // The ascription-free root IS the record directly — no wrapper to peel.
+        assert!(
+            af.compound_form_of(af.root, CompoundCtor::Record).is_some(),
+            "ascription-free root is the bare #record"
+        );
+        assert_eq!(
+            unascribe(&af, af.root),
+            af.root,
+            "nothing to unascribe on the structural form"
+        );
+        // The legacy root is the `(: value Type)` list; unascribe peels it to the record.
+        assert_eq!(
+            ax.as_form(ax.root, ":").map(|f| f.len()),
+            Some(2),
+            "legacy root is the ascription"
+        );
+        assert!(
+            ax.compound_form_of(ax.root, CompoundCtor::Record).is_none(),
+            "legacy root is NOT the bare record — the tag wraps it"
+        );
+        assert!(
+            ax.compound_form_of(unascribe(&ax, ax.root), CompoundCtor::Record)
+                .is_some()
+        );
     }
 
     #[test]
