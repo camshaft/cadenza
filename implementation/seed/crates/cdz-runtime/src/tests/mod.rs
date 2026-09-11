@@ -155,11 +155,11 @@ pub(crate) fn set_tuple_int_int_descriptor() -> Vec<u8> {
 /// descriptor, but the op must be total on any input). Here a `(Set Int64)` value handed a MISMATCHED
 /// descriptor whose root is a bare `Int` (not a Set) yields the empty list, not a trap.
 
-/// The root-`Framed` plain-Tuple descriptor `(: <value> (Tuple Int64 Int64))` — a tag-15 `Framed`
-/// whose TypeNode is `Tuple` with two `Int64` children, inner → a `Tuple[→Int, →Int]` table entry.
-/// This is the descriptor `sum_shape_descriptor` bakes for a `Value.encode` of a two-int tuple (the
-/// PUBLIC value-encode path frames the compound; the fold/reducer boundary's `bare_shape_descriptor`
-/// does NOT — see rcdzc `sum_shape_descriptor` vs `bare_shape_descriptor`). Kept as a test constant.
+/// A hand-built root-`Framed` plain-Tuple descriptor `(: <value> (Tuple Int64 Int64))` — a tag-15 `Framed`
+/// whose TypeNode is `Tuple` with two `Int64` children, inner → a `Tuple[→Int, →Int]` table entry. This is
+/// the LEGACY framed form: the value-codec migration removed it from the compiler (`sum_shape_descriptor`
+/// now bakes the bare tuple shape with no frame, like `bare_shape_descriptor`). Kept as a test constant so
+/// the runtime's TOLERANT DECODE of a still-framed descriptor (tag 15) stays exercised.
 pub(crate) fn framed_int_pair_descriptor() -> Vec<u8> {
     fn leb(out: &mut Vec<u8>, mut v: u64) {
         loop {

@@ -390,17 +390,13 @@ pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec
 /// statically known on BOTH sides, so no inline type frame is wanted. After the value-codec migration
 /// `value-encode` NEVER frames: every descriptor roots at the bare `shape_of` and emits the bare form,
 /// byte-matching the kernel. That migration makes this byte-identical to `sum_shape_descriptor` (which
-/// used to root a `Named`/`Framed` frame and now also encodes the bare `shape_of`); it is kept as a
-/// distinct named entry point for the boundary's intent — see backlog re: collapsing the two.
+/// used to root a `Named`/`Framed` frame and now also encodes the bare `shape_of`), so it delegates to it
+/// — kept as a distinct named entry point for the boundary's intent.
 pub fn bare_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
-    // Same DOMAIN as `sum_shape_descriptor` — only a value-form COMPOUND (sum/collection/record/tuple/
-    // bignum) has a value-form descriptor; a bare scalar/function/etc. has NONE and must decline (the bytes
-    // boundary requires a value-decodable compound param + a value-encodable compound result). `shape_of`
-    // alone would accept a scalar, so gate on `sum_shape_descriptor` first, then emit the UNFRAMED shape.
-    sum_shape_descriptor(db, ty)?;
-    let mut builder = ShapeTableBuilder::default();
-    let root = builder.shape_of(db, ty)?;
-    Some(builder.encode(root))
+    // Post value-codec migration `sum_shape_descriptor` already gates on the value-form COMPOUND domain
+    // (a bare scalar/function/etc. has no descriptor and declines) AND roots at the bare `shape_of` with no
+    // frame — exactly the bare fold-boundary descriptor this wants. So it IS `sum_shape_descriptor`.
+    sum_shape_descriptor(db, ty)
 }
 
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
