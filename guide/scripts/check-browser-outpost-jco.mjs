@@ -131,29 +131,46 @@ try {
 }
 const ag = appRoot["cadenza:platform/guest"] ?? appRoot.guest;
 if (!ag || typeof ag.onMessage !== "function") fail("app reducer exposes no callable onMessage");
-const appStep = ag.onMessage(msg);
-if (!appStep || !Array.isArray(appStep.requests) || appStep.requests.length !== 1) {
-  fail(`app on-message should emit exactly 1 render request, got ${appStep && JSON.stringify(appStep.requests)}`);
-}
-if (!appStep.outcome || appStep.outcome.tag !== "continue") {
-  fail(`app on-message should Continue after emitting the render effect, got outcome tag: ${appStep.outcome && appStep.outcome.tag}`);
-}
-const req = appStep.requests[0];
-const contractText = Buffer.from(req.contract).toString("latin1");
-if (!contractText.includes("cadenza.dom.render")) {
-  fail(`the emitted request is not a render effect (contract first bytes: ${JSON.stringify(contractText.slice(0, 40))})`);
-}
-const patchText = Buffer.from(req.payload).toString("latin1");
-if (!patchText.includes("hello from a cadenza reducer")) {
-  fail(`the render request payload does not carry the text patch (first bytes: ${JSON.stringify(patchText.slice(0, 80))})`);
-}
+
+// Assert a step emits exactly one render EFFECT (Continue + a request on the dom.render contract) whose patch
+// payload carries `want`.
+const assertRender = (step, want, label) => {
+  if (!step || !Array.isArray(step.requests) || step.requests.length !== 1) {
+    fail(`${label}: expected exactly 1 render request, got ${step && JSON.stringify(step.requests)}`);
+  }
+  if (!step.outcome || step.outcome.tag !== "continue") {
+    fail(`${label}: should Continue after emitting the render effect, got outcome tag: ${step.outcome && step.outcome.tag}`);
+  }
+  const r = step.requests[0];
+  if (!Buffer.from(r.contract).toString("latin1").includes("cadenza.dom.render")) {
+    fail(`${label}: the emitted request is not a render effect (contract: ${JSON.stringify(Buffer.from(r.contract).toString("latin1").slice(0, 40))})`);
+  }
+  if (!Buffer.from(r.payload).toString("latin1").includes(want)) {
+    fail(`${label}: the render patch does not carry ${JSON.stringify(want)} (first bytes: ${JSON.stringify(Buffer.from(r.payload).toString("latin1").slice(0, 80))})`);
+  }
+};
+
+// 7: DOM-as-effect OUTBOUND (§3.1) — a message with no dom-event contract emits the INITIAL render patch.
+assertRender(ag.onMessage(msg), "hello from a cadenza reducer", "initial render");
 checks++;
 
-if (checks !== 7) fail(`expected 7 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 8: DOM-as-effect INBOUND / the Elm update cycle (§3.2) — a CLICK message (delivered on the dom-event
+//    contract) folds to a NEW render patch ("clicked"). This proves the reducer receives a DOM event as an
+//    ordinary on-message call and re-renders — the full event→view loop, driven headlessly (a synthetic click).
+const clickMsg = {
+  contract: new TextEncoder().encode("cadenza.dom.event.click"),
+  sender: { reducer: empty, host: empty },
+  payload: empty,
+  token: empty,
+};
+assertRender(ag.onMessage(clickMsg), "clicked", "click-folded render");
+checks++;
+
+if (checks !== 8) fail(`expected 8 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
   `browser-outpost jco check: ok — the reducer transpiles (${guestFiles.length} files), INSTANTIATES with the ` +
-  `real value-heap runtime, DRIVES on-message to a full response value (deny 404 "not found"), and the app ` +
-  `reducer EMITS a render EFFECT carrying a vDOM patch value — all in a JS engine, no browser. A Cadenza ` +
-  `reducer runs, folds a message to a response, and drives the browser via a DOM-as-effect render patch.`,
+  `real value-heap runtime, DRIVES on-message to a response value, and the app reducer runs the full DOM-as-` +
+  `effect loop: emits a render patch, and FOLDS a click (dom-event) message into a new render patch — all in ` +
+  `a JS engine, no browser. A Cadenza reducer drives the browser as a pure event→view fold.`,
 );
 process.exit(0);
