@@ -3060,6 +3060,18 @@
           mkdir -p "$out"
           python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]).replace("cdz-http.handler.page...........", sys.argv[4]); assert sys.argv[2] in s and sys.argv[3] in s and sys.argv[4] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${httpConformanceProgramsDir}/routers/root-router-baked/reducer.cdz" "$hello" "$echoh" "$page" > "$out/reducer.cdz"
         '';
+        # compile-dispatch-inert-fold: the RED-negative router SOURCE — root-router-baked with its on-response
+        # fold DELETED (fixtures/root-router-inert-fold.cdz, NOT under programs/ so it is not auto-globbed as a
+        # seeded guest — it is only ever /compile'd from source at runtime). Same placeholder substitution as
+        # compileDispatchRouterSrc, so it dispatches to the same seeded handlers; only the missing fold differs.
+        compileDispatchInertRouterSrc = pkgs.runCommand "compile-dispatch-inert-router-templated"
+          { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          hello=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-hello"})
+          echoh=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-echo"})
+          page=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-page"})
+          mkdir -p "$out"
+          python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]).replace("cdz-http.handler.page...........", sys.argv[4]); assert sys.argv[2] in s and sys.argv[3] in s and sys.argv[4] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${./implementation/seed/crates/cdz-http-conformance/fixtures/root-router-inert-fold.cdz}" "$hello" "$echoh" "$page" > "$out/reducer.cdz"
+        '';
 
         # Per-scenario EXTERNAL guest packages (reducer-targets guests, not in this crate's programs/), seeded
         # into the CAS by name for the scenarios that drive them. Keyed by scenario name so ONLY those scenarios
@@ -3118,6 +3130,14 @@
             { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
             { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
           ];
+          # compile-dispatch-inert-fold: the RED-negative — identical guests to compile-dispatch (the difference
+          # is the router SOURCE has no on-response fold, so a dispatch HANGS instead of folding to 200).
+          compile-dispatch-inert-fold = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
+            { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
+          ];
         };
 
         # Per-scenario staged module SOURCES: the `.cdz` files a scenario POSTs to /parse via `body-source`
@@ -3147,6 +3167,18 @@
             { name = "control-send"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/control-send.cdz; }
             { name = "contract-id"; path = ./implementation/seed/crates/cdz-platform/guests/contract-id.cdz; }
           ];
+          # compile-dispatch-inert-fold: the RED-negative — the on-response-DELETED router source + the SAME
+          # 7-lib closure (only the router source differs from compile-dispatch above).
+          compile-dispatch-inert-fold = [
+            { name = "root-router-inert-fold"; path = "${compileDispatchInertRouterSrc}/reducer.cdz"; }
+            { name = "http-lib"; path = ./implementation/seed/crates/cdz-http-conformance/programs/lib/http-lib.cdz; }
+            { name = "reducer-lib"; path = ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz; }
+            { name = "http-response"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-response.cdz; }
+            { name = "http-deny"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-deny.cdz; }
+            { name = "http-dispatch"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-dispatch.cdz; }
+            { name = "control-send"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/control-send.cdz; }
+            { name = "contract-id"; path = ./implementation/seed/crates/cdz-platform/guests/contract-id.cdz; }
+          ];
         };
         # Per-scenario staged WIT-WORLD artifacts: `<name>.bin` KIND_WIT_WORLD blobs the driver seeds into the CAS
         # + exposes as a capture `<name>` (its raw ProgramHash) for a /compile `wit-world` ref. reducer-world.bin
@@ -3156,6 +3188,9 @@
             { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
           ];
           compile-dispatch = [
+            { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
+          ];
+          compile-dispatch-inert-fold = [
             { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
           ];
         };

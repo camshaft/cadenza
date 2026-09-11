@@ -191,6 +191,11 @@ pub struct Expect {
     /// blob is really a wasm component and not merely non-empty. A prefix, not the whole body, so it pins no
     /// machine-specific content.
     pub cas_body_starts_with: Option<Vec<u8>>,
+    /// Assert the gateway does NOT respond to this request within a bounded budget — i.e. the request HANGS.
+    /// The RED-negative guard for the dispatch fold (compile-dispatch): a router whose `on-response` never
+    /// folds (the inert reducer-lib `Continue`) leaves the caller waiting forever. Mutually exclusive with the
+    /// response-shape fields (`status`/`body`/… assert a response arrived; this asserts none does).
+    pub times_out: bool,
 }
 
 impl RunSpec {
@@ -267,7 +272,7 @@ impl Expect {
 
 /// A short, escaped preview of a body for a failure diagnostic (bodies can be large / binary): the first
 /// 64 bytes, lossy-decoded, with a trailing ellipsis when truncated.
-fn preview(bytes: &[u8]) -> String {
+pub(crate) fn preview(bytes: &[u8]) -> String {
     const MAX: usize = 64;
     let shown = &bytes[..bytes.len().min(MAX)];
     let text = String::from_utf8_lossy(shown);
@@ -489,6 +494,10 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(b) => Some(value::read_bytes(arenas, b)?.to_vec()),
         None => None,
     };
+    let times_out = match value::record_field(arenas, id, "times-out") {
+        Some(t) => value::read_bool(arenas, t)?,
+        None => false,
+    };
     Some(Expect {
         status,
         body,
@@ -499,6 +508,7 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         capture_body_as,
         body_equals_capture,
         cas_body_starts_with,
+        times_out,
     })
 }
 

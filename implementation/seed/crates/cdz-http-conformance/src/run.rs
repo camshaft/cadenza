@@ -223,6 +223,11 @@ pub async fn run_steps(
 const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// How long the `times-out` assertion waits for a gateway response before concluding the request HANGS (the
+/// inert-fold RED-negative). Well above a healthy dispatch (single-digit ms) so a PASS is unambiguous, and
+/// under the reqwest client timeout so this budget — not the client — is what fires.
+const TIMEOUT_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// Run one `http` step: make the request + check its `Expect`. When `expect.retry_until_match` is set, RE-ISSUE
 /// the request until the assertion holds or [`RETRY_TIMEOUT`] elapses (the non-linear primitive, for async
 /// propagation like a live root-router swap the gateway applies only on a later request); otherwise one shot.
@@ -232,6 +237,15 @@ async fn run_http_step(
     request: &crate::spec::HttpRequest,
     expect: &crate::spec::Expect,
 ) -> Result<bytes::Bytes, String> {
+    // `times-out`: assert the request HANGS (no gateway response within the probe budget) — the RED-negative
+    // for the dispatch fold. Mutually exclusive with the response-shape assertions (there is no response to
+    // check). An empty body stands in for the (absent) response so the step's capture machinery is a no-op.
+    if expect.times_out {
+        return gateway
+            .expect_timeout(request, TIMEOUT_PROBE_BUDGET)
+            .await
+            .map(|()| bytes::Bytes::new());
+    }
     let attempt = async || {
         let resp = gateway.send(request).await?;
         expect.check(resp.status, &resp.headers, &resp.body)?;

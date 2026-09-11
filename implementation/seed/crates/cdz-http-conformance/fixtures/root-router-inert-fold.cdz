@@ -1,0 +1,49 @@
+// RED-NEGATIVE fixture for compile-dispatch (v-hivemind, rig-verified): root-router-baked with its own
+// on-response fold DELETED, so `on-response` resolves to reducer-lib's INERT `Continue` (never folds the
+// dispatched handler's answer back to the socket). It COMPILES fine and serves the Close path (GET /_routes →
+// 200), but a DISPATCH (GET /) → the child answers → the inert on-response just Continues → the caller NEVER
+// gets a response → the request HANGS. That is exactly the compile-ok-but-dispatch-hangs bug the positive
+// scenario's real fold prevents; pairing this (hang) with the positive (200) makes the guard BIDIRECTIONAL.
+//
+// EXACTLY TWO changes vs root-router-baked (so positive + negative share ONE source, differing ONLY in the
+// fold): (1) the reducer-lib import ALSO pulls `on-response` (the inert Continue); (2) the `def on-response`
+// fold is removed. routes() (+ placeholders the flake substitutes), find, on-message, and the export are all
+// identical. See the `libs` manifest beside this file.
+import { Method, Route, Request, dispatch, deny, respond-encoded, respond-routes, method-code } from "http-lib"
+import { Error, on-response, on-notification } from "reducer-lib"
+
+// THE BAKED ROUTE TABLE. Handler values are the target handlers' real 33-byte ProgramHashes — here PLACEHOLDER
+// markers the deploy tooling replaces before compiling.
+def routes() =
+  ([ Route.Route({ method = Method.Get, path = "/", handler = b"cdz-http.handler.root..........." }),
+     Route.Route({ method = Method.Post, path = "/echo", handler = b"cdz-http.handler.echo..........." }),
+     Route.Route({ method = Method.Get, path = "/app", handler = b"cdz-http.handler.page..........." }) ]
+   : List(Route))
+
+// Recurse the BAKED table; first (method, path) match → dispatch its handler; exhausted → 404 deny. Method by
+// code (Int64-eq), path by BYTES equality (runtime String-eq is declined; Bytes-eq lowers).
+def find(rs: List(Route), mc: Int64, p: Bytes, input: Bytes) =
+  (match rs with
+   | [] => deny(404, b"not found")
+   | [head, .. rest] =>
+     (match head with
+      | Route.Route(r) =>
+        if method-code(r.method) == mc then
+          (if String.to-bytes(r.path) == p then dispatch(r.handler, input)
+           else find(rest, mc, p, input))
+        else find(rest, mc, p, input)))
+
+// The gateway delivers a BARE http-request (no envelope, no table — the table is baked). Decode it; a reserved
+// `GET /_routes` answers the SELF-DESCRIBING routes manifest (the router answers it ITSELF, not dispatched —
+// the /_routes convention, zero gateway change), else match the baked table. A malformed request → 404 deny.
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(rq)) =>
+     (if String.to-bytes(rq.path) == b"/_routes" then respond-routes(routes())
+      else find(routes(), method-code(rq.method), String.to-bytes(rq.path), msg.payload))
+   | None => deny(404, b"not found"))
+
+// NO `def on-response` here (deleted on purpose): `on-response` in the export below resolves to reducer-lib's
+// INERT Continue, so a dispatched handler's answer is never folded back → the request HANGS. This is the RED.
+
+export { on-message, on-response, on-notification }
