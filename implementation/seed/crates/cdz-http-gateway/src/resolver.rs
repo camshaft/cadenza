@@ -9,8 +9,10 @@
 //! subprogram from the store by its `ProgramHash`, RECURSIVELY drive it (a handler may itself dispatch,
 //! bounded by a recursion budget), and fold its terminal `Break` reason back as the dispatch answer.
 //! **`control.send`** (§3) — forward the opaque payload UP the control link and register the emitter so the
-//! `ControlDown` response folds back. A **per-request `deadline`** — arm a `Timeout` if no answer arrives in
-//! time. Any other contract-id is answered `Err(MissingHandler)`; `ws.send` layers on once its sink exists.
+//! `ControlDown` response folds back. **`timer`** (§2/§6) — arm the `FireAfter` and wake the emitter with a
+//! `Fired` response after the duration (mirrors `system.rs`). A **per-request `deadline`** — arm a `Timeout`
+//! if no answer arrives in time. Any other contract-id is answered `Err(MissingHandler)`; `ws.send` layers on
+//! once its sink exists.
 //!
 //! `http.response` / `http.deny` are NOT effects here — a program emits them as its terminal `Break`
 //! (schema = that contract-id), which the edge decodes into an HTTP response; the resolver never sees them.
@@ -21,8 +23,8 @@ use crate::session::{ControlSink, Sessions};
 use bytes::Bytes;
 use cdz_http_protocol::{ControlUp, RequestContext, value};
 use cdz_platform::{
-    ContractId, Delivered, Error, HostId, Message, Origin, ProgramHash, ProgramStore, ReducerId,
-    ReducerKind, Request, Response, Runtime, SpawnContext,
+    ContractId, Delivered, Error, FireAfter, Fired, HostId, Message, Origin, ProgramHash,
+    ProgramStore, ReducerId, ReducerKind, Request, Response, Runtime, SpawnContext, timer_contract,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -144,6 +146,23 @@ impl GatewayResolver {
                 let answer = this.run_dispatch::<R>(&payload).await;
                 reply::<R>(&reply_to, id, token, answer.ok_or(Error::MissingHandler));
             }));
+        } else if request.id == timer_contract() {
+            // A fire-after timer (§2/§6), mirroring `system.rs`: after the `FireAfter` duration, wake the
+            // emitter with the `Fired` event AS the response, correlated by the request's own token. Spawned
+            // under `scope` so it is aborted if the session ends first (no timer outlives its request; a fire
+            // after the reducer resolved the token or closed on `Break` is a harmless no-op). A malformed
+            // payload is dropped — no arm, no reply — and the reducer's own deadline (if any) still protects it.
+            if let Some(arm) = FireAfter::decode(&request.payload) {
+                let mailbox = mailbox.clone();
+                let token = request.continuation_token.clone();
+                R::spawn(scope.wrap(async move {
+                    R::sleep(Duration::from_nanos(arm.duration)).await;
+                    let fired = Fired {
+                        fired_time: R::now(),
+                    };
+                    reply::<R>(&mailbox, timer_contract(), token, Ok(fired.encode()));
+                }));
+            }
         } else if let Some(ctx) = self
             .control
             .as_ref()
@@ -592,5 +611,52 @@ mod tests {
         })
         .await;
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));
+    }
+
+    /// A reducer that arms a fire-after timer on-message, then breaks when the `Fired` wake folds back —
+    /// echoing whether it got the timer's `Fired` (`Ok`) or something unexpected.
+    struct ArmTimerThenBreak;
+    #[async_trait]
+    impl Reducer for ArmTimerThenBreak {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            // 10 ms fire-after, on the canonical timer contract (via the platform's own request builder).
+            let arm = FireAfter {
+                duration: 10_000_000,
+            }
+            .into_request(Bytes::from_static(b"t1"));
+            (vec![arm], Outcome::Continue)
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+            let reason = match &r.payload {
+                Ok(bytes) if Fired::decode(bytes).is_some() => Bytes::from_static(b"fired"),
+                _ => Bytes::from_static(b"unexpected"),
+            };
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: resp_id(),
+                    reason,
+                },
+            )
+        }
+        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fire_after_timer_wakes_the_reducer_with_a_fired_response() {
+        // The gateway resolver arms a `FireAfter` (§2/§6) exactly like system.rs: after the duration it
+        // injects a `Fired` event AS the response (`Ok`), correlated by the request token — NOT
+        // `MissingHandler` (the timer contract is a recognized effect, not an unknown one). Proves a handler
+        // can arm a delay and be woken, matching the platform driver's timer shape.
+        let store = NativeStore::with(Vec::new());
+        let resolver = GatewayResolver::new(store, dispatch_id(), request_id(), 8);
+        let reducer: Box<dyn Reducer> = Box::new(ArmTimerThenBreak);
+        let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx, scope| {
+            Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
+        })
+        .await;
+        assert_eq!(out, Some((resp_id(), Bytes::from_static(b"fired"))));
     }
 }
