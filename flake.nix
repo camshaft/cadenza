@@ -7638,6 +7638,14 @@
             # binary-AST admin channel, drives the run-spec's HTTP steps, and exits 0 iff every step's assertion
             # held (operator: a stock gateway tested end to end, nothing internal mocked). One check per scenario.
             mkHttpConformanceRun = { name, specFile }:
+              let
+                # The 3 canonical control-link frame ids (base62), from the authoritative contract-declarations
+                # manifest — the mock builds its tagged FrameCodec from these (matching the gateway by
+                # construction), so a handler's control.send round-trips. Read at eval time (the manifest is a
+                # small nix-built map); the driver's child mock inherits these env vars.
+                frameIds = builtins.fromJSON
+                  (builtins.readFile "${contractDeclarations}/manifest.json");
+              in
               pkgs.runCommand "http-conformance-${name}"
                 {
                   nativeBuildInputs = [ rustToolchain ];
@@ -7669,6 +7677,12 @@
                 # The dependency-closure store (value-heap runtime + nfc, by content hash) the guests import;
                 # the driver seeds it into the CAS so the gateway can spawn + compose a guest program.
                 export CDZ_HARNESS_COMPONENT_STORE=${componentStore}
+                # The 3 canonical control-link frame ids — the mock (spawned by the driver, inheriting this env)
+                # builds its tagged FrameCodec from them so a handler's control.send round-trips (the gateway
+                # writes/reads TAGGED ControlFrame envelopes).
+                export CDZ_CONTROL_FRAME_CONFIG_ID=${frameIds."cdz-platform.control.config"}
+                export CDZ_CONTROL_FRAME_UP_ID=${frameIds."cdz-platform.control.up"}
+                export CDZ_CONTROL_FRAME_DOWN_ID=${frameIds."cdz-platform.control.down"}
                 "$driver" "$TMPDIR/spec.bin"
                 echo "ok: http-conformance '${name}' — scenario passed (exit 0)" > "$out"
               '';

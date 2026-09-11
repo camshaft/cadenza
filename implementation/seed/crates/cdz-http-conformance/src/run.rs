@@ -418,6 +418,11 @@ mod tests {
                 sessions: new_sessions(),
                 cas_url: Str::from("http://127.0.0.1:9/cas"),
                 cas_credential: Bytes::new(),
+                codec: cdz_http_protocol::FrameCodec::new(
+                    Bytes::from_static(b"c"),
+                    Bytes::from_static(b"u"),
+                    Bytes::from_static(b"d"),
+                ),
             },
         ));
         let admin = AdminClient::new(admin_addr);

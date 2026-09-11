@@ -8,15 +8,12 @@
 //      handler's on-response, which closes with a 200 whose body is the control server's reply.
 //   -> the HTTP response body is exactly what the control server sent DOWN, proving the round-trip + correlation.
 //
-// STATUS (test-first acceptance spec): RED — pins a bug the harness caught, and the fix is in THIS vertical's
-// lane (the mock control server). ROOT CAUSE (root-caused with v-gateway-rewrite): NOT an id mismatch — the
-// control_send ids AGREE (the drive HANGS rather than 502-ing, which proves forward_control_send fired). The
-// bug is a control-link FRAME-ENCODING mismatch: the gateway writes/reads TAGGED `ControlFrame` envelopes
-// (FrameCodec, operator tagged-frame directive), but the mock reads BARE (`decode_control_up` on the raw
-// frame) → fails → 0 ControlUps captured → never replies → the handler hangs awaiting the ControlDown. FIX
-// (next unit, mine): make the mock speak the tagged FrameCodec on both faces — the driver/rig sources the 3
-// canonical frame ids (control_config/up/down, from the contract-declarations manifest) and the mock builds
-// FrameCodec::new(config,up,down), decoding inbound + sending Config/Down tagged. Auto-greens once landed.
+// GREEN. This exercised the harness's first control.send and caught + fixed a real bug: the gateway speaks
+// TAGGED `ControlFrame` envelopes (FrameCodec, operator tagged-frame directive), and the mock originally read
+// BARE — so it captured 0 ControlUps and the handler hung. The mock now speaks the tagged FrameCodec on both
+// faces (it builds FrameCodec::new(config,up,down) from the 3 canonical frame ids the rig sources from the
+// contract-declarations manifest), so the ControlUp reaches the mock, its correlation-matched ControlDown
+// folds back into on-response, and the body is the primed reply. (The control_send effect ids always agreed.)
 {
   config = {
     root-router = "http-ctl",

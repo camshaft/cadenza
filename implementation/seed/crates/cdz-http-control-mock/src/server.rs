@@ -12,9 +12,7 @@ use crate::admin::{AdminCommand, AdminReply, decode_command, encode_reply};
 use crate::ws::{Sessions, broadcast, push_to};
 use crate::{MockState, PrimedReply};
 use bytes::Bytes;
-use cdz_http_protocol::{
-    ControlConfig, ControlDown, encode_control_config, encode_control_down, encode_control_up,
-};
+use cdz_http_protocol::{ControlConfig, ControlDown, ControlFrame, FrameCodec, encode_control_up};
 use cdz_str::Str;
 use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
@@ -33,6 +31,8 @@ pub struct AdminCtx {
     pub sessions: Sessions,
     pub cas_url: Str,
     pub cas_credential: Bytes,
+    /// The tagged control-link frame codec (config/up/down ids) — pushes to gateway sessions go out TAGGED.
+    pub codec: FrameCodec,
 }
 
 /// Serve the admin API on `listener` until the task is dropped. One connection per accepted socket, each on
@@ -112,7 +112,8 @@ fn dispatch(cmd: AdminCommand, ctx: &AdminCtx) -> AdminReply {
                 match st.resolve(&program) {
                     Some(root_router) => {
                         st.push_root_router(root_router);
-                        st.config().map(encode_control_config)
+                        st.config()
+                            .map(|c| ctx.codec.encode(&ControlFrame::Config(c.clone())))
                     }
                     None => return unresolvable(&program),
                 }
@@ -144,7 +145,11 @@ fn dispatch(cmd: AdminCommand, ctx: &AdminCtx) -> AdminReply {
                 .lock()
                 .expect("state mutex poisoned")
                 .record_control_down(&down);
-            let _ = push_to(&ctx.sessions, &session, encode_control_down(&down));
+            let _ = push_to(
+                &ctx.sessions,
+                &session,
+                ctx.codec.encode(&ControlFrame::Down(down)),
+            );
             AdminReply::Ok
         }
         AdminCommand::Reset => {
@@ -208,6 +213,11 @@ mod tests {
             sessions: crate::ws::new_sessions(),
             cas_url: Str::from("http://127.0.0.1:9/cas"),
             cas_credential: Bytes::from_static(b"tok"),
+            codec: FrameCodec::new(
+                Bytes::from_static(b"c"),
+                Bytes::from_static(b"u"),
+                Bytes::from_static(b"d"),
+            ),
         };
         tokio::spawn(serve_admin(listener, ctx));
         (addr, state)
