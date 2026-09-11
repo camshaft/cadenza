@@ -24,7 +24,7 @@ use crate::servers::{spawn_cas, spawn_gateway, spawn_mock};
 use crate::spec::RunSpec;
 use cdz_http_control_mock::admin::{AdminCommand, AdminReply};
 use cdz_str::Str;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The throwaway write credential the harness gives its CAS so the driver can seed over the HTTP write path
@@ -118,17 +118,70 @@ pub async fn run_scenario(
     //     scenario is race-free without a per-step retry — the operator: a settle gate, not a flaky sleep.
     wait_until_configured(&gateway_client).await?;
 
+    // 5b. Seed any staged WIT-WORLD artifact (`reducer-world.bin`) into the CAS + expose its hash as a
+    //     pre-populated capture named after the artifact (e.g. `reducer-world`), so a `/compile` of a
+    //     reducer-world guest can reference it via `wit-world = { from-capture = "reducer-world" }` WITHOUT
+    //     pinning a machine-specific hash. Its CAS key is the canonical `program_hash` (the store keys
+    //     tag-agnostically by digest, so the guest's `blobs.get` resolves it by the raw 33-byte hash).
+    let seed_captures = seed_wit_world_artifacts(&cas_client).await?;
+
     // 6. Drive the run's http steps + judge. `cas`/`mock`/`gateway` are held alive across this (they drop —
     //    and their processes die — only when this function returns).
+    let module_sources = std::env::var_os(crate::run::MODULE_SOURCES_DIR_VAR).map(PathBuf::from);
     let outcomes = run_steps(
         &gateway_client,
         &admin,
         &cas_client,
         bins.compile_request.as_deref(),
+        module_sources.as_deref(),
+        seed_captures,
         &spec.requests,
     )
     .await;
     verdict(&outcomes)
+}
+
+/// The env var naming a dir of staged WIT-WORLD artifacts (`<name>.bin`) the driver seeds into the CAS before a
+/// run, exposing each under a capture named `<name>` (its raw 33-byte hash) for a `/compile` `wit-world` ref.
+pub const WIT_WORLD_DIR_VAR: &str = "CDZ_HARNESS_WIT_WORLD_DIR";
+
+/// Seed every staged WIT-WORLD artifact (`<name>.bin` in [`WIT_WORLD_DIR_VAR`]) into the CAS under its canonical
+/// [`program_hash`](crate::programs::program_hash) and return a capture map `{ <name> → raw 33-byte hash }`. No
+/// dir set (or empty) ⇒ an empty map (the common case; only reducer-world `/compile` scenarios stage one).
+///
+/// # Errors
+/// The dir cannot be read, an artifact file cannot be read, or a CAS PUT is rejected.
+async fn seed_wit_world_artifacts(
+    cas: &CasClient,
+) -> Result<std::collections::HashMap<String, bytes::Bytes>, String> {
+    let mut captures = std::collections::HashMap::new();
+    let Some(dir) = std::env::var_os(WIT_WORLD_DIR_VAR) else {
+        return Ok(captures);
+    };
+    let dir = PathBuf::from(dir);
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("reading wit-world dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("wit-world dir entry: {e}"))?
+            .path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("wit-world: bad filename {}", path.display()))?
+            .to_string();
+        let bytes = bytes::Bytes::from(
+            std::fs::read(&path)
+                .map_err(|e| format!("reading wit-world {}: {e}", path.display()))?,
+        );
+        let (hash_text, hash_bytes) = crate::programs::program_hash(&bytes);
+        cas.put(&hash_text, bytes).await?;
+        captures.insert(name, hash_bytes);
+    }
+    Ok(captures)
 }
 
 /// How long to wait for a freshly-spawned gateway to APPLY its initial control config before driving steps,

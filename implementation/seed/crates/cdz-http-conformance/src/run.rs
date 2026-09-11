@@ -94,27 +94,36 @@ pub async fn run_steps(
     admin: &AdminClient,
     cas: &crate::cas::CasClient,
     compile_request_bin: Option<&std::path::Path>,
+    module_sources_dir: Option<&std::path::Path>,
+    seed_captures: std::collections::HashMap<String, bytes::Bytes>,
     steps: &[Step],
 ) -> Vec<StepOutcome> {
     let mut outcomes = Vec::with_capacity(steps.len());
-    // Named response-body captures, for a later step's `body_equals_capture` (cross-step comparison) or a
-    // `compile-request` body-source (a captured /parse ast-hash → a /compile artifact-list body).
-    let mut captures: std::collections::HashMap<String, bytes::Bytes> =
-        std::collections::HashMap::new();
+    // Named captures for a later step's `body_equals_capture` (cross-step comparison), a `compile-request`
+    // body-source (a captured /parse ast-hash → a /compile artifact-list body), or a `wit-world` artifact.
+    // Pre-seeded with driver-provided artifact hashes (e.g. the seeded `reducer-world` wit-world blob).
+    let mut captures: std::collections::HashMap<String, bytes::Bytes> = seed_captures;
     for (i, step) in steps.iter().enumerate() {
         let (description, result) = match step {
             Step::Http { request, expect } => {
                 let description = format!("{} {}", request.method, request.path);
-                // A `compile-request` body-source is assembled NOW (post-capture) via the real deploy tool, so
-                // the captured ast-hash stays live. On a build error, the step fails with that diagnostic.
-                let effective = match &request.compile_request {
-                    Some(spec) => build_compile_request_body(compile_request_bin, spec, &captures)
-                        .map(|body| {
-                            let mut r = request.clone();
-                            r.body = Some(body);
-                            r
-                        }),
-                    None => Ok(request.clone()),
+                // Resolve the effective request body NOW: a `compile-request` is assembled (post-capture) via the
+                // real deploy tool; a `body-source` is read from the staged module-source dir; else the inline
+                // body is used as-is. On a build/read error, the step fails with that diagnostic.
+                let effective = if let Some(spec) = &request.compile_request {
+                    build_compile_request_body(compile_request_bin, spec, &captures).map(|body| {
+                        let mut r = request.clone();
+                        r.body = Some(body);
+                        r
+                    })
+                } else if let Some(name) = &request.body_source {
+                    read_staged_source(module_sources_dir, name).map(|body| {
+                        let mut r = request.clone();
+                        r.body = Some(body);
+                        r
+                    })
+                } else {
+                    Ok(request.clone())
                 };
                 let result = match effective {
                     Err(e) => Err(e),
@@ -263,24 +272,41 @@ fn build_compile_request_body(
         )
     })?;
 
-    let mut cmd = std::process::Command::new(bin);
-    for ast in &spec.asts {
-        let hash = captures.get(&ast.from_capture).ok_or_else(|| {
-            format!(
-                "compile-request: module {:?} references capture {:?}, but no earlier step captured it",
-                ast.name, ast.from_capture
-            )
-        })?;
-        let hash_file = dir.join(format!("{}.hash", ast.name));
+    // Resolve one {name, from_capture} artifact to a `--<flag> name=@<hashfile>` pair: look the raw 33-byte hash
+    // up in the captures, write it to a temp file, and append the flag. Used for both `--ast` and `--wit-world`.
+    let write_hash_arg = |cmd: &mut std::process::Command,
+                          flag: &str,
+                          art: &crate::spec::CompileAst|
+     -> Result<(), String> {
+        let hash = captures.get(&art.from_capture).ok_or_else(|| {
+                format!(
+                    "compile-request: {flag} {:?} references capture {:?}, but no earlier step captured it",
+                    art.name, art.from_capture
+                )
+            })?;
+        let hash_file = dir.join(format!(
+            "{}-{}.hash",
+            flag.trim_start_matches('-'),
+            art.name
+        ));
         std::fs::write(&hash_file, hash).map_err(|e| {
             format!(
-                "compile-request: writing ast-hash for {:?} to {}: {e}",
-                ast.name,
+                "compile-request: writing {flag} hash for {:?} to {}: {e}",
+                art.name,
                 hash_file.display()
             )
         })?;
-        cmd.arg("--ast")
-            .arg(format!("{}=@{}", ast.name, hash_file.display()));
+        cmd.arg(flag)
+            .arg(format!("{}=@{}", art.name, hash_file.display()));
+        Ok(())
+    };
+
+    let mut cmd = std::process::Command::new(bin);
+    for ast in &spec.asts {
+        write_hash_arg(&mut cmd, "--ast", ast)?;
+    }
+    if let Some(ww) = &spec.wit_world {
+        write_hash_arg(&mut cmd, "--wit-world", ww)?;
     }
     let out_file = dir.join("body.bin");
     cmd.arg("--entry").arg(&spec.entry).arg("-o").arg(&out_file);
@@ -308,6 +334,32 @@ fn build_compile_request_body(
 
 /// A per-process counter making each [`build_compile_request_body`] scratch dir unique.
 static COMPILE_REQ_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read a staged module SOURCE (`<dir>/<name>.cdz`) as an HTTP request body — the `body-source` mechanism, so a
+/// scenario can POST a real in-tree module source (a lib/contract of a reducer-world guest's compile closure)
+/// to `/parse` without embedding + drifting its text in the run-spec.
+///
+/// # Errors
+/// The staged-sources dir was not provided ([`MODULE_SOURCES_DIR_VAR`] unset), or the `<name>.cdz` file is
+/// missing / unreadable.
+fn read_staged_source(dir: Option<&std::path::Path>, name: &str) -> Result<Vec<u8>, String> {
+    let dir = dir.ok_or_else(|| {
+        format!(
+            "body-source: {MODULE_SOURCES_DIR_VAR} is not set (the nix rig stages the module sources for this \
+             scenario)"
+        )
+    })?;
+    let path = dir.join(format!("{name}.cdz"));
+    std::fs::read(&path).map_err(|e| {
+        format!(
+            "body-source: reading staged module {name:?} at {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// The env var naming the dir of staged module SOURCES (`<name>.cdz`) a scenario's `body-source` reads.
+pub const MODULE_SOURCES_DIR_VAR: &str = "CDZ_HARNESS_MODULE_SOURCES_DIR";
 
 /// Map a [`ControlStep`] to its human description + the [`AdminCommand`] that drives it at the mock.
 fn control_command(control: &ControlStep) -> (String, AdminCommand) {
@@ -441,7 +493,16 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), None, &steps).await;
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &steps,
+        )
+        .await;
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes[0].result.is_ok(), "step 1 should pass");
         assert!(outcomes[1].result.is_err(), "step 2 should fail");
@@ -475,7 +536,16 @@ mod tests {
                 },
             ),
         ];
-        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), None, &steps).await;
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &steps,
+        )
+        .await;
         assert!(verdict(&outcomes).is_ok());
     }
 
@@ -538,7 +608,16 @@ mod tests {
                 ..Default::default()
             },
         }];
-        let outcomes = run_steps(&gateway, &admin, &bogus_cas(), None, &retry).await;
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &retry,
+        )
+        .await;
         assert!(
             outcomes[0].result.is_ok(),
             "retry should poll past the 503s: {:?}",
@@ -559,7 +638,16 @@ mod tests {
                 ..Default::default()
             },
         }];
-        let outcomes = run_steps(&gateway2, &admin, &bogus_cas(), None, &once).await;
+        let outcomes = run_steps(
+            &gateway2,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &once,
+        )
+        .await;
         assert!(
             outcomes[0].result.is_err(),
             "no retry → the first 503 is reported"
@@ -614,6 +702,8 @@ mod tests {
             &admin,
             &bogus_cas(),
             None,
+            None,
+            std::collections::HashMap::new(),
             &[Step::Control(ControlStep::PushRootRouter(
                 "router-b".into(),
             ))],
@@ -637,6 +727,8 @@ mod tests {
             &admin,
             &bogus_cas(),
             None,
+            None,
+            std::collections::HashMap::new(),
             &[Step::Control(ControlStep::PushRootRouter("nope".into()))],
         )
         .await;

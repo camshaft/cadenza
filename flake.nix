@@ -3085,6 +3085,40 @@
             { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
             { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
           ];
+          # reducer-world-compile: compile a real reducer-world GUEST (http-hello + its lib closure) through
+          # /compile with a wit-world artifact. Same 4 route guests as `compile` (the guest being compiled is
+          # /parse'd from staged sources, NOT seeded as a guest).
+          reducer-world-compile = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
+            { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
+          ];
+        };
+
+        # Per-scenario staged module SOURCES: the `.cdz` files a scenario POSTs to /parse via `body-source`
+        # (read at runtime from CDZ_HARNESS_MODULE_SOURCES_DIR), so a run-spec references a real in-tree source
+        # by name without embedding + drifting its text. reducer-world-compile stages http-hello + its full
+        # 8-module lib/contract closure (the reducer-world compile closure v-hivemind proved live).
+        httpConformanceModuleSources = {
+          reducer-world-compile = [
+            { name = "http-hello"; path = ./implementation/seed/crates/cdz-http-conformance/programs/handlers/http-hello/reducer.cdz; }
+            { name = "http-lib"; path = ./implementation/seed/crates/cdz-http-conformance/programs/lib/http-lib.cdz; }
+            { name = "reducer-lib"; path = ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz; }
+            { name = "http-response"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-response.cdz; }
+            { name = "http-deny"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-deny.cdz; }
+            { name = "http-dispatch"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-dispatch.cdz; }
+            { name = "control-send"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/control-send.cdz; }
+            { name = "contract-id"; path = ./implementation/seed/crates/cdz-platform/guests/contract-id.cdz; }
+          ];
+        };
+        # Per-scenario staged WIT-WORLD artifacts: `<name>.bin` KIND_WIT_WORLD blobs the driver seeds into the CAS
+        # + exposes as a capture `<name>` (its raw ProgramHash) for a /compile `wit-world` ref. reducer-world.bin
+        # comes from the `worldArtifacts` derivation (the platform reducer-world, single source of truth).
+        httpConformanceWitWorlds = {
+          reducer-world-compile = [
+            { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
+          ];
         };
 
         cdzHttpGatewayBin =
@@ -7777,6 +7811,14 @@
                 # This scenario's EXTERNAL guests (reducer-targets), if any — copied only for the scenarios that
                 # declare them, so unrelated runs don't build the heavy rcdzc guests.
                 ${pkgs.lib.concatStringsSep "\n                " (map (g: ''cp ${g.drv} "$TMPDIR/programs/${g.name}.wasm"'') (httpConformanceExternalGuests.${name} or [ ]))}
+                # This scenario's staged module SOURCES (for `body-source` /parse steps) + WIT-WORLD artifacts
+                # (seeded into the CAS by the driver, exposed as captures) — only for scenarios that declare them
+                # (the advanced reducer-world /compile). Each source is copied to <name>.cdz; the world to <name>.bin.
+                mkdir -p "$TMPDIR/module-sources" "$TMPDIR/wit-worlds"
+                ${pkgs.lib.concatStringsSep "\n                " (map (s: ''cp ${s.path} "$TMPDIR/module-sources/${s.name}.cdz"'') (httpConformanceModuleSources.${name} or [ ]))}
+                ${pkgs.lib.concatStringsSep "\n                " (map (w: ''cp ${w.path} "$TMPDIR/wit-worlds/${w.name}.bin"'') (httpConformanceWitWorlds.${name} or [ ]))}
+                export CDZ_HARNESS_MODULE_SOURCES_DIR="$TMPDIR/module-sources"
+                export CDZ_HARNESS_WIT_WORLD_DIR="$TMPDIR/wit-worlds"
                 export CDZ_CAS_HTTP_BIN=${cdzCasHttpBin}/bin/cdz-cas-http
                 export CDZ_HTTP_CONTROL_MOCK_BIN=${cdzHttpControlMockBin}/bin/cdz-http-control-mock
                 export CDZ_HTTP_GATEWAY_BIN=${cdzHttpGatewayBin}/bin/cdz-http-gateway
