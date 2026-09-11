@@ -202,3 +202,104 @@ Usage:
                           kind=\"entry\" Inline artifact whose bytes are encode_name(<NAME>).
   -o, --out <FILE>        write the body to <FILE> (default: stdout).
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdz_http_protocol::value;
+
+    fn hash_of(byte: u8) -> Vec<u8> {
+        vec![byte; Hash::LEN]
+    }
+
+    /// The client-encoding contract is subtle (field order, the per-element `RouteArtifact` ascription decode
+    /// requires, the `Payload` constructors, and the entry's binary-AST name wire — the exact things that drove
+    /// the multi-module 422). Lock it: `encode_compile_route` must produce bytes that decode back into the
+    /// expected artifact list — a `CasRef(raw-hash)` per `--ast` and one `Inline(encode_name(entry))` entry.
+    #[test]
+    fn encode_compile_route_round_trips_to_the_expected_artifacts() {
+        let asts = vec![
+            AstInput {
+                name: "main".to_string(),
+                ast_hash: hash_of(1),
+            },
+            AstInput {
+                name: "util".to_string(),
+                ast_hash: hash_of(2),
+            },
+        ];
+        let bytes = encode_compile_route(&asts, "main");
+
+        let arenas = value::decode(&bytes).expect("output decodes as a binary-AST value");
+        // Root is `(: #record CompileRoute)` (Compile ctor elided) — unascribe to the record, read `artifacts`.
+        let root = value::unascribe(&arenas, arenas.root);
+        let artifacts = value::record_field(&arenas, root, "artifacts")
+            .expect("a CompileRoute has an `artifacts` field");
+        let elems = value::read_list(&arenas, artifacts).expect("`artifacts` is a list");
+        assert_eq!(elems.len(), 3, "two ast artifacts + one entry artifact");
+
+        // Each element is `(: #record RouteArtifact)` carrying kind/name and a `Payload` ctor.
+        struct Decoded {
+            kind: String,
+            name: String,
+            ctor: String,
+            bytes: Vec<u8>,
+        }
+        let seen: Vec<Decoded> = elems
+            .iter()
+            .map(|&e| {
+                let rec = value::unascribe(&arenas, e);
+                let field = |f: &str| value::record_field(&arenas, rec, f).unwrap();
+                let payload = field("payload");
+                Decoded {
+                    kind: value::read_str(&arenas, field("kind")).unwrap(),
+                    name: value::read_str(&arenas, field("name")).unwrap(),
+                    ctor: value::read_ctor(&arenas, payload).unwrap().to_string(),
+                    bytes: value::read_bytes(
+                        &arenas,
+                        value::ctor_payload(&arenas, payload).unwrap()[0],
+                    )
+                    .unwrap()
+                    .to_vec(),
+                }
+            })
+            .collect();
+
+        // Each `--ast` → a CasRef artifact carrying its raw hash bytes verbatim.
+        assert!(seen.iter().any(|d| d.kind == "ast"
+            && d.name == "main"
+            && d.ctor == "CasRef"
+            && d.bytes == hash_of(1)));
+        assert!(seen.iter().any(|d| d.kind == "ast"
+            && d.name == "util"
+            && d.ctor == "CasRef"
+            && d.bytes == hash_of(2)));
+
+        // The entry → an Inline artifact whose bytes are the binary-AST name wire (encode_name), which rcdzc
+        // reads with decode_name. This is the exact encoding whose raw-UTF-8 form 422'd the multi-module path.
+        let entry = seen
+            .iter()
+            .find(|d| d.kind == "entry")
+            .expect("an entry artifact");
+        assert_eq!(entry.ctor, "Inline", "entry rides Inline");
+        assert_eq!(
+            entry.bytes,
+            encode_name("main"),
+            "entry bytes are encode_name(entry)"
+        );
+        assert_eq!(
+            cadenza_compile_abi::decode_name(&entry.bytes).as_deref(),
+            Some("main"),
+            "and they decode back through the name wire"
+        );
+    }
+
+    /// A wrong-length raw hash fails LOUDLY at parse time (not as a silent per-module store miss at /compile).
+    #[test]
+    fn a_wrong_length_raw_hash_is_rejected() {
+        // A base62 string is not `Hash::LEN` raw bytes; but as a base62 token it parses — so use a token that is
+        // neither a readable file nor valid base62 to exercise the hard-error path.
+        let err = resolve_hash("@/nonexistent/path/to/hash", "main").unwrap_err();
+        assert!(err.contains("cannot read hash file"), "got: {err}");
+    }
+}
