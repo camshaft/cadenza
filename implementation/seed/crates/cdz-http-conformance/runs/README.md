@@ -94,7 +94,11 @@ Effect vocabulary + routing:
 - `drive-root-router` — the booted root router answers directly (the baseline spine).
 - `route-to-handler` — the baked router dispatches by (method, path); `/nope` → 404 deny.
 - `routes-manifest` — the self-describing `/_routes` convention returns the baked route table.
-- `echo-direct` — a handler `Value.decode`s the request + branches on method (the forward request-codec).
+- `echo-direct` — a handler `Value.decode`s the request + branches on method (the forward request-codec);
+  drives GET/POST/DELETE so the method-tag decode is pinned across variants.
+- `request-query-decode` — a handler echoes the decoded request's `query` string (`GET /?foo=bar&x=1` → body
+  `foo=bar&x=1`), pinning the forward codec's `query` field round-trips into the guest (complements the method
+  coverage above).
 - `live-swap` — a control `push-root-router` hot-swaps the root router (retry-until-match past propagation).
 - `control-send` — a handler's `control.send` round-trips (ControlUp → primed reply → on-response).
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
