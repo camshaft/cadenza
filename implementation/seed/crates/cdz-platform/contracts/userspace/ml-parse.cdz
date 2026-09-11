@@ -8,24 +8,24 @@
 // consumes it via self-reflection; the build-time contract projector also emits a Rust binding
 // (`crate::contracts::ml_parse::contract().id()`) so the Rust caller derives the SAME id.
 //
-// A `Diagnostic` is a single-constructor `| Diagnostic(Record(...))` (the proven contract idiom, cf.
-// http-request's `Header`), NOT a bare `type Diagnostic = Record(...)` record-alias — a bare record alias
+// A `ParseDiagnostic` is a single-constructor `| ParseDiagnostic(Record(...))` (the proven contract idiom, cf.
+// http-request's `Header`), NOT a bare `type ParseDiagnostic = Record(...)` record-alias — a bare record alias
 // names a type CONSTRUCTOR, not a record type (CDZ0203), so it does not typecheck as a `List` element.
 //
 // The `ast` payload is the CANONICAL BINARY-AST encoding of the parsed tree (`Bytes`) — binary-AST is THE
-// data-exchange format (standing directive). A parse `Diagnostic` is BYTE-SPAN located (`byteOffset`..+`len`
+// data-exchange format (standing directive). A parse `ParseDiagnostic` is BYTE-SPAN located (`byteOffset`..+`len`
 // into the source). The ML reader is ERROR-RECOVERING, so `ast` is a well-formed best-effort tree even when
 // `diagnostics` is non-empty — the caller gets both an AST AND every recovered problem, each byte-located.
 type ParseRequest = | Parse(String)
-type Diagnostic   = | Diagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
-type ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(Diagnostic)))
+type ParseDiagnostic   = | ParseDiagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
+type ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(ParseDiagnostic)))
 
 // --- conformance proof: fully-literal request + response values, ascribed against the schema types ---
 def a-request() -> ParseRequest = ParseRequest.Parse("def main() -> Int64 = 42")
 
 def a-result() -> ParseResult =
   ParseResult.Parsed({ ast = b"canonical-binary-ast-bytes",
-                       diagnostics = [Diagnostic.Diagnostic({ message = "expected an expression",
+                       diagnostics = [ParseDiagnostic.ParseDiagnostic({ message = "expected an expression",
                                                               byteOffset = 22, len = 0 })] })
 
 @test
@@ -40,7 +40,7 @@ def result-conforms() =
     (match r.diagnostics with
      | [d] =>
        (match d with
-        | Diagnostic.Diagnostic(x) =>
+        | ParseDiagnostic.ParseDiagnostic(x) =>
           if (r.ast == b"canonical-binary-ast-bytes") and (x.message == "expected an expression")
              and (x.byteOffset == 22) and (x.len == 0)
           then unit else trap("ml-parse result field mismatch"))
@@ -49,4 +49,4 @@ def result-conforms() =
 import { contract-descriptor } from "contract-id"
 def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.ml.parse", "ParseRequest", "ParseResult")
-export { ParseRequest.*, Diagnostic.*, ParseResult.*, descriptor }
+export { ParseRequest.*, ParseDiagnostic.*, ParseResult.*, descriptor }
