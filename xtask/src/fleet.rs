@@ -1626,6 +1626,27 @@ fn hot_overlap_files(branch_files: &[String], upstream_files: &[String]) -> Vec<
     out
 }
 
+/// Files whose SILENT stale-base-squash revert is CATASTROPHIC — frozen-hash / keystone files where a
+/// clobber corrupts the runtime-hash contract or undoes a keystone codec change with NO conflict + NO red
+/// (the #8790→#8791 class: a stale-base admin-merge reverted `value_codec.rs` + the frozen-hash
+/// `runtime_hash.rs` + a test, main stayed self-consistent so NOTHING flagged it). Editing one of these
+/// from a stale base is a HARD-FAIL for `fleet pr create`, not the mere advisory a normal overlap gets.
+/// Path-SUFFIX matched (a full repo path ending in one of these hits). EXTENSIBLE — add a file here when a
+/// new keystone/frozen-hash surface emerges. (concierge land-model coverage-hole 2026-09-11.)
+const PROTECTED_STALE_MERGE_FILES: &[&str] =
+    &["value_codec.rs", "runtime_hash.rs", "runtime_abi.rs"];
+
+/// The subset of `overlap` (files edited by BOTH the branch and the concurrent upstream landings) that are
+/// PROTECTED ([`PROTECTED_STALE_MERGE_FILES`], path-suffix matched). Non-empty ⇒ a stale-base squash would
+/// SILENTLY clobber a frozen-hash/keystone file ⇒ HARD-FAIL the PR. Pure so the policy is unit-tested.
+fn protected_stale_overlap(overlap: &[String]) -> Vec<String> {
+    overlap
+        .iter()
+        .filter(|f| PROTECTED_STALE_MERGE_FILES.iter().any(|p| f.ends_with(p)))
+        .cloned()
+        .collect()
+}
+
 /// The pre-merge rebase-freshness WARNING text, or `None` when there is no silent-revert risk. Fires ONLY
 /// when the branch base is stale (`stale_by > 0`) AND the branch overlaps an upstream landing (`!overlap
 /// .is_empty()`) — a stale base with NO file overlap can't silently revert anything, so it stays quiet
@@ -1694,6 +1715,35 @@ fn pr_rebase_freshness_advisory(base: &str) {
     let branch_files = names(format!("{mb}..HEAD"));
     let upstream_files = names(format!("{mb}..{upstream}"));
     let overlap = hot_overlap_files(&branch_files, &upstream_files);
+    // HARD-FAIL a stale-base PR that overlaps a FROZEN-HASH / keystone file (concierge 2026-09-11): a
+    // squash from this base would silently revert the landed change with no conflict + no red (#8790→#8791).
+    // A normal overlap only WARNS (below); a protected overlap REFUSES the PR outright — rebase is mandatory.
+    let protected = protected_stale_overlap(&overlap);
+    if !protected.is_empty() {
+        let list = protected
+            .iter()
+            .map(|f| format!("    • {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        eprintln!(
+            "🛑 fleet pr create: REFUSING — your branch base is {n} commit(s) behind origin/main and it edits \
+             {k} FROZEN-HASH / keystone file(s) ALSO changed by those concurrent landings:\n{list}\n\
+             A squash-merge from this stale base would SILENTLY REVERT that landed change — NO conflict, NO red \
+             (main stays self-consistent, so nothing flags it: the #8790→#8791 clobber class). HARD-FAIL, not an \
+             advisory. REBASE onto current origin/main, re-gate, then re-run pr create:\n\
+             \x20   cargo xtask fleet sync   (or: git fetch origin && git rebase origin/main)\n\
+             (Protected set: {set}. Override ONLY if you are certain the merge is safe: CDZ_ALLOW_STALE_PROTECTED_MERGE=1.)",
+            n = stale_by,
+            k = protected.len(),
+            set = PROTECTED_STALE_MERGE_FILES.join(", "),
+        );
+        if std::env::var("CDZ_ALLOW_STALE_PROTECTED_MERGE").is_err() {
+            std::process::exit(1);
+        }
+        eprintln!(
+            "  ⚠ CDZ_ALLOW_STALE_PROTECTED_MERGE set — proceeding despite the protected-file stale-base risk."
+        );
+    }
     if let Some(w) = rebase_freshness_warning(stale_by, &overlap) {
         eprintln!("{w}");
     }
@@ -17657,6 +17707,31 @@ mod tests {
         assert!(rebase_freshness_warning(9, &[]).is_none());
         // Fresh base (0 behind) → quiet even if the file list is non-empty (nothing to have reverted).
         assert!(rebase_freshness_warning(0, &["src/lower_match.rs".to_string()]).is_none());
+    }
+
+    #[test]
+    fn protected_stale_overlap_flags_only_frozen_hash_keystone_files() {
+        let overlap = vec![
+            "implementation/seed/crates/cdz-runtime/src/value_codec.rs".to_string(),
+            "implementation/seed/crates/rcdzc/src/lower/match.rs".to_string(),
+            "xtask/src/fleet.rs".to_string(),
+        ];
+        // Only the frozen-hash/keystone file is flagged (path-suffix match) → HARD-FAIL that PR.
+        assert_eq!(
+            protected_stale_overlap(&overlap),
+            vec!["implementation/seed/crates/cdz-runtime/src/value_codec.rs".to_string()]
+        );
+        // An overlap with NO protected file → empty (only the normal advisory warning, no hard-fail).
+        assert!(protected_stale_overlap(&["xtask/src/main.rs".to_string()]).is_empty());
+        // runtime_hash.rs + runtime_abi.rs are protected too (the full initial set).
+        assert_eq!(
+            protected_stale_overlap(&[
+                "a/b/runtime_hash.rs".to_string(),
+                "c/runtime_abi.rs".to_string()
+            ])
+            .len(),
+            2
+        );
     }
 
     #[test]
