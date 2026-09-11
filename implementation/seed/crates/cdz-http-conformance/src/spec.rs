@@ -40,6 +40,11 @@ pub struct Program {
 
 /// One interaction in a run: an HTTP request at the gateway, or a control-plane injection at the mock control
 /// server (a live root-router swap / an unsolicited push — the http-outpost's hot-reconfigure surface).
+///
+/// `Http` is inherently much larger than `Control` (a full request + a rich `Expect` assertion bag); this is a
+/// cold, per-step spec value (one small `Vec<Step>` per run, never in a hot path), so the size asymmetry is
+/// fine — boxing every field to equalize the variants would only add indirection for no real benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// Make an HTTP request at the gateway + assert the response.
@@ -85,6 +90,11 @@ pub struct HttpRequest {
     /// captured value, never a pinned machine-specific constant. `Box`ed to keep the (rare) compile-request
     /// path off the size of every ordinary `HttpRequest`.
     pub compile_request: Option<Box<CompileRequestSpec>>,
+    /// A request body READ AT SEND TIME from a staged module SOURCE file (the nix rig stages the named
+    /// `<name>.cdz` under `CDZ_HARNESS_MODULE_SOURCES_DIR`). Lets a scenario POST a real in-tree module source
+    /// (e.g. a lib/contract of a reducer-world guest's compile closure) to `/parse` without embedding + drifting
+    /// its text in the run-spec. Takes precedence over `body` (but not `compile_request`).
+    pub body_source: Option<String>,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -96,6 +106,10 @@ pub struct CompileRequestSpec {
     pub asts: Vec<CompileAst>,
     /// The entrypoint module name (`--entry`); must be one of the `asts` names.
     pub entry: String,
+    /// Optional WIT world (`--wit-world <name>=<hash>`, kind="wit-world"): the reducer-world binary that TYPES a
+    /// guest's `on-message` boundary — required to `/compile` a reducer-world guest (a router / handler). The
+    /// `from_capture` holds its raw 33-byte CAS hash (a seeded artifact — see the driver's `reducer-world` seed).
+    pub wit_world: Option<CompileAst>,
 }
 
 /// One AST artifact of a [`CompileRequestSpec`]: a module `name` bound to the `from_capture` capture holding
@@ -280,12 +294,17 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(cr) => Some(Box::new(parse_compile_request(arenas, cr)?)),
         None => None,
     };
+    let body_source = match value::record_field(arenas, http, "body-source") {
+        Some(bs) => Some(value::read_str(arenas, bs)?),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
         headers,
         body,
         compile_request,
+        body_source,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
@@ -333,7 +352,18 @@ fn parse_compile_request(arenas: &value::Arenas, id: value::ValueId) -> Option<C
         })
         .collect::<Option<Vec<_>>>()?;
     let entry = value::read_str(arenas, value::record_field(arenas, id, "entry")?)?;
-    Some(CompileRequestSpec { asts, entry })
+    let wit_world = match value::record_field(arenas, id, "wit-world") {
+        Some(w) => Some(CompileAst {
+            name: value::read_str(arenas, value::record_field(arenas, w, "name")?)?,
+            from_capture: value::read_str(arenas, value::record_field(arenas, w, "from-capture")?)?,
+        }),
+        None => None,
+    };
+    Some(CompileRequestSpec {
+        asts,
+        entry,
+        wit_world,
+    })
 }
 
 fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
