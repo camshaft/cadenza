@@ -19,6 +19,10 @@ use cdz_platform::{
 };
 use std::sync::Arc;
 
+/// The wasm program store plus a read-capable handle to the same CAS (the [`build_store`] return pair).
+/// Aliased to keep the signature under clippy's `type_complexity` bar.
+type StoreHandles = (Arc<dyn ProgramStore>, Arc<dyn BlobStore>);
+
 /// Build a wasm program store over the HTTP CAS at `cas_url`, plus a read-capable handle to that same CAS.
 /// The returned store instantiates a content-addressed wasm reducer per `spawn`; the returned [`BlobStore`] is
 /// how the edge resolves a `CasRef` response body (§6) — a handler answers with a blob hash and the gateway
@@ -28,10 +32,7 @@ use std::sync::Arc;
 ///
 /// # Errors
 /// Returns the [`wasmtime::Error`] if the wasm engine/linkers cannot be built.
-pub fn build_store(
-    cas_url: &str,
-    cas_credential: &[u8],
-) -> Result<(Arc<dyn ProgramStore>, Arc<dyn BlobStore>), wasmtime::Error> {
+pub fn build_store(cas_url: &str, cas_credential: &[u8]) -> Result<StoreHandles, wasmtime::Error> {
     let cas: Arc<dyn BlobStore> = Arc::new(
         HttpBlobStore::new(cas_url)
             .with_read_credential(String::from_utf8_lossy(cas_credential).into_owned()),
