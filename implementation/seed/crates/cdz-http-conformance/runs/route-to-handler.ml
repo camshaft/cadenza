@@ -3,8 +3,9 @@
 // The mock ships the baked root router (which bakes the handlers' real ProgramHashes — deploy-templated at
 // build time); the gateway fetches it from the CAS, drives it per request, and the router dispatches GET /
 // to the http-hello handler (whose 200 body folds back through the router's on-response to the socket). An
-// unmatched path (GET /nope) hits the router's deny terminal — the gateway folds ANY `http.deny` to a fixed
-// `403` (it does not read the deny's status field), so an unmatched route surfaces as 403, not 404.
+// unmatched path (GET /nope) hits the router's deny terminal — the gateway HONORS the deny's status + reason
+// (#8745): the router denies with deny(404, b"not found"), so the response is 404 with body "not found" (a
+// malformed/out-of-range deny would fall back to a plain 403).
 {
   config = {
     root-router = "root-router-baked",
@@ -18,6 +19,6 @@
     { http = { method = "GET", path = "/" },
       expect = { status = 200, body = b"hello from a wasm handler" } },
     { http = { method = "GET", path = "/nope" },
-      expect = { status = 403 } },
+      expect = { status = 404, body = b"not found" } },
   ],
 }
