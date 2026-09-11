@@ -1326,6 +1326,191 @@ fn value_decode_round_trips_sum_variants() {
     assert_eq!(live_nodes(), before, "no leak");
 }
 
+/// Frame-TOLERANT decode (value-codec migration — decode by STRUCTURE, not names). A value encoded
+/// WITHOUT its `(: value Type)` ascription frame decodes to the SAME value as one encoded WITH it. This
+/// pins the nested newtype-in-List gap: a `List` whose element shape is `Named("Item", Int)` must decode
+/// even when the per-element `(: n Item)` frame is ELIDED (the bare `Int` element form — what the value
+/// renderer emits and what a structural/`finish_value` encoder produces). Before the fix, a bare element
+/// hit `doc_list_kids(...)?` → `None` → the whole list decoded to NULL; now the `Named`/`Framed` arm
+/// decodes the bare struct directly against `inner`. The framed form still decodes unchanged.
+#[test]
+fn value_decode_is_frame_tolerant_for_named_and_nested_in_list() {
+    reset();
+    let before = live_nodes();
+
+    // desc_framed_elem: [0]=Int, [1]=Named("Item", inner→0), [2]=List(elem→1), root=2.
+    let desc_framed_elem: &[u8] = &[
+        0x03, // table_len
+        0x00, // [0] Int
+        0x0a, 0x04, b'I', b't', b'e', b'm', 0x00, // [1] Named("Item", inner→0)
+        0x07, 0x01, // [2] List(elem→1)
+        0x02, // root = 2
+    ];
+    // desc_bare_elem: [0]=Int, [1]=List(elem→0), root=1 — the SAME value, elements are bare Ints (no frame).
+    let desc_bare_elem: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
+
+    let mut v = op_vec_empty();
+    for i in 1..=3i64 {
+        v = op_vec_push(v, op_box_int(i));
+    }
+    let descriptor = decode_descriptor(desc_framed_elem).expect("descriptor");
+
+    let framed_doc = op_value_encode_form(v, desc_framed_elem).expect("encode framed");
+    let from_framed = op_value_decode(&framed_doc, desc_framed_elem);
+    assert_ne!(
+        from_framed,
+        Handle::NULL,
+        "framed element form decodes (unchanged)"
+    );
+    assert_eq!(
+        value_eq_shaped(&descriptor, from_framed, v, descriptor.root),
+        Some(true)
+    );
+
+    let bare_doc = op_value_encode_form(v, desc_bare_elem).expect("encode bare");
+    let from_bare = op_value_decode(&bare_doc, desc_framed_elem);
+    assert_ne!(
+        from_bare,
+        Handle::NULL,
+        "bare (ascription-free) element form now decodes against Named(Item) — was NULL"
+    );
+    assert_eq!(
+        value_eq_shaped(&descriptor, from_bare, v, descriptor.root),
+        Some(true)
+    );
+
+    op_drop(from_framed);
+    op_drop(from_bare);
+    op_drop(v);
+    assert_eq!(live_nodes(), before, "no leak");
+}
+
+/// Frame-tolerant decode for a single-ctor RECORD newtype at the ROOT (value-codec migration). This is
+/// v-gateway's #8775 case: the guest `Value.decode(Request)` returned None on an ascription-free root
+/// (`Request` is a `Named` over a record), forcing a revert. A bare `#record` root now decodes against
+/// the `Named`'s inner record. Complements the `Named`-over-Int witness (this exercises a record inner
+/// at root position).
+#[test]
+fn value_decode_frame_tolerant_named_record_root() {
+    reset();
+    let before = live_nodes();
+
+    // desc_named: [0]=Str, [1]=Record{name→0}, [2]=Named("Request", inner→1), root=2.
+    let desc_named: &[u8] = &[
+        0x03, // table_len
+        0x03, // [0] Str
+        0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, // [1] Record{name→0}
+        0x0a, 0x07, b'R', b'e', b'q', b'u', b'e', b's', b't',
+        0x01, // [2] Named("Request", inner→1)
+        0x02, // root = 2
+    ];
+    // desc_bare: [0]=Str, [1]=Record{name→0}, root=1 — same value, NO Named frame.
+    let desc_bare: &[u8] = &[
+        0x02, 0x03, 0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, 0x01,
+    ];
+
+    let rec = op_arr_alloc(1);
+    op_arr_set(rec, 0, op_str_new("hi".into()));
+    let named = decode_descriptor(desc_named).expect("descriptor");
+
+    // Framed root still decodes.
+    let framed = op_value_encode_form(rec, desc_named).expect("encode framed");
+    let from_framed = op_value_decode(&framed, desc_named);
+    assert_ne!(
+        from_framed,
+        Handle::NULL,
+        "framed record root decodes (unchanged)"
+    );
+    assert_eq!(
+        value_eq_shaped(&named, from_framed, rec, named.root),
+        Some(true)
+    );
+
+    // Bare record root (no `(: rec Request)`) now decodes against Named("Request", Record) — was NULL (#8775).
+    let bare = op_value_encode_form(rec, desc_bare).expect("encode bare");
+    let from_bare = op_value_decode(&bare, desc_named);
+    assert_ne!(
+        from_bare,
+        Handle::NULL,
+        "bare record root now decodes against Named(Request) — was NULL"
+    );
+    assert_eq!(
+        value_eq_shaped(&named, from_bare, rec, named.root),
+        Some(true)
+    );
+
+    op_drop(from_framed);
+    op_drop(from_bare);
+    op_drop(rec);
+    assert_eq!(live_nodes(), before, "no leak");
+}
+
+/// Frame-tolerant decode for a single-ctor RECORD newtype inside a homogeneous `List` (value-codec
+/// migration). This is v-gateway's `List(Header)` case (a per-element `(: header Header)` ascription was
+/// load-bearing, causing a real http-echo decode bug when absent) and reducer-targets' `List(RouteArtifact)`
+/// shape. A `List(Named("Header", Record))` now decodes with BARE `#record` elements. Confirms the fix
+/// holds for a record inner in list position (the earlier witness used an Int inner).
+#[test]
+fn value_decode_frame_tolerant_named_record_in_list() {
+    reset();
+    let before = live_nodes();
+
+    // desc_named: [0]=Str, [1]=Record{name→0}, [2]=Named("Header", inner→1), [3]=List(elem→2), root=3.
+    let desc_named: &[u8] = &[
+        0x04, // table_len
+        0x03, // [0] Str
+        0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, // [1] Record{name→0}
+        0x0a, 0x06, b'H', b'e', b'a', b'd', b'e', b'r',
+        0x01, // [2] Named("Header", inner→1)
+        0x07, 0x02, // [3] List(elem→2)
+        0x03, // root = 3
+    ];
+    // desc_bare: [0]=Str, [1]=Record{name→0}, [2]=List(elem→1), root=2 — bare #record elements.
+    let desc_bare: &[u8] = &[
+        0x03, 0x03, 0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, 0x07, 0x01, 0x02,
+    ];
+
+    // A List of two records [{name:"a"}, {name:"b"}].
+    let r0 = op_arr_alloc(1);
+    op_arr_set(r0, 0, op_str_new("a".into()));
+    let r1 = op_arr_alloc(1);
+    op_arr_set(r1, 0, op_str_new("b".into()));
+    let v = op_vec_push(op_vec_push(op_vec_empty(), r0), r1);
+    let named = decode_descriptor(desc_named).expect("descriptor");
+
+    // Framed elements still decode.
+    let framed = op_value_encode_form(v, desc_named).expect("encode framed");
+    let from_framed = op_value_decode(&framed, desc_named);
+    assert_ne!(
+        from_framed,
+        Handle::NULL,
+        "framed record elements decode (unchanged)"
+    );
+    assert_eq!(
+        value_eq_shaped(&named, from_framed, v, named.root),
+        Some(true)
+    );
+
+    // Bare `#record` elements (no per-element `(: rec Header)`) now decode against Named("Header", Record)
+    // — the whole list returned NULL before the frame-tolerance fix.
+    let bare = op_value_encode_form(v, desc_bare).expect("encode bare");
+    let from_bare = op_value_decode(&bare, desc_named);
+    assert_ne!(
+        from_bare,
+        Handle::NULL,
+        "bare record elements now decode against Named(Header) — was NULL"
+    );
+    assert_eq!(
+        value_eq_shaped(&named, from_bare, v, named.root),
+        Some(true)
+    );
+
+    op_drop(from_framed);
+    op_drop(from_bare);
+    op_drop(v);
+    assert_eq!(live_nodes(), before, "no leak");
+}
+
 #[test]
 fn value_decode_returns_null_on_shape_mismatch_never_traps() {
     reset();
