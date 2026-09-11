@@ -3031,8 +3031,9 @@
               { nativeBuildInputs = [ pkgs.python3 ]; } ''
               hello=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${base."http-hello"})
               echoh=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${base."http-echo"})
+              page=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${base."http-page"})
               mkdir -p "$out"
-              python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]); assert sys.argv[2] in s and sys.argv[3] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${bakedDir}/reducer.cdz" "$hello" "$echoh" > "$out/reducer.cdz"
+              python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]).replace("cdz-http.handler.page...........", sys.argv[4]); assert sys.argv[2] in s and sys.argv[3] in s and sys.argv[4] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${bakedDir}/reducer.cdz" "$hello" "$echoh" "$page" > "$out/reducer.cdz"
             '';
             bakedTemplated = mkCadenzaGuest ({
               pname = "cdz-http-conformance-root-router-baked";

@@ -19,7 +19,8 @@ import { Error, on-notification } from "reducer-lib"
 // markers the deploy tooling replaces before compiling.
 def routes() =
   ([ Route.Route({ method = Method.Get, path = "/", handler = b"cdz-http.handler.root..........." }),
-     Route.Route({ method = Method.Post, path = "/echo", handler = b"cdz-http.handler.echo..........." }) ]
+     Route.Route({ method = Method.Post, path = "/echo", handler = b"cdz-http.handler.echo..........." }),
+     Route.Route({ method = Method.Get, path = "/app", handler = b"cdz-http.handler.page..........." }) ]
    : List(Route))
 
 // Recurse the BAKED table; first (method, path) match → dispatch its handler; exhausted → 404 deny. Method by
