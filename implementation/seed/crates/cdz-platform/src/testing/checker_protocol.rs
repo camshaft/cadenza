@@ -72,10 +72,12 @@ pub fn encode_check(log: &[u8], verdict: ContractId) -> Bytes {
             verdict: verdict_leaf,
         },
     );
-    // The checker guest `Value.decode`s this payload into an `Envelope`, so wrap it in the root ascription
-    // the value decoder requires (`(: <value> Envelope)`); the type token is name-agnostic.
-    let root = ascribe(&mut b, value, "Envelope");
-    Bytes::from(codec::encode(&b.finish(root)))
+    // The checker guest `Value.decode`s this payload into an `Envelope`. Post value-codec migration
+    // (#8840) `Value.encode`/`Value.decode` are STRUCTURAL: the guest's descriptor for the nominal
+    // `Envelope` sum roots at the bare Sum (no `Named`/`Framed` frame), so its decode does NOT peel a
+    // `(: value Envelope)` wrapper — it must receive the BARE envelope value. (A root ascription here is
+    // exactly what broke every checker harness: the bare-Sum decode rejected the framed `:`-headed head.)
+    Bytes::from(codec::encode(&b.finish(value)))
 }
 
 /// Decode a `check` Message payload back to the serialized observation log it carries, or `None` if the

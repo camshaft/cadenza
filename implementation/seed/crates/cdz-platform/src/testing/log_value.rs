@@ -37,7 +37,7 @@ use super::observation::{
     RunCall, SpawnInfo,
 };
 use crate::contract_value::{
-    as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
+    as_ascribed, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
     record_field, uint_leaf,
 };
 use crate::{
@@ -58,11 +58,11 @@ pub fn serialize(records: &[Record]) -> Vec<u8> {
     let mut b = Builder::new();
     let items: Vec<StructId> = records.iter().map(|r| record_value(&mut b, r)).collect();
     let list = list_value(&mut b, items);
-    // The whole log crosses as one canonical Cadenza value a guest `Value.decode`s into a `List(LogRecord)`,
-    // so the root carries the ascription `Value.decode` requires (`(: <list> List)`); the type token is
-    // name-agnostic (the decoder is target-directed), so the bare `List` suffices.
-    let root = ascribe(&mut b, list, "List");
-    codec::encode(&b.finish(root))
+    // The whole log crosses as one canonical Cadenza value a guest `Value.decode`s into a `List(LogRecord)`.
+    // Post value-codec migration (#8840) `Value.encode`/`Value.decode` are STRUCTURAL: the guest's `List`
+    // descriptor roots at the bare list (no `(: <list> List)` frame) and its decode does NOT peel one, so the
+    // bare list IS the root — matching the guest's bare `Value.encode` of a `List(LogRecord)`.
+    codec::encode(&b.finish(list))
 }
 
 /// Decode an observation log from a Cadenza binary AST. Total: any input that is not a well-formed log value
@@ -93,11 +93,11 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
             ("entry", entry),
         ],
     );
-    // `LogRecord` is a SINGLE-constructor sum, so its value is the bare record with the constructor elided —
-    // but a bare record is ambiguous, so each single-constructor sum value carries its own `(: … LogRecord)`
-    // ascription (this is what `Value.encode` emits for each element of a `List(LogRecord)`). Without it the
-    // list elements do not decode as `LogRecord`s.
-    ascribe(b, rec, "LogRecord")
+    // `LogRecord` is a SINGLE-constructor sum, so its value form ELIDES the constructor — the bare record IS
+    // the value. Post value-codec migration (#8840) `Value.encode` of each element of a `List(LogRecord)` is
+    // exactly this bare record (no per-element `(: … LogRecord)` frame; the nominal type is erased and decode
+    // is structural/target-directed), so the element crosses bare and the guest decodes it as a `LogRecord`.
+    rec
 }
 
 fn read_record(arenas: &Arenas, id: StructId) -> Option<Record> {
@@ -1366,8 +1366,9 @@ mod tests {
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
         let root = crate::contract_value::unascribe(&arenas, arenas.root);
         let items = super::list_items(&arenas, root).expect("the log is a list");
-        let record =
-            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        // Each LogRecord element is the BARE record post value-codec migration (#8840); tolerate a legacy
+        // `(: <record> LogRecord)` frame too.
+        let record = super::as_ascribed(&arenas, items[0]).unwrap_or(items[0]);
         let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "Delivered");
@@ -1399,8 +1400,9 @@ mod tests {
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
         let root = crate::contract_value::unascribe(&arenas, arenas.root);
         let items = super::list_items(&arenas, root).expect("the log is a list");
-        let record =
-            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        // Each LogRecord element is the BARE record post value-codec migration (#8840); tolerate a legacy
+        // `(: <record> LogRecord)` frame too.
+        let record = super::as_ascribed(&arenas, items[0]).unwrap_or(items[0]);
         let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "KvScan");
