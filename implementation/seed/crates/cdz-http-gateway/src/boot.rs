@@ -481,9 +481,7 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
     .await;
     match out {
         Some((schema, reason)) if schema == gw.ids.response => decode_response(&reason),
-        Some((schema, _)) if schema == gw.ids.deny => {
-            status(StatusCode::FORBIDDEN, b"cdz-http-gateway: denied\n")
-        }
+        Some((schema, reason)) if schema == gw.ids.deny => decode_deny(&reason),
         // The program closed without a terminal http-response/deny, or a fold panicked → a gateway error.
         _ => status(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -637,6 +635,33 @@ fn decode_response(reason: &[u8]) -> Response<Full<Bytes>> {
     })
 }
 
+/// Turn a program's terminal `http.deny` `Break` reason — a `Deny.Deny` value (`status: Int64`, `reason:
+/// Bytes`, §4) — into the HTTP response: floor with the HANDLER-SUPPLIED `status` and its plain-text `reason`
+/// body ("status is the HTTP status to floor with, e.g. 403/404/429; reason a short plain-text body"). A
+/// malformed value, a missing field, or a status outside the valid HTTP range falls back to a plain `403` — a
+/// deny is still a deny even when its detail is unreadable.
+fn decode_deny(reason: &[u8]) -> Response<Full<Bytes>> {
+    let denied = || status(StatusCode::FORBIDDEN, b"cdz-http-gateway: denied\n");
+    let Some(arenas) = value::decode(reason) else {
+        return denied();
+    };
+    let root = arenas.root;
+    let Some(body) =
+        value::record_field(&arenas, root, "reason").and_then(|f| value::read_bytes(&arenas, f))
+    else {
+        return denied();
+    };
+    let code = value::record_field(&arenas, root, "status")
+        .and_then(|f| value::read_uint(&arenas, f))
+        .and_then(|u| u16::try_from(u).ok())
+        .and_then(|u| StatusCode::from_u16(u).ok())
+        .unwrap_or(StatusCode::FORBIDDEN);
+    Response::builder()
+        .status(code)
+        .body(Full::new(body))
+        .unwrap_or_else(|_| denied())
+}
+
 /// A static-body response with `code` and a plain-text `body` — the gateway's own floors (`503`/`400`/`403`/
 /// `500`), distinct from a program's answer.
 fn status(code: StatusCode, body: &'static [u8]) -> Response<Full<Bytes>> {
@@ -688,6 +713,55 @@ mod tests {
         assert_eq!(redial_backoff(100), Duration::from_millis(5000));
         // … including counts past the shift width, which must clamp (not overflow-panic).
         assert_eq!(redial_backoff(u32::MAX), Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn decode_deny_floors_with_the_denys_own_status_and_reason_not_a_fixed_403() {
+        use cdz_platform::contracts::http_deny as denyc;
+        // A well-formed Deny{404, "not found"} floors with 404 — the gateway READS the deny's status field
+        // (design §4), it does not hard-code 403 (the router denies unmatched routes with deny(404, ...)).
+        let mut b = value::ValueBuilder::new();
+        let st = value::uint_leaf(&mut b, 404);
+        let rs = value::bytes_leaf(&mut b, b"not found");
+        let deny = denyc::deny_deny(
+            &mut b,
+            denyc::DenyDeny {
+                status: st,
+                reason: rs,
+            },
+        );
+        let bytes = value::finish(b, deny, "Deny");
+        assert_eq!(decode_deny(&bytes).status(), StatusCode::NOT_FOUND);
+
+        // A 502 deny (the router's compile-error terminal) floors with 502, likewise honored.
+        let mut b2 = value::ValueBuilder::new();
+        let st2 = value::uint_leaf(&mut b2, 502);
+        let rs2 = value::bytes_leaf(&mut b2, b"bad gateway");
+        let deny2 = denyc::deny_deny(
+            &mut b2,
+            denyc::DenyDeny {
+                status: st2,
+                reason: rs2,
+            },
+        );
+        let bytes2 = value::finish(b2, deny2, "Deny");
+        assert_eq!(decode_deny(&bytes2).status(), StatusCode::BAD_GATEWAY);
+
+        // An undecodable reason, and a status outside the valid HTTP range, both fall back to a plain 403 —
+        // a deny is still a deny even when its detail is unreadable.
+        assert_eq!(decode_deny(b"not a value").status(), StatusCode::FORBIDDEN);
+        let mut b3 = value::ValueBuilder::new();
+        let st3 = value::uint_leaf(&mut b3, 9999);
+        let rs3 = value::bytes_leaf(&mut b3, b"weird");
+        let deny3 = denyc::deny_deny(
+            &mut b3,
+            denyc::DenyDeny {
+                status: st3,
+                reason: rs3,
+            },
+        );
+        let bytes3 = value::finish(b3, deny3, "Deny");
+        assert_eq!(decode_deny(&bytes3).status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
