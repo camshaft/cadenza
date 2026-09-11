@@ -58,6 +58,28 @@ static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 /// (a safety limit, not policy); the resolver decrements it per hop.
 const DISPATCH_DEPTH: usize = 16;
 
+/// The maximum request body the edge buffers before routing (design §8 #5): a body larger than this is
+/// answered `413 Payload Too Large` WITHOUT driving a program. A baked SAFETY ceiling (like [`DISPATCH_DEPTH`]),
+/// not control-shipped policy — generous by default; it can move to `ControlConfig` if the operator wants it
+/// tunable (a contract-id change then). 16 MiB.
+const MAX_REQUEST_BODY: usize = 16 << 20;
+
+/// Why marshalling an incoming request failed — selects the client-error floor.
+enum RequestReadError {
+    /// Unsupported method, or an unreadable/malformed body ⇒ `400`.
+    BadRequest,
+    /// The body exceeds [`MAX_REQUEST_BODY`] (by declared `Content-Length` or by actual bytes) ⇒ `413`,
+    /// answered BEFORE the program is driven (§8 #5).
+    TooLarge,
+}
+
+/// Whether a declared `Content-Length` exceeds [`MAX_REQUEST_BODY`]. `None` (absent/unparseable length) is not
+/// over the ceiling by declaration — the read-side `Limited` still bounds the actual bytes. Pure, so the
+/// ceiling decision is unit-testable without constructing a hyper body.
+fn content_length_exceeds_ceiling(len: Option<u64>) -> bool {
+    len.is_some_and(|n| n > MAX_REQUEST_BODY as u64)
+}
+
 /// The canonical contract-ids (§5) the gateway routes by — the descriptor-derived ids of the platform's
 /// `http.*` contracts (same derivation the guest + control server use, never ad-hoc markers). Computed once
 /// when a config is applied. Only the `host` build resolves a config to a ready state, so in the light spine
@@ -415,11 +437,21 @@ async fn handle(state: Option<GatewayState>, req: Request<Incoming>) -> Response
 /// resolver (fire-and-forget effects, §2), and turn its terminal `Break` into the response — `http.response`
 /// ⇒ the answer (§6), `http.deny` ⇒ `403`, anything else / no terminal ⇒ `500`.
 async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Full<Bytes>> {
-    let Some((payload, request)) = encode_request(req).await else {
-        return status(
-            StatusCode::BAD_REQUEST,
-            b"cdz-http-gateway: could not read request\n",
-        );
+    let (payload, request) = match encode_request(req).await {
+        Ok(pair) => pair,
+        // §8 #5: an oversized body is floored `413` BEFORE any program is driven.
+        Err(RequestReadError::TooLarge) => {
+            return status(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                b"cdz-http-gateway: request body exceeds the 16 MiB ceiling\n",
+            );
+        }
+        Err(RequestReadError::BadRequest) => {
+            return status(
+                StatusCode::BAD_REQUEST,
+                b"cdz-http-gateway: could not read request\n",
+            );
+        }
     };
     let ctx = SpawnContext {
         id: ReducerId::of(gw.root_router.hash().as_bytes()),
@@ -513,11 +545,23 @@ fn edge_origin() -> Origin {
 
 /// Marshal an incoming HTTP request into (the bare `http-request` value the driven program folds as its
 /// opening event, §4) plus (the [`RequestContext`] a `control.send` carries UP so the control server can
-/// route without re-parsing the payload, §3). Reads the whole body (buffered v0). `None` on an unsupported
-/// method or a body-read failure.
-async fn encode_request(req: Request<Incoming>) -> Option<(Bytes, RequestContext)> {
+/// route without re-parsing the payload, §3). Reads the whole body (buffered v0), bounded by the
+/// [`MAX_REQUEST_BODY`] ceiling (§8 #5). `Err(TooLarge)` if the body exceeds it (⇒ `413` before routing),
+/// `Err(BadRequest)` on an unsupported method or a body-read failure (⇒ `400`).
+async fn encode_request(
+    req: Request<Incoming>,
+) -> Result<(Bytes, RequestContext), RequestReadError> {
     let (parts, body) = req.into_parts();
-    let method = method_value_kind(&parts.method)?;
+    let method = method_value_kind(&parts.method).ok_or(RequestReadError::BadRequest)?;
+    // §8 #5 fast path: reject an oversized body by its DECLARED Content-Length before reading a byte.
+    let declared_len = parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    if content_length_exceeds_ceiling(declared_len) {
+        return Err(RequestReadError::TooLarge);
+    }
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().unwrap_or("").to_string();
     let headers: Vec<(String, String)> = parts
@@ -529,7 +573,21 @@ async fn encode_request(req: Request<Incoming>) -> Option<(Bytes, RequestContext
                 .map(|v| (n.as_str().to_string(), v.to_string()))
         })
         .collect();
-    let body = body.collect().await.ok()?.to_bytes();
+    // Bound the actual read at the ceiling so a missing/lying Content-Length (chunked) can neither OOM the
+    // edge nor slip past: a length-exceed ⇒ `413`, any other read failure ⇒ `400`.
+    let body = match http_body_util::Limited::new(body, MAX_REQUEST_BODY)
+        .collect()
+        .await
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(e)
+            if e.downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some() =>
+        {
+            return Err(RequestReadError::TooLarge);
+        }
+        Err(_) => return Err(RequestReadError::BadRequest),
+    };
     let payload = encode_request_value(method, &path, &query, &headers, &body);
     let context = RequestContext {
         method: Str::from(parts.method.as_str()),
@@ -542,7 +600,7 @@ async fn encode_request(req: Request<Incoming>) -> Option<(Bytes, RequestContext
             })
             .collect(),
     };
-    Some((payload, context))
+    Ok((payload, context))
 }
 
 /// The `http.request` `Method` variant for a hyper [`Method`], or `None` for one the contract has no case for
@@ -777,6 +835,26 @@ mod tests {
             )
             .status(),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn body_ceiling_flags_a_content_length_over_16_mib_and_floors_413() {
+        // §8 #5: a DECLARED Content-Length over the ceiling is rejected (→ 413 before routing); at/under and
+        // absent are not (the read-side Limited still bounds the actual bytes). The full oversized-body → 413
+        // path is proven by the conformance harness (v-gateway-conformance's scenario).
+        assert!(!content_length_exceeds_ceiling(None));
+        assert!(!content_length_exceeds_ceiling(Some(0)));
+        assert!(!content_length_exceeds_ceiling(Some(
+            MAX_REQUEST_BODY as u64
+        )));
+        assert!(content_length_exceeds_ceiling(Some(
+            MAX_REQUEST_BODY as u64 + 1
+        )));
+        assert!(content_length_exceeds_ceiling(Some(u64::MAX)));
+        assert_eq!(
+            status(StatusCode::PAYLOAD_TOO_LARGE, b"too large\n").status(),
+            StatusCode::PAYLOAD_TOO_LARGE
         );
     }
 
