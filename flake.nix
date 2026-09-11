@@ -5897,6 +5897,9 @@
           # The value-heap runtime component (packages.runtime $out), bound as cadenza:runtime/heap so the
           # driver can DRIVE on-message to a real response value (which the guest builds on the heap).
           CDZ_RUNTIME_WASM = "${runtime}";
+          # The browser-outpost APP reducer (S2a DOM-as-effect): the driver drives its on-message and asserts
+          # it EMITS a render effect carrying a vDOM patch value.
+          CDZ_APP_WASM = "${httpConformanceProgramsByName."browser-outpost-app"}";
           buildPhase = ''
             runHook preBuild
             ( cd guide

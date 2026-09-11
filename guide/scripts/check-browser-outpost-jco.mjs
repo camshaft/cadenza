@@ -114,10 +114,46 @@ if (!reasonText.includes("not found")) {
 }
 checks++;
 
-if (checks !== 6) fail(`expected 6 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 7: DOM-AS-EFFECT (design §3.1). Drive the browser-outpost APP reducer's on-message and assert it EMITS a
+//    render EFFECT carrying a vDOM patch VALUE — Elm architecture: a pure fold emitting a render REQUEST, not
+//    an imperative DOM call. The app is instantiated with the same real heap; its on-message returns
+//    Continue + exactly one render request whose payload is Value.encode(Patch.Text("hello from a cadenza
+//    reducer")). This is the headless half of S2 (the reducer EMITS the effect); the browser host that APPLIES
+//    the patch is the browser-driver follow-on.
+const appPath = process.env.CDZ_APP_WASM;
+if (!appPath) fail("CDZ_APP_WASM is not set (expected the browser-outpost-app mkCadenzaGuest $out .wasm)");
+const app = await loadComponent(readFileSync(appPath), "browserOutpostApp");
+let appRoot;
+try {
+  appRoot = await app.mod.instantiate(app.getCore, imports);
+} catch (e) {
+  fail(`app reducer did not instantiate with the real heap: ${e && e.message ? e.message : e}`);
+}
+const ag = appRoot["cadenza:platform/guest"] ?? appRoot.guest;
+if (!ag || typeof ag.onMessage !== "function") fail("app reducer exposes no callable onMessage");
+const appStep = ag.onMessage(msg);
+if (!appStep || !Array.isArray(appStep.requests) || appStep.requests.length !== 1) {
+  fail(`app on-message should emit exactly 1 render request, got ${appStep && JSON.stringify(appStep.requests)}`);
+}
+if (!appStep.outcome || appStep.outcome.tag !== "continue") {
+  fail(`app on-message should Continue after emitting the render effect, got outcome tag: ${appStep.outcome && appStep.outcome.tag}`);
+}
+const req = appStep.requests[0];
+const contractText = Buffer.from(req.contract).toString("latin1");
+if (!contractText.includes("cadenza.dom.render")) {
+  fail(`the emitted request is not a render effect (contract first bytes: ${JSON.stringify(contractText.slice(0, 40))})`);
+}
+const patchText = Buffer.from(req.payload).toString("latin1");
+if (!patchText.includes("hello from a cadenza reducer")) {
+  fail(`the render request payload does not carry the text patch (first bytes: ${JSON.stringify(patchText.slice(0, 80))})`);
+}
+checks++;
+
+if (checks !== 7) fail(`expected 7 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
   `browser-outpost jco check: ok — the reducer transpiles (${guestFiles.length} files), INSTANTIATES with the ` +
-  `real value-heap runtime, and DRIVES on-message to a full response value (deny 404 "not found") in a JS ` +
-  `engine. A Cadenza reducer runs, folds, and produces a response value in a JS engine — no browser needed.`,
+  `real value-heap runtime, DRIVES on-message to a full response value (deny 404 "not found"), and the app ` +
+  `reducer EMITS a render EFFECT carrying a vDOM patch value — all in a JS engine, no browser. A Cadenza ` +
+  `reducer runs, folds a message to a response, and drives the browser via a DOM-as-effect render patch.`,
 );
 process.exit(0);
