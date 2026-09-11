@@ -28,5 +28,8 @@
     // An unmatched route denies 404 (the router's inline no-route branch).
     { http = { method = "GET", path = "/nope" },
       expect = { status = 404, body-contains = "not found" } },
+    // A page/asset router serves GET only: a non-GET to a known route is 405, not the page.
+    { http = { method = "POST", path = "/" },
+      expect = { status = 405, body-contains = "method not allowed" } },
   ],
 }

@@ -21,7 +21,7 @@
 // Composed from the shared libs (operator 2026-09-10: reuse the mechanism, no inline worlds): `Request` +
 // `respond` + `deny` from `http-lib`, `Header` from `http-response`, the inert on-response / on-notification
 // from `reducer-lib`. HTML/JS use single-quoted attributes/strings so the byte-string literals need no `\"`.
-import { Request, respond, deny } from "http-lib"
+import { Method, Request, respond, deny, method-code } from "http-lib"
 import { Header } from "http-response"
 import { on-response, on-notification } from "reducer-lib"
 
@@ -35,12 +35,16 @@ def bootstrap-js() =
     [Header.Header({ name = "content-type", value = "text/javascript" })],
     b"const mount = document.getElementById('app'); mount.textContent = 'Cadenza browser outpost: bootstrap module loaded'; // S1b: fetch a shipped cadenza reducer (wasm), instantiate via jco, and drive its on-message/step against browser-APIs-as-effects.")
 
+// A page/asset router serves GET only — a non-GET to a known route is 405 (method not allowed), not the page.
+// Method is compared by code (Int64-eq; runtime String-eq is declined and method is an enum anyway).
 def on-message(msg) =
   (match (Value.decode(msg.payload) : Option(Request)) with
    | Some(Request.Request(rq)) =>
-     (if String.to-bytes(rq.path) == b"/" then html-page()
-      else if String.to-bytes(rq.path) == b"/app.js" then bootstrap-js()
-      else deny(404, b"not found"))
+     (if method-code(rq.method) == method-code(Method.Get) then
+        (if String.to-bytes(rq.path) == b"/" then html-page()
+         else if String.to-bytes(rq.path) == b"/app.js" then bootstrap-js()
+         else deny(404, b"not found"))
+      else deny(405, b"method not allowed"))
    | None => deny(404, b"not found"))
 
 export { on-message, on-response, on-notification }
