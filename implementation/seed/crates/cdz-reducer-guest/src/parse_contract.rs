@@ -11,10 +11,17 @@
 //!   ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(Diagnostic)))
 //!
 //! Encoding = the canonical value forms `Value.encode`/`Value.decode` speak, produced via the shared
-//! `cadenza-value` toolkit (the same codec the http gateway round-trips through Cadenza): a constructor
-//! application `(Parsed <record>)`; a record `#record((= field value)…)` with fields in ascending NAME order;
-//! a `List` compound; `String`/`Bytes`/`UInt32` leaves; the whole value wrapped in a root ascription
-//! `(: value ParseResult)`. Decoding is TOTAL (malformed -> `None`/empty), ascription-tolerant.
+//! `cadenza-value` toolkit (the same codec the http gateway round-trips through Cadenza). CRITICAL: every one
+//! of these types is a SINGLE-CONSTRUCTOR SINGLE-PAYLOAD sum — a NOMINAL NEWTYPE — which rcdzc's value form
+//! ERASES: the constructor is ELIDED and the inner value is ASCRIBED with the newtype's type name
+//! (`rcdzc/src/lower/value_form.rs` `Ty::Nominal` -> `Named(TypeName, shape_of(inner))`; confirmed against the
+//! now-green gateway Header fix, v-gateway-rewrite 2026-09-11). So:
+//!   `ParseRequest.Parse(src)`   encodes as  `(: "src" ParseRequest)`      (Parse elided)
+//!   `Diagnostic.Diagnostic(rec)` encodes as `(: #record Diagnostic)`      (Diagnostic elided)
+//!   `ParseResult.Parsed(rec)`   encodes as  `(: #record ParseResult)`     (Parsed elided)
+//! — NOT `(Parse …)`/`(Parsed …)`. Records are `#record((= field value)…)`, fields ascending NAME order;
+//! `String`/`Bytes`/`UInt32` leaves; `List` compound. Decoding is TOTAL (malformed -> `None`/empty),
+//! ascription-tolerant (the readers peel the `(: … Type)` frame).
 
 use cadenza_value::{self as value, ValueBuilder};
 
@@ -31,22 +38,18 @@ pub struct ParseDiag {
 #[must_use]
 pub fn decode_parse_request(bytes: &[u8]) -> Option<String> {
     let arenas = value::decode(bytes)?;
-    let root = arenas.root;
-    if value::read_ctor(&arenas, root)? != "Parse" {
-        return None;
-    }
-    let payload = value::ctor_payload(&arenas, root)?;
-    value::read_str(&arenas, *payload.first()?)
+    // The `Parse` ctor is ELIDED (Nominal newtype erased); the value IS the ascribed source string.
+    value::read_str(&arenas, arenas.root)
 }
 
 /// Encode a canonical `ParseRequest.Parse(source)` value — the request a caller builds to `run` a parser guest.
+/// The `Parse` ctor is elided (Nominal newtype), so it is the source string ascribed `(: "src" ParseRequest)`.
 /// Round-trips with [`decode_parse_request`].
 #[must_use]
 pub fn encode_parse_request(source: &str) -> Vec<u8> {
     let mut b = ValueBuilder::new();
     let s = value::str_leaf(&mut b, source);
-    let parse = value::bare_ctor(&mut b, "Parse", vec![s]);
-    value::finish(b, parse, "ParseRequest").to_vec()
+    value::finish(b, s, "ParseRequest").to_vec()
 }
 
 /// Encode a canonical `ParseResult.Parsed(Record(ast, diagnostics))` value — the parser guest's response.
@@ -66,13 +69,14 @@ pub fn encode_parse_result(ast: &[u8], diagnostics: &[ParseDiag]) -> Vec<u8> {
                 &mut b,
                 vec![("message", msg), ("byteOffset", off), ("len", len)],
             );
-            value::bare_ctor(&mut b, "Diagnostic", vec![rec])
+            // The `Diagnostic` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record Diagnostic)`.
+            value::ascribe(&mut b, rec, "Diagnostic")
         })
         .collect();
     let diags = value::list_value(&mut b, diag_values);
     let rec = value::record(&mut b, vec![("ast", ast_leaf), ("diagnostics", diags)]);
-    let parsed = value::bare_ctor(&mut b, "Parsed", vec![rec]);
-    value::finish(b, parsed, "ParseResult").to_vec()
+    // The `Parsed` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record ParseResult)`.
+    value::finish(b, rec, "ParseResult").to_vec()
 }
 
 /// Decode a canonical `ParseResult` value back into `(ast bytes, diagnostics)` — the inverse of
@@ -82,17 +86,9 @@ pub fn decode_parse_result(bytes: &[u8]) -> (Vec<u8>, Vec<ParseDiag>) {
     let Some(arenas) = value::decode(bytes) else {
         return (Vec::new(), Vec::new());
     };
-    let root = arenas.root;
-    // Expect `Parsed(<record>)`; anything else degrades to empty.
-    if value::read_ctor(&arenas, root) != Some("Parsed") {
-        return (Vec::new(), Vec::new());
-    }
-    let Some(payload) = value::ctor_payload(&arenas, root) else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(&rec) = payload.first() else {
-        return (Vec::new(), Vec::new());
-    };
+    // The `Parsed` ctor is elided (Nominal newtype); the root is the ascribed record itself (readers peel the
+    // `(: … ParseResult)` frame). A wrong-shape payload degrades to empty.
+    let rec = arenas.root;
     let ast = value::record_field(&arenas, rec, "ast")
         .and_then(|f| value::read_bytes(&arenas, f))
         .map(|b| b.to_vec())
@@ -109,12 +105,10 @@ pub fn decode_parse_result(bytes: &[u8]) -> (Vec<u8>, Vec<ParseDiag>) {
     (ast, diagnostics)
 }
 
-/// Decode one `Diagnostic(Record(message, byteOffset, len))` value.
+/// Decode one `Diagnostic` value — the `Diagnostic` ctor is elided (Nominal newtype), so `id` is the ascribed
+/// record directly (`record_field` peels the `(: … Diagnostic)` frame).
 fn decode_diag(arenas: &value::Arenas, id: value::ValueId) -> Option<ParseDiag> {
-    if value::read_ctor(arenas, id)? != "Diagnostic" {
-        return None;
-    }
-    let rec = *value::ctor_payload(arenas, id)?.first()?;
+    let rec = id;
     Some(ParseDiag {
         message: value::read_str(arenas, value::record_field(arenas, rec, "message")?)?,
         byte_offset: u32::try_from(value::read_uint(
