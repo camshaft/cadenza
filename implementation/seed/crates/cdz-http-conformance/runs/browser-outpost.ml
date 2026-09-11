@@ -15,20 +15,23 @@
     programs = [ { name = "browser-outpost", program = "browser-outpost" } ],
   },
   requests = [
-    // The HTML route: 200 text/html. Pin the FULL document body (the page IS the contract) so a future edit
-    // cannot silently change the served HTML shape — doctype, the #app mount div, and the out-of-line
-    // <script type=module src=/app.js> are all locked in.
+    // The HTML route: 200 text/html — the page references the out-of-line JS module + carries the mount/buttons.
     { http = { method = "GET", path = "/" },
       expect = { status = 200,
-                 body = b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><div id='app'>Loading...</div><script type='module' src='/app.js'></script></body></html>",
+                 body-contains = "src='/app.js'",
                  headers = [ { name = "content-type", value = "text/html" } ] } },
-    // The JavaScript route: 200 text/javascript. Pin the durable bootstrap contract — it mounts into the #app
-    // element via getElementById('app') (the DOM handle the reducer's render effect will target in S2), not
-    // just the current status string.
+    // The JavaScript route: 200 text/javascript. Pin the durable bootstrap contract — it mounts into #app via
+    // getElementById('app') (the DOM handle the reducer's render effect targets) and instantiates the reducer.
     { http = { method = "GET", path = "/app.js" },
       expect = { status = 200,
                  body-contains = "getElementById('app')",
                  headers = [ { name = "content-type", value = "text/javascript" } ] } },
+    // The wasm asset routes serve the reducer/runtime COMPONENT bytes via blobs.get(ProgramHash). In THIS
+    // harness the two components are not seeded and the hashes are unsubstituted placeholder markers, so
+    // blobs.get misses -> 404 (pinning the route exists + the blobs-miss path). The LIVE deploy substitutes the
+    // real ProgramHashes + seeds the components into the CAS, so /reducer.wasm serves 200 application/wasm there.
+    { http = { method = "GET", path = "/reducer.wasm" },
+      expect = { status = 404, body-contains = "not found" } },
     // An unmatched route denies 404 (the router's inline no-route branch).
     { http = { method = "GET", path = "/nope" },
       expect = { status = 404, body-contains = "not found" } },

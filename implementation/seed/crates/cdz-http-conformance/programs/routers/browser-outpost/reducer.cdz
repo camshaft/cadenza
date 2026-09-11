@@ -1,50 +1,61 @@
-// The BROWSER-OUTPOST router (DESIGN-browser-outpost.md, milestone S1a): a self-contained wasm router that
-// returns HTML on one route and JavaScript on another — the operator's exact ask (2026-09-11): "build a
-// router that returns HTML and JavaScript on certain routes … minimize the amount of JavaScript … mostly use
-// cadenza programs to drive the browser."
+// The BROWSER-OUTPOST router (DESIGN-browser-outpost.md) — the LIVE INTERACTIVE outpost. It serves, all
+// same-origin over the dumb gateway:
+//   GET /            -> 200 text/html        the page: a mount + click/reset buttons + <script src=/app.js>
+//   GET /app.js      -> 200 text/javascript  the real bootstrap: fetch the two wasms, jco-transpile IN-TAB,
+//                                             instantiate, drive the reducer's on-message on clicks (DOM-as-
+//                                             effect), apply the render patch to the DOM
+//   GET /reducer.wasm-> 200 application/wasm  the browser-outpost-app reducer COMPONENT bytes (blobs.get)
+//   GET /runtime.wasm-> 200 application/wasm  the value-heap runtime COMPONENT bytes (blobs.get)
+//   else / non-GET   -> 404 / 405
 //
-// Unlike the shared root-router-baked (which DISPATCHES to handler programs by baked hash and needs deploy
-// templating), this router answers INLINE: it decodes the http-request, branches on the path, and responds
-// directly. So it is one self-contained program with no baked handler hashes and no flake templating — it
-// stands alone in the browser-outpost territory. The dumb gateway needs ZERO changes: it forwards each
-// response's content-type header verbatim, so a browser fetches `/` as an HTML document and `/app.js` as an
-// ES module.
+// SAME-ORIGIN wasm serving (v-hivemind-confirmed mechanism): the gateway backs the guest's `blobs` import with
+// the shared CAS (#8729), so the router reads any component's bytes by its 33-byte ProgramHash at request time
+// via `blobs.get(h)` and `respond`s them as application/wasm — NOT http.response-cas (which would collide on
+// the duplicate Header type), and NOT the cross-origin CAS tunnel (CORS). The reducer + runtime ProgramHashes
+// are baked as fixed-width placeholder markers the deploy tooling substitutes (like root-router-baked's handler
+// markers) + it seeds those two components into the live CAS so blobs.get resolves them.
 //
-//   GET /        -> 200 text/html         the page: a mount point + <script type=module src=/app.js>
-//   GET /app.js  -> 200 text/javascript   the MINIMAL JS bootstrap (kept out-of-line so the HTML stays tiny)
-//   else         -> 404 deny
-//
-// The bootstrap JS is deliberately tiny (operator: minimize JS). S1b replaces its placeholder body with a
-// fetch+instantiate of a shipped cadenza reducer (wasm, via jco); S2 wires the first browser-API-as-effect
-// (DOM render / a click event) into that reducer's fold, so cadenza — not JS — drives the browser.
-//
-// Composed from the shared libs (operator 2026-09-10: reuse the mechanism, no inline worlds): `Request` +
-// `respond` + `deny` from `http-lib`, `Header` from `http-response`, the inert on-response / on-notification
-// from `reducer-lib`. HTML/JS use single-quoted attributes/strings so the byte-string literals need no `\"`.
+// The bootstrap JS is inline text (single-quoted, no backslash-escapes so the byte-string literal is literal;
+// `[ -~]` is the printable-ASCII range without a `\x` escape). It jco-transpiles in-tab (jco from a CDN) — the
+// same component the SERVER runs, adapted for the browser; a value-render component + bundled jco are follow-ons.
 import { Method, Request, respond, deny, method-code } from "http-lib"
 import { Header } from "http-response"
 import { on-response, on-notification } from "reducer-lib"
 
+// The reducer-app + value-heap-runtime ProgramHashes (33-byte markers; the deploy tooling substitutes the real
+// content hashes via cdz-http-programhash --escaped and seeds the two components into the live CAS).
+def reducer-hash() = (b"cdz-http.blob.reducer............" : Bytes)
+def runtime-hash() = (b"cdz-http.blob.runtime............" : Bytes)
+
+// Serve a CAS component's bytes same-origin: read by ProgramHash via the blobs host import, respond as wasm.
+def serve-wasm(h: Bytes) =
+  (match blobs.get(h) with
+   | Some(bytes) => respond(200, [Header.Header({ name = "content-type", value = "application/wasm" })], bytes)
+   | None(_) => deny(404, b"not found"))
+
 def html-page() =
   respond(200,
     [Header.Header({ name = "content-type", value = "text/html" })],
-    b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><div id='app'>Loading...</div><script type='module' src='/app.js'></script></body></html>")
+    b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><h1>Cadenza browser outpost</h1><p>A Cadenza reducer, shipped to this tab as a wasm component and driven as a pure fold. The buttons drive its on-message (DOM-as-effect); the display is the reducer's render patch.</p><div id='app'>loading reducer...</div><button id='click'>click (drive the reducer)</button><button id='reset'>agent reset</button><pre id='log' style='color:#666;font-size:.8rem'></pre><script type='module' src='/app.js'></script></body></html>")
 
 def bootstrap-js() =
   respond(200,
     [Header.Header({ name = "content-type", value = "text/javascript" })],
-    b"const mount = document.getElementById('app'); mount.textContent = 'Cadenza browser outpost: bootstrap module loaded'; // S1b: fetch a shipped cadenza reducer (wasm), instantiate via jco, and drive its on-message/step against browser-APIs-as-effects.")
+    b"const mount=document.getElementById('app');const logEl=document.getElementById('log');const log=(m)=>{if(logEl)logEl.textContent=logEl.textContent+m+' | ';};const enc=new TextEncoder();const patchText=(payload)=>{const s=new TextDecoder('latin1').decode(payload);const runs=s.match(/[ -~]{3,}/g)||[];const skip=['Patch','Text','Element','cdzast'];const best=runs.filter((r)=>skip.indexOf(r.trim())<0).sort((a,b)=>b.length-a.length)[0];return best?best.trim():'(empty)';};const apply=(step)=>{if(step&&step.requests&&step.requests[0])mount.textContent=patchText(step.requests[0].payload);};const loadComponent=async(url,name,transpileBytes)=>{const bytes=new Uint8Array(await (await fetch(url)).arrayBuffer());const{files}=await transpileBytes(bytes,{name:name,instantiation:'async',wasiShim:false,minify:false});const cores={};const blobUrls={};for(const[f,b]of Object.entries(files)){if(f.endsWith('.wasm'))cores[f]=b;else if(f.endsWith('.js'))blobUrls[f]=URL.createObjectURL(new Blob([b],{type:'text/javascript'}));}let entry=new TextDecoder().decode(files[name+'.js']);for(const[f,u]of Object.entries(blobUrls))entry=entry.split('./'+f).join(u);const mod=await import(URL.createObjectURL(new Blob([entry],{type:'text/javascript'})));const getCore=async(p)=>WebAssembly.compile(cores[p]);return{mod:mod,getCore:getCore};};(async()=>{try{mount.textContent='loading jco + reducer...';const jco=await import('https://esm.sh/@bytecodealliance/jco-transpile@0.4.2');const transpileBytes=jco.transpileBytes;const NFC={nfc:(b)=>enc.encode(new TextDecoder('utf-8').decode(b).normalize('NFC'))};const rt=await loadComponent('/runtime.wasm','heap',transpileBytes);const hroot=await rt.mod.instantiate(rt.getCore,{'cadenza:nfc/normalize':NFC});const heapKey=Object.keys(hroot).find((k)=>k.indexOf('heap')>=0);const stateMap=new Map();const kstr=(k)=>new TextDecoder('latin1').decode(k);const stateShim={get:(k)=>stateMap.get(kstr(k)),put:(k,v)=>{stateMap.set(kstr(k),v);},delete:(k)=>{stateMap.delete(kstr(k));}};const stub=new Proxy({},{get:()=>()=>undefined});const imports=new Proxy({},{get:(_t,key)=>{if(typeof key!=='string')return stub;if(key.indexOf('cadenza:runtime/heap')===0)return hroot[heapKey];if(key.indexOf('/state')>=0)return stateShim;return stub;}});const app=await loadComponent('/reducer.wasm','app',transpileBytes);const aroot=await app.mod.instantiate(app.getCore,imports);const g=aroot['cadenza:platform/guest']||aroot.guest;const e=new Uint8Array();const msg=(c)=>({contract:c,sender:{reducer:e,host:e},payload:e,token:e});apply(g.onMessage(msg(e)));document.getElementById('click').onclick=()=>apply(g.onMessage(msg(enc.encode('cadenza.dom.event.click'))));document.getElementById('reset').onclick=()=>apply(g.onMessage(msg(enc.encode('cadenza.agent.reset'))));log('reducer running - click the buttons');}catch(err){mount.textContent='failed to start: '+(err&&err.message?err.message:err);log('ERROR '+(err&&err.stack?err.stack:err));}})();")
 
-// A page/asset router serves GET only — a non-GET to a known route is 405 (method not allowed), not the page.
-// Method is compared by code (Int64-eq; runtime String-eq is declined and method is an enum anyway).
+// GET-only page/asset router. Wrap in `host blobs in` so blobs.get is in scope for the wasm asset routes
+// (blobs is already in the reducer-world wit-world — no wit-world change).
 def on-message(msg) =
-  (match (Value.decode(msg.payload) : Option(Request)) with
-   | Some(Request.Request(rq)) =>
-     (if method-code(rq.method) == method-code(Method.Get) then
-        (if String.to-bytes(rq.path) == b"/" then html-page()
-         else if String.to-bytes(rq.path) == b"/app.js" then bootstrap-js()
-         else deny(404, b"not found"))
-      else deny(405, b"method not allowed"))
-   | None => deny(404, b"not found"))
+  host blobs in
+    (match (Value.decode(msg.payload) : Option(Request)) with
+     | Some(Request.Request(rq)) =>
+       (if method-code(rq.method) == method-code(Method.Get) then
+          (if String.to-bytes(rq.path) == b"/" then html-page()
+           else if String.to-bytes(rq.path) == b"/app.js" then bootstrap-js()
+           else if String.to-bytes(rq.path) == b"/reducer.wasm" then serve-wasm(reducer-hash())
+           else if String.to-bytes(rq.path) == b"/runtime.wasm" then serve-wasm(runtime-hash())
+           else deny(404, b"not found"))
+        else deny(405, b"method not allowed"))
+     | None => deny(404, b"not found"))
 
 export { on-message, on-response, on-notification }

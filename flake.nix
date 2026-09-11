@@ -6881,6 +6881,9 @@
         packages.guide-site = guideSite;
         # `.#browser-outpost-bundle` — a static bundle to open the browser outpost in a real browser (manual test).
         packages.browser-outpost-bundle = browserOutpostBundle;
+        # `.#browser-outpost-app` — the browser-outpost APP reducer COMPONENT (.wasm), for the live deploy to
+        # seed into the CAS so the router's /reducer.wasm (blobs.get) resolves it. (Runtime is `.#runtime`.)
+        packages.browser-outpost-app = httpConformanceProgramsByName."browser-outpost-app";
 
         # `.#corpus-verdicts` — the WASM-corpus verdict harvest (v-xtask-decompose --save gate-delete). One
         # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
