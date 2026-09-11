@@ -13,15 +13,20 @@
 // recommended assertion. (A genuine multi-MiB upload instead races the gateway's close: the client sees a
 // connection reset, not the 413 status, so we assert the declared-length fast path here.)
 //
-// The 413 ceiling is implemented + owned by v-gateway-rewrite (#8785, MAX_REQUEST_BODY = 16 << 20).
+// The 413 ceiling is implemented + owned by v-gateway-rewrite (#8785, MAX_REQUEST_BODY = 16 << 20; #8787 drains
+// the oversized body so the client's upload completes + it receives a CLIENT-VISIBLE 413 rather than a mid-upload
+// reset). http-hello is the direct root router — it IGNORES the request and always 200s, so an oversized POST
+// that reached routing would wrongly get 200; a 413 proves the ceiling rejects FIRST.
 {
   config = {
     root-router = "http-hello",
     programs = [ { name = "http-hello", program = "http-hello" } ],
   },
   requests = [
-    // Declared Content-Length over the ceiling → 413 before routing (http-hello, which always 200s, never runs).
-    { http = { method = "POST", path = "/", declared-content-length = 20000000 },
+    // A genuine 20 MiB upload (> the 16 MiB = 16777216 ceiling) → a client-visible 413: the gateway drains the
+    // body (#8787) so the upload completes and the 413 status comes back (not a connection reset). body-fill
+    // generates the body at send time (no huge literal in the run-spec).
+    { http = { method = "POST", path = "/", body-fill = 20971520 },
       expect = { status = 413 } },
     // A normal small body still routes to http-hello → 200.
     { http = { method = "POST", path = "/", body = b"hi" },

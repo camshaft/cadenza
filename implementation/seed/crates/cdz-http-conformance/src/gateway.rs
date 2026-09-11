@@ -60,13 +60,6 @@ impl GatewayClient {
     /// # Errors
     /// The request method is not a valid HTTP method, the request cannot be sent, or the body cannot be read.
     pub async fn send(&self, req: &HttpRequest) -> Result<GatewayResponse, String> {
-        // The body-ceiling 413 fast path: send a raw request declaring a large Content-Length but NO body, so
-        // the gateway rejects on the declared length BEFORE reading — a client-visible 413 with nothing uploaded
-        // (a genuine oversized upload instead races the gateway's close → the client sees a reset). reqwest can't
-        // send a Content-Length that mismatches the body, so this path is raw.
-        if let Some(declared) = req.declared_content_length {
-            return self.send_raw_declared_length(req, declared).await;
-        }
         let method = Method::from_bytes(req.method.as_bytes())
             .map_err(|e| format!("invalid method {:?}: {e}", req.method))?;
         let url = format!("{}{}", self.base, req.path);
@@ -105,47 +98,6 @@ impl GatewayClient {
         })
     }
 
-    /// Send a raw request declaring `Content-Length: <declared>` with NO body, and read the response — the
-    /// body-ceiling 413 fast-path probe (see [`send`](Self::send)). The gateway rejects on the oversized declared
-    /// length before reading the body, so it answers immediately (then closes, per our `Connection: close`).
-    ///
-    /// # Errors
-    /// The connection fails, the write fails, or the gateway does not respond within the budget (e.g. it waits to
-    /// read the declared body first, which would be a real bug — surfaced as a clear read-timeout error).
-    async fn send_raw_declared_length(
-        &self,
-        req: &HttpRequest,
-        declared: u64,
-    ) -> Result<GatewayResponse, String> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let budget = std::time::Duration::from_secs(10);
-        let addr = self.base.strip_prefix("http://").unwrap_or(&self.base);
-        let mut stream = tokio::time::timeout(budget, tokio::net::TcpStream::connect(addr))
-            .await
-            .map_err(|_| format!("raw connect to {addr} timed out"))?
-            .map_err(|e| format!("raw connect to {addr}: {e}"))?;
-        // Write ONLY the request head (no body) — the gateway 413s on the declared length before reading.
-        let head = format!(
-            "{} {} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n",
-            req.method, req.path
-        );
-        stream
-            .write_all(head.as_bytes())
-            .await
-            .map_err(|e| format!("raw write: {e}"))?;
-        let _ = stream.flush().await;
-        let mut buf = Vec::new();
-        tokio::time::timeout(budget, stream.read_to_end(&mut buf))
-            .await
-            .map_err(|_| {
-                "raw read timed out: the gateway did not answer the oversized declared Content-Length (it may \
-                 be waiting to read the body before rejecting — the 413 fast path should answer first)"
-                    .to_string()
-            })?
-            .map_err(|e| format!("raw read: {e}"))?;
-        parse_raw_response(&buf)
-    }
-
     /// Probe the gateway's boot readiness with a short-budget `GET /`, classifying the outcome (see
     /// [`SettleProbe`]). The unconfigured floor answers INSTANTLY with `503 waiting for control`; anything
     /// slower-than-`budget` means the gateway accepted the connection and is DRIVING (configured) — critically,
@@ -171,45 +123,6 @@ impl GatewayClient {
             Ok(Err(_)) | Err(_) => SettleProbe::Configured,
         }
     }
-}
-
-/// Parse a raw HTTP/1.1 response (status line + headers + body) into a [`GatewayResponse`]. Used by the raw
-/// declared-Content-Length path, which speaks HTTP directly rather than through `reqwest`.
-///
-/// # Errors
-/// The response has no header/body separator, or its status line is malformed / missing a numeric code.
-fn parse_raw_response(raw: &[u8]) -> Result<GatewayResponse, String> {
-    let sep = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| {
-            format!(
-                "raw response has no header/body separator ({} bytes: {:?})",
-                raw.len(),
-                String::from_utf8_lossy(&raw[..raw.len().min(80)])
-            )
-        })?;
-    let head = String::from_utf8_lossy(&raw[..sep]);
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or_default();
-    // Status line: `HTTP/1.1 <code> <reason>`; the code is the 2nd whitespace token.
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse::<u16>().ok())
-        .ok_or_else(|| format!("raw response has a malformed status line: {status_line:?}"))?;
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|line| {
-            line.split_once(':')
-                .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string()))
-        })
-        .collect();
-    let body = Bytes::copy_from_slice(&raw[sep + 4..]);
-    Ok(GatewayResponse {
-        status,
-        headers,
-        body,
-    })
 }
 
 #[cfg(test)]
