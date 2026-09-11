@@ -132,6 +132,11 @@ pub struct Expect {
     /// Assert this response BODY equals a value captured by an earlier step's `capture_body_as`. A robust
     /// structural check that pins NO machine-specific value (unlike an exact `body`).
     pub body_equals_capture: Option<String>,
+    /// Additionally assert the CAS-resolved blob (see `resolves_in_cas`, which must be set) STARTS WITH these
+    /// bytes — e.g. the wasm magic `\0asm` (`00 61 73 6d`) for a `/compile` component, proving the published
+    /// blob is really a wasm component and not merely non-empty. A prefix, not the whole body, so it pins no
+    /// machine-specific content.
+    pub cas_body_starts_with: Option<Vec<u8>>,
 }
 
 impl RunSpec {
@@ -369,6 +374,10 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(c) => Some(value::read_str(arenas, c)?),
         None => None,
     };
+    let cas_body_starts_with = match value::record_field(arenas, id, "cas-body-starts-with") {
+        Some(b) => Some(value::read_bytes(arenas, b)?.to_vec()),
+        None => None,
+    };
     Some(Expect {
         status,
         body,
@@ -378,6 +387,7 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         resolves_in_cas,
         capture_body_as,
         body_equals_capture,
+        cas_body_starts_with,
     })
 }
 
@@ -505,6 +515,37 @@ mod tests {
         assert_eq!(cr.asts.len(), 1);
         assert_eq!(cr.asts[0].name, "main");
         assert_eq!(cr.asts[0].from_capture, "main-ast");
+    }
+
+    #[test]
+    fn parses_cas_body_starts_with_prefix() {
+        // expect = { resolves-in-cas = true, cas-body-starts-with = b"\x00asm" } — the wasm magic prefix.
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "POST");
+        let path = str_leaf(&mut b, "/compile");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        let rc = bool_leaf(&mut b, true);
+        let magic = bytes_leaf(&mut b, b"\x00asm");
+        let expect = record(
+            &mut b,
+            vec![("cas-body-starts-with", magic), ("resolves-in-cas", rc)],
+        );
+        let step = record(&mut b, vec![("expect", expect), ("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { expect, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
+        assert!(expect.resolves_in_cas);
+        assert_eq!(
+            expect.cas_body_starts_with.as_deref(),
+            Some(&[0x00, 0x61, 0x73, 0x6d][..]),
+            "the wasm magic prefix must decode to the four magic bytes"
+        );
     }
 
     #[test]
