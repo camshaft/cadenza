@@ -108,6 +108,9 @@ Effect vocabulary + routing:
 - `request-header-decode` — a handler recurses `List(Header)` for a named header (`x-probe`) and echoes its
   value (`X-Probe: v` → body `v`; absent → `(absent)`), pinning the forward codec's `headers` field is READABLE
   in the guest (names arrive lowercased). Completes the forward-codec field coverage (method/path/query/body/headers).
+- `response-multi-header` — a handler answers a chosen status (`201`) + a TWO-element `List(Header)`, pinning the
+  REVERSE (response) codec: the gateway forwards the handler's status (not a hardcoded 200) and EVERY header (not
+  just the first) — invariants a single-header 200 can't catch.
 - `live-swap` — a control `push-root-router` hot-swaps the root router (retry-until-match past propagation).
 - `control-send` — a handler's `control.send` round-trips (ControlUp → primed reply → on-response).
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
