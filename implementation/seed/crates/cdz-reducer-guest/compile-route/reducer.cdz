@@ -18,8 +18,8 @@
 // below are rewritten in place. TODO(B9-followup): select the parser by a `?syntax=sexpr|ml` query param
 // (r.query) — defaults to ML for the first cut.
 import { Request, respond } from "http-lib"
-import { descriptor as ml-parse-desc, ParseRequest, ParseResult } from "ml-parse"
-import { descriptor as rcdzc-desc, CompileRequest, CompileResult, Artifact } from "rcdzc-compile"
+import { descriptor as ml-parse-desc, ParseRequest, ParseResult, ParseDiagnostic } from "ml-parse"
+import { descriptor as rcdzc-desc, CompileRequest, CompileResult, Artifact, CompileDiagnostic } from "rcdzc-compile"
 import { Error, on-response, on-notification } from "reducer-lib"
 
 // The ProgramHash of the ML-parser build guest (reducer-guest-ml) — a CAS content address baked at build time.
@@ -34,6 +34,27 @@ def component-of(artifacts: List(Artifact)) -> Option(Bytes) =
   | [a, .. rest] =>
     (match a with
      | Artifact.Artifact(x) => if x.kind == "component" then Option.Some(x.bytes) else component-of(rest))
+
+// Render the PARSE diagnostics (byte-span located) as a newline-joined message body — so a 400 tells the
+// caller exactly what was wrong with the source, not a bare "parse diagnostics".
+def render-parse-diags(ds: List(ParseDiagnostic)) -> String =
+  match ds with
+  | [] => ""
+  | [d, .. rest] =>
+    (match d with
+     | ParseDiagnostic.ParseDiagnostic(x) =>
+       String.concat(x.message, String.concat("\n", render-parse-diags(rest))))
+
+// Render the COMPILE diagnostics (`<code>: <message>` per line) — so a 422 (an invalid program rcdzc declined,
+// no component) tells the caller/agent what was wrong, rather than a bare "compile produced no component".
+def render-compile-diags(ds: List(CompileDiagnostic)) -> String =
+  match ds with
+  | [] => ""
+  | [d, .. rest] =>
+    (match d with
+     | CompileDiagnostic.CompileDiagnostic(x) =>
+       let prefix = (match x.code with | Option.Some(c) => String.concat(c, ": ") | Option.None => "") in
+       String.concat(prefix, String.concat(x.message, String.concat("\n", render-compile-diags(rest)))))
 
 def on-message(msg) =
   host run in
@@ -61,10 +82,10 @@ def on-message(msg) =
                        | Some(CompileResult.Compiled(cr)) =>
                          (match component-of(cr.artifacts) with
                           | Some(component) => (let h = blobs.put(component) in respond(200, [], h))
-                          | None => respond(422, [], b"compile produced no component"))
+                          | None => respond(422, [], String.to-bytes(render-compile-diags(cr.diagnostics))))
                        | None => respond(500, [], b"undecodable CompileResult"))
                     | Err(_e) => respond(500, [], b"rcdzc run failed")))
-                | [_, .. _] => respond(400, [], b"parse diagnostics"))
+                | [_, .. _] => respond(400, [], String.to-bytes(render-parse-diags(pr.diagnostics))))
              | None => respond(500, [], b"undecodable ParseResult"))
           | Err(_e) => respond(500, [], b"ml parser run failed")))
        | None => respond(400, [], b"undecodable http-request"))
