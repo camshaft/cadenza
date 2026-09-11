@@ -1,0 +1,13 @@
+// The http-facing MULTI-MODULE compile request (reducer-targets B10b; operator design via v-hivemind): the
+// body a client POSTs to the /compile route — a set of already-parsed modules keyed by name to their AST's
+// content-address, plus the entrypoint module name. Value.encode/Value.decode'd as the request body (canonical
+// binary-AST — the exchange format, operator standing directive; NOT JSON). The handler blobs.gets each
+// `astHash` from the CAS and feeds rcdzc a KIND_AST(name = module-name) artifact per module + a KIND_ENTRY
+// artifact naming the entry — rcdzc resolves imports across the named set + compiles the entrypoint.
+//
+// Distinct type names from rcdzc-compile's CompileRequest/Artifact (this is the HTTP request; that is the
+// rcdzc GUEST wire) so both co-import cleanly. Single-ctor record newtypes.
+type Module = | Module(Record(name: String, astHash: Bytes))
+type CompileRoute = | Compile(Record(modules: List(Module), entry: String))
+
+export { Module.*, CompileRoute.* }
