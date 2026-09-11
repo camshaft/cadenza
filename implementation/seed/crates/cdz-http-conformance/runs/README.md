@@ -40,6 +40,8 @@ A record with two fields (read by name; order-independent):
     mock replies a correlation-matched `ControlDown` carrying `reply`. Set it before the request that sends.
   - `{ control = { drop-control = true } }` — close the gateway's control-ws server-side, forcing it to
     REDIAL (reconnect/resilience testing; the mock re-ships the config on reconnect).
+  - `{ control = { push-garbage-frame = true } }` — send an UNDECODABLE control frame; the gateway must
+    tolerate it (ignore/recover, not crash/hang).
 
 ### `http` request fields
 
@@ -106,6 +108,8 @@ Effect vocabulary + routing:
   baseline GET / → 200, then after the drop a retried GET / → 200 (a control blip doesn't break the data plane).
 - `concurrency` — 25 concurrent GET / to http-hello → all 200: the gateway drives a fresh mailbox per
   request with no cross-request race/deadlock/corruption under load (§8-grow concurrency).
+- `malformed-frame` — a `push-garbage-frame` delivers undecodable bytes on the control link → the gateway
+  tolerates it (baseline GET /→200, garbage frame, retried GET /→200); a crash/hang would fail (§8-grow malformed frames).
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.

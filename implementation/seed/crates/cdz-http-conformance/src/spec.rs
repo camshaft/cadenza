@@ -89,6 +89,9 @@ pub enum ControlStep {
     /// exercising the control-link reconnect/resilience path (the gateway re-configures from the config the
     /// mock re-ships on reconnect).
     DropControl,
+    /// Send an UNDECODABLE (malformed) control frame to the gateway (`push-garbage-frame`) — the gateway must
+    /// tolerate garbage on the control link (ignore/recover, never crash/hang).
+    PushGarbageFrame,
 }
 
 /// An HTTP request to make at the gateway. `headers` are `(name, value)` pairs; `body` is the request body
@@ -389,6 +392,9 @@ fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlSt
     }
     if value::record_field(arenas, id, "drop-control").is_some() {
         return Some(ControlStep::DropControl);
+    }
+    if value::record_field(arenas, id, "push-garbage-frame").is_some() {
+        return Some(ControlStep::PushGarbageFrame);
     }
     if let Some(pr) = value::record_field(arenas, id, "prime-reply") {
         let match_path = match value::record_field(arenas, pr, "match-path") {
