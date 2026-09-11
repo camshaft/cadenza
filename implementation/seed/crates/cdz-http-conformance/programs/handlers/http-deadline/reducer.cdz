@@ -1,0 +1,21 @@
+// A DEADLINE/TIMEOUT handler (DESIGN-http-outpost §1/§2): on each request it emits ONE effect carrying a
+// per-request DEADLINE and CONTINUES, awaiting the answer. The control server is NOT primed to reply, so no
+// answer arrives — the gateway's resolver (which arms the deadline BEFORE classifying the effect, so this is
+// a REAL gateway-enforced timeout, not a harness injection) injects Err(Error.Timeout) at the deadline. The
+// handler folds that into a 504 response. This pins the deadline path independent of the control-link frame
+// codec (the deadline is LOCAL-inject).
+//
+// Composed from the shared libs: `control-send-deadline` + `respond` from `http-lib`, the reducer-world
+// boundary from the witWorld artifact, the inert on-notification from `reducer-lib`.
+import { control-send-deadline, respond } from "http-lib"
+import { Error, on-notification } from "reducer-lib"
+
+// 100ms deadline — the effect will never be answered (no prime-reply), so the timeout fires.
+def on-message(_msg) = control-send-deadline(b"awaiting-a-reply-that-never-comes", 100000000)
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  (match resp.answer with
+   | Ok(_) => respond(200, [], b"unexpected reply (the deadline should have fired first)")
+   | Err(_) => respond(504, [], b"TIMEOUT"))
+
+export { on-message, on-response, on-notification }
