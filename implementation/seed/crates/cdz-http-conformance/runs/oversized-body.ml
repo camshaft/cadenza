@@ -7,19 +7,21 @@
 // that reaches routing would wrongly get 200; a 413 proves the ceiling fires FIRST, before http-hello is driven.
 // A normal small POST still routes to http-hello (200), confirming the ceiling only rejects the oversized case.
 //
-// The oversized body is GENERATED at send time via `body-fill` (20 MiB — comfortably over a ~16 MiB ceiling; no
-// giant literal in the run-spec). If v-gateway-rewrite's final ceiling differs, bump this to stay clearly over.
+// The oversized request declares `Content-Length: 20000000` (> the 16 MiB = 16777216 ceiling) with NO actual
+// body (`declared-content-length`, sent over a raw socket). The gateway's fast path rejects on the declared
+// length BEFORE reading a byte, so a CLIENT-VISIBLE 413 comes back with nothing uploaded — v-gateway-rewrite's
+// recommended assertion. (A genuine multi-MiB upload instead races the gateway's close: the client sees a
+// connection reset, not the 413 status, so we assert the declared-length fast path here.)
 //
-// Test-first: RED until the gateway ceiling lands (until then the oversized POST returns http-hello's 200), then
-// auto-greens. v-gateway-rewrite will ping at land with the exact ceiling value.
+// The 413 ceiling is implemented + owned by v-gateway-rewrite (#8785, MAX_REQUEST_BODY = 16 << 20).
 {
   config = {
     root-router = "http-hello",
     programs = [ { name = "http-hello", program = "http-hello" } ],
   },
   requests = [
-    // Oversized body (20 MiB) → 413 before routing (http-hello never sees it).
-    { http = { method = "POST", path = "/", body-fill = 20971520 },
+    // Declared Content-Length over the ceiling → 413 before routing (http-hello, which always 200s, never runs).
+    { http = { method = "POST", path = "/", declared-content-length = 20000000 },
       expect = { status = 413 } },
     // A normal small body still routes to http-hello → 200.
     { http = { method = "POST", path = "/", body = b"hi" },
