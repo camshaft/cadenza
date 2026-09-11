@@ -1,0 +1,22 @@
+// A CAS-backed response handler that also sets a NON-200 status + a response HEADER on the CasRef terminal —
+// pins the gateway's decode_response_cas status/header decode, a SEPARATE code path from decode_response (they
+// differ only in where the body comes from — the CasRef path FETCHES it from the CAS). The plain http-casref
+// scenario only exercises 200 + [] headers, so this closes the CasRef path's status/header gap (the analogue of
+// response-multi-header for the inline path).
+//
+// Publishes bytes via blobs.put, then closes http.response-cas with status 201 + an x-conformance header + the
+// blob hash. Mirrors http-casref exactly (imports Header from http-response-cas — NOT http-response — to avoid
+// the CDZ0201 collision between the two identical Header types).
+import { ResponseCas, Header, descriptor as response-cas-descriptor } from "http-response-cas"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  host blobs in
+    (let h = blobs.put(b"cas-backed body bytes") in
+     { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+       outcome = Outcome.Close({ schema = response-cas-descriptor().id,
+                                 reason = Value.encode(ResponseCas.ResponseCas({ status = 201,
+                                                                                 headers = [Header.Header({ name = "x-conformance", value = "cas-header-ok" })],
+                                                                                 body_hash = h })) }) })
+
+export { on-message, on-response, on-notification }
