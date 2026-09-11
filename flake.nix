@@ -5877,6 +5877,41 @@
           '';
         };
 
+        # browser-outpost S1b (headless): prove a Cadenza REDUCER ships to the browser via jco. Reuses the
+        # guide's vendored npm deps (guideNpmDeps already locks @bytecodealliance/jco-transpile, transitively
+        # via jco) + node 22 + npmConfigHook (offline `npm ci`), then runs check-browser-outpost-jco.mjs over
+        # the browser-outpost reducer-world guest component (CDZ_GUEST_WASM = its mkCadenzaGuest $out — the
+        # stripped .wasm file). No compiler-wasm / stage-wasm / codegen needed — just node + jco + the guest.
+        # The smallest GATED proof (no browser) that a shipped reducer is jco-loadable in a JS engine.
+        browserOutpostJcoCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-browser-outpost-jco-transpile";
+          version = "0.0.0";
+          src = guideExamplesSrc;
+          nativeBuildInputs = [
+            pkgs.nodejs_22
+            pkgs.npmHooks.npmConfigHook
+          ];
+          npmDeps = guideNpmDeps;
+          npmRoot = "guide";
+          CDZ_GUEST_WASM = "${httpConformanceProgramsByName."browser-outpost"}";
+          buildPhase = ''
+            runHook preBuild
+            ( cd guide
+              npm ci
+              # Vendored bins ship `#!/usr/bin/env node` shebangs that don't resolve in the sandbox; the
+              # driver only import()s jco-transpile (no vendored bin), but patch anyway to be safe.
+              patchShebangs node_modules
+              node scripts/check-browser-outpost-jco.mjs
+            )
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-browser-outpost-jco-transpile (reducer transpiles + loads via jco)" > "$out"
+            runHook postInstall
+          '';
+        };
+
         # guideSite — the DEPLOYABLE static guide site (`guide/dist/`) built through NIX so the GitHub-Pages
         # deploy reuses the SHARED nix cache instead of a cold raw build every 30-min cron (operator directive
         # 2026-08-29, job 33275680429 — the pages deploy spent a lot of time building). Same build path as
@@ -8212,6 +8247,8 @@
             # Full-CI-in-nix increment 6f: the GHA guide-examples job (the guide's runnable-content gate —
             # hermetic wasm-pack + npm ci + the check:* battery + build + bundle). The LAST required job.
             guide-examples = guideExamplesCheck;
+            # browser-outpost S1b: headless jco-transpile proof that a Cadenza reducer is browser-loadable.
+            browser-outpost-jco-transpile = browserOutpostJcoCheck;
             guide-shred-check = guideShredCheck;
             guide-examples-shredded = guideExamplesShredded;
             guide-manifest-drift-assert = guideManifestDriftAssert;
