@@ -19,7 +19,7 @@
   requests = [
     // Declare a (sub-ceiling) body, send nothing, hold open → the gateway's idle timeout floors it 408.
     { http = { method = "POST", path = "/", stalled-content-length = 1000 },
-      expect = { status = 408 } },
+      expect = { status = 408, body-contains = "read timed out" } },
     // A normal small body still routes to http-hello → 200 (the idle timeout only floors a stalled client).
     { http = { method = "POST", path = "/", body = b"hi" },
       expect = { status = 200, body = b"hello from a wasm handler" } },

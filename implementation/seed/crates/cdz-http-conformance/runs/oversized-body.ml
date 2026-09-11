@@ -27,7 +27,7 @@
     // body (#8787) so the upload completes and the 413 status comes back (not a connection reset). body-fill
     // generates the body at send time (no huge literal in the run-spec).
     { http = { method = "POST", path = "/", body-fill = 20971520 },
-      expect = { status = 413 } },
+      expect = { status = 413, body-contains = "exceeds the 16 MiB ceiling" } },
     // A normal small body still routes to http-hello → 200.
     { http = { method = "POST", path = "/", body = b"hi" },
       expect = { status = 200, body = b"hello from a wasm handler" } },
