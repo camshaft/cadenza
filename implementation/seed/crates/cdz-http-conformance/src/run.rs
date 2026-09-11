@@ -122,6 +122,12 @@ pub async fn run_steps(
                         r.body = Some(body);
                         r
                     })
+                } else if let Some(n) = request.body_fill {
+                    // Generate a large filler body at send time (e.g. over the gateway's ceiling → 413) without
+                    // a huge literal in the run-spec.
+                    let mut r = request.clone();
+                    r.body = Some(vec![b'a'; n as usize]);
+                    Ok(r)
                 } else {
                     Ok(request.clone())
                 };
