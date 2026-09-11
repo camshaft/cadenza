@@ -126,6 +126,12 @@ pub struct HttpRequest {
     /// WIT swallows) leaves a fresh hash unresolvable → a deterministic downstream floor. Takes precedence over
     /// `body` (but not `compile_request` / `body_source` / `body_fill`).
     pub body_nonce: bool,
+    /// Fire this request `N` times CONCURRENTLY (all in flight at once) and require EVERY response to pass the
+    /// step's `Expect` — the concurrency/isolation gate (the gateway must drive a fresh mailbox per request with
+    /// no cross-request race, deadlock, or state corruption under load). A simple burst: the `body*` /
+    /// `compile-request` / capture / resolves-in-cas machinery is bypassed (a concurrency step uses a plain
+    /// request-independent handler).
+    pub concurrency: Option<u32>,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -346,6 +352,10 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(n) => value::read_bool(arenas, n)?,
         None => false,
     };
+    let concurrency = match value::record_field(arenas, http, "concurrency") {
+        Some(c) => Some(u32::try_from(value::read_uint(arenas, c)?).ok()?),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
@@ -356,6 +366,7 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         body_fill,
         stalled_content_length,
         body_nonce,
+        concurrency,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,

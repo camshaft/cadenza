@@ -105,6 +105,14 @@ pub async fn run_steps(
     let mut captures: std::collections::HashMap<String, bytes::Bytes> = seed_captures;
     for (i, step) in steps.iter().enumerate() {
         let (description, result) = match step {
+            // A CONCURRENCY burst: fire the request N times at once + require every response to pass — the
+            // gateway must drive a fresh mailbox per request with no cross-request race/deadlock/corruption.
+            Step::Http { request, expect } if request.concurrency.is_some() => {
+                let n = request.concurrency.unwrap_or(1);
+                let description = format!("{} {} (x{n} concurrent)", request.method, request.path);
+                let result = run_concurrent(gateway, request, expect, n).await;
+                (description, result)
+            }
             Step::Http { request, expect } => {
                 let description = format!("{} {}", request.method, request.path);
                 // Resolve the effective request body NOW: a `compile-request` is assembled (post-capture) via the
@@ -276,6 +284,48 @@ async fn run_http_step(
         last = attempt().await;
     }
     last.map_err(|e| format!("retry-until-match timed out after {RETRY_TIMEOUT:?}: {e}"))
+}
+
+/// Fire `request` `n` times CONCURRENTLY at the `gateway` and require EVERY response to pass `expect` — the
+/// concurrency/isolation gate (a fresh mailbox per request, no cross-request race/deadlock/corruption under
+/// load). Each concurrent copy is a plain send + `Expect::check` (no capture / resolves-in-cas / retry).
+///
+/// # Errors
+/// One or more of the `n` concurrent requests errored in transport or missed its `Expect` (the count + a sample).
+async fn run_concurrent(
+    gateway: &GatewayClient,
+    request: &crate::spec::HttpRequest,
+    expect: &crate::spec::Expect,
+    n: u32,
+) -> Result<(), String> {
+    let handles: Vec<_> = (0..n)
+        .map(|_| {
+            let g = gateway.clone();
+            let r = request.clone();
+            let e = expect.clone();
+            tokio::spawn(async move {
+                let resp = g.send(&r).await?;
+                e.check(resp.status, &resp.headers, &resp.body)
+            })
+        })
+        .collect();
+    let mut failures = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => failures.push(e),
+            Err(join) => failures.push(format!("concurrent task join error: {join}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}/{n} concurrent requests failed (e.g. {})",
+            failures.len(),
+            failures.first().map(String::as_str).unwrap_or("")
+        ))
+    }
 }
 
 /// Build a `/compile` route request body from a [`CompileRequestSpec`] by invoking the REAL
@@ -731,6 +781,76 @@ mod tests {
         assert!(
             outcomes[0].result.is_err(),
             "no retry → the first 503 is reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_concurrency_step_fires_n_requests_and_requires_all_pass() {
+        // The looping stub serves 200 "ok" to every connection; a 10x concurrent burst all matching → Ok.
+        let addr = looping_http_stub("200 OK", b"ok").await;
+        let gateway = GatewayClient::new(addr);
+        let admin = AdminClient::new("127.0.0.1:1".parse().unwrap());
+        let burst = vec![Step::Http {
+            request: HttpRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                concurrency: Some(10),
+                ..Default::default()
+            },
+            expect: Expect {
+                status: Some(200),
+                body: Some(b"ok".to_vec()),
+                ..Default::default()
+            },
+        }];
+        let outcomes = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &burst,
+        )
+        .await;
+        assert!(
+            outcomes[0].result.is_ok(),
+            "all 10 concurrent requests should pass: {:?}",
+            outcomes[0].result
+        );
+        assert!(outcomes[0].description.contains("(x10 concurrent)"));
+
+        // If the assertion doesn't hold, the burst fails naming how many of N failed.
+        let mismatch = vec![Step::Http {
+            request: HttpRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                concurrency: Some(5),
+                ..Default::default()
+            },
+            expect: Expect {
+                status: Some(404),
+                ..Default::default()
+            },
+        }];
+        let bad = run_steps(
+            &gateway,
+            &admin,
+            &bogus_cas(),
+            None,
+            None,
+            std::collections::HashMap::new(),
+            &mismatch,
+        )
+        .await;
+        assert!(
+            bad[0]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .contains("5/5 concurrent"),
+            "got: {:?}",
+            bad[0].result
         );
     }
 
