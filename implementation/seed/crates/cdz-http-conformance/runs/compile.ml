@@ -33,10 +33,12 @@
     // 2. Live-swap the root router to the compile handler.
     { control = { push-root-router = "reducer-guest-compile" } },
     // 3. Compile: the body is built from the captured ast-hash by the real deploy tool. → the component's
-    //    ProgramHash, which must resolve in the CAS (the compile published a real wasm component).
+    //    ProgramHash, which must resolve in the CAS to a real wasm component — asserted by the wasm magic
+    //    (\x00asm = 00 61 73 6d) prefix of the resolved blob, not just that it is non-empty.
     { http = { method = "POST", path = "/compile",
                compile-request = { asts = [ { name = "main", from-capture = "main-ast" } ],
                                    entry = "main" } },
-      expect = { status = 200, resolves-in-cas = true, retry-until-match = true } },
+      expect = { status = 200, resolves-in-cas = true, cas-body-starts-with = b"\x00asm",
+                 retry-until-match = true } },
   ],
 }

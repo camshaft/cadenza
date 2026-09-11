@@ -189,7 +189,20 @@ async fn run_http_step(
                 )
             })?;
             match cas.get(&hash).await {
-                Ok(Some(bytes)) if !bytes.is_empty() => {}
+                Ok(Some(bytes)) if !bytes.is_empty() => {
+                    // Optionally assert the resolved blob starts with an expected prefix (e.g. the wasm magic
+                    // for a /compile component) — proving it is the RIGHT kind of blob, not merely non-empty.
+                    if let Some(prefix) = &expect.cas_body_starts_with
+                        && !bytes.starts_with(prefix)
+                    {
+                        return Err(format!(
+                            "resolves-in-cas: blob {hash} does not start with the expected {}-byte prefix \
+                             (got first bytes {:02x?})",
+                            prefix.len(),
+                            &bytes[..bytes.len().min(prefix.len())]
+                        ));
+                    }
+                }
                 Ok(Some(_)) => {
                     return Err(format!(
                         "resolves-in-cas: hash {hash} resolved to an EMPTY blob"
