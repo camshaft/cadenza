@@ -1511,6 +1511,66 @@ fn value_decode_frame_tolerant_named_record_in_list() {
     assert_eq!(live_nodes(), before, "no leak");
 }
 
+/// Frame-vs-bare DISAMBIGUATION guard (value-codec migration). The frame-tolerant `Named`/`Framed` arm
+/// treats a wire struct as the `(: value _)` frame ONLY when it is a 3-element list whose head is the
+/// `:` NAME atom — length 3 alone is NOT enough. This pins that a BARE 3-element list value (e.g. a
+/// `List` of exactly 3, whose head is an element, not `:`) decodes as the value against `inner`, and is
+/// NOT mis-unwrapped as a frame (which would decode element [1] and drop the rest). Guards the exact
+/// `kids.len() == 3 && doc_atom_name(kids[0]) == Some(":")` condition against a future "length-only"
+/// regression — the subtle logic the keystone (and its clobber/re-land) rests on.
+#[test]
+fn value_decode_frame_tolerant_disambiguates_bare_3_element_list_from_a_frame() {
+    reset();
+    let before = live_nodes();
+
+    // desc_named: [0]=Int, [1]=List(elem→0), [2]=Named("Ints", inner→1), root=2.
+    let desc_named: &[u8] = &[
+        0x03, // table_len
+        0x00, // [0] Int
+        0x07, 0x00, // [1] List(elem→0)
+        0x0a, 0x04, b'I', b'n', b't', b's', 0x01, // [2] Named("Ints", inner→1)
+        0x02, // root = 2
+    ];
+    // desc_bare: [0]=Int, [1]=List(elem→0), root=1 — same value, no Named frame.
+    let desc_bare: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
+
+    // A list of EXACTLY 3 ints — a wire form that collides with the frame's element count.
+    let mut v = op_vec_empty();
+    for i in 10..=12i64 {
+        v = op_vec_push(v, op_box_int(i));
+    }
+    let named = decode_descriptor(desc_named).expect("descriptor");
+
+    // Bare 3-element list decodes against Named("Ints", List) — NOT mistaken for a `(: v _)` frame (its
+    // head is an Int leaf, not the `:` name), so the whole list is preserved (all 3 elements), not
+    // unwrapped to element [1].
+    let bare = op_value_encode_form(v, desc_bare).expect("encode bare");
+    let from_bare = op_value_decode(&bare, desc_named);
+    assert_ne!(
+        from_bare,
+        Handle::NULL,
+        "bare 3-element list decodes against Named (not a frame)"
+    );
+    assert_eq!(
+        value_eq_shaped(&named, from_bare, v, named.root),
+        Some(true),
+        "the FULL 3-element list is preserved — not mis-unwrapped as a frame's element [1]"
+    );
+    // The framed form still round-trips too.
+    let framed = op_value_encode_form(v, desc_named).expect("encode framed");
+    let from_framed = op_value_decode(&framed, desc_named);
+    assert_ne!(from_framed, Handle::NULL);
+    assert_eq!(
+        value_eq_shaped(&named, from_framed, v, named.root),
+        Some(true)
+    );
+
+    op_drop(from_bare);
+    op_drop(from_framed);
+    op_drop(v);
+    assert_eq!(live_nodes(), before, "no leak");
+}
+
 #[test]
 fn value_decode_returns_null_on_shape_mismatch_never_traps() {
     reset();
