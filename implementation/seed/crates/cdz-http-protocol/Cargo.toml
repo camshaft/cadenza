@@ -33,11 +33,6 @@ publish = false
 # documents (design §4), so their encode/decode is built directly on `cadenza_ast::{ast, codec}` — the same
 # forms `Value.encode`/`Value.decode` produce, so a frame the gateway emits is a well-formed Cadenza value.
 cadenza-ast = { path = "../cadenza-ast" }
-# The canonical value-form toolkit (record/list/ctor builders + readers) — extracted out of this crate's
-# `value` module into a shared crate so a reducer build-guest reuses the SAME codec (no drifting copies). The
-# `value` module here re-exports it (`pub use cadenza_value::*`), so existing `cdz_http_protocol::value::*`
-# users are unaffected. (An excluded standalone crate depending on a member — the cdz-smith / gateway precedent.)
-cadenza-value = { path = "../cadenza-value" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — hashes, credentials, opaque payloads, session ids.
 bytes = "1"
 # `Str` — the canonical Bytes-backed UTF-8 text type (spec §12). Every text field of a frame (a url, a
