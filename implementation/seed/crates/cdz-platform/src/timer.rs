@@ -72,7 +72,7 @@ impl FireAfter {
     /// [`decode`](Self::decode).
     #[must_use]
     pub fn encode(&self) -> Bytes {
-        crate::contract_value::encode_ascribed(|b| self.build(b), "Envelope")
+        crate::contract_value::encode_value(|b| self.build(b))
     }
 
     /// The [`Request`](crate::Request) a reducer emits to arm this timer: against the [`timer_contract`], with
@@ -117,7 +117,7 @@ impl Fired {
     /// [`decode`](Self::decode).
     #[must_use]
     pub fn encode(&self) -> Bytes {
-        crate::contract_value::encode_ascribed(|b| self.build(b), "Event")
+        crate::contract_value::encode_value(|b| self.build(b))
     }
 
     /// Decode a fired event from a Cadenza value, or `None` if the bytes are not a well-formed `Fired` value.

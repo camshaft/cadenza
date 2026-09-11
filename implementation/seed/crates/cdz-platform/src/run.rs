@@ -279,8 +279,8 @@ impl Run {
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
         let value = self.build(&mut b);
-        let root = crate::contract_value::ascribe(&mut b, value, "Request");
-        Bytes::from(codec::encode(&b.finish(root)))
+        // Structural encode — no `(: <value> Request)` frame (value-codec migration).
+        Bytes::from(codec::encode(&b.finish(value)))
     }
 
     /// The [`Request`](crate::Request) a reducer emits to run `self` as an effect: against the
@@ -323,8 +323,8 @@ impl RunOutput {
         let mut b = Builder::new();
         let output = v::bytes_leaf(&mut b, &self.output);
         let value = c::output_output(&mut b, output);
-        let root = v::ascribe(&mut b, value, "Output");
-        Bytes::from(codec::encode(&b.finish(root)))
+        // Structural encode — no `(: <value> Output)` frame (value-codec migration).
+        Bytes::from(codec::encode(&b.finish(value)))
     }
 
     /// Decode an output from a Cadenza value, or `None` if the bytes are not a well-formed `Output` value.

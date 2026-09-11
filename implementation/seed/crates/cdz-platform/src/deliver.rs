@@ -73,11 +73,10 @@ impl Deliver {
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
         let value = self.build(&mut b);
-        // Wrap the value in the canonical root ascription `(: <value> Envelope)` — the top-level form the
-        // compiler's `Value.decode` requires (the type token is name-agnostic; it is the contract's input
-        // type by convention). `decode` strips it.
-        let root = crate::contract_value::ascribe(&mut b, value, "Envelope");
-        let arenas = b.finish(root);
+        // Encode the value STRUCTURALLY — no `(: <value> Envelope)` ascription frame (value-codec
+        // migration: decode by structure, not names). The guest `Value.decode` and the platform readers
+        // are frame-tolerant, so the bare canonical value decodes at the boundary.
+        let arenas = b.finish(value);
         Bytes::from(codec::encode(&arenas))
     }
 
