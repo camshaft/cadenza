@@ -1,0 +1,30 @@
+// The BROWSER-OUTPOST landing handler (DESIGN-browser-outpost.md §0/§2, milestone S0): a content-addressed
+// wasm reducer that answers `200 text/html` with a complete HTML page carrying a MINIMAL inline JS bootstrap.
+// This is the SERVER side of the browser outpost — the operator's "a router that returns HTML and JavaScript
+// on certain routes" (2026-09-11). The dumb gateway needs ZERO changes: it forwards the handler's
+// `content-type: text/html` header verbatim (boot.rs decode_response), so the page renders in a browser.
+//
+// The handler serves the page for any request (it does not inspect the request — the SMALLEST thing that
+// proves the HTML+JS DELIVERY loop end to end: edge -> spawn -> fold -> text/html response -> socket). Used
+// as a scenario's DIRECT root router (config.root-router = "http-page"), like http-echo in echo-direct — so
+// this slice stands alone in the browser-outpost territory and does not touch the shared baked router.
+//
+// The JS is deliberately tiny (operator: "minimize the amount of JavaScript … mostly use cadenza programs to
+// drive the browser"): S0 only proves delivery. S1 replaces the placeholder bootstrap with a fetch+instantiate
+// of a shipped cadenza reducer (wasm, via jco); S2 wires the first browser-API-as-effect (DOM render / a click
+// event) into the reducer fold.
+//
+// Composed from the shared libs (operator 2026-09-10: reuse the mechanism, no inline worlds): the
+// reducer-world WIT boundary from the `reducer-world` witWorld artifact, `respond` + `Header` from `http-lib`,
+// the inert on-response / on-notification from `reducer-lib`. See the `libs` manifest beside this file. HTML
+// uses single-quoted attributes so the byte-string literal needs no `\"` escaping.
+import { respond } from "http-lib"
+import { Header } from "http-response"
+import { on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  respond(200,
+    [Header.Header({ name = "content-type", value = "text/html" })],
+    b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><div id='app'>Loading...</div><script type='module'>document.getElementById('app').textContent = 'Cadenza browser outpost: server-rendered HTML + JS bootstrap OK';</script></body></html>")
+
+export { on-message, on-response, on-notification }
