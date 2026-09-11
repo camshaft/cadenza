@@ -78,6 +78,8 @@ Effect vocabulary + routing:
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
 - `timer` — the fire-after timer effect (`FireAfter` → `Fired`).
 - `casref` — a handler publishes a body to the CAS + answers a `http.response-cas` CasRef terminal.
+- `missing-program` — a dispatch to a deliberately-absent program hash → the gateway floors GRACEFULLY (a 502,
+  no hang/crash): spawn can't fetch the hash, injects `Err`, the handler folds it into a deny (design §8 #9).
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.

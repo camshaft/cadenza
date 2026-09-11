@@ -1,0 +1,23 @@
+// A MISSING-PROGRAM resilience handler (DESIGN-http-outpost-conformance-harness.md §8 #9: "a named-but-absent
+// program → gateway floors gracefully, no hang/crash"). On each request it emits an `http.dispatch` naming a
+// ProgramHash that is DELIBERATELY ABSENT from the CAS (never seeded), then CONTINUES awaiting the answer. The
+// gateway tries to spawn that hash, cannot fetch it, and injects an `Err` answer (the graceful floor — it does
+// NOT hang or crash). The handler folds that `Err` into a `502` deny, so the scenario observes a clean status.
+//
+// Composed from the shared libs: `dispatch` + `deny` + `respond-encoded` from `http-lib`, the reducer-world
+// boundary from the witWorld artifact, the inert on-notification from `reducer-lib`.
+import { dispatch, deny, respond-encoded } from "http-lib"
+import { Error, on-notification } from "reducer-lib"
+
+// A deliberately-absent 33-byte ProgramHash marker — not a real content hash, never seeded, so the gateway's
+// spawn (fetch + compose from the CAS) fails to resolve it.
+def absent-handler() = b"cdz.absent.program.hash.000000000"
+
+def on-message(_msg) = dispatch(absent-handler(), b"")
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  (match resp.answer with
+   | Ok(response) => respond-encoded(response)
+   | Err(_) => deny(502, b"dispatch target program is absent from the store"))
+
+export { on-message, on-response, on-notification }
