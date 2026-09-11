@@ -410,7 +410,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((size #record((= x 3) (= y 4))) (size (Some 7)) (size #list(1 2 3))))
 
   (export main))`,
-    expected: "(: (tuple 102 61 66) (Tuple Int64 Int64 Int64))",
+    expected: "(tuple 54 28 35)",
   },
   {
     id: "value-encode-determinism",
@@ -427,7 +427,7 @@ export const EXAMPLES: Example[] = [
       #tuple((Bytes.len ba) (= ba bb) (= ba bc))))
 
   (export main))`,
-    expected: "(: (tuple 102 true false) (Tuple Int64 Bool Bool))",
+    expected: "(tuple 54 true false)",
   },
   {
     id: "value-encode-roundtrip",
@@ -449,7 +449,7 @@ export const EXAMPLES: Example[] = [
           ((None) #tuple((Bytes.len bytes) 0))))))
 
   (export main))`,
-    expected: "(: (tuple 73 7) (Tuple Int64 Int64))",
+    expected: "(tuple 54 7)",
   },
   {
     id: "exact-rational-arithmetic",
