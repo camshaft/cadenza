@@ -5894,6 +5894,9 @@
           npmDeps = guideNpmDeps;
           npmRoot = "guide";
           CDZ_GUEST_WASM = "${httpConformanceProgramsByName."browser-outpost"}";
+          # The value-heap runtime component (packages.runtime $out), bound as cadenza:runtime/heap so the
+          # driver can DRIVE on-message to a real response value (which the guest builds on the heap).
+          CDZ_RUNTIME_WASM = "${runtime}";
           buildPhase = ''
             runHook preBuild
             ( cd guide

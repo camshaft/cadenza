@@ -1,112 +1,123 @@
-/// browser-outpost S1b (headless): prove a Cadenza REDUCER ships to the browser via jco. Transpile the
-/// browser-outpost reducer-world guest component (a `cadenza:platform/guest`) with @bytecodealliance/
-/// jco-transpile — the SAME transpiler the guide's in-tab run worker uses (guide/src/runner/runWorker.ts) —
-/// and assert it produces a loadable ES module whose transpiled bindings surface the reducer's WIT `guest`
-/// interface (on-message). This is the smallest GATED proof (no browser needed) that a shipped reducer is
-/// jco-loadable in a JS engine — the client-side half of the browser outpost.
+/// browser-outpost S1b (headless): prove a Cadenza REDUCER ships to the browser via jco AND actually folds a
+/// message to a response value in a JS engine. Transpile the browser-outpost reducer-world guest with
+/// @bytecodealliance/jco-transpile (the SAME transpiler the guide's in-tab run worker uses,
+/// guide/src/runner/runWorker.ts), instantiate it with the REAL value-heap runtime bound as
+/// cadenza:runtime/heap, then DRIVE its guest interface — proving a shipped Cadenza reducer runs AND folds in
+/// a JS engine with no browser. This is the client-side half of the browser outpost.
 ///
-/// The guest wasm is supplied by Nix as CDZ_GUEST_WASM (a mkCadenzaGuest $out — the stripped component file).
-/// FOLLOW-UP (once the toolchain lands): instantiate with JS-shim state/blobs/identity/run + value-heap
-/// runtime imports and DRIVE on-message end to end (needs the host-import shims); this slice pins the
-/// transpile+load layer. Run: `node scripts/check-browser-outpost-jco.mjs` (Node >=20.19 for jco).
+/// Nix supplies CDZ_GUEST_WASM (the browser-outpost mkCadenzaGuest $out) and CDZ_RUNTIME_WASM (the value-heap
+/// runtime component, packages.runtime $out). NFC is a JS shim (String.normalize), per check-calculator.mjs.
+/// Run: `node scripts/check-browser-outpost-jco.mjs` (Node >=20.19 for jco).
 
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const wasmPath = process.env.CDZ_GUEST_WASM;
-if (!wasmPath) {
-  console.error("browser-outpost jco check: CDZ_GUEST_WASM is not set (expected a mkCadenzaGuest $out .wasm)");
-  process.exit(1);
-}
-const bytes = readFileSync(wasmPath);
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
-
-const name = "browserOutpost";
-// Same options the run worker uses (guide/src/runner/runWorker.ts:100-106): async instantiation, no WASI
-// shim, no minify (keeps the native oxc-minify addon off the executed path — a browser-safe transpile).
-const { files } = await transpileBytes(new Uint8Array(bytes), {
-  name,
-  instantiation: "async",
-  wasiShim: false,
-  minify: false,
-});
 
 let checks = 0;
 const fail = (msg) => { console.error(`browser-outpost jco check: FAIL — ${msg}`); process.exit(1); };
 
-// 1. jco produced a transpiled ES module (the reducer is transpilable).
-const fileNames = Object.keys(files);
-if (fileNames.length === 0) fail("jco produced no files");
-checks++;
-
-// 2. the entry module is present and IMPORTS cleanly under Node (valid generated JS). Async-instantiation
-//    mode does not touch wasm at import time (the run worker imports the entry, then calls instantiate) — so
-//    importing here proves the generated module loads without needing the host imports.
-const entryJs = `${name}.js`;
-if (!fileNames.includes(entryJs)) fail(`no entry module ${entryJs}; got: ${fileNames.join(", ")}`);
-const dir = mkdtempSync(join(tmpdir(), "cdz-bo-jco-"));
-for (const [f, b] of Object.entries(files)) {
-  if (f.endsWith(".d.ts")) continue; // TypeScript decls — the run worker never writes/loads these
-  writeFileSync(join(dir, f), b);
+/// Transpile a component to a loadable ES module in a temp dir (mirrors runWorker.ts / check-calculator.mjs).
+/// async instantiation → the entry `import()`s without touching wasm; instantiate is a separate call.
+async function loadComponent(bytes, name) {
+  const { files } = await transpileBytes(new Uint8Array(bytes), {
+    name, instantiation: "async", wasiShim: false, minify: false,
+  });
+  const dir = mkdtempSync(join(tmpdir(), `cdz-bo-${name}-`));
+  for (const [f, b] of Object.entries(files)) {
+    if (f.endsWith(".d.ts")) continue; // types only — never loaded (mirrors runWorker.ts)
+    writeFileSync(join(dir, f), b);
+  }
+  const mod = await import(join(dir, `${name}.js`));
+  const getCore = async (p) => WebAssembly.compile(readFileSync(join(dir, p)));
+  return { files, mod, getCore };
 }
-const mod = await import(join(dir, entryJs));
-if (typeof mod.instantiate !== "function") fail("transpiled entry module exposes no instantiate() function");
+
+const wasmPath = process.env.CDZ_GUEST_WASM;
+if (!wasmPath) fail("CDZ_GUEST_WASM is not set (expected the browser-outpost mkCadenzaGuest $out .wasm)");
+const runtimePath = process.env.CDZ_RUNTIME_WASM;
+if (!runtimePath) fail("CDZ_RUNTIME_WASM is not set (expected the value-heap runtime component .wasm)");
+
+// 1-3: transpile the guest + assert its bindings surface the reducer's WIT guest interface.
+const guest = await loadComponent(readFileSync(wasmPath), "browserOutpost");
+const guestFiles = Object.keys(guest.files);
+if (guestFiles.length === 0) fail("jco produced no files for the guest");
+checks++;
+if (typeof guest.mod.instantiate !== "function") fail("guest entry module exposes no instantiate()");
+checks++;
+const guestText = Object.values(guest.files).map((b) => Buffer.from(b).toString("utf8")).join("\n");
+if (!guestText.includes("cadenza:platform/guest")) fail("guest bindings do not reference cadenza:platform/guest");
+if (!/onMessage/.test(guestText)) fail("guest bindings do not surface onMessage");
 checks++;
 
-// 3. the transpiled bindings surface the reducer's WIT `guest` interface (cadenza:platform/guest) and its
-//    on-message export (jco camelCases on-message -> onMessage) — i.e. jco bound the reducer contract, not
-//    some other component shape. This is what makes the shipped component drivable as a reducer in JS.
-const allText = Object.values(files).map((b) => Buffer.from(b).toString("utf8")).join("\n");
-const hasGuest = allText.includes("cadenza:platform/guest");
-const hasOnMessage = /onMessage/.test(allText) || /on-message/.test(allText);
-if (!hasGuest) fail("transpiled bindings do not reference the cadenza:platform/guest interface");
-if (!hasOnMessage) fail("transpiled bindings do not surface the reducer on-message export");
-checks++;
+// Instantiate the value-heap RUNTIME (with an NFC JS shim, per check-calculator.mjs) → the heap interface the
+// guest imports as cadenza:runtime/heap. This is what lets the guest BUILD a response value on the heap.
+const NFC = "cadenza:nfc/normalize";
+const nfcShim = { nfc: (b) => new TextEncoder().encode(new TextDecoder("utf-8").decode(b).normalize("NFC")) };
+const rt = await loadComponent(readFileSync(runtimePath), "heap");
+const rroot = await rt.mod.instantiate(rt.getCore, { [NFC]: nfcShim });
+const heapKey = Object.keys(rroot).find((k) => k.includes("heap"));
+const heapIface = heapKey ? rroot[heapKey] : undefined;
+if (!heapIface) fail(`runtime exposes no heap interface (root keys: ${Object.keys(rroot).join(", ")})`);
 
-// 4. INSTANTIATE the component in a JS engine and assert the reducer's guest interface surfaces as a
-//    CALLABLE on-message. Supply no-op STUB imports for every host interface the component links
-//    (state/blobs/identity/run + the value-heap runtime + nfc): instantiation only LINKS these — the guest
-//    calls them at fold time, not at instantiation — so no-op stubs satisfy the linker without hand-writing
-//    each WIT shape. This is a step up from "the module loads": it proves the reducer actually INSTANTIATES
-//    in a JS engine and its on-message export is a real callable JS function (the step before driving a fold).
-const getCore = async (p) => WebAssembly.compile(readFileSync(join(dir, p)));
-// Nested Proxy: imports[anyInterface][anyFunc] → a no-op stub, so jco's import linking is satisfied for any
-// host interface the component declares, without enumerating them.
+// 4: INSTANTIATE the guest with the REAL heap bound; no-op stubs satisfy the other host imports
+//    (state/blobs/identity/run) that this fold path does not call. Assert the guest interface is callable.
 const stubIface = new Proxy({}, { get: () => () => undefined });
-const importsProxy = new Proxy({}, { get: () => stubIface });
+const imports = new Proxy({}, {
+  get: (_t, key) => (typeof key === "string" && key.startsWith("cadenza:runtime/heap")) ? heapIface : stubIface,
+});
 let root;
 try {
-  root = await mod.instantiate(getCore, importsProxy);
+  root = await guest.mod.instantiate(guest.getCore, imports);
 } catch (e) {
-  fail(`component did not instantiate with stub imports: ${e && e.message ? e.message : e}`);
+  fail(`guest did not instantiate with the real heap runtime: ${e && e.message ? e.message : e}`);
 }
-const guest = root["cadenza:platform/guest"] ?? root.guest;
-if (!guest || typeof guest.onMessage !== "function") {
+const g = root["cadenza:platform/guest"] ?? root.guest;
+if (!g || typeof g.onMessage !== "function") {
   fail(`instantiated root exposes no callable cadenza:platform/guest.onMessage (root keys: ${Object.keys(root).join(", ")})`);
 }
 checks++;
 
-// 5. DRIVE A FOLD: actually CALL the reducer in the JS engine and assert it returns a well-formed step.
-//    on-notification is the inert handler ({ requests: [], outcome: continue }) — it ignores its input and
-//    is heap-light (an empty request list + a nullary Continue), so it drives under the no-op stub imports
-//    without the value-heap runtime. This proves the reducer doesn't just instantiate but EXECUTES a fold in
-//    a JS engine and returns a well-formed WIT `step`. (Driving on-message to a full RESPONSE value — which
-//    allocates on the value heap — is the next follow-up that wires the real runtime component as the heap.)
-if (typeof guest.onNotification !== "function") fail("guest exposes no callable onNotification");
-const step = guest.onNotification({ contract: new Uint8Array(), payload: new Uint8Array() });
-if (!step || typeof step !== "object") fail(`onNotification returned no step object: ${step}`);
-if (!Array.isArray(step.requests)) fail(`step.requests is not a list: ${JSON.stringify(step.requests)}`);
-if (step.requests.length !== 0) fail(`inert on-notification should emit 0 requests, got ${step.requests.length}`);
-const outcomeTag = step.outcome && step.outcome.tag;
-if (outcomeTag !== "continue") fail(`inert on-notification should continue, got outcome tag: ${outcomeTag}`);
+// 5: DRIVE the inert on-notification → { requests: [], outcome: continue } (a fold executes + returns a step).
+const note = g.onNotification({ contract: new Uint8Array(), payload: new Uint8Array() });
+if (!note || !Array.isArray(note.requests) || note.requests.length !== 0) {
+  fail(`inert on-notification should emit 0 requests, got ${note && JSON.stringify(note.requests)}`);
+}
+if (!note.outcome || note.outcome.tag !== "continue") {
+  fail(`inert on-notification should continue, got outcome tag: ${note.outcome && note.outcome.tag}`);
+}
 checks++;
 
-if (checks !== 5) fail(`expected 5 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 6: DRIVE on-message to a full RESPONSE VALUE. An empty payload does not decode as a Request, so the
+//    browser-outpost router folds to its deny(404, "not found") branch — a Close terminal whose reason is a
+//    value BUILT ON THE VALUE HEAP. This proves the reducer folds a message to a real response value in a JS
+//    engine using the runtime, the client-side capstone. The canonical-encoded reason carries the ASCII
+//    "not found" (a Bytes leaf), so a substring on the reason bytes pins the fold's actual output.
+const empty = new Uint8Array();
+const msg = { contract: empty, sender: { reducer: empty, host: empty }, payload: empty, token: empty };
+let step;
+try {
+  step = g.onMessage(msg);
+} catch (e) {
+  fail(`driving on-message threw: ${e && e.message ? e.message : e}`);
+}
+if (!step || !step.outcome) fail(`on-message returned no step: ${JSON.stringify(step)}`);
+if (step.outcome.tag !== "close") {
+  fail(`on-message on an undecodable payload should Close (deny), got outcome tag: ${step.outcome.tag}`);
+}
+const reason = step.outcome.val && step.outcome.val.reason;
+if (!reason) fail("close outcome carries no reason payload");
+const reasonText = Buffer.from(reason).toString("latin1");
+if (!reasonText.includes("not found")) {
+  fail(`close reason does not contain the deny text "not found" (first bytes: ${JSON.stringify(reasonText.slice(0, 80))})`);
+}
+checks++;
+
+if (checks !== 6) fail(`expected 6 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
-  `browser-outpost jco check: ok — the reducer transpiles (${fileNames.length} files), INSTANTIATES in a JS ` +
-  `engine, exposes a callable cadenza:platform/guest, and DRIVES a fold (on-notification → {requests: [], ` +
-  `outcome: continue}). A Cadenza reducer runs AND folds in a JS engine (follow-up: drive on-message to a ` +
-  `full response value via the real value-heap runtime).`,
+  `browser-outpost jco check: ok — the reducer transpiles (${guestFiles.length} files), INSTANTIATES with the ` +
+  `real value-heap runtime, and DRIVES on-message to a full response value (deny 404 "not found") in a JS ` +
+  `engine. A Cadenza reducer runs, folds, and produces a response value in a JS engine — no browser needed.`,
 );
 process.exit(0);
