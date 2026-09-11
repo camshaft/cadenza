@@ -436,6 +436,21 @@ Each a declarative scenario, mapping behaviors currently pinned by Rust `#[test]
 
 Then grow: WebSocket sessions, malformed frames, auth failures, reconnect/resilience, concurrency.
 
+**Delivered status (2026-09-11).** All of §8 #1–#10 are landed + green, plus the corpus grew well beyond the
+initial set (the LIVING corpus index — every scenario + the run-spec fields — is `runs/README.md`, kept
+current; that is the source of truth, not this list). Highlights beyond the initial 10: the `/parse` + `/compile`
+family (`parse`, `cross-surface`, `compile`, `parse-diagnostics`, `compile-diagnostics`, `reducer-world-compile`
+— the reducer-world compile path with a `wit-world` artifact); the body-handling pair `oversized-body` (413
+ceiling, drained → client-visible) + `slow-upload` (408 body-read idle timeout, slowloris); and the
+browser-outpost scenarios (owned by `v-browser-outpost`, auto-discovered here). The `#5 413` + `#6 504` + `#9
+graceful-floor` behaviors are covered by `oversized-body` / `deadline-timeout` / `missing-program` respectively.
+Grow-list status: **auth failures** — PARKED: a wrong control-shipped CAS write credential unexpectedly still
+writes OK (200, not the expected 401→502) despite the mock, gateway encode, CAS `ct_eq`, and (no) blob-cache all
+verifying correct in isolation — an integration puzzle needing runtime instrumentation (offered to pair with
+v-gateway-rewrite). **fresh-session** — N/A in the current stateless reducer-guest model (per-request isolation
+is structural). **WebSocket / malformed-frames / reconnect / concurrency** — not started (need mock/gateway or
+driver features; will pursue on a peer trigger or when the behavior lands).
+
 ---
 
 ## 9. Build sequence (landable slices)
