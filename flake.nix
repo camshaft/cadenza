@@ -7042,18 +7042,10 @@
               # cdz-reducer-guest (v-reducer-targets B2): 4 unit tests (request round-trip + rcdzc handler e2e),
               # inline-string sources → no extraSrc. Its rcdzc-inclusive closure is walked live by crateClosure.
               test-cdz-reducer-guest = mkCrateTestCrane { crate = "cdz-reducer-guest"; };
-              # reducer-guest-* COMPONENT builds (v-reducer-targets B3c gate-coverage): the wasm reducer
-              # components are only `packages.*`, so the crate clippy/test checks never build them — a
-              # component-build regression (a cargo-component/wit-bindgen break, a contract co-import collision
-              # like the ParseDiagnostic/CompileDiagnostic split, a handler compile error, a stale baked-hash
-              # rewrite) was caught ONLY by an explicit build or the live rig, never a gate. Wire each build as
-              # a check so `nix flake check` guards it. (These join the full check battery, NOT the fast per-PR
-              # localGate aggregate — the rcdzc guest is a ~1min wasm build; compile bakes the ml/rcdzc hashes.)
-              reducer-guest-rcdzc = reducerGuestRcdzc;
-              reducer-guest-sexpr = reducerGuestSexpr;
-              reducer-guest-ml = reducerGuestMl;
-              reducer-guest-compile = reducerGuestCompile;
-              reducer-guest-parse = reducerGuestParse;
+              # NOTE: the reducer-guest-* COMPONENT-build gate-coverage checks live in `reducerGuestComponentChecks`
+              # (merged into `checks` below), NOT here — perCrateTestCrane feeds `testCrateCoverageAssert`, which
+              # requires every entry to be a `test-<workspace-member>` (the component builds are Cadenza wasm
+              # guests, not Rust crates, so they'd read as spurious EXTRA members and detonate the parity assert).
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };
@@ -8182,6 +8174,21 @@
           # A candidate touching ONE crate builds just its test-<crate> (+ dependents); the rest cache-hit.
           # cargoArtifacts-cached (deps + dev-dep layer warm since cargoArtifacts is doCheck=true).
           // perCrateTestCrane
+          # reducer-guest-* COMPONENT builds (v-reducer-targets B3c gate-coverage): the wasm reducer components
+          # are only `packages.*`, so the crate clippy/test checks never build them — a component-build
+          # regression (a cargo-component/wit-bindgen break, a contract co-import collision like the
+          # ParseDiagnostic/CompileDiagnostic split, a handler compile error, a stale baked-hash rewrite) was
+          # caught ONLY by an explicit build or the live rig, never a gate. Wire each build as a check so `nix
+          # flake check` guards it. Merged HERE (not into perCrateTestCrane) so they stay off testCrateCoverageAssert
+          # — they are Cadenza wasm guests, not Rust workspace members. (Full check battery, NOT the fast per-PR
+          # localGate aggregate — the rcdzc guest is a ~1min wasm build; compile bakes the ml/rcdzc hashes.)
+          // {
+            reducer-guest-rcdzc = reducerGuestRcdzc;
+            reducer-guest-sexpr = reducerGuestSexpr;
+            reducer-guest-ml = reducerGuestMl;
+            reducer-guest-compile = reducerGuestCompile;
+            reducer-guest-parse = reducerGuestParse;
+          }
           # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
           # `cad-tests` aggregate. A candidate touching ONE project builds just that project's check; the
