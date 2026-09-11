@@ -89,14 +89,34 @@ pub async fn run_steps(
     steps: &[Step],
 ) -> Vec<StepOutcome> {
     let mut outcomes = Vec::with_capacity(steps.len());
+    // Named response-body captures, for a later step's `body_equals_capture` (cross-step comparison).
+    let mut captures: std::collections::HashMap<String, bytes::Bytes> =
+        std::collections::HashMap::new();
     for (i, step) in steps.iter().enumerate() {
         let (description, result) = match step {
             Step::Http { request, expect } => {
                 let description = format!("{} {}", request.method, request.path);
-                (
-                    description,
-                    run_http_step(gateway, cas, request, expect).await,
-                )
+                let result = match run_http_step(gateway, cas, request, expect).await {
+                    Ok(body) => {
+                        if let Some(name) = &expect.capture_body_as {
+                            captures.insert(name.clone(), body.clone());
+                        }
+                        match &expect.body_equals_capture {
+                            Some(name) => match captures.get(name) {
+                                Some(want) if *want == body => Ok(()),
+                                Some(_) => Err(format!(
+                                    "body-equals-capture: response body differs from captured '{name}'"
+                                )),
+                                None => Err(format!(
+                                    "body-equals-capture: no earlier step captured '{name}'"
+                                )),
+                            },
+                            None => Ok(()),
+                        }
+                    }
+                    Err(e) => Err(e),
+                };
+                (description, result)
             }
             Step::Control(control) => {
                 let (description, command) = control_command(control);
@@ -132,7 +152,7 @@ async fn run_http_step(
     cas: &crate::cas::CasClient,
     request: &crate::spec::HttpRequest,
     expect: &crate::spec::Expect,
-) -> Result<(), String> {
+) -> Result<bytes::Bytes, String> {
     let attempt = async || {
         let resp = gateway.send(request).await?;
         expect.check(resp.status, &resp.headers, &resp.body)?;
@@ -160,7 +180,7 @@ async fn run_http_step(
                 Err(e) => return Err(format!("resolves-in-cas: CAS get for {hash}: {e}")),
             }
         }
-        Ok(())
+        Ok(resp.body)
     };
     if !expect.retry_until_match {
         return attempt().await;
