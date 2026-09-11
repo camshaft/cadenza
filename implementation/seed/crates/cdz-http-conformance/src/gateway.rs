@@ -9,10 +9,12 @@ use bytes::Bytes;
 use reqwest::Method;
 use std::net::SocketAddr;
 
-/// The observable response to a gateway request: the HTTP status and the full body bytes.
+/// The observable response to a gateway request: the HTTP status, the response headers (lower-cased
+/// `(name, value)` pairs, as the wire delivers them), and the full body bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayResponse {
     pub status: u16,
+    pub headers: Vec<(String, String)>,
     pub body: Bytes,
 }
 
@@ -55,11 +57,27 @@ impl GatewayClient {
             .await
             .map_err(|e| format!("gateway request {} {}: {e}", req.method, req.path))?;
         let status = resp.status().as_u16();
+        // Capture the response headers (name lower-cased for case-insensitive assertion; a header whose value
+        // is not valid UTF-8 is skipped — the assertions are text). Taken before the body consumes `resp`.
+        let headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|v| (name.as_str().to_ascii_lowercase(), v.to_string()))
+            })
+            .collect();
         let body = resp
             .bytes()
             .await
             .map_err(|e| format!("reading gateway response body: {e}"))?;
-        Ok(GatewayResponse { status, body })
+        Ok(GatewayResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -111,6 +129,12 @@ mod tests {
             .expect("request succeeds");
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body.as_ref(), b"hello from a wasm handler");
+        // Response headers are captured (lower-cased); the stub always sends Content-Length.
+        assert!(
+            resp.headers.iter().any(|(n, _)| n == "content-length"),
+            "expected content-length in captured headers: {:?}",
+            resp.headers
+        );
     }
 
     #[tokio::test]
@@ -148,12 +172,12 @@ mod tests {
             body_contains: Some("wasm".into()),
             ..Default::default()
         };
-        assert!(ok.check(resp.status, &resp.body).is_ok());
+        assert!(ok.check(resp.status, &resp.headers, &resp.body).is_ok());
         let wrong = Expect {
             status: Some(500),
             ..Expect::default()
         };
-        assert!(wrong.check(resp.status, &resp.body).is_err());
+        assert!(wrong.check(resp.status, &resp.headers, &resp.body).is_err());
     }
 
     #[tokio::test]

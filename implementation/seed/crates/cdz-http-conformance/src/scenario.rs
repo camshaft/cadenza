@@ -228,6 +228,7 @@ mod tests {
         // The exact floor the gateway serves before control configures it → "not yet settled".
         let floor = GatewayResponse {
             status: 503,
+            headers: Vec::new(),
             body: Bytes::from_static(
                 b"cdz-http-gateway: waiting for control (no program configured yet)\n",
             ),
@@ -236,6 +237,7 @@ mod tests {
         // A configured router's own 503 (different body) is SETTLED — not the boot floor.
         let router_503 = GatewayResponse {
             status: 503,
+            headers: Vec::new(),
             body: Bytes::from_static(b"upstream busy"),
         };
         assert!(
@@ -245,6 +247,7 @@ mod tests {
         // Any normal response is settled.
         let ok = GatewayResponse {
             status: 200,
+            headers: Vec::new(),
             body: Bytes::from_static(b"hello from a wasm handler"),
         };
         assert!(!is_unconfigured(&ok));

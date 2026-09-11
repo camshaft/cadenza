@@ -6,7 +6,7 @@
 //! The value shape (see `runs/README.md`):
 //!   { config = { root-router = "<name>", programs = [ { name, program }, … ] },
 //!     requests = [ { http = { method, path, headers = [ { name, value } ]?, body = b"…"? },
-//!                    expect = { status?, body?, body-contains? } }
+//!                    expect = { status?, body?, body-contains?, headers = [ { name, value } ]? } }
 //!                | { control = { push-root-router = "<name>" } }
 //!                | { control = { push-down = { session = b"…"?, payload = b"…" } } }, … ] }
 //! where an http `expect` may also carry `retry-until-match = true` (poll the request until it matches).
@@ -81,6 +81,9 @@ pub struct Expect {
     pub body: Option<Vec<u8>>,
     /// Assert the response body CONTAINS this substring.
     pub body_contains: Option<String>,
+    /// Assert each of these response headers is present: a `(name, value)` must appear (header NAME matched
+    /// case-insensitively per HTTP, value exact). Empty ⇒ asserts nothing about headers.
+    pub headers: Vec<(String, String)>,
     /// Poll the request, re-issuing it until the assertion holds or a timeout elapses — the one non-linear
     /// primitive, for async propagation (e.g. a live root-router swap the gateway applies on a later request).
     pub retry_until_match: bool,
@@ -106,8 +109,14 @@ impl Expect {
     /// diverged). A `None` field asserts nothing, so an empty [`Expect`] always passes.
     ///
     /// # Errors
-    /// The status, exact body, or `body-contains` substring assertion does not hold.
-    pub fn check(&self, status: u16, body: &[u8]) -> Result<(), String> {
+    /// The status, exact body, `body-contains` substring, or a required response `header` assertion does not
+    /// hold.
+    pub fn check(
+        &self,
+        status: u16,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<(), String> {
         if let Some(want) = self.status
             && status != want
         {
@@ -130,6 +139,16 @@ impl Expect {
                 return Err(format!(
                     "body-contains: {sub:?} not found in body ({})",
                     preview(body)
+                ));
+            }
+        }
+        for (name, value) in &self.headers {
+            // HTTP header names are case-insensitive; the response headers arrive lower-cased.
+            let want_name = name.to_ascii_lowercase();
+            let found = headers.iter().any(|(n, v)| *n == want_name && v == value);
+            if !found {
+                return Err(format!(
+                    "header: expected {name:?}: {value:?} not found (response headers: {headers:?})"
                 ));
             }
         }
@@ -244,6 +263,19 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         Some(bc) => Some(value::read_str(arenas, bc)?),
         None => None,
     };
+    // `headers = [ { name, value }, … ]` — each response header the assertion requires present.
+    let headers = match value::record_field(arenas, id, "headers") {
+        Some(hs) => value::read_list(arenas, hs)?
+            .iter()
+            .map(|&h| {
+                Some((
+                    value::read_str(arenas, value::record_field(arenas, h, "name")?)?,
+                    value::read_str(arenas, value::record_field(arenas, h, "value")?)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?,
+        None => Vec::new(),
+    };
     let retry_until_match = match value::record_field(arenas, id, "retry-until-match") {
         Some(r) => value::read_bool(arenas, r)?,
         None => false,
@@ -252,6 +284,7 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
         status,
         body,
         body_contains,
+        headers,
         retry_until_match,
     })
 }
@@ -376,11 +409,11 @@ mod tests {
             body_contains: Some("ell".into()),
             ..Default::default()
         };
-        assert!(e.check(200, b"hello").is_ok());
+        assert!(e.check(200, &[], b"hello").is_ok());
         // Status mismatch is named.
-        assert!(e.check(404, b"hello").unwrap_err().contains("status"));
+        assert!(e.check(404, &[], b"hello").unwrap_err().contains("status"));
         // Exact-body mismatch is named.
-        assert!(e.check(200, b"HELLO").unwrap_err().contains("body"));
+        assert!(e.check(200, &[], b"HELLO").unwrap_err().contains("body"));
         // body-contains miss is named.
         let contains = Expect {
             status: None,
@@ -390,13 +423,68 @@ mod tests {
         };
         assert!(
             contains
-                .check(200, b"plain")
+                .check(200, &[], b"plain")
                 .unwrap_err()
                 .contains("body-contains")
         );
-        assert!(contains.check(200, b"a wasm handler").is_ok());
+        assert!(contains.check(200, &[], b"a wasm handler").is_ok());
         // An empty Expect asserts nothing.
-        assert!(Expect::default().check(500, b"anything").is_ok());
+        assert!(Expect::default().check(500, &[], b"anything").is_ok());
+    }
+
+    #[test]
+    fn expect_checks_required_response_headers_case_insensitively() {
+        let e = Expect {
+            headers: vec![("content-type".into(), "text/plain".into())],
+            ..Default::default()
+        };
+        // Present (response headers arrive lower-cased) → ok.
+        let resp = [("content-type".to_string(), "text/plain".to_string())];
+        assert!(e.check(200, &resp, b"").is_ok());
+        // Header NAME match is case-insensitive (the assertion may spell it any case).
+        let mixed = Expect {
+            headers: vec![("Content-Type".into(), "text/plain".into())],
+            ..Default::default()
+        };
+        assert!(mixed.check(200, &resp, b"").is_ok());
+        // Missing header → named error.
+        let err = e.check(200, &[], b"").unwrap_err();
+        assert!(
+            err.contains("header") && err.contains("content-type"),
+            "got: {err}"
+        );
+        // Value must match exactly.
+        let wrong_val = [("content-type".to_string(), "application/json".to_string())];
+        assert!(e.check(200, &wrong_val, b"").is_err());
+    }
+
+    #[test]
+    fn parses_expect_headers() {
+        let mut b = ValueBuilder::new();
+        let rr = str_leaf(&mut b, "r");
+        let empty = list_value(&mut b, vec![]);
+        let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
+        let m = str_leaf(&mut b, "GET");
+        let path = str_leaf(&mut b, "/");
+        let http = record(&mut b, vec![("method", m), ("path", path)]);
+        // expect = { status = 200, headers = [ { name = "content-type", value = "text/plain" } ] }
+        let st = uint_leaf(&mut b, 200);
+        let hn = str_leaf(&mut b, "content-type");
+        let hv = str_leaf(&mut b, "text/plain");
+        let hdr = record(&mut b, vec![("name", hn), ("value", hv)]);
+        let hlist = list_value(&mut b, vec![hdr]);
+        let expect = record(&mut b, vec![("headers", hlist), ("status", st)]);
+        let step = record(&mut b, vec![("expect", expect), ("http", http)]);
+        let requests = list_value(&mut b, vec![step]);
+        let root = record(&mut b, vec![("config", config), ("requests", requests)]);
+        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let Step::Http { expect, .. } = &spec.requests[0] else {
+            panic!("expected an http step");
+        };
+        assert_eq!(
+            expect.headers,
+            vec![("content-type".to_string(), "text/plain".to_string())]
+        );
     }
 
     #[test]
