@@ -99,6 +99,8 @@ Effect vocabulary + routing:
 - `request-query-decode` — a handler echoes the decoded request's `query` string (`GET /?foo=bar&x=1` → body
   `foo=bar&x=1`), pinning the forward codec's `query` field round-trips into the guest (complements the method
   coverage above).
+- `request-body-decode` — a handler echoes the decoded request's `body` bytes verbatim (`POST /` with a body →
+  the same bytes back), pinning the forward codec's `body` field round-trips into the guest.
 - `live-swap` — a control `push-root-router` hot-swaps the root router (retry-until-match past propagation).
 - `control-send` — a handler's `control.send` round-trips (ControlUp → primed reply → on-response).
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
