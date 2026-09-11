@@ -10,6 +10,6 @@ def a-delete() -> DeleteRequest = DeleteRequest.Delete(b"k")
 def delete-conforms() =
   match a-delete() with | DeleteRequest.Delete(k) => if k == b"k" then unit else trap("delete key mismatch")
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.state.delete", "DeleteRequest", "DeleteResult")
 export { DeleteRequest.*, DeleteResult.*, descriptor }

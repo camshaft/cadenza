@@ -128,7 +128,7 @@ def contract(const m: Ast, const name: String, const input: String, const output
 // reads `descriptor().id` to route (or `.name`/`.input`/`.output`/`.ast` to inspect). All fields fold at
 // compile time (the operands are the const `Ast.module` + the const string args), so the record is a constant —
 // no runtime `Ast.encode`.
-def contract-descriptor(const m: Ast, const name: String, const input: String, const output: String) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def contract-descriptor(const m: Ast, const name: String, const input: String, const output: String) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes, declaration: Bytes) =
   // The const block wraps the WHOLE `match m` (not just the record it produces), so calling
   // `contract-descriptor` directly returns the record with ZERO runtime computation — the match DISPATCH and
   // every field both fold at compile time (all derive from the const `m` = a contract's `Ast.module` — and the
@@ -140,7 +140,11 @@ def contract-descriptor(const m: Ast, const name: String, const input: String, c
               name = name,
               input = Ast.encode(Ast.Name(input)),
               output = Ast.encode(Ast.Name(output)),
-              ast = Ast.encode(m) }
+              ast = Ast.encode(m),
+              // The RAW canonical declaration bytes — exactly what the id is the hash of
+              // (0x01 ++ blake3(declaration)). Exported so the descriptor SELF-DESCRIBES its contract and a
+              // consumer can pin the declaration in the CAS by id (operator directive 2026-09-10).
+              declaration = contract-declaration(m, name, input, output) }
         | _ => trap("contract-id: not a contract module — expected a (do …) module AST"))
 
 export { contract-id, contract, contract-declaration , contract-descriptor }

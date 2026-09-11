@@ -19,6 +19,6 @@ def dispatch-conforms() =
     else trap("dispatch field mismatch")
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.http.dispatch", "Dispatch", "Dispatch")
 export { Dispatch.*, descriptor }

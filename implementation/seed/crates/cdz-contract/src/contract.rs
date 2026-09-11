@@ -114,6 +114,30 @@ pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
     Some((name?, id?))
 }
 
+/// The RAW canonical declaration bytes read from a contract's `descriptor()` RETURN VALUE — the `declaration`
+/// field the descriptor now self-describes (`Ast.encode((contract <name> (types …) <input> <output>))`), which
+/// is EXACTLY the bytes the contract-id is the hash of (`0x01 ++ blake3(declaration)`). Read straight off the
+/// descriptor rather than re-derived, so the tooling emits the guest's own const-folded declaration. `None`
+/// unless the descriptor record carries a `declaration` `Bytes` field.
+#[must_use]
+pub fn declaration_from_descriptor(value: &Arenas) -> Option<Vec<u8>> {
+    let annotated = value.as_form(value.root, ":")?;
+    let record = *annotated.first()?;
+    let fields = value.compound_form_of(record, CompoundCtor::Record)?;
+    for &field in fields {
+        let Some((field_name, field_value)) = value
+            .field_pair_parts(field)
+            .or_else(|| value.field_pair(field))
+        else {
+            continue;
+        };
+        if value.as_name(field_name) == Some("declaration") {
+            return bytes_leaf(value, field_value).map(<[u8]>::to_vec);
+        }
+    }
+    None
+}
+
 /// The contract NAME plus its INPUT and OUTPUT type names, read from a contract's `descriptor()` RETURN VALUE
 /// — the tuple `xtask codegen` needs to generate the kernel `contract()` (`Contract::new(name, types, input,
 /// output)`) under the Option-B path (operator 2026-08-27: codegen compiles+executes the module, reads the
@@ -175,7 +199,8 @@ fn bytes_leaf(value: &Arenas, id: StructId) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        contract_declaration, contract_id, id_name_from_descriptor, identity_from_descriptor,
+        contract_declaration, contract_id, declaration_from_descriptor, id_name_from_descriptor,
+        identity_from_descriptor,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::Leaf;
@@ -316,6 +341,48 @@ mod tests {
             want_id.to_string(),
             "renders the SAME base62 id"
         );
+    }
+
+    #[test]
+    fn declaration_bytes_are_read_from_the_descriptor_value_form() {
+        // The descriptor now self-describes its raw canonical declaration via a `declaration` Bytes field;
+        // `declaration_from_descriptor` reads it back, skipping the other fields (id/name here).
+        let decl = b"a-canonical-contract-declaration".to_vec();
+        let mut b = Builder::new();
+        let field = |b: &mut Builder, key: &str, val: StructId| -> StructId {
+            let k = b.name(key);
+            b.field_pair(k, val)
+        };
+        let id_val = b.atom_leaf(Leaf::Bytes(Arc::from(
+            &Hash::of(HashTag::Contract, &decl).as_bytes()[..],
+        )));
+        let field_id = field(&mut b, "id", id_val);
+        let name_val = b.atom_leaf(Leaf::Str(Arc::from("temp.celsius")));
+        let field_name = field(&mut b, "name", name_val);
+        let decl_val = b.atom_leaf(Leaf::Bytes(Arc::from(&decl[..])));
+        let field_decl = field(&mut b, "declaration", decl_val);
+        let record = b.compound(CompoundCtor::Record, &[field_id, field_name, field_decl]);
+        let ty = b.compound(CompoundCtor::Record, &[]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, record, ty]);
+        let arenas = b.finish(root);
+        assert_eq!(
+            declaration_from_descriptor(&arenas).as_deref(),
+            Some(&decl[..]),
+            "recovers the raw declaration bytes"
+        );
+
+        // A descriptor with NO declaration field (a pre-field binding) → None, not a panic.
+        let mut b2 = Builder::new();
+        let nm = b2.atom_leaf(Leaf::Str(Arc::from("x")));
+        let k = b2.name("name");
+        let fnm = b2.field_pair(k, nm);
+        let rec2 = b2.compound(CompoundCtor::Record, &[fnm]);
+        let ty2 = b2.compound(CompoundCtor::Record, &[]);
+        let c2 = b2.name(":");
+        let root2 = b2.list(vec![c2, rec2, ty2]);
+        let arenas2 = b2.finish(root2);
+        assert_eq!(declaration_from_descriptor(&arenas2), None);
     }
 
     #[test]

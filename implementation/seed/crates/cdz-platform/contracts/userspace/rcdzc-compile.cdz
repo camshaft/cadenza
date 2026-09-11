@@ -65,6 +65,6 @@ def result-conforms() =
      | _ => trap("expected exactly one output artifact"))
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.rcdzc.compile", "CompileRequest", "CompileResult")
 export { Severity.*, Artifact.*, Diagnostic.*, CompileRequest.*, CompileResult.*, descriptor }

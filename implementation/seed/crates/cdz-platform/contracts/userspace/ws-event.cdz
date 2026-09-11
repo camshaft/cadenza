@@ -32,6 +32,6 @@ def connect-and-disconnect-conform() =
    | _ => trap("expected an Event.Disconnect"))
 
 import { contract-descriptor } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.ws.event", "Event", "Event")
 export { Event.*, descriptor }

@@ -20,6 +20,7 @@ mod contract;
 mod hash;
 
 pub use contract::{
-    contract_declaration, contract_id, id_name_from_descriptor, identity_from_descriptor,
+    contract_declaration, contract_id, declaration_from_descriptor, id_name_from_descriptor,
+    identity_from_descriptor,
 };
 pub use hash::{Hash, HashTag, Hasher, base62};
