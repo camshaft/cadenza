@@ -35,6 +35,10 @@ pub enum AdminCommand {
     Reset,
     /// Query: return the captured `ControlUp` envelopes.
     GetControlUps,
+    /// Close every live gateway control-ws session (server-initiated), forcing the gateway to REDIAL — for
+    /// testing the control-link reconnect/resilience path. On redial the mock ships the current `ControlConfig`
+    /// again (the normal on-connect behavior), so a healthy gateway recovers.
+    DropControl,
 }
 
 /// The mock's answer to an [`AdminCommand`]. A multi-constructor sum, root-ascribed `AdminReply`.
@@ -92,6 +96,10 @@ pub fn encode_command(cmd: &AdminCommand) -> Bytes {
         AdminCommand::GetControlUps => {
             let u = value::unit(&mut b);
             value::bare_ctor(&mut b, "GetControlUps", vec![u])
+        }
+        AdminCommand::DropControl => {
+            let u = value::unit(&mut b);
+            value::bare_ctor(&mut b, "DropControl", vec![u])
         }
     };
     value::finish(b, node, "AdminCommand")
@@ -154,6 +162,7 @@ pub fn decode_command(bytes: &[u8]) -> Option<AdminCommand> {
         },
         "Reset" => AdminCommand::Reset,
         "GetControlUps" => AdminCommand::GetControlUps,
+        "DropControl" => AdminCommand::DropControl,
         _ => return None,
     })
 }

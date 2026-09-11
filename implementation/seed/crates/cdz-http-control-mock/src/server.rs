@@ -166,6 +166,12 @@ fn dispatch(cmd: AdminCommand, ctx: &AdminCtx) -> AdminReply {
                 .map(encode_control_up)
                 .collect(),
         },
+        AdminCommand::DropControl => {
+            // Server-initiated close of every live gateway session → each `run_session` breaks + drops its ws,
+            // so the gateway sees the control link drop + redials (re-shipping the current config on reconnect).
+            broadcast(&ctx.sessions, Bytes::from_static(crate::ws::CLOSE_SENTINEL));
+            AdminReply::Ok
+        }
     }
 }
 

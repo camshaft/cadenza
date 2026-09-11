@@ -417,6 +417,10 @@ fn control_command(control: &ControlStep) -> (String, AdminCommand) {
                 reply: Bytes::copy_from_slice(reply),
             },
         ),
+        ControlStep::DropControl => (
+            "control drop-control (force gateway redial)".to_string(),
+            AdminCommand::DropControl,
+        ),
     }
 }
 

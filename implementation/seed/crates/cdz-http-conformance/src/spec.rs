@@ -80,6 +80,10 @@ pub enum ControlStep {
         match_path: Option<String>,
         reply: Vec<u8>,
     },
+    /// Drop the gateway's control-ws connection server-side (`drop-control`), forcing it to REDIAL — for
+    /// exercising the control-link reconnect/resilience path (the gateway re-configures from the config the
+    /// mock re-ships on reconnect).
+    DropControl,
 }
 
 /// An HTTP request to make at the gateway. `headers` are `(name, value)` pairs; `body` is the request body
@@ -361,6 +365,9 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
 fn parse_control(arenas: &value::Arenas, id: value::ValueId) -> Option<ControlStep> {
     if let Some(name) = value::record_field(arenas, id, "push-root-router") {
         return Some(ControlStep::PushRootRouter(value::read_str(arenas, name)?));
+    }
+    if value::record_field(arenas, id, "drop-control").is_some() {
+        return Some(ControlStep::DropControl);
     }
     if let Some(pr) = value::record_field(arenas, id, "prime-reply") {
         let match_path = match value::record_field(arenas, pr, "match-path") {
