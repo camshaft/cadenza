@@ -29,6 +29,12 @@ pub struct Config {
     pub root_router: String,
     /// The programs to seed into the CAS (routers + handlers), each `{ name, program }`.
     pub programs: Vec<Program>,
+    /// Optional override for the CAS WRITE credential the mock ships to the gateway (in `ControlConfig`
+    /// `cas-credential`, sent verbatim as the gateway's `blobs.put` Bearer). Default (`None`) ⇒ the harness's
+    /// correct seed credential. The harness's CAS always expects the fixed seed credential, so a WRONG value
+    /// here is rejected by the CAS (401) — though the guest `blobs.put` WIT SWALLOWS that error, so the failure
+    /// surfaces DOWNSTREAM as an unresolvable CasRef (see the auth-failure scenario).
+    pub cas_write_credential: Option<String>,
 }
 
 /// One program the run makes resolvable: a `name` bound to a `program` reference (name or resolved path/hash).
@@ -106,6 +112,11 @@ pub struct HttpRequest {
     /// above the timeout. When set, the high-level client + other `body*` fields are bypassed; only `method` /
     /// `path` (+ this) are used.
     pub stalled_content_length: Option<u64>,
+    /// Generate a UNIQUE (per-run, per-request) request body — so a handler that publishes it produces a hash
+    /// never before seen in the CAS. Used by the auth-failure scenario: a denied `blobs.put` (whose error the
+    /// WIT swallows) leaves a fresh hash unresolvable → a deterministic downstream floor. Takes precedence over
+    /// `body` (but not `compile_request` / `body_source` / `body_fill`).
+    pub body_nonce: bool,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -273,9 +284,14 @@ fn parse_config(arenas: &value::Arenas, id: value::ValueId) -> Option<Config> {
             })
         })
         .collect::<Option<Vec<_>>>()?;
+    let cas_write_credential = match value::record_field(arenas, id, "cas-write-credential") {
+        Some(c) => Some(value::read_str(arenas, c)?),
+        None => None,
+    };
     Some(Config {
         root_router,
         programs,
+        cas_write_credential,
     })
 }
 
@@ -317,6 +333,10 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(s) => Some(value::read_uint(arenas, s)?),
         None => None,
     };
+    let body_nonce = match value::record_field(arenas, http, "body-nonce") {
+        Some(n) => value::read_bool(arenas, n)?,
+        None => false,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
@@ -326,6 +346,7 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         body_source,
         body_fill,
         stalled_content_length,
+        body_nonce,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,

@@ -1,0 +1,19 @@
+// A CAS-BACKED RESPONSE handler that publishes the RAW REQUEST BYTES (unlike http-casref, which publishes a
+// fixed literal). Used by the auth-failure scenario: with a wrong CAS write credential the host SWALLOWS the
+// blobs.put 401 (the WIT put is infallible-shaped, cdz-platform host.rs) and returns the locally-computed hash
+// as if it succeeded; the guest closes with http.response-cas{that hash}; the gateway then CAS-fetches it. When
+// the POSTed body is UNIQUE per run, that hash is never present, so the fetch misses → 502 — the observable
+// downstream consequence of a denied authenticated write. (Publishing `msg.payload`, the raw encoded request,
+// is just an arbitrary UNIQUE payload vehicle; it avoids decoding the request, so no http-request `Header`
+// collides with http-response-cas's `Header` — the CDZ0201 reason http-casref stays self-contained.)
+import { ResponseCas, Header, descriptor as response-cas-descriptor } from "http-response-cas"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  host blobs in
+    (let h = blobs.put(msg.payload) in
+     { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+       outcome = Outcome.Close({ schema = response-cas-descriptor().id,
+                                 reason = Value.encode(ResponseCas.ResponseCas({ status = 200, headers = ([] : List(Header)), body_hash = h })) }) })
+
+export { on-message, on-response, on-notification }

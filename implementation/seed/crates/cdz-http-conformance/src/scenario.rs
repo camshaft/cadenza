@@ -75,12 +75,21 @@ pub async fn run_scenario(
     //    credential matters for a handler's `blobs.put` (a CasRef response, a compile/parse publish): the
     //    gateway backs the guest `blobs` import with the control-shipped credential, and the CAS requires it
     //    for writes — without it a `blobs.put` is rejected and a CasRef body then 502s (absent). Reads are open.
+    //    A scenario may OVERRIDE the shipped credential (`config.cas-write-credential`) to a WRONG value; the CAS
+    //    above always expects the fixed `SEED_CREDENTIAL`, so a wrong shipped value is rejected (the auth-failure
+    //    path). (The guest `blobs.put` WIT swallows the rejection, so it surfaces downstream as an unresolvable
+    //    CasRef — see the cas-auth-failure scenario.)
+    let shipped_credential = spec
+        .config
+        .cas_write_credential
+        .as_deref()
+        .unwrap_or(SEED_CREDENTIAL);
     let mock = spawn_mock(
         &bins.mock,
         LOOPBACK,
         LOOPBACK,
         &cas_url,
-        Some(SEED_CREDENTIAL),
+        Some(shipped_credential),
     )
     .await?;
     let admin = AdminClient::new(mock.admin_addr);
@@ -300,6 +309,7 @@ mod tests {
                     name: "missing".into(),
                     program: "missing".into(),
                 }],
+                cas_write_credential: None,
             },
             requests: vec![],
         };
