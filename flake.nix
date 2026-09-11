@@ -3046,6 +3046,21 @@
           base // { "root-router-baked" = bakedTemplated; };
         httpConformancePrograms = builtins.attrValues httpConformanceProgramsByName;
 
+        # compile-dispatch: the SAME deploy-templated router SOURCE as root-router-baked (the placeholder handler
+        # markers substituted with the seeded http-hello/http-echo/http-page ProgramHashes via
+        # `cdz-http-programhash --escaped`), but exposed at THIS scope so the compile-dispatch scenario can STAGE it
+        # as a /parse+/compile input — i.e. BUILD the dispatching router via the /compile endpoint at runtime, then
+        # dispatch through it. Re-derives the identical substitution rather than reusing the inner `bakedTemplatedSrc`
+        # (which is scoped inside httpConformanceProgramsByName's let); inputs + script mirror that block (3030).
+        compileDispatchRouterSrc = pkgs.runCommand "compile-dispatch-router-templated"
+          { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          hello=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-hello"})
+          echoh=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-echo"})
+          page=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${httpConformanceProgramsByName."http-page"})
+          mkdir -p "$out"
+          python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("cdz-http.handler.root...........", sys.argv[2]).replace("cdz-http.handler.echo...........", sys.argv[3]).replace("cdz-http.handler.page...........", sys.argv[4]); assert sys.argv[2] in s and sys.argv[3] in s and sys.argv[4] in s, "placeholder substitution did not apply"; sys.stdout.write(s)' "${httpConformanceProgramsDir}/routers/root-router-baked/reducer.cdz" "$hello" "$echoh" "$page" > "$out/reducer.cdz"
+        '';
+
         # Per-scenario EXTERNAL guest packages (reducer-targets guests, not in this crate's programs/), seeded
         # into the CAS by name for the scenarios that drive them. Keyed by scenario name so ONLY those scenarios
         # depend on the heavy `rcdzc` reducer-guest builds — every other run stays uncoupled. The scenario's
@@ -3095,6 +3110,14 @@
             { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
             { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
           ];
+          # compile-dispatch: same 4 route guests as reducer-world-compile (parse root, then swap to compile),
+          # plus the router being /compile'd dispatches to the SEEDED http-hello/http-echo (config.programs).
+          compile-dispatch = [
+            { name = "reducer-guest-parse"; drv = reducerGuestParse; }
+            { name = "reducer-guest-ml"; drv = reducerGuestMl; }
+            { name = "reducer-guest-rcdzc"; drv = reducerGuestRcdzc; }
+            { name = "reducer-guest-compile"; drv = reducerGuestCompile; }
+          ];
         };
 
         # Per-scenario staged module SOURCES: the `.cdz` files a scenario POSTs to /parse via `body-source`
@@ -3112,12 +3135,27 @@
             { name = "control-send"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/control-send.cdz; }
             { name = "contract-id"; path = ./implementation/seed/crates/cdz-platform/guests/contract-id.cdz; }
           ];
+          # compile-dispatch: the deploy-templated ROUTER source (real handler hashes substituted) as the entry,
+          # + the SAME 7-module lib/contract closure reducer-world-compile stages (router replaces http-hello).
+          compile-dispatch = [
+            { name = "root-router-baked"; path = "${compileDispatchRouterSrc}/reducer.cdz"; }
+            { name = "http-lib"; path = ./implementation/seed/crates/cdz-http-conformance/programs/lib/http-lib.cdz; }
+            { name = "reducer-lib"; path = ./implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz; }
+            { name = "http-response"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-response.cdz; }
+            { name = "http-deny"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-deny.cdz; }
+            { name = "http-dispatch"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/http-dispatch.cdz; }
+            { name = "control-send"; path = ./implementation/seed/crates/cdz-platform/contracts/userspace/control-send.cdz; }
+            { name = "contract-id"; path = ./implementation/seed/crates/cdz-platform/guests/contract-id.cdz; }
+          ];
         };
         # Per-scenario staged WIT-WORLD artifacts: `<name>.bin` KIND_WIT_WORLD blobs the driver seeds into the CAS
         # + exposes as a capture `<name>` (its raw ProgramHash) for a /compile `wit-world` ref. reducer-world.bin
         # comes from the `worldArtifacts` derivation (the platform reducer-world, single source of truth).
         httpConformanceWitWorlds = {
           reducer-world-compile = [
+            { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
+          ];
+          compile-dispatch = [
             { name = "reducer-world"; path = "${worldArtifacts}/reducer-world.bin"; }
           ];
         };
