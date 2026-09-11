@@ -66,7 +66,7 @@ mod arg_probe_world {
 }
 
 // --- the TEST-ONLY arg-probe host import (§9 arg-value capture) ---
-use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf, unit};
+use crate::contract_value::{bare_ctor, record, uint_leaf, unit};
 use arg_probe_world::cadenza::test_arg_probe::arg_probe as ap;
 use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix, StructId};
 use cadenza_ast::codec;
@@ -120,37 +120,31 @@ fn narrow_value(b: &mut Builder, n: &ap::Narrow) -> StructId {
     }
 }
 
-/// Encode a received `probe-record` to canonical Value bytes: `(record (= v <mixed>) (= tag <s64>))`
-/// ascribed `ProbeRecord` — byte-for-byte what a Cadenza checker's `Value.encode` of the same value produces.
+/// Encode a received `probe-record` to canonical Value bytes: the bare `(record (= v <mixed>) (= tag <s64>))`
+/// — byte-for-byte what a Cadenza checker's `Value.encode` of the same value produces. No root ascription:
+/// the value-codec migration dropped the `(: value Type)` frame (decode is type-directed by the caller), so
+/// the record IS the root, matching the guest's bare `Value.encode`.
 fn encode_probe_record(r: &ap::ProbeRecord) -> Vec<u8> {
     let mut b = Builder::new();
     let v = mixed_value(&mut b, &r.v);
     let tag = int_leaf(&mut b, r.tag);
     let rec = record(&mut b, vec![("v", v), ("tag", tag)]);
-    let root = ascribe(&mut b, rec, "ProbeRecord");
-    codec::encode(&b.finish(root))
+    codec::encode(&b.finish(rec))
 }
 
-/// Encode the received `list<narrow>` to canonical Value bytes: the M2 NATIVE `Ctor(List)` list ascribed
-/// with the PARAMETERIZED type `(List Narrow)` — byte-for-byte what a Cadenza checker's `Value.encode` of the
-/// same `List(Narrow)` produces. Native, not the legacy name-headed `(list …)`: the guest runtime's
-/// `decode_value` REQUIRES the native ctor-leaf head and rejects a name/string head, and the checker
-/// byte-matches this against the guest's native `Value.encode` — so a name-headed list neither decodes nor
-/// byte-matches (mirrors `contract_value::record` / `log_value::list_value`). The root ascription of a generic
-/// value carries the type CONSTRUCTOR APPLIED to its argument (`(List Narrow)`, mirroring `(: (Some 5) (Option
-/// Int64))` in the codec), not the bare constructor name — a bare `List` decodes fine (the decoder is
-/// type-directed and ignores the token) but does not byte-match the checker.
+/// Encode the received `list<narrow>` to canonical Value bytes: the bare M2 NATIVE `Ctor(List)` list —
+/// byte-for-byte what a Cadenza checker's `Value.encode` of the same `List(Narrow)` produces. Native, not
+/// the legacy name-headed `(list …)`: the guest runtime's `decode_value` REQUIRES the native ctor-leaf head
+/// and rejects a name/string head, and the checker byte-matches this against the guest's native
+/// `Value.encode` — so a name-headed list neither decodes nor byte-matches (mirrors `contract_value::record`
+/// / `log_value::list_value`). No root ascription: the value-codec migration dropped the `(: value (List
+/// Narrow))` frame, so the native list IS the root, matching the guest's bare `Value.encode` (decode is
+/// type-directed by the caller and never read the erased type token).
 fn encode_narrow_list(items: &[ap::Narrow]) -> Vec<u8> {
     let mut b = Builder::new();
     let vals: Vec<StructId> = items.iter().map(|n| narrow_value(&mut b, n)).collect();
     let list = b.compound(CompoundCtor::List, &vals);
-    // The `(List Narrow)` type node — the list type constructor applied to its element type.
-    let list_ty = b.name("List");
-    let elem_ty = b.name("Narrow");
-    let ty = b.list(vec![list_ty, elem_ty]);
-    let colon = b.name(":");
-    let root = b.list(vec![colon, list, ty]);
-    codec::encode(&b.finish(root))
+    codec::encode(&b.finish(list))
 }
 
 impl ap::Host for HostState {
@@ -1688,7 +1682,8 @@ mod tests {
         use crate::contract_value::{as_ascribed, as_bare_ctor, read_uint, record_field};
         use cadenza_ast::codec;
 
-        // probe-record { v: Big(5), tag: 42 } -> (: (record (= v (Big 5)) (= tag 42)) ProbeRecord)
+        // probe-record { v: Big(5), tag: 42 } -> bare (record (= v (Big 5)) (= tag 42)) (no root ascription;
+        // as_ascribed(..).unwrap_or(root) tolerates either form, so this still reads the record fields).
         let bytes = super::encode_probe_record(&ap::ProbeRecord {
             v: ap::Mixed::Big(5),
             tag: 42,
@@ -1701,7 +1696,8 @@ mod tests {
         let tag = record_field(&arenas, rec, "tag").expect("field tag");
         assert_eq!(read_uint(&arenas, tag), Some(42), "tag");
 
-        // list<narrow> [A(7), Absent, B(300)] -> (: <native Ctor(List)>[(A 7) (Absent unit) (B 300)] (List Narrow))
+        // list<narrow> [A(7), Absent, B(300)] -> bare <native Ctor(List)>[(A 7) (Absent unit) (B 300)]
+        // (no root ascription; as_ascribed(..).unwrap_or(root) tolerates either form).
         let bytes =
             super::encode_narrow_list(&[ap::Narrow::A(7), ap::Narrow::Absent, ap::Narrow::B(300)]);
         let arenas = codec::decode(&bytes).expect("list decodes");
