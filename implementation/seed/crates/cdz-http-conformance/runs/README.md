@@ -64,6 +64,10 @@ A record with two fields (read by name; order-independent):
 - `body-nonce` — `true?`: generate a per-run-UNIQUE body at send time (pid+nanos+counter) — for a handler
   that publishes it, the CAS hash is fresh every run (used by the auth-failure scenario: a swallowed denied write
   leaves a fresh hash unresolvable → a deterministic 502).
+- `stalled-content-length` — `<n>?`: over a RAW socket, declare `Content-Length: n` in the request head then
+  send NO body and hold the connection open — a stalled/slowloris client. Exercises the gateway's body-read IDLE
+  timeout (→ 408) without a real upload. Bypasses the reqwest client (raw TCP); the driver waits past the idle
+  timeout to observe a real 408 vs. a hang.
 - `concurrency` — `<n>?`: fire this request `n` times CONCURRENTLY (all in flight) and require every
   response to pass the step's `expect` — the concurrency/isolation gate (bypasses the `body*`/capture machinery).
 
@@ -101,6 +105,9 @@ Effect vocabulary + routing:
 - `oversized-body` — a request body over the 16 MiB ceiling → 413 BEFORE routing (design §8 #5): a genuine large
   upload (`body-fill`) is drained by the gateway so the client sees a real 413, not a mid-upload reset; a small
   body still routes → 200.
+- `slow-upload` — the too-SLOW counterpart to oversized-body's too-BIG: a `stalled-content-length` client declares
+  a (sub-ceiling) body then STALLS → the gateway's body-read idle timeout floors it 408 (#8801, slowloris hardening);
+  a normal small body still routes → 200 (idle-based, so only a genuine stall trips it).
 - `cas-auth-failure` — a handler `blobs.put` with a WRONG control-shipped CAS write credential (config
   `cas-write-credential`): the CAS rejects the write (401) but the infallible-shaped `blobs.put` WIT SWALLOWS it, so
   it surfaces DOWNSTREAM — the published (unique) CasRef hash is absent → the gateway floors 502 (§8-grow auth failure).
@@ -125,7 +132,7 @@ Effect vocabulary + routing:
 
 Browser outpost (owned by the `v-browser-outpost` vertical — it drops `browser-*.ml` + their handlers/routers
 here; they auto-discover as `http-conformance-browser-*` checks):
-- `browser-page` / `browser-outpost` — a reducer serves HTML + JavaScript through the gateway with the
-  `content-type` forwarded verbatim (S0: a direct handler; S1a: a method-aware router — `GET /`→html,
-  `GET /app.js`→js, unmatched→404, non-GET→405). This vertical only guarantees the harness runs them; their
-  scenario semantics + additions are that vertical's.
+- `browser-page` / `browser-outpost` / `browser-baked-app` — a reducer serves HTML + JavaScript through the
+  gateway with the `content-type` forwarded verbatim (S0: a direct handler; S1a: a method-aware router — `GET /`→html,
+  `GET /app.js`→js, unmatched→404, non-GET→405; and a baked-app variant serving a bundled page). This vertical only
+  guarantees the harness runs them; their scenario semantics + additions are that vertical's.
