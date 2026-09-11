@@ -13,6 +13,6 @@
   },
   requests = [
     { http = { method = "GET", path = "/" },
-      expect = { status = 502 } },
+      expect = { status = 502, body-contains = "absent from the store" } },
   ],
 }
