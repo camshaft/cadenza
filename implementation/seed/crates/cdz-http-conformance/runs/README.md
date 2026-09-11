@@ -42,12 +42,19 @@ A record with two fields (read by name; order-independent):
 - `method` / `path` — required.
 - `headers` — `[ { name, value }, … ]?` request headers (e.g. `content-type`).
 - `body` — `b"…"?` the request body bytes.
-- `compile-request` — `{ asts = [ { name, from-capture }, … ], entry = "<name>" }?`: build the `/compile`
-  route's artifact-list body AT SEND TIME by invoking the real `cdz-http-compile-request` deploy tool (the
-  single source of truth for the `CompileRoute` value shape). Each `asts` entry names a module + the
-  `from-capture` (an earlier step's `capture-body-as`) holding its raw 33-byte `/parse` ast-hash; `entry` is
-  the entrypoint module. Building at send time keeps the ast-hash a LIVE captured value — never a pinned
-  constant. (Takes precedence over `body`.)
+- `compile-request` — `{ asts = [ { name, from-capture }, … ], entry = "<name>", wit-world = { name,
+  from-capture }? }?`: build the `/compile` route's artifact-list body AT SEND TIME by invoking the real
+  `cdz-http-compile-request` deploy tool (the single source of truth for the `CompileRoute` value shape). Each
+  `asts` entry names a module + the `from-capture` (an earlier step's `capture-body-as`) holding its raw 33-byte
+  `/parse` ast-hash; `entry` is the entrypoint module. `wit-world` (optional) names a `kind="wit-world"` artifact
+  by a `from-capture` holding its hash — required to `/compile` a reducer-world guest (a driver-seeded artifact,
+  e.g. `reducer-world`). Building at send time keeps every hash a LIVE captured value — never a pinned constant.
+  (Takes precedence over the other body fields.)
+- `body-source` — `"<name>"?`: read the body AT SEND TIME from a staged in-tree module source
+  (`<name>.cdz` under `CDZ_HARNESS_MODULE_SOURCES_DIR`, staged per-scenario by the flake) — POST a real
+  lib/contract source to `/parse` without embedding + drifting its text here. (Precedence: after `compile-request`.)
+- `body-fill` — `<n>?`: generate an `n`-byte filler body AT SEND TIME — POST a large body (e.g. over the 16 MiB
+  ceiling → a client-visible 413, since the gateway drains the oversized body) without a huge literal here.
 
 ### `expect` fields (all optional; a `None` field asserts nothing)
 
@@ -80,6 +87,9 @@ Effect vocabulary + routing:
 - `casref` — a handler publishes a body to the CAS + answers a `http.response-cas` CasRef terminal.
 - `missing-program` — a dispatch to a deliberately-absent program hash → the gateway floors GRACEFULLY (a 502,
   no hang/crash): spawn can't fetch the hash, injects `Err`, the handler folds it into a deny (design §8 #9).
+- `oversized-body` — a request body over the 16 MiB ceiling → 413 BEFORE routing (design §8 #5): a genuine large
+  upload (`body-fill`) is drained by the gateway so the client sees a real 413, not a mid-upload reset; a small
+  body still routes → 200.
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.
@@ -89,6 +99,9 @@ Effect vocabulary + routing:
 - `parse-diagnostics` — a malformed source → 400 whose body carries the parse diagnostic ("expected").
 - `compile-diagnostics` — programs that parse but fail to COMPILE → 422 with the CDZ code ("CDZ0203",
   "nothing is public").
+- `reducer-world-compile` — `/compile` a real reducer-world GUEST: parse the guest (http-hello) + its full
+  lib/contract closure (8 modules, via `body-source`), then `/compile` the artifact list + a `kind="wit-world"`
+  reducer-world artifact → a real wasm component (`\x00asm`). Exercises the multi-`ast` + `wit-world` compile path.
 
 Browser outpost (owned by the `v-browser-outpost` vertical — it drops `browser-*.ml` + their handlers/routers
 here; they auto-discover as `http-conformance-browser-*` checks):
