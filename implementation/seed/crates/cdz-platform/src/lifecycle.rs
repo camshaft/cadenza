@@ -111,7 +111,7 @@ impl Lifecycle {
         use crate::contract_value as v;
         use crate::contracts::lifecycle as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let root = v::unascribe(&arenas, arenas.root);
         if let Some(e) = c::as_event_exited(&arenas, root) {
             return Some(Lifecycle::Exited {
                 reducer: ReducerId::from_hash(v::read_hash(&arenas, e.reducer)?),

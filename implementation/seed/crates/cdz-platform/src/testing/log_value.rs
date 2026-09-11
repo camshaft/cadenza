@@ -1364,7 +1364,7 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let root = crate::contract_value::unascribe(&arenas, arenas.root);
         let items = super::list_items(&arenas, root).expect("the log is a list");
         let record =
             super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
@@ -1397,7 +1397,7 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let root = crate::contract_value::unascribe(&arenas, arenas.root);
         let items = super::list_items(&arenas, root).expect("the log is a list");
         let record =
             super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
