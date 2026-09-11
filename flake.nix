@@ -1846,6 +1846,30 @@
           entry = "reducer";
         } // cadenzaWorldArgs "reducer-world");
 
+        # reducer-guest-parse (v-reducer-targets B10): the PARSE HTTP route handler — POST source -> run a
+        # parser guest (sexpr or ml by Content-Type) -> blobs.put(ast) -> 200 with the AST's ProgramHash (the
+        # content-addressed half of multi-module /compile). HASH INJECTION (operator 2026-09-11): rather than a
+        # textual placeholder-replace, GENERATE a tiny `guest-hashes` Cadenza module holding the reducer-guest-
+        # {ml,sexpr} ProgramHashes as `def`s and INJECT it as a lib — the handler IMPORTS the hashes, its source
+        # stays pristine + content-address-agnostic. (cdz-http-programhash --escaped emits each hash as the
+        # `b"…"`-literal byte-escape form.)
+        reducerGuestParseDir = ./implementation/seed/crates/cdz-reducer-guest/parse-route;
+        reducerGuestParseLibLines = builtins.filter (s: s != "")
+          (pkgs.lib.splitString "\n" (builtins.readFile (reducerGuestParseDir + "/libs")));
+        reducerGuestParseHashes = pkgs.runCommand "reducer-guest-parse-hashes" { } ''
+          ml=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestMl})
+          sexpr=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestSexpr})
+          mkdir -p "$out"
+          printf 'def ml-parser-hash() -> Bytes = b"%s"\ndef sexpr-parser-hash() -> Bytes = b"%s"\nexport { ml-parser-hash, sexpr-parser-hash }\n' "$ml" "$sexpr" > "$out/guest-hashes.cdz"
+        '';
+        reducerGuestParse = mkCadenzaGuest ({
+          pname = "reducer-guest-parse";
+          src = reducerGuestParseDir + "/reducer.cdz";
+          componentName = "cadenza:platform/guest";
+          libs = (closeLibs reducerGuestParseLibLines) ++ [ (reducerGuestParseHashes + "/guest-hashes.cdz") ];
+          entry = "reducer";
+        } // cadenzaWorldArgs "reducer-world");
+
         # Full-CI-in-nix increment 3: the NATIVE half of the GHA `rcdzc-wasm` job (cargo test + clippy +
         # fmt in the rcdzc-wasm crate dir). The job's OTHER half — the wasm32-wasip1 build — is already
         # the `rcdzcWasm` derivation above, so `nix flake check` covers the whole job via two checks. This
@@ -6719,6 +6743,9 @@
         # POSTs into the live CAS + pushes as the gateway root-router).
         packages.reducer-guest-compile = reducerGuestCompile;
         packages.reducer-guest-compile-hash = hashOf reducerGuestCompile "reducer-guest-compile-hash";
+        # reducer-guest-parse (B10): the parse HTTP route handler guest (source -> ast -> blobs.put -> hash).
+        packages.reducer-guest-parse = reducerGuestParse;
+        packages.reducer-guest-parse-hash = hashOf reducerGuestParse "reducer-guest-parse-hash";
 
         # S2: build a Cadenza project through nix (the S1 compiler on Project.cdz → wasm).
         # `.#example-project` is the gate-witness demo, built by the in-flake `buildCadenzaProject`
@@ -6962,6 +6989,7 @@
               reducer-guest-sexpr = reducerGuestSexpr;
               reducer-guest-ml = reducerGuestMl;
               reducer-guest-compile = reducerGuestCompile;
+              reducer-guest-parse = reducerGuestParse;
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };
