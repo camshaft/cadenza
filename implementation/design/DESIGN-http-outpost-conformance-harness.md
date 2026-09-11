@@ -444,12 +444,20 @@ family (`parse`, `cross-surface`, `compile`, `parse-diagnostics`, `compile-diagn
 ceiling, drained → client-visible) + `slow-upload` (408 body-read idle timeout, slowloris); and the
 browser-outpost scenarios (owned by `v-browser-outpost`, auto-discovered here). The `#5 413` + `#6 504` + `#9
 graceful-floor` behaviors are covered by `oversized-body` / `deadline-timeout` / `missing-program` respectively.
-Grow-list status: **auth failures** — PARKED: a wrong control-shipped CAS write credential unexpectedly still
-writes OK (200, not the expected 401→502) despite the mock, gateway encode, CAS `ct_eq`, and (no) blob-cache all
-verifying correct in isolation — an integration puzzle needing runtime instrumentation (offered to pair with
-v-gateway-rewrite). **fresh-session** — N/A in the current stateless reducer-guest model (per-request isolation
-is structural). **WebSocket / malformed-frames / reconnect / concurrency** — not started (need mock/gateway or
-driver features; will pursue on a peer trigger or when the behavior lands).
+Grow-list status: **auth failures** — DONE (`cas-auth-failure`): a wrong control-shipped CAS write credential →
+the guest `blobs.put` is denied (401), but the infallible-shaped `blobs.put` WIT SWALLOWS the error, so it
+surfaces DOWNSTREAM as an unresolvable CasRef → 502 (v-gateway-rewrite traced the WIT swallow; a fallible
+`blobs.put` WIT is a flagged latent platform gap). **reconnect/resilience** — DONE (`reconnect`): a server-side
+control-ws drop → the gateway redials (#8741) + keeps serving. **concurrency** — DONE (`concurrency`): 25
+in-flight requests all served (fresh mailbox per request). **malformed frames** — DONE (`malformed-frame`): an
+undecodable control frame is tolerated (ignore/recover, no crash/hang). **fresh-session** — N/A in the current
+stateless reducer-guest model (per-request isolation is structural). Also DONE beyond the list: the self-hosting
+**compile→install→serve** loop (`reducer-world-compile` installs its freshly-`/compile`-built component as root +
+serves) via a `push-root-router = { from-capture }` cap. **WebSocket** — NOT YET: the gateway serves no
+client-facing WS (its only WS is the control-link CLIENT to the mock); no test until a client-facing WS surface
+lands. **compile-DISPATCH** (dispatch through a `/compile`-built ROUTER, catching compile-ok-but-dispatch-hangs)
+— pending v-hivemind's proven dispatching-router source + closure (the `from-capture` install path it builds on
+is already proven).
 
 ---
 
