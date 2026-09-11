@@ -1,0 +1,46 @@
+// The BROWSER-OUTPOST router (DESIGN-browser-outpost.md, milestone S1a): a self-contained wasm router that
+// returns HTML on one route and JavaScript on another — the operator's exact ask (2026-09-11): "build a
+// router that returns HTML and JavaScript on certain routes … minimize the amount of JavaScript … mostly use
+// cadenza programs to drive the browser."
+//
+// Unlike the shared root-router-baked (which DISPATCHES to handler programs by baked hash and needs deploy
+// templating), this router answers INLINE: it decodes the http-request, branches on the path, and responds
+// directly. So it is one self-contained program with no baked handler hashes and no flake templating — it
+// stands alone in the browser-outpost territory. The dumb gateway needs ZERO changes: it forwards each
+// response's content-type header verbatim, so a browser fetches `/` as an HTML document and `/app.js` as an
+// ES module.
+//
+//   GET /        -> 200 text/html         the page: a mount point + <script type=module src=/app.js>
+//   GET /app.js  -> 200 text/javascript   the MINIMAL JS bootstrap (kept out-of-line so the HTML stays tiny)
+//   else         -> 404 deny
+//
+// The bootstrap JS is deliberately tiny (operator: minimize JS). S1b replaces its placeholder body with a
+// fetch+instantiate of a shipped cadenza reducer (wasm, via jco); S2 wires the first browser-API-as-effect
+// (DOM render / a click event) into that reducer's fold, so cadenza — not JS — drives the browser.
+//
+// Composed from the shared libs (operator 2026-09-10: reuse the mechanism, no inline worlds): `Request` +
+// `respond` + `deny` from `http-lib`, `Header` from `http-response`, the inert on-response / on-notification
+// from `reducer-lib`. HTML/JS use single-quoted attributes/strings so the byte-string literals need no `\"`.
+import { Request, respond, deny } from "http-lib"
+import { Header } from "http-response"
+import { on-response, on-notification } from "reducer-lib"
+
+def html-page() =
+  respond(200,
+    [Header.Header({ name = "content-type", value = "text/html" })],
+    b"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Cadenza Browser Outpost</title></head><body><div id='app'>Loading...</div><script type='module' src='/app.js'></script></body></html>")
+
+def bootstrap-js() =
+  respond(200,
+    [Header.Header({ name = "content-type", value = "text/javascript" })],
+    b"const mount = document.getElementById('app'); mount.textContent = 'Cadenza browser outpost: bootstrap module loaded'; // S1b: fetch a shipped cadenza reducer (wasm), instantiate via jco, and drive its on-message/step against browser-APIs-as-effects.")
+
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(rq)) =>
+     (if String.to-bytes(rq.path) == b"/" then html-page()
+      else if String.to-bytes(rq.path) == b"/app.js" then bootstrap-js()
+      else deny(404, b"not found"))
+   | None => deny(404, b"not found"))
+
+export { on-message, on-response, on-notification }
