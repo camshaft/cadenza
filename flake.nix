@@ -5991,6 +5991,35 @@
           '';
         };
 
+        # browser-outpost SELF-CONTAINED BROWSER BUNDLE (for the operator's manual real-browser test): a static
+        # dir ($out) with index.html + the jco-transpiled browser-outpost-app reducer ESM + the value-heap
+        # runtime ESM + a minimal real bootstrap. `nix build .#browser-outpost-bundle` then serve $out with any
+        # static server (`python3 -m http.server -d result`) and open it — the page instantiates the Cadenza
+        # reducer in the tab (jco) and drives its on-message on button clicks (DOM-as-effect). Reuses the guide's
+        # vendored jco toolchain (zero new deps). The build also NODE-SMOKES the fold; the DOM layer is the
+        # operator's manual test.
+        browserOutpostBundle = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-browser-outpost-bundle";
+          version = "0.0.0";
+          src = guideExamplesSrc;
+          nativeBuildInputs = [ pkgs.nodejs_22 pkgs.npmHooks.npmConfigHook ];
+          npmDeps = guideNpmDeps;
+          npmRoot = "guide";
+          CDZ_APP_WASM = "${httpConformanceProgramsByName."browser-outpost-app"}";
+          CDZ_RUNTIME_WASM = "${runtime}";
+          buildPhase = ''
+            runHook preBuild
+            ( cd guide && npm ci )
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            ( cd guide && OUT="$out" node scripts/build-browser-outpost-bundle.mjs )
+            runHook postInstall
+          '';
+        };
+
         # guideSite — the DEPLOYABLE static guide site (`guide/dist/`) built through NIX so the GitHub-Pages
         # deploy reuses the SHARED nix cache instead of a cold raw build every 30-min cron (operator directive
         # 2026-08-29, job 33275680429 — the pages deploy spent a lot of time building). Same build path as
@@ -6850,6 +6879,8 @@
         # Pages deploy for the shared cache). `nix build .#guide-site` → result/ = the site the pages.yml
         # deploy uploads as the Pages artifact (cache-hit on unchanged trunk instead of a cold ARM rebuild).
         packages.guide-site = guideSite;
+        # `.#browser-outpost-bundle` — a static bundle to open the browser outpost in a real browser (manual test).
+        packages.browser-outpost-bundle = browserOutpostBundle;
 
         # `.#corpus-verdicts` — the WASM-corpus verdict harvest (v-xtask-decompose --save gate-delete). One
         # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
