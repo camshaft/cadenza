@@ -160,7 +160,7 @@ impl Deliver {
         use crate::contracts::deliver as c;
 
         let arenas = codec::decode(bytes)?;
-        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let root = v::unascribe(&arenas, arenas.root);
         let env = c::as_envelope_deliver(&arenas, root)?;
         let target = ReducerId::from_hash(v::read_hash(&arenas, env.target)?);
         let event = decode_event(&arenas, env.event)?;
@@ -330,7 +330,7 @@ mod tests {
         };
         let arenas = cadenza_ast::codec::decode(&d.encode()).expect("well-formed value");
         let root =
-            crate::contract_value::as_ascribed(&arenas, arenas.root).expect("root ascription");
+            crate::contract_value::unascribe(&arenas, arenas.root);
         let env = c::as_envelope_deliver(&arenas, root).expect("an Envelope.Deliver value");
         // `event` is an `Event.Message` whose fields read back by name, the payload being the request body.
         let m = c::as_event_message(&arenas, env.event).expect("an Event.Message value");

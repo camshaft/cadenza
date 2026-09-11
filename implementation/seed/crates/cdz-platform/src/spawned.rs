@@ -73,7 +73,7 @@ impl Spawned {
         use crate::contract_value as v;
         use crate::contracts::spawned as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let root = v::unascribe(&arenas, arenas.root);
         let e = c::as_event_spawned(&arenas, root)?;
         Some(Self {
             id: ReducerId::from_hash(v::read_hash(&arenas, e.id)?),
@@ -114,7 +114,7 @@ mod tests {
             parent: rid(b"parent"),
         };
         let arenas = cadenza_ast::codec::decode(&event.encode()).expect("well-formed value");
-        let inner = v::as_ascribed(&arenas, arenas.root).expect("root ascription");
+        let inner = v::unascribe(&arenas, arenas.root);
         // The elided value IS the record: its fields read directly by name.
         assert!(
             v::record_field(&arenas, inner, "id").is_some(),

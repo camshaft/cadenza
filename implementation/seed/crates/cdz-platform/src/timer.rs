@@ -96,7 +96,7 @@ impl FireAfter {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let root = v::unascribe(&arenas, arenas.root);
         let duration = c::as_envelope_fire_after(&arenas, root)?;
         Some(Self {
             duration: v::read_uint(&arenas, duration)?,
@@ -126,7 +126,7 @@ impl Fired {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let root = v::unascribe(&arenas, arenas.root);
         let fired_time = c::as_event_fired(&arenas, root)?;
         Some(Self {
             fired_time: v::read_uint(&arenas, fired_time)?,
@@ -159,7 +159,7 @@ mod tests {
         use crate::contract_value as v;
         let arm = FireAfter { duration: 5000 };
         let arenas = cadenza_ast::codec::decode(&arm.encode()).expect("well-formed value");
-        let inner = v::as_ascribed(&arenas, arenas.root).expect("root ascription");
+        let inner = v::unascribe(&arenas, arenas.root);
         // The elided value IS the scalar: `read_uint` reads it directly.
         assert_eq!(v::read_uint(&arenas, inner), Some(5000));
         // And it is NOT wrapped in the `FireAfter` constructor (elided) — nor any bare-ctor list.
@@ -230,7 +230,7 @@ mod tests {
         use crate::contracts::timer as c;
         let arm = FireAfter { duration: 5000 };
         let arenas = cadenza_ast::codec::decode(&arm.encode()).expect("well-formed value");
-        let root = v::as_ascribed(&arenas, arenas.root).expect("root ascription");
+        let root = v::unascribe(&arenas, arenas.root);
         let payload =
             c::as_envelope_fire_after(&arenas, root).expect("an Envelope.FireAfter value");
         assert_eq!(v::read_uint(&arenas, payload), Some(5000));

@@ -169,6 +169,19 @@ pub fn as_ascribed(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<St
     (inner.len() == 2).then_some(inner[0])
 }
 
+/// Strip an OPTIONAL root ascription `(: value ty)`, returning the underlying value — or `id` unchanged
+/// if there is no ascription. The frame-TOLERANT reader entry point (value-codec migration: decode by
+/// STRUCTURE, not names): it mirrors the runtime `Value.decode`, which now decodes a bare/unframed value
+/// too, so a contract value read here decodes whether or not the encode boundary emitted the `(: value
+/// ty)` wrapper. Prefer this over `as_ascribed(..)?` / `as_ascribed(..).expect(..)` at a decode entry —
+/// those REJECT/panic on an unframed value, but the frame is decorative (the type token is never matched)
+/// and is being eliminated from the encoders. A value built by these builders (framed today) is
+/// unaffected; a bare one now reads instead of failing.
+#[must_use]
+pub fn unascribe(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> StructId {
+    as_ascribed(arenas, id).unwrap_or(id)
+}
+
 /// Whether `id` is the `unit` atom — the inverse of [`unit`]. A nullary single-constructor sum's elided
 /// payload, once the root ascription is stripped, is exactly this atom.
 #[must_use]
