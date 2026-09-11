@@ -134,6 +134,9 @@ Effect vocabulary + routing:
   baseline GET / → 200, then after the drop a retried GET / → 200 (a control blip doesn't break the data plane).
 - `concurrency` — 25 concurrent GET / to http-hello → all 200: the gateway drives a fresh mailbox per
   request with no cross-request race/deadlock/corruption under load (§8-grow concurrency).
+- `concurrency-dispatch` — the dispatch companion: 25 concurrent GET / through the BAKED ROUTER → each
+  dispatches to http-hello → all 200. Exercises concurrent child SPAWNS + per-request dispatch session/mailbox
+  isolation under load (a distinct path from the direct `concurrency` case).
 - `malformed-frame` — a `push-garbage-frame` delivers undecodable bytes on the control link → the gateway
   tolerates it (baseline GET /→200, garbage frame, retried GET /→200); a crash/hang would fail (§8-grow malformed frames).
 
