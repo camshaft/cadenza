@@ -543,12 +543,20 @@ fn encode_request_value(
     let method = value::bare_ctor(&mut b, method, vec![unit]);
     let path = value::str_leaf(&mut b, path);
     let query = value::str_leaf(&mut b, query);
+    // Each list element must carry its own `(: <record> Header)` ascription: the guest's `Value.encode`
+    // ascribes a single-constructor RECORD value (a `Header` newtype) so `Value.decode` can disambiguate the
+    // elided `#record` back to `Header`, and its decode of `List(Header)` REQUIRES that per-element ascription.
+    // `reqc::header_header` builds the bare record (single-ctor elided, no ascription — correct for a value
+    // whose type is fixed by an enclosing ascription, e.g. a root or a same-typed field), so a list element
+    // needs the wrap. Without it, any request WITH headers fails to decode in the guest (an empty header list
+    // is unaffected — hence it hid until a header-bearing request was driven end to end).
     let header_values: Vec<value::ValueId> = headers
         .iter()
         .map(|(name, val)| {
             let name = value::str_leaf(&mut b, name);
             let value = value::str_leaf(&mut b, val);
-            reqc::header_header(&mut b, reqc::HeaderHeader { name, value })
+            let header = reqc::header_header(&mut b, reqc::HeaderHeader { name, value });
+            value::ascribe(&mut b, header, "Header")
         })
         .collect();
     let headers = value::list_value(&mut b, header_values);
