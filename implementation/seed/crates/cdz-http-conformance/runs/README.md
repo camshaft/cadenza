@@ -134,7 +134,12 @@ Effect vocabulary + routing:
   "nothing is public").
 - `reducer-world-compile` — `/compile` a real reducer-world GUEST: parse the guest (http-hello) + its full
   lib/contract closure (8 modules, via `body-source`), then `/compile` the artifact list + a `kind="wit-world"`
-  reducer-world artifact → a real wasm component (`\x00asm`). Exercises the multi-`ast` + `wit-world` compile path.
+  reducer-world artifact → a real wasm component (`\x00asm`), then INSTALL it as root + SERVE (compile→install→serve).
+- `compile-dispatch` — the compile→root→DISPATCH path: `/compile` a dispatching ROUTER (the deploy-templated
+  root-router-baked source, its placeholder handler hashes substituted with the seeded http-hello/http-echo
+  ProgramHashes) from its 8-module closure, root the freshly-built component (`push-root-router` from-capture,
+  #8811), then dispatch: `GET /` → 200 (router folds http-hello's response through its on-response), `GET /nope`
+  → 404 deny. Closes the compile-ok-but-dispatch-hangs gap (the router's fold is the exact bug-class guard).
 
 Browser outpost (owned by the `v-browser-outpost` vertical — it drops `browser-*.ml` + their handlers/routers
 here; they auto-discover as `http-conformance-browser-*` checks):
