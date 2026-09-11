@@ -2697,6 +2697,34 @@
             --cdz ${seedCompiler}/bin/cdz --out "$out"
         '';
 
+        # Per-contract raw DECLARATION bytes — mirrors `contractHashes` (same compile+run env, since
+        # `cdz-contract declaration` also executes `descriptor()`), but emits each contract's CANONICAL
+        # declaration (the `cdz-contract declaration` primitive, #8733). A deploy/pin step (~/hivemind
+        # pin-core) POSTs each blob to the live CAS, and because `ContractId = 0x01 ++ blake3(declaration)`
+        # and the CAS GET is tag-agnostic (32-byte digest match), each contract becomes GET-resolvable BY ITS
+        # ContractId — the operator's "pin contracts so anyone can look them up". Emits one `$out/<stem>.bin`
+        # per contract source + a `$out/manifest.json` name→base62-ContractId mapping (the same
+        # `packages.contract-hashes` mapping) so the pin step has each blob's ContractId key without
+        # recomputing. The subcommand self-checks `0x01 ++ blake3(declaration) == descriptor().id` per blob.
+        contractDeclarations = pkgs.runCommand "cdz-contract-declarations"
+          { nativeBuildInputs = [ contractHasher seedCompiler ]; } ''
+          export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+          export CDZ_STORE="${componentStore}"
+          export CDZ_COMPILE_BIN="${cdzCompile}/bin/cdz-compile"
+          export CDZ_RUN_BIN="${cdzRun}/bin/cdz-run"
+          cp ${./implementation/seed/crates/cdz-platform/guests/contract-id.cdz} "$TMPDIR/contract-id.cdz"
+          mkdir -p "$out"
+          find ${contractSourcesDir} -name '*.cdz' | sort | while read -r f; do
+            stem="$(basename "$f" .cdz)"
+            cdz-contract declaration "$f" \
+              --lib "$TMPDIR/contract-id.cdz" \
+              --cdz ${seedCompiler}/bin/cdz > "$out/$stem.bin"
+          done
+          cdz-contract hash ${contractSourcesDir} \
+            --lib "$TMPDIR/contract-id.cdz" \
+            --cdz ${seedCompiler}/bin/cdz --out "$out/manifest.json"
+        '';
+
         # cdzPlatformContracts (v-nix, operator codegen→build-time-nix): run v-xtask-decompose's standalone
         # xtask-codegen-contracts bin (#5209) to EMIT cdz-platform/src/contracts/*.rs at BUILD time, so the
         # generated contract schemas need not be committed source. The bin reads CDZ_REPO_ROOT-relative:
@@ -6413,6 +6441,10 @@
         # run resolves a `contract = "<name>"` reference against (see mkHarnessAst).
         packages.cdz-contract = contractHasher;
         packages.contract-hashes = contractHashes;
+        # `nix build .#contract-declarations` → a dir of per-contract raw declaration bytes
+        # (`<stem>.bin`) + `manifest.json` (name→ContractId), for the pin step that POSTs each to the live
+        # CAS so contracts are GET-resolvable by ContractId (~/hivemind pin-core consumes this).
+        packages.contract-declarations = contractDeclarations;
 
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
