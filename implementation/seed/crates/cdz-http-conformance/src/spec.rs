@@ -99,6 +99,12 @@ pub struct HttpRequest {
     /// (e.g. over the gateway's body ceiling → 413) without embedding a huge literal in the run-spec. Takes
     /// precedence over `body` (but not `compile_request` / `body_source`).
     pub body_fill: Option<u64>,
+    /// Send this request over a RAW socket declaring `Content-Length: <n>` but NO body — for the body-ceiling
+    /// 413 fast path: the gateway rejects on the oversized declared length BEFORE reading a byte, so a
+    /// client-visible 413 comes back with nothing actually uploaded (a genuine large upload instead races the
+    /// gateway's close and the client sees a reset, not the status). When set, the high-level client + `body*`
+    /// fields are bypassed. Only `method`/`path` (+ this) are used.
+    pub declared_content_length: Option<u64>,
 }
 
 /// The `/compile` route's request body, assembled at send time from captured `/parse` ast-hashes. Reuses the
@@ -306,6 +312,11 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         Some(bf) => Some(value::read_uint(arenas, bf)?),
         None => None,
     };
+    let declared_content_length = match value::record_field(arenas, http, "declared-content-length")
+    {
+        Some(d) => Some(value::read_uint(arenas, d)?),
+        None => None,
+    };
     let request = HttpRequest {
         method: value::read_str(arenas, value::record_field(arenas, http, "method")?)?,
         path: value::read_str(arenas, value::record_field(arenas, http, "path")?)?,
@@ -314,6 +325,7 @@ fn parse_step(arenas: &value::Arenas, id: value::ValueId) -> Option<Step> {
         compile_request,
         body_source,
         body_fill,
+        declared_content_length,
     };
     let expect = match value::record_field(arenas, id, "expect") {
         Some(e) => parse_expect(arenas, e)?,
