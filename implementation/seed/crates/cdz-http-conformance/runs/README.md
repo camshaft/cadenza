@@ -111,6 +111,9 @@ Effect vocabulary + routing:
 - `response-multi-header` — a handler answers a chosen status (`201`) + a TWO-element `List(Header)`, pinning the
   REVERSE (response) codec: the gateway forwards the handler's status (not a hardcoded 200) and EVERY header (not
   just the first) — invariants a single-header 200 can't catch.
+- `response-cas-headers` — the CasRef analogue: a `blobs.put` handler answers `http.response-cas` with a non-200
+  status (`201`) + a header, pinning the gateway's `decode_response_cas` status/header decode (a SEPARATE path
+  from `decode_response`; the plain `casref` only exercises `200` + no headers).
 - `live-swap` — a control `push-root-router` hot-swaps the root router (retry-until-match past propagation).
 - `control-send` — a handler's `control.send` round-trips (ControlUp → primed reply → on-response).
 - `deadline-timeout` — a per-request deadline fires `Err(Timeout)` (gateway-enforced).
