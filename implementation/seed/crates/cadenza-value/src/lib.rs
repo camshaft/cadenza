@@ -340,6 +340,76 @@ mod tests {
         );
     }
 
+    /// Extends the invariance test to the edge shapes real contract/frame encoders emit — a nullary
+    /// `(Ctor unit)` variant, a `Bytes` leaf, a `Bool` leaf, an EMPTY list, and a list-of-records —
+    /// each encoded ascription-free via [`finish_value`] and read back structurally. Also asserts NO
+    /// `(: …)` frame anywhere on the decoded root (the whole point: the structural readers never need
+    /// one). This pins the structural contract across the shape menagerie the site migrations rely on.
+    #[test]
+    fn finish_value_edge_shapes_round_trip_structurally() {
+        let mut b = Builder::new();
+        // A nullary variant `(None unit)`.
+        let u = unit(&mut b);
+        let none = bare_ctor(&mut b, "None", vec![u]);
+        // A bytes leaf and a bool leaf.
+        let raw = bytes_leaf(&mut b, &[0xde, 0xad, 0xbe, 0xef]);
+        let flag = bool_leaf(&mut b, true);
+        // An empty list.
+        let empty = list_value(&mut b, vec![]);
+        // A list of two records: [{k:1}, {k:2}].
+        let k1 = uint_leaf(&mut b, 1);
+        let r1 = record(&mut b, vec![("k", k1)]);
+        let k2 = uint_leaf(&mut b, 2);
+        let r2 = record(&mut b, vec![("k", k2)]);
+        let rows = list_value(&mut b, vec![r1, r2]);
+        let root = record(
+            &mut b,
+            vec![
+                ("opt", none),
+                ("raw", raw),
+                ("flag", flag),
+                ("empty", empty),
+                ("rows", rows),
+            ],
+        );
+        let bytes = finish_value(b, root);
+
+        let a = decode(&bytes).expect("edge shapes decode");
+        // No ascription frame on the structural root.
+        assert_eq!(
+            a.as_form(a.root, ":"),
+            None,
+            "finish_value emits no root ascription"
+        );
+        assert_eq!(unascribe(&a, a.root), a.root);
+
+        // Nullary variant: head `None`, payload is the `unit` atom.
+        let opt = record_field(&a, a.root, "opt").unwrap();
+        assert_eq!(read_ctor(&a, opt), Some("None"));
+        assert_eq!(a.as_name(ctor_payload(&a, opt).unwrap()[0]), Some("unit"));
+        // Bytes + bool leaves.
+        assert_eq!(
+            read_bytes(&a, record_field(&a, a.root, "raw").unwrap()).as_deref(),
+            Some(&[0xde, 0xad, 0xbe, 0xef][..])
+        );
+        assert_eq!(
+            read_bool(&a, record_field(&a, a.root, "flag").unwrap()),
+            Some(true)
+        );
+        // Empty list decodes to an empty slice (not None).
+        assert_eq!(
+            read_list(&a, record_field(&a, a.root, "empty").unwrap()),
+            Some(&[][..])
+        );
+        // List of records: read each row's `k`.
+        let rows = read_list(&a, record_field(&a, a.root, "rows").unwrap()).unwrap();
+        let ks: Vec<u64> = rows
+            .iter()
+            .map(|&r| read_uint(&a, record_field(&a, r, "k").unwrap()).unwrap())
+            .collect();
+        assert_eq!(ks, vec![1, 2]);
+    }
+
     #[test]
     fn bool_leaf_round_trips_and_is_not_a_name() {
         // A `Leaf::Bool` reads back via read_bool; as_name does NOT see it (the trap the harness parser hit).
