@@ -12,7 +12,7 @@
 // NOTE (compile gate): the handler hashes baked below are PLACEHOLDER 33-byte markers the deploy tooling
 // replaces with the real deployed handler ProgramHashes; and the dispatch/deny/response contract-ids come
 // from http-lib's (centralized) markers, to be swapped for the computed userspace-contract ids in one place.
-import { Method, Route, Request, dispatch, deny, respond-encoded, method-code } from "http-lib"
+import { Method, Route, Request, dispatch, deny, respond-encoded, respond-routes, method-code } from "http-lib"
 import { Error, on-notification } from "reducer-lib"
 
 // THE BAKED ROUTE TABLE. Handler values are the target handlers' real 33-byte ProgramHashes — here PLACEHOLDER
@@ -35,11 +35,14 @@ def find(rs: List(Route), mc: Int64, p: Bytes, input: Bytes) =
            else find(rest, mc, p, input))
         else find(rest, mc, p, input)))
 
-// The gateway delivers a BARE http-request (no envelope, no table — the table is baked). Decode it, match the
-// baked table. A malformed request → 404 deny.
+// The gateway delivers a BARE http-request (no envelope, no table — the table is baked). Decode it; a reserved
+// `GET /_routes` answers the SELF-DESCRIBING routes manifest (the router answers it ITSELF, not dispatched —
+// the /_routes convention, zero gateway change), else match the baked table. A malformed request → 404 deny.
 def on-message(msg) =
   (match (Value.decode(msg.payload) : Option(Request)) with
-   | Some(Request.Request(rq)) => find(routes(), method-code(rq.method), String.to-bytes(rq.path), msg.payload)
+   | Some(Request.Request(rq)) =>
+     (if String.to-bytes(rq.path) == b"/_routes" then respond-routes(routes())
+      else find(routes(), method-code(rq.method), String.to-bytes(rq.path), msg.payload))
    | None => deny(404, b"not found"))
 
 // The handler's response folds back through on-response: close with it as the http-response terminal; a fold
