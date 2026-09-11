@@ -453,11 +453,22 @@ in-flight requests all served (fresh mailbox per request). **malformed frames** 
 undecodable control frame is tolerated (ignore/recover, no crash/hang). **fresh-session** — N/A in the current
 stateless reducer-guest model (per-request isolation is structural). Also DONE beyond the list: the self-hosting
 **compile→install→serve** loop (`reducer-world-compile` installs its freshly-`/compile`-built component as root +
-serves) via a `push-root-router = { from-capture }` cap. **WebSocket** — NOT YET: the gateway serves no
-client-facing WS (its only WS is the control-link CLIENT to the mock); no test until a client-facing WS surface
-lands. **compile-DISPATCH** (dispatch through a `/compile`-built ROUTER, catching compile-ok-but-dispatch-hangs)
-— pending v-hivemind's proven dispatching-router source + closure (the `from-capture` install path it builds on
-is already proven).
+serves) via a `push-root-router = { from-capture }` cap. **compile-DISPATCH** — DONE, **bidirectional** (the recipe
++ rig-verified fixtures came from v-hivemind): `compile-dispatch` builds a dispatching ROUTER via `/compile` at
+runtime (its baked handler-hash placeholders deploy-templated to the seeded handlers), roots it from-capture, and
+dispatches (`GET /` → 200 folded through the router's `on-response`); its RED-negative partner
+`compile-dispatch-inert-fold` compiles the SAME router with the `on-response` fold deleted (resolves to the inert
+`Continue`) — it compiles + serves `/_routes` but `GET /` HANGS, asserted by the new `times-out` expect primitive.
+Together they pin the exact compile-ok-but-dispatch-hangs bug class (real fold → 200 ; missing fold → hang).
+**Codec coverage — both directions:** the FORWARD request-codec is pinned on every decodable field (method
+`echo-direct`, path via routing, query `request-query-decode`, body `request-body-decode`, headers
+`request-header-decode`); the REVERSE response-codec on both terminals (inline `http.response` status + multi-header
+`response-multi-header`, CasRef `http.response-cas` status + header `response-cas-headers`) plus header-forwarding
+through the router fold (`route-to-handler`). **concurrency** additionally covers the dispatch path
+(`concurrency-dispatch`: 25 concurrent requests THROUGH the router → concurrent child spawns, distinct from the
+direct `concurrency` burst). **WebSocket** — NOT YET: the gateway serves no client-facing WS (its only WS is the
+control-link CLIENT to the mock); no test until a client-facing WS surface lands — the sole remaining un-actionable
+grow item.
 
 ---
 
