@@ -1,5 +1,6 @@
-// SCENARIO: /compile a real reducer-world GUEST (a handler) into a wasm component — the ADVANCED /compile path
-// (the flake notes the reducer-world compile path was UNEXERCISED e2e). Unlike compile.ml (a PLAIN program, one
+// SCENARIO: /compile a real reducer-world GUEST (a handler) into a wasm component, then INSTALL that freshly-built
+// component as the root + SERVE through it — the ADVANCED /compile path + the self-hosting compile→install→serve
+// loop (the flake notes the reducer-world compile path was UNEXERCISED e2e). Unlike compile.ml (a PLAIN program, one
 // --ast, no world), a reducer-world guest that does anything real needs (a) its lib/contract CLOSURE as extra
 // --ast modules and (b) a kind="wit-world" artifact (the reducer-world binary that TYPES its on-message
 // boundary + links its run/blobs imports). v-hivemind's deploy-router proved this recipe live.
@@ -46,7 +47,8 @@
       expect = { status = 200, resolves-in-cas = true, capture-body-as = "contract-id-ast" } },
     // 2. Live-swap the root router to the compile handler.
     { control = { push-root-router = "reducer-guest-compile" } },
-    // 3. Compile the guest + its closure + the reducer-world wit-world → 200 + a real wasm component.
+    // 3. Compile the guest + its closure + the reducer-world wit-world → 200 + a real wasm component; CAPTURE the
+    //    component ProgramHash for the install step (the self-hosting compile→install→serve loop).
     { http = { method = "POST", path = "/compile",
                compile-request = {
                  asts = [
@@ -63,6 +65,12 @@
                  wit-world = { name = "reducer-world", from-capture = "reducer-world" },
                } },
       expect = { status = 200, resolves-in-cas = true, cas-body-starts-with = b"\x00asm",
-                 retry-until-match = true } },
+                 capture-body-as = "compiled-guest", retry-until-match = true } },
+    // 4. INSTALL the freshly-compiled component as the root router (rooting a RUNTIME-CAPTURED ProgramHash), then
+    //    SERVE through it: GET / drives the just-built http-hello → 200 "hello…". Proves the compile→install→serve
+    //    self-hosting loop end to end (a program built by /compile at run time is deployable + serves).
+    { control = { push-root-router = { from-capture = "compiled-guest" } } },
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body-contains = "hello from a wasm handler", retry-until-match = true } },
   ],
 }
