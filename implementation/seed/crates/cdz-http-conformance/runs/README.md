@@ -90,6 +90,9 @@ Effect vocabulary + routing:
 - `compile-diagnostics` — programs that parse but fail to COMPILE → 422 with the CDZ code ("CDZ0203",
   "nothing is public").
 
-Browser outpost:
-- `browser-page` — a handler answers `200 text/html` with a full HTML document + inline JS bootstrap; the
-  gateway forwards the `content-type: text/html` header verbatim (browser-outpost S0; owned by that vertical).
+Browser outpost (owned by the `v-browser-outpost` vertical — it drops `browser-*.ml` + their handlers/routers
+here; they auto-discover as `http-conformance-browser-*` checks):
+- `browser-page` / `browser-outpost` — a reducer serves HTML + JavaScript through the gateway with the
+  `content-type` forwarded verbatim (S0: a direct handler; S1a: a method-aware router — `GET /`→html,
+  `GET /app.js`→js, unmatched→404, non-GET→405). This vertical only guarantees the harness runs them; their
+  scenario semantics + additions are that vertical's.
