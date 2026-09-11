@@ -62,6 +62,8 @@ A record with two fields (read by name; order-independent):
 - `body-nonce` — `true?`: generate a per-run-UNIQUE body at send time (pid+nanos+counter) — for a handler
   that publishes it, the CAS hash is fresh every run (used by the auth-failure scenario: a swallowed denied write
   leaves a fresh hash unresolvable → a deterministic 502).
+- `concurrency` — `<n>?`: fire this request `n` times CONCURRENTLY (all in flight) and require every
+  response to pass the step's `expect` — the concurrency/isolation gate (bypasses the `body*`/capture machinery).
 
 ### `expect` fields (all optional; a `None` field asserts nothing)
 
@@ -102,6 +104,8 @@ Effect vocabulary + routing:
   it surfaces DOWNSTREAM — the published (unique) CasRef hash is absent → the gateway floors 502 (§8-grow auth failure).
 - `reconnect` — a `drop-control` closes the gateway's control link → it must REDIAL (#8741) + recover: a
   baseline GET / → 200, then after the drop a retried GET / → 200 (a control blip doesn't break the data plane).
+- `concurrency` — 25 concurrent GET / to http-hello → all 200: the gateway drives a fresh mailbox per
+  request with no cross-request race/deadlock/corruption under load (§8-grow concurrency).
 
 `/parse` + `/compile` (reducer-target guests):
 - `parse` — POST ml source → 200 + the ast-hash, which resolves in the CAS.
