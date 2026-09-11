@@ -1,0 +1,29 @@
+// A request-READING handler that echoes the value of a named request HEADER — pins that the forward request-
+// codec's `headers` field (the gateway encodes each request header as a `Header` record into `List(Header)`,
+// boot.rs encode_request_value) is READABLE in a guest via `Value.decode(_ : Request)`. Completes the forward-
+// codec field coverage (method: http-echo, query: http-echo-query, body: http-echo-body): before this only that
+// a header-BEARING request DECODES was gated (echo-direct); nothing proved a guest reads a header's VALUE.
+//
+// Recurses `List(Header)` (like the router's `find` over `List(Route)`) for the header named `x-probe`. NOTE the
+// gateway normalizes request header names to LOWERCASE (hyper's HeaderName::as_str), so the match is against the
+// lowercased `b"x-probe"`. Absent → a `(absent)` sentinel (pins the not-found terminal too). `Header` comes from
+// http-response (http-lib does not re-export it); it is in the transitive lib closure.
+import { Request, respond } from "http-lib"
+import { Header } from "http-response"
+import { on-response, on-notification } from "reducer-lib"
+
+def find-header(hs: List(Header), name: Bytes) =
+  (match hs with
+   | [] => b"(absent)"
+   | [head, .. rest] =>
+     (match head with
+      | Header.Header(h) =>
+        if String.to-bytes(h.name) == name then String.to-bytes(h.value)
+        else find-header(rest, name)))
+
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(r)) => respond(200, [], find-header(r.headers, b"x-probe"))
+   | None => respond(400, [], b"undecodable http-request"))
+
+export { on-message, on-response, on-notification }
