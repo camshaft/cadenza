@@ -7,8 +7,8 @@
 //!
 //! The types (see `cdz-platform/contracts/userspace/{sexpr,ml}-parse.cdz`):
 //!   ParseRequest = | Parse(String)
-//!   Diagnostic   = | Diagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
-//!   ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(Diagnostic)))
+//!   ParseDiagnostic   = | ParseDiagnostic(Record(message: String, byteOffset: UInt32, len: UInt32))
+//!   ParseResult  = | Parsed(Record(ast: Bytes, diagnostics: List(ParseDiagnostic)))
 //!
 //! Encoding = the canonical value forms `Value.encode`/`Value.decode` speak, produced via the shared
 //! `cadenza-value` toolkit (the same codec the http gateway round-trips through Cadenza). CRITICAL: every one
@@ -17,7 +17,7 @@
 //! (`rcdzc/src/lower/value_form.rs` `Ty::Nominal` -> `Named(TypeName, shape_of(inner))`; confirmed against the
 //! now-green gateway Header fix, v-gateway-rewrite 2026-09-11). So:
 //!   `ParseRequest.Parse(src)`   encodes as  `(: "src" ParseRequest)`      (Parse elided)
-//!   `Diagnostic.Diagnostic(rec)` encodes as `(: #record Diagnostic)`      (Diagnostic elided)
+//!   `ParseDiagnostic.ParseDiagnostic(rec)` encodes as `(: #record ParseDiagnostic)`      (ParseDiagnostic elided)
 //!   `ParseResult.Parsed(rec)`   encodes as  `(: #record ParseResult)`     (Parsed elided)
 //! — NOT `(Parse …)`/`(Parsed …)`. Records are `#record((= field value)…)`, fields ascending NAME order;
 //! `String`/`Bytes`/`UInt32` leaves; `List` compound. Decoding is TOTAL (malformed -> `None`/empty),
@@ -69,8 +69,8 @@ pub fn encode_parse_result(ast: &[u8], diagnostics: &[ParseDiag]) -> Vec<u8> {
                 &mut b,
                 vec![("message", msg), ("byteOffset", off), ("len", len)],
             );
-            // The `Diagnostic` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record Diagnostic)`.
-            value::ascribe(&mut b, rec, "Diagnostic")
+            // The `ParseDiagnostic` ctor is ELIDED (Nominal newtype) — the ascribed bare record `(: #record ParseDiagnostic)`.
+            value::ascribe(&mut b, rec, "ParseDiagnostic")
         })
         .collect();
     let diags = value::list_value(&mut b, diag_values);
@@ -105,8 +105,8 @@ pub fn decode_parse_result(bytes: &[u8]) -> (Vec<u8>, Vec<ParseDiag>) {
     (ast, diagnostics)
 }
 
-/// Decode one `Diagnostic` value — the `Diagnostic` ctor is elided (Nominal newtype), so `id` is the ascribed
-/// record directly (`record_field` peels the `(: … Diagnostic)` frame).
+/// Decode one `ParseDiagnostic` value — the `ParseDiagnostic` ctor is elided (Nominal newtype), so `id` is the ascribed
+/// record directly (`record_field` peels the `(: … ParseDiagnostic)` frame).
 fn decode_diag(arenas: &value::Arenas, id: value::ValueId) -> Option<ParseDiag> {
     let rec = id;
     Some(ParseDiag {

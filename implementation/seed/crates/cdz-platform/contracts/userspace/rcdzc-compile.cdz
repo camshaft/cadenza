@@ -11,7 +11,7 @@
 // spec/capabilities/self-hosting-surface.md — a toolchain's internal values do not cross the boundary, only
 // byte sequences): `kind == "ast"` is a canonical binary-AST INPUT, `kind == "component"` a derived wasm
 // OUTPUT. The request is the SAME `&[Artifact]` bundle `rcdzc::compile` takes ("all the sidecar and inputs
-// as one message", operator). A compile `Diagnostic` is NODE-located (`node` = the AST node index it
+// as one message", operator). A compile `CompileDiagnostic` is NODE-located (`node` = the AST node index it
 // concerns), NOT byte-span located like a PARSE diagnostic (cf. sexpr-parse/ml-parse) — the compiler is
 // span-free; the consumer holds the span table keyed by node. `severity` distinguishes an Error (denies a
 // component) from a Warning (accompanies one); `code` is the stable `CDZ####` (`None` for an uncoded
@@ -22,10 +22,10 @@
 // type; it is optional in the wire and belongs to the guest-wire-reconciliation slice. Tracked, not lost.)
 type Severity   = | Error | Warning
 type Artifact   = | Artifact(Record(kind: String, name: String, bytes: Bytes))
-type Diagnostic =
-  | Diagnostic(Record(severity: Severity, code: Option(String), message: String, node: Option(UInt32)))
+type CompileDiagnostic =
+  | CompileDiagnostic(Record(severity: Severity, code: Option(String), message: String, node: Option(UInt32)))
 type CompileRequest = | Compile(List(Artifact))
-type CompileResult  = | Compiled(Record(artifacts: List(Artifact), diagnostics: List(Diagnostic)))
+type CompileResult  = | Compiled(Record(artifacts: List(Artifact), diagnostics: List(CompileDiagnostic)))
 
 // --- conformance proof: fully-literal request + response values, ascribed against the schema types ---
 def a-request() -> CompileRequest =
@@ -34,7 +34,7 @@ def a-request() -> CompileRequest =
 def a-result() -> CompileResult =
   CompileResult.Compiled(
     { artifacts = [Artifact.Artifact({ kind = "component", name = "main", bytes = b"\x00asm..." })],
-      diagnostics = [Diagnostic.Diagnostic({ severity = Severity.Warning,
+      diagnostics = [CompileDiagnostic.CompileDiagnostic({ severity = Severity.Warning,
                                              code = Option.Some("CDZ0102"),
                                              message = "unused binding",
                                              node = Option.Some(7) })] })
@@ -56,7 +56,7 @@ def result-conforms() =
     (match r.artifacts with
      | [a] => (match a with | Artifact.Artifact(x) =>
                  (match r.diagnostics with
-                  | [d] => (match d with | Diagnostic.Diagnostic(y) =>
+                  | [d] => (match d with | CompileDiagnostic.CompileDiagnostic(y) =>
                               if (x.kind == "component") and (y.message == "unused binding")
                                  and (y.code == Option.Some("CDZ0102")) and (y.node == Option.Some(7))
                               then (match y.severity with | Warning => unit | _ => trap("severity mismatch"))
@@ -67,4 +67,4 @@ def result-conforms() =
 import { contract-descriptor } from "contract-id"
 def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.rcdzc.compile", "CompileRequest", "CompileResult")
-export { Severity.*, Artifact.*, Diagnostic.*, CompileRequest.*, CompileResult.*, descriptor }
+export { Severity.*, Artifact.*, CompileDiagnostic.*, CompileRequest.*, CompileResult.*, descriptor }
