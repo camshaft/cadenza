@@ -1,33 +1,23 @@
-// The COMPILE HTTP ROUTE handler (reducer-targets B9; operator 2026-09-11: "a compile http route handler —
-// take an http request, parse, compile, store it in cas, then return the hash in the http body"). A Cadenza
-// reducer-world guest that DELEGATES to the existing build guests via the `run` capability and stores via
-// `blobs`: NO reducer spawning, driven by the gateway per request. STRONG CONTRACTS end-to-end (operator "use
-// strong contracts in all of those places") — every hop is a typed contract value composed via
-// `Value.encode`/`Value.decode`, never a bare byte blob:
-//   1. decode the delivered `http-request` (body = the source program).
-//   2. run the ML-parser guest over the `cdz-platform.ml.parse` contract -> a `ParseResult`; a parse problem
-//      answers 400 with the diagnostics.
-//   3. build a `CompileRequest` (the AST as the sole "ast" kinded input) + run rcdzc over the
-//      `cdz-platform.rcdzc.compile` contract -> a `CompileResult`; no component answers 422.
-//   4. `blobs.put` the component bytes -> its content-addressed ProgramHash.
-//   5. answer 200 with the hash in the body.
-// Composed from the shared libs (see the `libs` manifest): `http-lib` (Request/respond), the two contract
-// modules (their types + `descriptor` for the routing id), `reducer-lib` (the inert handlers). The delegated
-// guests are referenced BY ProgramHash; those hashes are content addresses baked at BUILD time by a
-// `cdz rewrite` that reads `packages.reducer-guest-{ml,rcdzc}-hash` (reducer-targets B9b) — the placeholders
-// below are rewritten in place. TODO(B9-followup): select the parser by a `?syntax=sexpr|ml` query param
-// (r.query) — defaults to ML for the first cut.
+// The COMPILE HTTP route handler (reducer-targets B10b; operator multi-module design via v-hivemind): POST a
+// MULTI-MODULE compile request — a {module-name -> ast-hash} map + an entrypoint — and get back the compiled
+// component's ProgramHash. A client first parses each source module via the PARSE route (-> ast published in
+// the CAS -> ast-hash), then submits the map here. This handler fetches each AST from the store by hash, feeds
+// rcdzc a KIND_AST(name = module-name) artifact per module + a KIND_ENTRY artifact naming the entrypoint, and
+// rcdzc resolves imports across the named set + compiles the entry (rcdzc::compile already filters KIND_AST +
+// honors KIND_ENTRY — no compiler change). A Cadenza reducer-world guest: CALLS `run` (delegate to rcdzc) +
+// `blobs` (fetch the asts, publish the component); NO reducer spawning.
+//
+// Strong contracts: the request is the canonical CompileRoute value (Value.decode of the http body); the rcdzc
+// hop is the canonical rcdzc.compile CompileRequest/CompileResult. On no component answers 422 WITH the compile
+// diagnostics (render-compile-diags). The rcdzc ProgramHash is INJECTED via the generated `guest-hashes` lib
+// (the handler imports it — no textual placeholder rewrite).
 import { Request, respond } from "http-lib"
-import { descriptor as ml-parse-desc, ParseRequest, ParseResult, ParseDiagnostic } from "ml-parse"
 import { descriptor as rcdzc-desc, CompileRequest, CompileResult, Artifact, CompileDiagnostic } from "rcdzc-compile"
+import { Module, CompileRoute } from "compile-req"
 import { Error, on-response, on-notification } from "reducer-lib"
+import { rcdzc-hash } from "guest-hashes"
 
-// The ProgramHash of the ML-parser build guest (reducer-guest-ml) — a CAS content address baked at build time.
-def ml-parser-hash() -> Bytes = b"__REDUCER_GUEST_ML_HASH__"
-// The ProgramHash of the rcdzc compile build guest (reducer-guest-rcdzc) — baked at build time.
-def rcdzc-hash() -> Bytes = b"__REDUCER_GUEST_RCDZC_HASH__"
-
-// The bytes of the first artifact whose kind is "component", if any (the derived wasm component rcdzc emits).
+// The bytes of the first "component" output artifact, if any (the derived wasm component rcdzc emits).
 def component-of(artifacts: List(Artifact)) -> Option(Bytes) =
   match artifacts with
   | [] => Option.None
@@ -35,18 +25,7 @@ def component-of(artifacts: List(Artifact)) -> Option(Bytes) =
     (match a with
      | Artifact.Artifact(x) => if x.kind == "component" then Option.Some(x.bytes) else component-of(rest))
 
-// Render the PARSE diagnostics (byte-span located) as a newline-joined message body — so a 400 tells the
-// caller exactly what was wrong with the source, not a bare "parse diagnostics".
-def render-parse-diags(ds: List(ParseDiagnostic)) -> String =
-  match ds with
-  | [] => ""
-  | [d, .. rest] =>
-    (match d with
-     | ParseDiagnostic.ParseDiagnostic(x) =>
-       String.concat(x.message, String.concat("\n", render-parse-diags(rest))))
-
-// Render the COMPILE diagnostics (`<code>: <message>` per line) — so a 422 (an invalid program rcdzc declined,
-// no component) tells the caller/agent what was wrong, rather than a bare "compile produced no component".
+// Render the compile diagnostics (`<code>: <message>` per line) — a 422 tells the caller what was wrong.
 def render-compile-diags(ds: List(CompileDiagnostic)) -> String =
   match ds with
   | [] => ""
@@ -56,38 +35,45 @@ def render-compile-diags(ds: List(CompileDiagnostic)) -> String =
        let prefix = (match x.code with | Option.Some(c) => String.concat(c, ": ") | Option.None => "") in
        String.concat(prefix, String.concat(x.message, String.concat("\n", render-compile-diags(rest)))))
 
+// Fetch each module's AST from the CAS (blobs.get by hash) and build the kinded-input bundle: a KIND_AST
+// artifact per module (name = module-name) + a KIND_ENTRY artifact naming the entrypoint. `None` if any AST is
+// missing from the store. blobs.get is a host effect handled by the enclosing `host blobs in`.
+def fetch-inputs(modules: List(Module), entry: String) -> Option(List(Artifact)) =
+  match modules with
+  | [] =>
+    Option.Some([Artifact.Artifact({ kind = "entry", name = "entry", bytes = String.to-bytes(entry) })])
+  | [m, .. rest] =>
+    (match m with
+     | Module.Module(x) =>
+       (match blobs.get(x.astHash) with
+        | Some(ast) =>
+          (match fetch-inputs(rest, entry) with
+           | Some(more) =>
+             Option.Some(List.push(more, Artifact.Artifact({ kind = "ast", name = x.name, bytes = ast })))
+           | None => Option.None)
+        | None => Option.None))
+
 def on-message(msg) =
   host run in
     host blobs in
       (match (Value.decode(msg.payload) : Option(Request)) with
        | Some(Request.Request(r)) =>
-         // The request body is the source program; decode it as UTF-8 text (non-UTF-8 -> 400).
-         (match String.from-bytes(r.body) with
-          | None => respond(400, [], b"request body is not valid UTF-8")
-          | Some(source) =>
-         // Parse the source via the ML-parser guest over the ml.parse contract.
-         (match (run.run(ml-parser-hash(), ml-parse-desc().id,
-                         Value.encode(ParseRequest.Parse(source))) : Result(Bytes, Error)) with
-          | Ok(parse-bytes) =>
-            (match (Value.decode(parse-bytes) : Option(ParseResult)) with
-             | Some(ParseResult.Parsed(pr)) =>
-               (match pr.diagnostics with
-                // A clean parse -> compile the AST; any diagnostic -> 400 (do not compile an unclean program).
-                | [] =>
-                  (let req = CompileRequest.Compile(
-                       [Artifact.Artifact({ kind = "ast", name = "main", bytes = pr.ast })]) in
-                   (match (run.run(rcdzc-hash(), rcdzc-desc().id, Value.encode(req)) : Result(Bytes, Error)) with
-                    | Ok(compile-bytes) =>
-                      (match (Value.decode(compile-bytes) : Option(CompileResult)) with
-                       | Some(CompileResult.Compiled(cr)) =>
-                         (match component-of(cr.artifacts) with
-                          | Some(component) => (let h = blobs.put(component) in respond(200, [], h))
-                          | None => respond(422, [], String.to-bytes(render-compile-diags(cr.diagnostics))))
-                       | None => respond(500, [], b"undecodable CompileResult"))
-                    | Err(_e) => respond(500, [], b"rcdzc run failed")))
-                | [_, .. _] => respond(400, [], String.to-bytes(render-parse-diags(pr.diagnostics))))
-             | None => respond(500, [], b"undecodable ParseResult"))
-          | Err(_e) => respond(500, [], b"ml parser run failed")))
+         (match (Value.decode(r.body) : Option(CompileRoute)) with
+          | Some(CompileRoute.Compile(c)) =>
+            (match fetch-inputs(c.modules, c.entry) with
+             | None => respond(422, [], b"a module AST was not found in the store")
+             | Some(inputs) =>
+               (match (run.run(rcdzc-hash(), rcdzc-desc().id,
+                               Value.encode(CompileRequest.Compile(inputs))) : Result(Bytes, Error)) with
+                | Ok(compile-bytes) =>
+                  (match (Value.decode(compile-bytes) : Option(CompileResult)) with
+                   | Some(CompileResult.Compiled(cr)) =>
+                     (match component-of(cr.artifacts) with
+                      | Some(component) => (let h = blobs.put(component) in respond(200, [], h))
+                      | None => respond(422, [], String.to-bytes(render-compile-diags(cr.diagnostics))))
+                   | None => respond(500, [], b"undecodable CompileResult"))
+                | Err(_e) => respond(500, [], b"rcdzc run failed")))
+          | None => respond(400, [], b"undecodable compile request (expected a Compile(modules, entry) value)"))
        | None => respond(400, [], b"undecodable http-request"))
 
 export { on-message, on-response, on-notification }

@@ -1828,21 +1828,24 @@
         # reducerGuestMl/reducerGuestRcdzc (the generic `cdz-http-programhash --escaped`, a compiled component's
         # ProgramHash for a `b"…"` literal), substitute the source placeholders, THEN compile via mkCadenzaGuest
         # against the reducer-world (so `run` + `blobs` link). libs auto-close over the import graph (closeLibs).
+        # reducer-guest-compile (B10b multi-module): {module-name -> ast-hash} + entry -> blobs.get each ast ->
+        # KIND_AST+KIND_ENTRY -> rcdzc.compile -> component -> ProgramHash. HASH INJECTION (operator): GENERATE a
+        # `guest-hashes` module (rcdzc-hash def = the reducer-guest-rcdzc CAS hash) + inject it as a lib; the
+        # handler IMPORTS it (no textual placeholder rewrite). Only the rcdzc hash is needed — the compile route
+        # takes already-parsed ast HASHES (the parse route handles source->ast).
         reducerGuestCompileDir = ./implementation/seed/crates/cdz-reducer-guest/compile-route;
         reducerGuestCompileLibLines = builtins.filter (s: s != "")
           (pkgs.lib.splitString "\n" (builtins.readFile (reducerGuestCompileDir + "/libs")));
-        reducerGuestCompileTemplatedSrc = pkgs.runCommand "reducer-guest-compile-templated"
-          { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          ml=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestMl})
+        reducerGuestCompileHashes = pkgs.runCommand "reducer-guest-compile-hashes" { } ''
           rcdzc=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestRcdzc})
           mkdir -p "$out"
-          python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("__REDUCER_GUEST_ML_HASH__", sys.argv[2]).replace("__REDUCER_GUEST_RCDZC_HASH__", sys.argv[3]); assert sys.argv[2] in s and sys.argv[3] in s, "reducer-guest-compile hash substitution did not apply"; sys.stdout.write(s)' "${reducerGuestCompileDir}/reducer.cdz" "$ml" "$rcdzc" > "$out/reducer.cdz"
+          printf 'def rcdzc-hash() -> Bytes = b"%s"\nexport { rcdzc-hash }\n' "$rcdzc" > "$out/guest-hashes.cdz"
         '';
         reducerGuestCompile = mkCadenzaGuest ({
           pname = "reducer-guest-compile";
-          src = reducerGuestCompileTemplatedSrc + "/reducer.cdz";
+          src = reducerGuestCompileDir + "/reducer.cdz";
           componentName = "cadenza:platform/guest";
-          libs = closeLibs reducerGuestCompileLibLines;
+          libs = (closeLibs reducerGuestCompileLibLines) ++ [ (reducerGuestCompileHashes + "/guest-hashes.cdz") ];
           entry = "reducer";
         } // cadenzaWorldArgs "reducer-world");
 
