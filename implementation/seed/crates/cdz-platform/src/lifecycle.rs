@@ -59,7 +59,7 @@ impl Lifecycle {
     /// encoding every value on the wire uses. The inverse of [`decode`](Self::decode).
     #[must_use]
     pub fn encode(&self) -> Bytes {
-        crate::contract_value::encode_ascribed(|b| self.build(b), "Event")
+        crate::contract_value::encode_value(|b| self.build(b))
     }
 
     /// Build the event value into `b`, returning its root — a value of the schema type `Event`, so it

@@ -67,6 +67,11 @@ pub fn unit(b: &mut Builder) -> StructId {
 /// payload-encode boundary. The type token is recorded but not matched against the decode target (the decoder
 /// is type-directed by the caller's annotation), so any name — conventionally the contract's declared input
 /// type — is accepted; [`as_ascribed`] strips it on read.
+// Retained for the `testing`/`host` feature encoders (checker_protocol/spec/log_value/host probes) and
+// unit tests that still build an explicitly-ascribed value; the production contract encoders no longer
+// emit the frame (value-codec migration — they use [`encode_value`]), so `ascribe` is dead in the default
+// (feature-less) lib build. `allow` not `expect`: it IS used under those cfgs.
+#[allow(dead_code)]
 #[must_use]
 pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
     let colon = b.name(":");
@@ -75,15 +80,17 @@ pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
 }
 
 /// Encode a self-built value in the canonical binary form ([`cadenza_ast::codec`]): run `build` into a
-/// fresh [`Builder`], [`ascribe`] its root to schema type `ty`, finish, and codec-encode. Every contract
-/// event/envelope's `encode` is this exact `build → ascribe → finish → encode` wrapper, so it lives here
-/// once — each type supplies only its `build` closure and ascription type.
+/// fresh [`Builder`], finish at its root, and codec-encode — **structurally, with NO `(: value Type)`
+/// ascription frame** (value-codec migration: decode by structure, not names). Every contract
+/// event/envelope's `encode` is this exact `build → finish → encode` wrapper, so it lives here once.
+/// The bare value is decoded by structure at the boundary — the guest runtime `Value.decode` and the
+/// platform's own readers ([`unascribe`]) are frame-tolerant, so the type token the old
+/// `build → ascribe → finish` wrapper emitted is gone.
 #[must_use]
-pub fn encode_ascribed(build: impl FnOnce(&mut Builder) -> StructId, ty: &str) -> Bytes {
+pub fn encode_value(build: impl FnOnce(&mut Builder) -> StructId) -> Bytes {
     let mut b = Builder::new();
     let value = build(&mut b);
-    let root = ascribe(&mut b, value, ty);
-    let arenas = b.finish(root);
+    let arenas = b.finish(value);
     Bytes::from(cadenza_ast::codec::encode(&arenas))
 }
 
