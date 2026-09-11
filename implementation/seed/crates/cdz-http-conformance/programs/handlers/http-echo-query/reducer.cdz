@@ -1,0 +1,17 @@
+// A request-READING handler that echoes the decoded request's QUERY string — pins that the forward
+// request-codec's `query` field (the gateway parses `parts.uri.query()` into the request value, boot.rs)
+// round-trips into a guest via `Value.decode(_ : Request)`. Complements http-echo (which decodes the
+// method): before this only method + path were exercised e2e, leaving the query field of the forward codec
+// untested. Echoes the RAW query bytes so an exact assertion pins the decoded value; a decode failure falls
+// to 400 (distinguishable from a present-but-empty query, which yields an empty 200 body).
+//
+// Composed from the shared libs (see the `libs` manifest beside this file), like http-echo.
+import { Request, respond } from "http-lib"
+import { on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(r)) => respond(200, [], String.to-bytes(r.query))
+   | None => respond(400, [], b"undecodable http-request"))
+
+export { on-message, on-response, on-notification }
