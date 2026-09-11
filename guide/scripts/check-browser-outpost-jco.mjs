@@ -184,12 +184,29 @@ checks++;
 assertRender(ag.onMessage(clickMsg), "clicked again", "second click (state hit — carried across events)");
 checks++;
 
-if (checks !== 9) fail(`expected 9 assertions to run, ran ${checks} (vacuous-pass guard)`);
+// 10: AGENT-DRIVE (§7). An AGENT command (a message on the app's drive contract, NOT a user click) drives the
+//     app over the SAME on-message fold: a reset clears the shared state and re-renders "reset by agent".
+//     Agent-drive is the federation default — the operator's "agents can drive it directly." To the reducer an
+//     agent command and a user click differ only by contract.
+const agentReset = {
+  contract: new TextEncoder().encode("cadenza.agent.reset"),
+  sender: { reducer: empty, host: empty },
+  payload: empty,
+  token: empty,
+};
+assertRender(ag.onMessage(agentReset), "reset by agent", "agent reset command");
+checks++;
+// 11: the agent command shares STATE with user events — after the agent reset, a click is a state MISS again
+//     ("clicked once"), proving the agent drove the same fold + the same state a user click does.
+assertRender(ag.onMessage(clickMsg), "clicked once", "click after agent reset (shared state cleared)");
+checks++;
+
+if (checks !== 11) fail(`expected 11 assertions to run, ran ${checks} (vacuous-pass guard)`);
 console.log(
   `browser-outpost jco check: ok — the reducer transpiles (${guestFiles.length} files), INSTANTIATES with the ` +
-  `real value-heap runtime, DRIVES on-message to a response value, and runs the full STATEFUL DOM-as-effect ` +
-  `loop: emits a render patch, folds a click into a re-render, and MAINTAINS STATE ACROSS clicks (once → ` +
-  `again) via the state host — all in a JS engine, no browser. A Cadenza reducer drives the browser as a ` +
-  `stateful event→view fold.`,
+  `real value-heap runtime, DRIVES on-message to a response value, runs the full STATEFUL DOM-as-effect loop ` +
+  `(render + click fold + state across clicks), AND is AGENT-DRIVABLE (an agent reset command drives the same ` +
+  `fold + shared state as a user click) — all in a JS engine, no browser. A Cadenza reducer is a stateful, ` +
+  `user- and agent-drivable event→view app.`,
 );
 process.exit(0);

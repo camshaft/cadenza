@@ -20,8 +20,12 @@ type Patch = | Text(String)
 // The render contract a browser dom host backs (§3.1) — a marker id for the headless emit-proof.
 def render-contract() = (b"cadenza.dom.render..............." : Bytes)
 // The dom-event contract a click arrives on (§3.2) — the inbound half. A message on this contract is a user
-// click; any other contract is the initial/agent message. (A real dom WIT interface pins these; marker for now.)
+// click. (A real dom WIT interface pins these; marker for now.)
 def click-contract() = (b"cadenza.dom.event.click" : Bytes)
+// The app's AGENT DRIVE contract (§7): a command an authorized agent may emit to drive this app remotely.
+// Agent-drive is the federation DEFAULT, not a feature — to the reducer an agent command and a user click are
+// the SAME on-message call, differing only by contract, so the app is agent-drivable "for free" over one fold.
+def agent-reset-contract() = (b"cadenza.agent.reset" : Bytes)
 
 // The state key under which the app persists its click history (design §5: state → IndexedDB in the browser,
 // a Map in the headless check — the reducer is host-agnostic).
@@ -43,6 +47,8 @@ def on-message(msg) =
        (match state.get(clicked-key()) with
         | Some(_) => render(Patch.Text("clicked again"))
         | None(_) => ( state.put(clicked-key(), b"yes") ; render(Patch.Text("clicked once")) ))
+     else if msg.contract == agent-reset-contract() then
+       ( state.delete(clicked-key()) ; render(Patch.Text("reset by agent")) )
      else render(Patch.Text("hello from a cadenza reducer")))
 
 export { on-message, on-response, on-notification }
