@@ -1820,6 +1820,32 @@
         reducerGuestSexpr = mkReducerGuest "sexpr";
         reducerGuestMl = mkReducerGuest "ml";
 
+        # reducer-guest-compile (v-reducer-targets B9b): the compile HTTP route handler — a Cadenza reducer-world
+        # guest (compile-route/reducer.cdz) that DELEGATES to reducer-guest-{ml,rcdzc} via the `run` import +
+        # publishes via `blobs.put`. It references the delegated guests BY ProgramHash, BAKED at build time
+        # (operator 2026-09-11: "as part of the build you need to get those hashes and do a syntax rewrite and
+        # put them in") — mirror the root-router-baked deploy-templating: compute the escaped ProgramHashes of
+        # reducerGuestMl/reducerGuestRcdzc (the generic `cdz-http-programhash --escaped`, a compiled component's
+        # ProgramHash for a `b"…"` literal), substitute the source placeholders, THEN compile via mkCadenzaGuest
+        # against the reducer-world (so `run` + `blobs` link). libs auto-close over the import graph (closeLibs).
+        reducerGuestCompileDir = ./implementation/seed/crates/cdz-reducer-guest/compile-route;
+        reducerGuestCompileLibLines = builtins.filter (s: s != "")
+          (pkgs.lib.splitString "\n" (builtins.readFile (reducerGuestCompileDir + "/libs")));
+        reducerGuestCompileTemplatedSrc = pkgs.runCommand "reducer-guest-compile-templated"
+          { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          ml=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestMl})
+          rcdzc=$(${cdzHttpProgramhashBin}/bin/cdz-http-programhash --escaped ${reducerGuestRcdzc})
+          mkdir -p "$out"
+          python3 -c 'import sys; s=open(sys.argv[1]).read(); s=s.replace("__REDUCER_GUEST_ML_HASH__", sys.argv[2]).replace("__REDUCER_GUEST_RCDZC_HASH__", sys.argv[3]); assert sys.argv[2] in s and sys.argv[3] in s, "reducer-guest-compile hash substitution did not apply"; sys.stdout.write(s)' "${reducerGuestCompileDir}/reducer.cdz" "$ml" "$rcdzc" > "$out/reducer.cdz"
+        '';
+        reducerGuestCompile = mkCadenzaGuest ({
+          pname = "reducer-guest-compile";
+          src = reducerGuestCompileTemplatedSrc + "/reducer.cdz";
+          componentName = "cadenza:platform/guest";
+          libs = closeLibs reducerGuestCompileLibLines;
+          entry = "reducer";
+        } // cadenzaWorldArgs "reducer-world");
+
         # Full-CI-in-nix increment 3: the NATIVE half of the GHA `rcdzc-wasm` job (cargo test + clippy +
         # fmt in the rcdzc-wasm crate dir). The job's OTHER half — the wasm32-wasip1 build — is already
         # the `rcdzcWasm` derivation above, so `nix flake check` covers the whole job via two checks. This
@@ -6688,6 +6714,11 @@
         packages.reducer-guest-sexpr-hash = hashOf reducerGuestSexpr "reducer-guest-sexpr-hash";
         packages.reducer-guest-ml = reducerGuestMl;
         packages.reducer-guest-ml-hash = hashOf reducerGuestMl "reducer-guest-ml-hash";
+        # reducer-guest-compile (B9b): the compile HTTP route handler guest — its ml/rcdzc ProgramHashes are
+        # baked in at build time (see reducerGuestCompile). `-hash` is its own CAS ProgramHash (what v-hivemind
+        # POSTs into the live CAS + pushes as the gateway root-router).
+        packages.reducer-guest-compile = reducerGuestCompile;
+        packages.reducer-guest-compile-hash = hashOf reducerGuestCompile "reducer-guest-compile-hash";
 
         # S2: build a Cadenza project through nix (the S1 compiler on Project.cdz → wasm).
         # `.#example-project` is the gate-witness demo, built by the in-flake `buildCadenzaProject`
