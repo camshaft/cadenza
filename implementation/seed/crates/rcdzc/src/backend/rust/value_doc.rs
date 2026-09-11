@@ -47,12 +47,12 @@ pub(super) fn emit_result_doc(
     out.push_str("    let mut __b = cadenza_ast::ast::Builder::new();\n");
     out.push_str(&format!("    let __r = {call_expr};\n"));
     let vnode = doc_value_node(db, result_ty, "__r", &mut out, &mut ctr)?;
-    let tnode = doc_type_node(db, result_ty, &mut out, &mut ctr)?;
-    out.push_str("    let __colon = __b.name(\":\");\n");
+    // STRUCTURAL (value-codec migration): the value node IS the root — no `(: value type)` ascription
+    // frame (decode by structure, not names), matching the wasm `op_value_encode_form` bare descriptor and
+    // keeping cross-backend byte-identity (grader-enforced). `doc_type_node` is no longer emitted here.
     out.push_str(&format!(
-        "    let __root = __b.list(vec![__colon, {vnode}, {tnode}]);\n"
+        "    let __bytes = cadenza_ast::codec::encode(&__b.finish({vnode}));\n"
     ));
-    out.push_str("    let __bytes = cadenza_ast::codec::encode(&__b.finish(__root));\n");
     // Hex-encode with the `CDZDOC:` marker (matching cdz_rust_run::value_doc::interpret_run_stdout).
     out.push_str(
         "    let mut __s = String::from(\"CDZDOC:\");\n\

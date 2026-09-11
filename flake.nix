@@ -6236,7 +6236,15 @@
               got=$(cdz-run ${build}/emit.wasm 2>run.err) || { echo "FAIL guide ${dir} (${surface}): run trapped:"; cat run.err; exit 1; }
               if [ -e ${build}/expected ]; then
                 want=$(cat ${build}/expected)
-                [ "$got" = "$want" ] || { echo "FAIL guide ${dir} (${surface}): value mismatch — got [$got] want [$want]"; exit 1; }
+                # ANNOTATION-INVARIANT compare (value-codec migration): canonicalize BOTH sides — strip
+                # top-level `(: value type)` ascriptions + nativize `#ctor` heads — via the single-sourced
+                # grade canonicalizer, so a bare structural `Value.encode` output (`#list(3 2 1)`) matches an
+                # annotated golden (`(: #list(3 2 1) (List Int64))`). Matches the corpus grader's
+                # `canonical_output_value`; the guide's annotated INPUT syntax stays valid + taught. Fail-safe:
+                # if a side is not a parseable value (an error string), fall back to it verbatim.
+                got_c=$(cdz-run --canonicalize "$got" 2>/dev/null) || got_c="$got"
+                want_c=$(cdz-run --canonicalize "$want" 2>/dev/null) || want_c="$want"
+                [ "$got_c" = "$want_c" ] || { echo "FAIL guide ${dir} (${surface}): value mismatch — got [$got] want [$want]"; exit 1; }
                 echo "ok: guide ${dir} (${surface}) — value [$got]"
               else
                 echo "ok: guide ${dir} (${surface}) — compiled + ran clean (ungraded)"

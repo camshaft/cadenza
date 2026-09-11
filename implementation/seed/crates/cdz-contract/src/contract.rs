@@ -83,8 +83,13 @@ pub fn contract_id(
 #[must_use]
 pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
     // The escaped value form is `(: <record> <type>)`; the record is the first child after the `:` head.
-    let annotated = value.as_form(value.root, ":")?;
-    let record = *annotated.first()?;
+    // Frame-TOLERANT (value-codec migration): the descriptor's root is the bare record now (structural
+    // Value.encode, no `(: <record> <type>)` frame); accept the legacy framed form too by peeling an
+    // optional root `:` ascription.
+    let record = value
+        .as_form(value.root, ":")
+        .and_then(|a| a.first().copied())
+        .unwrap_or(value.root);
     // `(#record (= <field> <value>) …)` — scan the `(= …)` field groups for `id` and `name`. The descriptor
     // value is the M2 NATIVE compound form (a `RecordCtor` ctor-leaf head), so recognize it via
     // `compound_form_of` (native leaf + the legacy name/string heads during migration), not the name-only
@@ -121,8 +126,13 @@ pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
 /// unless the descriptor record carries a `declaration` `Bytes` field.
 #[must_use]
 pub fn declaration_from_descriptor(value: &Arenas) -> Option<Vec<u8>> {
-    let annotated = value.as_form(value.root, ":")?;
-    let record = *annotated.first()?;
+    // Frame-TOLERANT (value-codec migration): the descriptor's root is the bare record now (structural
+    // Value.encode, no `(: <record> <type>)` frame); accept the legacy framed form too by peeling an
+    // optional root `:` ascription.
+    let record = value
+        .as_form(value.root, ":")
+        .and_then(|a| a.first().copied())
+        .unwrap_or(value.root);
     let fields = value.compound_form_of(record, CompoundCtor::Record)?;
     for &field in fields {
         let Some((field_name, field_value)) = value
@@ -149,8 +159,13 @@ pub fn declaration_from_descriptor(value: &Arenas) -> Option<Vec<u8>> {
 /// record with a string `name` and `Bytes` `input`/`output` fields that each decode to a `Name`.
 #[must_use]
 pub fn identity_from_descriptor(value: &Arenas) -> Option<(String, String, String)> {
-    let annotated = value.as_form(value.root, ":")?;
-    let record = *annotated.first()?;
+    // Frame-TOLERANT (value-codec migration): the descriptor's root is the bare record now (structural
+    // Value.encode, no `(: <record> <type>)` frame); accept the legacy framed form too by peeling an
+    // optional root `:` ascription.
+    let record = value
+        .as_form(value.root, ":")
+        .and_then(|a| a.first().copied())
+        .unwrap_or(value.root);
     // Native compound form (M2 `RecordCtor` ctor-leaf head) — see `id_name_from_descriptor`.
     let fields = value.compound_form_of(record, CompoundCtor::Record)?;
     let mut name: Option<String> = None;

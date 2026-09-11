@@ -55,13 +55,14 @@ pub fn runtime_value_form_template(
     ncx: &crate::ty::NameCtx,
 ) -> Option<ValueFormTemplate> {
     let mut b = crate::ast::Builder::new();
-    let colon = b.name(":");
+    let _ = ncx; // type node no longer emitted (value-codec migration: structural, no `(: value Type)` frame)
     // Build the value AST with PLACEHOLDER leaves, recording each leaf's walk path + kind as we go.
+    // STRUCTURAL: the value IS the root — no `(: value Type)` ascription frame (value-codec migration:
+    // decode by structure, not names). `resolve_leaf_offsets` recomputes each hole's pool offset from the
+    // encoded bytes, so dropping the frame's leaves (`:` + the type node) needs no offset bookkeeping here.
     let mut leaves: Vec<PendingLeaf> = Vec::new();
     let value = template_value_ast(&mut b, ty, &mut Vec::new(), &mut leaves)?;
-    let type_ast = type_ast(&mut b, ty, ncx)?;
-    let root = b.list(vec![colon, value, type_ast]);
-    let arenas = b.finish(root);
+    let arenas = b.finish(value);
     let bytes = crate::codec::encode(&arenas);
     // Locate each placeholder leaf's byte offset in the encoded LEAF POOL (leaves are encoded in order
     // right after the 8-byte header + leaf-count LEB). Walk the pool, tracking offsets; a leaf that was
@@ -212,22 +213,21 @@ pub(super) fn runtime_leaf_form(db: &mut Db, is_string: bool) -> Option<RuntimeB
     const KIND_BYTES: u8 = 11;
     const KIND_STR: u8 = 7;
     let mut b = crate::ast::Builder::new();
-    let colon = b.name(":");
-    let (empty, ty_name, kind) = if is_string {
+    // STRUCTURAL: the bare leaf IS the root — no `(: <leaf> <TypeName>)` ascription frame (value-codec
+    // migration: decode by structure, not names). The `<kind> 0x00` split still uniquely locates the empty
+    // payload leaf (there are no longer any `:`/type NAME leaves to confuse it).
+    let (empty, kind) = if is_string {
         (
             b.atom_leaf(crate::ast::Leaf::Str(String::new().into())),
-            b.name("String"),
             KIND_STR,
         )
     } else {
         (
             b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new().into())),
-            b.name("Bytes"),
             KIND_BYTES,
         )
     };
-    let root = b.list(vec![colon, empty, ty_name]);
-    let arenas = b.finish(root);
+    let arenas = b.finish(empty);
     let encoded = crate::codec::encode(&arenas);
     // Find the leaf's KIND tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf). `":"` and
     // the type name are NAME leaves (`0x0a …`), so the only `<kind> 00` pair is the empty payload leaf.
@@ -413,17 +413,13 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // wraps in a PARAMETRIC `Framed(<type-node>, …)` frame built from the full type (`type_node_of`
         // renders `(Option String)`), exactly as a `List`/`Map`/`Set` does. Without this a generic sum
         // result dropped its type args at the boundary.
-        crate::ty::Ty::Sum { decl, args, .. } => {
-            let name = db.type_decl_by_occ(*decl)?.name.clone();
+        // STRUCTURAL (value-codec migration): encode the bare inner sum value shape — no `(: value Type)`
+        // Named/Framed root frame. Both a monomorphic and a generic sum drop the frame; the type token /
+        // type-args were OBSERVABILITY only (decode is type-directed by the caller, never the embedded
+        // type), so the value renders bare (`(Some "é")`, not `(: (Some "é") (Option String))`).
+        crate::ty::Ty::Sum { .. } => {
             let inner = builder.shape_of(db, ty)?;
-            if args.is_empty() {
-                let named = builder.push(ShapeNode::Named(name, inner));
-                Some(builder.encode(named))
-            } else {
-                let type_node = type_node_of(ty, &db.name_ctx())?;
-                let framed = builder.push(ShapeNode::Framed(type_node, inner));
-                Some(builder.encode(framed))
-            }
+            Some(builder.encode(inner))
         }
         // A NOMINAL newtype (a recursive one that escapes): its `shape_of` ALREADY produces a
         // `Named(<type name>, …)` root (the erased-tag frame), so encode it directly — wrapping again
@@ -440,10 +436,9 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
         // recurses over nested collections, so the walker renders them; only the type node needed lifting.
         crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
-            let type_node = type_node_of(ty, &db.name_ctx())?;
+            // STRUCTURAL: bare `#list(…)` / `#set(…)` / `#map(…)` — no `(: value (List T))` frame.
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(type_node, inner));
-            Some(builder.encode(framed))
+            Some(builder.encode(inner))
         }
         // A RUNTIME-computed `BigInt`/`Rational` result: its value form is VARIABLE-length (a BigInt
         // magnitude is however many bytes the value needs — the fixed-hole `runtime_value_form_template`
@@ -452,10 +447,9 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `{num,den}` record. Wrap in a `Framed(<type-node>, …)` frame so the value form is `(: N BigInt)`
         // (the `Named` bare-name frame the constant escape uses), the type node observable.
         crate::ty::Ty::BigInt | crate::ty::Ty::Rational => {
-            let type_node = type_node_of(ty, &db.name_ctx())?;
+            // STRUCTURAL: bare `N` (BigInt) / `{num,den}` (Rational) leaf — no `(: N BigInt)` frame.
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(type_node, inner));
-            Some(builder.encode(framed))
+            Some(builder.encode(inner))
         }
         // A TUPLE/RECORD result whose value shape is renderable but which contains a VARIABLE-length element
         // (a list/map/set, or a sum) — `runtime_value_form_template` returns `None` for it (no fixed-size
@@ -467,10 +461,10 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // (`runtime_value_form_template`), which the caller tries FIRST — this descriptor path is the fallback
         // for the variable-shape case only.
         crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
-            let type_node = type_node_of(ty, &db.name_ctx())?;
+            // STRUCTURAL: bare `#tuple(…)` / `#record(…)` — no `(: value (Tuple …))` frame. (Variable-shape
+            // fallback; the fixed-shape path in `runtime_value_form_template` is likewise bare now.)
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(type_node, inner));
-            Some(builder.encode(framed))
+            Some(builder.encode(inner))
         }
         _ => None,
     }
@@ -481,6 +475,12 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 /// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
 /// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
 /// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
+///
+/// OBSOLETE post value-codec migration: the `(: value <type-node>)` frame is no longer emitted (structural
+/// encode — decode by structure, not names), so this has no live callers. Retained (`allow(dead_code)`) as
+/// the reference type-node shape in case a future observability feature needs it; a follow-up may remove it
+/// (and the `TypeNode` type) outright.
+#[allow(dead_code)]
 pub(super) fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Option<TypeNode> {
     use crate::ty::Ty;
     let leaf = |s: String| TypeNode {
@@ -635,13 +635,21 @@ pub(super) enum ShapeNode {
     List(u32),
     Record(Vec<(String, u32)>),
     Sum(Vec<(String, u32)>),
+    /// OBSOLETE post value-codec migration: the compiler no longer CONSTRUCTS a `Named` root — nominal
+    /// newtypes/monomorphic sums encode bare (see `shape_of`/`sum_shape_descriptor`). Retained
+    /// (`allow(dead_code)`) so the descriptor tag-10 format stays representable (the runtime still DECODES
+    /// tag 10 for backward-compat + frame-tolerance); a follow-up may remove it. The `(: value Type)` frame
+    /// is no longer emitted (decode by structure, not names).
+    #[allow(dead_code)]
     Named(String, u32),
     Ref(u32),
     Set(u32),
     Map(u32, u32),
-    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. The runtime
-    /// `value-encode` decodes this as descriptor tag 15 and renders the type node RECURSIVELY, so a runtime
-    /// collection crosses as `(: (list …) (List Int64))` — or, with nesting, `(: … (List (List Int64)))`.
+    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. OBSOLETE post
+    /// value-codec migration: the compiler no longer CONSTRUCTS `Framed` (collections/generic-sums encode
+    /// bare); retained (`allow(dead_code)`) so descriptor tag-15 stays representable (runtime still decodes
+    /// it for backward-compat). A follow-up may remove it.
+    #[allow(dead_code)]
     Framed(TypeNode, u32),
     /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
     /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
@@ -914,13 +922,16 @@ impl ShapeTableBuilder {
                 self.table[self_ix as usize] = ShapeNode::Sum(out);
                 self_ix
             }
-            // A NOMINAL newtype is ERASED at run time — the value IS its underlying value — so its shape
-            // is its inner's shape, wrapped in `Named(<type name>, …)` so the host renders `(: <underlying>
-            // <TypeName>)`. Recursion closes on the nominal's OWN `decl` (a RECURSIVE newtype's inner
+            // A NOMINAL newtype is ERASED at run time — the value IS its underlying value — so its shape is
+            // its inner's shape, made TRANSPARENT via `Ref(inner)` (value-codec migration: STRUCTURAL, no
+            // `(: <underlying> <TypeName>)` ascription frame — decode by structure, not names; the newtype
+            // name was OBSERVABILITY/render only, never load-bearing for decode). `Ref` adds NO wire struct
+            // level (unlike `Named`, which wrapped the frame), so the erased newtype crosses as its bare
+            // inner value. Recursion closes on the nominal's OWN `decl` (a RECURSIVE newtype's inner
             // re-references it): reserve the entry keyed by `decl` BEFORE building the inner (a
-            // self-reference resolves to a `Ref`), then fill it. The inner's `Ty::Sum{decl}` back-edge (the
-            // erased-newtype μ-binder) resolves to this same reserved entry via `sums`, so the shape table
-            // is finite. Reuses `Named`, which the runtime `value-encode` walker already renders.
+            // self-reference resolves to a `Ref`), then fill it with `Ref(inner)`. The inner's `Ty::Sum{decl}`
+            // back-edge (the erased-newtype μ-binder) resolves to this same reserved entry via `sums`, so the
+            // shape table is finite and the Ref chain makes progress (it descends into the inner's payload).
             Ty::Nominal { decl, inner, .. } => {
                 // Same instantiation-keying as `Ty::Sum` — a generic nominal `Box Int64` vs `Box Bool`
                 // share the decl but differ, so key on (decl, args fingerprint). A recursive nominal's
@@ -929,11 +940,10 @@ impl ShapeTableBuilder {
                 if let Some(&existing) = self.sums.get(&key) {
                     return Some(self.push(ShapeNode::Ref(existing)));
                 }
-                let name = db.type_decl_by_occ(*decl)?.name.clone();
                 let self_ix = self.push(ShapeNode::Unit); // placeholder, filled below
                 self.sums.insert(key, self_ix);
                 let inner_ix = self.shape_of(db, inner)?;
-                self.table[self_ix as usize] = ShapeNode::Named(name, inner_ix);
+                self.table[self_ix as usize] = ShapeNode::Ref(inner_ix);
                 self_ix
             }
             // A QUANTITY erases to its inner scalar at runtime (the unit is a compile-time concern carried
