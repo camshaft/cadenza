@@ -1,19 +1,19 @@
-// The COMPILE HTTP route handler (reducer-targets B10b; operator multi-module design via v-hivemind): POST a
-// MULTI-MODULE compile request — a {module-name -> ast-hash} map + an entrypoint — and get back the compiled
-// component's ProgramHash. A client first parses each source module via the PARSE route (-> ast published in
-// the CAS -> ast-hash), then submits the map here. This handler fetches each AST from the store by hash, feeds
-// rcdzc a KIND_AST(name = module-name) artifact per module + a KIND_ENTRY artifact naming the entrypoint, and
-// rcdzc resolves imports across the named set + compiles the entry (rcdzc::compile already filters KIND_AST +
-// honors KIND_ENTRY — no compiler change). A Cadenza reducer-world guest: CALLS `run` (delegate to rcdzc) +
-// `blobs` (fetch the asts, publish the component); NO reducer spawning.
+// The COMPILE HTTP route handler (reducer-targets B10c; operator artifact-list design via v-hivemind): POST the
+// COMPLETE kinded-artifact list a client assembled — each artifact {kind, name, payload} where payload is
+// Inline(bytes) or CasRef(hash) — and get back the compiled component's ProgramHash. The handler is the SOLE CAS
+// boundary: it resolves every payload to bytes (CasRef → blobs.get(hash), Inline → bytes as-is), then hands
+// rcdzc the SAME bytes-only Artifact(kind, name, bytes) list it already takes. NO per-kind special-casing, NO
+// entry synthesis — the client passes the entry as a first-class kind="entry" artifact (Inline, its bytes the
+// encode_name form of the entry-file name), so rcdzc's existing KIND_AST-filter + KIND_ENTRY-find drops in. A
+// Cadenza reducer-world guest: CALLS `run` (delegate to rcdzc) + `blobs` (deref CasRefs, publish the component).
 //
-// Strong contracts: the request is the canonical CompileRoute value (Value.decode of the http body); the rcdzc
-// hop is the canonical rcdzc.compile CompileRequest/CompileResult. On no component answers 422 WITH the compile
-// diagnostics (render-compile-diags). The rcdzc ProgramHash is INJECTED via the generated `guest-hashes` lib
-// (the handler imports it — no textual placeholder rewrite).
+// INVARIANT (operator): rcdzc knows NOTHING about the CAS — Payload/Inline/CasRef live only in the compile-req
+// contract (this handler's domain); the rcdzc hop is the plain CAS-agnostic CompileRequest/CompileResult. On no
+// component answers 422 WITH the compile diagnostics (render-compile-diags). The rcdzc ProgramHash is INJECTED
+// via the generated `guest-hashes` lib (the handler imports it — no textual placeholder rewrite).
 import { Request, respond } from "http-lib"
 import { descriptor as rcdzc-desc, CompileRequest, CompileResult, Artifact, CompileDiagnostic } from "rcdzc-compile"
-import { Module, CompileRoute } from "compile-req"
+import { Payload, RouteArtifact, CompileRoute } from "compile-req"
 import { Error, on-response, on-notification } from "reducer-lib"
 import { rcdzc-hash } from "guest-hashes"
 
@@ -35,21 +35,27 @@ def render-compile-diags(ds: List(CompileDiagnostic)) -> String =
        let prefix = (match x.code with | Option.Some(c) => String.concat(c, ": ") | Option.None => "") in
        String.concat(prefix, String.concat(x.message, String.concat("\n", render-compile-diags(rest)))))
 
-// Fetch each module's AST from the CAS (blobs.get by hash) and build the kinded-input bundle: a KIND_AST
-// artifact per module (name = module-name) + a KIND_ENTRY artifact naming the entrypoint. `None` if any AST is
-// missing from the store. blobs.get is a host effect handled by the enclosing `host blobs in`.
-def fetch-inputs(modules: List(Module), entry: String) -> Option(List(Artifact)) =
-  match modules with
-  | [] =>
-    Option.Some([Artifact.Artifact({ kind = "entry", name = "entry", bytes = String.to-bytes(entry) })])
-  | [m, .. rest] =>
-    (match m with
-     | Module.Module(x) =>
-       (match blobs.get(x.astHash) with
-        | Some(ast) =>
-          (match fetch-inputs(rest, entry) with
+// Resolve one artifact payload to bytes: Inline carries the bytes; CasRef derefs the store by 33-byte hash
+// (`None` if the store lacks it). blobs.get is a host effect handled by the enclosing `host blobs in`.
+def resolve-payload(p: Payload) -> Option(Bytes) =
+  match p with
+  | Payload.Inline(b) => Option.Some(b)
+  | Payload.CasRef(h) => blobs.get(h)
+
+// Resolve the whole kinded-artifact list to rcdzc's bytes-only Artifact(kind, name, bytes) inputs — the sole
+// CAS step. `None` if any CasRef is missing from the store. rcdzc then filters KIND_AST + finds the client's
+// KIND_ENTRY artifact; no synthesis here (the handler stays dumb, rcdzc stays CAS-agnostic).
+def resolve-inputs(arts: List(RouteArtifact)) -> Option(List(Artifact)) =
+  match arts with
+  | [] => Option.Some([])
+  | [a, .. rest] =>
+    (match a with
+     | RouteArtifact.RouteArtifact(x) =>
+       (match resolve-payload(x.payload) with
+        | Some(bytes) =>
+          (match resolve-inputs(rest) with
            | Some(more) =>
-             Option.Some(List.push(more, Artifact.Artifact({ kind = "ast", name = x.name, bytes = ast })))
+             Option.Some(List.push(more, Artifact.Artifact({ kind = x.kind, name = x.name, bytes = bytes })))
            | None => Option.None)
         | None => Option.None))
 
@@ -60,8 +66,8 @@ def on-message(msg) =
        | Some(Request.Request(r)) =>
          (match (Value.decode(r.body) : Option(CompileRoute)) with
           | Some(CompileRoute.Compile(c)) =>
-            (match fetch-inputs(c.modules, c.entry) with
-             | None => respond(422, [], b"a module AST was not found in the store")
+            (match resolve-inputs(c.artifacts) with
+             | None => respond(422, [], b"a CasRef artifact was not found in the store")
              | Some(inputs) =>
                (match (run.run(rcdzc-hash(), rcdzc-desc().id,
                                Value.encode(CompileRequest.Compile(inputs))) : Result(Bytes, Error)) with
@@ -73,7 +79,7 @@ def on-message(msg) =
                       | None => respond(422, [], String.to-bytes(render-compile-diags(cr.diagnostics))))
                    | None => respond(500, [], b"undecodable CompileResult"))
                 | Err(_e) => respond(500, [], b"rcdzc run failed")))
-          | None => respond(400, [], b"undecodable compile request (expected a Compile(modules, entry) value)"))
+          | None => respond(400, [], b"undecodable compile request (expected a Compile(artifacts) value)"))
        | None => respond(400, [], b"undecodable http-request"))
 
 export { on-message, on-response, on-notification }

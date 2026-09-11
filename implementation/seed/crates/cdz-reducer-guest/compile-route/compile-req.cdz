@@ -1,13 +1,20 @@
-// The http-facing MULTI-MODULE compile request (reducer-targets B10b; operator design via v-hivemind): the
-// body a client POSTs to the /compile route — a set of already-parsed modules keyed by name to their AST's
-// content-address, plus the entrypoint module name. Value.encode/Value.decode'd as the request body (canonical
-// binary-AST — the exchange format, operator standing directive; NOT JSON). The handler blobs.gets each
-// `astHash` from the CAS and feeds rcdzc a KIND_AST(name = module-name) artifact per module + a KIND_ENTRY
-// artifact naming the entry — rcdzc resolves imports across the named set + compiles the entrypoint.
+// The http-facing /compile request (reducer-targets B10c; operator artifact-list design via v-hivemind): the
+// body a client POSTs to the /compile route — the COMPLETE kinded-artifact list the client assembled, mirroring
+// rcdzc::compile's own &[Artifact] (kind + name + bytes). Value.encode/Value.decode'd as the request body
+// (canonical binary-AST — the exchange format, operator standing directive; NOT JSON).
 //
-// Distinct type names from rcdzc-compile's CompileRequest/Artifact (this is the HTTP request; that is the
-// rcdzc GUEST wire) so both co-import cleanly. Single-ctor record newtypes.
-type Module = | Module(Record(name: String, astHash: Bytes))
-type CompileRoute = | Compile(Record(modules: List(Module), entry: String))
+// Each artifact's payload is EITHER Inline (bytes carried in the request) OR CasRef (a 33-byte ProgramHash the
+// handler blobs.gets). So a big AST rides by-reference (kind="ast", CasRef(astHash from /parse)) while a tiny
+// name rides inline (kind="entry", Inline(encode_name(entry-file-name))). The handler resolves every payload to
+// bytes and hands rcdzc the SAME bytes-only Artifact(kind,name,bytes) list it already takes — no per-kind
+// special-casing, no entry synthesis. Any future kind (spans → wasm-debug/dwarf, result-types, …) just goes in
+// the list; small ones Inline, big ones CasRef; the handler + rcdzc are unchanged.
+//
+// INVARIANT (operator): the CAS lives ONLY here (the handler's domain). Payload/Inline/CasRef must NOT appear in
+// rcdzc's CompileRequest/Artifact wire — rcdzc stays bytes-only + CAS-agnostic (the compiler knows nothing about
+// the CAS). Named RouteArtifact (not Artifact) so this co-imports cleanly with rcdzc-compile's Artifact.
+type Payload       = | Inline(Bytes) | CasRef(Bytes)
+type RouteArtifact = | RouteArtifact(Record(kind: String, name: String, payload: Payload))
+type CompileRoute  = | Compile(Record(artifacts: List(RouteArtifact)))
 
-export { Module.*, CompileRoute.* }
+export { Payload.*, RouteArtifact.*, CompileRoute.* }

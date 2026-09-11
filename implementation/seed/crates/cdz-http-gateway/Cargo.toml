@@ -37,6 +37,11 @@ host = ["cdz-platform/host", "dep:wasmtime"]
 # compiler's own `Value.encode`/`Value.decode` produce, so a value the gateway emits is decodable by a
 # Cadenza guest and vice versa.
 cadenza-ast = { path = "../cadenza-ast" }
+# The compile-boundary name wire (`encode_name`): the `cdz-http-compile-request` deploy-tool bin emits the
+# /compile route's entry artifact as `Inline(encode_name(entry))` — the binary-AST `Str`-leaf form rcdzc's
+# `decode_name` reads (operator P0 seq-284: no raw-bytes-as-name). Using the canonical crate (not a re-inlined
+# copy) keeps the wire drift-free. Light: cadenza-ast core only, same as the gateway already pulls.
+cadenza-compile-abi = { path = "../cadenza-compile-abi" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — the request/response `body` and the encoded payloads.
 bytes = "1"
 # The platform's reducer contract: the `ProgramStore`/`Reducer` traits + `SpawnContext`/`Message`/`Outcome`/
