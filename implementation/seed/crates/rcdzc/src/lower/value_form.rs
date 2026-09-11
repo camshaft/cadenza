@@ -349,9 +349,8 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 /// RECURSIVE sum: a sum decl already in the table is referenced by index (`Ref`), closing the cycle.
 /// `None` if any payload type has no renderable shape yet (a Float/Str/Bytes payload — the escape declines).
 /// Build a `Set`-ROOTED shape descriptor for `set-to-list`: the runtime `op_set_to_list` resolves the
-/// descriptor's ROOT and requires `Shape::Set(elem)` DIRECTLY (to order by the element shape), NOT the
-/// `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces. So encode the bare
-/// `shape_of(Set elem)` root. Returns `None` if the element shape has no descriptor (unorderable).
+/// descriptor's ROOT and requires `Shape::Set(elem)` DIRECTLY (to order by the element shape). Encode the
+/// bare `shape_of(Set elem)` root. Returns `None` if the element shape has no descriptor (unorderable).
 pub fn set_shape_descriptor(db: &mut Db, elem_ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     let set_ty = crate::ty::Ty::Set(Box::new(elem_ty.clone()));
@@ -360,9 +359,9 @@ pub fn set_shape_descriptor(db: &mut Db, elem_ty: &crate::ty::Ty) -> Option<Vec<
 }
 
 /// Build a `Map`-ROOTED shape descriptor for `map-to-list`: `op_map_to_list` resolves the root and
-/// requires `Shape::Map(key, val)` DIRECTLY (to order by the KEY shape), NOT the `Framed` value-form
-/// wrapper. Encode the bare `shape_of(Map key val)` root. `None` if the key/value shape has no
-/// descriptor (unorderable). The map companion of [`set_shape_descriptor`].
+/// requires `Shape::Map(key, val)` DIRECTLY (to order by the KEY shape). Encode the bare
+/// `shape_of(Map key val)` root. `None` if the key/value shape has no descriptor (unorderable). The map
+/// companion of [`set_shape_descriptor`].
 pub fn map_shape_descriptor(
     db: &mut Db,
     key_ty: &crate::ty::Ty,
@@ -376,9 +375,8 @@ pub fn map_shape_descriptor(
 
 /// Build a bare-`ty`-ROOTED shape descriptor for the runtime `value-cmp` op: `value_cmp_shaped` resolves
 /// the descriptor's ROOT to the operands' shape DIRECTLY and walks it (blessed per-leaf orders + compound
-/// lexicographic) — NOT the `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces.
-/// So encode the bare `shape_of(ty)` root (the same discipline as `set_shape_descriptor`/`map_shape_
-/// descriptor`). `None` if the type has no descriptor (a component the shape table can't encode — the emit
+/// lexicographic). So encode the bare `shape_of(ty)` root (the same discipline as `set_shape_descriptor`/
+/// `map_shape_descriptor`). `None` if the type has no descriptor (a component the shape table can't encode — the emit
 /// then declines cleanly, matching the compiler's decision not to order it).
 pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
@@ -386,14 +384,14 @@ pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec
     Some(builder.encode(root))
 }
 
-/// The BARE value-form shape descriptor for `ty` — the inner value shape with NO `Named`/`Framed`
-/// type-frame wrapper. The reducer FOLD BOUNDARY (apply param decode + result encode) carries BARE value
-/// documents: the kernel's `val_to_ast`/`build_event_document`/`parse_effect_list` are bare (root head
-/// `record`/`list`, `= name value` fields), and the type is statically known on BOTH sides, so no inline
-/// type frame is wanted. `value-encode` frames the output as `(: value Type)` ONLY when the descriptor
-/// ROOT is `Shape::Named`/`Framed` (v-ah + v-runtime ruling 2026-08-12); rooting at the bare `shape_of`
-/// makes it emit the bare form, byte-matching the kernel. `sum_shape_descriptor` (the ESCAPE path) keeps
-/// the frame — that path crosses to an untyped host that renders `(: value Type)`; this boundary does not.
+/// The value-form shape descriptor for `ty` at the reducer FOLD BOUNDARY (apply param decode + result
+/// encode), which carries BARE value documents: the kernel's `val_to_ast`/`build_event_document`/
+/// `parse_effect_list` are bare (root head `record`/`list`, `= name value` fields), and the type is
+/// statically known on BOTH sides, so no inline type frame is wanted. After the value-codec migration
+/// `value-encode` NEVER frames: every descriptor roots at the bare `shape_of` and emits the bare form,
+/// byte-matching the kernel. That migration makes this byte-identical to `sum_shape_descriptor` (which
+/// used to root a `Named`/`Framed` frame and now also encodes the bare `shape_of`); it is kept as a
+/// distinct named entry point for the boundary's intent — see backlog re: collapsing the two.
 pub fn bare_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     // Same DOMAIN as `sum_shape_descriptor` — only a value-form COMPOUND (sum/collection/record/tuple/
     // bignum) has a value-form descriptor; a bare scalar/function/etc. has NONE and must decline (the bytes
