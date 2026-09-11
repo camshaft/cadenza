@@ -20,11 +20,12 @@
       expect = { status = 200,
                  body-contains = "src='/app.js'",
                  headers = [ { name = "content-type", value = "text/html" } ] } },
-    // The JavaScript route: 200 text/javascript. Pin the durable bootstrap contract — it mounts into #app via
-    // getElementById('app') (the DOM handle the reducer's render effect targets) and instantiates the reducer.
+    // The JavaScript route: 200 text/javascript. Pin the THIN-BRIDGE invariant (operator direction: shrink JS,
+    // move event-ownership into the wasm) — the bootstrap wires events GENERICALLY from the wasm-declared
+    // `data-cdz-event` attributes, not hand-written per-button handlers.
     { http = { method = "GET", path = "/app.js" },
       expect = { status = 200,
-                 body-contains = "getElementById('app')",
+                 body-contains = "data-cdz-event",
                  headers = [ { name = "content-type", value = "text/javascript" } ] } },
     // The AOT bundle-file routes serve each file's bytes via blobs.get(ProgramHash). In THIS harness the files
     // are not seeded and the hashes are unsubstituted placeholder markers, so blobs.get misses -> 404 (pinning
