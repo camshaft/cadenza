@@ -101,6 +101,14 @@ pub struct RunArgs {
     #[arg(long = "format", value_name = "FMT", default_value = "sexp")]
     pub format: OutputFormat,
 
+    /// Canonicalize a value s-expression and print it, then exit — NO program is run. Strips top-level
+    /// `(: value type)` ascriptions and nativizes classic `(ctor …)` heads to `#ctor`, via the SINGLE-
+    /// SOURCED grade canonicalizer (`cdz_corpus_grade::canonical_output_value`). Lets a value compare be
+    /// ANNOTATION-INVARIANT (`(: (Some 5) (Option Int64))` ≡ `(Some 5)`) — used by the guide-exec grader so
+    /// a bare structural `Value.encode` output matches an annotated golden (value-codec migration).
+    #[arg(long = "canonicalize", value_name = "VALUE")]
+    pub canonicalize: Option<String>,
+
     /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
     /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
     /// bypasses that lookup — use for local runtime debugging, not conformance.
@@ -325,6 +333,19 @@ fn precompile_to(
 }
 
 fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
+    // CANONICALIZE mode (value-codec migration): print the ascription-stripped, `#ctor`-nativized canonical
+    // form of a value s-expression and exit — NO program run. Single-sources the grade canonicalizer so a
+    // value compare is annotation-invariant (the guide-exec grader pipes both sides through this so a bare
+    // structural `Value.encode` output matches an annotated golden). Highest precedence (no component needed).
+    if let Some(value) = &cli.canonicalize {
+        match cdz_corpus_grade::canonical_output_value(value) {
+            Ok(canon) => {
+                println!("{canon}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err(e) => anyhow::bail!("canonicalize: {e}"),
+        }
+    }
     // PRECOMPILE mode (seq-250 AOT corpus-exec): emit a serialized `.cwasm` for the component and exit —
     // the compile-once step the cranelift-free corpus-exec later deserializes. Highest precedence (a
     // precompile run neither instantiates nor calls an export).
