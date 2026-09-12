@@ -2737,12 +2737,17 @@
         # gateway pattern: deliver http.request value → reducer answers http.response) can e2e-test against real
         # Cadenza guests. http-echo/http-hello decode an http.request and Close with an http.response; the
         # root-router-baked router bakes their ProgramHashes and dispatches (router → http.dispatch → handler →
-        # http.response). Their value-heap dep closure (runtime+nfc) is the same one .#wasm-components-export /
-        # .#hivemind-bootstrap ship; the http.* ContractIds are in the contracts manifest there. git-LFS.
+        # http.response). http-flex-echo (#8897, inc-16 S3c) is the flexible-handler variant on the #8895
+        # contract vocabulary (request-head + body-mode + request/response body streams). Their value-heap dep
+        # closure (runtime+nfc) is the same one .#wasm-components-export / .#hivemind-bootstrap ship; the http.*
+        # ContractIds (incl. the #8895 additions) are in the contracts manifest there. git-LFS.
         gatewayGuests = {
           "http-echo" = httpConformanceProgramsByName."http-echo";
           "http-hello" = httpConformanceProgramsByName."http-hello";
           "root-router-baked" = httpConformanceProgramsByName."root-router-baked";
+          # http-flex-echo (#8897): the flexible-handler guest on the #8895 contract vocabulary
+          # (request-head + body-mode + request/response body streams) — for v-hivemind inc-16 S3c.
+          "http-flex-echo" = httpConformanceProgramsByName."http-flex-echo";
         };
         gatewayConformanceComponents = pkgs.runCommand "gateway-conformance-components" { } ''
           mkdir -p "$out/components"
@@ -2761,7 +2766,7 @@
           done
           [ "$n" -eq ${toString (builtins.length (builtins.attrNames gatewayGuests))} ] || { echo "expected ${toString (builtins.length (builtins.attrNames gatewayGuests))} gateway guests, found $n"; exit 1; }
           [ "$(grep -c '=' ${gatewayConformanceComponents}/components/hashes.env)" -eq "$n" ] || { echo "hashes.env count mismatch"; exit 1; }
-          echo "ok: gateway-conformance-components ($n guests: http-echo/http-hello/root-router-baked, valid wasm + ProgramHashes + LFS)" > "$out"
+          echo "ok: gateway-conformance-components ($n guests: ${pkgs.lib.concatStringsSep "/" (builtins.attrNames gatewayGuests)}, valid wasm + ProgramHashes + LFS)" > "$out"
         '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
