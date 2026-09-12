@@ -71,6 +71,12 @@ impl<'de> AstDeserializer<'de> {
     /// ascribed value at ANY position decodes identically to a bare one — which is what lets this reader
     /// replace a hand-written, ascription-tolerant platform decoder without changing the producer's bytes.
     /// (This crate's own serializer never emits ascription, so `cur()` is a no-op on its own output.)
+    ///
+    /// ⏳ TRANSITIONAL (coordinated with `v-ascription-removal`, 2026-09-12): the ascription peel exists
+    /// ONLY to read CURRENT platform bytes that still carry `(: v T)` while ascription is being removed
+    /// fleet-wide (operator: "ascription nowhere in decode"). Once no producer emits the wrapper, DELETE
+    /// this peel (the loop below) + the `decodes_ascribed_root_record` test so the end state has ascription
+    /// nowhere in decode. Do NOT let this become permanent ascription-tolerance.
     fn cur(&self) -> StructId {
         let mut id = self.id;
         while let Some(&inner) = self.arenas.as_form(id, ":").and_then(|tail| tail.first()) {
