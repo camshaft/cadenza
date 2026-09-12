@@ -263,7 +263,13 @@ impl GatewayResolver {
         let (_schema, reason) = drive::<R>(reducer, first, move |req, tx, scope| {
             Arc::clone(&child).carry::<R>(req, tx, scope)
         })
-        .await?;
+        .await
+        // v1: a child subprogram fault (`Err`) or a no-terminal child (`Ok(None)`) both resolve this
+        // dispatch as "no response" — collapse `Result`→`Option` exactly as the prior `Option` return did.
+        // The 502-vs-500 refinement is applied at the TOP-LEVEL request drive (boot.rs); propagating a
+        // dispatched subprogram's `HostBackend` fault up to a 502 is a follow-up (see the drive-fault memo).
+        .ok()
+        .flatten()?;
         Some(reason)
     }
 }
@@ -468,7 +474,8 @@ mod tests {
         let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
             Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"200 hello"))));
     }
 
@@ -484,7 +491,8 @@ mod tests {
         let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
             Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
-        .await;
+        .await
+        .expect("native test drive never faults");
         // The dispatch answer was Err → the router folded an empty reason (unwrap_or_default) and broke.
         assert_eq!(out, Some((resp_id(), Bytes::new())));
     }
@@ -624,7 +632,8 @@ mod tests {
         let out = drive::<TokioRuntime>(router, opening(), move |req, tx, scope| {
             Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));
     }
 
@@ -654,7 +663,8 @@ mod tests {
         let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx, scope| {
             Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"timed-out"))));
     }
 
@@ -710,7 +720,8 @@ mod tests {
         let out = drive::<TokioRuntime>(reducer, opening(), move |req, tx, scope| {
             Arc::clone(&resolver).carry::<TokioRuntime>(req, tx, scope)
         })
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(out, Some((resp_id(), Bytes::from_static(b"fired"))));
     }
 }
