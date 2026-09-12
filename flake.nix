@@ -2344,6 +2344,80 @@
           '';
         };
 
+        # brazilCodecProjection (v-nix-projection I1b): the DRIFT-PROOF-from-flake projection of the LIGHT
+        # binary-AST value-codec tier (cadenza-ast + cadenza-value + cadenza-ast-serde) into a self-contained,
+        # Brazil-vendorable Rust source tree. $out is a standalone cargo workspace (the 3 crate sources copied
+        # verbatim + a generated workspace Cargo.toml + a Cargo.lock DERIVED by filtering the repo's pinned root
+        # lock to the crates' transitive version-aware closure + REFRESH.md). Refresh a Brazil vendor copy with
+        # `nix build .#brazil-codec-projection && cp -r result <brazil-ws>` — same pinned inputs the flake
+        # builds from, so drift is impossible by construction. The projector `cdz-brazil-projection` is an
+        # EXCLUDED standalone crate (zero deps, std-only) so scopedToolSrc (member-only) does not apply — a
+        # narrow custom fileset stages just the projector + the 3 codec crates it copies + the root lock it reads.
+        brazilCodecProjection = pkgs.stdenvNoCC.mkDerivation {
+          pname = "brazil-codec-projection";
+          version = "0.0.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./implementation/seed/crates/cdz-brazil-projection
+              ./implementation/seed/crates/cadenza-ast
+              ./implementation/seed/crates/cadenza-value
+              ./implementation/seed/crates/cadenza-ast-serde
+              ./Cargo.lock
+              ./rust-toolchain.toml
+            ];
+          };
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            chmod -R u+w .
+            export CARGO_HOME="$TMPDIR/cargo"
+            export HOME="$TMPDIR/home"
+            mkdir -p "$CARGO_HOME" "$HOME"
+            # Zero external deps → builds fully offline, no vendor needed.
+            cargo build --release --offline \
+              --manifest-path implementation/seed/crates/cdz-brazil-projection/Cargo.toml
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            implementation/seed/crates/cdz-brazil-projection/target/release/cdz-brazil-projection \
+              --repo . --out "$out"
+            runHook postInstall
+          '';
+        };
+        # brazilCodecProjectionCheck (v-nix-projection I1b): gate coverage for the projection — PROVE the
+        # emitted tree is SELF-CONTAINED by building it OFFLINE against the pinned root-lock vendor
+        # (seedCargoVendor). The projected filtered lock's versions are a SUBSET of the root lock, so every dep
+        # resolves from that vendor with NO network — a green here means a Brazil consumer can vendor + build
+        # the projection with the exact pinned versions (a missing/mis-versioned dep fails offline). NOTE: this
+        # is `--offline`, not `--locked`: a vendored-SOURCES source-replacement makes cargo rewrite the lock's
+        # `source` fields (the projected workspace differs from the root workspace the vendor was built from), so
+        # `--locked` trips benignly on a perfectly buildable tree; the lock's exactness/minimality is asserted
+        # separately by the projector's unit tests + a `--locked --offline` build against a real registry.
+        # STANDALONE (like the cdz-http-* checks) — deliberately NOT in local-gate (a projection tool must not
+        # burden the merge gate); run via `nix build .#checks.<sys>.brazil-codec-projection` (+ `nix flake check`).
+        brazilCodecProjectionCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "brazil-codec-projection-check";
+          version = "0.0.0";
+          src = brazilCodecProjection;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            cp -r ${brazilCodecProjection} ./proj
+            chmod -R u+w ./proj
+            cd ./proj
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo build --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: projected codec tier builds --locked --offline against the pinned vendor" > "$out"
+            runHook postInstall
+          '';
+        };
+
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
         # NAMES THE WORLD the reducer targets. `readDir` derives BOTH the worlds AND the reducer names from
@@ -6820,6 +6894,10 @@
         # re-introduce the names the tree already derives. `.#world-artifacts` stays (the KIND_WIT_WORLD
         # binaries the host-import guests consume — not a reducer name).
         packages.world-artifacts = worldArtifacts;
+        # brazil-codec-projection (v-nix-projection I1b): the drift-proof projection of the binary-AST
+        # value-codec tier into a self-contained Brazil-vendorable Rust tree. Refresh a vendored copy with
+        # `nix build .#brazil-codec-projection && cp -r result <brazil-ws>`.
+        packages.brazil-codec-projection = brazilCodecProjection;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8477,6 +8555,11 @@
             # The run-spec parse round-trip: every runs/*.ml compiles to binary-AST + the driver parses it.
             # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-parse`.
             cdz-http-conformance-parse = cdzHttpConformanceParseCheck;
+            # brazil-codec-projection (v-nix-projection I1b): builds the projected codec tree under strict
+            # `cargo build --locked --offline` against the pinned root-lock vendor — proves the projection is
+            # self-contained + Brazil-vendorable with the exact pinned versions. STANDALONE — NOT in local-gate;
+            # run via `nix build .#checks.<sys>.brazil-codec-projection`.
+            brazil-codec-projection = brazilCodecProjectionCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
