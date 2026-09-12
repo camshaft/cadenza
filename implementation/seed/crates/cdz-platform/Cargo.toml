@@ -59,7 +59,15 @@ cdz-str = { path = "../cdz-str" }
 # contract value can carry a native Cadenza integer field (Int64/UInt64) rather than only opaque bytes.
 num-bigint = "0.4"
 blake3 = "1" # the one content-address digest (fleet-unified on blake3, operator 2026-08-08)
-bytes = "1"  # every byte buffer is bytes::Bytes, never Vec<u8> (spec §12) — O(1) clone as it threads through
+# `bytes` with `serde` so a `Bytes` field maps through serialize_bytes/deserialize_byte_buf (⇒ Leaf::Bytes).
+bytes = { version = "1", features = ["serde"] }  # every byte buffer is bytes::Bytes (spec §12) — O(1) clone
+# serde + the binary-AST serde format: schema-value DECODERS (Lifecycle::decode etc.) read through
+# cadenza_ast_serde::from_bytes instead of a hand-rolled reader (operator 2026-09-12: anything decoding a
+# binary-AST should use serde). Host-side crate, NOT in rcdzc's closure → serde stays out of the compiler.
+# The typed ids (ContractId/ReducerId/…) get serde impls in `ids.rs` (bytes ⇄ Hash). Emit side stays the
+# schema-generated codec (byte-locked to guests); only the DECODE direction moves to serde.
+serde = { version = "1", features = ["derive"] }
+cadenza-ast-serde = { path = "../cadenza-ast-serde" }
 async-trait = "0.1" # dyn-safe async traits, so a store/kv backend is a swappable trait object (spec §8)
 # tokio is the platform's async runtime (spec §9 shared async runtime). A main dep per operator directive
 # 2026-08-20; the trait layers stay runtime-agnostic (await-only, no tokio primitives) so they also run

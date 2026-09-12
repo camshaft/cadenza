@@ -16,7 +16,7 @@
 
 use crate::{Bytes, Contract, ContractId, Notification, ReducerId};
 use cadenza_ast::ast::{Builder, StructId};
-use cadenza_ast::codec;
+use serde::Deserialize;
 use std::sync::OnceLock;
 
 /// The contract of the lifecycle notification (§7): a [`Notification`] whose `id` is this contract's id
@@ -33,7 +33,7 @@ pub fn lifecycle_contract() -> ContractId {
 
 /// A terminated reducer's lifecycle event, delivered to each of its watchers (§7). It names the reducer
 /// that ended and says how it ended, so a watcher subscribed to several peers can tell them apart.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub enum Lifecycle {
     /// The reducer closed itself with a typed reason — its [`Break`](crate::Outcome::Break). `schema` is
     /// the reason value's schema hash and `reason` its canonical bytes, the same typed reason the reducer
@@ -108,29 +108,19 @@ impl Lifecycle {
     /// Total, so a malformed value is a rejected event, never a panic.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        use crate::contract_value as v;
-        use crate::contracts::lifecycle as c;
-        let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        if let Some(e) = c::as_event_exited(&arenas, root) {
-            return Some(Lifecycle::Exited {
-                reducer: ReducerId::from_hash(v::read_hash(&arenas, e.reducer)?),
-                schema: ContractId::from_hash(v::read_hash(&arenas, e.schema)?),
-                reason: v::read_bytes(&arenas, e.reason)?,
-            });
-        }
-        if let Some(e) = c::as_event_crashed(&arenas, root) {
-            return Some(Lifecycle::Crashed {
-                reducer: ReducerId::from_hash(v::read_hash(&arenas, e.reducer)?),
-            });
-        }
-        None
+        // Decode the schema value straight into the enum via serde. The `Event` schema is a sum of
+        // records — `Exited(Record(reducer, schema, reason)) | Crashed(Record(reducer))` — which matches
+        // this crate's canonical struct-variant encoding `(Exited (record (= reducer ..) …))`; the typed
+        // ids deserialize from their 33-byte hash `Bytes`, and cadenza-ast-serde peels the root type
+        // ascription `encode` still writes. So `from_bytes` reads exactly the bytes `encode` produces
+        // (the round-trip test below is the byte-compat golden). Total: a malformed value is `None`.
+        cadenza_ast_serde::from_bytes(bytes).ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Lifecycle, lifecycle_contract};
+    use super::{lifecycle_contract, Lifecycle};
     use crate::{Bytes, ContractId, ReducerId};
 
     fn cid(tag: &[u8]) -> ContractId {

@@ -15,6 +15,34 @@
 use crate::{Hash, HashTag};
 use std::fmt;
 
+/// Deserialize a [`Hash`] from a byte string — the on-wire form of every typed id (a `Bytes` leaf of the
+/// hash's 33 raw bytes, the same shape [`Hash::as_bytes`] serializes). Shared by the id types'
+/// `Deserialize` impls so a `#[derive(Deserialize)]` struct/enum with an id field decodes the id from the
+/// canonical value-form via `cadenza-ast-serde` (or any serde format).
+fn deserialize_hash<'de, D>(deserializer: D) -> Result<Hash, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    struct HashVisitor;
+    impl<'de> Visitor<'de> for HashVisitor {
+        type Value = Hash;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a hash as a byte string")
+        }
+        fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Hash, E> {
+            Hash::try_from(v).map_err(E::custom)
+        }
+        fn visit_borrowed_bytes<E: Error>(self, v: &'de [u8]) -> Result<Hash, E> {
+            Hash::try_from(v).map_err(E::custom)
+        }
+        fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Hash, E> {
+            Hash::try_from(v.as_slice()).map_err(E::custom)
+        }
+    }
+    deserializer.deserialize_byte_buf(HashVisitor)
+}
+
 macro_rules! hash_id {
     ($(#[$doc:meta])* $name:ident, $tag:expr) => {
         $(#[$doc])*
@@ -62,6 +90,22 @@ macro_rules! hash_id {
         impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}({})", stringify!($name), self.0)
+            }
+        }
+
+        // serde: a typed id (de)serializes AS its hash's 33 raw bytes — the same `Bytes` value-form the
+        // hand-written codecs use (bytes_leaf(id.hash().as_bytes()) / read_hash). So a
+        // `#[derive(Serialize, Deserialize)]` struct/enum with an id field round-trips through the
+        // canonical binary-AST via `cadenza-ast-serde` with no change to the id's bytes.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(self.0.as_bytes())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                deserialize_hash(deserializer).map(Self::from_hash)
             }
         }
     };
