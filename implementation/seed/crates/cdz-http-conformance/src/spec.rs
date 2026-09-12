@@ -516,7 +516,7 @@ fn parse_expect(arenas: &value::Arenas, id: value::ValueId) -> Option<Expect> {
 mod tests {
     use super::*;
     use cdz_http_protocol::value::{
-        ValueBuilder, bool_leaf, bytes_leaf, finish, list_value, record, str_leaf, uint_leaf,
+        ValueBuilder, bool_leaf, bytes_leaf, finish_value, list_value, record, str_leaf, uint_leaf,
     };
 
     /// Build the binary-AST for a run-spec matching `runs/route-to-handler.ml`'s first request.
@@ -540,7 +540,7 @@ mod tests {
         let step = record(&mut b, vec![("expect", expect), ("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        finish(b, root, "RunSpec")
+        finish_value(b, root)
     }
 
     #[test]
@@ -586,7 +586,7 @@ mod tests {
         let step = record(&mut b, vec![("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { request, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -619,7 +619,7 @@ mod tests {
         let step = record(&mut b, vec![("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { request, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -657,7 +657,7 @@ mod tests {
         let step = record(&mut b, vec![("expect", expect), ("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -681,7 +681,7 @@ mod tests {
         let step = record(&mut b, vec![("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -773,7 +773,7 @@ mod tests {
         let step = record(&mut b, vec![("expect", expect), ("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -801,7 +801,7 @@ mod tests {
         let step = record(&mut b, vec![("expect", expect), ("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -823,7 +823,7 @@ mod tests {
         let step = record(&mut b, vec![("expect", expect), ("http", http)]);
         let requests = list_value(&mut b, vec![step]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         let Step::Http { expect, .. } = &spec.requests[0] else {
             panic!("expected an http step");
         };
@@ -848,7 +848,7 @@ mod tests {
         let step2 = record(&mut b, vec![("control", pd)]);
         let requests = list_value(&mut b, vec![step1, step2]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         assert_eq!(spec.requests.len(), 2);
         assert_eq!(
             spec.requests[0],
@@ -882,7 +882,7 @@ mod tests {
         let s2 = record(&mut b, vec![("control", step2)]);
         let requests = list_value(&mut b, vec![s1, s2]);
         let root = record(&mut b, vec![("config", config), ("requests", requests)]);
-        let spec = parse_run_spec(&finish(b, root, "RunSpec")).expect("parses");
+        let spec = parse_run_spec(&finish_value(b, root)).expect("parses");
         assert_eq!(
             spec.requests[0],
             Step::Control(ControlStep::PrimeReply {
@@ -908,6 +908,6 @@ mod tests {
         let empty = list_value(&mut b, vec![]);
         let config = record(&mut b, vec![("programs", empty), ("root-router", rr)]);
         let root = record(&mut b, vec![("config", config)]);
-        assert!(parse_run_spec(&finish(b, root, "RunSpec")).is_none());
+        assert!(parse_run_spec(&finish_value(b, root)).is_none());
     }
 }

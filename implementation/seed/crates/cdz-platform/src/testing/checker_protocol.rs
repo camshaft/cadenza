@@ -19,7 +19,7 @@
 use super::checker::CheckOutcome;
 use super::log_value;
 use super::observation::{Entry, EventKind, EventOp, Record};
-use crate::contract_value::{as_ascribed, ascribe, bytes_leaf, read_bytes, read_hash};
+use crate::contract_value::{as_ascribed, bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::codec;
@@ -119,10 +119,12 @@ pub fn encode_verdict(pass: bool, messages: &[Str]) -> Bytes {
             messages: messages_leaf,
         },
     );
-    // Symmetric with the verdict a guest emits (its `Value.encode` wraps the root), so a native verdict and
-    // a guest verdict decode by the same path (`(: <value> Verdict)`, name-agnostic token).
-    let root = ascribe(&mut b, value, "Verdict");
-    Bytes::from(codec::encode(&b.finish(root)))
+    // Structural (ascription-free) encode — NO root `(: value Verdict)` frame (operator directive
+    // 2026-09-12: no type-ascription in the value encoding). Decode stays compatible: `decode_verdict`
+    // and a guest `Value.decode` read by structure and tolerate an absent frame, so this bare native
+    // verdict AND a (currently still-framed) guest verdict both decode. The `as_ascribed` peel on the
+    // read side strips any legacy frame until the guest encoder is de-framed too.
+    Bytes::from(codec::encode(&b.finish(value)))
 }
 
 /// Decode a `verdict` Request payload into a [`CheckOutcome`], or `None` if the bytes are not a well-formed

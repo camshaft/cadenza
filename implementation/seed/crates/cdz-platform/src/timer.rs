@@ -204,7 +204,11 @@ mod tests {
         // reader is type-directed by the caller, so the rejection lives in `read_uint`, not a ctor tag).
         let mut b = cadenza_ast::ast::Builder::new();
         let rec = crate::contract_value::record(&mut b, vec![]);
-        let ascribed_record = crate::contract_value::ascribe(&mut b, rec, "Envelope");
+        // Build the legacy `(: rec Envelope)` frame inline — the `ascribe` emitter is gone, but the tolerant
+        // reader must still peel a framed value and then reject its non-int payload.
+        let colon = b.name(":");
+        let ty = b.name("Envelope");
+        let ascribed_record = b.list(vec![colon, rec, ty]);
         let not_an_int = cadenza_ast::codec::encode(&b.finish(ascribed_record));
         assert_eq!(FireAfter::decode(&not_an_int), None);
         // NOTE: `Envelope.FireAfter` and `Event.Fired` are BOTH single-constructor sums over `UInt64`, so

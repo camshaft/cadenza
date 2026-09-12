@@ -355,10 +355,10 @@ mod tests {
         ContractId::of(b"cdz-platform.http.response")
     }
 
-    /// Encode a `Dispatch { input, subprogram }` effect payload (name-sorted record, root-ascribed) the way
-    /// a guest's `Value.encode` would — reusing the shared value toolkit.
+    /// Encode a `Dispatch { input, subprogram }` effect payload (name-sorted record, structural — no
+    /// root ascription) the way a guest's `Value.encode` would — reusing the shared value toolkit.
     fn encode_dispatch(subprogram: &ProgramHash, input: &[u8]) -> Bytes {
-        use cdz_http_protocol::value::{ValueBuilder, bytes_leaf, finish, record};
+        use cdz_http_protocol::value::{ValueBuilder, bytes_leaf, finish_value, record};
         let mut b = ValueBuilder::new();
         let input_leaf = bytes_leaf(&mut b, input);
         let sub_leaf = bytes_leaf(&mut b, subprogram.hash().as_bytes());
@@ -366,7 +366,7 @@ mod tests {
             &mut b,
             vec![("input", input_leaf), ("subprogram", sub_leaf)],
         );
-        finish(b, r, "Dispatch")
+        finish_value(b, r)
     }
 
     /// A leaf handler: `Break`s on its opening message with a fixed http-response reason.

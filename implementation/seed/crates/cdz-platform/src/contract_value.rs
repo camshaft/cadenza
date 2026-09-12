@@ -11,14 +11,15 @@
 //! codec" (§12) actually holding across the Rust↔Cadenza boundary. A guest `Value.decode`s type-directed,
 //! so the shape is:
 //!  - a constructor `T.C` applied to a payload → the BARE-name form `(C <payload>…)` (the type `T` is not in
-//!    the value — it comes from the root ascription / the target type); a SINGLE-constructor sum ELIDES the
+//!    the value — it comes from the decode target); a SINGLE-constructor sum ELIDES the
 //!    constructor entirely (the payload directly) — that elision is the generated code's call, not here;
 //!  - a record value → the NAME-headed `(record (= <field> <value>)…)`, with fields in ascending NAME order
 //!    (the decoder reads records in the compiler's canonical order — [`record`] sorts them);
 //!  - a prelude (unqualified) constructor `C` → the same bare-name `(C <payload>…)` (e.g. `Ok`/`Err`);
-//!  - the whole payload, at the encode boundary, is wrapped in a root ascription `(: <value> <Type>)` via
-//!    [`ascribe`] (the decoder reads the type token but does not match it against the target — [`as_ascribed`]
-//!    strips it on the way in).
+//!  - the whole payload, at the encode boundary, is encoded BARE — with NO root ascription `(: <value>
+//!    <Type>)` frame (operator directive 2026-09-12: no type-ascription in the value encoding). The decode
+//!    target fixes the type; on the read side [`as_ascribed`]/[`unascribe`] stay TOLERANT of a legacy frame
+//!    (so bytes still in the wild decode) but nothing here emits one — encoders use [`encode_value`].
 //!
 //! These are generic over the constructor/field names, so they carry no schema-specific knowledge — the
 //! generated code supplies the names. Readers are the exact inverses and are total (`Option`), so decoding
@@ -61,22 +62,6 @@ pub fn bare_ctor(b: &mut Builder, name: &str, payload: Vec<StructId>) -> StructI
 #[must_use]
 pub fn unit(b: &mut Builder) -> StructId {
     b.name("unit")
-}
-
-/// A root ascription `(: <value> <ty>)` — the top-level wrapper the compiler's `Value.decode` requires at the
-/// payload-encode boundary. The type token is recorded but not matched against the decode target (the decoder
-/// is type-directed by the caller's annotation), so any name — conventionally the contract's declared input
-/// type — is accepted; [`as_ascribed`] strips it on read.
-// Retained for the `testing`/`host` feature encoders (checker_protocol/spec/log_value/host probes) and
-// unit tests that still build an explicitly-ascribed value; the production contract encoders no longer
-// emit the frame (value-codec migration — they use [`encode_value`]), so `ascribe` is dead in the default
-// (feature-less) lib build. `allow` not `expect`: it IS used under those cfgs.
-#[allow(dead_code)]
-#[must_use]
-pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
-    let colon = b.name(":");
-    let ty = b.name(ty);
-    b.list(vec![colon, value, ty])
 }
 
 /// Encode a self-built value in the canonical binary form ([`cadenza_ast::codec`]): run `build` into a
@@ -264,8 +249,8 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_ascribed, as_bare_ctor, as_qctor, ascribe, bare_ctor, bytes_leaf, is_unit, qctor,
-        read_bytes, read_hash, read_uint, record, record_field, uint_leaf, unit,
+        as_ascribed, as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, is_unit, qctor, read_bytes,
+        read_hash, read_uint, record, record_field, uint_leaf, unit,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix};
@@ -275,6 +260,15 @@ mod tests {
         let mut b = Builder::new();
         let root = build(&mut b);
         b.finish(root)
+    }
+
+    // The ascription EMITTER was removed from the codec (no producer wraps `(: value ty)` anymore), but the
+    // READERS below (`as_ascribed`/`unascribe`) stay tolerant of a legacy frame so bytes still in the wild
+    // decode. These tests build a frame INLINE to pin that read tolerance — this mirrors the old `ascribe`.
+    fn ascribe(b: &mut Builder, value: super::StructId, ty: &str) -> super::StructId {
+        let colon = b.name(":");
+        let ty = b.name(ty);
+        b.list(vec![colon, value, ty])
     }
 
     #[test]

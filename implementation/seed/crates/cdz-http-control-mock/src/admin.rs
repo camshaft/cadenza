@@ -109,7 +109,7 @@ pub fn encode_command(cmd: &AdminCommand) -> Bytes {
             value::bare_ctor(&mut b, "PushGarbageFrame", vec![u])
         }
     };
-    value::finish(b, node, "AdminCommand")
+    value::finish_value(b, node)
 }
 
 /// Encode an [`AdminReply`] to its binary-AST bytes.
@@ -133,7 +133,7 @@ pub fn encode_reply(reply: &AdminReply) -> Bytes {
             value::bare_ctor(&mut b, "ControlUps", vec![rec])
         }
     };
-    value::finish(b, node, "AdminReply")
+    value::finish_value(b, node)
 }
 
 // --- decode --------------------------------------------------------------------------------------------
