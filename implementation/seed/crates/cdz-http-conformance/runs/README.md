@@ -128,8 +128,10 @@ Effect vocabulary + routing:
   a (sub-ceiling) body then STALLS → the gateway's body-read idle timeout floors it 408 (#8801, slowloris hardening);
   a normal small body still routes → 200 (idle-based, so only a genuine stall trips it).
 - `cas-auth-failure` — a handler `blobs.put` with a WRONG control-shipped CAS write credential (config
-  `cas-write-credential`): the CAS rejects the write (401) but the infallible-shaped `blobs.put` WIT SWALLOWS it, so
-  it surfaces DOWNSTREAM — the published (unique) CasRef hash is absent → the gateway floors 502 (§8-grow auth failure).
+  `cas-write-credential`): the CAS rejects the write (401); as of #8880 the now-FALLIBLE `blobs` host import TRAPS
+  the guest on that backend error → no terminal response → the gateway floors 500 "no response from program"
+  (§8-grow auth failure). (Before #8880 the infallible `blobs.put` swallowed the 401 → downstream unresolvable
+  CasRef → 502; #8880 replaced silent-swallow with an explicit trap.)
 - `reconnect` — a `drop-control` closes the gateway's control link → it must REDIAL (#8741) + recover: a
   baseline GET / → 200, then after the drop a retried GET / → 200 (a control blip doesn't break the data plane).
 - `concurrency` — 25 concurrent GET / to http-hello → all 200: the gateway drives a fresh mailbox per

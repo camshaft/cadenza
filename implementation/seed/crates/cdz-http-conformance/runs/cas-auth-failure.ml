@@ -1,17 +1,18 @@
 // SCENARIO (§8-"grow" — auth failure): a handler's blobs.put with a MISMATCHED CAS write credential surfaces as
-// a graceful downstream floor (502), never a hang/crash. ROOT CAUSE (v-gateway-rewrite trace): the guest
-// blobs.put WIT import is INFALLIBLE-shaped, so the host SWALLOWS the CAS 401 (wrong Bearer) and returns the
-// locally-computed content hash as if the write succeeded. So the write's failure is invisible to the guest; it
-// surfaces DOWNSTREAM: the handler closes http.response-cas{that hash}, the gateway CAS-fetches it, and — since
-// the (denied) write never persisted the blob — the fetch MISSES → 502. (A latent platform gap: a fallible
-// blobs.put WIT would let a guest handle its own write failure; flagged to concierge. This scenario pins the
-// observable downstream 502.)
+// a clean floor, never a hang/crash. BEHAVIOR (as of #8880, which made the state/blobs host imports FALLIBLE +
+// TRAP on a backend error — closing the previously-flagged infallible-swallow gap): the guest blobs.put is
+// DENIED by the CAS (401, wrong Bearer); the now-fallible blobs host import TRAPS the guest reducer on that
+// backend error, so the reducer never reaches a terminal Break. The gateway drives a program that produces NO
+// response → it floors 500 "no response from program". (BEFORE #8880 the infallible blobs.put SWALLOWED the 401
+// and returned a bogus hash, surfacing DOWNSTREAM as an unresolvable CasRef → 502 "absent from CAS"; #8880
+// replaced that silent-swallow with an explicit trap. NOTE: the trap→500 floor semantic — vs a more specific
+// 502/bad-gateway for a backend-caused trap — is confirmed-pending with v-gateway-rewrite; this pins the current
+// observable behavior.)
 //
-// To make the 502 DETERMINISTIC regardless of what's already in the CAS, the published body must be UNIQUE per
-// run (a fresh hash never pre-present): http-casref-echo publishes msg.payload (the raw encoded request), and
-// body-nonce makes that request body unique per run. config.cas-write-credential ships a WRONG credential (the
-// harness CAS expects the fixed seed credential), so the blobs.put is denied → swallowed → fresh hash absent →
-// gateway cas.get miss → 502. (The `casref` scenario is the happy-path twin with the correct credential → 200.)
+// body-nonce keeps the (attempted) published body unique per run so the outcome is deterministic regardless of
+// CAS contents. config.cas-write-credential ships a WRONG credential (the harness CAS expects the fixed seed),
+// so the blobs.put is denied → traps → no program response → 500. (The `casref` scenario is the happy-path twin
+// with the correct credential → 200; it stays green — only the DENIED path changed under #8880.)
 {
   config = {
     root-router = "http-casref-echo",
@@ -20,6 +21,6 @@
   },
   requests = [
     { http = { method = "POST", path = "/", body-nonce = true },
-      expect = { status = 502, body-contains = "absent from CAS" } },
+      expect = { status = 500, body-contains = "no response from program" } },
   ],
 }
