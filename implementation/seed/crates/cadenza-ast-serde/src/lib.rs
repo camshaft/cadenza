@@ -656,4 +656,79 @@ mod canonical_value_form {
             }
         );
     }
+
+    /// A record headed by the shadowable NAME alias `record` (the legacy/platform head), not the native
+    /// ctor leaf — `compound_form_of` accepts both, so the Deserializer must too.
+    fn name_record(b: &mut Builder, fields: &[StructId]) -> StructId {
+        let head = b.name("record");
+        let mut items = vec![head];
+        items.extend_from_slice(fields);
+        b.list(items)
+    }
+
+    /// Wrap `value` in a root type-ascription `(: value SomeType)` — the reader must peel it.
+    fn ascribe(b: &mut Builder, value: StructId) -> StructId {
+        let colon = b.name(":");
+        let ty = b.name("SomeType");
+        b.list(vec![colon, value, ty])
+    }
+
+    #[test]
+    fn decodes_ascribed_root_record() {
+        let mut b = Builder::new();
+        let vx = int(&mut b, 5);
+        let fx = field(&mut b, "x", vx);
+        let vy = int(&mut b, 6);
+        let fy = field(&mut b, "y", vy);
+        let vl = string(&mut b, "asc");
+        let fl = field(&mut b, "label", vl);
+        let rec = b.compound(CompoundCtor::Record, &[fx, fy, fl]);
+        let asc = ascribe(&mut b, rec); // (: (record …) SomeType)
+        let arenas = b.finish(asc);
+        let got: Point = from_arenas(&arenas).expect("decode ascribed record");
+        assert_eq!(
+            got,
+            Point {
+                x: 5,
+                y: 6,
+                label: "asc".into()
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_name_alias_headed_record() {
+        let mut b = Builder::new();
+        let vx = int(&mut b, 1);
+        let fx = field(&mut b, "x", vx);
+        let vy = int(&mut b, 2);
+        let fy = field(&mut b, "y", vy);
+        let vl = string(&mut b, "alias");
+        let fl = field(&mut b, "label", vl);
+        let rec = name_record(&mut b, &[fx, fy, fl]);
+        let arenas = b.finish(rec);
+        let got: Point = from_arenas(&arenas).expect("decode name-alias-headed record");
+        assert_eq!(
+            got,
+            Point {
+                x: 1,
+                y: 2,
+                label: "alias".into()
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_name_alias_headed_list() {
+        // A Vec decodes from a `(list e…)` headed by the Name alias "list".
+        let mut b = Builder::new();
+        let e1 = int(&mut b, 10);
+        let e2 = int(&mut b, 20);
+        let e3 = int(&mut b, 30);
+        let head = b.name("list");
+        let lst = b.list(vec![head, e1, e2, e3]);
+        let arenas = b.finish(lst);
+        let got: Vec<i32> = from_arenas(&arenas).expect("decode name-alias-headed list");
+        assert_eq!(got, vec![10, 20, 30]);
+    }
 }
