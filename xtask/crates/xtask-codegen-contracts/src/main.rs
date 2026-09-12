@@ -425,14 +425,18 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId, single: bool) -> Option<T
                     }
                 }
             } else {
+                // A multi-constructor nullary variant encodes as `(<ctor> unit)` — the ctor head carrying the
+                // erased Unit payload — NOT the empty `(<ctor>)`. That is what the compiler's `Value.encode`
+                // produces (`Value.encode(Method.Get)` = `(Get unit)`), so a Rust-built nullary value decodes
+                // byte-for-byte in a Cadenza guest. The reader is liberal (also accepts the legacy empty tail).
                 quote! {
                     #[doc = #doc_build]
                     pub fn #build(b: &mut Builder) -> StructId {
-                        v::qctor(b, #ty, #ctor, vec![])
+                        v::qctor_nullary(b, #ty, #ctor)
                     }
                     #[doc = #doc_read]
                     pub fn #is(arenas: &Arenas, id: StructId) -> bool {
-                        v::as_qctor(arenas, id, #ty, #ctor).is_some_and(|t| t.is_empty())
+                        v::is_qctor_nullary(arenas, id, #ty, #ctor)
                     }
                 }
             }
