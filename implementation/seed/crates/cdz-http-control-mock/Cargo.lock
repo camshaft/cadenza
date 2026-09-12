@@ -34,6 +34,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cadenza-ast"
@@ -41,6 +44,14 @@ version = "0.1.0"
 dependencies = [
  "num-bigint",
  "unicode-normalization",
+]
+
+[[package]]
+name = "cadenza-ast-serde"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "serde",
 ]
 
 [[package]]
@@ -72,8 +83,10 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "cadenza-ast",
+ "cadenza-ast-serde",
  "cadenza-value",
  "cdz-str",
+ "serde",
 ]
 
 [[package]]
@@ -81,6 +94,7 @@ name = "cdz-str"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "serde",
 ]
 
 [[package]]
@@ -383,6 +397,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+dependencies = [
+ "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_core"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]

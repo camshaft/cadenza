@@ -2896,6 +2896,10 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
@@ -2949,6 +2953,10 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
@@ -3221,6 +3229,10 @@
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-compile-abi/src
@@ -3283,6 +3295,10 @@
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-compile-abi/src
@@ -3345,6 +3361,10 @@
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-compile-abi/src
@@ -7616,6 +7636,10 @@
                 # + cdz-str (already staged below), so only its own src + manifest need adding here.
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 # Path-dep: the compile-boundary name wire (encode_name) the cdz-http-compile-request bin uses.
@@ -7764,6 +7788,10 @@
               fileset = pkgs.lib.fileset.unions [
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.lock
@@ -7812,6 +7840,10 @@
                 ./implementation/seed/crates/cdz-http-control-mock/Cargo.lock
                 ./implementation/seed/crates/cdz-http-protocol/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
+                # cdz-http-protocol path-deps cadenza-ast-serde (the frame structs (de)serialize through
+                # it); its source must be in every http-outpost check sandbox that builds the protocol.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
@@ -7875,6 +7907,9 @@
                 ./implementation/seed/crates/cdz-http-control-mock/src
                 ./implementation/seed/crates/cdz-http-protocol/Cargo.toml
                 ./implementation/seed/crates/cdz-http-protocol/src
+                # cdz-http-protocol path-deps cadenza-ast-serde (frame structs (de)serialize through it).
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-value/src
                 ./implementation/seed/crates/cadenza-value/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src

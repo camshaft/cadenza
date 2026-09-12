@@ -113,6 +113,28 @@ impl Deref for Str {
     }
 }
 
+// OPTIONAL serde support (the `serde` feature, off by default): a `Str` (de)serializes as a plain
+// string — the natural mapping for the canonical text type. This lets host-side crates derive
+// Serialize/Deserialize on Str-bearing structs (e.g. via cadenza-ast-serde) without a per-field
+// adapter, while the default (feature-off) build — including every compiler/seed build — stays
+// serde-free (operator 2026-09-12: serde welcome on the platform/tooling, compiler stays lean).
+#[cfg(feature = "serde")]
+impl serde::Serialize for Str {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Str {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize as an owned String, then reuse its allocation as the backing Bytes (From<String>
+        // is a no-copy move). Simpler and always-correct vs a borrowed &str (which not every format
+        // can supply).
+        <String as serde::Deserialize>::deserialize(deserializer).map(Str::from)
+    }
+}
+
 impl AsRef<str> for Str {
     fn as_ref(&self) -> &str {
         self.as_str()
