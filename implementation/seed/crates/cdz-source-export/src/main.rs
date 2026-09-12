@@ -1,8 +1,10 @@
-//! cdz-brazil-projection — project the Cadenza reducer-runtime pieces into a self-contained,
-//! Brazil-vendorable Rust source tree (single source of truth, re-runnable, NOT a fork).
+//! cdz-source-export — project the Cadenza reducer-runtime pieces into a self-contained,
+//! vendorable Rust source tree (single source of truth, re-runnable, NOT a fork).
 //!
-//! I1 capability: project the LIGHT binary-AST value-codec tier — the crates `cadenza-ast`,
-//! `cadenza-value`, `cadenza-ast-serde` — into a standalone cargo workspace under `--out`.
+//! Tiers (`--tier`): `codec` (the LIGHT binary-AST value-codec crates), `reducer` (the HEAVY
+//! reducer-world wasmtime driving), and `all` (both in ONE workspace sharing a single `cadenza-ast`
+//! — a consumer needing both must use this so the two tiers don't ship duplicate `cadenza-ast` copies
+//! that collide at the consumer's lockfile stage).
 //!
 //! Drift-proof by reading the SAME pinned inputs the flake builds from:
 //!   * the crate SOURCES are copied verbatim out of the repo, and
@@ -11,13 +13,12 @@
 //!     are exactly the ones the nix build pins (`seedCargoVendor = importCargoLock ./Cargo.lock`).
 //!
 //! Usage:
-//!   cdz-brazil-projection [--repo <repo-root>] --out <dir> [--tier codec|reducer]
+//!   cdz-source-export [--repo <repo-root>] --out <dir> [--tier codec|reducer|all] [--emit-lock]
 //!
-//! `--repo` defaults to the current directory. `--out` is created (must not already be a non-empty
-//! tree we would clobber — it is emptied first). Tiers are kept SEPARATE so the heavy wasmtime deps
-//! of the reducer tier never leak into the light codec path:
-//!   * `codec`   — the LIGHT binary-AST value-codec tier (no wasmtime/tokio/network).
-//!   * `reducer` — the HEAVY reducer-world tier: the wasmtime driving + WIT world + host-import traits.
+//! `--repo` defaults to the current directory; `--out` is emptied first. By default NO `Cargo.lock` is
+//! exported (the consumer resolves from its own version set); `--emit-lock` opts into a filtered pinned
+//! lock. The codec + reducer tiers are kept separate so the heavy wasmtime deps never leak into the
+//! light codec path; the `all` tier is the combined workspace for a consumer that needs both.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -38,8 +39,20 @@ fn tier_roots(tier: &str) -> Result<&'static [&'static str], String> {
         // BlobStore/KvStore/ReducerGraph host-import traits. Its first-party deps (cadenza-ast/cdz-contract/
         // cdz-str) are discovered. Build the projected tree with `--features cdz-platform/host`.
         "reducer" => Ok(&["cdz-platform"]),
+        // COMBINED tier: codec + reducer in ONE workspace sharing a SINGLE cadenza-ast. A consumer that
+        // needs BOTH (config via cadenza-ast-serde AND the reducer via cdz-platform) must vendor this
+        // ONE tree — vendoring the two separate tiers instead ships two cadenza-ast copies at different
+        // paths, which collides at the consumer's lockfile stage (`brazil-build sync`: "package collision
+        // ... cadenza-ast v0.1.0 ... only one can be written unambiguously"). Rooting at both tiers' roots
+        // + dedup discovery yields the union with cadenza-ast exactly once.
+        "all" => Ok(&[
+            "cadenza-ast",
+            "cadenza-value",
+            "cadenza-ast-serde",
+            "cdz-platform",
+        ]),
         other => Err(format!(
-            "unknown --tier {other:?} (known tiers: codec, reducer)"
+            "unknown --tier {other:?} (known tiers: codec, reducer, all)"
         )),
     }
 }
@@ -98,17 +111,46 @@ fn sibling_path_deps(manifest: &str) -> Vec<String> {
     deps
 }
 
+/// Rewrite a projected crate's `Cargo.toml` to namespace its package name with `<prefix>-`, entirely in
+/// the manifest (NO source edits): (1) `[package] name = "<own>"` → `"<prefix>-<own>"`; (2) every sibling
+/// first-party path-dep gains `package = "<prefix>-<dep>"` while KEEPING its original key (so the crate's
+/// `use <dep_underscored>::…` is unchanged — cargo maps the key to the renamed package); (3) the original
+/// lib name is PRESERVED via an explicit `[lib] name` (the projected crates have no `[lib]` section, so
+/// their lib name would otherwise follow the renamed package). Used e.g. for Brazil's mandatory `amzn-`.
+fn prefix_manifest(text: &str, own: &str, prefix: &str, members: &[&str]) -> String {
+    // (1) the [package] name — replace the FIRST `name = "<own>"` (the package name precedes any
+    // `[[bin]] name`); the closing quote disambiguates from a longer name like `<own>-itest`.
+    let mut out = text.replacen(
+        &format!("name = \"{own}\""),
+        &format!("name = \"{prefix}-{own}\""),
+        1,
+    );
+    // (2) sibling path-deps → add `package = "<prefix>-<dep>"`. The closing quote in the match keeps
+    // `../cadenza-ast` from also matching `../cadenza-ast-serde`.
+    for d in members {
+        out = out.replace(
+            &format!("path = \"../{d}\""),
+            &format!("path = \"../{d}\", package = \"{prefix}-{d}\""),
+        );
+    }
+    // (3) preserve the original lib name so consumers' `use <own_underscored>::…` keeps resolving even
+    // though the package is renamed (the projected crates declare no `[lib]`, so append one).
+    let lib = own.replace('-', "_");
+    out.push_str(&format!("\n[lib]\nname = \"{lib}\"\n"));
+    out
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok((tier, out)) => {
             eprintln!(
-                "cdz-brazil-projection: projected {tier} tier -> {}",
+                "cdz-source-export: projected {tier} tier -> {}",
                 out.display()
             );
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("cdz-brazil-projection: error: {e}");
+            eprintln!("cdz-source-export: error: {e}");
             ExitCode::FAILURE
         }
     }
@@ -123,13 +165,7 @@ fn run() -> Result<(String, PathBuf), String> {
     let members = discover_members(&repo, tier_roots(&args.tier)?)?;
     let crates: Vec<&str> = members.iter().map(String::as_str).collect();
 
-    // 1. Filter the pinned root Cargo.lock to the tier crates' transitive closure.
-    let lock_path = repo.join("Cargo.lock");
-    let lock_text = read(&lock_path)?;
-    let filtered =
-        filter_lock(&lock_text, &crates).map_err(|e| format!("{}: {e}", lock_path.display()))?;
-
-    // 2. Assemble a fresh output tree (crate sources copied verbatim, incl. any wit/ dir inside them).
+    // 1. Assemble a fresh output tree (crate sources copied verbatim, incl. any wit/ dir inside them).
     reset_dir(&out)?;
     let crates_dir = out.join("crates");
     mkdir(&crates_dir)?;
@@ -141,10 +177,32 @@ fn run() -> Result<(String, PathBuf), String> {
         copy_crate(&src, &crates_dir.join(crate_name))?;
     }
 
-    // 3. Write the projected workspace manifest, the filtered lock, and the refresh doc.
+    // 1b. Optionally namespace the projected crate names (Cargo.toml-only, e.g. Brazil's mandatory
+    //     `amzn-`): rename each [package] + rewrite sibling path-deps to the prefixed package, preserving
+    //     lib names so no source edit is needed.
+    if let Some(prefix) = &args.prefix {
+        for crate_name in &crates {
+            let mf = crates_dir.join(crate_name).join("Cargo.toml");
+            let text = read(&mf)?;
+            write(&mf, &prefix_manifest(&text, crate_name, prefix, &crates))?;
+        }
+    }
+
+    // 2. Write the projected workspace manifest + refresh doc. By DEFAULT no Cargo.lock is emitted —
+    //    the projection matches the consumer's no-lockfile norm (CargoBrazil resolves versions from its
+    //    own version set), which also avoids the stale-standalone-lock-under-nix-`--locked` failure class.
     write(&out.join("Cargo.toml"), &workspace_manifest(&crates))?;
-    write(&out.join("Cargo.lock"), &filtered)?;
     write(&out.join("REFRESH.md"), &refresh_doc(&args.tier, &crates))?;
+
+    // 3. `--emit-lock` opts into a filtered Cargo.lock: the version-aware transitive closure of the pinned
+    //    root lock (exact nix-pinned versions), for a consumer that wants pinning instead of its own resolver.
+    if args.emit_lock {
+        let lock_path = repo.join("Cargo.lock");
+        let lock_text = read(&lock_path)?;
+        let filtered = filter_lock(&lock_text, &crates)
+            .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+        write(&out.join("Cargo.lock"), &filtered)?;
+    }
 
     Ok((args.tier, out))
 }
@@ -356,8 +414,8 @@ fn workspace_manifest(crates: &[&str]) -> String {
         .map(|c| format!("    \"crates/{c}\",\n"))
         .collect::<String>();
     format!(
-        "# GENERATED by cdz-brazil-projection — do not edit by hand.\n\
-         # A faithful, refreshable PROJECTION of Cadenza reducer-runtime crates for Brazil.\n\
+        "# GENERATED by cdz-source-export — do not edit by hand.\n\
+         # A faithful, refreshable PROJECTION of Cadenza reducer-runtime crates for downstream vendoring.\n\
          # Re-run the projection to refresh (see REFRESH.md); the source of truth is the Cadenza flake.\n\
          [workspace]\n\
          resolver = \"3\"\n\
@@ -370,8 +428,14 @@ fn refresh_doc(tier: &str, crates: &[&str]) -> String {
         .iter()
         .map(|c| format!("- `crates/{c}` — projected verbatim from the Cadenza repo.\n"))
         .collect::<String>();
-    // The reducer tier's driving is behind cdz-platform's `host` feature; the codec tier is plain.
-    let build_note = if tier == "reducer" {
+    // The flake attr: the combined `all` tier is exposed as `source-export`; the others as `<tier>-source-export`.
+    let attr = if tier == "all" {
+        "source-export".to_string()
+    } else {
+        format!("{tier}-source-export")
+    };
+    // The reducer + combined tiers carry cdz-platform's wasmtime driving (behind its `host` feature).
+    let build_note = if tier == "reducer" || tier == "all" {
         "\n## Building\n\n\
          The wasmtime driving lives behind `cdz-platform`'s `host` feature — build it with:\n\n\
          ```sh\n\
@@ -379,28 +443,29 @@ fn refresh_doc(tier: &str, crates: &[&str]) -> String {
          ```\n\n\
          (`ReducerHost` / `WasmReducer` / `WasmProgramStore` in `cdz-platform::host`; the reducer-world\n\
          WIT is `crates/cdz-platform/wit/world.wit`; plug your own backends into the `BlobStore` /\n\
-         `KvStore` / `ReducerGraph` traits.) This tier pulls wasmtime 37 + cranelift — kept a SEPARATE\n\
-         projection from the light codec tier so those deps never leak into it.\n"
+         `KvStore` / `ReducerGraph` traits.) It pulls wasmtime 37 + cranelift; the codec crates\n\
+         (`cadenza-value` / `cadenza-ast-serde`) build plain, all against the ONE shared `cadenza-ast`.\n"
     } else {
         ""
     };
     format!(
-        "# Cadenza {tier} projection\n\n\
+        "# Cadenza {tier} source export\n\n\
          This tree is a **projection** of Cadenza reducer-runtime crates ({tier} tier), emitted by the\n\
-         `cdz-brazil-projection` tool from the Cadenza repo. It is a single source of truth: DO NOT edit\n\
+         `cdz-source-export` tool from the Cadenza repo. It is a single source of truth: DO NOT edit\n\
          the vendored crate sources here — change them upstream in Cadenza and re-run the projection so\n\
          this copy stays faithful.\n\n\
          ## What is here\n\n\
          {members}\
-         - `Cargo.lock` — the transitive dependency closure of the above, FILTERED (version-aware) from\n\
-           the Cadenza repo's pinned root lock (same versions the nix build pins → drift-proof).\n\
+         No `Cargo.lock` is shipped — resolve dependencies with your own build's version set (the crate\n\
+         set is the version-aware closure of Cadenza's pinned root lock, so the pinned versions resolve\n\
+         cleanly). Pass `--emit-lock` to the tool if you want the filtered pinned lock committed instead.\n\
          {build_note}\n\
          ## Refresh\n\n\
          From a checkout of the Cadenza repo:\n\n\
          ```sh\n\
-         cargo run -p cdz-brazil-projection -- --repo <cadenza-repo> --out <this-tree> --tier {tier}\n\
+         cargo run -p cdz-source-export -- --repo <cadenza-repo> --out <this-tree> --tier {tier}\n\
          ```\n\n\
-         Or, drift-proof from the flake outputs: `nix build .#brazil-{tier}-projection` and copy the result.\n"
+         Or, drift-proof from the flake outputs: `nix build .#{attr}` and copy the result.\n"
     )
 }
 
@@ -412,6 +477,8 @@ struct Args {
     repo: PathBuf,
     out: PathBuf,
     tier: String,
+    emit_lock: bool,
+    prefix: Option<String>,
 }
 
 impl Args {
@@ -419,14 +486,18 @@ impl Args {
         let mut repo = None;
         let mut out = None;
         let mut tier = "codec".to_string();
+        let mut emit_lock = false;
+        let mut prefix = None;
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--repo" => repo = Some(PathBuf::from(next(&mut it, "--repo")?)),
                 "--out" => out = Some(PathBuf::from(next(&mut it, "--out")?)),
                 "--tier" => tier = next(&mut it, "--tier")?,
+                "--emit-lock" => emit_lock = true,
+                "--prefix" => prefix = Some(next(&mut it, "--prefix")?),
                 "-h" | "--help" => {
                     return Err(
-                        "usage: cdz-brazil-projection [--repo <dir>] --out <dir> [--tier codec]"
+                        "usage: cdz-source-export [--repo <dir>] --out <dir> [--tier codec|reducer|all] [--prefix <p>] [--emit-lock]"
                             .into(),
                     )
                 }
@@ -437,6 +508,8 @@ impl Args {
             repo: repo.unwrap_or_else(|| PathBuf::from(".")),
             out: out.ok_or("missing required --out <dir>")?,
             tier,
+            emit_lock,
+            prefix,
         })
     }
 }
@@ -708,7 +781,52 @@ source = \"registry+https://x\"
         );
         // The reducer tier roots at cdz-platform; its first-party deps are discovered from the manifest.
         assert_eq!(tier_roots("reducer").unwrap(), &["cdz-platform"]);
+        // The combined `all` tier roots at both tiers' surfaces; discovery dedups cadenza-ast to ONE copy.
+        assert_eq!(
+            tier_roots("all").unwrap(),
+            &[
+                "cadenza-ast",
+                "cadenza-value",
+                "cadenza-ast-serde",
+                "cdz-platform"
+            ]
+        );
         assert!(tier_roots("bogus").is_err());
+    }
+
+    #[test]
+    fn prefix_manifest_renames_package_deps_and_preserves_lib() {
+        let manifest = "\
+[package]
+name = \"cdz-platform\"
+version = \"0.0.0\"
+
+[[bin]]
+name = \"cdz-platform-itest\"
+
+[dependencies]
+cadenza-ast = { path = \"../cadenza-ast\" }
+cadenza-ast-serde = { path = \"../cadenza-ast-serde\" }
+num-bigint = \"0.4\"
+";
+        let members = ["cdz-platform", "cadenza-ast", "cadenza-ast-serde"];
+        let out = prefix_manifest(manifest, "cdz-platform", "amzn", &members);
+        // (1) the package name is prefixed; the [[bin]] name is NOT (longer string, and only the first
+        // `name = "cdz-platform"` is replaced).
+        assert!(out.contains("name = \"amzn-cdz-platform\"\n"));
+        assert!(out.contains("name = \"cdz-platform-itest\"\n"));
+        // (2) sibling path-deps gain package=, keeping their original key; `../cadenza-ast` did NOT
+        // corrupt `../cadenza-ast-serde` (closing-quote match).
+        assert!(out.contains(
+            "cadenza-ast = { path = \"../cadenza-ast\", package = \"amzn-cadenza-ast\" }"
+        ));
+        assert!(out.contains(
+            "cadenza-ast-serde = { path = \"../cadenza-ast-serde\", package = \"amzn-cadenza-ast-serde\" }"
+        ));
+        // external deps are untouched.
+        assert!(out.contains("num-bigint = \"0.4\""));
+        // (3) the original lib name is preserved explicitly.
+        assert!(out.contains("[lib]\nname = \"cdz_platform\""));
     }
 
     #[test]

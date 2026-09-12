@@ -2344,22 +2344,22 @@
           '';
         };
 
-        # brazilCodecProjection (v-nix-projection I1b): the DRIFT-PROOF-from-flake projection of the LIGHT
+        # codecSourceExport (v-nix-projection I1b): the DRIFT-PROOF-from-flake projection of the LIGHT
         # binary-AST value-codec tier (cadenza-ast + cadenza-value + cadenza-ast-serde) into a self-contained,
-        # Brazil-vendorable Rust source tree. $out is a standalone cargo workspace (the 3 crate sources copied
+        # vendorable Rust source tree. $out is a standalone cargo workspace (the 3 crate sources copied
         # verbatim + a generated workspace Cargo.toml + a Cargo.lock DERIVED by filtering the repo's pinned root
-        # lock to the crates' transitive version-aware closure + REFRESH.md). Refresh a Brazil vendor copy with
-        # `nix build .#brazil-codec-projection && cp -r result <brazil-ws>` — same pinned inputs the flake
-        # builds from, so drift is impossible by construction. The projector `cdz-brazil-projection` is an
+        # lock to the crates' transitive version-aware closure + REFRESH.md). Refresh a vendored copy with
+        # `nix build .#codec-source-export && cp -r result <workspace>` — same pinned inputs the flake
+        # builds from, so drift is impossible by construction. The projector `cdz-source-export` is an
         # EXCLUDED standalone crate (zero deps, std-only) so scopedToolSrc (member-only) does not apply — a
         # narrow custom fileset stages just the projector + the 3 codec crates it copies + the root lock it reads.
-        brazilCodecProjection = pkgs.stdenvNoCC.mkDerivation {
-          pname = "brazil-codec-projection";
+        codecSourceExport = pkgs.stdenvNoCC.mkDerivation {
+          pname = "codec-source-export";
           version = "0.0.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
-              ./implementation/seed/crates/cdz-brazil-projection
+              ./implementation/seed/crates/cdz-source-export
               ./implementation/seed/crates/cadenza-ast
               ./implementation/seed/crates/cadenza-value
               ./implementation/seed/crates/cadenza-ast-serde
@@ -2376,35 +2376,35 @@
             mkdir -p "$CARGO_HOME" "$HOME"
             # Zero external deps → builds fully offline, no vendor needed.
             cargo build --release --offline \
-              --manifest-path implementation/seed/crates/cdz-brazil-projection/Cargo.toml
+              --manifest-path implementation/seed/crates/cdz-source-export/Cargo.toml
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            implementation/seed/crates/cdz-brazil-projection/target/release/cdz-brazil-projection \
+            implementation/seed/crates/cdz-source-export/target/release/cdz-source-export \
               --repo . --out "$out"
             runHook postInstall
           '';
         };
-        # brazilCodecProjectionCheck (v-nix-projection I1b): gate coverage for the projection — PROVE the
+        # codecSourceExportCheck (v-nix-projection I1b): gate coverage for the projection — PROVE the
         # emitted tree is SELF-CONTAINED by building it OFFLINE against the pinned root-lock vendor
         # (seedCargoVendor). The projected filtered lock's versions are a SUBSET of the root lock, so every dep
-        # resolves from that vendor with NO network — a green here means a Brazil consumer can vendor + build
+        # resolves from that vendor with NO network — a green here means a downstream consumer can vendor + build
         # the projection with the exact pinned versions (a missing/mis-versioned dep fails offline). NOTE: this
         # is `--offline`, not `--locked`: a vendored-SOURCES source-replacement makes cargo rewrite the lock's
         # `source` fields (the projected workspace differs from the root workspace the vendor was built from), so
         # `--locked` trips benignly on a perfectly buildable tree; the lock's exactness/minimality is asserted
         # separately by the projector's unit tests + a `--locked --offline` build against a real registry.
         # STANDALONE (like the cdz-http-* checks) — deliberately NOT in local-gate (a projection tool must not
-        # burden the merge gate); run via `nix build .#checks.<sys>.brazil-codec-projection` (+ `nix flake check`).
-        brazilCodecProjectionCheck = pkgs.stdenvNoCC.mkDerivation {
-          pname = "brazil-codec-projection-check";
+        # burden the merge gate); run via `nix build .#checks.<sys>.codec-source-export` (+ `nix flake check`).
+        codecSourceExportCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "codec-source-export-check";
           version = "0.0.0";
-          src = brazilCodecProjection;
+          src = codecSourceExport;
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
-            cp -r ${brazilCodecProjection} ./proj
+            cp -r ${codecSourceExport} ./proj
             chmod -R u+w ./proj
             cd ./proj
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
@@ -2417,21 +2417,21 @@
             runHook postInstall
           '';
         };
-        # brazilReducerProjection (v-nix-projection I2): the DRIFT-PROOF-from-flake projection of the HEAVY
+        # reducerSourceExport (v-nix-projection I2): the DRIFT-PROOF-from-flake projection of the HEAVY
         # reducer-world tier — `cdz-platform` (the wasmtime driving in src/host.rs behind its `host` feature:
         # ReducerHost/WasmReducer/WasmProgramStore) + its reducer-world WIT (wit/world.wit, inside the crate
         # dir) + first-party deps cadenza-ast/cdz-contract/cdz-str. $out is a standalone cargo workspace a
-        # Brazil consumer (MembrainHivemind's amzn-membrain-hivemind-reducer) vendors + builds with
+        # downstream consumer (MembrainHivemind's amzn-membrain-hivemind-reducer) vendors + builds with
         # `--features cdz-platform/host`, wrapping WasmReducer in its ReducerRuntime::fold and plugging its own
         # CAS/KV backends into the BlobStore/KvStore/ReducerGraph traits. SEPARATE package from the light codec
-        # tier so wasmtime 37 + cranelift never leak into it. Refresh: `nix build .#brazil-reducer-projection`.
-        brazilReducerProjection = pkgs.stdenvNoCC.mkDerivation {
-          pname = "brazil-reducer-projection";
+        # tier so wasmtime 37 + cranelift never leak into it. Refresh: `nix build .#reducer-source-export`.
+        reducerSourceExport = pkgs.stdenvNoCC.mkDerivation {
+          pname = "reducer-source-export";
           version = "0.0.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
-              ./implementation/seed/crates/cdz-brazil-projection
+              ./implementation/seed/crates/cdz-source-export
               ./implementation/seed/crates/cdz-platform
               ./implementation/seed/crates/cadenza-ast
               ./implementation/seed/crates/cdz-contract
@@ -2449,12 +2449,12 @@
             mkdir -p "$CARGO_HOME" "$HOME"
             # The projector has zero external deps → builds fully offline, no vendor needed.
             cargo build --release --offline \
-              --manifest-path implementation/seed/crates/cdz-brazil-projection/Cargo.toml
+              --manifest-path implementation/seed/crates/cdz-source-export/Cargo.toml
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            implementation/seed/crates/cdz-brazil-projection/target/release/cdz-brazil-projection \
+            implementation/seed/crates/cdz-source-export/target/release/cdz-source-export \
               --repo . --out "$out" --tier reducer
             # cdz-platform's `src/contracts/` is BUILD-TIME-GENERATED (gitignored, #5250) by the
             # cdzPlatformContracts codegen — the verbatim source copy misses it, so overlay the generated
@@ -2466,22 +2466,22 @@
             runHook postInstall
           '';
         };
-        # brazilReducerProjectionCheck (v-nix-projection I2): gate coverage — PROVE the projected reducer tree
+        # reducerSourceExportCheck (v-nix-projection I2): gate coverage — PROVE the projected reducer tree
         # is self-contained by building `cdz-platform` WITH ITS `host` FEATURE (the wasmtime driving) OFFLINE
         # against the pinned root-lock vendor (seedCargoVendor). Green ⇒ the whole heavy closure (wasmtime 37 +
-        # cranelift + tokio) resolves from the pinned vendor with no network, i.e. a Brazil consumer can vendor
+        # cranelift + tokio) resolves from the pinned vendor with no network, i.e. a downstream consumer can vendor
         # + build the reducer host + driving with the exact pinned versions. `--offline` not `--locked` for the
         # same vendored-sources reason as the codec check. HEAVY (compiles the wasmtime/cranelift closure) but
         # STANDALONE — NOT in local-gate (a projection tool must not burden the merge gate); run via `nix build
-        # .#checks.<sys>.brazil-reducer-projection` (+ `nix flake check`).
-        brazilReducerProjectionCheck = pkgs.stdenvNoCC.mkDerivation {
-          pname = "brazil-reducer-projection-check";
+        # .#checks.<sys>.reducer-source-export` (+ `nix flake check`).
+        reducerSourceExportCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "reducer-source-export-check";
           version = "0.0.0";
-          src = brazilReducerProjection;
+          src = reducerSourceExport;
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
-            cp -r ${brazilReducerProjection} ./proj
+            cp -r ${reducerSourceExport} ./proj
             chmod -R u+w ./proj
             cd ./proj
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
@@ -2492,6 +2492,76 @@
           installPhase = ''
             runHook preInstall
             echo "ok: projected reducer tier (cdz-platform --features host) builds --offline against the pinned vendor" > "$out"
+            runHook postInstall
+          '';
+        };
+        # sourceExportAll (v-nix-projection): the COMBINED source export — codec + reducer tiers in ONE
+        # workspace sharing a SINGLE cadenza-ast. A consumer needing BOTH (config via cadenza-ast-serde AND
+        # the reducer via cdz-platform) MUST vendor this one tree: vendoring the two separate tiers ships two
+        # cadenza-ast v0.1.0 copies at different paths, which collides at the consumer's lockfile stage
+        # (brazil-build sync "package collision ... cadenza-ast ... only one can be written unambiguously").
+        # Emits NO Cargo.lock (the consumer resolves from its own version set). Overlays the build-time-
+        # generated cdz-platform/src/contracts so the tree is self-contained. Refresh: `nix build .#source-export`.
+        sourceExportAll = pkgs.stdenvNoCC.mkDerivation {
+          pname = "source-export";
+          version = "0.0.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./implementation/seed/crates/cdz-source-export
+              ./implementation/seed/crates/cadenza-ast
+              ./implementation/seed/crates/cadenza-value
+              ./implementation/seed/crates/cadenza-ast-serde
+              ./implementation/seed/crates/cdz-platform
+              ./implementation/seed/crates/cdz-contract
+              ./implementation/seed/crates/cdz-str
+              ./Cargo.lock
+              ./rust-toolchain.toml
+            ];
+          };
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            chmod -R u+w .
+            export CARGO_HOME="$TMPDIR/cargo"
+            export HOME="$TMPDIR/home"
+            mkdir -p "$CARGO_HOME" "$HOME"
+            cargo build --release --offline \
+              --manifest-path implementation/seed/crates/cdz-source-export/Cargo.toml
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            implementation/seed/crates/cdz-source-export/target/release/cdz-source-export \
+              --repo . --out "$out" --tier all --prefix amzn
+            mkdir -p "$out/crates/cdz-platform/src/contracts"
+            cp ${cdzPlatformContracts}/contracts/*.rs "$out/crates/cdz-platform/src/contracts/"
+            runHook postInstall
+          '';
+        };
+        # sourceExportAllCheck: PROVE the combined tree is self-contained by building it OFFLINE (no shipped
+        # lock, resolving from the pinned root-lock vendor seedCargoVendor) — cdz-platform WITH `--features
+        # host` (the wasmtime driving) + the codec crates, all against the ONE shared cadenza-ast. STANDALONE
+        # (NOT in local-gate). Run via `nix build .#checks.<sys>.source-export`.
+        sourceExportAllCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "source-export-check";
+          version = "0.0.0";
+          src = sourceExportAll;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            cp -r ${sourceExportAll} ./proj
+            chmod -R u+w ./proj
+            cd ./proj
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            # cdz-platform with host (the driving) + the codec crates, all sharing the ONE cadenza-ast.
+            # Package names are amzn- prefixed (Brazil mandate); the `host` feature name is unchanged.
+            cargo build --offline -p amzn-cdz-platform --features host -p amzn-cadenza-value -p amzn-cadenza-ast-serde
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: combined source export (codec + reducer, one shared cadenza-ast) builds --offline against the pinned vendor" > "$out"
             runHook postInstall
           '';
         };
@@ -6972,15 +7042,19 @@
         # re-introduce the names the tree already derives. `.#world-artifacts` stays (the KIND_WIT_WORLD
         # binaries the host-import guests consume — not a reducer name).
         packages.world-artifacts = worldArtifacts;
-        # brazil-codec-projection (v-nix-projection I1b): the drift-proof projection of the binary-AST
-        # value-codec tier into a self-contained Brazil-vendorable Rust tree. Refresh a vendored copy with
-        # `nix build .#brazil-codec-projection && cp -r result <brazil-ws>`.
-        packages.brazil-codec-projection = brazilCodecProjection;
-        # brazil-reducer-projection (v-nix-projection I2): the drift-proof projection of the HEAVY
-        # reducer-world tier (cdz-platform host driving + WIT + first-party deps) into a Brazil-vendorable
-        # tree. Refresh: `nix build .#brazil-reducer-projection && cp -r result <brazil-ws>`. Build the
+        # codec-source-export (v-nix-projection I1b): the drift-proof projection of the binary-AST
+        # value-codec tier into a self-contained vendorable Rust tree. Refresh a vendored copy with
+        # `nix build .#codec-source-export && cp -r result <workspace>`.
+        packages.codec-source-export = codecSourceExport;
+        # reducer-source-export (v-nix-projection I2): the drift-proof projection of the HEAVY
+        # reducer-world tier (cdz-platform host driving + WIT + first-party deps) into a vendorable
+        # tree. Refresh: `nix build .#reducer-source-export && cp -r result <workspace>`. Build the
         # projected tree with `--features cdz-platform/host`. SEPARATE from the light codec package.
-        packages.brazil-reducer-projection = brazilReducerProjection;
+        packages.reducer-source-export = reducerSourceExport;
+        # source-export (v-nix-projection): the COMBINED codec+reducer export sharing ONE cadenza-ast — the
+        # one a consumer needing both tiers vendors (avoids the two-cadenza-ast lockfile collision). Refresh:
+        # `nix build .#source-export && cp -r result <workspace>`; build with `--features cdz-platform/host`.
+        packages.source-export = sourceExportAll;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8638,17 +8712,20 @@
             # The run-spec parse round-trip: every runs/*.ml compiles to binary-AST + the driver parses it.
             # STANDALONE — run via `nix build .#checks.<sys>.cdz-http-conformance-parse`.
             cdz-http-conformance-parse = cdzHttpConformanceParseCheck;
-            # brazil-codec-projection (v-nix-projection I1b): builds the projected codec tree under strict
+            # codec-source-export (v-nix-projection I1b): builds the projected codec tree under strict
             # `cargo build --locked --offline` against the pinned root-lock vendor — proves the projection is
-            # self-contained + Brazil-vendorable with the exact pinned versions. STANDALONE — NOT in local-gate;
-            # run via `nix build .#checks.<sys>.brazil-codec-projection`.
-            brazil-codec-projection = brazilCodecProjectionCheck;
-            # brazil-reducer-projection (v-nix-projection I2): builds the projected reducer tree's
+            # self-contained + vendorable with the exact pinned versions. STANDALONE — NOT in local-gate;
+            # run via `nix build .#checks.<sys>.codec-source-export`.
+            codec-source-export = codecSourceExportCheck;
+            # reducer-source-export (v-nix-projection I2): builds the projected reducer tree's
             # cdz-platform WITH `--features host` (the wasmtime driving) offline against the pinned vendor —
-            # proves the heavy reducer host + driving is self-contained + Brazil-vendorable with the exact
+            # proves the heavy reducer host + driving is self-contained + vendorable with the exact
             # pinned versions. HEAVY (wasmtime/cranelift closure); STANDALONE — NOT in local-gate. Run via
-            # `nix build .#checks.<sys>.brazil-reducer-projection`.
-            brazil-reducer-projection = brazilReducerProjectionCheck;
+            # `nix build .#checks.<sys>.reducer-source-export`.
+            reducer-source-export = reducerSourceExportCheck;
+            # source-export (combined codec+reducer, one shared cadenza-ast): builds it offline against the
+            # pinned vendor. STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.source-export`.
+            source-export = sourceExportAllCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
