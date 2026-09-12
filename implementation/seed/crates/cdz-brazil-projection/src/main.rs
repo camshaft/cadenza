@@ -11,28 +11,44 @@
 //!     are exactly the ones the nix build pins (`seedCargoVendor = importCargoLock ./Cargo.lock`).
 //!
 //! Usage:
-//!   cdz-brazil-projection [--repo <repo-root>] --out <dir> [--tier codec]
+//!   cdz-brazil-projection [--repo <repo-root>] --out <dir> [--tier codec|reducer]
 //!
 //! `--repo` defaults to the current directory. `--out` is created (must not already be a non-empty
-//! tree we would clobber — it is emptied first). Only the `codec` tier exists today; I2+ add the
-//! heavier reducer-world host-import + wasmtime-driving tiers as separate opt-in projections.
+//! tree we would clobber — it is emptied first). Tiers are kept SEPARATE so the heavy wasmtime deps
+//! of the reducer tier never leak into the light codec path:
+//!   * `codec`   — the LIGHT binary-AST value-codec tier (no wasmtime/tokio/network).
+//!   * `reducer` — the HEAVY reducer-world tier: the wasmtime driving + WIT world + host-import traits.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The crates that make up the LIGHT binary-AST value-codec tier, in workspace-member order. These
-/// are the projection ROOTS for the `codec` tier; the transitive lock closure is computed from them.
-const CODEC_CRATES: &[&str] = &["cadenza-ast", "cadenza-value", "cadenza-ast-serde"];
+/// The first-party crates that make up each projection tier, in workspace-member order — the ROOTS
+/// for the transitive lock closure AND the sources copied verbatim into the projected tree.
+fn tier_crates(tier: &str) -> Result<&'static [&'static str], String> {
+    match tier {
+        // LIGHT binary-AST value-codec tier: no wasmtime/tokio/network; `cadenza-ast`'s core is no_std.
+        "codec" => Ok(&["cadenza-ast", "cadenza-value", "cadenza-ast-serde"]),
+        // HEAVY reducer-world tier: `cdz-platform` carries the wasmtime driving (src/host.rs —
+        // ReducerHost/WasmReducer/WasmProgramStore, behind its `host` feature) + the reducer-world WIT
+        // (wit/world.wit, copied verbatim as it lives inside the crate dir) + the swappable
+        // BlobStore/KvStore/ReducerGraph host-import traits; the rest are its first-party deps. Build the
+        // projected tree with `--features cdz-platform/host` to pull in wasmtime 37 + cranelift.
+        "reducer" => Ok(&["cdz-platform", "cadenza-ast", "cdz-contract", "cdz-str"]),
+        other => Err(format!(
+            "unknown --tier {other:?} (known tiers: codec, reducer)"
+        )),
+    }
+}
 
 /// Where the first-party crate sources live under the repo root.
 const SEED_CRATES: &str = "implementation/seed/crates";
 
 fn main() -> ExitCode {
     match run() {
-        Ok(out) => {
+        Ok((tier, out)) => {
             eprintln!(
-                "cdz-brazil-projection: projected codec tier -> {}",
+                "cdz-brazil-projection: projected {tier} tier -> {}",
                 out.display()
             );
             ExitCode::SUCCESS
@@ -44,41 +60,36 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<PathBuf, String> {
+fn run() -> Result<(String, PathBuf), String> {
     let args = Args::parse(std::env::args().skip(1))?;
-    if args.tier != "codec" {
-        return Err(format!(
-            "unknown --tier {:?} (only 'codec' is implemented; the reducer-world/wasmtime tiers are I2+)",
-            args.tier
-        ));
-    }
+    let crates = tier_crates(&args.tier)?;
     let repo = args.repo;
     let out = args.out;
 
-    // 1. Filter the pinned root Cargo.lock to the codec crates' transitive closure.
+    // 1. Filter the pinned root Cargo.lock to the tier crates' transitive closure.
     let lock_path = repo.join("Cargo.lock");
     let lock_text = read(&lock_path)?;
-    let filtered = filter_lock(&lock_text, CODEC_CRATES)
-        .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+    let filtered =
+        filter_lock(&lock_text, crates).map_err(|e| format!("{}: {e}", lock_path.display()))?;
 
-    // 2. Assemble a fresh output tree.
+    // 2. Assemble a fresh output tree (crate sources copied verbatim, incl. any wit/ dir inside them).
     reset_dir(&out)?;
     let crates_dir = out.join("crates");
     mkdir(&crates_dir)?;
-    for crate_name in CODEC_CRATES {
+    for crate_name in crates {
         let src = repo.join(SEED_CRATES).join(crate_name);
         if !src.is_dir() {
-            return Err(format!("missing codec crate source: {}", src.display()));
+            return Err(format!("missing tier crate source: {}", src.display()));
         }
         copy_crate(&src, &crates_dir.join(crate_name))?;
     }
 
     // 3. Write the projected workspace manifest, the filtered lock, and the refresh doc.
-    write(&out.join("Cargo.toml"), &workspace_manifest(CODEC_CRATES))?;
+    write(&out.join("Cargo.toml"), &workspace_manifest(crates))?;
     write(&out.join("Cargo.lock"), &filtered)?;
-    write(&out.join("REFRESH.md"), &refresh_doc())?;
+    write(&out.join("REFRESH.md"), &refresh_doc(&args.tier, crates))?;
 
-    Ok(out)
+    Ok((args.tier, out))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -289,7 +300,7 @@ fn workspace_manifest(crates: &[&str]) -> String {
         .collect::<String>();
     format!(
         "# GENERATED by cdz-brazil-projection — do not edit by hand.\n\
-         # A faithful, refreshable PROJECTION of the Cadenza binary-AST value-codec crates for Brazil.\n\
+         # A faithful, refreshable PROJECTION of Cadenza reducer-runtime crates for Brazil.\n\
          # Re-run the projection to refresh (see REFRESH.md); the source of truth is the Cadenza flake.\n\
          [workspace]\n\
          resolver = \"3\"\n\
@@ -297,28 +308,42 @@ fn workspace_manifest(crates: &[&str]) -> String {
     )
 }
 
-fn refresh_doc() -> String {
+fn refresh_doc(tier: &str, crates: &[&str]) -> String {
+    let members = crates
+        .iter()
+        .map(|c| format!("- `crates/{c}` — projected verbatim from the Cadenza repo.\n"))
+        .collect::<String>();
+    // The reducer tier's driving is behind cdz-platform's `host` feature; the codec tier is plain.
+    let build_note = if tier == "reducer" {
+        "\n## Building\n\n\
+         The wasmtime driving lives behind `cdz-platform`'s `host` feature — build it with:\n\n\
+         ```sh\n\
+         cargo build -p cdz-platform --features host\n\
+         ```\n\n\
+         (`ReducerHost` / `WasmReducer` / `WasmProgramStore` in `cdz-platform::host`; the reducer-world\n\
+         WIT is `crates/cdz-platform/wit/world.wit`; plug your own backends into the `BlobStore` /\n\
+         `KvStore` / `ReducerGraph` traits.) This tier pulls wasmtime 37 + cranelift — kept a SEPARATE\n\
+         projection from the light codec tier so those deps never leak into it.\n"
+    } else {
+        ""
+    };
     format!(
-        "# Cadenza codec projection ({}/{}/{})\n\n\
-         This tree is a **projection** of the Cadenza binary-AST value-codec crates, emitted by the\n\
-         `cdz-brazil-projection` tool from the Cadenza repo. It is a single source of truth: DO NOT\n\
-         edit the vendored crate sources here — change them upstream in Cadenza and re-run the\n\
-         projection so this copy stays faithful.\n\n\
+        "# Cadenza {tier} projection\n\n\
+         This tree is a **projection** of Cadenza reducer-runtime crates ({tier} tier), emitted by the\n\
+         `cdz-brazil-projection` tool from the Cadenza repo. It is a single source of truth: DO NOT edit\n\
+         the vendored crate sources here — change them upstream in Cadenza and re-run the projection so\n\
+         this copy stays faithful.\n\n\
          ## What is here\n\n\
-         - `crates/cadenza-ast` — the AST value model + canonical binary-AST codec (`codec::encode` /\n\
-           `codec::decode`), `no_std`+`alloc` core, `std` default feature adds the num-bigint/NFC bridge.\n\
-         - `crates/cadenza-value` — the value-form builders/readers (`record`/`list`/`ctor`/leaves).\n\
-         - `crates/cadenza-ast-serde` — a serde data format whose wire IS the canonical binary-AST.\n\
-         - `Cargo.lock` — the transitive dependency closure of the above, FILTERED from the Cadenza\n\
-           repo's pinned root lock (same versions the nix build pins → drift-proof).\n\n\
+         {members}\
+         - `Cargo.lock` — the transitive dependency closure of the above, FILTERED (version-aware) from\n\
+           the Cadenza repo's pinned root lock (same versions the nix build pins → drift-proof).\n\
+         {build_note}\n\
          ## Refresh\n\n\
          From a checkout of the Cadenza repo:\n\n\
          ```sh\n\
-         cargo run -p cdz-brazil-projection -- --repo <cadenza-repo> --out <this-tree>\n\
+         cargo run -p cdz-brazil-projection -- --repo <cadenza-repo> --out <this-tree> --tier {tier}\n\
          ```\n\n\
-         (or, drift-proof from the flake outputs, `nix build .#brazil-codec-projection` and copy the\n\
-         result — a later projection increment.)\n",
-        CODEC_CRATES[0], CODEC_CRATES[1], CODEC_CRATES[2]
+         Or, drift-proof from the flake outputs: `nix build .#brazil-{tier}-projection` and copy the result.\n"
     )
 }
 
@@ -505,7 +530,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
     #[test]
     fn closure_keeps_only_reachable_packages() {
-        let out = filter_lock(LOCK, CODEC_CRATES).unwrap();
+        let out = filter_lock(LOCK, tier_crates("codec").unwrap()).unwrap();
         let kept: BTreeSet<String> = names(&out).into_iter().collect();
         let expected: BTreeSet<String> = [
             "cadenza-ast",
@@ -528,7 +553,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
     #[test]
     fn preamble_and_retained_blocks_are_verbatim() {
-        let out = filter_lock(LOCK, CODEC_CRATES).unwrap();
+        let out = filter_lock(LOCK, tier_crates("codec").unwrap()).unwrap();
         // Header preamble preserved exactly.
         assert!(out.starts_with(
             "# This file is automatically @generated by Cargo.\n\
@@ -616,5 +641,19 @@ source = \"registry+https://x\"
     fn name_only_ref_to_ambiguous_crate_errors() {
         // A root named `syn` cannot resolve when two `syn` versions are locked.
         assert!(filter_lock(LOCK_MULTI, &["syn"]).is_err());
+    }
+
+    #[test]
+    fn tier_crates_maps_known_tiers_and_rejects_unknown() {
+        assert_eq!(
+            tier_crates("codec").unwrap(),
+            &["cadenza-ast", "cadenza-value", "cadenza-ast-serde"]
+        );
+        // The reducer tier roots at cdz-platform (the wasmtime driving) + its first-party deps.
+        assert_eq!(
+            tier_crates("reducer").unwrap(),
+            &["cdz-platform", "cadenza-ast", "cdz-contract", "cdz-str"]
+        );
+        assert!(tier_crates("bogus").is_err());
     }
 }
