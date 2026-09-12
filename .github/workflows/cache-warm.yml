@@ -64,7 +64,7 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.

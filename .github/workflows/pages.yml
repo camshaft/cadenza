@@ -79,7 +79,7 @@ jobs:
       # Install nix + wire the SHARED /nix/store cache (same pattern as the checks.yml nix jobs: the
       # installer enables ca-derivations for the content-addressed corpus/component cache, and the
       # nix-store-cache composite restores+saves the store so an unchanged-trunk cron is a cache hit).
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           # Enable ca-derivations so the deploy reuses the shared content-addressed store (#3363)
           # instead of rebuilding the world. accept-flake-config lets nix TRUST the flake's
