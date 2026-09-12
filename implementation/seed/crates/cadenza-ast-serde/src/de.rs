@@ -120,14 +120,22 @@ impl<'de> AstDeserializer<'de> {
         }
     }
 
-    /// The children of a compound `(<ctor> child…)` after its head. Recognizes BOTH the native ctor-LEAF
-    /// head this crate's serializer emits AND the shadowable NAME-alias head the platform value-form uses
-    /// (`("record" …)` etc.), via [`Arenas::compound_form_of`] — so a platform-produced value decodes
-    /// without changing its bytes. Reads through `cur()`, so an ascribed compound is accepted too.
+    /// The children of a compound `(<ctor> child…)` after its head. Recognizes ONLY the native
+    /// compound-type CONSTRUCTOR (the ctor-LEAF head, [`Arenas::compound_ctor_leaf`]) — NOT a
+    /// `("record" …)` string/ident-head alias. The ident/string compound heads were eliminated
+    /// fleet-wide in favor of compound types (operator 2026-09-12: "constructors everywhere"), so the
+    /// canonical value form is ctor-leaf throughout; this crate's serializer emits ctor-leaf too, so
+    /// encode and decode agree. Reads through `cur()`, so a (transitionally) ascribed compound is peeled.
     fn compound_children(&self, expect: CompoundCtor) -> Result<&'de [StructId]> {
-        self.arenas
-            .compound_form_of(self.cur(), expect)
-            .ok_or_else(|| Error::UnexpectedShape(format!("expected a {expect:?} compound")))
+        let id = self.cur();
+        match &self.arenas.structure[id.0 as usize] {
+            Struct::List(items) if self.arenas.compound_ctor_leaf(id) == Some(expect) => {
+                Ok(&items[1..])
+            }
+            _ => Err(Error::UnexpectedShape(format!(
+                "expected a {expect:?} compound (constructor head)"
+            ))),
+        }
     }
 
     /// The `f64` a float leaf denotes (finite decimal, or a non-finite marker).
