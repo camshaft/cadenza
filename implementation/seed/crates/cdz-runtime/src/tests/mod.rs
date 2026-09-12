@@ -5,11 +5,11 @@ pub(crate) use super::*;
 /// it builds. Kept as a documented no-op so each test reads as a self-contained scenario.
 pub(crate) fn reset() {}
 
-/// The `IntList` shape descriptor `(type IL (Cons (Tuple Int64 IL)) Nil)`, wrapped in the outer
-/// `(: <value> IL)` frame — a TABLE with a self-`Ref` closing the recursion (as the compiler bakes
-/// it). Table: [0]=Int, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("IL"→1);
-/// root=4. The `Cons` payload tuple's second element (→1) points back at the Sum — a finite 1-entry
-/// cycle the value walk unfolds to the value's depth.
+/// The `IntList` shape descriptor `(type IL (Cons (Tuple Int64 IL)) Nil)` — a BARE structural table
+/// with a self-`Ref` closing the recursion (as the compiler bakes it post value-codec ascription removal:
+/// no `(: <value> IL)` Named frame). Table: [0]=Int, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1],
+/// [3]=Unit; root=1 (the Sum directly). The `Cons` payload tuple's second element (→1) points back at the
+/// Sum — a finite 1-entry cycle the value walk unfolds to the value's depth.
 pub(crate) fn intlist_descriptor() -> Vec<u8> {
     fn leb(out: &mut Vec<u8>, mut v: u64) {
         loop {
@@ -29,7 +29,7 @@ pub(crate) fn intlist_descriptor() -> Vec<u8> {
         out.extend_from_slice(s.as_bytes());
     }
     let mut d = Vec::new();
-    leb(&mut d, 5); // table_len = 5
+    leb(&mut d, 4); // table_len = 4
     // [0] Int
     d.push(0);
     // [1] Sum [(Cons → 2), (Nil → 3)]
@@ -46,11 +46,7 @@ pub(crate) fn intlist_descriptor() -> Vec<u8> {
     leb(&mut d, 1);
     // [3] Unit
     d.push(5);
-    // [4] Named("IL" → 1)
-    d.push(10);
-    name(&mut d, "IL");
-    leb(&mut d, 1);
-    leb(&mut d, 4); // root = 4
+    leb(&mut d, 1); // root = 1 (the Sum — bare, no Named frame)
     d
 }
 
@@ -155,52 +151,6 @@ pub(crate) fn set_tuple_int_int_descriptor() -> Vec<u8> {
 /// descriptor, but the op must be total on any input). Here a `(Set Int64)` value handed a MISMATCHED
 /// descriptor whose root is a bare `Int` (not a Set) yields the empty list, not a trap.
 
-/// A hand-built root-`Framed` plain-Tuple descriptor `(: <value> (Tuple Int64 Int64))` — a tag-15 `Framed`
-/// whose TypeNode is `Tuple` with two `Int64` children, inner → a `Tuple[→Int, →Int]` table entry. This is
-/// the LEGACY framed form: the value-codec migration removed it from the compiler (`sum_shape_descriptor`
-/// now bakes the bare tuple shape with no frame, like `bare_shape_descriptor`). Kept as a test constant so
-/// the runtime's TOLERANT DECODE of a still-framed descriptor (tag 15) stays exercised.
-pub(crate) fn framed_int_pair_descriptor() -> Vec<u8> {
-    fn leb(out: &mut Vec<u8>, mut v: u64) {
-        loop {
-            let mut b = (v & 0x7f) as u8;
-            v >>= 7;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    }
-    fn name(out: &mut Vec<u8>, s: &str) {
-        leb(out, s.len() as u64);
-        out.extend_from_slice(s.as_bytes());
-    }
-    let mut d = Vec::new();
-    leb(&mut d, 3); // table_len = 3
-    // [0] Int
-    d.push(0);
-    // [1] Tuple [→0, →0]
-    d.push(6);
-    leb(&mut d, 2);
-    leb(&mut d, 0);
-    leb(&mut d, 0);
-    // [2] Framed( TypeNode Tuple[Int64, Int64], inner → 1 )
-    d.push(15);
-    // TypeNode: head "Tuple", 2 children each head "Int64" with 0 children
-    name(&mut d, "Tuple");
-    leb(&mut d, 2);
-    name(&mut d, "Int64");
-    leb(&mut d, 0);
-    name(&mut d, "Int64");
-    leb(&mut d, 0);
-    leb(&mut d, 1); // inner → 1 (the Tuple shape)
-    leb(&mut d, 2); // root = 2 (the Framed)
-    d
-}
-
 /// GOLDEN + cross-backend divergence pin: `Value.encode` of a two-int tuple must render the
 /// `(: (tuple 5 105) (Tuple Int64 Int64))` COLON-FRAMED typed document — NOT the bare `(tuple 5 105)`.
 /// This is the exact shape a native-backend divergence surfaced on (v-rust-backend, 2026-08-16: the
@@ -209,57 +159,6 @@ pub(crate) fn framed_int_pair_descriptor() -> Vec<u8> {
 /// framed-root walk three ways: iterative == recursive oracle, decode ∘ encode == id, and the exact
 /// golden bytes. A native backend (rcdzc rust / cadenza-ast) mirrors this same golden constant so the
 /// two codecs are pinned to one byte string. `#[cfg(test)]` → does not touch the runtime hash.
-
-/// The root-`Framed` two-field-record descriptor `(: <value> (Record (a Int64) (b Int64)))` —
-/// tag-15 `Framed` whose TypeNode is `record` with two field children (`a`→`Int64`, `b`→`Int64`,
-/// each a `(name <type>)` node), inner → a `Record[a→0, b→0]` table entry. This is what
-/// `sum_shape_descriptor` bakes for a `Value.encode` of a two-`Int64`-field record.
-pub(crate) fn framed_int_record_descriptor() -> Vec<u8> {
-    fn leb(out: &mut Vec<u8>, mut v: u64) {
-        loop {
-            let mut b = (v & 0x7f) as u8;
-            v >>= 7;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    }
-    fn name(out: &mut Vec<u8>, s: &str) {
-        leb(out, s.len() as u64);
-        out.extend_from_slice(s.as_bytes());
-    }
-    let mut d = Vec::new();
-    leb(&mut d, 3); // table_len = 3
-    // [0] Int
-    d.push(0);
-    // [1] Record [ a→0, b→0 ]
-    d.push(8);
-    leb(&mut d, 2);
-    name(&mut d, "a");
-    leb(&mut d, 0);
-    name(&mut d, "b");
-    leb(&mut d, 0);
-    // [2] Framed( TypeNode record[ a[Int64], b[Int64] ], inner → 1 )
-    d.push(15);
-    // TypeNode: head "record", 2 children, each a field node (head = field name, 1 child = "Int64").
-    name(&mut d, "record");
-    leb(&mut d, 2);
-    name(&mut d, "a");
-    leb(&mut d, 1);
-    name(&mut d, "Int64");
-    leb(&mut d, 0);
-    name(&mut d, "b");
-    leb(&mut d, 1);
-    name(&mut d, "Int64");
-    leb(&mut d, 0);
-    leb(&mut d, 1); // inner → 1 (the Record shape)
-    leb(&mut d, 2); // root = 2 (the Framed)
-    d
-}
 
 /// GOLDEN + cross-backend divergence pin, RECORD shape (v-rust-backend fixture 1, 2026-08-16): a
 /// `Value.encode` of `(record (= a 5) (= b 105))` at `(Record (a Int64) (b Int64))` must render the
@@ -281,211 +180,6 @@ pub(crate) fn desc_leb(out: &mut Vec<u8>, mut v: u64) {
         }
     }
 }
-pub(crate) fn desc_name(out: &mut Vec<u8>, s: &str) {
-    desc_leb(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
-}
-
-/// The generic-Sum descriptor `(: <value> (Option Int64))` — a boxed GENERIC sum (`args` non-empty)
-/// roots at a PARAMETRIC `Framed(TypeNode Option[Int64], inner)`. Table: [0] Int, [1] Unit (the None
-/// payload), [2] Sum[(Some→0),(None→1)], [3] Framed(Option[Int64] → 2); root = 3.
-pub(crate) fn framed_option_int_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 4); // table_len = 4
-    d.push(0); // [0] Int
-    d.push(5); // [1] Unit
-    // [2] Sum [ (Some → 0), (None → 1) ]
-    d.push(9);
-    desc_leb(&mut d, 2);
-    desc_name(&mut d, "Some");
-    desc_leb(&mut d, 0);
-    desc_name(&mut d, "None");
-    desc_leb(&mut d, 1);
-    // [3] Framed( TypeNode Option[ Int64 ], inner → 2 )
-    d.push(15);
-    desc_name(&mut d, "Option");
-    desc_leb(&mut d, 1);
-    desc_name(&mut d, "Int64");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 2); // inner → 2 (the Sum)
-    desc_leb(&mut d, 3); // root = 3 (the Framed)
-    d
-}
-
-/// GOLDEN pin, GENERIC-SUM shape (v-rust-backend fixtures 2+3, 2026-08-16): `Value.encode` of
-/// `(Some 5)` / `None` at `(Option Int64)` must render the colon-framed doc with a PARAMETRIC `Option`
-/// type node — `(: (Some 5) (Option Int64))` and `(: (None unit) (Option Int64))`. Guarded three ways
-/// each (iterative == recursive oracle, decode∘encode == id, exact leaf pool). The cadenza-ast mirror
-/// asserts the same byte strings. `#[cfg(test)]` → no runtime-hash change.
-
-/// The monomorphic-Sum descriptor `(: <value> Shape)` where `Shape = (Circle Int64) | (Rect Int64
-/// Int64)` — a MONOMORPHIC sum (`args: []`) roots at a bare-name `Named("Shape", inner)`, NOT a
-/// parametric `Framed`. A multi-payload variant's payload is a `Spread` (its elements splice flat).
-/// Table: [0] Int, [1] Spread[→0,→0] (Rect's two Int64s), [2] Sum[(Circle→0),(Rect→1)],
-/// [3] Named("Shape" → 2); root = 3.
-pub(crate) fn named_shape_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 4); // table_len = 4
-    d.push(0); // [0] Int
-    // [1] Spread [→0, →0]
-    d.push(16);
-    desc_leb(&mut d, 2);
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 0);
-    // [2] Sum [ (Circle → 0), (Rect → 1) ]
-    d.push(9);
-    desc_leb(&mut d, 2);
-    desc_name(&mut d, "Circle");
-    desc_leb(&mut d, 0);
-    desc_name(&mut d, "Rect");
-    desc_leb(&mut d, 1);
-    // [3] Named( "Shape", inner → 2 )
-    d.push(10);
-    desc_name(&mut d, "Shape");
-    desc_leb(&mut d, 2);
-    desc_leb(&mut d, 3); // root = 3 (the Named)
-    d
-}
-
-/// GOLDEN pin, MONOMORPHIC-multi-payload-SUM shape (v-rust-backend fixture 4, 2026-08-16):
-/// `Value.encode` of `(Rect 5 6)` at `Shape` must render `(: (Rect 5 6) Shape)` — the frame is a
-/// bare-name `Named` (NOT a parametric type node, because `Shape` is monomorphic), and `Rect`'s two
-/// payloads splice FLAT (a `Spread`). This exercises the Named-vs-Framed root distinction the earlier
-/// goldens don't. Guarded three ways; the cadenza-ast mirror asserts the same bytes. `#[cfg(test)]`.
-
-/// The framed Int×Float tuple descriptor `(: <value> (Tuple Int64 Float64))` — tag-15 `Framed` whose
-/// TypeNode is `Tuple[Int64, Float64]`, inner → a `Tuple[→Int, →Float]`. Exercises the FLOAT leaf
-/// (KIND_FLOAT exact-decimal) inside the framed cross-backend golden.
-pub(crate) fn framed_int_float_pair_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 4); // table_len = 4 (Int, Float, Tuple, Framed)
-    d.push(0); // [0] Int
-    d.push(2); // [1] Float
-    // [2] Tuple [→0, →1]
-    d.push(6);
-    desc_leb(&mut d, 2);
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 1);
-    // [3] Framed( TypeNode Tuple[ Int64, Float64 ], inner → 2 )
-    d.push(15);
-    desc_name(&mut d, "Tuple");
-    desc_leb(&mut d, 2);
-    desc_name(&mut d, "Int64");
-    desc_leb(&mut d, 0);
-    desc_name(&mut d, "Float64");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 2); // inner → 2
-    desc_leb(&mut d, 3); // root = 3
-    d
-}
-
-/// GOLDEN pin, FLOAT shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of `(tuple 5 2.5)` at
-/// `(Tuple Int64 Float64)` must render `(: (tuple 5 2.5) (Tuple Int64 Float64))` — the 2.5 is a
-/// KIND_FLOAT exact-decimal leaf (Decimal false/25/-1, i.e. 25×10⁻¹), NOT a lossy f64 bit pattern. This
-/// pins the exact-decimal Float leaf identity that the 3 codecs (runtime/rcdzc/cadenza-ast) share; the
-/// cadenza-ast mirror (`1712ab8d7`) asserts the same bytes. Guarded three ways. `#[cfg(test)]`.
-
-/// The framed Map descriptor `(: <value> (Map Int64 Int64))` — tag-15 `Framed` whose TypeNode is
-/// `Map[Int64, Int64]`, inner → a `Map(key→0, val→0)` (tag 13).
-pub(crate) fn framed_int_map_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 3); // table_len = 3
-    d.push(0); // [0] Int
-    // [1] Map [ key→0, val→0 ]
-    d.push(13);
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 0);
-    // [2] Framed( TypeNode Map[ Int64, Int64 ], inner → 1 )
-    d.push(15);
-    desc_name(&mut d, "Map");
-    desc_leb(&mut d, 2);
-    desc_name(&mut d, "Int64");
-    desc_leb(&mut d, 0);
-    desc_name(&mut d, "Int64");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 1); // inner → 1
-    desc_leb(&mut d, 2); // root = 2
-    d
-}
-
-/// The framed Set descriptor `(: <value> (Set Int64))` — tag-15 `Framed` whose TypeNode is
-/// `Set[Int64]`, inner → a `Set(elem→0)` (tag 12).
-pub(crate) fn framed_int_set_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 3); // table_len = 3
-    d.push(0); // [0] Int
-    // [1] Set [ elem→0 ]
-    d.push(12);
-    desc_leb(&mut d, 0);
-    // [2] Framed( TypeNode Set[ Int64 ], inner → 1 )
-    d.push(15);
-    desc_name(&mut d, "Set");
-    desc_leb(&mut d, 1);
-    desc_name(&mut d, "Int64");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 1); // inner → 1
-    desc_leb(&mut d, 2); // root = 2
-    d
-}
-
-/// GOLDEN pin, MAP shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of
-/// `(Map.insert (Map.insert Map.empty 7 70) 8 99)` at `(Map Int64 Int64)` must render
-/// `(: (map (7 70) (8 99)) (Map Int64 Int64))` — the entries in CANONICAL KEY ORDER (7 before 8,
-/// regardless of insert order), the value head `map` distinct from the type node's `Map`. Pins the
-/// member-order-at-build contract (the runtime's canonical map iteration). Guarded three ways; the
-/// cadenza-ast mirror asserts the same bytes. `#[cfg(test)]`.
-
-/// GOLDEN pin, SET shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of
-/// `(Set.of (list 7 12 17))` at `(Set Int64)` must render `(: ((. Set of) (list 7 12 17)) (Set
-/// Int64))` — the `((. Set of) (list …))` member-access form, elements in CANONICAL order. Pins the
-/// Set member-order-at-build contract. Guarded three ways; the cadenza-ast mirror asserts the same
-/// bytes. `#[cfg(test)]`.
-
-/// The framed BigInt descriptor `(: <value> BigInt)` — tag-15 `Framed` whose TypeNode is a bare-leaf
-/// `BigInt`, inner → a `BigInt` (tag 17). A BigInt renders as a plain KIND_INT leaf.
-pub(crate) fn framed_bigint_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 2); // table_len = 2
-    d.push(17); // [0] BigInt
-    // [1] Framed( TypeNode 'BigInt' (0 children), inner → 0 )
-    d.push(15);
-    desc_name(&mut d, "BigInt");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 0); // inner → 0
-    desc_leb(&mut d, 1); // root → 1
-    d
-}
-
-/// GOLDEN pin, BIGINT shape (v-rust-backend fixture, 2026-08-16; the last leaf gap, native codec
-/// `df50352da`): `Value.encode` of `(BigInt.of 5)` at `BigInt` must render `(: 5 BigInt)` — the BigInt
-/// is a plain KIND_INT leaf (byte-identical to a boxed int 5). Guarded three ways; the cadenza-ast
-/// mirror asserts the same bytes. `#[cfg(test)]`.
-
-/// The framed Rational descriptor `(: <num>/<den> Rational)` — tag-18 `Rational` leaf, wrapped in a
-/// tag-15 `Framed` whose TypeNode is the childless name `Rational` (mirrors the BigInt descriptor:
-/// one scalar-ish leaf under one frame).
-pub(crate) fn framed_rational_descriptor() -> Vec<u8> {
-    let mut d = Vec::new();
-    desc_leb(&mut d, 2); // table_len = 2
-    d.push(18); // [0] Rational
-    // [1] Framed( TypeNode 'Rational' (0 children), inner → 0 )
-    d.push(15);
-    desc_name(&mut d, "Rational");
-    desc_leb(&mut d, 0);
-    desc_leb(&mut d, 0); // inner → 0
-    desc_leb(&mut d, 1); // root → 1
-    d
-}
-
-/// GOLDEN pin, RATIONAL shape (closes the 8+1 cross-backend `Value.encode` byte-identity guard;
-/// v-rust-backend landed the native-rust Rational R2 arm on trunk `f62a6dc18`, `backend/rust/expr.rs`
-/// `emit_value_form`: `Ty::Rational => __b.name(&val.to_display_string())` — a SINGLE NAME leaf, the
-/// exact form this pins). `Value.encode` of `(Rational.of 3 4)` at `Rational` must render
-/// `(: 3/4 Rational)` — the value is ONE `num/den` NAME leaf (lowest-terms, sign-on-numerator, den>0),
-/// NOT a `(record num den)` and NOT the 2-BigInt-handle heap node. Byte-identical to v-rb's
-/// `to_display_string()` NAME leaf by construction. Guarded three ways (iterative==recursive oracle,
-/// decode∘encode==id, exact full-document bytes). `#[cfg(test)]`.
-
 // A bare `Char` value-codec descriptor: one shape-table entry (tag 19 = Char) at the root. A char
 // value is an immediate int codepoint at runtime; the descriptor's tag 19 is the ONLY thing that
 // distinguishes it from an `Int` at the encode/decode boundary (it selects the `KIND_CHAR` leaf).
@@ -717,26 +411,6 @@ pub(crate) fn encode_value_recursive(
                 let payload = encode_value_recursive(desc, b, payload_h, payload_shape, depth + 1)?;
                 b.list(&[head_s, payload])
             }
-        }
-        S::Named(name, inner) => {
-            let (name, inner) = (name.clone(), *inner);
-            let colon = b.name_leaf(":");
-            let colon_s = b.atom(colon);
-            let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
-            let tname = b.name_leaf(&name);
-            let tname_s = b.atom(tname);
-            b.list(&[colon_s, value, tname_s])
-        }
-        S::Framed(type_node, inner) => {
-            // The `(: value <type-node>)` frame — mirrors the iterative walk: colon, the value, then
-            // the (possibly nested) type node, then the outer list. The type node is rendered from the
-            // baked `TypeNode` (compile-time-known), so it handles arbitrary nesting.
-            let inner = *inner;
-            let colon = b.name_leaf(":");
-            let colon_s = b.atom(colon);
-            let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
-            let type_s = b.render_type_node(type_node);
-            b.list(&[colon_s, value, type_s])
         }
         S::Set(elem) => {
             let elem = *elem;

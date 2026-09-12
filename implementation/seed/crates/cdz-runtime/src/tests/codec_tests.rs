@@ -116,535 +116,6 @@ fn set_to_list_declines_a_non_set_descriptor_to_empty() {
 }
 
 #[test]
-fn value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_int_pair_descriptor();
-    let pair = op_arr_alloc(2);
-    op_arr_set(pair, 0, op_box_int(5));
-    op_arr_set(pair, 1, op_box_int(105));
-    let got = op_value_encode_form(pair, &desc).expect("encode framed int pair");
-
-    // (1) iterative production walk == recursive oracle (the byte-equality guard the sibling
-    // differential relies on, here on a root-Framed Tuple rather than a Named sum).
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
-        .expect("recursive encode");
-    let rec_doc = b.finish(root);
-    assert_eq!(
-        got, rec_doc,
-        "iterative and recursive framed-tuple encode disagree"
-    );
-
-    // (2) decode ∘ encode == id (the doc round-trips back to the same value form).
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(
-        back,
-        Handle::NULL,
-        "framed-tuple doc must decode (round-trip)"
-    );
-    let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed tuple");
-    assert_eq!(
-        got, reencoded,
-        "decode∘encode is not the identity on the framed tuple"
-    );
-    op_drop(back);
-
-    // (3) exact golden bytes — the FULL colon-framed typed document (leaf pool + struct spine).
-    // Leaves in canon pre-order first-encounter: ':' , 'tuple', 5, 105, 'Tuple', 'Int64'; the
-    // '(: value type)' frame is the outer form (head ':'), value = (tuple 5 105), type = (Tuple Int64
-    // Int64). Asserting the WHOLE document (not just a prefix) makes this a symmetric full-byte
-    // wasm==rust guard against the same golden the cadenza-ast mirror asserts (reviewer refinement).
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x06, // 6 leaves
-        0x0a, 0x01, 0x3a, // NAME ':'
-        0x15, // M2 Ctor(Tuple) value head (kind 21, payloadless) — was NAME 'tuple'
-        0x00, 0x01, 0x05, // INT 5
-        0x00, 0x01, 0x69, // INT 105
-        0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // NAME 'Tuple'
-        0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64'
-        // struct spine (post-order structs; TAG_ATOM=0/TAG_LIST=1 + child refs):
-        0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-        0x04, 0x00, 0x05, 0x00, 0x05, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
-        0x09,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed int-tuple must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got[8], 0x06,
-        "leaf count 6 (framed) not 3 (bare) — the divergence guard"
-    );
-
-    op_drop(pair);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_int_record_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_int_record_descriptor();
-    // A record VALUE is a heap array of its field values in declared order (the descriptor names them).
-    let rec = op_arr_alloc(2);
-    op_arr_set(rec, 0, op_box_int(5));
-    op_arr_set(rec, 1, op_box_int(105));
-    let got = op_value_encode_form(rec, &desc).expect("encode framed int record");
-
-    // (1) iterative production walk == recursive oracle.
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(
-        got,
-        b.finish(root),
-        "iterative and recursive framed-record encode disagree"
-    );
-
-    // (2) decode ∘ encode == id.
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(
-        back,
-        Handle::NULL,
-        "framed-record doc must decode (round-trip)"
-    );
-    let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed record");
-    assert_eq!(
-        got, reencoded,
-        "decode∘encode is not the identity on the framed record"
-    );
-    op_drop(back);
-
-    // (3) exact leaf pool — the deduped leaves in canon pre-order first-encounter: ':' , 'record',
-    // '=' , 'a', 5, 'b', 105, 'Int64'. 8 deduped leaves. KEY DETAIL: the frame's type node is
-    // `(record (a Int64) (b Int64))` — its head atom is the LOWERCASE `record`, the SAME atom as the
-    // value form's `(record …)` head, so it INTERNS ONCE (no distinct `Record` type leaf); likewise the
-    // field-name atoms `a`/`b` are shared between the value's `(= a …)` and the type's `(a Int64)`, and
-    // `Int64` interns once across both fields. So the pool is 8, not 9 (a bare record would omit ':' and
-    // 'Int64' entirely — this leaf-count is the framed-vs-bare divergence guard).
-    // M2 head-first golden: the value head is Ctor(Record)=0x16 + fields are (FieldPair name value) with
-    // FieldPair head=0x19; the value+type 'record' head is NO LONGER shared (value is a ctor leaf, the
-    // type node keeps NAME 'record'), so the pool is 9 leaves (was 8 deduped) and the spine refs shift.
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a, 0x16, 0x19, 0x0a,
-        0x01, 0x61, 0x00, 0x01, 0x05, 0x0a, 0x01, 0x62, 0x00, 0x01, 0x69, 0x0a, 0x06, 0x72, 0x65,
-        0x63, 0x6f, 0x72, 0x64, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x14, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00,
-        0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05, 0x09, 0x00, 0x07,
-        0x00, 0x03, 0x00, 0x08, 0x01, 0x02, 0x0c, 0x0d, 0x00, 0x05, 0x00, 0x08, 0x01, 0x02, 0x0f,
-        0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11, 0x01, 0x03, 0x00, 0x0a, 0x12, 0x13,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed int-record must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got[8], 0x09,
-        "leaf count 9 (M2 framed record — value head un-shared from the type head)"
-    );
-
-    op_drop(rec);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_generic_sum_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_option_int_descriptor();
-
-    // (Some 5): disc 0, single Int payload.
-    let some = op_sum_new(0, op_box_int(5));
-    let got_some = op_value_encode_form(some, &desc).expect("encode Some 5");
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, some, descriptor.root, 0)
-        .expect("recursive encode Some");
-    assert_eq!(
-        got_some,
-        b.finish(root),
-        "iterative/recursive disagree on Some"
-    );
-    let back = op_value_decode(&got_some, &desc);
-    assert_ne!(back, Handle::NULL, "Some doc must decode");
-    assert_eq!(
-        got_some,
-        op_value_encode_form(back, &desc).expect("re-encode Some"),
-        "decode∘encode ≠ id on Some"
-    );
-    op_drop(back);
-    // FULL document: ':' , 'Some', 5, 'Option', 'Int64' (5 leaves) + spine — the parametric Option node.
-    let expect_some: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x05, // 5 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x0a, 0x04, 0x53, 0x6f, 0x6d, 0x65, // 'Some'
-        0x00, 0x01, 0x05, // INT 5
-        0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
-        0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
-        // struct spine:
-        0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
-        0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
-    ];
-    assert_eq!(
-        got_some, expect_some,
-        "Some must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got_some[8], 0x05,
-        "Some leaf count = 5 (framed generic sum)"
-    );
-    op_drop(some);
-
-    // None: disc 1, nullary (unit) payload → renders (None unit).
-    let none = op_sum_new(1, op_arr_alloc(0));
-    let got_none = op_value_encode_form(none, &desc).expect("encode None");
-    let mut b2 = DocBuilder::default();
-    let root2 = encode_value_recursive(&descriptor, &mut b2, none, descriptor.root, 0)
-        .expect("recursive encode None");
-    assert_eq!(
-        got_none,
-        b2.finish(root2),
-        "iterative/recursive disagree on None"
-    );
-    let back2 = op_value_decode(&got_none, &desc);
-    assert_ne!(back2, Handle::NULL, "None doc must decode");
-    assert_eq!(
-        got_none,
-        op_value_encode_form(back2, &desc).expect("re-encode None"),
-        "decode∘encode ≠ id on None"
-    );
-    op_drop(back2);
-    // FULL document: ':' , 'None', 'unit', 'Option', 'Int64' (5 leaves) + spine.
-    let expect_none: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x05, // 5 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x0a, 0x04, 0x4e, 0x6f, 0x6e, 0x65, // 'None'
-        0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, // 'unit'
-        0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
-        0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
-        // struct spine:
-        0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
-        0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
-    ];
-    assert_eq!(
-        got_none, expect_none,
-        "None must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got_none[8], 0x05,
-        "None leaf count = 5 (framed generic sum)"
-    );
-    op_drop(none);
-
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_named_monomorphic_sum_is_the_colon_framed_golden() {
-    reset();
-    let desc = named_shape_descriptor();
-    // (Rect 5 6): disc 1, payload a 2-element arr (the Spread splices its two Int64s flat).
-    let pair = op_arr_alloc(2);
-    op_arr_set(pair, 0, op_box_int(5));
-    op_arr_set(pair, 1, op_box_int(6));
-    let rect = op_sum_new(1, pair);
-    let got = op_value_encode_form(rect, &desc).expect("encode Rect 5 6");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, rect, descriptor.root, 0)
-        .expect("recursive encode Rect");
-    assert_eq!(got, b.finish(root), "iterative/recursive disagree on Rect");
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "Rect doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode Rect"),
-        "decode∘encode ≠ id on Rect"
-    );
-    op_drop(back);
-
-    // FULL document: ':' , 'Rect', 5, 6, 'Shape' (5 leaves) + spine — a bare-name 'Shape' frame
-    // (Named), the two payloads flat. NO parametric type node (contrast the generic Option's node).
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x05, // 5 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x0a, 0x04, 0x52, 0x65, 0x63, 0x74, // 'Rect'
-        0x00, 0x01, 0x05, // INT 5
-        0x00, 0x01, 0x06, // INT 6
-        0x0a, 0x05, 0x53, 0x68, 0x61, 0x70, 0x65, // 'Shape'
-        // struct spine:
-        0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-        0x04, 0x01, 0x03, 0x00, 0x04, 0x05, 0x06,
-    ];
-    assert_eq!(
-        got, expect,
-        "Rect must be the full colon-framed golden document (Named root)"
-    );
-    assert_eq!(
-        got[8], 0x05,
-        "Rect leaf count = 5 (Named mono sum, flat payloads)"
-    );
-
-    op_drop(rect);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_int_float_tuple_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_int_float_pair_descriptor();
-    let pair = op_arr_alloc(2);
-    op_arr_set(pair, 0, op_box_int(5));
-    op_arr_set(pair, 1, op_box_float(2.5));
-    let got = op_value_encode_form(pair, &desc).expect("encode framed int/float pair");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(
-        got,
-        b.finish(root),
-        "iterative/recursive disagree on int/float tuple"
-    );
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "int/float tuple doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode"),
-        "decode∘encode ≠ id on int/float tuple"
-    );
-    op_drop(back);
-
-    // FULL document: ':' , 'tuple', 5, 2.5 (KIND_FLOAT), 'Tuple', 'Int64', 'Float64' (7 leaves) + spine.
-    // The FLOAT leaf is KIND_FLOAT(6) + neg(0) + exponent as a FIXED 8-byte BIG-ENDIAN i64 (-1 =
-    // 0xFF×8) + siglen(1) + significand([25]) — i.e. 25×10⁻¹ = 2.5 (exact decimal, not lossy bits).
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x07, // 7 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x15, // M2 Ctor(Tuple) value head (kind 21) — was NAME 'tuple'
-        0x00, 0x01, 0x05, // INT 5
-        0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
-        0x19, // FLOAT 2.5 (exp -1, sig 25)
-        0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // 'Tuple'
-        0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
-        0x0a, 0x07, 0x46, 0x6c, 0x6f, 0x61, 0x74, 0x36, 0x34, // 'Float64'
-        // struct spine:
-        0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-        0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
-        0x09,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed int/float tuple must be the full colon-framed golden document"
-    );
-    assert_eq!(got[8], 0x07, "leaf count = 7 (framed int/float tuple)");
-
-    op_drop(pair);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_int_map_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_int_map_descriptor();
-    // Insert 8 THEN observe canonical order puts 7 first — build 7 then 8 (canonical is key-sorted
-    // regardless, but this documents the value the fixture names).
-    let m = op_map_insert(
-        op_map_insert(op_map_empty(), op_box_int(7), op_box_int(70)),
-        op_box_int(8),
-        op_box_int(99),
-    );
-    let got = op_value_encode_form(m, &desc).expect("encode framed int map");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(got, b.finish(root), "iterative/recursive disagree on map");
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "map doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode map"),
-        "decode∘encode ≠ id on map"
-    );
-    op_drop(back);
-
-    // FULL document: ':' , 'map', 7, 70, 8, 99, 'Map', 'Int64' (8 leaves) + spine. Entries in
-    // canonical key order (7 before 8).
-    // M2 head-first golden: value head Ctor(Map)=0x17; each entry is (FieldPair k v) with FieldPair
-    // head=0x19 (was a bare `(k v)` pair). 9 leaves (was 8 — the FieldPair ctor leaf is added).
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a, 0x17, 0x19, 0x00,
-        0x01, 0x07, 0x00, 0x01, 0x46, 0x00, 0x01, 0x08, 0x00, 0x01, 0x63, 0x0a, 0x03, 0x4d, 0x61,
-        0x70, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02,
-        0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06,
-        0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05, 0x09, 0x00, 0x07, 0x00, 0x08, 0x00,
-        0x08, 0x01, 0x03, 0x0b, 0x0c, 0x0d, 0x01, 0x03, 0x00, 0x0a, 0x0e, 0x0f,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed int map must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got[8], 0x09,
-        "map leaf count = 9 (M2: + the FieldPair ctor leaf)"
-    );
-
-    op_drop(m);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_int_set_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_int_set_descriptor();
-    let mut s = op_set_empty();
-    for e in [7i64, 12, 17] {
-        s = op_set_insert(s, op_box_int(e));
-    }
-    let got = op_value_encode_form(s, &desc).expect("encode framed int set");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(got, b.finish(root), "iterative/recursive disagree on set");
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "set doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode set"),
-        "decode∘encode ≠ id on set"
-    );
-    op_drop(back);
-
-    // FULL document: ':' , '.', 'Set', 'of', 'list', 7, 12, 17, 'Int64' (9 leaves) + spine. The
-    // ((. Set of) (list …)) member-access form, elements in canonical order 7 < 12 < 17.
-    // M2 head-first golden: a Set is flat `(Ctor(Set) e…)` — the Set ctor head=0x18 + the sorted
-    // elements directly (was `((. Set of) (list e…))`). 7 leaves (was 9 — dropped `.`/`of`/`list`
-    // names, added the Set ctor leaf).
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x18, 0x00, 0x01,
-        0x07, 0x00, 0x01, 0x0c, 0x00, 0x01, 0x11, 0x0a, 0x03, 0x53, 0x65, 0x74, 0x0a, 0x05, 0x49,
-        0x6e, 0x74, 0x36, 0x34, 0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04,
-        0x01, 0x04, 0x01, 0x02, 0x03, 0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x02, 0x06, 0x07, 0x01,
-        0x03, 0x00, 0x05, 0x08, 0x09,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed int set must be the full colon-framed golden document"
-    );
-    assert_eq!(
-        got[8], 0x07,
-        "set leaf count = 7 (M2 flat Ctor(Set) — dropped the (.Set of)/list wrapper)"
-    );
-
-    op_drop(s);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_bigint_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_bigint_descriptor();
-    let n = op_bigint_of_i64(5);
-    let got = op_value_encode_form(n, &desc).expect("encode framed bigint");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, n, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(
-        got,
-        b.finish(root),
-        "iterative/recursive disagree on bigint"
-    );
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "bigint doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode bigint"),
-        "decode∘encode ≠ id on bigint"
-    );
-    op_drop(back);
-
-    // FULL document: ':' , 5 (KIND_INT), 'BigInt' (3 leaves) + spine.
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x03, // 3 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x00, 0x01, 0x05, // INT 5 (a BigInt renders as a plain KIND_INT leaf)
-        0x0a, 0x06, 0x42, 0x69, 0x67, 0x49, 0x6e, 0x74, // 'BigInt'
-        // struct spine:
-        0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed bigint must be the full colon-framed golden document"
-    );
-    assert_eq!(got[8], 0x03, "bigint leaf count = 3");
-
-    op_drop(n);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
-fn value_encode_of_a_framed_rational_is_the_colon_framed_golden() {
-    reset();
-    let desc = framed_rational_descriptor();
-    let r = op_rational_of(op_bigint_of_i64(3), op_bigint_of_i64(4));
-    let got = op_value_encode_form(r, &desc).expect("encode framed rational");
-
-    let descriptor = decode_descriptor(&desc).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root = encode_value_recursive(&descriptor, &mut b, r, descriptor.root, 0)
-        .expect("recursive encode");
-    assert_eq!(
-        got,
-        b.finish(root),
-        "iterative/recursive disagree on rational"
-    );
-
-    let back = op_value_decode(&got, &desc);
-    assert_ne!(back, Handle::NULL, "rational doc must decode");
-    assert_eq!(
-        got,
-        op_value_encode_form(back, &desc).expect("re-encode rational"),
-        "decode∘encode ≠ id on rational"
-    );
-    op_drop(back);
-
-    // seq-204: the value is now the native head+children list `(KIND_RATIONAL 3 4)` — NOT the old
-    // num/den NAME. iterative==recursive + decode∘encode==id above pin the bytes; the exact 3-way
-    // cross-renderer byte golden (op62 == rust emit == cadenza-ast Builder::rational) re-pins together
-    // in the coordinated flag-day land. Assert the form is native here:
-    assert!(
-        got.contains(&doc::KIND_RATIONAL),
-        "the value must carry the native KIND_RATIONAL(27) tag head, not a num/den name"
-    );
-    assert!(
-        !got.windows(3).any(|w| w == b"3/4"),
-        "no legacy num/den NAME string — 3 and 4 are ordinary Int child leaves"
-    );
-
-    op_drop(r);
-    assert_eq!(live_nodes(), 0, "no leak");
-}
-
-#[test]
 fn value_encode_decode_of_char_scalar_emits_kind_char_and_round_trips() {
     reset();
     let desc = char_scalar_descriptor();
@@ -745,14 +216,13 @@ fn value_encode_of_a_surrogate_char_declines_cleanly() {
 fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
     reset();
     let desc = intlist_descriptor();
-    // Nil (disc 1, unit payload) → the LEN-46 oracle dump (see the const IntList value form).
+    // Nil (disc 1, unit payload) → the BARE IntList value form (no `(: … IL)` frame post ascription
+    // removal): `(Nil unit)` — the bare single-ctor sum value, no colon leaf, no `IL` type name.
     let nil = op_sum_new(1, op_arr_alloc(0));
     let got = op_value_encode_form(nil, &desc).expect("encode Nil");
     let expect_nil: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x04, 0x0a, 0x01, 0x3a, 0x0a, 0x03, 0x4e,
-        0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49, 0x4c, 0x06, 0x00, 0x00,
-        0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x01, 0x03, 0x00, 0x03, 0x04,
-        0x05,
+        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x02, 0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a,
+        0x04, 0x75, 0x6e, 0x69, 0x74, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00, 0x01, 0x02,
     ];
     assert_eq!(
         got, expect_nil,
@@ -760,7 +230,8 @@ fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
     );
     op_drop(nil);
 
-    // Cons(tuple 1 Nil) → the LEN-77 oracle dump.
+    // Cons(tuple 1 Nil) → the BARE IntList value form (no `(: … IL)` frame): `(Cons 1 (Nil unit))`
+    // — the Cons head, M2 Ctor(Tuple)=0x15, INT 1, then the bare inner Nil; no colon leaf, no `IL`.
     let inner_nil = op_sum_new(1, op_arr_alloc(0));
     let pair = op_arr_alloc(2);
     op_arr_set(pair, 0, op_box_int(1));
@@ -768,12 +239,11 @@ fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
     let cons = op_sum_new(0, pair);
     let got = op_value_encode_form(cons, &desc).expect("encode Cons");
     let expect_cons: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x0a, 0x04, 0x43,
-        0x6f, 0x6e, 0x73, 0x15, 0x00, 0x01, 0x01, // Cons, M2 Ctor(Tuple)=0x15, INT 1
-        0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49, 0x4c,
-        0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x01, 0x02,
-        0x04, 0x05, 0x01, 0x03, 0x02, 0x03, 0x06, 0x01, 0x02, 0x01, 0x07, 0x00, 0x06, 0x01, 0x03,
-        0x00, 0x08, 0x09, 0x0a,
+        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x05, 0x0a, 0x04, 0x43, 0x6f, 0x6e, 0x73,
+        0x15, 0x00, 0x01, 0x01, // Cons, M2 Ctor(Tuple)=0x15, INT 1
+        0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x08, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x03, 0x01, 0x02,
+        0x05, 0x01, 0x02, 0x00, 0x06, 0x07,
     ];
     assert_eq!(
         got, expect_cons,
@@ -786,10 +256,12 @@ fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
 fn value_encode_sum_arm_carrying_a_record_is_not_empty() {
     reset();
     let before = live_nodes();
-    // v-cml's exact descriptor bytes.
+    // v-cml's descriptor bytes, bare (the trailing Named("P"→0) root removed post ascription removal;
+    // root now points at the Sum [0] directly). table [0]=Sum[(A→1),(B→3)], [1]=Bytes, [2]=Str,
+    // [3]=Record[x→2]; root=0.
     let desc: &[u8] = &[
-        0x05, 0x09, 0x02, 0x01, 0x41, 0x01, 0x01, 0x42, 0x03, 0x04, 0x03, 0x08, 0x01, 0x01, 0x78,
-        0x02, 0x0a, 0x01, 0x50, 0x00, 0x04,
+        0x04, 0x09, 0x02, 0x01, 0x41, 0x01, 0x01, 0x42, 0x03, 0x04, 0x03, 0x08, 0x01, 0x01, 0x78,
+        0x02, 0x00,
     ];
     // Build B(record x="hi"): arm B has disc 1; its payload is a 1-field record arr [str "hi"].
     let rec = op_arr_alloc(1);
@@ -1326,251 +798,6 @@ fn value_decode_round_trips_sum_variants() {
     assert_eq!(live_nodes(), before, "no leak");
 }
 
-/// Frame-TOLERANT decode (value-codec migration — decode by STRUCTURE, not names). A value encoded
-/// WITHOUT its `(: value Type)` ascription frame decodes to the SAME value as one encoded WITH it. This
-/// pins the nested newtype-in-List gap: a `List` whose element shape is `Named("Item", Int)` must decode
-/// even when the per-element `(: n Item)` frame is ELIDED (the bare `Int` element form — what the value
-/// renderer emits and what a structural/`finish_value` encoder produces). Before the fix, a bare element
-/// hit `doc_list_kids(...)?` → `None` → the whole list decoded to NULL; now the `Named`/`Framed` arm
-/// decodes the bare struct directly against `inner`. The framed form still decodes unchanged.
-#[test]
-fn value_decode_is_frame_tolerant_for_named_and_nested_in_list() {
-    reset();
-    let before = live_nodes();
-
-    // desc_framed_elem: [0]=Int, [1]=Named("Item", inner→0), [2]=List(elem→1), root=2.
-    let desc_framed_elem: &[u8] = &[
-        0x03, // table_len
-        0x00, // [0] Int
-        0x0a, 0x04, b'I', b't', b'e', b'm', 0x00, // [1] Named("Item", inner→0)
-        0x07, 0x01, // [2] List(elem→1)
-        0x02, // root = 2
-    ];
-    // desc_bare_elem: [0]=Int, [1]=List(elem→0), root=1 — the SAME value, elements are bare Ints (no frame).
-    let desc_bare_elem: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
-
-    let mut v = op_vec_empty();
-    for i in 1..=3i64 {
-        v = op_vec_push(v, op_box_int(i));
-    }
-    let descriptor = decode_descriptor(desc_framed_elem).expect("descriptor");
-
-    let framed_doc = op_value_encode_form(v, desc_framed_elem).expect("encode framed");
-    let from_framed = op_value_decode(&framed_doc, desc_framed_elem);
-    assert_ne!(
-        from_framed,
-        Handle::NULL,
-        "framed element form decodes (unchanged)"
-    );
-    assert_eq!(
-        value_eq_shaped(&descriptor, from_framed, v, descriptor.root),
-        Some(true)
-    );
-
-    let bare_doc = op_value_encode_form(v, desc_bare_elem).expect("encode bare");
-    let from_bare = op_value_decode(&bare_doc, desc_framed_elem);
-    assert_ne!(
-        from_bare,
-        Handle::NULL,
-        "bare (ascription-free) element form now decodes against Named(Item) — was NULL"
-    );
-    assert_eq!(
-        value_eq_shaped(&descriptor, from_bare, v, descriptor.root),
-        Some(true)
-    );
-
-    op_drop(from_framed);
-    op_drop(from_bare);
-    op_drop(v);
-    assert_eq!(live_nodes(), before, "no leak");
-}
-
-/// Frame-tolerant decode for a single-ctor RECORD newtype at the ROOT (value-codec migration). This is
-/// v-gateway's #8775 case: the guest `Value.decode(Request)` returned None on an ascription-free root
-/// (`Request` is a `Named` over a record), forcing a revert. A bare `#record` root now decodes against
-/// the `Named`'s inner record. Complements the `Named`-over-Int witness (this exercises a record inner
-/// at root position).
-#[test]
-fn value_decode_frame_tolerant_named_record_root() {
-    reset();
-    let before = live_nodes();
-
-    // desc_named: [0]=Str, [1]=Record{name→0}, [2]=Named("Request", inner→1), root=2.
-    let desc_named: &[u8] = &[
-        0x03, // table_len
-        0x03, // [0] Str
-        0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, // [1] Record{name→0}
-        0x0a, 0x07, b'R', b'e', b'q', b'u', b'e', b's', b't',
-        0x01, // [2] Named("Request", inner→1)
-        0x02, // root = 2
-    ];
-    // desc_bare: [0]=Str, [1]=Record{name→0}, root=1 — same value, NO Named frame.
-    let desc_bare: &[u8] = &[
-        0x02, 0x03, 0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, 0x01,
-    ];
-
-    let rec = op_arr_alloc(1);
-    op_arr_set(rec, 0, op_str_new("hi".into()));
-    let named = decode_descriptor(desc_named).expect("descriptor");
-
-    // Framed root still decodes.
-    let framed = op_value_encode_form(rec, desc_named).expect("encode framed");
-    let from_framed = op_value_decode(&framed, desc_named);
-    assert_ne!(
-        from_framed,
-        Handle::NULL,
-        "framed record root decodes (unchanged)"
-    );
-    assert_eq!(
-        value_eq_shaped(&named, from_framed, rec, named.root),
-        Some(true)
-    );
-
-    // Bare record root (no `(: rec Request)`) now decodes against Named("Request", Record) — was NULL (#8775).
-    let bare = op_value_encode_form(rec, desc_bare).expect("encode bare");
-    let from_bare = op_value_decode(&bare, desc_named);
-    assert_ne!(
-        from_bare,
-        Handle::NULL,
-        "bare record root now decodes against Named(Request) — was NULL"
-    );
-    assert_eq!(
-        value_eq_shaped(&named, from_bare, rec, named.root),
-        Some(true)
-    );
-
-    op_drop(from_framed);
-    op_drop(from_bare);
-    op_drop(rec);
-    assert_eq!(live_nodes(), before, "no leak");
-}
-
-/// Frame-tolerant decode for a single-ctor RECORD newtype inside a homogeneous `List` (value-codec
-/// migration). This is v-gateway's `List(Header)` case (a per-element `(: header Header)` ascription was
-/// load-bearing, causing a real http-echo decode bug when absent) and reducer-targets' `List(RouteArtifact)`
-/// shape. A `List(Named("Header", Record))` now decodes with BARE `#record` elements. Confirms the fix
-/// holds for a record inner in list position (the earlier witness used an Int inner).
-#[test]
-fn value_decode_frame_tolerant_named_record_in_list() {
-    reset();
-    let before = live_nodes();
-
-    // desc_named: [0]=Str, [1]=Record{name→0}, [2]=Named("Header", inner→1), [3]=List(elem→2), root=3.
-    let desc_named: &[u8] = &[
-        0x04, // table_len
-        0x03, // [0] Str
-        0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, // [1] Record{name→0}
-        0x0a, 0x06, b'H', b'e', b'a', b'd', b'e', b'r',
-        0x01, // [2] Named("Header", inner→1)
-        0x07, 0x02, // [3] List(elem→2)
-        0x03, // root = 3
-    ];
-    // desc_bare: [0]=Str, [1]=Record{name→0}, [2]=List(elem→1), root=2 — bare #record elements.
-    let desc_bare: &[u8] = &[
-        0x03, 0x03, 0x08, 0x01, 0x04, b'n', b'a', b'm', b'e', 0x00, 0x07, 0x01, 0x02,
-    ];
-
-    // A List of two records [{name:"a"}, {name:"b"}].
-    let r0 = op_arr_alloc(1);
-    op_arr_set(r0, 0, op_str_new("a".into()));
-    let r1 = op_arr_alloc(1);
-    op_arr_set(r1, 0, op_str_new("b".into()));
-    let v = op_vec_push(op_vec_push(op_vec_empty(), r0), r1);
-    let named = decode_descriptor(desc_named).expect("descriptor");
-
-    // Framed elements still decode.
-    let framed = op_value_encode_form(v, desc_named).expect("encode framed");
-    let from_framed = op_value_decode(&framed, desc_named);
-    assert_ne!(
-        from_framed,
-        Handle::NULL,
-        "framed record elements decode (unchanged)"
-    );
-    assert_eq!(
-        value_eq_shaped(&named, from_framed, v, named.root),
-        Some(true)
-    );
-
-    // Bare `#record` elements (no per-element `(: rec Header)`) now decode against Named("Header", Record)
-    // — the whole list returned NULL before the frame-tolerance fix.
-    let bare = op_value_encode_form(v, desc_bare).expect("encode bare");
-    let from_bare = op_value_decode(&bare, desc_named);
-    assert_ne!(
-        from_bare,
-        Handle::NULL,
-        "bare record elements now decode against Named(Header) — was NULL"
-    );
-    assert_eq!(
-        value_eq_shaped(&named, from_bare, v, named.root),
-        Some(true)
-    );
-
-    op_drop(from_framed);
-    op_drop(from_bare);
-    op_drop(v);
-    assert_eq!(live_nodes(), before, "no leak");
-}
-
-/// Frame-vs-bare DISAMBIGUATION guard (value-codec migration). The frame-tolerant `Named`/`Framed` arm
-/// treats a wire struct as the `(: value _)` frame ONLY when it is a 3-element list whose head is the
-/// `:` NAME atom — length 3 alone is NOT enough. This pins that a BARE 3-element list value (e.g. a
-/// `List` of exactly 3, whose head is an element, not `:`) decodes as the value against `inner`, and is
-/// NOT mis-unwrapped as a frame (which would decode element [1] and drop the rest). Guards the exact
-/// `kids.len() == 3 && doc_atom_name(kids[0]) == Some(":")` condition against a future "length-only"
-/// regression — the subtle logic the keystone (and its clobber/re-land) rests on.
-#[test]
-fn value_decode_frame_tolerant_disambiguates_bare_3_element_list_from_a_frame() {
-    reset();
-    let before = live_nodes();
-
-    // desc_named: [0]=Int, [1]=List(elem→0), [2]=Named("Ints", inner→1), root=2.
-    let desc_named: &[u8] = &[
-        0x03, // table_len
-        0x00, // [0] Int
-        0x07, 0x00, // [1] List(elem→0)
-        0x0a, 0x04, b'I', b'n', b't', b's', 0x01, // [2] Named("Ints", inner→1)
-        0x02, // root = 2
-    ];
-    // desc_bare: [0]=Int, [1]=List(elem→0), root=1 — same value, no Named frame.
-    let desc_bare: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
-
-    // A list of EXACTLY 3 ints — a wire form that collides with the frame's element count.
-    let mut v = op_vec_empty();
-    for i in 10..=12i64 {
-        v = op_vec_push(v, op_box_int(i));
-    }
-    let named = decode_descriptor(desc_named).expect("descriptor");
-
-    // Bare 3-element list decodes against Named("Ints", List) — NOT mistaken for a `(: v _)` frame (its
-    // head is an Int leaf, not the `:` name), so the whole list is preserved (all 3 elements), not
-    // unwrapped to element [1].
-    let bare = op_value_encode_form(v, desc_bare).expect("encode bare");
-    let from_bare = op_value_decode(&bare, desc_named);
-    assert_ne!(
-        from_bare,
-        Handle::NULL,
-        "bare 3-element list decodes against Named (not a frame)"
-    );
-    assert_eq!(
-        value_eq_shaped(&named, from_bare, v, named.root),
-        Some(true),
-        "the FULL 3-element list is preserved — not mis-unwrapped as a frame's element [1]"
-    );
-    // The framed form still round-trips too.
-    let framed = op_value_encode_form(v, desc_named).expect("encode framed");
-    let from_framed = op_value_decode(&framed, desc_named);
-    assert_ne!(from_framed, Handle::NULL);
-    assert_eq!(
-        value_eq_shaped(&named, from_framed, v, named.root),
-        Some(true)
-    );
-
-    op_drop(from_bare);
-    op_drop(from_framed);
-    op_drop(v);
-    assert_eq!(live_nodes(), before, "no leak");
-}
-
 #[test]
 fn value_decode_returns_null_on_shape_mismatch_never_traps() {
     reset();
@@ -1698,7 +925,7 @@ fn value_encode_wide_record_matches_recursive_reference() {
 fn value_encode_string_list_matches_recursive_reference() {
     reset();
     // Descriptor built programmatically (nested shapes are error-prone as a hand array):
-    // table [0]=Str, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("SL"→1); root=4.
+    // table [0]=Str, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit; root=1 (bare Sum, no Named).
     let mut d: Vec<u8> = Vec::new();
     let leb = |out: &mut Vec<u8>, v: u64| {
         let mut v = v;
@@ -1731,7 +958,7 @@ fn value_encode_string_list_matches_recursive_reference() {
         out.extend_from_slice(&tmp);
         out.extend_from_slice(s.as_bytes());
     };
-    leb(&mut d, 5); // table_len
+    leb(&mut d, 4); // table_len
     d.push(3); // [0] Str
     d.push(9); // [1] Sum
     leb(&mut d, 2);
@@ -1744,10 +971,7 @@ fn value_encode_string_list_matches_recursive_reference() {
     leb(&mut d, 0);
     leb(&mut d, 1);
     d.push(5); // [3] Unit
-    d.push(10); // [4] Named("SL" → 1)
-    name(&mut d, "SL");
-    leb(&mut d, 1);
-    leb(&mut d, 4); // root
+    leb(&mut d, 1); // root = 1 (the Sum — bare, no Named frame)
 
     // Build ["a", "bb", "ccc"] as Cons(tuple s rest)…Nil.
     let strs = ["a", "bb", "ccc"];
@@ -1832,7 +1056,7 @@ fn value_encode_renders_a_bytes_leaf() {
 #[test]
 fn value_encode_bytes_list_matches_recursive_reference() {
     reset();
-    // table [0]=Bytes, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("BL"→1); root=4.
+    // table [0]=Bytes, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit; root=1 (bare Sum, no Named).
     let mut d: Vec<u8> = Vec::new();
     let leb = |out: &mut Vec<u8>, mut v: u64| loop {
         let mut b = (v & 0x7f) as u8;
@@ -1860,7 +1084,7 @@ fn value_encode_bytes_list_matches_recursive_reference() {
         }
         out.extend_from_slice(s.as_bytes());
     };
-    leb(&mut d, 5);
+    leb(&mut d, 4);
     d.push(4); // [0] Bytes
     d.push(9); // [1] Sum
     leb(&mut d, 2);
@@ -1873,10 +1097,7 @@ fn value_encode_bytes_list_matches_recursive_reference() {
     leb(&mut d, 0);
     leb(&mut d, 1);
     d.push(5); // [3] Unit
-    d.push(10); // [4] Named("BL" → 1)
-    name(&mut d, "BL");
-    leb(&mut d, 1);
-    leb(&mut d, 4);
+    leb(&mut d, 1); // root = 1 (the Sum — bare, no Named frame)
 
     // Build a list of two Bytes elements, one of them a ROPE (to exercise flatten under the walk).
     let e0 = bytes_leaf(&[0x10, 0x20]);
@@ -2833,116 +2054,6 @@ fn value_encode_multi_payload_variant_escapes_flat_via_spread() {
         "each Leaf's unit payload present"
     );
     op_drop(node);
-    assert_eq!(live_nodes(), before, "no leak");
-}
-
-#[test]
-fn value_encode_renders_a_framed_parametric_type() {
-    reset();
-    let before = live_nodes();
-    // Descriptor: [0]=Int, [1]=List(→0), [2]=Framed("List", ["Int64"], inner→1). root=2.
-    // Bytes: table_len=3; [0]=Int(tag0); [1]=List(tag7, elem 0); [2]=Framed(tag15, "List", 1 arg
-    // "Int64", inner 1); root=2.
-    let mut d: Vec<u8> = Vec::new();
-    let leb = |out: &mut Vec<u8>, v: u64| {
-        let mut v = v;
-        loop {
-            let mut b = (v & 0x7f) as u8;
-            v >>= 7;
-            if v != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if v == 0 {
-                break;
-            }
-        }
-    };
-    let name = |out: &mut Vec<u8>, s: &str| {
-        let mut n = s.len() as u64;
-        loop {
-            let mut b = (n & 0x7f) as u8;
-            n >>= 7;
-            if n != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-            if n == 0 {
-                break;
-            }
-        }
-        out.extend_from_slice(s.as_bytes());
-    };
-    leb(&mut d, 3); // table_len
-    d.push(0); // [0] Int
-    d.push(7); // [1] List
-    leb(&mut d, 0); // elem → 0
-    d.push(15); // [2] Framed
-    // The type node is now a RECURSIVE `TypeNode` (`08d4a99a`): every node — INCLUDING a leaf — declares
-    // its own child count, so a nested type like `(List Int64)` is `List{ Int64{} }`. `Int64` therefore
-    // needs an explicit `n_children = 0` before the `inner` index (the old flat `[head][n_args](arg)*n`
-    // wire had no per-arg child count — that stale layout desynced the recursive decoder).
-    name(&mut d, "List"); // head
-    leb(&mut d, 1); // List n_children = 1
-    name(&mut d, "Int64"); // child[0] head
-    leb(&mut d, 0); // Int64 n_children = 0 (a leaf type node)
-    leb(&mut d, 1); // inner → 1
-    leb(&mut d, 2); // root
-
-    // A real RUNTIME list value (RRB vec, NOT an arr — the Shape::List arm reads via vec-len/vec-get).
-    let mut v = op_vec_empty();
-    for i in 1..=3i64 {
-        v = op_vec_push(v, op_box_int(i));
-    }
-    let doc = op_value_encode_form(v, &d).expect("encode a Framed(list)");
-
-    // Differential: the recursive oracle must produce byte-identical output.
-    let descriptor = decode_descriptor(&d).expect("descriptor");
-    let mut b = DocBuilder::default();
-    let root =
-        encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
-    assert_eq!(
-        doc,
-        b.finish(root),
-        "iterative and recursive Framed encode must agree"
-    );
-
-    // The document's NAME leaves — the `(: (list 1 2 3) (List Int64))` frame emits, in walk order,
-    // the names `:`, `list`, then the type head/args `List`, `Int64` (ints are KIND_INT leaves, not
-    // names). Collect the name-leaf strings in emission order and check the frame's names are present.
-    let mut names: Vec<String> = Vec::new();
-    let leaf_count = doc[8] as usize;
-    let mut i = 9;
-    for _ in 0..leaf_count {
-        let kind = doc[i];
-        i += 1;
-        match kind {
-            0 => {
-                // KIND_INT_POS_DEC: LEB len + magnitude
-                let len = doc[i] as usize;
-                i += 1 + len;
-            }
-            10 => {
-                // KIND_NAME: LEB len + utf8
-                let len = doc[i] as usize;
-                i += 1;
-                names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
-                i += len;
-            }
-            20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
-            k => panic!("unexpected leaf kind {k} in a Framed(list) document"),
-        }
-    }
-    // The frame's NAME leaves, in walk order: `:` (the outer frame head), then `List` + `Int64` (the
-    // type node, emitted AFTER the value). The value's list head is now the M2 Ctor(List) LEAF (not the
-    // `list` name), so it no longer appears among the name leaves.
-    let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-    assert_eq!(
-        names_ref,
-        alloc::vec![":", "List", "Int64"],
-        "Framed frame emits `:`, then the type head `List` + arg `Int64` (value list head is a ctor leaf)"
-    );
-    op_drop(v);
     assert_eq!(live_nodes(), before, "no leak");
 }
 

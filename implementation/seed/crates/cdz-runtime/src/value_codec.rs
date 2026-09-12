@@ -142,7 +142,6 @@ pub(crate) enum Shape {
     List(u32),
     Record(Rc<[(Rc<str>, u32)]>),
     Sum(Rc<[(Rc<str>, u32)]>),
-    Named(Rc<str>, u32),
     Ref(u32),
     /// A SET over one element shape — rendered `(Set.of (list e1 … en))` with the elements in CANONICAL
     /// key-VALUE order (collections-and-text.md §A Set's canonical form). The runtime iterates the CHAMP
@@ -154,52 +153,12 @@ pub(crate) enum Shape {
     /// NOT hash order. Only a SCALAR KEY shape is orderable-and-encodable; the VALUE may be any encodable
     /// shape (the walk recurses on it). `(key_shape, value_shape)` table indices.
     Map(u32, u32),
-    /// A `(: <value> <type-node>)` frame — like `Named` but the TYPE is an arbitrary (possibly NESTED)
-    /// type node, not a single name. Carries a recursive [`TypeNode`] so a nested collection renders its
-    /// full parametric type — e.g. `(List (List Int64))`, `(Map Int64 (List Bool))` — matching the
-    /// constant-value form. The `u32` is the inner value shape index.
-    Framed(TypeNode, u32),
     /// A MULTI-payload sum variant's payload — a tuple handle at run time (`arr` of the boxed payloads)
     /// whose elements render FLATTENED as the variant's children: `(Cons h t)`, NOT `(Cons (tuple h t))`.
     /// Read exactly like a `Tuple` (each element via `arr-get`) but the enclosing `Sum` walk splices the
     /// elements directly under the variant head instead of emitting a `tuple` form. Only a `Sum` variant's
     /// payload references a `Spread`; a genuine tuple VALUE stays a `Tuple`.
     Spread(Rc<[u32]>),
-}
-
-/// A compile-time-baked TYPE node for a `Framed` frame: `head` + child type nodes. A LEAF type
-/// (`Int64`/`Bool`/`String`/`Unit`/a nominal name) has no children and renders as the bare name atom; a
-/// PARAMETRIC type (`(List e)`, `(Map k v)`, `(Tuple …)`, `(Set e)`) renders `list([head, child…])`, each
-/// child rendered recursively. The whole thing is compile-time-known (the result type), so the runtime
-/// only re-emits it — it never inspects the runtime value to build the type.
-pub(crate) struct TypeNode {
-    head: String,
-    children: Vec<TypeNode>,
-}
-
-/// Decode a [`TypeNode`]: `[ head_len ][ head_utf8 ] [ n_children:LEB ]( TypeNode )*n`.
-/// Max nesting of a Framed type node. A genuine type is shallow — `(Map Int64 (List Bool))` is depth 2,
-/// and the compiler bakes only such well-formed nodes — so a cap far above any real type still declines a
-/// MALFORMED descriptor whose TypeNode nests thousands deep before it overflows the native/wasm call
-/// stack. WITHOUT this, `decode_type_node`'s recursion is bounded only by the byte length (each level is
-/// just `[name_len=0][n_children=1]` = 2 bytes), so a ~200 KB descriptor crashes the guest — violating
-/// value-encode's "never a trap" totality contract (a compiler-baked descriptor is always shallow, but
-/// the escape op must DECLINE any input, not abort).
-pub(crate) const TYPE_NODE_DEPTH_CAP: u32 = 256;
-
-pub(crate) fn decode_type_node(d: &[u8], pos: &mut usize, depth: u32) -> Option<TypeNode> {
-    if depth > TYPE_NODE_DEPTH_CAP {
-        return None; // a malformed descriptor's runaway TypeNode nesting — decline, don't overflow
-    }
-    let head = desc_name(d, pos)?;
-    let n = desc_leb(d, pos)?;
-    // `reserve_cap`: clamp an untrusted child count to remaining bytes so a malformed TypeNode can't
-    // `with_capacity`-abort (each child is ≥1 byte).
-    let mut children = Vec::with_capacity(reserve_cap(n, d, *pos));
-    for _ in 0..n {
-        children.push(decode_type_node(d, pos, depth + 1)?);
-    }
-    Some(TypeNode { head, children })
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -281,10 +240,9 @@ pub(crate) fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             }
             Shape::Sum(variants.into())
         }
-        10 => {
-            let name: Rc<str> = desc_name(d, pos)?.into();
-            Shape::Named(name, desc_leb(d, pos)? as u32)
-        }
+        // tag 10 (Named) removed with the value-codec ascription removal (operator 2026-09-12): the
+        // compiler no longer emits a Named descriptor root (#8840/#8841), so this tag now DECLINES via the
+        // `_` arm — decode is purely structural.
         11 => Shape::Ref(desc_leb(d, pos)? as u32),
         12 => Shape::Set(desc_leb(d, pos)? as u32),
         13 => {
@@ -293,11 +251,9 @@ pub(crate) fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             Shape::Map(key, val)
         }
         14 => Shape::Float32,
-        15 => {
-            // Framed: <TypeNode> [ inner: idx ]  where TypeNode = [ head ][ n ]( TypeNode )*n (recursive).
-            let type_node = decode_type_node(d, pos, 0)?;
-            Shape::Framed(type_node, desc_leb(d, pos)? as u32)
-        }
+        // tag 15 (Framed) removed with the value-codec ascription removal (operator 2026-09-12): the
+        // compiler no longer emits a Framed `(: value <type-node>)` descriptor root, so this tag now
+        // DECLINES via the `_` arm — decode is purely structural.
         16 => {
             // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
             // knows to splice the elements FLAT under the variant head rather than wrap them in `tuple`.
@@ -720,24 +676,6 @@ impl DocBuilder {
         });
         (self.structs.len() - 1) as u32
     }
-    /// Render a [`TypeNode`] to a struct index (recursive): a LEAF type (no children) → the bare name
-    /// atom; a PARAMETRIC type → `list([head-atom, child…])`, each child rendered recursively. Builds the
-    /// `(: value <type>)` frame's type position for a `Framed` — handles arbitrary nesting like
-    /// `(List (List Int64))` / `(Map Int64 (List Bool))`.
-    pub(crate) fn render_type_node(&mut self, tn: &TypeNode) -> u32 {
-        let head_leaf = self.name_leaf(&tn.head);
-        let head_atom = self.atom(head_leaf);
-        if tn.children.is_empty() {
-            head_atom
-        } else {
-            let child_structs: Vec<u32> = tn
-                .children
-                .iter()
-                .map(|c| self.render_type_node(c))
-                .collect();
-            self.list_head_tail(head_atom, &child_structs)
-        }
-    }
     pub(crate) fn finish(&self, root: u32) -> Vec<u8> {
         // Pre-size the output so serializing a large document doesn't realloc-churn (grow-once, the same
         // discipline as the leaf/struct/child pools). Cheap UPPER-BOUND estimate in one pass: header +
@@ -879,7 +817,7 @@ impl DocBuilder {
 pub(crate) fn resolve_shape(desc: &Descriptor, mut shape_ix: u32) -> Option<&Shape> {
     for _ in 0..64 {
         match desc.table.get(shape_ix as usize)? {
-            Shape::Ref(target) | Shape::Named(_, target) => shape_ix = *target,
+            Shape::Ref(target) => shape_ix = *target,
             other => return Some(other),
         }
     }
@@ -887,7 +825,7 @@ pub(crate) fn resolve_shape(desc: &Descriptor, mut shape_ix: u32) -> Option<&Sha
 }
 
 /// Collect a SET's elements into a Vec of (borrowed) element handles, SORTED into canonical key-VALUE
-/// order under the element shape `elem_ix` (resolved through `Named`/`Ref`). The CHAMP iterates hash
+/// order under the element shape `elem_ix` (resolved through `Ref`). The CHAMP iterates hash
 /// order, so this re-sorts to the canonical render order. `None` (the encode declines) when the element
 /// shape is not a canonically-orderable SCALAR — matching the compiler's `const_key_order`, which
 /// declines a nested-compound element. The returned handles are BORROWED (the set still owns them); the
@@ -1085,14 +1023,6 @@ pub(crate) enum EncodeWork {
     },
     /// Assemble `list([head_s, <the top `nkids` results in child order>])` — the tuple/list/record/sum body.
     List { head_s: u32, nkids: usize },
-    /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
-    /// (matching the recursive order), then `list([colon_s, value, tname_s])`. The name `&str` is
-    /// re-derived at process time from `desc.table[named_ix]` (the `Shape::Named`).
-    Named { colon_s: u32, named_ix: u32 },
-    /// Assemble a `(: value <type-node>)` frame — like `Named` but the type is an arbitrary (possibly
-    /// NESTED) type node, re-derived at process time from `desc.table[framed_ix]` (the `Shape::Framed`).
-    /// Pop the inner value, `render_type_node` the type, then `list([colon_s, value, type_node])`.
-    Framed { colon_s: u32, framed_ix: u32 },
     /// Assemble one record field: pop the field value, `list([eq, katom, fval])` where `eq` is the M2
     /// FieldPair ctor-head atom (pre-M2 it was the `=` name atom). `eq` and the key atom are built PRE-order
     /// (before the value visit) so the leaf/struct pool matches canon's pre-order first-encounter — see
@@ -1394,37 +1324,6 @@ pub(crate) fn encode_value(
                             });
                         }
                     }
-                    Shape::Named(_name, inner) => {
-                        // The `(: <value> <Type>)` value-form frame — same `h`, no node consumed → count.
-                        let inner = *inner;
-                        let colon = b.name_leaf(":");
-                        let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Named {
-                            colon_s,
-                            named_ix: shape_ix, // re-derives `name` from desc.table[named_ix] at process time
-                        });
-                        work.push(EncodeWork::Visit {
-                            h,
-                            shape_ix: inner,
-                            refs: refs + 1,
-                        });
-                    }
-                    Shape::Framed(_type_node, inner) => {
-                        // The `(: <value> <type-node>)` frame — an arbitrary (possibly nested) type node.
-                        // Same `h`, no node consumed → count toward the ref cap.
-                        let inner = *inner;
-                        let colon = b.name_leaf(":");
-                        let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Framed {
-                            colon_s,
-                            framed_ix: shape_ix, // re-derives the TypeNode from desc.table[framed_ix]
-                        });
-                        work.push(EncodeWork::Visit {
-                            h,
-                            shape_ix: inner,
-                            refs: refs + 1,
-                        });
-                    }
                     Shape::Set(elem) => {
                         // A Set renders `((. Set of) (list e1 … en))` with elements in CANONICAL key-VALUE
                         // order. The CHAMP iterates hash order, so collect + SORT by the element's canonical
@@ -1543,27 +1442,6 @@ pub(crate) fn encode_value(
                 let s = b.list_head_tail(head_s, &out[base..]);
                 out.truncate(base);
                 out.push(s);
-            }
-            EncodeWork::Named { colon_s, named_ix } => {
-                let value = out.pop()?;
-                // Re-derive the type name from the owning `Shape::Named` (no borrow on the stack).
-                let name = match desc.table.get(named_ix as usize) {
-                    Some(Shape::Named(name, _)) => &**name,
-                    _ => return None,
-                };
-                let tname = b.name_leaf(name);
-                let tname_s = b.atom(tname);
-                out.push(b.list(&[colon_s, value, tname_s]));
-            }
-            EncodeWork::Framed { colon_s, framed_ix } => {
-                let value = out.pop()?;
-                // Re-derive the TypeNode from the owning `Shape::Framed` (no borrow on the stack).
-                let type_node = match desc.table.get(framed_ix as usize) {
-                    Some(Shape::Framed(tn, _)) => tn,
-                    _ => return None,
-                };
-                let type_s = b.render_type_node(type_node);
-                out.push(b.list(&[colon_s, value, type_s]));
             }
             EncodeWork::Pair { eq, katom } => {
                 // Record field value-output form is the `(= name value)` ascription (record-type Phase B
@@ -1993,29 +1871,11 @@ pub(crate) fn decode_value_opt(
         return None;
     }
     match desc.table.get(shape_ix as usize)? {
-        // Transparent wrappers: the value handle passes through unchanged. On the wire a Named/Ref adds no
-        // struct level (encode reuses the same `h`), EXCEPT Named/Framed which wrap `(: value Type)`.
+        // Transparent wrapper: the value handle passes through unchanged (a `Ref` adds no struct level on
+        // the wire — encode reuses the same `h`). The `Named`/`Framed` `(: value Type)` frame arms were
+        // REMOVED (value-codec ascription removal, operator 2026-09-12): the compiler emits no such
+        // descriptor and decode is now purely structural — no root frame is peeled.
         Shape::Ref(target) => decode_value_opt(desc, doc, struct_ix, *target, depth + 1),
-        Shape::Named(_, inner) | Shape::Framed(_, inner) => {
-            // The `(: <value> <Type>)` frame — a 3-element `:`-headed list; the value is element [1],
-            // decoded against `inner`. FRAME-TOLERANT (value-codec migration: decode by STRUCTURE, not
-            // names): if the frame is ABSENT — a structurally / ascription-free encoded value (see
-            // `cadenza_value::finish_value`), or a value rendered without its nested ascription — the
-            // struct itself IS the value, so decode it directly against `inner`. Backward-compatible: a
-            // framed value still unwraps to element [1]; only the previously-`None` (unframed) case now
-            // decodes, and it still returns `None` on a genuine `inner`-shape mismatch, so this is
-            // strictly more accepting, never less. It also lets a bare newtype-record element inside a
-            // `List(Newtype)` decode — previously the per-element `(: #record T)` frame was load-bearing
-            // and a bare `#record` returned `None`. The type NAME is (and was) never matched. (The frame
-            // vs. bare disambiguation is unchanged: only a 3-element list whose head is the `:` name atom
-            // is taken as the frame — the same assumption the pre-migration code made.)
-            if let Some(kids) = doc_list_kids(doc, struct_ix) {
-                if kids.len() == 3 && doc_atom_name(doc, kids[0]) == Some(":") {
-                    return decode_value_opt(desc, doc, kids[1], *inner, depth + 1);
-                }
-            }
-            decode_value_opt(desc, doc, struct_ix, *inner, depth + 1)
-        }
         Shape::Int => {
             let ParsedLeaf::Int(neg, mag) = doc_atom_leaf(doc, struct_ix)? else {
                 return None;
