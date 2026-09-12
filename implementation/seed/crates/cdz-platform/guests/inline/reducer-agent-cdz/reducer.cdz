@@ -11,7 +11,9 @@
 // shorter value → MalformedContractId; to_contract does not validate the tag byte, so any 33 bytes work).
 // The driving host routes on the exact 33-byte values `b"cadenza-fixture-agent-tool-------"` /
 // `b"cadenza-fixture-agent-sink-------"` (26-char name + 7 `-` pad = 33) — a fixture convention, not a
-// computed ContractId. "Break" maps to the world.wit `close{schema,reason}`.
+// computed ContractId. "Break" maps to the world.wit `close{schema,reason}` — and the Close `schema` is
+// ALSO a ContractId host-side (outcome_from_wit runs to_contract on it), so it too is a 33-byte value
+// (b"cadenza-fixture-agent-out--------" / -err--------); only `reason` is free-form Bytes.
 world reducer-world =
   | export guest =
     | on-message : (msg : {contract: list(u8),
@@ -51,9 +53,9 @@ def on-response(resp) =
   match resp.answer with
   | Ok(answer) =>
       { requests = [{ contract = b"cadenza-fixture-agent-sink-------", payload = answer, token = b"out", deadlineNanos = None }],
-        outcome = Outcome.Close({ schema = b"agent-out", reason = answer }) }
+        outcome = Outcome.Close({ schema = b"cadenza-fixture-agent-out--------", reason = answer }) }
   | Err(_) =>
-      { requests = [], outcome = Outcome.Close({ schema = b"agent-err", reason = b"tool-call-failed" }) }
+      { requests = [], outcome = Outcome.Close({ schema = b"cadenza-fixture-agent-err--------", reason = b"tool-call-failed" }) }
 
 def on-notification(_note) =
   { requests = [], outcome = Outcome.Continue }
