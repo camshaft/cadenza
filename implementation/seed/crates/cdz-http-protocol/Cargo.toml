@@ -39,8 +39,18 @@ cadenza-ast = { path = "../cadenza-ast" }
 # users are unaffected. (An excluded standalone crate depending on a member — the cdz-smith / gateway precedent.)
 cadenza-value = { path = "../cadenza-value" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — hashes, credentials, opaque payloads, session ids.
-bytes = "1"
+# The `serde` feature gives `Bytes` a Serialize/Deserialize that maps through `serialize_bytes` /
+# `deserialize_byte_buf` — i.e. a `Leaf::Bytes` in the binary-AST — so frame byte fields derive directly.
+bytes = { version = "1", features = ["serde"] }
 # `Str` — the canonical Bytes-backed UTF-8 text type (spec §12). Every text field of a frame (a url, a
 # method, a path, a header name/value) is a `Str`, not a `String`: an O(1)-clone view that shares its bytes
 # with the wire, matching the rest of the fleet (operator 2026-09-10 "use the Str data structure everywhere").
-cdz-str = { path = "../cdz-str" }
+cdz-str = { path = "../cdz-str", features = ["serde"] }
+# serde + the binary-AST serde format: the frame structs `#[derive(Serialize, Deserialize)]` and
+# (de)serialize THROUGH the canonical binary-AST via `cadenza-ast-serde`, replacing the hand-written
+# value-form frame encode/decode with derive-generated ser/de. serde stays OUT of the compiler — this is
+# an excluded host-side crate, NOT in rcdzc's dep closure (operator 2026-09-12: serde is welcome on the
+# platform/tooling, but the compiler stays lean). The `value` module (re-exporting `cadenza-value`) is
+# UNCHANGED so the mock's own admin protocol keeps working; only the 5 frame codecs move to serde.
+serde = { version = "1", features = ["derive"] }
+cadenza-ast-serde = { path = "../cadenza-ast-serde" }

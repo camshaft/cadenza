@@ -11,7 +11,17 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# OPTIONAL serde support: `Str` (de)serializes as a plain string. OFF by default, so `cdz-str`'s default
+# build — and every seed/compiler build (cdz-str is a foundational leaf, NOT in rcdzc's closure) — stays
+# serde-free. Only a host-side crate that wants derive-based ser/de (e.g. cdz-http-protocol via
+# cadenza-ast-serde) opts in with `features = ["serde"]`; the compiler never enables it, so serde stays
+# out of the compiler (operator 2026-09-12).
+serde = ["dep:serde"]
+
 [dependencies]
 # `Str` is a newtype over `bytes::Bytes` — a clone is an O(1) refcount bump, and text/bytes share ONE
 # representation so a value crosses the text/binary boundary without re-allocating (spec §12).
 bytes = "1"
+# OPTIONAL — only pulled in by the `serde` feature (off by default). `Str` serializes as a string.
+serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
