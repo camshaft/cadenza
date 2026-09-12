@@ -23,18 +23,21 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The first-party crates that make up each projection tier, in workspace-member order — the ROOTS
-/// for the transitive lock closure AND the sources copied verbatim into the projected tree.
-fn tier_crates(tier: &str) -> Result<&'static [&'static str], String> {
+/// The ROOT crates that define each projection tier — the tier's purpose surface. The full first-party
+/// crate set to project (their transitive sibling path-dep closure) is DISCOVERED from these at run
+/// time (see `discover_members`), so the projected member set auto-adapts if an upstream crate gains a
+/// first-party dep — the projection stays drift-proof for the crate SET, not just the pinned versions.
+fn tier_roots(tier: &str) -> Result<&'static [&'static str], String> {
     match tier {
         // LIGHT binary-AST value-codec tier: no wasmtime/tokio/network; `cadenza-ast`'s core is no_std.
+        // All three are the consumer surface (cadenza-ast's codec + cadenza-value's forms + the serde bridge).
         "codec" => Ok(&["cadenza-ast", "cadenza-value", "cadenza-ast-serde"]),
         // HEAVY reducer-world tier: `cdz-platform` carries the wasmtime driving (src/host.rs —
         // ReducerHost/WasmReducer/WasmProgramStore, behind its `host` feature) + the reducer-world WIT
         // (wit/world.wit, copied verbatim as it lives inside the crate dir) + the swappable
-        // BlobStore/KvStore/ReducerGraph host-import traits; the rest are its first-party deps. Build the
-        // projected tree with `--features cdz-platform/host` to pull in wasmtime 37 + cranelift.
-        "reducer" => Ok(&["cdz-platform", "cadenza-ast", "cdz-contract", "cdz-str"]),
+        // BlobStore/KvStore/ReducerGraph host-import traits. Its first-party deps (cadenza-ast/cdz-contract/
+        // cdz-str) are discovered. Build the projected tree with `--features cdz-platform/host`.
+        "reducer" => Ok(&["cdz-platform"]),
         other => Err(format!(
             "unknown --tier {other:?} (known tiers: codec, reducer)"
         )),
@@ -43,6 +46,57 @@ fn tier_crates(tier: &str) -> Result<&'static [&'static str], String> {
 
 /// Where the first-party crate sources live under the repo root.
 const SEED_CRATES: &str = "implementation/seed/crates";
+
+/// Discover the transitive first-party crate set to project, starting from a tier's root crates: a BFS
+/// over each crate's `Cargo.toml` sibling path-dependencies (`path = "../<name>"`). Returns the roots
+/// first, then discovered deps, deduped — so the projected member set (and the lock-closure roots)
+/// auto-adapts to an upstream first-party-dep change without editing this tool.
+fn discover_members(repo: &Path, roots: &[&str]) -> Result<Vec<String>, String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut queue: std::collections::VecDeque<String> =
+        roots.iter().map(|s| s.to_string()).collect();
+    while let Some(name) = queue.pop_front() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        order.push(name.clone());
+        let manifest = repo.join(SEED_CRATES).join(&name).join("Cargo.toml");
+        let text = read(&manifest)?;
+        for dep in sibling_path_deps(&text) {
+            if !seen.contains(&dep) {
+                queue.push_back(dep);
+            }
+        }
+    }
+    Ok(order)
+}
+
+/// Extract the sibling-crate names from a `Cargo.toml`'s `path = "../<name>"` dependency entries. Only
+/// `../`-prefixed paths (the seed's first-party path-dep convention) count as first-party crates, so a
+/// `[[bin]]`/`[lib]` `path = "src/..."` target is naturally excluded (it is not `../`-prefixed).
+fn sibling_path_deps(manifest: &str) -> Vec<String> {
+    let needle = "path = \"../";
+    let mut deps = Vec::new();
+    let mut rest = manifest;
+    while let Some(i) = rest.find(needle) {
+        let after = &rest[i + needle.len()..];
+        match after.find('"') {
+            Some(end) => {
+                // `after[..end]` is the path with the leading `../` already consumed by the needle; the
+                // crate name is its final component (handles `../x` and `../../a/x` alike).
+                if let Some(name) = after[..end].rsplit('/').next() {
+                    if !name.is_empty() {
+                        deps.push(name.to_string());
+                    }
+                }
+                rest = &after[end..];
+            }
+            None => break,
+        }
+    }
+    deps
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -62,21 +116,24 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(String, PathBuf), String> {
     let args = Args::parse(std::env::args().skip(1))?;
-    let crates = tier_crates(&args.tier)?;
     let repo = args.repo;
     let out = args.out;
+
+    // Discover the full first-party crate set (tier roots + their transitive sibling path-deps).
+    let members = discover_members(&repo, tier_roots(&args.tier)?)?;
+    let crates: Vec<&str> = members.iter().map(String::as_str).collect();
 
     // 1. Filter the pinned root Cargo.lock to the tier crates' transitive closure.
     let lock_path = repo.join("Cargo.lock");
     let lock_text = read(&lock_path)?;
     let filtered =
-        filter_lock(&lock_text, crates).map_err(|e| format!("{}: {e}", lock_path.display()))?;
+        filter_lock(&lock_text, &crates).map_err(|e| format!("{}: {e}", lock_path.display()))?;
 
     // 2. Assemble a fresh output tree (crate sources copied verbatim, incl. any wit/ dir inside them).
     reset_dir(&out)?;
     let crates_dir = out.join("crates");
     mkdir(&crates_dir)?;
-    for crate_name in crates {
+    for crate_name in &crates {
         let src = repo.join(SEED_CRATES).join(crate_name);
         if !src.is_dir() {
             return Err(format!("missing tier crate source: {}", src.display()));
@@ -85,9 +142,9 @@ fn run() -> Result<(String, PathBuf), String> {
     }
 
     // 3. Write the projected workspace manifest, the filtered lock, and the refresh doc.
-    write(&out.join("Cargo.toml"), &workspace_manifest(crates))?;
+    write(&out.join("Cargo.toml"), &workspace_manifest(&crates))?;
     write(&out.join("Cargo.lock"), &filtered)?;
-    write(&out.join("REFRESH.md"), &refresh_doc(&args.tier, crates))?;
+    write(&out.join("REFRESH.md"), &refresh_doc(&args.tier, &crates))?;
 
     Ok((args.tier, out))
 }
@@ -530,7 +587,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
     #[test]
     fn closure_keeps_only_reachable_packages() {
-        let out = filter_lock(LOCK, tier_crates("codec").unwrap()).unwrap();
+        let out = filter_lock(LOCK, tier_roots("codec").unwrap()).unwrap();
         let kept: BTreeSet<String> = names(&out).into_iter().collect();
         let expected: BTreeSet<String> = [
             "cadenza-ast",
@@ -553,7 +610,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"
 
     #[test]
     fn preamble_and_retained_blocks_are_verbatim() {
-        let out = filter_lock(LOCK, tier_crates("codec").unwrap()).unwrap();
+        let out = filter_lock(LOCK, tier_roots("codec").unwrap()).unwrap();
         // Header preamble preserved exactly.
         assert!(out.starts_with(
             "# This file is automatically @generated by Cargo.\n\
@@ -644,16 +701,43 @@ source = \"registry+https://x\"
     }
 
     #[test]
-    fn tier_crates_maps_known_tiers_and_rejects_unknown() {
+    fn tier_roots_maps_known_tiers_and_rejects_unknown() {
         assert_eq!(
-            tier_crates("codec").unwrap(),
+            tier_roots("codec").unwrap(),
             &["cadenza-ast", "cadenza-value", "cadenza-ast-serde"]
         );
-        // The reducer tier roots at cdz-platform (the wasmtime driving) + its first-party deps.
+        // The reducer tier roots at cdz-platform; its first-party deps are discovered from the manifest.
+        assert_eq!(tier_roots("reducer").unwrap(), &["cdz-platform"]);
+        assert!(tier_roots("bogus").is_err());
+    }
+
+    #[test]
+    fn sibling_path_deps_extracts_first_party_only() {
+        let manifest = "\
+[package]
+name = \"cdz-platform\"
+
+[[bin]]
+path = \"src/bin/cdz-platform-itest.rs\"
+
+[dependencies]
+cadenza-ast = { path = \"../cadenza-ast\" }
+cdz-contract = { path = \"../cdz-contract\" }
+cdz-str = { path = \"../cdz-str\" }
+num-bigint = \"0.4\"
+wasmtime = { version = \"37\", optional = true }
+";
+        // Only the `../`-prefixed sibling deps are first-party; the [[bin]] `src/...` path is excluded,
+        // and external (crates.io) deps have no `path`.
         assert_eq!(
-            tier_crates("reducer").unwrap(),
-            &["cdz-platform", "cadenza-ast", "cdz-contract", "cdz-str"]
+            sibling_path_deps(manifest),
+            vec![
+                "cadenza-ast".to_string(),
+                "cdz-contract".to_string(),
+                "cdz-str".to_string()
+            ]
         );
-        assert!(tier_crates("bogus").is_err());
+        // A crate with no first-party path-deps discovers nothing.
+        assert!(sibling_path_deps("[dependencies]\nbytes = \"1\"\n").is_empty());
     }
 }
