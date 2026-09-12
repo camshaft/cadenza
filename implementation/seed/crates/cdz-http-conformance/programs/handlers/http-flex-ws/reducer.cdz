@@ -1,0 +1,46 @@
+// FLEXIBLE-HANDLER guest fixture — WEBSOCKET-UPGRADE variant (v-hivemind inc-16 S4 variant 3; #8895
+// flexible-HTTP-handler protocol + DESIGN-http-outpost.md §6 ws seam). Instead of choosing a body mode that
+// consumes the request body, this handler UPGRADES: on the request head it emits BodyMode.Upgrade (negotiating
+// a subprotocol), the native edge performs the 101 handshake and then spawns the per-connection WS session,
+// which folds the inbound ws-event stream (Connect / Frame / Disconnect) through this same reducer and PUSHes
+// outbound frames via the ws-send effect. v-hivemind's S4 driver drives it as:
+//
+//   on_message(request-head)          → emit BodyMode.Upgrade({ subprotocol = Some("mcp") }) as a REQUEST
+//                                        effect; Continue (the driver does the 101 + opens the WS).
+//   on_message(ws-event Connect{conn}) → PUSH a greeting frame: ws-send Send{conn, b"welcome"}; Continue.
+//   on_message(ws-event Frame{conn,data}) → ECHO it back: ws-send Send{conn, data}; Continue.
+//   on_message(ws-event Disconnect{conn}) → Close (session done).
+//
+// DISPATCH: ws-event and request-head both arrive as on_message; dispatch on the ws-event contract-id
+// (else = the head → Upgrade). ws-event's inbound `Frame` is a VARIANT of `Event` (Event.Frame), not a
+// top-level `Frame` TYPE, so there is no name collision with http-request-body-stream/http-response-stream —
+// and neither ws contract defines a `Header`, so no CDZ0201 collision (no http-lib respond, no body-stream).
+// ws-send is a DISTINCT contract from ws-event so send-vs-receive dispatches by contract-id (design §6).
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Event, descriptor as ws-event-desc } from "ws-event"
+import { Send, descriptor as ws-send-desc } from "ws-send"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
+
+def ws-push(conn, data) =
+  // Emit a single outbound WS frame (ws-send effect); Continue the session.
+  { requests = [request(ws-send-desc().id,
+                       Value.encode(Send.Send({ conn = conn, data = data })),
+                       b"")],
+    outcome = Outcome.Continue }
+
+def on-message(msg) =
+  (if msg.contract == ws-event-desc().id then
+     (match (Value.decode(msg.payload) : Option(Event)) with
+      | Some(Event.Connect(c)) => ws-push(c.conn, b"welcome")
+      | Some(Event.Frame(f))   => ws-push(f.conn, f.data)
+      | _ =>
+          // Disconnect (or any terminal ws-event) → close the session.
+          { requests = [], outcome = Outcome.Close({ schema = ws-event-desc().id, reason = b"" }) })
+   else
+     // HEAD (any non-ws-event contract) → UPGRADE to a WebSocket (subprotocol "mcp"); Continue.
+     { requests = [request(body-mode-desc().id,
+                          Value.encode(BodyMode.Upgrade({ subprotocol = Option.Some("mcp") })),
+                          msg.token)],
+       outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }
