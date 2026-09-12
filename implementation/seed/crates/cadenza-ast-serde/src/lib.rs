@@ -657,36 +657,6 @@ mod canonical_value_form {
         );
     }
 
-    /// Wrap `value` in a root type-ascription `(: value SomeType)` — the reader must peel it.
-    fn ascribe(b: &mut Builder, value: StructId) -> StructId {
-        let colon = b.name(":");
-        let ty = b.name("SomeType");
-        b.list(vec![colon, value, ty])
-    }
-
-    #[test]
-    fn decodes_ascribed_root_record() {
-        let mut b = Builder::new();
-        let vx = int(&mut b, 5);
-        let fx = field(&mut b, "x", vx);
-        let vy = int(&mut b, 6);
-        let fy = field(&mut b, "y", vy);
-        let vl = string(&mut b, "asc");
-        let fl = field(&mut b, "label", vl);
-        let rec = b.compound(CompoundCtor::Record, &[fx, fy, fl]);
-        let asc = ascribe(&mut b, rec); // (: (record …) SomeType)
-        let arenas = b.finish(asc);
-        let got: Point = from_arenas(&arenas).expect("decode ascribed record");
-        assert_eq!(
-            got,
-            Point {
-                x: 5,
-                y: 6,
-                label: "asc".into()
-            }
-        );
-    }
-
     #[test]
     fn decodes_present_optional_as_bare_value() {
         // Platform/canonical convention for `Option`: a PRESENT optional field carries its BARE value

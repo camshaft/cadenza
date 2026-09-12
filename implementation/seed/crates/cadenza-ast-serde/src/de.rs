@@ -74,28 +74,8 @@ impl<'de> AstDeserializer<'de> {
         }
     }
 
-    /// This node with any leading type-ascription `(: value type)` peeled off — the canonical value-form
-    /// readers ignore the ascription token ("decode by structure, not names"; operator 2026-09-11), so we
-    /// do too. Iterates to peel nested ascriptions. Every node-access below goes through `cur()`, so an
-    /// ascribed value at ANY position decodes identically to a bare one — which is what lets this reader
-    /// replace a hand-written, ascription-tolerant platform decoder without changing the producer's bytes.
-    /// (This crate's own serializer never emits ascription, so `cur()` is a no-op on its own output.)
-    ///
-    /// ⏳ TRANSITIONAL (coordinated with `v-ascription-removal`, 2026-09-12): the ascription peel exists
-    /// ONLY to read CURRENT platform bytes that still carry `(: v T)` while ascription is being removed
-    /// fleet-wide (operator: "ascription nowhere in decode"). Once no producer emits the wrapper, DELETE
-    /// this peel (the loop below) + the `decodes_ascribed_root_record` test so the end state has ascription
-    /// nowhere in decode. Do NOT let this become permanent ascription-tolerance.
-    fn cur(&self) -> StructId {
-        let mut id = self.id;
-        while let Some(&inner) = self.arenas.as_form(id, ":").and_then(|tail| tail.first()) {
-            id = inner;
-        }
-        id
-    }
-
     fn node(&self) -> &'de Struct {
-        &self.arenas.structure[self.cur().0 as usize]
+        &self.arenas.structure[self.id.0 as usize]
     }
 
     /// The leaf at `id` if it is an `Atom`, else `None`.
@@ -107,7 +87,7 @@ impl<'de> AstDeserializer<'de> {
     }
 
     fn atom_leaf(&self) -> Result<&'de Leaf> {
-        self.leaf_at(self.cur())
+        self.leaf_at(self.id)
             .ok_or_else(|| Error::UnexpectedShape("expected a leaf atom, found a list".into()))
     }
 
@@ -134,11 +114,10 @@ impl<'de> AstDeserializer<'de> {
     /// accepts BOTH the native compound-type CONSTRUCTOR (the ctor-LEAF head) AND the shadowable
     /// `(record …)` NAME-alias head, so this reads legacy/persisted values as well as canonical ones.
     /// (The EMIT side is strict — [`crate::ser`] serializes ONLY native ctor-leaf compounds, never a
-    /// name/string head; that is the hard rule.) Reads through `cur()`, so a (transitionally) ascribed
-    /// compound is peeled.
+    /// name/string head; that is the hard rule.)
     fn compound_children(&self, expect: CompoundCtor) -> Result<&'de [StructId]> {
         self.arenas
-            .compound_form_of(self.cur(), expect)
+            .compound_form_of(self.id, expect)
             .ok_or_else(|| Error::UnexpectedShape(format!("expected a {expect:?} compound")))
     }
 
