@@ -330,11 +330,13 @@ dependencies = [
  "blake3",
  "bytes",
  "cadenza-ast",
+ "cadenza-ast-serde",
  "cdz-contract",
  "cdz-str",
  "futures-core",
  "futures-util",
  "num-bigint",
+ "serde",
  "tokio",
  "wasmtime",
 ]
