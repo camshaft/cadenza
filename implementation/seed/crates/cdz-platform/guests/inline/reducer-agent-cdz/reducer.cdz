@@ -1,0 +1,58 @@
+// A minimal 2-step AGENT reducer fixture (for the consumer's inc-8 agent/edges work): it exercises both
+// entry points + the request/response effect round-trip, inline (no host imports beyond the value-heap
+// runtime, like reducer-echo).
+//   - on-message: emit exactly ONE Request to a fixed TOOL contract (the agent's "tool call"), Continue.
+//   - on-response: on Ok(answer-bytes), emit ONE Request to a fixed SINK/output contract carrying the
+//     answer verbatim, then Close (schema=b"agent-out", reason=the answer) — the agent finished. On Err,
+//     Close (schema=b"agent-err") with a fixed reason.
+//   - on-notification: inert.
+// The tool/sink contract fields are FIXED TAG BYTES (Request.contract is raw list(u8) at the boundary), so
+// the driving host routes on the exact values `b"cadenza-fixture-agent-tool"` / `b"cadenza-fixture-agent-sink"`
+// — a fixture convention, not a computed ContractId. "Break" maps to the world.wit `close{schema,reason}`.
+world reducer-world =
+  | export guest =
+    | on-message : (msg : {contract: list(u8),
+                           sender: {reducer: list(u8), host: list(u8)},
+                           payload: list(u8),
+                           token: list(u8)})
+                 -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                     outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-response : (resp : {contract: list(u8),
+                             token: list(u8),
+                             answer: result(list(u8), variant(timeout, missing-handler, schema-violation, faulted))})
+                  -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                      outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-notification : (note : {contract: list(u8), payload: list(u8)})
+                      -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                          outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+
+type Outcome =
+  | Continue
+  | Close(Record(schema: Bytes, reason: Bytes))
+
+type Error =
+  | Timeout
+  | MissingHandler
+  | SchemaViolation
+  | Faulted
+
+// Step 1: the agent calls its tool — one request on the fixed tool contract, carrying the input; continue
+// (awaiting the tool's response).
+def on-message(msg) =
+  { requests = [{ contract = b"cadenza-fixture-agent-tool", payload = msg.payload, token = b"call-1", deadlineNanos = None }],
+    outcome = Outcome.Continue }
+
+// Step 2: the tool answered — emit the agent's output to the sink contract (the answer verbatim) and finish
+// (Close). On a runtime failure of the tool call, finish with an error reason and no output.
+def on-response(resp) =
+  match resp.answer with
+  | Ok(answer) =>
+      { requests = [{ contract = b"cadenza-fixture-agent-sink", payload = answer, token = b"out", deadlineNanos = None }],
+        outcome = Outcome.Close({ schema = b"agent-out", reason = answer }) }
+  | Err(_) =>
+      { requests = [], outcome = Outcome.Close({ schema = b"agent-err", reason = b"tool-call-failed" }) }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
