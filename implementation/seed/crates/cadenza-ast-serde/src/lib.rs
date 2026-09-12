@@ -532,3 +532,128 @@ mod migration_scenarios {
         assert_eq!(back, Renamed { x: 5 });
     }
 }
+
+#[cfg(test)]
+mod canonical_value_form {
+    //! FOUNDATION for the broad decoder-migration sweep (operator 2026-09-12: any struct decoding
+    //! binary-AST should use serde). The platform / `Value.encode` produce records with NAME-keyed
+    //! field pairs (`(record (= Name"field" v)…)`) — NOT the `Str`-keyed form this crate's own
+    //! serializer emits. These tests build the platform-canonical shape DIRECTLY via `Builder` (the
+    //! same primitives `cadenza_value::record` uses) and prove `from_arenas` decodes it into a derived
+    //! struct — i.e. a hand-written platform decoder can be replaced by `cadenza_ast_serde::from_bytes`
+    //! WITHOUT changing the producer's bytes. Where a platform convention (Option/enum/ctor-elision)
+    //! diverges, this module is where the compatibility gets pinned as the Deserializer is extended.
+
+    use crate::from_arenas;
+    use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix, StructId};
+    use serde::Deserialize;
+    use std::sync::Arc;
+
+    fn int(b: &mut Builder, v: i64) -> StructId {
+        b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(v),
+            radix: Radix::Dec,
+        })
+    }
+    fn string(b: &mut Builder, s: &str) -> StructId {
+        b.atom_leaf(Leaf::Str(Arc::from(s)))
+    }
+    /// A NAME-keyed field pair `(= Name"key" value)` — the platform's record-field form.
+    fn field(b: &mut Builder, key: &str, value: StructId) -> StructId {
+        let k = b.name(key);
+        b.field_pair(k, value)
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Point {
+        x: i32,
+        y: i32,
+        label: String,
+    }
+
+    #[test]
+    fn decodes_a_name_keyed_record() {
+        // Build `(record (= Name"x" 1) (= Name"y" 2) (= Name"label" "p"))` exactly as the platform's
+        // value-form builder would, then decode it via serde. Field keys are NAME atoms, not Str.
+        let mut b = Builder::new();
+        let vx = int(&mut b, 1);
+        let fx = field(&mut b, "x", vx);
+        let vy = int(&mut b, 2);
+        let fy = field(&mut b, "y", vy);
+        let vlabel = string(&mut b, "p");
+        let flabel = field(&mut b, "label", vlabel);
+        let rec = b.compound(CompoundCtor::Record, &[fx, fy, flabel]);
+        let arenas = b.finish(rec);
+        let got: Point = from_arenas(&arenas).expect("decode name-keyed record");
+        assert_eq!(
+            got,
+            Point {
+                x: 1,
+                y: 2,
+                label: "p".into()
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_with_fields_out_of_declaration_order() {
+        // The platform emits fields NAME-SORTED, not in declaration order; serde matches by key, so a
+        // reordered record still decodes. (label, x, y) order here vs (x, y, label) declared.
+        let mut b = Builder::new();
+        let vlabel = string(&mut b, "q");
+        let flabel = field(&mut b, "label", vlabel);
+        let vx = int(&mut b, 7);
+        let fx = field(&mut b, "x", vx);
+        let vy = int(&mut b, 8);
+        let fy = field(&mut b, "y", vy);
+        let rec = b.compound(CompoundCtor::Record, &[flabel, fx, fy]);
+        let arenas = b.finish(rec);
+        let got: Point = from_arenas(&arenas).expect("decode reordered record");
+        assert_eq!(
+            got,
+            Point {
+                x: 7,
+                y: 8,
+                label: "q".into()
+            }
+        );
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Config {
+        listen: String,
+        #[serde(default)]
+        credential: Option<String>,
+        inner: Nested,
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct Nested {
+        n: i32,
+    }
+
+    #[test]
+    fn decodes_omitted_optional_and_nested_record() {
+        // A platform record that OMITS an absent optional field (the common convention) + a NESTED
+        // record. `#[serde(default)]` on the Option fills None; the nested record decodes recursively.
+        let mut b = Builder::new();
+        let vlisten = string(&mut b, "127.0.0.1:8080");
+        let listen = field(&mut b, "listen", vlisten);
+        let vn = int(&mut b, 42);
+        let fn_ = field(&mut b, "n", vn);
+        let nrec = b.compound(CompoundCtor::Record, &[fn_]);
+        let inner = field(&mut b, "inner", nrec);
+        // NOTE: no `credential` field at all — it must default to None.
+        let rec = b.compound(CompoundCtor::Record, &[listen, inner]);
+        let arenas = b.finish(rec);
+        let got: Config = from_arenas(&arenas).expect("decode omitted-optional + nested record");
+        assert_eq!(
+            got,
+            Config {
+                listen: "127.0.0.1:8080".into(),
+                credential: None,
+                inner: Nested { n: 42 },
+            }
+        );
+    }
+}
