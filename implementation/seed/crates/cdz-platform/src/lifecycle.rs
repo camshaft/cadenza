@@ -120,7 +120,7 @@ impl Lifecycle {
 
 #[cfg(test)]
 mod tests {
-    use super::{lifecycle_contract, Lifecycle};
+    use super::{Lifecycle, lifecycle_contract};
     use crate::{Bytes, ContractId, ReducerId};
 
     fn cid(tag: &[u8]) -> ContractId {
