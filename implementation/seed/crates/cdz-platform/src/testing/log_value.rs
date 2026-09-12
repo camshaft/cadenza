@@ -37,8 +37,8 @@ use super::observation::{
     RunCall, SpawnInfo,
 };
 use crate::contract_value::{
-    as_ascribed, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
-    record_field, uint_leaf,
+    as_ascribed, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field,
+    uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Dir, EdgeKind, Error, Hash, HostId, Origin, ProgramHash, ReducerId,
