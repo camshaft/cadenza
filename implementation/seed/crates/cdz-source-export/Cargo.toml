@@ -1,5 +1,5 @@
-# cdz-brazil-projection — the RE-RUNNABLE projection tool that emits the Cadenza reducer-runtime
-# pieces as a self-contained, Brazil-vendorable Rust source tree (nix-build → Brazil, single source
+# cdz-source-export — the RE-RUNNABLE projection tool that emits the Cadenza reducer-runtime
+# pieces as a self-contained, vendorable Rust source tree (nix-build → external source, single source
 # of truth, refreshable — NOT a fork, NOT hand-codegen). Owned by the fleet vertical v-nix-projection.
 #
 # I1 (this crate's first capability): project the LIGHT "binary-AST value codec" tier — the crates
@@ -17,13 +17,13 @@
 # part of the compiler/gate. Zero external dependencies — std-only, hand-parsing the machine-generated
 # `Cargo.lock` — so it builds with no network fetch and no vendoring chicken-and-egg.
 [package]
-name = "cdz-brazil-projection"
+name = "cdz-source-export"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "cdz-brazil-projection"
+name = "cdz-source-export"
 path = "src/main.rs"
 
 [dependencies]

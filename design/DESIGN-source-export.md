@@ -1,19 +1,20 @@
-# DESIGN: Brazil projection — nix flake outputs → Brazil-vendorable Rust source
+# DESIGN: source export — nix flake outputs → vendorable Rust source
 
-Owner: `v-nix-projection` (subsystem `nix-flake`). Consumer: MembrainHivemind (a Brazil
-package that plugs the REAL Cadenza reducer as its per-event fold), via `v-hivemind`.
+Owner: `v-nix-projection` (subsystem `nix-flake`). First consumer: MembrainHivemind (a package
+that plugs the REAL Cadenza reducer as its per-event fold), via `v-hivemind` — but nothing here
+is consumer-specific; this is a generic source export.
 
 ## Problem
 
-MembrainHivemind builds under Amazon's Brazil, which has no nix. It needs the Cadenza
-reducer-runtime pieces as **vendorable Rust source** it can commit + build with cargo. The
-naive options are both bad:
+A downstream consumer builds in an environment with no nix (e.g. a cargo-only or corporate build
+system). It needs the Cadenza reducer-runtime pieces as **vendorable Rust source** it can commit +
+build with cargo. The naive options are both bad:
 
-- **nix-inside-Brazil** — Brazil has no nix; a non-starter.
+- **nix in the consumer's build** — the consumer has no nix; a non-starter.
 - **hand-codegen / a fork per piece** — drifts from Cadenza the moment either side changes.
 
 We want a **faithful, re-runnable PROJECTION**: a single source of truth (Cadenza's flake +
-its pinned inputs) from which the vendored Rust tree is regenerated on demand, so the Brazil
+its pinned inputs) from which the vendored Rust tree is regenerated on demand, so the exported
 copy can never silently drift.
 
 ## The three pieces to project (v-hivemind's request)
@@ -35,14 +36,19 @@ The pieces are already first-party Rust crates, pinned + vendored by the flake:
 projection reads the **same pinned inputs the flake builds from**, so drift is impossible by
 construction:
 
-- **Sources** are copied verbatim from the repo crates.
+- **Sources** are copied verbatim from the repo crates. Build-time-GENERATED code that a projected
+  crate needs (e.g. `cdz-platform/src/contracts/`, produced by the `cdzPlatformContracts` codegen and
+  gitignored in-repo) is overlaid into the projected crate, exactly as the flake's own builds do — so
+  the projected tree is codegen-complete and compiles standalone.
+- The projected **crate SET** is *auto-discovered* from the tier's root crates' manifests (transitive
+  `path = "../…"` sibling deps), so it auto-adapts if an upstream crate gains a first-party dep.
 - The projected **`Cargo.lock`** is *derived by filtering* the repo's pinned root `Cargo.lock`
   to the transitive, **version-aware** dependency closure of the projected crates — no fresh
   resolution, so the emitted versions are exactly what the nix build pins. Version-aware so
   duplicate-version crates (e.g. three `syn`s in the root lock) are not over-included; the
   emitted lock stays minimal.
 
-A small std-only tool (`cdz-brazil-projection`, an excluded zero-dep crate) performs the copy
+A small std-only tool (`cdz-source-export`, an excluded zero-dep crate) performs the copy
 + lock-filter; a nix derivation wraps it so a refresh is one command.
 
 ## Tiers (kept separate so wasmtime never leaks into the light path)
@@ -54,7 +60,7 @@ in **separate opt-in tiers**:
 - **Tier A — codec (LIGHT, DELIVERED).** `cadenza-ast` + `cadenza-value` + `cadenza-ast-serde`.
   No wasmtime/tokio/network; `cadenza-ast`'s core is `no_std`. This is piece #3 (the value
   codec) and the foundation the other pieces cross their value boundaries through.
-- **Tier B — reducer (HEAVY, PLANNED).** `cdz-platform` (with its `host` feature = wasmtime 37
+- **Tier B — reducer (HEAVY, DELIVERED).** `cdz-platform` (with its `host` feature = wasmtime 37
   + cranelift + tokio) + first-party deps `cadenza-ast` / `cdz-contract` / `cdz-str` + the WIT
   world (`cdz-platform/wit/world.wit`). This is pieces #1 + #2: the reducer-world host-import
   traits (`BlobStore` / `KvStore` / `ReducerGraph` — the consumer plugs its own impls) and the
@@ -65,13 +71,13 @@ in **separate opt-in tiers**:
 
 ## Mechanics
 
-- **Tool:** `cargo run -p cdz-brazil-projection -- --repo <cadenza> --out <tree>`.
-- **Refresh (drift-proof, from the flake):** `nix build .#brazil-codec-projection && cp -r
-  result <brazil-ws>`.
-- **Package:** `packages.brazil-codec-projection` runs the tool against the flake's pinned
+- **Tool:** `cargo run -p cdz-source-export -- --repo <cadenza> --out <tree>`.
+- **Refresh (drift-proof, from the flake):** `nix build .#codec-source-export && cp -r
+  result <workspace>`.
+- **Package:** `packages.codec-source-export` runs the tool against the flake's pinned
   sources → a self-contained cargo workspace at `$out` (`crates/<name>` + workspace
   `Cargo.toml` + filtered `Cargo.lock` + `REFRESH.md`).
-- **Gate coverage:** `checks.<sys>.brazil-codec-projection` offline-builds the projected tree
+- **Gate coverage:** `checks.<sys>.codec-source-export` offline-builds the projected tree
   against `seedCargoVendor` — a green proves the tree is self-contained and vendorable with the
   exact pinned versions. STANDALONE (not in `local-gate`, like the `cdz-http-*` checks) so a
   projection tool never burdens the fleet's merge gate.
@@ -83,9 +89,11 @@ in **separate opt-in tiers**:
 
 ## Status
 
-- **Tier A (codec):** DELIVERED — tool (#8858) + nix package/check (#8860).
-- **Tier B (reducer):** planned; blocked on the consumer's exact `ReducerRuntime::fold` surface
-  (MembrainHivemind's `amzn-membrain-hivemind-reducer`, defined at its build increment 7). The
-  intended shape: the consumer depends on the projected `cdz-platform` host surface and wraps
-  `WasmReducer` in its `ReducerRuntime::fold`, plugging its own CAS/heap/delegate impls into the
-  host-import traits via a `ctx`.
+- **Tier A (codec):** DELIVERED — tool (#8858) + nix package/check (#8860). Refresh:
+  `nix build .#codec-source-export`.
+- **Tier B (reducer):** DELIVERED — `--tier reducer` (#8867) + nix package/check (#8868). Refresh:
+  `nix build .#reducer-source-export`; build the projected tree with `--features cdz-platform/host`.
+  The consumer depends on the projected `cdz-platform` host surface and wraps `WasmReducer` in its
+  `ReducerRuntime::fold`, plugging its own CAS/heap/delegate impls into the host-import traits.
+- **Crate-name prefix:** a `--prefix <P>` option (namespacing the exported crate names) is planned so
+  a consumer can vendor the crates under a namespaced name to avoid collisions.

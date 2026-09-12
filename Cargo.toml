@@ -82,13 +82,13 @@ exclude = [
     # try to load it as a seed member (it has no member Cargo.toml yet, and the driver, when added, is a heavy
     # excluded crate like its siblings). nix reads the programs/ tree directly.
     "implementation/seed/crates/cdz-http-conformance",
-    # `cdz-brazil-projection` (v-nix-projection) is the RE-RUNNABLE tool that projects the Cadenza
-    # reducer-runtime pieces into a self-contained, Brazil-vendorable Rust source tree. Excluded so the
+    # `cdz-source-export` (v-nix-projection) is the RE-RUNNABLE tool that projects the Cadenza
+    # reducer-runtime pieces into a self-contained, vendorable Rust source tree. Excluded so the
     # `crates/*` glob does not load it as a seed member — it is a host-side TOOL, not compiler/gate code,
     # with its OWN `[workspace]` + leaf `Cargo.lock` and ZERO external deps (std-only). Gated by its own
-    # dedicated check `nix build .#checks.<sys>.cdz-brazil-projection` (a later slice), same discipline as
+    # dedicated check `nix build .#checks.<sys>.cdz-source-export` (a later slice), same discipline as
     # the excluded http-outpost siblings.
-    "implementation/seed/crates/cdz-brazil-projection",
+    "implementation/seed/crates/cdz-source-export",
 ]
 
 [profile.dev]
