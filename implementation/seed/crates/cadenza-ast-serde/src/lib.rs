@@ -421,7 +421,7 @@ mod tests {
                 })
                 .unwrap()
             ),
-            "(Named (= \"name\" \"sq\") (= \"sides\" 4))"
+            "(Named (record (= \"name\" \"sq\") (= \"sides\" 4)))"
         );
     }
 }
@@ -741,5 +741,42 @@ mod canonical_value_form {
         let arenas2 = b2.finish(count);
         let got2: Status = from_arenas(&arenas2).expect("decode payload variant");
         assert_eq!(got2, Status::Count(5));
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    enum Event {
+        Exited {
+            reducer: u32,
+            reason: String,
+        },
+        #[allow(dead_code)]
+        Crashed {
+            reducer: u32,
+        },
+    }
+
+    #[test]
+    fn decodes_schema_sum_of_record_variant() {
+        // The canonical sum-of-record shape a `.cdz` schema uses (e.g. `type Event =
+        // Exited(Record(reducer, reason)) | …`): `(Exited (record (= reducer ..) (= reason ..)))`. A Rust
+        // STRUCT variant decodes from it directly — no need to model it as a newtype-of-struct. (Fields
+        // are plain here to isolate the shape from the hash-type serde prerequisite.)
+        let mut b = Builder::new();
+        let vred = int(&mut b, 7);
+        let fred = field(&mut b, "reducer", vred);
+        let vrs = string(&mut b, "boom");
+        let frs = field(&mut b, "reason", vrs);
+        let rec = b.compound(CompoundCtor::Record, &[fred, frs]);
+        let head = b.name("Exited");
+        let v = b.list(vec![head, rec]);
+        let arenas = b.finish(v);
+        let got: Event = from_arenas(&arenas).expect("decode Variant(Record) struct-variant");
+        assert_eq!(
+            got,
+            Event::Exited {
+                reducer: 7,
+                reason: "boom".into()
+            }
+        );
     }
 }

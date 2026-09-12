@@ -696,9 +696,24 @@ impl<'de> VariantAccess<'de> for VariantReader<'de> {
     where
         V: Visitor<'de>,
     {
+        // The variant payload is a single Record value: `(VariantName (record (= "field" v)…))` — the
+        // canonical `Variant(Record(…))` sum shape. Read that record's field pairs as the map.
+        let record = match self.payload {
+            [only] => *only,
+            _ => {
+                return Err(Error::UnexpectedShape(
+                    "expected a struct variant's single record payload".into(),
+                ));
+            }
+        };
+        let entries = AstDeserializer {
+            arenas: self.arenas,
+            id: record,
+        }
+        .compound_children(CompoundCtor::Record)?;
         visitor.visit_map(MapReader {
             arenas: self.arenas,
-            entries: self.payload,
+            entries,
             idx: 0,
             value: None,
         })
