@@ -779,4 +779,51 @@ mod canonical_value_form {
             }
         );
     }
+
+    /// A record headed by the shadowable NAME alias `record` (a legacy/alias head), not the native
+    /// ctor leaf. Accepted on DECODE (operator: legacy inputs are fine to accept); never EMITTED.
+    fn name_record(b: &mut Builder, fields: &[StructId]) -> StructId {
+        let head = b.name("record");
+        let mut items = vec![head];
+        items.extend_from_slice(fields);
+        b.list(items)
+    }
+
+    #[test]
+    fn decodes_legacy_name_alias_headed_record() {
+        // The decoder tolerates a `(record (= …)…)` NAME-alias head (legacy/alias form) as well as the
+        // native ctor-leaf head — emit stays native-only, decode is lenient.
+        let mut b = Builder::new();
+        let vx = int(&mut b, 1);
+        let fx = field(&mut b, "x", vx);
+        let vy = int(&mut b, 2);
+        let fy = field(&mut b, "y", vy);
+        let vl = string(&mut b, "alias");
+        let fl = field(&mut b, "label", vl);
+        let rec = name_record(&mut b, &[fx, fy, fl]);
+        let arenas = b.finish(rec);
+        let got: Point = from_arenas(&arenas).expect("decode legacy name-alias-headed record");
+        assert_eq!(
+            got,
+            Point {
+                x: 1,
+                y: 2,
+                label: "alias".into()
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_legacy_name_alias_headed_list() {
+        // A Vec decodes from a `(list e…)` headed by the Name alias "list" (legacy form) too.
+        let mut b = Builder::new();
+        let e1 = int(&mut b, 10);
+        let e2 = int(&mut b, 20);
+        let e3 = int(&mut b, 30);
+        let head = b.name("list");
+        let lst = b.list(vec![head, e1, e2, e3]);
+        let arenas = b.finish(lst);
+        let got: Vec<i32> = from_arenas(&arenas).expect("decode legacy name-alias-headed list");
+        assert_eq!(got, vec![10, 20, 30]);
+    }
 }
