@@ -425,3 +425,110 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod migration_scenarios {
+    // Real-world derived-struct behaviors the platform/tooling migrations rely on: optional fields
+    // via #[serde(default)], unknown-field skipping, deny_unknown_fields, and #[serde(rename)] for
+    // kebab-case wire keys. These pin that the format handles the kinds of structs a config / host
+    // wire migration produces — not just the tidy round-trip cases.
+    use crate::{from_bytes, to_arenas, to_bytes};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize)]
+    struct OnlyA {
+        a: i32,
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct WithDefault {
+        a: i32,
+        #[serde(default)]
+        b: i32,
+    }
+
+    #[test]
+    fn missing_field_uses_serde_default() {
+        // `OnlyA` serializes to a record with just `a`; deserializing as `WithDefault` must fill `b`
+        // from #[serde(default)] rather than erroring on the absent key.
+        let bytes = to_bytes(&OnlyA { a: 1 }).unwrap();
+        let got: WithDefault = from_bytes(&bytes).unwrap();
+        assert_eq!(got, WithDefault { a: 1, b: 0 });
+    }
+
+    #[test]
+    fn genuinely_missing_required_field_errors() {
+        // Without a default, an absent required field is a hard error (serde derive's job; our reader
+        // simply must not fabricate it).
+        #[derive(Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct NeedsBoth {
+            a: i32,
+            b: i32,
+        }
+        let bytes = to_bytes(&OnlyA { a: 1 }).unwrap();
+        let got: Result<NeedsBoth, _> = from_bytes(&bytes);
+        assert!(got.is_err(), "missing required `b` must error, got {got:?}");
+    }
+
+    #[derive(Serialize)]
+    struct Extra {
+        a: i32,
+        extra: i32,
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    struct JustA {
+        a: i32,
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored_by_default() {
+        // A record carrying an unknown `extra` field deserializes into a struct that does not declare
+        // it — serde's default skips unknown fields (which drives our deserialize_ignored_any).
+        let bytes = to_bytes(&Extra { a: 7, extra: 99 }).unwrap();
+        let got: JustA = from_bytes(&bytes).unwrap();
+        assert_eq!(got, JustA { a: 7 });
+    }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    #[serde(deny_unknown_fields)]
+    struct StrictA {
+        a: i32,
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_extra() {
+        let bytes = to_bytes(&Extra { a: 7, extra: 99 }).unwrap();
+        let got: Result<StrictA, _> = from_bytes(&bytes);
+        assert!(
+            got.is_err(),
+            "deny_unknown_fields must reject the extra field, got {got:?}"
+        );
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Renamed {
+        #[serde(rename = "the-field")]
+        x: i32,
+    }
+
+    #[test]
+    fn rename_changes_the_record_key() {
+        // The wire field name follows #[serde(rename)] — needed for kebab-case wire keys (e.g.
+        // `cas-url`, `root-router` in the http control frames).
+        let arenas = to_arenas(&Renamed { x: 5 }).unwrap();
+        let has_renamed_key = arenas
+            .leaves
+            .iter()
+            .any(|l| matches!(l, cadenza_ast::ast::Leaf::Str(s) if &**s == "the-field"));
+        assert!(
+            has_renamed_key,
+            "the renamed key 'the-field' must appear as a Str leaf"
+        );
+        // And it still round-trips by the renamed key.
+        let bytes = to_bytes(&Renamed { x: 5 }).unwrap();
+        let back: Renamed = from_bytes(&bytes).unwrap();
+        assert_eq!(back, Renamed { x: 5 });
+    }
+}
