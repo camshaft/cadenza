@@ -639,6 +639,12 @@
         # `cargo test --workspace --no-run`) → ∪ `test -p C` == the old whole-workspace run.
         rootWorkspaceCrates = {
           cadenza-ast = "implementation/seed/crates/cadenza-ast";
+          # cadenza-ast-serde (v-ast-serde P1): the serde data-format whose wire IS the canonical
+          # binary-AST (deps only cadenza-ast + external serde). A ROOT workspace member (crates/*
+          # glob), so it MUST register here or the crane deps-layer src omits its Cargo.toml and the
+          # workspace fails to load; also needs a per-crate clippy/test crane (testCrateCoverageAssert
+          # requires every member have one).
+          cadenza-ast-serde = "implementation/seed/crates/cadenza-ast-serde";
           # cadenza-value (v-reducer-targets 2026-09-11): the canonical binary-AST VALUE-FORM toolkit
           # (record/list/ctor builders + readers) extracted out of cdz-http-protocol so ONE codec serves the
           # http control-plane frames AND a reducer build-guest emitting a contract response as a typed value
@@ -1108,6 +1114,11 @@
               # Request/Query encode/decode codec builds on cadenza_ast::Builder + cadenza_ast::codec).
               # cadenza-ast is a foundational leaf (no workspace path-deps), so the closure is the two.
               cadenza-compile-abi = [ "cadenza-ast" "cadenza-compile-abi" ];
+              # cadenza-ast-serde (v-ast-serde P1) is the serde data-format whose wire IS the canonical
+              # binary-AST: its ONLY first-party path-dep is cadenza-ast (serde is external; the derive
+              # macros are an external dev-dep). Pinning its closure here keeps the serde convenience
+              # layer a thin leaf — a future accidental heavy first-party dep would trip this assert.
+              cadenza-ast-serde = [ "cadenza-ast" "cadenza-ast-serde" ];
               # corpus-case-titles (#7646) deps cadenza-syntax-sexpr + cadenza-syntax-core (the lean sexpr
               # reader surface); cadenza-syntax-sexpr pulls cadenza-ast + cadenza-syntax-core. NO cdz.
               corpus-case-titles = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "corpus-case-titles" ];
@@ -7187,6 +7198,7 @@
             # workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
             perCrateClippyCrane = {
               clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
+              clippy-cadenza-ast-serde = mkCrateClippyCrane { crate = "cadenza-ast-serde"; };
               clippy-cadenza-value = mkCrateClippyCrane { crate = "cadenza-value"; };
               clippy-cadenza-compile-abi = mkCrateClippyCrane { crate = "cadenza-compile-abi"; };
               clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
@@ -7256,6 +7268,10 @@
             # testCrateCoverageAssert (below) so a new workspace member can't silently escape the test set.
             perCrateTestCrane = {
               test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
+              # cadenza-ast-serde (v-ast-serde P1): 11 inline round-trip tests (primitives, floats,
+              # option/unit, seq/tuple, maps, structs, enums, range/malformed rejection, determinism);
+              # no fixture files → no extraSrc. REQUIRED by testCrateCoverageAssert as a new member.
+              test-cadenza-ast-serde = mkCrateTestCrane { crate = "cadenza-ast-serde"; };
               test-cadenza-value = mkCrateTestCrane { crate = "cadenza-value"; };
               # cadenza-compile-abi: runs its unit tests (7). Leaf, zero deps. REQUIRED by testCrateCoverageAssert.
               test-cadenza-compile-abi = mkCrateTestCrane { crate = "cadenza-compile-abi"; };
