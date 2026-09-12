@@ -714,4 +714,32 @@ mod canonical_value_form {
             }
         );
     }
+
+    #[derive(Deserialize, PartialEq, Debug)]
+    enum Status {
+        Idle,
+        Count(u32),
+    }
+
+    #[test]
+    fn decodes_value_form_sum_variants() {
+        // A sum variant is `bare_ctor` = `(<VariantName> payload…)`, a NAME-headed list — matching this
+        // crate's own enum form. A NULLARY variant carries the `unit` atom: `(Idle unit)`.
+        let mut b = Builder::new();
+        let idle_head = b.name("Idle");
+        let unit_atom = b.name("unit");
+        let idle = b.list(vec![idle_head, unit_atom]);
+        let arenas = b.finish(idle);
+        let got: Status = from_arenas(&arenas).expect("decode nullary (Name unit) variant");
+        assert_eq!(got, Status::Idle);
+
+        // A payload variant: `(Count 5)`.
+        let mut b2 = Builder::new();
+        let count_head = b2.name("Count");
+        let five = int(&mut b2, 5);
+        let count = b2.list(vec![count_head, five]);
+        let arenas2 = b2.finish(count);
+        let got2: Status = from_arenas(&arenas2).expect("decode payload variant");
+        assert_eq!(got2, Status::Count(5));
+    }
 }
