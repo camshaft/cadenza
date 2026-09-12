@@ -2641,6 +2641,31 @@
           grep -q '^reducer-echo=' ${reducerEchoComponent}/hashes.env || { echo "hashes.env missing reducer-echo entry"; exit 1; }
           echo "ok: reducer-echo component (valid wasm magic + ProgramHash + .gitattributes LFS)" > "$out"
         '';
+        # reducerFaultFixtures (v-nix-projection, for v-hivemind inc-7/8 fault coverage): two reducer-world
+        # fault fixtures so the consumer can e2e-test the #8882 ReducerFault classification —
+        #   - reducer-trap: on-message calls the `trap` primitive (→ unconditional wasm unreachable), so a
+        #     driving host observes a GUEST TRAP → FoldError::GuestCrashed (the inline reducer-trap-cdz guest).
+        #   - reducer-state: the existing reducer-world guest that calls the `state` host import (get/put/
+        #     delete); drive it against a fault-injecting KvStore that Errs → the trappable host import unwinds
+        #     → FoldError::HostBackend (retry). (The Err-injecting store is the consumer's ~10-line test decorator
+        #     over the projected cdz-platform KvStore trait — the guest is the projectable half.)
+        # Shipped via git-LFS like the echo fixture. SEPARATE from the runtime pins (test fixtures).
+        reducerFaultFixtures = pkgs.runCommand "reducer-fault-fixtures" { } ''
+          mkdir -p "$out/components"
+          cp ${cadenzaGuests."reducer-trap-cdz"} "$out/components/reducer-trap.wasm"
+          echo "reducer-trap=$(cat ${hashOf cadenzaGuests."reducer-trap-cdz" "reducer-trap-hash"})" >> "$out/components/hashes.env"
+          cp ${cadenzaGuests."reducer-state-cdz"} "$out/components/reducer-state.wasm"
+          echo "reducer-state=$(cat ${hashOf cadenzaGuests."reducer-state-cdz" "reducer-state-hash"})" >> "$out/components/hashes.env"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        reducerFaultFixturesCheck = pkgs.runCommand "reducer-fault-fixtures-check" { } ''
+          for w in reducer-trap reducer-state; do
+            magic=$(head -c 4 ${reducerFaultFixtures}/components/$w.wasm | od -An -tx1 | tr -d ' \n')
+            [ "$magic" = "0061736d" ] || { echo "$w.wasm not a wasm module (magic $magic)"; exit 1; }
+            grep -q "^$w=" ${reducerFaultFixtures}/components/hashes.env || { echo "hashes.env missing $w entry"; exit 1; }
+          done
+          echo "ok: reducer-fault-fixtures (reducer-trap + reducer-state, valid wasm + ProgramHashes + LFS)" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7138,6 +7163,10 @@
         # reducer-echo-component (v-nix-projection, for v-hivemind inc-7): a minimal reducer-echo wasm blob
         # (git-LFS) test fixture to validate the real WasmReducer fold path in a Brazil test.
         packages.reducer-echo-component = reducerEchoComponent;
+        # reducer-fault-fixtures (v-nix-projection, for v-hivemind): reducer-trap (traps → GuestCrashed) +
+        # reducer-state (calls state → HostBackend when the backend Errs) wasm blobs (git-LFS) for the
+        # consumer's e2e ReducerFault classification test.
+        packages.reducer-fault-fixtures = reducerFaultFixtures;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8815,6 +8844,9 @@
             # reducer-echo-component: the echo test-fixture blob is a valid wasm module + has its ProgramHash.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-echo-component`.
             reducer-echo-component = reducerEchoComponentCheck;
+            # reducer-fault-fixtures: reducer-trap + reducer-state blobs are valid wasm + have ProgramHashes.
+            # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-fault-fixtures`.
+            reducer-fault-fixtures = reducerFaultFixturesCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
