@@ -13,9 +13,9 @@
 //! Values decode purely by STRUCTURE, never by a type/field NAME: a record is a `#record`, a list a
 //! `#list`, a variant a `(<Ctor> …)`. Encode via [`finish_value`] — the ONLY encode entry point: the
 //! bare canonical value form, with NO root type-ascription wrapper (operator directive 2026-09-12: no
-//! type-ascription anywhere in the value encoding). The readers remain tolerant of a legacy root
-//! ascription `(: <value> <Type>)` via [`unascribe`] — so any bytes still carrying one decode fine —
-//! but nothing in this codec EMITS one.
+//! type-ascription anywhere in the value encoding). Type-ascription is now gone from BOTH ends: nothing
+//! EMITS a `(: <value> <Type>)` frame and the readers no longer PEEL one — decode is purely structural.
+//! ([`unascribe`] is retained under its historical name but now only peels reader `(comment …)` wrappers.)
 
 use bytes::Bytes;
 use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
@@ -31,9 +31,9 @@ pub use cadenza_ast::ast::{Arenas, Builder as ValueBuilder, StructId as ValueId}
 /// ascription wrapper**. This is the SOLE encode entry point: the payload is the bare canonical value
 /// form, decoded purely by STRUCTURE (a record is a `#record`, a list is a `#list`, a variant is a
 /// `(<Ctor> …)` — never by a type/field NAME carried in a `(: value Type)` tag). The structural readers
-/// below (`record_field`, `read_list`, `read_ctor`, …) decode this form directly; they also stay
-/// tolerant of a legacy root ascription via [`unascribe`], but nothing here emits one (operator
-/// directive 2026-09-12: no type-ascription anywhere in the value encoding).
+/// below (`record_field`, `read_list`, `read_ctor`, …) decode this form directly. Type-ascription is
+/// gone from both ends: nothing here emits a `(: value Type)` frame and the readers no longer peel one
+/// (operator directive 2026-09-12: no type-ascription anywhere in the value encoding).
 #[must_use]
 pub fn finish_value(b: Builder, value: StructId) -> Bytes {
     let arenas = b.finish(value);
@@ -102,24 +102,20 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
     cadenza_ast::codec::decode(bytes)
 }
 
-/// The value inside a root ascription `(: <value> <ty>)`, ignoring the type token.
-fn as_ascribed(arenas: &Arenas, id: StructId) -> Option<StructId> {
-    let inner = arenas.as_form(id, ":")?;
-    (inner.len() == 2).then_some(inner[0])
-}
-
-/// Strip an optional root ascription `(: value ty)` AND any reader comment wrappers `(comment "…" form)` /
-/// `(comment-after "…" form)`, returning the underlying value. A run-spec compiled from ML surface by
-/// `cdz convert --to binary` carries a doc comment above its root value as a `(comment …)` wrapper (and
-/// values may be ascribed); peeling both — to a fixpoint, since they can nest in any order — lets the
-/// structural readers see the value regardless. A value built by [`ValueBuilder`] (no comment nodes) is
-/// unaffected. Named `unascribe` for compatibility; it now also peels comments.
+/// Strip any reader comment wrappers `(comment "…" form)` / `(comment-after "…" form)`, returning the
+/// underlying value. A run-spec compiled from ML surface by `cdz convert --to binary` carries a doc
+/// comment above its root value as a `(comment …)` wrapper; peeling it — to a fixpoint, since comments
+/// can nest — lets the structural readers see the value. A value built by [`ValueBuilder`] (no comment
+/// nodes) is unaffected.
+///
+/// Historically this ALSO peeled a root type-ascription `(: value ty)`; that peel was REMOVED (operator
+/// directive 2026-09-12: no type-ascription in the value encoding — nothing emits `(: value T)` anymore,
+/// so nothing decodes it either). The name is kept for call-site compatibility; it now ONLY peels comments.
 #[must_use]
 pub fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
     let mut id = id;
     loop {
-        let peeled = arenas.peel_comments(id);
-        let next = as_ascribed(arenas, peeled).unwrap_or(peeled);
+        let next = arenas.peel_comments(id);
         if next == id {
             return id;
         }
@@ -127,7 +123,7 @@ pub fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
     }
 }
 
-/// The value of a record's field named `name` (ascription-tolerant on `id`).
+/// The value of a record's field named `name` (comment-tolerant on `id`).
 #[must_use]
 pub fn record_field(arenas: &Arenas, id: StructId, name: &str) -> Option<StructId> {
     let fields = arenas.compound_form_of(unascribe(arenas, id), CompoundCtor::Record)?;
@@ -137,13 +133,13 @@ pub fn record_field(arenas: &Arenas, id: StructId, name: &str) -> Option<StructI
     })
 }
 
-/// The members of a `#list(…)` value, or `None` if `id` is not a list (ascription/comment-tolerant).
+/// The members of a `#list(…)` value, or `None` if `id` is not a list (comment-tolerant).
 #[must_use]
 pub fn read_list(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     arenas.compound_form_of(unascribe(arenas, id), CompoundCtor::List)
 }
 
-/// The head constructor name of a `(<Ctor> …)` value (ascription-tolerant), or `None` if not a ctor form.
+/// The head constructor name of a `(<Ctor> …)` value (comment-tolerant), or `None` if not a ctor form.
 #[must_use]
 pub fn read_ctor(arenas: &Arenas, id: StructId) -> Option<&str> {
     match arenas.get(unascribe(arenas, id)) {
@@ -153,7 +149,7 @@ pub fn read_ctor(arenas: &Arenas, id: StructId) -> Option<&str> {
 }
 
 /// The payload of a constructor application `(<Ctor> <payload>…)` — the elements after the head
-/// (ascription-tolerant), or `None` if not a ctor form.
+/// (comment-tolerant), or `None` if not a ctor form.
 #[must_use]
 pub fn ctor_payload(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     match arenas.get(unascribe(arenas, id)) {
@@ -162,13 +158,13 @@ pub fn ctor_payload(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
     }
 }
 
-/// A `String` leaf's text (ascription/comment-tolerant).
+/// A `String` leaf's text (comment-tolerant).
 #[must_use]
 pub fn read_str(arenas: &Arenas, id: StructId) -> Option<String> {
     arenas.as_str(unascribe(arenas, id)).map(str::to_string)
 }
 
-/// A `Bytes` leaf's bytes (ascription/comment-tolerant).
+/// A `Bytes` leaf's bytes (comment-tolerant).
 #[must_use]
 pub fn read_bytes(arenas: &Arenas, id: StructId) -> Option<Bytes> {
     match arenas.get(unascribe(arenas, id)) {
@@ -181,7 +177,7 @@ pub fn read_bytes(arenas: &Arenas, id: StructId) -> Option<Bytes> {
 }
 
 /// An integer leaf's value as a `u64`, or `None` if not an integer / negative / too large
-/// (ascription/comment-tolerant).
+/// (comment-tolerant).
 #[must_use]
 pub fn read_uint(arenas: &Arenas, id: StructId) -> Option<u64> {
     match arenas.get(unascribe(arenas, id)) {
@@ -193,7 +189,7 @@ pub fn read_uint(arenas: &Arenas, id: StructId) -> Option<u64> {
     }
 }
 
-/// A boolean leaf's value (ascription/comment-tolerant). A surface `true` / `false` encodes as a
+/// A boolean leaf's value (comment-tolerant). A surface `true` / `false` encodes as a
 /// `Leaf::Bool` — NOT a `Leaf::Name` — so it must be read through [`Arenas::as_bool`], not `as_name`.
 #[must_use]
 pub fn read_bool(arenas: &Arenas, id: StructId) -> Option<bool> {
@@ -230,99 +226,55 @@ mod tests {
         assert_eq!(read_uint(&arenas, n), Some(200));
     }
 
-    /// The core mandate premise: decode is invariant to a root ascription. The codec no longer EMITS
-    /// one (there is only [`finish_value`]), but the readers stay tolerant of legacy bytes that carry a
-    /// `(: <value> <Type>)` wrapper — so encode the SAME value both ways (ascription-free via
-    /// [`finish_value`], and with a manually-built root ascription) and assert every structural reader
-    /// returns the IDENTICAL result on both. Also pin that the ascription-free form carries NO wrapper
-    /// (its decoded root IS the record directly, needing no `unascribe`), while the ascribed form's root
-    /// is the `(: …)` list that `unascribe` peels. This pins the reader tolerance that keeps legacy
-    /// bytes decodable after the emitter was removed.
+    /// Type-ascription tolerance was REMOVED (operator directive 2026-09-12): the codec emits no
+    /// `(: value T)` frame AND the readers no longer PEEL one. Pin both halves: a bare value decodes
+    /// structurally as before, and a value that DOES carry a manually-built root `(: value Type)` is NOT
+    /// transparently unwrapped — the readers see the `:`-headed list, so `unascribe` is a no-op on it and
+    /// `record_field` misses. This guards against a future change silently re-introducing ascription
+    /// tolerance. (Comment-wrapper peeling is retained — see `readers_see_through_reader_comment_wrappers`.)
     #[test]
-    fn structural_decode_is_invariant_to_root_ascription() {
-        // Build a nested value: a record with a string field, an int field, a list, and a variant —
-        // covering record/list/ctor/str/int readers in one shape.
+    fn readers_do_not_peel_a_root_ascription() {
         fn build(b: &mut Builder) -> StructId {
             let name = str_leaf(b, "widget");
             let count = uint_leaf(b, 42);
-            let e0 = uint_leaf(b, 1);
-            let e1 = uint_leaf(b, 2);
-            let items = list_value(b, vec![e0, e1]);
-            let payload = uint_leaf(b, 7);
-            let tag = bare_ctor(b, "Some", vec![payload]);
-            record(
-                b,
-                vec![
-                    ("name", name),
-                    ("count", count),
-                    ("items", items),
-                    ("tag", tag),
-                ],
-            )
+            record(b, vec![("name", name), ("count", count)])
         }
 
+        // A bare value decodes structurally, and `unascribe` is a no-op on it.
         let mut ba = Builder::new();
         let va = build(&mut ba);
-        let free = finish_value(ba, va); // ascription-free
+        let bare = decode(&finish_value(ba, va)).expect("bare decodes");
+        assert_eq!(
+            read_str(&bare, record_field(&bare, bare.root, "name").unwrap()).as_deref(),
+            Some("widget")
+        );
+        assert_eq!(
+            unascribe(&bare, bare.root),
+            bare.root,
+            "nothing to peel on a bare value"
+        );
 
+        // A value wrapped in a root `(: <record> Widget)` is NOT peeled: the root stays the `:` list, so
+        // the structural readers do not see the record through it and `unascribe` leaves it untouched.
         let mut bb = Builder::new();
         let vb = build(&mut bb);
-        // Manually build a legacy root ascription `(: <value> Widget)` — the emitter is gone, but the
-        // readers must still decode bytes shaped this way.
         let colon = bb.name(":");
         let tyname = bb.name("Widget");
         let root_ascription = bb.list(vec![colon, vb, tyname]);
-        let ascribed = finish_value(bb, root_ascription);
-
-        assert_ne!(
-            free, ascribed,
-            "the two encodings differ in bytes (one carries the tag)"
-        );
-
-        let af = decode(&free).expect("ascription-free decodes");
-        let ax = decode(&ascribed).expect("ascribed decodes");
-
-        // Structural invariance: every reader agrees across the two encodings.
-        for a in [&af, &ax] {
-            assert_eq!(
-                read_str(a, record_field(a, a.root, "name").unwrap()).as_deref(),
-                Some("widget")
-            );
-            assert_eq!(
-                read_uint(a, record_field(a, a.root, "count").unwrap()),
-                Some(42)
-            );
-            let items = read_list(a, record_field(a, a.root, "items").unwrap()).unwrap();
-            let got: Vec<u64> = items.iter().map(|&e| read_uint(a, e).unwrap()).collect();
-            assert_eq!(got, vec![1, 2]);
-            let tag = record_field(a, a.root, "tag").unwrap();
-            assert_eq!(read_ctor(a, tag), Some("Some"));
-            assert_eq!(read_uint(a, ctor_payload(a, tag).unwrap()[0]), Some(7));
-        }
-
-        // The ascription-free root IS the record directly — no wrapper to peel.
-        assert!(
-            af.compound_form_of(af.root, CompoundCtor::Record).is_some(),
-            "ascription-free root is the bare #record"
-        );
+        let ascribed = decode(&finish_value(bb, root_ascription)).expect("decodes");
         assert_eq!(
-            unascribe(&af, af.root),
-            af.root,
-            "nothing to unascribe on the structural form"
-        );
-        // The legacy root is the `(: value Type)` list; unascribe peels it to the record.
-        assert_eq!(
-            ax.as_form(ax.root, ":").map(|f| f.len()),
+            ascribed.as_form(ascribed.root, ":").map(|f| f.len()),
             Some(2),
-            "legacy root is the ascription"
+            "the root is the `(: value Type)` list"
+        );
+        assert_eq!(
+            unascribe(&ascribed, ascribed.root),
+            ascribed.root,
+            "unascribe no longer peels a root ascription"
         );
         assert!(
-            ax.compound_form_of(ax.root, CompoundCtor::Record).is_none(),
-            "legacy root is NOT the bare record — the tag wraps it"
-        );
-        assert!(
-            ax.compound_form_of(unascribe(&ax, ax.root), CompoundCtor::Record)
-                .is_some()
+            record_field(&ascribed, ascribed.root, "name").is_none(),
+            "readers do not transparently unwrap a root ascription anymore"
         );
     }
 
