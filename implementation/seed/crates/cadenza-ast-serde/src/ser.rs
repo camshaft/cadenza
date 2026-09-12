@@ -435,9 +435,12 @@ impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
     }
 
     fn end(self) -> Result<StructId> {
-        let mut items = Vec::with_capacity(1 + self.entries.len());
-        items.push(self.head);
-        items.extend_from_slice(&self.entries);
-        Ok(self.builder.list(items))
+        // A struct variant is `(VariantName (record (= "field" v)…))` — the variant name applied to a
+        // single Record payload. This matches the canonical value-form sum shape `Variant(Record(…))`
+        // (e.g. `type Event = Exited(Record(reducer, schema, reason)) | …`), so a Rust struct-variant
+        // enum decodes from / encodes to the same bytes a `.cdz` schema value uses — no need to model it
+        // as a newtype-variant-wrapping-a-struct in Rust.
+        let record = self.builder.compound(CompoundCtor::Record, &self.entries);
+        Ok(self.builder.list(vec![self.head, record]))
     }
 }
