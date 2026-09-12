@@ -6,11 +6,12 @@
 //     answer verbatim, then Close (schema=b"agent-out", reason=the answer) — the agent finished. On Err,
 //     Close (schema=b"agent-err") with a fixed reason.
 //   - on-notification: inert.
-// The tool/sink contract fields are FIXED 32-BYTE TAGS (the host decodes Request.contract as a ContractId
-// via Hash::from_bytes, which requires EXACTLY 32 bytes — a shorter tag → MalformedContractId). The driving
-// host routes on the exact 32-byte values `b"cadenza-fixture-agent-tool------"` / `b"cadenza-fixture-agent-sink------"`
-// (26-char name + 6 `-` pad = 32) — a fixture convention, not a computed ContractId. "Break" maps to the
-// world.wit `close{schema,reason}`.
+// The tool/sink contract fields are FIXED 33-BYTE TAGS (the host decodes Request.contract as a ContractId
+// via Hash::from_bytes, which requires EXACTLY Hash::LEN = 33 bytes = 1 tag byte + 32-byte digest — a
+// shorter value → MalformedContractId; to_contract does not validate the tag byte, so any 33 bytes work).
+// The driving host routes on the exact 33-byte values `b"cadenza-fixture-agent-tool-------"` /
+// `b"cadenza-fixture-agent-sink-------"` (26-char name + 7 `-` pad = 33) — a fixture convention, not a
+// computed ContractId. "Break" maps to the world.wit `close{schema,reason}`.
 world reducer-world =
   | export guest =
     | on-message : (msg : {contract: list(u8),
@@ -41,7 +42,7 @@ type Error =
 // Step 1: the agent calls its tool — one request on the fixed tool contract, carrying the input; continue
 // (awaiting the tool's response).
 def on-message(msg) =
-  { requests = [{ contract = b"cadenza-fixture-agent-tool------", payload = msg.payload, token = b"call-1", deadlineNanos = None }],
+  { requests = [{ contract = b"cadenza-fixture-agent-tool-------", payload = msg.payload, token = b"call-1", deadlineNanos = None }],
     outcome = Outcome.Continue }
 
 // Step 2: the tool answered — emit the agent's output to the sink contract (the answer verbatim) and finish
@@ -49,7 +50,7 @@ def on-message(msg) =
 def on-response(resp) =
   match resp.answer with
   | Ok(answer) =>
-      { requests = [{ contract = b"cadenza-fixture-agent-sink------", payload = answer, token = b"out", deadlineNanos = None }],
+      { requests = [{ contract = b"cadenza-fixture-agent-sink-------", payload = answer, token = b"out", deadlineNanos = None }],
         outcome = Outcome.Close({ schema = b"agent-out", reason = answer }) }
   | Err(_) =>
       { requests = [], outcome = Outcome.Close({ schema = b"agent-err", reason = b"tool-call-failed" }) }
