@@ -104,11 +104,12 @@ async fn kv_calls_are_recorded_with_who_what_and_order_and_pass_through_unchange
 
     // The wrapped store returns exactly what the backend would — a miss, then a hit after a put,
     // then a delete reporting the entry existed. Recording does not alter behavior (§9).
-    assert_eq!(kv.get(b"k").await, None);
+    assert_eq!(kv.get(b"k").await.unwrap(), None);
     kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
-        .await;
-    assert_eq!(kv.get(b"k").await, Some(Bytes::from_static(b"v")));
-    assert!(kv.delete(b"k").await);
+        .await
+        .unwrap();
+    assert_eq!(kv.get(b"k").await.unwrap(), Some(Bytes::from_static(b"v")));
+    assert!(kv.delete(b"k").await.unwrap());
     let _ = kv.scan(whole_store());
 
     let records = log.snapshot();
@@ -481,9 +482,10 @@ fn one_log_orders_two_reducers_deterministically_under_bach() {
 
             // Interleave the two reducers' store calls against the one log.
             a.put(Bytes::from_static(b"x"), Bytes::from_static(b"1"))
-                .await;
+                .await
+                .unwrap();
             let h = b.put(Bytes::from_static(b"payload")).await.unwrap();
-            assert_eq!(a.get(b"x").await, Some(Bytes::from_static(b"1")));
+            assert_eq!(a.get(b"x").await.unwrap(), Some(Bytes::from_static(b"1")));
             assert!(b.has(h).await.unwrap());
 
             let records = log.snapshot();
@@ -1093,7 +1095,8 @@ impl Reducer for Storer {
     async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
         self.kv
             .put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
-            .await;
+            .await
+            .unwrap();
         self.blobs
             .put(Bytes::from_static(b"blob-payload"))
             .await

@@ -74,20 +74,58 @@ pub fn prefix_range(prefix: Bytes) -> KeyRange {
     (Bound::Included(prefix), upper)
 }
 
+/// Why a [`KvStore`] operation failed. **Absence is NOT an error** — [`get`](KvStore::get) returns
+/// `Ok(None)` for a genuine miss; an `Err` means the store could not COMPLETE the operation (a
+/// transport/I-O failure talking to a disk/network backend, or a rejected credential). Mirrors
+/// [`BlobStoreError`](crate::BlobStoreError): a single CONCRETE type (not an associated `type Error`) so
+/// `dyn KvStore` stays object-safe.
+///
+/// Crucially, a backend error is DISTINCT from a miss: the host must NOT lower a failure to the guest as
+/// `none` (a phantom miss) — it traps and unwinds the guest execution so the fold aborts and retries (the
+/// transaction is the unit of correctness), rather than committing state derived from a read that never
+/// actually happened.
+#[derive(Debug, Clone)]
+pub enum KvStoreError {
+    /// A transport / I-O failure talking to the backend (disk, network) — possibly transient.
+    Io(String),
+    /// A credential was missing or rejected by the backend.
+    Unauthorized,
+}
+
+impl std::fmt::Display for KvStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(msg) => write!(f, "kv store I/O error: {msg}"),
+            Self::Unauthorized => {
+                write!(f, "kv store unauthorized: credential missing or rejected")
+            }
+        }
+    }
+}
+
+impl std::error::Error for KvStoreError {}
+
 /// A key-value store: `Bytes` keys to `Bytes` values (§7). Backends (in memory, persistent, disk) implement
 /// this and are swapped by reference. `Send + Sync` so it can be shared across the runtime's concurrent
 /// tasks behind an `Arc`.
+///
+/// `get`/`put`/`delete` are fallible ([`KvStoreError`]): a real disk/network backend can fail, and the
+/// host must be able to tell a genuine miss (`Ok(None)`) from a failure (`Err`) — a failure traps + unwinds
+/// the guest rather than masquerading as absent. (The scans stay infallible: they are internal, lazy, and
+/// not driven across the guest boundary — the WIT `state` interface is get/put/delete only.)
 #[async_trait]
 pub trait KvStore: Send + Sync {
-    /// The value stored under `key`, or `None` if the store holds no entry for it.
-    async fn get(&self, key: &[u8]) -> Option<Bytes>;
+    /// The value stored under `key`, `Ok(None)` if the store holds no entry for it, or `Err` if the
+    /// backend could not determine the answer (transport/I-O/auth).
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, KvStoreError>;
 
-    /// Insert or overwrite the value under `key`. Last write wins, as a map does.
-    async fn put(&mut self, key: Bytes, value: Bytes);
+    /// Insert or overwrite the value under `key`. Last write wins, as a map does. `Err` on a backend
+    /// failure to persist.
+    async fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), KvStoreError>;
 
-    /// Remove the entry under `key`, returning `true` if one was present (and is now gone), `false` if
-    /// there was nothing to remove.
-    async fn delete(&mut self, key: &[u8]) -> bool;
+    /// Remove the entry under `key`, returning `Ok(true)` if one was present (and is now gone), `Ok(false)`
+    /// if there was nothing to remove, or `Err` on a backend failure.
+    async fn delete(&mut self, key: &[u8]) -> Result<bool, KvStoreError>;
 
     /// Stream every `(key, value)` whose key falls in `range`, in ascending key order. A lazy [`Stream`],
     /// not a materialized collection, so a scan that matches a great many keys does not load them all at
@@ -131,18 +169,19 @@ impl InMemoryKvStore {
 
 #[async_trait]
 impl KvStore for InMemoryKvStore {
-    async fn get(&self, key: &[u8]) -> Option<Bytes> {
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, KvStoreError> {
         // `cloned()` on a Bytes is an O(1) refcount bump, not a copy. `Bytes: Borrow<[u8]>` lets a byte
-        // slice look up a Bytes-keyed map without allocating a key.
-        self.entries.get(key).cloned()
+        // slice look up a Bytes-keyed map without allocating a key. In-memory never fails.
+        Ok(self.entries.get(key).cloned())
     }
 
-    async fn put(&mut self, key: Bytes, value: Bytes) {
+    async fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), KvStoreError> {
         self.entries.insert(key, value);
+        Ok(())
     }
 
-    async fn delete(&mut self, key: &[u8]) -> bool {
-        self.entries.remove(key).is_some()
+    async fn delete(&mut self, key: &[u8]) -> Result<bool, KvStoreError> {
+        Ok(self.entries.remove(key).is_some())
     }
 
     fn scan(&self, range: KeyRange) -> KvScan<'_> {
@@ -183,9 +222,10 @@ mod tests {
             Bytes::from_static(b"tick/interval-ms"),
             Bytes::from_static(b"900000"),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(
-            kv.get(b"tick/interval-ms").await,
+            kv.get(b"tick/interval-ms").await.unwrap(),
             Some(Bytes::from_static(b"900000"))
         );
     }
@@ -193,17 +233,22 @@ mod tests {
     #[tokio::test]
     async fn get_reports_absence() {
         let kv = InMemoryKvStore::new();
-        assert_eq!(kv.get(b"missing").await, None);
+        assert_eq!(kv.get(b"missing").await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn put_overwrites_last_write_wins() {
         let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"first"))
-            .await;
+            .await
+            .unwrap();
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"second"))
-            .await;
-        assert_eq!(kv.get(b"k").await, Some(Bytes::from_static(b"second")));
+            .await
+            .unwrap();
+        assert_eq!(
+            kv.get(b"k").await.unwrap(),
+            Some(Bytes::from_static(b"second"))
+        );
         assert_eq!(kv.len(), 1);
     }
 
@@ -211,11 +256,15 @@ mod tests {
     async fn delete_removes_and_reports_presence() {
         let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
-            .await;
-        assert!(kv.delete(b"k").await, "deleting a present key returns true");
-        assert_eq!(kv.get(b"k").await, None);
+            .await
+            .unwrap();
+        assert!(
+            kv.delete(b"k").await.unwrap(),
+            "deleting a present key returns true"
+        );
+        assert_eq!(kv.get(b"k").await.unwrap(), None);
         assert!(kv.is_empty());
-        assert!(!kv.delete(b"k").await);
+        assert!(!kv.delete(b"k").await.unwrap());
     }
 
     #[tokio::test]
@@ -226,7 +275,8 @@ mod tests {
                 Bytes::from(k.as_bytes().to_vec()),
                 Bytes::from(v.as_bytes().to_vec()),
             )
-            .await;
+            .await
+            .unwrap();
         }
         // half-open range [b, d): b, c — sorted, excluding d.
         let range = (
@@ -255,9 +305,11 @@ mod tests {
     async fn scan_keys_yields_only_keys() {
         let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"a"), Bytes::from_static(b"1"))
-            .await;
+            .await
+            .unwrap();
         kv.put(Bytes::from_static(b"b"), Bytes::from_static(b"2"))
-            .await;
+            .await
+            .unwrap();
         let keys: Vec<Bytes> = kv.scan_keys(all()).collect().await;
         assert_eq!(
             keys,
@@ -270,7 +322,8 @@ mod tests {
         let mut kv = InMemoryKvStore::new();
         for k in ["seen/a", "seen/b", "seen0", "seem", "tick/x"] {
             kv.put(Bytes::from(k.as_bytes().to_vec()), Bytes::from_static(b"1"))
-                .await;
+                .await
+                .unwrap();
         }
         // "seen/" must match seen/a and seen/b only — NOT "seen0" (next byte after '/') or "seem".
         let keys: Vec<Bytes> = kv
@@ -290,9 +343,11 @@ mod tests {
         );
         // a prefix ending in 0xFF still bounds correctly.
         kv.put(Bytes::from_static(&[0xFF, 0x01]), Bytes::from_static(b"x"))
-            .await;
+            .await
+            .unwrap();
         kv.put(Bytes::from_static(&[0xFF, 0xFF]), Bytes::from_static(b"y"))
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             kv.scan_keys(prefix_range(Bytes::from_static(&[0xFF])))
                 .count()
@@ -313,10 +368,15 @@ mod tests {
             async {
                 let mut kv = InMemoryKvStore::new();
                 kv.put(Bytes::from_static(b"seen/msg-1"), Bytes::from_static(b"1"))
-                    .await;
+                    .await
+                    .unwrap();
                 kv.put(Bytes::from_static(b"seen/msg-2"), Bytes::from_static(b"2"))
-                    .await;
-                assert_eq!(kv.get(b"seen/msg-1").await, Some(Bytes::from_static(b"1")));
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    kv.get(b"seen/msg-1").await.unwrap(),
+                    Some(Bytes::from_static(b"1"))
+                );
                 assert_eq!(
                     kv.scan(prefix_range(Bytes::from_static(b"seen/")))
                         .count()
@@ -329,7 +389,7 @@ mod tests {
                         .await,
                     2
                 );
-                assert!(kv.delete(b"seen/msg-1").await);
+                assert!(kv.delete(b"seen/msg-1").await.unwrap());
                 assert_eq!(
                     kv.scan_keys(prefix_range(Bytes::from_static(b"seen/")))
                         .count()

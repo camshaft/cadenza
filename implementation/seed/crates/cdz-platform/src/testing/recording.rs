@@ -19,9 +19,9 @@ use super::observation::{
 };
 use crate::{
     ArgProbeSink, BlobStore, BlobStoreError, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind,
-    Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome,
-    ProgramHash, ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request,
-    Response, RunError, RunSink, SpawnContext, Str,
+    Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, KvStoreError, Message, Notification,
+    Origin, Outcome, ProgramHash, ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId,
+    RejectedSink, Request, Response, RunError, RunSink, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -65,16 +65,16 @@ impl<K> RecordingKvStore<K> {
 
 #[async_trait]
 impl<K: KvStore> KvStore for RecordingKvStore<K> {
-    async fn get(&self, key: &[u8]) -> Option<Bytes> {
-        let value = self.inner.get(key).await;
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, KvStoreError> {
+        let value = self.inner.get(key).await?;
         self.record(KvOp::Get {
             key: Bytes::copy_from_slice(key),
             hit: value.is_some(),
         });
-        value
+        Ok(value)
     }
 
-    async fn put(&mut self, key: Bytes, value: Bytes) {
+    async fn put(&mut self, key: Bytes, value: Bytes) -> Result<(), KvStoreError> {
         // Record the write (O(1) Bytes clones), then apply it. `put` has no outcome to observe, so the
         // order relative to the backend call does not matter; recording first keeps the write and its
         // record adjacent even if the backend were to yield.
@@ -82,16 +82,16 @@ impl<K: KvStore> KvStore for RecordingKvStore<K> {
             key: key.clone(),
             value: value.clone(),
         });
-        self.inner.put(key, value).await;
+        self.inner.put(key, value).await
     }
 
-    async fn delete(&mut self, key: &[u8]) -> bool {
-        let existed = self.inner.delete(key).await;
+    async fn delete(&mut self, key: &[u8]) -> Result<bool, KvStoreError> {
+        let existed = self.inner.delete(key).await?;
         self.record(KvOp::Delete {
             key: Bytes::copy_from_slice(key),
             existed,
         });
-        existed
+        Ok(existed)
     }
 
     fn scan(&self, range: KeyRange) -> KvScan<'_> {
