@@ -2565,6 +2565,62 @@
             runHook postInstall
           '';
         };
+        # wasmComponentsExport (v-nix-projection I3): project the built Cadenza reducer-runtime WASM COMPONENTS
+        # (binary artifacts, NOT Rust source) into a tree a consumer commits into its git-LFS-backed package —
+        # the operator's "get the cadenza compiler + syntax wasm components in there ... use git LFS so we don't
+        # bloat the repo ... anything pinned in ~/hivemind is a good candidate". The set is exactly the
+        # ~/hivemind pins (components/hashes.env): the COMPILER guest (reducer-guest-rcdzc, source-AST->component)
+        # + the SYNTAX parser guests (reducer-guest-sexpr / -ml, source->AST+diagnostics) + the value-heap
+        # runtime + nfc that emitted programs import by hash. Emits $out/components/<name>.wasm + a hashes.env
+        # (name=ProgramHash, mirroring the rig, so the consumer seeds its CAS by hash) + a `.gitattributes`
+        # marking `*.wasm` as git-LFS (the consumer's repo stores the blobs as LFS on commit — no repo bloat).
+        # Re-runnable/drift-proof: reads the flake's own built artifacts. Refresh: `nix build .#wasm-components-export`.
+        wasmComponents = {
+          "reducer-guest-rcdzc" = { wasm = reducerGuestRcdzc; hash = hashOf reducerGuestRcdzc "reducer-guest-rcdzc-hash"; };
+          "reducer-guest-sexpr" = { wasm = reducerGuestSexpr; hash = hashOf reducerGuestSexpr "reducer-guest-sexpr-hash"; };
+          "reducer-guest-ml" = { wasm = reducerGuestMl; hash = hashOf reducerGuestMl "reducer-guest-ml-hash"; };
+          "runtime" = { wasm = runtime; hash = runtimeHash; };
+          "nfc" = { wasm = nfc; hash = nfcHash; };
+        };
+        wasmExportRefresh = pkgs.writeText "wasm-components-export-REFRESH.md" ''
+          # Cadenza wasm-components export
+
+          Built Cadenza reducer-runtime WASM components (binary artifacts), for vendoring into a
+          git-LFS-backed package. Emitted by `nix build .#wasm-components-export` from the Cadenza flake;
+          re-run to refresh (single source of truth — do NOT hand-edit the blobs).
+
+          - `components/*.wasm` — the compiler guest (`reducer-guest-rcdzc`), the syntax parser guests
+            (`reducer-guest-sexpr` / `reducer-guest-ml`), and the value-heap `runtime` + `nfc` components.
+          - `components/hashes.env` — `<name>=<ProgramHash>` for each, so the consumer can seed a CAS /
+            resolve components by hash (mirrors the ~/hivemind rig).
+          - `.gitattributes` — marks `*.wasm` as git-LFS; the consumer's LFS-enabled repo stores the blobs
+            out-of-tree on commit (no repo bloat).
+
+          Refresh: `nix build .#wasm-components-export && cp -r result/* <package-dir>/`
+        '';
+        wasmComponentsExport = pkgs.runCommand "wasm-components-export" { } ''
+          mkdir -p "$out/components"
+          ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: c: ''
+            cp ${c.wasm} "$out/components/${name}.wasm"
+            echo "${name}=$(cat ${c.hash})" >> "$out/components/hashes.env"
+          '') wasmComponents)}
+          # git-LFS: mark the wasm blobs so the consumer's LFS-enabled repo stores them out-of-tree.
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+          cp ${wasmExportRefresh} "$out/REFRESH.md"
+        '';
+        # wasmComponentsExportCheck: PROVE every exported blob is a real wasm module (`\0asm` magic) and that
+        # hashes.env has one entry per component. STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.wasm-components-export`.
+        wasmComponentsExportCheck = pkgs.runCommand "wasm-components-export-check" { } ''
+          n=0
+          for w in ${wasmComponentsExport}/components/*.wasm; do
+            magic=$(head -c 4 "$w" | od -An -tx1 | tr -d ' \n')
+            [ "$magic" = "0061736d" ] || { echo "not a wasm module: $w (magic $magic)"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" -eq ${toString (builtins.length (builtins.attrNames wasmComponents))} ] || { echo "expected ${toString (builtins.length (builtins.attrNames wasmComponents))} wasm components, found $n"; exit 1; }
+          [ "$(grep -c '=' ${wasmComponentsExport}/components/hashes.env)" -eq "$n" ] || { echo "hashes.env entry count != wasm count"; exit 1; }
+          echo "ok: $n wasm components exported (valid wasm magic) + hashes.env complete + .gitattributes LFS" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7055,6 +7111,10 @@
         # one a consumer needing both tiers vendors (avoids the two-cadenza-ast lockfile collision). Refresh:
         # `nix build .#source-export && cp -r result <workspace>`; build with `--features cdz-platform/host`.
         packages.source-export = sourceExportAll;
+        # wasm-components-export (v-nix-projection I3): the built Cadenza reducer-runtime WASM components
+        # (compiler + syntax parser guests + runtime/nfc — the ~/hivemind pins) + hashes.env + a git-LFS
+        # `.gitattributes`, for vendoring into a git-LFS-backed package. Refresh: `nix build .#wasm-components-export`.
+        packages.wasm-components-export = wasmComponentsExport;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8726,6 +8786,9 @@
             # source-export (combined codec+reducer, one shared cadenza-ast): builds it offline against the
             # pinned vendor. STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.source-export`.
             source-export = sourceExportAllCheck;
+            # wasm-components-export: every exported blob is a real wasm module + hashes.env complete.
+            # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.wasm-components-export`.
+            wasm-components-export = wasmComponentsExportCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
