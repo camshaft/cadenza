@@ -1,0 +1,40 @@
+// The HTTP-outpost REQUEST-BODY-STREAM contract (operator 655, v-hivemind's settled flexible-handler
+// vocabulary): the INBOUND request body delivered to a flexible handler as a sequence of messages, AFTER the
+// handler chose a Whole or StreamIn body-mode (§ http-body-mode.cdz). ONE unified inbound-body contract with
+// NO Head — the request-head (§ http-request-head.cdz) already carried method/path/query/headers, so a body
+// frame carries only body bytes:
+//   Chunk — a body chunk, delivered 0..N times.
+//   End   — the body is complete (a bare no-payload constructor, cf. deliver's `Delivered`).
+//
+// Whole vs StreamIn is DRIVER BEHAVIOR, not separate contracts (so one inbound-body contract suffices):
+//   Whole    = the driver buffers up to the mode's max_body_size, then delivers ONE Chunk + End.
+//   StreamIn = the driver passes chunks through as they arrive, then End.
+// Either way the handler folds `Chunk`* then `End`. This is the inbound analog of the outbound
+// response-stream (§ http-response-stream.cdz); a DISTINCT contract-id per direction (matching the
+// ws-event/ws-send precedent) so the per-request driver dispatches inbound-vs-outbound by id — the two share
+// the `Frame` type NAME but are separate modules with separate computed ids. Userspace (this dir): a Cadenza
+// reducer CONSUMES these via self-reflection; the native edge produces them; no Rust binding is hand-written.
+type Frame =
+  | Chunk(Record(body: Bytes))
+  | End
+
+// --- conformance proofs: a fully-literal value of each frame kind, ascribed against the schema type ---
+def a-chunk() -> Frame = Frame.Chunk({ body = b"{\"upload\":" })
+def an-end() -> Frame = Frame.End
+
+@test
+def chunk-conforms() =
+  match a-chunk() with
+  | Frame.Chunk(c) => if c.body == b"{\"upload\":" then unit else trap("request-body chunk mismatch")
+  | _ => trap("expected a Frame.Chunk")
+
+@test
+def end-conforms() =
+  match an-end() with
+  | Frame.End => unit
+  | _ => trap("expected a Frame.End")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.request-body-stream", "Frame", "Frame")
+export { Frame.*, descriptor }

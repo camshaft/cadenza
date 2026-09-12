@@ -1,0 +1,70 @@
+// The HTTP-outpost STREAMING-RESPONSE contract (operator 653 gateway-generality + v-hivemind's 653 consumer
+// assessment): the ONE contract gap the assessment found — an HTTP response a reducer emits INCREMENTALLY,
+// as EFFECTS (Requests) REPEATEDLY over one open HTTP response, rather than the one-shot `http.response`
+// (§ http-response.cdz) carried on a session's closing `Break`. It is the streaming ANALOG of that one-shot
+// response, and DISTINCT from both `http.response` (single Break value) and `ws-*` (bidirectional): here the
+// server pushes a sequence of frames DOWN one already-open HTTP response, the client only receives.
+//
+// Head-then-chunks-then-end is the shape; the per-request driver maps each frame onto the open response:
+//   Head  — opens the response (emitted ONCE): status + headers. For SSE the handler sets
+//           `content-type: text/event-stream` HERE. The driver writes the response head.
+//   Chunk — a body chunk, emitted 0..N times: the driver writes `body` to the open response as it arrives
+//           (HTTP chunked transfer / one SSE frame). `body` is protocol-neutral Bytes — for SSE it is the
+//           handler-FORMATTED event bytes (`event:`/`data:`/`id:` lines), which keeps this contract generic;
+//           the driver does not interpret it (cf. http-response's protocol-neutral body).
+//   End   — terminates the response (final chunk / close): a bare no-payload constructor (cf. deliver's
+//           `Delivered`), the streaming analog of the one-shot response's close.
+// Serves interactive dashboards (incremental HTML/JSON), MCP-over-SSE, and chunked bodies. A structured
+// {event,data,id} SSE variant is intentionally OMITTED (kept generic per the seed); gateway owners can add
+// one later if typed framing is preferred — the Chunk-of-Bytes form already expresses SSE.
+//
+// `Header` mirrors http-request/http-response's — a single-constructor `| Header(Record(...))` (the proven
+// contract idiom), not a bare record-alias (which names a type constructor, CDZ0203, and does not typecheck).
+// `status` is `Int64` to match the sibling http.response (its status is Int64), not the seed's u16 — the
+// contract layer carries status as Int64 uniformly. Userspace (this dir): a Cadenza reducer EMITS these
+// frames via self-reflection and the native edge acts on each; no Rust binding is hand-written (codegen
+// projects the schema module + the computed contract-id from `descriptor()`).
+type Header = | Header(Record(name: String, value: String))
+type Frame =
+  | Head(Record(status: Int64, headers: List(Header)))
+  | Chunk(Record(body: Bytes))
+  | End
+
+// --- conformance proofs: a fully-literal value of each frame kind, ascribed against the schema type ---
+def a-head() -> Frame =
+  Frame.Head({ status = 200,
+               headers = [Header.Header({ name = "content-type", value = "text/event-stream" })] })
+def a-chunk() -> Frame = Frame.Chunk({ body = b"data: hello\n\n" })
+def an-end() -> Frame = Frame.End
+
+// Each test destructures the built value and asserts a field/shape, so it exercises the value, not just that
+// construction type-checks (a returned `unit` passes; a `trap` fails).
+@test
+def head-conforms() =
+  match a-head() with
+  | Frame.Head(h) =>
+    (match h.headers with
+     | [x] =>
+       (match x with
+        | Header.Header(hd) =>
+          if (h.status == 200) and (hd.name == "content-type") and (hd.value == "text/event-stream")
+          then unit else trap("stream head field mismatch"))
+     | _ => trap("expected exactly one header"))
+  | _ => trap("expected a Frame.Head")
+
+@test
+def chunk-conforms() =
+  match a-chunk() with
+  | Frame.Chunk(c) => if c.body == b"data: hello\n\n" then unit else trap("stream chunk body mismatch")
+  | _ => trap("expected a Frame.Chunk")
+
+@test
+def end-conforms() =
+  match an-end() with
+  | Frame.End => unit
+  | _ => trap("expected a Frame.End")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.response-stream", "Frame", "Frame")
+export { Header.*, Frame.*, descriptor }

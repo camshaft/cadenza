@@ -1,0 +1,61 @@
+// The HTTP-outpost BODY-MODE effect contract (operator 655/656, v-hivemind's settled flexible-handler
+// vocabulary): the effect a flexible HTTP handler emits ONCE after receiving the request-head
+// (§ http-request-head.cdz) to CHOOSE how its request body is handled. The per-request driver dispatches on
+// the VARIANT — one contract, three decisions (cleaner than three ids since it is one decision point):
+//   Whole    — deliver the full request body as ONE inbound message: the driver buffers up to
+//              `max_body_size`, then delivers a single Chunk + End on the request-body-stream
+//              (§ http-request-body-stream.cdz).
+//   StreamIn — stream the body in as a sequence of Chunk messages as they arrive (large uploads / streaming
+//              ingest), terminated by End, on the request-body-stream.
+//   Upgrade  — upgrade to a WebSocket: the driver performs the 101 handshake (negotiating `subprotocol`)
+//              and hands off to the existing ws-event (connect/frame/disconnect) + ws-send bidirectional
+//              contracts; no request-body-stream follows.
+//
+// PER-REQUEST body cap (656): `max_body_size` is `Option(Int64)` — there is NO fixed global body limit; each
+// handler decides its own cap (a small-JSON handler caps low, a large-upload/stream handler allows large or
+// unbounded). `None` = unbounded (an Option, NOT a sentinel int — per the no-sentinel-ints directive). The
+// driver enforces the cap: an over-limit body is rejected (413) without buffering past the cap.
+// `Upgrade.subprotocol` is `Option(Str)` for WebSocket subprotocol negotiation (`None` = none offered).
+// Userspace (this dir): a Cadenza reducer EMITS it via self-reflection; the native edge acts on the variant;
+// no Rust binding is hand-written (codegen projects the schema + the computed contract-id).
+type BodyMode =
+  | Whole(Record(max_body_size: Option(Int64)))
+  | StreamIn(Record(max_body_size: Option(Int64)))
+  | Upgrade(Record(subprotocol: Option(String)))
+
+// --- conformance proofs: a fully-literal value of each mode, ascribed against the schema type ---
+def a-whole() -> BodyMode = BodyMode.Whole({ max_body_size = Option.Some(1048576) })
+def a-stream-in() -> BodyMode = BodyMode.StreamIn({ max_body_size = Option.None })
+def an-upgrade() -> BodyMode = BodyMode.Upgrade({ subprotocol = Option.Some("mcp") })
+
+@test
+def whole-conforms() =
+  match a-whole() with
+  | BodyMode.Whole(w) =>
+    (match w.max_body_size with
+     | Some(n) => if n == 1048576 then unit else trap("whole max_body_size mismatch")
+     | None => trap("expected a bounded Whole cap"))
+  | _ => trap("expected a BodyMode.Whole")
+
+@test
+def stream-in-conforms() =
+  match a-stream-in() with
+  | BodyMode.StreamIn(s) =>
+    (match s.max_body_size with
+     | None => unit
+     | Some(_) => trap("expected an unbounded StreamIn cap"))
+  | _ => trap("expected a BodyMode.StreamIn")
+
+@test
+def upgrade-conforms() =
+  match an-upgrade() with
+  | BodyMode.Upgrade(u) =>
+    (match u.subprotocol with
+     | Some(p) => if p == "mcp" then unit else trap("upgrade subprotocol mismatch")
+     | None => trap("expected a negotiated subprotocol"))
+  | _ => trap("expected a BodyMode.Upgrade")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.body-mode", "BodyMode", "BodyMode")
+export { BodyMode.*, descriptor }
