@@ -2732,6 +2732,37 @@
           grep -q '{' ${hivemindBootstrap}/contracts/manifest.json || { echo "contracts manifest.json missing/empty"; exit 1; }
           echo "ok: hivemind-bootstrap ($nc components + $nb contract declarations, manifests present, LFS)" > "$out"
         '';
+        # gatewayConformanceComponents (v-nix-projection, for v-hivemind inc-11): gateway-shaped guest FIXTURES
+        # — the cdz-http-conformance handler + router guests, compiled to wasm — so the daemon (adopting the
+        # gateway pattern: deliver http.request value → reducer answers http.response) can e2e-test against real
+        # Cadenza guests. http-echo/http-hello decode an http.request and Close with an http.response; the
+        # root-router-baked router bakes their ProgramHashes and dispatches (router → http.dispatch → handler →
+        # http.response). Their value-heap dep closure (runtime+nfc) is the same one .#wasm-components-export /
+        # .#hivemind-bootstrap ship; the http.* ContractIds are in the contracts manifest there. git-LFS.
+        gatewayGuests = {
+          "http-echo" = httpConformanceProgramsByName."http-echo";
+          "http-hello" = httpConformanceProgramsByName."http-hello";
+          "root-router-baked" = httpConformanceProgramsByName."root-router-baked";
+        };
+        gatewayConformanceComponents = pkgs.runCommand "gateway-conformance-components" { } ''
+          mkdir -p "$out/components"
+          ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: guest: ''
+            cp ${guest} "$out/components/${name}.wasm"
+            echo "${name}=$(cat ${hashOf guest "${name}-hash"})" >> "$out/components/hashes.env"
+          '') gatewayGuests)}
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        gatewayConformanceComponentsCheck = pkgs.runCommand "gateway-conformance-components-check" { } ''
+          n=0
+          for w in ${gatewayConformanceComponents}/components/*.wasm; do
+            magic=$(head -c 4 "$w" | od -An -tx1 | tr -d ' \n')
+            [ "$magic" = "0061736d" ] || { echo "not a wasm module: $w"; exit 1; }
+            n=$((n+1))
+          done
+          [ "$n" -eq ${toString (builtins.length (builtins.attrNames gatewayGuests))} ] || { echo "expected ${toString (builtins.length (builtins.attrNames gatewayGuests))} gateway guests, found $n"; exit 1; }
+          [ "$(grep -c '=' ${gatewayConformanceComponents}/components/hashes.env)" -eq "$n" ] || { echo "hashes.env count mismatch"; exit 1; }
+          echo "ok: gateway-conformance-components ($n guests: http-echo/http-hello/root-router-baked, valid wasm + ProgramHashes + LFS)" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7239,6 +7270,9 @@
         # hivemind-bootstrap (v-nix-projection): the FULL bootstrap set (core wasm components + contract
         # declarations) in one export, so a consumer can seed a hivemind CAS from one `nix build`.
         packages.hivemind-bootstrap = hivemindBootstrap;
+        # gateway-conformance-components (v-nix-projection, for v-hivemind inc-11): gateway-shaped guest fixtures
+        # (http-echo/http-hello handlers + root-router-baked router) compiled to wasm, git-LFS.
+        packages.gateway-conformance-components = gatewayConformanceComponents;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8923,6 +8957,8 @@
             agent-fixture = agentFixtureCheck;
             # hivemind-bootstrap: components valid wasm + hashes complete + contracts present. STANDALONE.
             hivemind-bootstrap = hivemindBootstrapCheck;
+            # gateway-conformance-components: the 3 gateway guests are valid wasm + have ProgramHashes. STANDALONE.
+            gateway-conformance-components = gatewayConformanceComponentsCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
