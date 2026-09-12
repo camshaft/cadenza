@@ -736,7 +736,13 @@ pub async fn run_mailbox_loop<R: Runtime>(
             .catch_unwind()
             .await
         {
-            Ok(folded) => folded,
+            Ok(Ok(folded)) => folded,
+            // A typed fold fault (a wasm reducer trapped — host-backend or guest) ends the drain with no
+            // Break reason, the same as an uncontrolled crash. This loop has no transaction to retry (its
+            // backends are in-process), so both fault kinds collapse to a `Crashed`-shaped `None`; a driver
+            // that CAN retry (the HTTP-outpost gateway's 502-vs-500, a Membrain-backed fold's abort+retry)
+            // reads the typed [`ReducerFault`](crate::ReducerFault) by calling the reducer directly.
+            Ok(Err(_fault)) => return None,
             // A panic in a fold is an uncontrolled crash: stop draining, report no Break reason.
             Err(_panic) => return None,
         };
@@ -750,8 +756,12 @@ pub async fn run_mailbox_loop<R: Runtime>(
     None
 }
 
-/// Fold one delivered event through a reducer's matching entry point.
-async fn fold(reducer: &mut Box<dyn Reducer>, event: Delivered) -> (Vec<Request>, Outcome) {
+/// Fold one delivered event through a reducer's matching entry point. `Err` is a [`ReducerFault`] — a
+/// wasm reducer trapped (host-backend or guest); a native reducer never faults.
+async fn fold(
+    reducer: &mut Box<dyn Reducer>,
+    event: Delivered,
+) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
     match event {
         Delivered::Message(message) => reducer.on_message(message).await,
         Delivered::Response(response) => reducer.on_response(response).await,
@@ -781,7 +791,8 @@ mod tests {
     use crate::{
         BachRuntime, Bytes, ContractId, Deliver, Delivered, FireAfter, Fired, HostId,
         InMemoryEventRegistry, InMemoryReducerGraph, Lifecycle, Message, Notification, Origin,
-        Outcome, ProgramHash, Reducer, ReducerGraph, ReducerId, Request, Response, Run, RunOutput,
+        Outcome, ProgramHash, Reducer, ReducerFault, ReducerGraph, ReducerId, Request, Response, Run,
+        RunOutput,
         Spawned, TokioRuntime, lifecycle_contract, run_contract, spawned_contract, timer_contract,
     };
     use std::sync::Arc;
@@ -831,7 +842,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for Probe {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let _ = self.saw.send(self.me);
             let requests = match self.deliver_to {
                 Some(target) => vec![
@@ -843,13 +854,13 @@ mod tests {
                 ],
                 None => Vec::new(),
             };
-            (requests, Outcome::Continue)
+            Ok((requests, Outcome::Continue))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1176,20 +1187,20 @@ mod tests {
         struct Terminating;
         #[async_trait::async_trait]
         impl Reducer for Terminating {
-            async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-                (
+            async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+                Ok((
                     Vec::new(),
                     Outcome::Break {
                         schema: cid(b"done"),
                         reason: Bytes::from_static(b"bye"),
                     },
-                )
+                ))
             }
-            async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-                (Vec::new(), Outcome::Continue)
+            async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+                Ok((Vec::new(), Outcome::Continue))
             }
-            async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-                (Vec::new(), Outcome::Continue)
+            async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+                Ok((Vec::new(), Outcome::Continue))
             }
         }
 
@@ -1224,15 +1235,15 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for Watcher {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, n: Notification) -> (Vec<Request>, Outcome) {
+        async fn on_notification(&mut self, n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let _ = self.heard.send(n);
-            (Vec::new(), Outcome::Continue)
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1241,20 +1252,20 @@ mod tests {
     struct Closer;
     #[async_trait::async_trait]
     impl Reducer for Closer {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: cid(b"finished"),
                     reason: Bytes::from_static(b"done"),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1262,14 +1273,14 @@ mod tests {
     struct Panicker;
     #[async_trait::async_trait]
     impl Reducer for Panicker {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             panic!("panicker crashed");
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1567,26 +1578,26 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for Emitter {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let request = Request {
                 id: self.contract,
                 payload: Bytes::from_static(b"effect"),
                 continuation_token: Bytes::from_static(b"k"),
                 deadline: None,
             };
-            (
+            Ok((
                 vec![request],
                 Outcome::Break {
                     schema: cid(b"done"),
                     reason: Bytes::from_static(b"emitted"),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1596,21 +1607,21 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for SystemStub {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let _ = self.saw.send((m.from.reducer, m.id));
-            (
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: cid(b"shepherded"),
                     reason: Bytes::new(),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1669,35 +1680,35 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for Armer {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             // Arm the timer (durations are nanoseconds), correlating the wake with the standard
             // continuation-token every request carries — no bespoke token rides in the value.
             let arm = FireAfter {
                 duration: self.duration,
             };
-            (
+            Ok((
                 vec![arm.into_request(self.token.clone())],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        async fn on_response(&mut self, r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             if r.id == timer_contract()
                 && let Ok(payload) = &r.payload
                 && let Some(fired) = Fired::decode(payload)
             {
                 let _ = self.heard.send((r.continuation_token, fired.fired_time));
-                return (
+                return Ok((
                     Vec::new(),
                     Outcome::Break {
                         schema: cid(b"woke"),
                         reason: Bytes::new(),
                     },
-                );
+                ));
             }
-            (Vec::new(), Outcome::Continue)
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1708,23 +1719,23 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for ArmThenClose {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let arm = FireAfter {
                 duration: self.duration,
             };
-            (
+            Ok((
                 vec![arm.into_request(Bytes::from_static(b"pending"))],
                 Outcome::Break {
                     schema: cid(b"closed"),
                     reason: Bytes::new(),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1940,22 +1951,22 @@ mod tests {
     struct RunTarget;
     #[async_trait::async_trait]
     impl Reducer for RunTarget {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let mut out = m.payload.to_vec();
             out.extend_from_slice(&m.payload);
-            (
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: cid(b"out"),
                     reason: Bytes::from(out),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -1966,35 +1977,35 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for RunEmitter {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let run = Run {
                 program: prog(b"run-target"),
                 contract: cid(b"c"),
                 input: Bytes::from_static(b"ab"),
             };
-            (
+            Ok((
                 vec![run.into_request(Bytes::from_static(b"tok"))],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        async fn on_response(&mut self, r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             if r.id == run_contract()
                 && let Ok(payload) = &r.payload
                 && let Some(out) = RunOutput::decode(payload)
             {
                 let _ = self.heard.send(out.output);
-                return (
+                return Ok((
                     Vec::new(),
                     Outcome::Break {
                         schema: cid(b"done"),
                         reason: Bytes::new(),
                     },
-                );
+                ));
             }
-            (Vec::new(), Outcome::Continue)
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 

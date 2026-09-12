@@ -72,7 +72,7 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Reducer for SawContractChecker {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
             let verdict = if m.id == check_contract() {
                 match decode_check(&m.payload).and_then(|log| deserialize_log(&log)) {
                     Some(records) => {
@@ -95,7 +95,7 @@ mod tests {
             } else {
                 encode_verdict(false, &[crate::Str::from("unexpected contract")])
             };
-            (
+            Ok((
                 vec![Request {
                     id: verdict_contract(),
                     payload: verdict,
@@ -106,13 +106,13 @@ mod tests {
                     schema: ContractId::of(b"checked"),
                     reason: Bytes::new(),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 

@@ -173,15 +173,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for Counting {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
             self.seen += 1;
-            (Vec::new(), Outcome::Continue)
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -214,7 +214,7 @@ mod tests {
             },
             continuation_token: Bytes::new(),
         })
-        .await;
+        .await.unwrap();
         // `b` is a separate instance; if they shared state this would be observable, but they do not.
         drop((a, b));
     }

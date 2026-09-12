@@ -140,8 +140,11 @@ pub(crate) async fn drive_pure(
         .catch_unwind()
         .await;
     match folded {
-        Ok((_denied_requests, Outcome::Break { reason, .. })) => Ok(reason),
-        Ok((_requests, Outcome::Continue)) => Err(RunError::DidNotReturn),
+        Ok(Ok((_denied_requests, Outcome::Break { reason, .. }))) => Ok(reason),
+        Ok(Ok((_requests, Outcome::Continue))) => Err(RunError::DidNotReturn),
+        // A wasm trap (host-backend or guest) faulted the run — no output produced. A pure `run` has no
+        // transaction to retry, so either fault kind is a `Faulted` (§3), the same as a panic.
+        Ok(Err(_fault)) => Err(RunError::Faulted),
         Err(_panic) => Err(RunError::Faulted),
     }
 }
@@ -344,7 +347,7 @@ impl RunOutput {
 mod tests {
     use super::{Run, RunError, RunOutput, Runner, run_contract};
     use crate::{
-        Bytes, ContractId, Message, Notification, Outcome, ProgramHash, Reducer, Request, Response,
+        Bytes, ContractId, Message, Notification, Outcome, ProgramHash, Reducer, ReducerFault, Request, Response,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -361,22 +364,22 @@ mod tests {
     struct Doubler;
     #[async_trait::async_trait]
     impl Reducer for Doubler {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let mut out = m.payload.to_vec();
-            out.extend_from_slice(&m.payload); // output = input ++ input
+            out.extend_from_slice(&m.payload); Ok(// output = input ++ input
             (
                 Vec::new(),
                 Outcome::Break {
                     schema: cid(b"out"),
                     reason: Bytes::from(out),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -385,20 +388,20 @@ mod tests {
     struct Waiter;
     #[async_trait::async_trait]
     impl Reducer for Waiter {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             let req = Request {
                 id: m.id,
                 payload: m.payload,
                 continuation_token: Bytes::from_static(b"k"),
                 deadline: None,
             };
-            (vec![req], Outcome::Continue)
+            Ok((vec![req], Outcome::Continue))
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -406,14 +409,14 @@ mod tests {
     struct Trapper;
     #[async_trait::async_trait]
     impl Reducer for Trapper {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             panic!("trapper trapped");
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 

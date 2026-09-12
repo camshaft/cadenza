@@ -159,24 +159,66 @@ pub struct Notification {
 /// `Sync` would rule out a wasm-backed reducer, which owns a wasmtime `Store` — `Send` but not `Sync` — with
 /// no benefit, since nothing ever holds a reducer behind a shared reference.
 ///
+/// Why a reducer fold FAULTED — the guest did not return a value. Distinguishes a HOST-BACKEND trap (a
+/// [`KvStore`](crate::KvStore) / [`BlobStore`](crate::BlobStore) `state`/`blobs` backend failed, so the
+/// transaction could not complete → **abort + RETRY** the fold; the guest's run is discarded and nothing
+/// derived from a phantom read/write is committed) from a GUEST fault (the guest panicked / hit
+/// `unreachable` / aborted, or returned a malformed step → the reducer **crashed**; retrying will not
+/// help). A native reducer never faults; only a wasm-backed reducer can (its guest can trap), and the
+/// wasm host classifies the trap via [`is_host_backend_trap`](crate::is_host_backend_trap). A driver reads
+/// this to decide retry-the-transaction vs report-a-crash (§3/§7).
+#[derive(Debug)]
+pub enum ReducerFault {
+    /// A host-import backend (`state`/`blobs`) failed — the transaction could not complete. Abort + retry.
+    HostBackend(String),
+    /// The guest itself faulted (trap/panic/unreachable/abort, or a malformed returned step). Crashed.
+    Guest(String),
+}
+
+impl std::fmt::Display for ReducerFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HostBackend(msg) => write!(f, "reducer fold aborted — host backend failure: {msg}"),
+            Self::Guest(msg) => write!(f, "reducer fold crashed — guest fault: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ReducerFault {}
+
 /// The event reducer that shepherds an effect (§4) is a distinct, privileged interface, not this one.
+///
+/// The three entry points return `Result<(Vec<Request>, Outcome), ReducerFault>`: `Ok` carries the fold's
+/// requests + [`Outcome`], while `Err` is a [`ReducerFault`] — the guest did not return a value (a
+/// wasm-backed reducer trapped). A native reducer never returns `Err`. A driver maps a
+/// [`HostBackend`](ReducerFault::HostBackend) fault to abort-and-retry the transaction and a
+/// [`Guest`](ReducerFault::Guest) fault to a crash (§7).
 #[async_trait]
 pub trait Reducer: Send {
     /// React to a [`Response`] — a reply to a request this reducer performed.
-    async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome);
+    async fn on_response(
+        &mut self,
+        response: Response,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault>;
 
     /// React to a [`Message`] — an effect performed on this reducer by another, carrying its [`Origin`].
-    async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome);
+    async fn on_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault>;
 
     /// React to a [`Notification`] — an unsolicited platform control-plane event. A reducer that has no
-    /// interest in a given notification simply returns `(Vec::new(), Outcome::Continue)`; ignoring the
+    /// interest in a given notification simply returns `Ok((Vec::new(), Outcome::Continue))`; ignoring the
     /// control plane is safe (for handler-availability, not propagating fails closed, §3).
-    async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome);
+    async fn on_notification(
+        &mut self,
+        notification: Notification,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault>;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Message, Notification, Origin, Outcome, Reducer, Request, Response};
+    use super::{Message, Notification, Origin, Outcome, Reducer, ReducerFault, Request, Response};
     use crate::{Bytes, ContractId, HostId, ReducerId};
 
     // Typed-id helpers over distinct hashes.
@@ -204,7 +246,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for Counter {
-        async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             self.seen += 1;
             let request = Request {
                 id: self.downstream,
@@ -220,15 +262,15 @@ mod tests {
             } else {
                 Outcome::Continue
             };
-            (vec![request], outcome)
+            Ok((vec![request], outcome))
         }
 
-        async fn on_response(&mut self, _response: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _response: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
 
-        async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
-            // Only the `propagate` notification does anything: forward it downstream. Every other
+        async fn on_notification(&mut self, notification: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok(// Only the `propagate` notification does anything: forward it downstream. Every other
             // control-plane event is ignored (returns no requests), which is the safe default.
             if notification.id == self.propagate {
                 let request = Request {
@@ -240,7 +282,7 @@ mod tests {
                 (vec![request], Outcome::Continue)
             } else {
                 (Vec::new(), Outcome::Continue)
-            }
+            })
         }
     }
 
@@ -269,14 +311,14 @@ mod tests {
     async fn folds_state_across_calls_and_breaks_at_the_limit() {
         let mut r = counter(3);
         // The running count carried on each forwarded request reflects accumulated state: 1, then 2.
-        let (out1, o1) = r.on_message(msg(b"t1")).await;
+        let (out1, o1) = r.on_message(msg(b"t1")).await.unwrap();
         assert_eq!(out1[0].payload, Bytes::copy_from_slice(&1u32.to_le_bytes()));
         assert_eq!(o1, Outcome::Continue);
-        let (out2, o2) = r.on_message(msg(b"t2")).await;
+        let (out2, o2) = r.on_message(msg(b"t2")).await.unwrap();
         assert_eq!(out2[0].payload, Bytes::copy_from_slice(&2u32.to_le_bytes()));
         assert_eq!(o2, Outcome::Continue);
         // The third message hits the limit, so the reducer closes — an outcome that depends on state.
-        let (out3, o3) = r.on_message(msg(b"t3")).await;
+        let (out3, o3) = r.on_message(msg(b"t3")).await.unwrap();
         assert_eq!(out3[0].payload, Bytes::copy_from_slice(&3u32.to_le_bytes()));
         assert!(matches!(o3, Outcome::Break { .. }));
     }
@@ -286,7 +328,7 @@ mod tests {
         let mut r = counter(100);
         // The reducer routes to its downstream contract and threads the caller's token through, so the
         // eventual answer correlates back — the routing behavior, not the struct shape.
-        let (requests, _) = r.on_message(msg(b"correlate-me")).await;
+        let (requests, _) = r.on_message(msg(b"correlate-me")).await.unwrap();
         assert_eq!(requests[0].id, cid(b"downstream"));
         assert_eq!(
             requests[0].continuation_token,
@@ -303,7 +345,7 @@ mod tests {
                 id: cid(b"propagate"),
                 payload: Bytes::from_static(b"new-handler"),
             })
-            .await;
+            .await.unwrap();
         assert_eq!(out[0].id, cid(b"downstream"));
         assert_eq!(out[0].payload, Bytes::from_static(b"new-handler"));
         assert_eq!(o, Outcome::Continue);
@@ -313,7 +355,7 @@ mod tests {
                 id: cid(b"some-lifecycle-event"),
                 payload: Bytes::from_static(b"ignored"),
             })
-            .await;
+            .await.unwrap();
         assert!(out2.is_empty());
         assert_eq!(r.seen, 0, "notifications are not messages");
     }
@@ -328,8 +370,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for HostGate {
-        async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
-            if message.from.host == self.trusted_host {
+        async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok(if message.from.host == self.trusted_host {
                 let request = Request {
                     id: self.downstream,
                     payload: message.payload,
@@ -339,13 +381,13 @@ mod tests {
                 (vec![request], Outcome::Continue)
             } else {
                 (Vec::new(), Outcome::Continue)
-            }
+            })
         }
-        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -372,13 +414,13 @@ mod tests {
             },
             ..from_trusted.clone()
         };
-        let (out_ok, _) = gate.on_message(from_trusted).await;
+        let (out_ok, _) = gate.on_message(from_trusted).await.unwrap();
         assert_eq!(
             out_ok.len(),
             1,
             "an effect from the trusted host is forwarded"
         );
-        let (out_denied, _) = gate.on_message(from_untrusted).await;
+        let (out_denied, _) = gate.on_message(from_untrusted).await.unwrap();
         assert!(
             out_denied.is_empty(),
             "an effect from another host is dropped"
