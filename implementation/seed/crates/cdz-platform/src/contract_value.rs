@@ -18,8 +18,8 @@
 //!  - a prelude (unqualified) constructor `C` → the same bare-name `(C <payload>…)` (e.g. `Ok`/`Err`);
 //!  - the whole payload, at the encode boundary, is encoded BARE — with NO root ascription `(: <value>
 //!    <Type>)` frame (operator directive 2026-09-12: no type-ascription in the value encoding). The decode
-//!    target fixes the type; on the read side [`as_ascribed`]/[`unascribe`] stay TOLERANT of a legacy frame
-//!    (so bytes still in the wild decode) but nothing here emits one — encoders use [`encode_value`].
+//!    target fixes the type; nothing here emits an ascription frame AND the readers no longer PEEL one —
+//!    decode is purely structural (a record is a `(record …)`, a ctor `(C …)`); encoders use [`encode_value`].
 //!
 //! These are generic over the constructor/field names, so they carry no schema-specific knowledge — the
 //! generated code supplies the names. Readers are the exact inverses and are total (`Option`), so decoding
@@ -36,8 +36,8 @@ use std::sync::Arc;
 /// A constructor application in the canonical BARE-name form `(<ctor> <payload>…)` — the constructor name is
 /// the head, then its payload occurrences; nullary → `(<ctor>)`. `ty` is accepted for the generated caller's
 /// convenience (it names the sum the constructor belongs to) but is NOT part of the value: the compiler's
-/// value form carries no `(. ty ctor)` member node — the type is fixed by the root ascription / the decode
-/// target. A single-constructor sum elides the constructor (the generated code emits the payload directly),
+/// value form carries no `(. ty ctor)` member node — the type is fixed by the decode target (there is no
+/// root ascription). A single-constructor sum elides the constructor (the generated code emits the payload directly),
 /// so this builds only the multi-constructor case.
 #[must_use]
 pub fn qctor(b: &mut Builder, ty: &str, ctor: &str, payload: Vec<StructId>) -> StructId {
@@ -55,8 +55,8 @@ pub fn bare_ctor(b: &mut Builder, name: &str, payload: Vec<StructId>) -> StructI
 
 /// The `unit` atom — the canonical Value form of a Unit value. The compiler's `Value.encode` renders Unit as
 /// the bare name atom `unit` (the same form the runtime's value renderer emits for a `Unit` payload), so a
-/// **nullary single-constructor** sum elides its constructor to exactly this atom, framed only by the root
-/// ascription: `(type Ack = | Ack)` encodes at the payload boundary as `(: unit Ack)`, not `(: (Ack) Ack)`.
+/// **nullary single-constructor** sum elides its constructor to exactly this atom, bare at the root:
+/// `(type Ack = | Ack)` encodes at the payload boundary as just `unit`, not `(Ack)` and not `(: unit Ack)`.
 /// (A *multi*-constructor nullary variant keeps its bare-name form `(Ctor)` — the elision is single-ctor
 /// only.) The inverse is [`is_unit`].
 #[must_use]
@@ -69,8 +69,8 @@ pub fn unit(b: &mut Builder) -> StructId {
 /// ascription frame** (value-codec migration: decode by structure, not names). Every contract
 /// event/envelope's `encode` is this exact `build → finish → encode` wrapper, so it lives here once.
 /// The bare value is decoded by structure at the boundary — the guest runtime `Value.decode` and the
-/// platform's own readers ([`unascribe`]) are frame-tolerant, so the type token the old
-/// `build → ascribe → finish` wrapper emitted is gone.
+/// platform's own readers decode a bare value directly, so the type token the old
+/// `build → ascribe → finish` wrapper emitted is gone (the readers no longer peel a `(: value ty)` frame).
 #[must_use]
 pub fn encode_value(build: impl FnOnce(&mut Builder) -> StructId) -> Bytes {
     let mut b = Builder::new();
@@ -152,30 +152,16 @@ pub fn as_qctor<'a>(
     })
 }
 
-/// The value inside a root ascription `(: <value> <ty>)`, ignoring the type token (the decoder is
-/// type-directed). `None` if `id` is not a `(:  …)` ascription of exactly `(value ty)`. The inverse of
-/// [`ascribe`].
-#[must_use]
-pub fn as_ascribed(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<StructId> {
-    let inner = arenas.as_form(id, ":")?;
-    (inner.len() == 2).then_some(inner[0])
-}
-
-/// Strip an OPTIONAL root ascription `(: value ty)`, returning the underlying value — or `id` unchanged
-/// if there is no ascription. The frame-TOLERANT reader entry point (value-codec migration: decode by
-/// STRUCTURE, not names): it mirrors the runtime `Value.decode`, which now decodes a bare/unframed value
-/// too, so a contract value read here decodes whether or not the encode boundary emitted the `(: value
-/// ty)` wrapper. Prefer this over `as_ascribed(..)?` / `as_ascribed(..).expect(..)` at a decode entry —
-/// those REJECT/panic on an unframed value, but the frame is decorative (the type token is never matched)
-/// and is being eliminated from the encoders. A value built by these builders (framed today) is
-/// unaffected; a bare one now reads instead of failing.
-#[must_use]
-pub fn unascribe(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> StructId {
-    as_ascribed(arenas, id).unwrap_or(id)
-}
+// Type-ascription readers (`as_ascribed` / `unascribe`) were REMOVED (operator directive 2026-09-12: no
+// type-ascription anywhere in the value encoding). Nothing emits a `(: value ty)` frame, so nothing peels
+// one — decode is purely structural. A decode entry point that used `unascribe(&arenas, arenas.root)` now
+// reads `arenas.root` directly; the structural readers below (`record_field`, `as_qctor`, `is_unit`, …)
+// take the value as-is. (These never peeled reader `(comment …)` wrappers — that peel lives only in the
+// separate `cadenza-value` toolkit, whose inputs can be `cdz convert` surface — so removal is a no-op for
+// every platform decode path.)
 
 /// Whether `id` is the `unit` atom — the inverse of [`unit`]. A nullary single-constructor sum's elided
-/// payload, once the root ascription is stripped, is exactly this atom.
+/// payload is exactly this atom (the root value directly — there is no ascription frame to strip).
 #[must_use]
 pub fn is_unit(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> bool {
     arenas.as_name(id) == Some("unit")
@@ -249,8 +235,8 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_ascribed, as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, is_unit, qctor, read_bytes,
-        read_hash, read_uint, record, record_field, uint_leaf, unit,
+        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, is_unit, qctor, read_bytes, read_hash,
+        read_uint, record, record_field, uint_leaf, unit,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix};
@@ -262,9 +248,8 @@ mod tests {
         b.finish(root)
     }
 
-    // The ascription EMITTER was removed from the codec (no producer wraps `(: value ty)` anymore), but the
-    // READERS below (`as_ascribed`/`unascribe`) stay tolerant of a legacy frame so bytes still in the wild
-    // decode. These tests build a frame INLINE to pin that read tolerance — this mirrors the old `ascribe`.
+    // Build a legacy root ascription `(: value ty)` INLINE — the emitter is gone, but a few tests still need
+    // to construct the frame to PIN that the structural readers no longer transparently peel it.
     fn ascribe(b: &mut Builder, value: super::StructId, ty: &str) -> super::StructId {
         let colon = b.name(":");
         let ty = b.name(ty);
@@ -313,14 +298,18 @@ mod tests {
         // The multi-ctor nullary form `(Delivered)` is NOT the unit atom (it is a list, not the name `unit`).
         let other = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
         assert!(!is_unit(&other, other.root));
-        // Ascribed at the root, the single-ctor-nullary form is `(: unit Ack)`: strip the ascription, the
-        // inner value is the unit atom (what a generated `is_ack_ack` checks after `as_ascribed`).
-        let ascribed = built(|b| {
+        // The single-ctor-nullary form is the bare `unit` atom AT THE ROOT — no `(: unit Ack)` frame — so
+        // `is_unit` reads the root value directly (what a generated `is_ack_ack` checks). A manually-built
+        // `(: unit Ack)` is NOT peeled: its root is the `:` list, not the atom, so `is_unit` is false there.
+        assert!(is_unit(&arenas, arenas.root));
+        let framed = built(|b| {
             let u = unit(b);
             ascribe(b, u, "Ack")
         });
-        let inner = as_ascribed(&ascribed, ascribed.root).expect("a root ascription");
-        assert!(is_unit(&ascribed, inner));
+        assert!(
+            !is_unit(&framed, framed.root),
+            "readers do not peel a root `(: unit Ack)` — decode is structural"
+        );
     }
 
     #[test]
@@ -339,21 +328,33 @@ mod tests {
     }
 
     #[test]
-    fn a_root_ascription_round_trips_and_ignores_its_type_token() {
-        // The encode-boundary wrapper `(: value Ty)`: `as_ascribed` returns the inner value; the type token
-        // is not matched (the decoder is type-directed), so any name wraps and strips the same.
-        let arenas = built(|b| {
-            let v = bytes_leaf(b, b"inner");
-            ascribe(b, v, "Envelope")
+    fn readers_do_not_peel_a_root_ascription() {
+        // Type-ascription tolerance was REMOVED (operator directive 2026-09-12): nothing emits a
+        // `(: value ty)` frame AND the readers no longer PEEL one — decode is purely structural. Pin the
+        // removal: a value wrapped in a manually-built root `(: <record> Envelope)` is NOT transparently
+        // unwrapped — the structural readers see the `:`-headed list, so `record_field` misses on it. This
+        // guards against a future change silently re-introducing an `as_ascribed`/`unascribe` peel.
+        let framed = built(|b| {
+            let id = bytes_leaf(b, b"the-id");
+            let rec = record(b, vec![("id", id)]);
+            ascribe(b, rec, "Envelope")
         });
-        let inner = as_ascribed(&arenas, arenas.root).expect("an ascription");
-        assert_eq!(
-            read_bytes(&arenas, inner).as_deref(),
-            Some(b"inner".as_slice())
+        // The root IS the `(: value Envelope)` list, exactly `(value ty)`.
+        let inner = framed.as_form(framed.root, ":").expect("a `:`-headed root");
+        assert_eq!(inner.len(), 2, "an ascription is exactly `(: value ty)`");
+        assert_eq!(framed.as_name(inner[1]), Some("Envelope"));
+        // And the readers do NOT see through it: the record's field is not reachable from the framed root.
+        assert!(
+            record_field(&framed, framed.root, "id").is_none(),
+            "readers do not transparently unwrap a root ascription anymore"
         );
-        // A non-ascription (a bare bytes leaf) is not an ascription.
-        let bare = built(|b| bytes_leaf(b, b"x"));
-        assert!(as_ascribed(&bare, bare.root).is_none());
+        // The same record, bare (no frame), reads its field structurally — the form callers actually emit.
+        let bare = built(|b| {
+            let id = bytes_leaf(b, b"the-id");
+            record(b, vec![("id", id)])
+        });
+        let id = record_field(&bare, bare.root, "id").expect("a bare record reads structurally");
+        assert_eq!(read_bytes(&bare, id).as_deref(), Some(b"the-id".as_slice()));
     }
 
     #[test]
@@ -415,22 +416,6 @@ mod tests {
             ["alpha", "mango", "zebra"],
             "record fields must be emitted in ascending NAME order (canonical form), not declaration order"
         );
-    }
-
-    #[test]
-    fn a_root_ascription_wraps_the_value_as_the_outermost_colon_form() {
-        // FIX B invariant: the encode boundary wraps the payload in `(: <value> <ty>)` as the OUTERMOST node
-        // — the top-level form the compiler's `Value.decode` requires. Pin the physical shape: the root is a
-        // `:`-headed list of exactly `(value ty)`, with the value first and the type token second.
-        let arenas = built(|b| {
-            let v = record(b, vec![]);
-            ascribe(b, v, "Envelope")
-        });
-        let inner = arenas.as_form(arenas.root, ":").expect("a `:`-headed root");
-        assert_eq!(inner.len(), 2, "an ascription is exactly `(: value ty)`");
-        // The type token is the SECOND child (the value is first); `as_ascribed` returns the first.
-        assert_eq!(arenas.as_name(inner[1]), Some("Envelope"));
-        assert_eq!(as_ascribed(&arenas, arenas.root), Some(inner[0]));
     }
 
     #[test]

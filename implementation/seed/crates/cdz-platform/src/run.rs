@@ -303,8 +303,7 @@ impl Run {
         use crate::contract_value as v;
         use crate::contracts::run as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        let r = c::as_request_run(&arenas, root)?;
+        let r = c::as_request_run(&arenas, arenas.root)?;
         Some(Self {
             program: ProgramHash::try_from(v::read_bytes(&arenas, r.program)?.as_ref()).ok()?,
             contract: ContractId::try_from(v::read_bytes(&arenas, r.contract)?.as_ref()).ok()?,
@@ -334,8 +333,7 @@ impl RunOutput {
         use crate::contract_value as v;
         use crate::contracts::run as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        let inner = c::as_output_output(&arenas, root)?;
+        let inner = c::as_output_output(&arenas, arenas.root)?;
         Some(Self {
             output: v::read_bytes(&arenas, inner)?,
         })

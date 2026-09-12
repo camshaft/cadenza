@@ -1679,31 +1679,29 @@ mod tests {
     #[test]
     fn arg_probe_encodes_the_canonical_value_form() {
         use super::ap;
-        use crate::contract_value::{as_ascribed, as_bare_ctor, read_uint, record_field};
+        use crate::contract_value::{as_bare_ctor, read_uint, record_field};
         use cadenza_ast::codec;
 
-        // probe-record { v: Big(5), tag: 42 } -> bare (record (= v (Big 5)) (= tag 42)) (no root ascription;
-        // as_ascribed(..).unwrap_or(root) tolerates either form, so this still reads the record fields).
+        // probe-record { v: Big(5), tag: 42 } -> bare (record (= v (Big 5)) (= tag 42)) at the root: no
+        // ascription frame (operator directive 2026-09-12), so the record reads structurally from the root.
         let bytes = super::encode_probe_record(&ap::ProbeRecord {
             v: ap::Mixed::Big(5),
             tag: 42,
         });
         let arenas = codec::decode(&bytes).expect("probe-record decodes");
-        let rec = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-        let v = record_field(&arenas, rec, "v").expect("field v");
+        let v = record_field(&arenas, arenas.root, "v").expect("field v");
         let big = as_bare_ctor(&arenas, v, "Big").expect("v is (Big _)");
         assert_eq!(read_uint(&arenas, big[0]), Some(5), "Big payload");
-        let tag = record_field(&arenas, rec, "tag").expect("field tag");
+        let tag = record_field(&arenas, arenas.root, "tag").expect("field tag");
         assert_eq!(read_uint(&arenas, tag), Some(42), "tag");
 
         // list<narrow> [A(7), Absent, B(300)] -> bare <native Ctor(List)>[(A 7) (Absent unit) (B 300)]
-        // (no root ascription; as_ascribed(..).unwrap_or(root) tolerates either form).
+        // at the root (no ascription frame; the list reads structurally from the root).
         let bytes =
             super::encode_narrow_list(&[ap::Narrow::A(7), ap::Narrow::Absent, ap::Narrow::B(300)]);
         let arenas = codec::decode(&bytes).expect("list decodes");
-        let list = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
         let elems = arenas
-            .compound_form_of(list, CompoundCtor::List)
+            .compound_form_of(arenas.root, CompoundCtor::List)
             .expect("native Ctor(List) list");
         assert_eq!(elems.len(), 3, "three narrow elements");
         let a = as_bare_ctor(&arenas, elems[0], "A").expect("(A _)");
