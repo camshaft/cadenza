@@ -10893,7 +10893,7 @@ todo	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
-todo	a recursive newtype escapes to the host tagged with its own name at each recursion point
+todo	a recursive newtype escapes to the host STRUCTURALLY — bare, with no per-recursion type tag
 todo	a reducer emitting no effects builds an empty-requests step and runs (via an imposed WIT world)
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
