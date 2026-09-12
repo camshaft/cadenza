@@ -15,11 +15,15 @@
 //! loop and returns the terminal `Break`.
 
 use crate::cancel::CancelScope;
-use cdz_platform::{ContractId, Delivered, Reducer, Request, Runtime, run_mailbox_loop};
+use cdz_platform::{
+    ContractId, Delivered, Reducer, ReducerFault, Request, Runtime, run_mailbox_loop,
+};
 
 /// Drive `reducer` to its terminal `Break`: deliver `first` as its opening event, and resolve every request
-/// it emits via `carry`. Returns the `Break` reason `(schema, reason)` — the closing value the gateway turns
-/// into an HTTP response / deny — or `None` if the reducer closed its mailbox or a fold panicked.
+/// it emits via `carry`. Returns `Ok(Some((schema, reason)))` — the terminal `Break` the gateway turns into
+/// an HTTP response / deny; `Ok(None)` if the reducer closed its mailbox with no terminal; or
+/// `Err(`[`ReducerFault`]`)` if a fold FAULTED — `HostBackend` (a denied/failed upstream `state`/`blobs` op,
+/// which the caller floors `502`) vs `Guest` (a trap/panic/malformed step, floored `500`).
 ///
 /// `carry` is the pluggable effect resolver: for each emitted [`Request`] it receives the request plus a
 /// clone of the session mailbox sender, carries the effect out, and (when an answer arrives) injects a
@@ -29,7 +33,7 @@ pub async fn drive<R: Runtime>(
     mut reducer: Box<dyn Reducer>,
     first: Delivered,
     mut carry: impl FnMut(Request, R::Sender, &CancelScope),
-) -> Option<(ContractId, bytes::Bytes)> {
+) -> Result<Option<(ContractId, bytes::Bytes)>, ReducerFault> {
     let (sender, mut receiver) = R::channel();
     // The opening event: the http-request delivered as an `on_message`, a subprogram's dispatched input, …
     R::send(&sender, first);
@@ -112,7 +116,8 @@ mod tests {
             // no effects emitted, so the resolver is never invoked
             |_req, _tx, _scope| {},
         )
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(
             out,
             Some((
@@ -181,7 +186,8 @@ mod tests {
             opening(b"http-request", b""),
             carry,
         )
-        .await;
+        .await
+        .expect("native test drive never faults");
         assert_eq!(
             out,
             Some((

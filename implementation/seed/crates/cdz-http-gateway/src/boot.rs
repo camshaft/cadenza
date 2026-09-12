@@ -33,7 +33,7 @@ use cdz_http_protocol::{
 };
 use cdz_platform::{
     BlobStore, ContractId, Delivered, Hash, HostId, Message as ReducerMessage, Origin, ProgramHash,
-    ProgramStore, ReducerId, ReducerKind, SpawnContext, Str, TokioRuntime,
+    ProgramStore, ReducerFault, ReducerId, ReducerKind, SpawnContext, Str, TokioRuntime,
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
@@ -537,12 +537,21 @@ async fn drive_request(gw: &GatewayState, req: Request<Incoming>) -> Response<Fu
     })
     .await;
     match out {
-        Some((schema, reason)) if schema == gw.ids.response => decode_response(&reason),
-        Some((schema, reason)) if schema == gw.ids.response_cas => {
+        Ok(Some((schema, reason))) if schema == gw.ids.response => decode_response(&reason),
+        Ok(Some((schema, reason))) if schema == gw.ids.response_cas => {
             decode_response_cas(&gw.cas, &reason).await
         }
-        Some((schema, reason)) if schema == gw.ids.deny => decode_deny(&reason),
-        // The program closed without a terminal http-response/deny, or a fold panicked → a gateway error.
+        Ok(Some((schema, reason))) if schema == gw.ids.deny => decode_deny(&reason),
+        // A host-backend trap (§6): a denied/failed upstream `state`/`blobs` op (e.g. a CAS write rejected
+        // for a bad credential) unwound the fold — the gateway's DEPENDENCY failed, not the handler, so
+        // floor `502 Bad Gateway`. The backend error text is NOT surfaced to the client (it can carry a CAS
+        // URL / credential detail); a generic body only.
+        Err(ReducerFault::HostBackend(_)) => status(
+            StatusCode::BAD_GATEWAY,
+            b"cdz-http-gateway: upstream backend error\n",
+        ),
+        // A genuine guest fault (`ReducerFault::Guest` — trap/panic/malformed step), a program that closed
+        // without a terminal http-response/deny, or an unrecognized terminal schema → a program-side `500`.
         _ => status(
             StatusCode::INTERNAL_SERVER_ERROR,
             b"cdz-http-gateway: no response from program\n",

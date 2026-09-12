@@ -691,7 +691,11 @@ impl<R: Runtime> Shared<R> {
                             }
                         },
                     )
-                    .await;
+                    .await
+                    // TaskSystem cannot retry an in-process fold, so collapse any typed `ReducerFault` to the
+                    // prior `None` (→ `Crashed`), exactly as the pre-typed loop did. (The HTTP-outpost gateway
+                    // is the driver that acts on the fault KIND — 502-vs-500 — not this one.)
+                    .unwrap_or(None);
                 }
                 // Tell every watcher how this reducer ended, then leave the graph (§7): a clean Break is an
                 // `Exited` carrying its typed reason; any other end — a fold that panicked (caught above), the
@@ -719,8 +723,12 @@ impl<R: Runtime> Shared<R> {
 /// mailbox, [`fold`] each delivered event through its matching entry point, and hand every request it emits
 /// to `dispatch` — FIRE-AND-FORGET: `dispatch` carries the request out and, when an answer arrives, injects
 /// it back into the mailbox as a `Delivered::Response` correlated by `continuation_token`, never blocking
-/// this loop. Returns the reducer's `Break` reason (`Some((schema, reason))`), or `None` if the mailbox
-/// closed or a fold panicked (an uncontrolled crash).
+/// this loop. Returns `Ok(Some((schema, reason)))` on the reducer's terminal `Break`, `Ok(None)` if the
+/// mailbox closed with no Break, or `Err(`[`ReducerFault`](crate::ReducerFault)`)` if a fold FAULTED — a
+/// typed host-backend/guest trap, or a Rust panic (mapped to `ReducerFault::Guest`, since a panic is a
+/// guest-side crash, not a backend failure). A driver that acts on the fault KIND reads it here (the
+/// HTTP-outpost gateway maps `HostBackend`→502 vs `Guest`→500); one that can't collapses it
+/// (`.unwrap_or(None)` → `Crashed`), exactly as the pre-typed loop did.
 ///
 /// This is the ONE loop shape the platform ([`TaskSystem`]) and other drivers (the HTTP-outpost gateway)
 /// SHARE: each supplies its own per-request `dispatch` — deliver/timer/run/ordinary-effect routing for the
@@ -730,30 +738,30 @@ pub async fn run_mailbox_loop<R: Runtime>(
     reducer: &mut Box<dyn Reducer>,
     inbox: &mut R::Receiver,
     mut dispatch: impl AsyncFnMut(Request),
-) -> Option<(ContractId, Bytes)> {
+) -> Result<Option<(ContractId, Bytes)>, crate::ReducerFault> {
     while let Some(event) = R::recv(inbox).await {
         let (requests, outcome) = match std::panic::AssertUnwindSafe(fold(reducer, event))
             .catch_unwind()
             .await
         {
             Ok(Ok(folded)) => folded,
-            // A typed fold fault (a wasm reducer trapped — host-backend or guest) ends the drain with no
-            // Break reason, the same as an uncontrolled crash. This loop has no transaction to retry (its
-            // backends are in-process), so both fault kinds collapse to a `Crashed`-shaped `None`; a driver
-            // that CAN retry (the HTTP-outpost gateway's 502-vs-500, a Membrain-backed fold's abort+retry)
-            // reads the typed [`ReducerFault`](crate::ReducerFault) by calling the reducer directly.
-            Ok(Err(_fault)) => return None,
-            // A panic in a fold is an uncontrolled crash: stop draining, report no Break reason.
-            Err(_panic) => return None,
+            // A typed fold fault (a wasm reducer trapped — host-backend or guest): SURFACE the typed
+            // [`ReducerFault`](crate::ReducerFault) so a driver that acts on the KIND does (the HTTP-outpost
+            // gateway maps `HostBackend`→502 vs `Guest`→500). A driver that can't collapses it
+            // (`.unwrap_or(None)` → `Crashed`), matching the pre-typed behavior.
+            Ok(Err(fault)) => return Err(fault),
+            // A Rust panic in a fold is a guest-side crash (not a host-backend failure): surface it as a
+            // `Guest` fault, so it floors 500 downstream exactly as the old caught-panic `None` did.
+            Err(_panic) => return Err(crate::ReducerFault::Guest("reducer fold panicked".into())),
         };
         for request in requests {
             dispatch(request).await;
         }
         if let Outcome::Break { schema, reason } = outcome {
-            return Some((schema, reason));
+            return Ok(Some((schema, reason)));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Fold one delivered event through a reducer's matching entry point. `Err` is a [`ReducerFault`] — a
