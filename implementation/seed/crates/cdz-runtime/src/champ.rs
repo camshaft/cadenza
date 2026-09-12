@@ -563,17 +563,16 @@ pub(crate) fn compare_scalar_leaf(
             let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
             Some(as_.cmp(bs))
         }
-        // Not a scalar leaf — a compound / set / map / framed root: the caller falls through to the walk.
+        // Not a scalar leaf — a compound / set / map root: the caller falls through to the walk.
         Shape::Tuple(_)
         | Shape::List(_)
         | Shape::Record(_)
         | Shape::Sum(_)
         | Shape::Spread(_)
         | Shape::Set(_)
-        | Shape::Map(..)
-        | Shape::Framed(..) => return None,
-        // Named/Ref were already resolved by `resolve_shape`; a residual one is a malformed descriptor.
-        Shape::Named(..) | Shape::Ref(_) => return None,
+        | Shape::Map(..) => return None,
+        // Ref was already resolved by `resolve_shape`; a residual one is a malformed descriptor.
+        Shape::Ref(_) => return None,
     })
 }
 
@@ -766,19 +765,8 @@ pub(crate) fn value_cmp_shaped(
                             });
                         }
                     }
-                    // A `Framed` frame (`(: value type-node)`) wraps an INNER value shape (like `Named` but
-                    // with a full type node) — transparent for ordering: compare the inner value. Not
-                    // followed by `resolve_shape` (which only chases `Ref`/`Named`), so descend it here.
-                    Shape::Framed(_type_node, inner) => {
-                        let inner = *inner;
-                        work.push(CmpTask::Pair {
-                            a,
-                            b,
-                            shape_ix: inner,
-                        });
-                    }
-                    // `Ref`/`Named` were resolved by `resolve_shape` above and never reach here.
-                    Shape::Ref(_) | Shape::Named(..) => return None,
+                    // `Ref` was resolved by `resolve_shape` above and never reaches here.
+                    Shape::Ref(_) => return None,
                 }
             }
         }
@@ -948,15 +936,7 @@ pub(crate) fn value_eq_shaped(
                     });
                 }
             }
-            Shape::Framed(_type_node, inner) => {
-                let inner = *inner;
-                work.push(EqTask::Pair {
-                    a,
-                    b,
-                    shape_ix: inner,
-                });
-            }
-            Shape::Ref(_) | Shape::Named(..) => return None,
+            Shape::Ref(_) => return None,
         }
     }
     Some(true)
@@ -1052,12 +1032,12 @@ pub(crate) fn value_canonicalize_shaped(
             }
             CanonTask::Visit { h, shape_ix, refs } => {
                 if refs > ENCODE_REF_CYCLE_CAP {
-                    return canon_decline(&mut results); // a Ref/Named chain that never reaches a node
+                    return canon_decline(&mut results); // a Ref chain that never reaches a node
                 }
                 match desc.table.get(shape_ix as usize) {
                     None => return canon_decline(&mut results),
-                    // Indirections: same `h`, no node reached → count toward the cycle cap.
-                    Some(Shape::Ref(target) | Shape::Named(_, target)) => {
+                    // Indirection: same `h`, no node reached → count toward the cycle cap.
+                    Some(Shape::Ref(target)) => {
                         work.push(CanonTask::Visit {
                             h,
                             shape_ix: *target,
@@ -1163,14 +1143,6 @@ pub(crate) fn value_canonicalize_shaped(
                             h: op_sum_payload(h),
                             shape_ix: *payload_shape,
                             refs: 0,
-                        });
-                    }
-                    // A `(: value type-node)` frame — transparent for the VALUE: canonicalize the inner value.
-                    Some(Shape::Framed(_type_node, inner)) => {
-                        work.push(CanonTask::Visit {
-                            h,
-                            shape_ix: *inner,
-                            refs: refs + 1,
                         });
                     }
                 }
