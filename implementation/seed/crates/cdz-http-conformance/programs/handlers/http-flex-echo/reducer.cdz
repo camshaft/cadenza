@@ -1,0 +1,50 @@
+// FLEXIBLE-HANDLER guest fixture (v-hivemind inc-16 S3c; #8895 flexible-HTTP-handler protocol). Unlike the
+// one-shot handlers (http-echo etc.), a flexible handler is a MULTI-MESSAGE, held-alive-per-request reducer
+// that speaks the head-first-then-deferred-body protocol. This is the basic ECHO variant: it echoes the
+// request body back as a 200. v-hivemind's S3c per-request driver drives it as:
+//
+//   on_message #1  contract = cdz-platform.http.request-head   → EMIT a body-mode effect (Whole, unbounded)
+//                  as a REQUEST (fire-and-forget directive), Continue.
+//   on_message #2  contract = cdz-platform.http.request-body-stream, Frame.Chunk(full body for Whole)
+//                  → stash the body in ephemeral state, Continue.
+//   on_message #3  contract = cdz-platform.http.request-body-stream, Frame.End
+//                  → Break with a ONE-SHOT http.response {200, [], echoed body} (identical to http-echo's
+//                  response half — only the intake side is new).
+//
+// State: ONE reducer instance held across the request (per-request ephemeral session); it carries the body
+// from the Chunk on_message to the End on_message via the `state` host import (reducer-putget idiom).
+//
+// DISPATCH NOTE: only request-head + request-body-stream ever reach on_message (per the protocol), so we
+// dispatch on the request-body-stream contract-id and treat ELSE = the head. This deliberately AVOIDS importing
+// http-request-head, whose `Header` type would collide (CDZ0201) with http-response's `Header` pulled in by
+// http-lib's `respond` — the two are structurally identical but distinct types, the known Header-collision trap
+// (cf. http-casref). We never read the head's fields (only need to know it arrived → choose the body-mode), so
+// not importing http-request-head costs nothing. http-body-mode + http-request-body-stream define no `Header`.
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Frame, descriptor as body-stream-desc } from "http-request-body-stream"
+import { respond } from "http-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == body-stream-desc().id then
+       (match (Value.decode(msg.payload) : Option(Frame)) with
+        | Some(Frame.Chunk(c)) =>
+            // Whole delivers the full body as one Chunk: stash it, Continue to await End.
+            (state.put(b"body", c.body) ;
+             { requests = [], outcome = Outcome.Continue })
+        | Some(Frame.End) =>
+            // Body complete → echo it back as a one-shot http.response 200 (Break).
+            (match state.get(b"body") with
+             | Some(body) => respond(200, [], body)
+             | None(_) => respond(200, [], b""))
+        | None => respond(400, [], b"undecodable request-body-stream frame"))
+     else
+       // The HEAD (on_message #1; any non-body-stream contract) → choose Whole (unbounded) body-mode, emitted
+       // as a fire-and-forget REQUEST effect; Continue to await the body-stream on_messages.
+       { requests = [request(body-mode-desc().id,
+                            Value.encode(BodyMode.Whole({ max_body_size = Option.None })),
+                            msg.token)],
+         outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }
