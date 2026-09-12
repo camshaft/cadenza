@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           # ca-derivations so the per-case content-addressed emit.wasm cache is built + reused (#3363); the
           # cachix substituter so an already-warm case cache-HITS instead of recompiling.

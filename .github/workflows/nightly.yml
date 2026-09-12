@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       - uses: ./.github/actions/nix-store-cache
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           # ca-derivations for the content-addressed store; accept-flake-config + the camshaft.cachix.org
           # substituter/trusted-key at the DAEMON level (the #6370-correct vJQM+ key) so this build PULLS the

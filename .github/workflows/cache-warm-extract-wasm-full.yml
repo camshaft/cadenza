@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       # SERIALIZE the ca-derivations schema migration BEFORE the cachix post-build-hook attaches (v-nix #7874).
@@ -91,7 +91,7 @@ jobs:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       - uses: cachix/cachix-action@v17
