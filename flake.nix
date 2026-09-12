@@ -2621,6 +2621,26 @@
           [ "$(grep -c '=' ${wasmComponentsExport}/components/hashes.env)" -eq "$n" ] || { echo "hashes.env entry count != wasm count"; exit 1; }
           echo "ok: $n wasm components exported (valid wasm magic) + hashes.env complete + .gitattributes LFS" > "$out"
         '';
+        # reducerEchoComponent (v-nix-projection, for v-hivemind inc-7): a MINIMAL reducer-echo wasm
+        # component blob — a test fixture so the consumer can `include_bytes!` it (or seed it into a Brazil
+        # test CAS by ProgramHash) to validate the real WasmReducer fold path (spawn a live guest + assert
+        # echo + exercise the HostBackend-retry vs GuestCrashed fault classification). It is the EXISTING
+        # `guests/inline/reducer-echo-cdz` Cadenza guest (exports cadenza:platform/guest, no host imports →
+        # instantiable on the pure/inline linker), built by the same mkCadenzaGuest machinery as the shipped
+        # reducer-guest components; shipped via git-LFS like wasm-components-export. Kept a SEPARATE small
+        # package from wasm-components-export (a test fixture, not one of the ~/hivemind runtime pins).
+        reducerEchoComponent = pkgs.runCommand "reducer-echo-component" { } ''
+          mkdir -p "$out"
+          cp ${cadenzaGuests."reducer-echo-cdz"} "$out/reducer-echo.wasm"
+          echo "reducer-echo=$(cat ${hashOf cadenzaGuests."reducer-echo-cdz" "reducer-echo-hash"})" > "$out/hashes.env"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        reducerEchoComponentCheck = pkgs.runCommand "reducer-echo-component-check" { } ''
+          magic=$(head -c 4 ${reducerEchoComponent}/reducer-echo.wasm | od -An -tx1 | tr -d ' \n')
+          [ "$magic" = "0061736d" ] || { echo "reducer-echo.wasm not a wasm module (magic $magic)"; exit 1; }
+          grep -q '^reducer-echo=' ${reducerEchoComponent}/hashes.env || { echo "hashes.env missing reducer-echo entry"; exit 1; }
+          echo "ok: reducer-echo component (valid wasm magic + ProgramHash + .gitattributes LFS)" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7115,6 +7135,9 @@
         # (compiler + syntax parser guests + runtime/nfc — the ~/hivemind pins) + hashes.env + a git-LFS
         # `.gitattributes`, for vendoring into a git-LFS-backed package. Refresh: `nix build .#wasm-components-export`.
         packages.wasm-components-export = wasmComponentsExport;
+        # reducer-echo-component (v-nix-projection, for v-hivemind inc-7): a minimal reducer-echo wasm blob
+        # (git-LFS) test fixture to validate the real WasmReducer fold path in a Brazil test.
+        packages.reducer-echo-component = reducerEchoComponent;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8789,6 +8812,9 @@
             # wasm-components-export: every exported blob is a real wasm module + hashes.env complete.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.wasm-components-export`.
             wasm-components-export = wasmComponentsExportCheck;
+            # reducer-echo-component: the echo test-fixture blob is a valid wasm module + has its ProgramHash.
+            # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-echo-component`.
+            reducer-echo-component = reducerEchoComponentCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
