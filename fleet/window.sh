@@ -163,6 +163,21 @@ if [ "${DISALLOW_ASK:-1}" = "1" ]; then
 fi
 CLAUDE_ARGS+=(--effort "$EFFORT" --model "$MODEL" --dangerously-skip-permissions)
 
+# ── LAUNCH-TIME HEARTBEAT (concierge flap fix, concierge-approved 2026-09-12) ──
+# Stamp the agent's heartbeat NOW, at launch, so a session that is SLOW on its FIRST /loop tick — the
+# concierge reads its charter + drains a deep inbox + runs its in-tick watchdog before the loop's step-1
+# `fleet heartbeat` stamps — is NOT misread as never-heartbeated → "died before heartbeat" / failed
+# cold-start by the watchdog + the compact-nudge flap detector (the intermittent concierge boot-window
+# false-positive). The /loop's step-1 heartbeat refreshes it every tick after; this is just the initial
+# "I launched" stamp. Matches `heartbeat_refresh_liveness` exactly (respect the stop-file, create the dir,
+# write "tick\n" — heartbeat_age_secs only reads the MTIME). Raw write, NOT `cargo xtask fleet heartbeat`:
+# a cargo call here could trigger a rebuild and ADD boot latency (the opposite of the #8796 throttle) —
+# this is instant + fail-open.
+if [ ! -e "$HUB/.claude/fleet/stop/$AGENT" ]; then
+  mkdir -p "$HUB/.claude/fleet/heartbeat" 2>/dev/null || true
+  printf 'tick\n' > "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null || true
+fi
+
 echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL effort=$EFFORT interval=$INTERVAL) in $WORKTREE"
 echo "           claude ${CLAUDE_ARGS[*]} <kickoff>"
 exec claude "${CLAUDE_ARGS[@]}" "$KICKOFF"
