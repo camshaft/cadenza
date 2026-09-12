@@ -1,0 +1,44 @@
+// The HTTP-outpost REQUEST-HEAD contract (operator 655, v-hivemind's settled flexible-handler vocabulary):
+// the FIRST message every flexible HTTP handler reducer receives — the request HEAD ONLY (method, path,
+// query, headers), with NO body yet. Head-first-then-deferred-body is the whole point of 655: the handler
+// inspects the head and then EMITS A body-mode EFFECT (§ http-body-mode.cdz) to choose how the body is
+// delivered (whole / stream-in / ws-upgrade). A NEW leaner contract — NOT the one-shot `http-request`
+// (§ http-request.cdz), which carries the body inline; here the body is DEFERRED to the mode choice.
+//
+// `Header` mirrors http-request/http-response's — a single-constructor `| Header(Record(...))` (the proven
+// contract idiom), not a bare record-alias (which names a type constructor, CDZ0203, and does not typecheck).
+// `method` is a plain `String` (per the settled spec) rather than http-request's typed `Method` enum — the
+// head stays lean and protocol-neutral; the driver/handler interprets the verb. Userspace (this dir): a
+// Cadenza reducer consumes it via self-reflection; the native edge produces it as the session's first
+// on_message; no Rust binding is hand-written (codegen projects the schema + the computed contract-id).
+type Header = | Header(Record(name: String, value: String))
+type Head =
+  | Head(Record(method: String,
+                path: String,
+                query: String,
+                headers: List(Header)))
+
+// --- conformance proof: a fully-literal request-head value, ascribed against the schema type ---
+def a-head() -> Head =
+  Head.Head({ method = "GET",
+              path = "/events",
+              query = "since=42",
+              headers = [Header.Header({ name = "accept", value = "text/event-stream" })] })
+
+@test
+def head-conforms() =
+  match a-head() with
+  | Head.Head(h) =>
+    (match h.headers with
+     | [x] =>
+       (match x with
+        | Header.Header(hd) =>
+          if (h.method == "GET") and (h.path == "/events") and (h.query == "since=42")
+             and (hd.name == "accept") and (hd.value == "text/event-stream")
+          then unit else trap("request-head field mismatch"))
+     | _ => trap("expected exactly one header"))
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.request-head", "Head", "Head")
+export { Header.*, Head.*, descriptor }
