@@ -38,8 +38,7 @@ use super::observation::{
     RunCall, SpawnInfo,
 };
 use crate::contract_value::{
-    as_ascribed, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field,
-    uint_leaf,
+    bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Dir, EdgeKind, Error, Hash, HostId, Origin, ProgramHash, ReducerId,
@@ -71,10 +70,9 @@ pub fn serialize(records: &[Record]) -> Vec<u8> {
 #[must_use]
 pub fn deserialize(bytes: &[u8]) -> Option<Vec<Record>> {
     let arenas = codec::decode(bytes)?;
-    // Strip the root ascription `(: <list> List)` if present (`serialize` writes it so a guest can
-    // `Value.decode` the log); tolerate a bare list too, so the reader is liberal about the wrapper.
-    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-    let items = list_items(&arenas, root)?;
+    // The log is a bare `List(LogRecord)` at the root — `serialize` writes no `(: <list> List)` frame and
+    // this reader peels none (decode is purely structural, matching a guest's bare `Value.encode`).
+    let items = list_items(&arenas, arenas.root)?;
     items.iter().map(|&r| read_record(&arenas, r)).collect()
 }
 
@@ -102,9 +100,8 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
 }
 
 fn read_record(arenas: &Arenas, id: StructId) -> Option<Record> {
-    // Strip the per-element `(: <record> LogRecord)` ascription `serialize` writes (liberal — a bare record
-    // is tolerated too).
-    let id = as_ascribed(arenas, id).unwrap_or(id);
+    // Each `LogRecord` element is the BARE record (single-ctor elision, #8840) — no per-element
+    // `(: <record> LogRecord)` frame is emitted and none is peeled here; the record reads structurally.
     Some(Record {
         seq: read_uint(arenas, field(arenas, id, "seq")?)?,
         time_ns: read_uint(arenas, field(arenas, id, "time")?)?,
@@ -1365,11 +1362,10 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let root = crate::contract_value::unascribe(&arenas, arenas.root);
-        let items = super::list_items(&arenas, root).expect("the log is a list");
-        // Each LogRecord element is the BARE record post value-codec migration (#8840); tolerate a legacy
-        // `(: <record> LogRecord)` frame too.
-        let record = super::as_ascribed(&arenas, items[0]).unwrap_or(items[0]);
+        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        // Each LogRecord element is the BARE record post value-codec migration (#8840) — no `(: … LogRecord)`
+        // frame is emitted or peeled; the record reads structurally.
+        let record = items[0];
         let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "Delivered");
@@ -1399,11 +1395,10 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let root = crate::contract_value::unascribe(&arenas, arenas.root);
-        let items = super::list_items(&arenas, root).expect("the log is a list");
-        // Each LogRecord element is the BARE record post value-codec migration (#8840); tolerate a legacy
-        // `(: <record> LogRecord)` frame too.
-        let record = super::as_ascribed(&arenas, items[0]).unwrap_or(items[0]);
+        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        // Each LogRecord element is the BARE record post value-codec migration (#8840) — no `(: … LogRecord)`
+        // frame is emitted or peeled; the record reads structurally.
+        let record = items[0];
         let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "KvScan");

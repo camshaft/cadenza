@@ -73,8 +73,7 @@ impl Spawned {
         use crate::contract_value as v;
         use crate::contracts::spawned as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        let e = c::as_event_spawned(&arenas, root)?;
+        let e = c::as_event_spawned(&arenas, arenas.root)?;
         Some(Self {
             id: ReducerId::from_hash(v::read_hash(&arenas, e.id)?),
             parent: ReducerId::from_hash(v::read_hash(&arenas, e.parent)?),
@@ -114,14 +113,13 @@ mod tests {
             parent: rid(b"parent"),
         };
         let arenas = cadenza_ast::codec::decode(&event.encode()).expect("well-formed value");
-        let inner = v::unascribe(&arenas, arenas.root);
-        // The elided value IS the record: its fields read directly by name.
+        // The elided value IS the record at the root (no ascription frame): its fields read by name.
         assert!(
-            v::record_field(&arenas, inner, "id").is_some(),
+            v::record_field(&arenas, arenas.root, "id").is_some(),
             "the elided single-ctor value is the record itself"
         );
         // And it is NOT wrapped in the `Spawned` constructor (elided).
-        assert!(v::as_qctor(&arenas, inner, "Event", "Spawned").is_none());
+        assert!(v::as_qctor(&arenas, arenas.root, "Event", "Spawned").is_none());
     }
 
     #[test]

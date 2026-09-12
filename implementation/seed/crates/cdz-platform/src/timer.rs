@@ -57,8 +57,8 @@ pub struct Fired {
 }
 
 impl FireAfter {
-    /// Build the arm value into `b`, returning its root — a value of the schema type `Envelope`, so it
-    /// type-ascribes against the contract's schema. The value SHAPE is entirely the generated builder's
+    /// Build the arm value into `b`, returning its root — a value of the schema type `Envelope`, matching
+    /// the contract's schema (structurally; no ascription frame). The value SHAPE is entirely the generated builder's
     /// (`contracts::timer`, generated from the same source as the schema, so they cannot drift); this only
     /// supplies the `UInt64` leaf.
     fn build(&self, b: &mut Builder) -> StructId {
@@ -96,8 +96,7 @@ impl FireAfter {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        let duration = c::as_envelope_fire_after(&arenas, root)?;
+        let duration = c::as_envelope_fire_after(&arenas, arenas.root)?;
         Some(Self {
             duration: v::read_uint(&arenas, duration)?,
         })
@@ -126,8 +125,7 @@ impl Fired {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let root = v::unascribe(&arenas, arenas.root);
-        let fired_time = c::as_event_fired(&arenas, root)?;
+        let fired_time = c::as_event_fired(&arenas, arenas.root)?;
         Some(Self {
             fired_time: v::read_uint(&arenas, fired_time)?,
         })
@@ -152,18 +150,17 @@ mod tests {
     fn a_single_constructor_scalar_arm_elides_its_constructor() {
         // FIX B invariant, scalar elision arm: `Envelope` is a SINGLE-constructor sum (`| FireAfter(UInt64)`),
         // so the canonical form the compiler's `Value.decode` reads ELIDES the constructor — the payload (the
-        // bare `UInt64` leaf) rides directly under the root ascription, with NO `(FireAfter …)` wrapper. Both
-        // the generated builder and reader elide symmetrically, so the round-trip test above cannot catch a
-        // regression that (consistently) re-introduces the wrapper — but a guest `Value.decode` then fails.
-        // Pin the PHYSICAL shape: under the ascription is the integer leaf itself, not a constructor list.
+        // bare `UInt64` leaf) rides directly AT THE ROOT, with NO `(FireAfter …)` wrapper and NO `(: … Envelope)`
+        // ascription frame. Both the generated builder and reader elide symmetrically, so the round-trip test
+        // above cannot catch a regression that (consistently) re-introduces the wrapper — but a guest
+        // `Value.decode` then fails. Pin the PHYSICAL shape: the root IS the integer leaf, not a constructor list.
         use crate::contract_value as v;
         let arm = FireAfter { duration: 5000 };
         let arenas = cadenza_ast::codec::decode(&arm.encode()).expect("well-formed value");
-        let inner = v::unascribe(&arenas, arenas.root);
-        // The elided value IS the scalar: `read_uint` reads it directly.
-        assert_eq!(v::read_uint(&arenas, inner), Some(5000));
+        // The elided value IS the scalar at the root: `read_uint` reads it directly.
+        assert_eq!(v::read_uint(&arenas, arenas.root), Some(5000));
         // And it is NOT wrapped in the `FireAfter` constructor (elided) — nor any bare-ctor list.
-        assert!(v::as_qctor(&arenas, inner, "Envelope", "FireAfter").is_none());
+        assert!(v::as_qctor(&arenas, arenas.root, "Envelope", "FireAfter").is_none());
     }
 
     #[test]
@@ -195,30 +192,29 @@ mod tests {
         // Not a valid encoding at all.
         assert_eq!(FireAfter::decode(&[0xFF, 0x00, 0x13, 0x37]), None);
         assert_eq!(FireAfter::decode(&[]), None);
-        // A well-formed Cadenza value with no root ascription is not a timer value.
+        // A well-formed Cadenza value that is not the `FireAfter` shape is not a timer value.
         let mut b = cadenza_ast::ast::Builder::new();
         let root = b.name("not-a-timer");
         let wrong_shape = cadenza_ast::codec::encode(&b.finish(root));
         assert_eq!(FireAfter::decode(&wrong_shape), None);
-        // An ascribed value whose payload is not an integer is not a timer arm (the elided single-ctor
-        // reader is type-directed by the caller, so the rejection lives in `read_uint`, not a ctor tag).
+        // A legacy `(: rec Envelope)` frame is REJECTED, not peeled: decode is structural now, so the reader
+        // sees the `:`-headed list at the root (not a `UInt64` leaf) and declines — the ascription tolerance
+        // is gone (operator directive 2026-09-12), so a framed value no longer sneaks through.
         let mut b = cadenza_ast::ast::Builder::new();
         let rec = crate::contract_value::record(&mut b, vec![]);
-        // Build the legacy `(: rec Envelope)` frame inline — the `ascribe` emitter is gone, but the tolerant
-        // reader must still peel a framed value and then reject its non-int payload.
         let colon = b.name(":");
         let ty = b.name("Envelope");
         let ascribed_record = b.list(vec![colon, rec, ty]);
-        let not_an_int = cadenza_ast::codec::encode(&b.finish(ascribed_record));
-        assert_eq!(FireAfter::decode(&not_an_int), None);
+        let framed = cadenza_ast::codec::encode(&b.finish(ascribed_record));
+        assert_eq!(FireAfter::decode(&framed), None);
         // NOTE: `Envelope.FireAfter` and `Event.Fired` are BOTH single-constructor sums over `UInt64`, so
-        // in the compiler's canonical form each is ELIDED to just the ascribed integer — `(: <n> Envelope)`
-        // and `(: <n> Event)`. Value decoding is TYPE-DIRECTED (the root ascription's type token is read but
-        // not matched — see `contract_value::as_ascribed`), so the two share a byte form and are told apart by
-        // the decode TARGET, not the bytes. The runtime picks the target from context (an arm rides in a
-        // request payload, a fired event is delivered on the contract's output), so cross-decoding at the
-        // bytes level is expected and harmless — it is exactly what a Cadenza `Value.decode` of either type
-        // does. This is why we do NOT assert the two "do not cross": that would contradict the canonical form.
+        // in the compiler's canonical form each is ELIDED to just the bare integer leaf `<n>` — no ctor
+        // wrapper and no `(: … Envelope)`/`(: … Event)` ascription frame. Value decoding is TYPE-DIRECTED:
+        // the type comes from the decode TARGET, not the bytes, so the two share a byte form and are told
+        // apart by the target. The runtime picks the target from context (an arm rides in a request payload,
+        // a fired event is delivered on the contract's output), so cross-decoding at the bytes level is
+        // expected and harmless — exactly what a Cadenza `Value.decode` of either type does. This is why we
+        // do NOT assert the two "do not cross": that would contradict the canonical form.
         assert_eq!(
             Fired::decode(&FireAfter { duration: 7 }.encode()),
             Some(Fired { fired_time: 7 }),
@@ -234,9 +230,8 @@ mod tests {
         use crate::contracts::timer as c;
         let arm = FireAfter { duration: 5000 };
         let arenas = cadenza_ast::codec::decode(&arm.encode()).expect("well-formed value");
-        let root = v::unascribe(&arenas, arenas.root);
         let payload =
-            c::as_envelope_fire_after(&arenas, root).expect("an Envelope.FireAfter value");
+            c::as_envelope_fire_after(&arenas, arenas.root).expect("an Envelope.FireAfter value");
         assert_eq!(v::read_uint(&arenas, payload), Some(5000));
     }
 

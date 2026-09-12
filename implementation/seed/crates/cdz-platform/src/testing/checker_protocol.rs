@@ -19,7 +19,7 @@
 use super::checker::CheckOutcome;
 use super::log_value;
 use super::observation::{Entry, EventKind, EventOp, Record};
-use crate::contract_value::{as_ascribed, bytes_leaf, read_bytes, read_hash};
+use crate::contract_value::{bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::codec;
@@ -85,8 +85,7 @@ pub fn encode_check(log: &[u8], verdict: ContractId) -> Bytes {
 #[must_use]
 pub fn decode_check(bytes: &[u8]) -> Option<Bytes> {
     let arenas = codec::decode(bytes)?;
-    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-    let env = crate::contracts::check::as_envelope_check(&arenas, root)?;
+    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
     read_bytes(&arenas, env.log)
 }
 
@@ -96,8 +95,7 @@ pub fn decode_check(bytes: &[u8]) -> Option<Bytes> {
 #[must_use]
 pub fn decode_check_verdict(bytes: &[u8]) -> Option<ContractId> {
     let arenas = codec::decode(bytes)?;
-    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-    let env = crate::contracts::check::as_envelope_check(&arenas, root)?;
+    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
     Some(ContractId::from_hash(read_hash(&arenas, env.verdict)?))
 }
 
@@ -120,10 +118,9 @@ pub fn encode_verdict(pass: bool, messages: &[Str]) -> Bytes {
         },
     );
     // Structural (ascription-free) encode — NO root `(: value Verdict)` frame (operator directive
-    // 2026-09-12: no type-ascription in the value encoding). Decode stays compatible: `decode_verdict`
-    // and a guest `Value.decode` read by structure and tolerate an absent frame, so this bare native
-    // verdict AND a (currently still-framed) guest verdict both decode. The `as_ascribed` peel on the
-    // read side strips any legacy frame until the guest encoder is de-framed too.
+    // 2026-09-12: no type-ascription in the value encoding). Decode reads by structure: `decode_verdict`
+    // and a guest `Value.decode` both read the bare verdict from the root. The guest `Value.encode` is
+    // itself already bare (it never frames), so native and guest verdicts share one structural byte form.
     Bytes::from(codec::encode(&b.finish(value)))
 }
 
@@ -133,9 +130,8 @@ pub fn encode_verdict(pass: bool, messages: &[Str]) -> Bytes {
 #[must_use]
 pub fn decode_verdict(bytes: &[u8]) -> Option<CheckOutcome> {
     let arenas = codec::decode(bytes)?;
-    // A verdict from a Cadenza guest is `Value.encode`d (root ascription); a native `encode_verdict` matches.
-    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
-    let v = crate::contracts::verdict::as_verdict_verdict(&arenas, root)?;
+    // A verdict from a Cadenza guest is `Value.encode`d (bare, structural); a native `encode_verdict` matches.
+    let v = crate::contracts::verdict::as_verdict_verdict(&arenas, arenas.root)?;
     let pass = read_bool(&arenas, v.pass)?;
     let messages = read_string_list(&arenas, v.messages)?;
     Some(if pass {
