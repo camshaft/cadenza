@@ -51,7 +51,10 @@ struct EmitAndClose {
 }
 #[async_trait::async_trait]
 impl Reducer for EmitAndClose {
-    async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        _m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((
             vec![Request {
                 id: self.contract,
@@ -65,10 +68,16 @@ impl Reducer for EmitAndClose {
             },
         ))
     }
-    async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_response(
+        &mut self,
+        _r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }
@@ -77,7 +86,10 @@ impl Reducer for EmitAndClose {
 struct JustClose;
 #[async_trait::async_trait]
 impl Reducer for JustClose {
-    async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        _m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((
             Vec::new(),
             Outcome::Break {
@@ -86,10 +98,16 @@ impl Reducer for JustClose {
             },
         ))
     }
-    async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_response(
+        &mut self,
+        _r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }
@@ -530,7 +548,8 @@ async fn a_recording_reducer_logs_birth_delivered_emitted_and_close_attributed_t
     // The reducer's id is known at construction (from the spawn context, §3), so every record — including
     // the birth notification it folds first — is attributed to it.
     r.on_notification(Spawned { id: me, parent }.into_notification())
-        .await.unwrap();
+        .await
+        .unwrap();
     // Then a message that makes it emit an effect and close.
     let (_reqs, outcome) = r
         .on_message(Message {
@@ -542,7 +561,8 @@ async fn a_recording_reducer_logs_birth_delivered_emitted_and_close_attributed_t
             },
             continuation_token: Bytes::from_static(b"t"),
         })
-        .await.unwrap();
+        .await
+        .unwrap();
     assert!(matches!(outcome, Outcome::Break { .. }));
 
     let records = log.snapshot();
@@ -898,7 +918,10 @@ struct ArmThenCloseOnFire {
 }
 #[async_trait::async_trait]
 impl Reducer for ArmThenCloseOnFire {
-    async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        _m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let arm = FireAfter {
             duration: self.duration_ns,
         };
@@ -907,20 +930,29 @@ impl Reducer for ArmThenCloseOnFire {
             Outcome::Continue,
         ))
     }
-    async fn on_response(&mut self, r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
-        Ok(if r.id == timer_contract() && matches!(&r.payload, Ok(b) if Fired::decode(b).is_some()) {
-            (
-                Vec::new(),
-                Outcome::Break {
-                    schema: ContractId::of(b"woke"),
-                    reason: Bytes::new(),
-                },
-            )
-        } else {
-            (Vec::new(), Outcome::Continue)
-        })
+    async fn on_response(
+        &mut self,
+        r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+        Ok(
+            if r.id == timer_contract() && matches!(&r.payload, Ok(b) if Fired::decode(b).is_some())
+            {
+                (
+                    Vec::new(),
+                    Outcome::Break {
+                        schema: ContractId::of(b"woke"),
+                        reason: Bytes::new(),
+                    },
+                )
+            } else {
+                (Vec::new(), Outcome::Continue)
+            },
+        )
     }
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }
@@ -1035,13 +1067,22 @@ fn a_fire_after_timer_is_driven_to_fire_and_the_round_trip_is_recorded() {
 struct Panicker;
 #[async_trait::async_trait]
 impl Reducer for Panicker {
-    async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        _m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         panic!("boom");
     }
-    async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_response(
+        &mut self,
+        _r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }
@@ -1092,7 +1133,10 @@ struct Storer {
 
 #[async_trait::async_trait]
 impl Reducer for Storer {
-    async fn on_message(&mut self, _m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        _m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         self.kv
             .put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
             .await
@@ -1104,11 +1148,17 @@ impl Reducer for Storer {
         Ok((Vec::new(), Outcome::Continue))
     }
 
-    async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_response(
+        &mut self,
+        _r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }
@@ -1266,7 +1316,10 @@ fn a_real_runs_log_round_trips_through_the_structured_serializer() {
 struct SpawnPresenceChecker;
 #[async_trait::async_trait]
 impl Reducer for SpawnPresenceChecker {
-    async fn on_message(&mut self, m: Message) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_message(
+        &mut self,
+        m: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let verdict = if m.id == check_contract() {
             match decode_check(&m.payload).and_then(|log| deserialize_log(&log)) {
                 Some(records) if records.iter().any(|r| matches!(r.entry, Entry::Spawn(_))) => {
@@ -1291,10 +1344,16 @@ impl Reducer for SpawnPresenceChecker {
             },
         ))
     }
-    async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_response(
+        &mut self,
+        _r: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
-    async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        _n: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         Ok((Vec::new(), Outcome::Continue))
     }
 }

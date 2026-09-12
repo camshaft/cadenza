@@ -1109,9 +1109,7 @@ fn fold_result(
     match call {
         Ok(step) => step_from_wit(step)
             .map_err(|e| ReducerFault::Guest(format!("{op} returned a malformed step: {e:?}"))),
-        Err(e) if is_host_backend_trap(&e) => {
-            Err(ReducerFault::HostBackend(format!("{op}: {e}")))
-        }
+        Err(e) if is_host_backend_trap(&e) => Err(ReducerFault::HostBackend(format!("{op}: {e}"))),
         Err(e) => Err(ReducerFault::Guest(format!("{op} trapped: {e}"))),
     }
 }
@@ -1962,7 +1960,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            State::get(&mut host, b"k".to_vec()).await.unwrap().as_deref(),
+            State::get(&mut host, b"k".to_vec())
+                .await
+                .unwrap()
+                .as_deref(),
             Some(b"v".as_slice())
         );
         State::delete(&mut host, b"k".to_vec()).await.unwrap();

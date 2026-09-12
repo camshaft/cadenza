@@ -657,7 +657,10 @@ fn panic_reason(panic: &(dyn Any + Send)) -> Str {
 
 #[async_trait]
 impl Reducer for RecordingReducer {
-    async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+    async fn on_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         let contract = message.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Message,
@@ -676,7 +679,10 @@ impl Reducer for RecordingReducer {
         Ok((requests, outcome))
     }
 
-    async fn on_response(&mut self, response: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+    async fn on_response(
+        &mut self,
+        response: Response,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         // A response carries its result in the payload: `Ok` bytes, or an `Err` runtime failure (§3). Split
         // it so the record shows the answer or the failure without wrapping.
         let (payload, error) = match &response.payload {
@@ -701,7 +707,10 @@ impl Reducer for RecordingReducer {
         Ok((requests, outcome))
     }
 
-    async fn on_notification(&mut self, notification: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+    async fn on_notification(
+        &mut self,
+        notification: Notification,
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         let contract = notification.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Notification,
