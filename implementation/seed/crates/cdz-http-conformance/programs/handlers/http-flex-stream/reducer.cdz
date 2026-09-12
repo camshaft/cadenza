@@ -1,0 +1,51 @@
+// FLEXIBLE-HANDLER guest fixture — RESPONSE-STREAM variant (v-hivemind inc-16 S4 variant 2): a true streaming
+// OUT response (SSE/chunked), emitted incrementally as EFFECTS rather than a one-shot http.response Break.
+// Extends the basic http-flex-echo intake (head → body-mode Whole → accumulate request body) but on the body
+// End, instead of a one-shot respond, it emits http-response-stream effects and closes with the stream End:
+//
+//   on_message(request-head)              → emit body-mode Whole (unbounded) + Continue.
+//   on_message(request-body-stream Chunk) → stash body, Continue.
+//   on_message(request-body-stream End)   → emit response-stream Head(200, [content-type]) + Chunk(body) as
+//       REQUEST effects, and TERMINATE by Breaking with schema = response-stream contract-id + reason = a
+//       response-stream End frame (the terminal Break itself carries the End frame — that is how v-hivemind's
+//       driver knows the stream is complete: it opens the response on Head, writes each Chunk, closes on the
+//       End-frame Break).
+//
+// TWO `Frame` types are needed — request-body-stream's (intake Chunk|End) and response-stream's (output
+// Head|Chunk|End) — same type NAME, so they are imported ALIASED (InFrame / OutFrame). No http-lib `respond`
+// here (the response is the response-stream, not http.response), so http-response's Header never enters the
+// closure — the only Header is response-stream's (OutHeader) → no CDZ0201 collision.
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Frame as InFrame, descriptor as body-stream-desc } from "http-request-body-stream"
+import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
+
+def stream-out(body) =
+  // Emit the streaming response: Head + one Chunk (the echoed body) as effects, then Break carrying the End frame.
+  { requests = [ request(resp-stream-desc().id,
+                        Value.encode(OutFrame.Head({ status = 200,
+                                                     headers = [OutHeader.Header({ name = "content-type", value = "text/plain" })] })),
+                        b""),
+                 request(resp-stream-desc().id, Value.encode(OutFrame.Chunk({ body = body })), b"") ],
+    outcome = Outcome.Close({ schema = resp-stream-desc().id, reason = Value.encode(OutFrame.End) }) }
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == body-stream-desc().id then
+       (match (Value.decode(msg.payload) : Option(InFrame)) with
+        | Some(InFrame.Chunk(c)) =>
+            (state.put(b"body", c.body) ;
+             { requests = [], outcome = Outcome.Continue })
+        | _ =>
+            // End (not-a-Chunk) → stream the accumulated body out.
+            (match state.get(b"body") with
+             | Some(body) => stream-out(body)
+             | None(_) => stream-out(b"")))
+     else
+       // HEAD → choose Whole body-mode; Continue.
+       { requests = [request(body-mode-desc().id,
+                            Value.encode(BodyMode.Whole({ max_body_size = Option.None })),
+                            msg.token)],
+         outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }
