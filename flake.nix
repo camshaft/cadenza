@@ -2745,9 +2745,16 @@
           "http-echo" = httpConformanceProgramsByName."http-echo";
           "http-hello" = httpConformanceProgramsByName."http-hello";
           "root-router-baked" = httpConformanceProgramsByName."root-router-baked";
-          # http-flex-echo (#8897): the flexible-handler guest on the #8895 contract vocabulary
-          # (request-head + body-mode + request/response body streams) — for v-hivemind inc-16 S3c.
+          # http-flex-* : the flexible-handler guest family on the #8895 contract vocabulary
+          # (request-head + body-mode + request/response body streams), for v-hivemind inc-16.
+          #   echo   (#8897, S3c)     — round-trips the request body via the stream vocabulary.
+          #   authz  (#8900, S4 v1)   — durable-interleave (auth check between head + body).
+          #   stream (#8902, S4 v2)   — response-stream (chunked http.response-stream output).
+          #   ws     (#8903, S4 v3)   — WebSocket-upgrade variant.
           "http-flex-echo" = httpConformanceProgramsByName."http-flex-echo";
+          "http-flex-authz" = httpConformanceProgramsByName."http-flex-authz";
+          "http-flex-stream" = httpConformanceProgramsByName."http-flex-stream";
+          "http-flex-ws" = httpConformanceProgramsByName."http-flex-ws";
         };
         gatewayConformanceComponents = pkgs.runCommand "gateway-conformance-components" { } ''
           mkdir -p "$out/components"
