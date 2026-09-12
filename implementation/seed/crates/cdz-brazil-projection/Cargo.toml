@@ -1,0 +1,31 @@
+# cdz-brazil-projection — the RE-RUNNABLE projection tool that emits the Cadenza reducer-runtime
+# pieces as a self-contained, Brazil-vendorable Rust source tree (nix-build → Brazil, single source
+# of truth, refreshable — NOT a fork, NOT hand-codegen). Owned by the fleet vertical v-nix-projection.
+#
+# I1 (this crate's first capability): project the LIGHT "binary-AST value codec" tier — the crates
+# `cadenza-ast` + `cadenza-value` + `cadenza-ast-serde` — into a standalone cargo workspace. The tool
+# is drift-proof by reading the SAME pinned inputs the flake builds from: it copies the crate SOURCES
+# verbatim and derives the projected `Cargo.lock` by FILTERING the repo's pinned root `Cargo.lock` to
+# the transitive dependency closure of those crates (no fresh resolution → the emitted versions are
+# exactly what the nix build pins). Later increments (I2+) project the heavier reducer-world host
+# imports + the cdz-http-gateway wasmtime driving as SEPARATE opt-in packages (wasmtime never leaks
+# into this light codec path).
+#
+# STANDALONE crate on purpose: it has its OWN `[workspace]` + leaf `Cargo.lock` and is listed in the
+# root `Cargo.toml` `exclude`, so it is not a root workspace member (the member-registration-assert
+# drops excluded paths) and needs no `rootWorkspaceCrates`/crane entry. It is a host-side TOOL, not
+# part of the compiler/gate. Zero external dependencies — std-only, hand-parsing the machine-generated
+# `Cargo.lock` — so it builds with no network fetch and no vendoring chicken-and-egg.
+[package]
+name = "cdz-brazil-projection"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cdz-brazil-projection"
+path = "src/main.rs"
+
+[dependencies]
+
+[workspace]
