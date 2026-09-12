@@ -635,6 +635,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadenza-ast-serde"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,12 +663,14 @@ dependencies = [
  "aws-sdk-s3",
  "bytes",
  "cadenza-ast",
+ "cadenza-ast-serde",
  "cdz-platform",
  "http-body-util",
  "hyper 1.11.1",
  "hyper-util",
  "reqwest",
  "rustls 0.23.44",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",

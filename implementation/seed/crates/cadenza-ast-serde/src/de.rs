@@ -292,13 +292,22 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let items = self.as_list()?;
-        match items.len() {
-            0 => visitor.visit_none(),
-            1 => visitor.visit_some(self.at(items[0])),
-            n => Err(Error::UnexpectedShape(format!(
-                "expected an option (0- or 1-element list), found {n} elements"
-            ))),
+        // Two option encodings are accepted:
+        //  - this crate's own: `None` → `()` (empty list), `Some(v)` → `(v)` (one-element list);
+        //  - the platform/canonical convention: an optional record FIELD is simply PRESENT with its
+        //    BARE value (⇒ `Some`) or ABSENT (⇒ `None`, already handled by `#[serde(default)]` before we
+        //    are even called). So a present value that is NOT the `()`/`(v)` form IS the `Some` payload.
+        // Disambiguation is unambiguous for every value this crate emits (its `Some` is always a
+        // one-element list) and for platform values (a `Some` payload is a bare atom or a ctor-headed
+        // compound, i.e. ≥2 list items) — the only theoretical clash is a payload that is itself a
+        // 1-element list, which neither producer emits as an option value.
+        match self.node() {
+            Struct::List(items) if items.is_empty() => visitor.visit_none(),
+            Struct::List(items) if items.len() == 1 => {
+                let inner = items[0];
+                visitor.visit_some(self.at(inner))
+            }
+            _ => visitor.visit_some(self),
         }
     }
 
