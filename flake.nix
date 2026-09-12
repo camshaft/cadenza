@@ -2683,6 +2683,55 @@
           grep -q '^reducer-agent=' ${agentFixture}/components/hashes.env || { echo "hashes.env missing reducer-agent entry"; exit 1; }
           echo "ok: agent-fixture (reducer-agent 2-step agent guest, valid wasm + ProgramHash + LFS)" > "$out"
         '';
+        # hivemindBootstrap (v-nix-projection): the FULL hivemind bootstrap set in ONE export (operator: "the
+        # nix export must export all of the stuff we'd need to bootstrap the hivemind"). Mirrors the two ~/hivemind
+        # bootstrap PIN steps (README): pin-core (the value-heap runtime + nfc + the compiler/syntax reducer-guest
+        # components → seed the CAS by ProgramHash) AND pin-contracts (every cdz-platform contract's canonical
+        # declaration .bin → seed the CAS by ContractId, from packages.contract-declarations #8735). So a consumer
+        # can bootstrap a hivemind's CAS entirely from `nix build .#hivemind-bootstrap` — components + contracts,
+        # each with its manifest. git-LFS for the binary blobs (.wasm/.bin). Drift-proof/re-runnable.
+        # (The dev-rig SERVER BINARIES — cdz-http-gateway/cdz-cas-http/control-mock — are the ~/hivemind serving
+        # layer; whether the Brazil daemon needs them is being confirmed with v-hivemind, added here if so.)
+        hivemindBootstrapRefresh = pkgs.writeText "hivemind-bootstrap-REFRESH.md" ''
+          # Cadenza hivemind bootstrap export
+
+          Everything needed to bootstrap a hivemind's content-addressed store, emitted by
+          `nix build .#hivemind-bootstrap` from the Cadenza flake (re-run to refresh — single source of truth):
+
+          - `components/*.wasm` + `components/hashes.env` — the core wasm components (value-heap `runtime`,
+            `nfc`, and the `reducer-guest-{rcdzc,sexpr,ml}` compiler/syntax guests); seed the CAS by the
+            ProgramHash in `hashes.env` (the ~/hivemind `pin-core` step).
+          - `contracts/*.bin` + `contracts/manifest.json` — every cdz-platform contract's canonical
+            declaration; seed the CAS by the base62 ContractId in `manifest.json` (the `pin-contracts` step).
+          - `.gitattributes` — marks `*.wasm`/`*.bin` as git-LFS (the consumer's LFS repo stores them
+            out-of-tree on commit).
+
+          Refresh: `nix build .#hivemind-bootstrap && cp -r result/* <package-dir>/`.
+        '';
+        hivemindBootstrap = pkgs.runCommand "hivemind-bootstrap" { } ''
+          mkdir -p "$out/components" "$out/contracts"
+          cp ${wasmComponentsExport}/components/*.wasm "$out/components/"
+          cp ${wasmComponentsExport}/components/hashes.env "$out/components/hashes.env"
+          cp ${contractDeclarations}/*.bin "$out/contracts/"
+          cp ${contractDeclarations}/manifest.json "$out/contracts/manifest.json"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' '*.bin filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+          cp ${hivemindBootstrapRefresh} "$out/REFRESH.md"
+        '';
+        hivemindBootstrapCheck = pkgs.runCommand "hivemind-bootstrap-check" { } ''
+          # every component is a real wasm module + hashes.env is complete.
+          nc=0
+          for w in ${hivemindBootstrap}/components/*.wasm; do
+            magic=$(head -c 4 "$w" | od -An -tx1 | tr -d ' \n')
+            [ "$magic" = "0061736d" ] || { echo "not a wasm module: $w"; exit 1; }
+            nc=$((nc+1))
+          done
+          [ "$(grep -c '=' ${hivemindBootstrap}/components/hashes.env)" -eq "$nc" ] || { echo "components hashes.env count mismatch"; exit 1; }
+          # contracts present + manifest is JSON-ish with one id per .bin (name:id lines).
+          nb=$(ls ${hivemindBootstrap}/contracts/*.bin | wc -l)
+          [ "$nb" -gt 0 ] || { echo "no contract .bin blobs"; exit 1; }
+          grep -q '{' ${hivemindBootstrap}/contracts/manifest.json || { echo "contracts manifest.json missing/empty"; exit 1; }
+          echo "ok: hivemind-bootstrap ($nc components + $nb contract declarations, manifests present, LFS)" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7187,6 +7236,9 @@
         # agent-fixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step agent reducer-world guest
         # (tool-call Request -> sink Request + Close), git-LFS, for driving the consumer dispatch/effect-outbox.
         packages.agent-fixture = agentFixture;
+        # hivemind-bootstrap (v-nix-projection): the FULL bootstrap set (core wasm components + contract
+        # declarations) in one export, so a consumer can seed a hivemind CAS from one `nix build`.
+        packages.hivemind-bootstrap = hivemindBootstrap;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8869,6 +8921,8 @@
             reducer-fault-fixtures = reducerFaultFixturesCheck;
             # agent-fixture: the 2-step agent guest blob is valid wasm + has a ProgramHash. STANDALONE.
             agent-fixture = agentFixtureCheck;
+            # hivemind-bootstrap: components valid wasm + hashes complete + contracts present. STANDALONE.
+            hivemind-bootstrap = hivemindBootstrapCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
