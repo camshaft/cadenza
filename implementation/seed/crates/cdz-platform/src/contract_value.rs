@@ -34,11 +34,13 @@ use std::sync::Arc;
 // --- builders ---
 
 /// A constructor application in the canonical BARE-name form `(<ctor> <payload>…)` — the constructor name is
-/// the head, then its payload occurrences; nullary → `(<ctor>)`. `ty` is accepted for the generated caller's
-/// convenience (it names the sum the constructor belongs to) but is NOT part of the value: the compiler's
-/// value form carries no `(. ty ctor)` member node — the type is fixed by the decode target (there is no
-/// root ascription). A single-constructor sum elides the constructor (the generated code emits the payload directly),
-/// so this builds only the multi-constructor case.
+/// the head, then its payload occurrences. `ty` is accepted for the generated caller's convenience (it names
+/// the sum the constructor belongs to) but is NOT part of the value: the compiler's value form carries no
+/// `(. ty ctor)` member node — the type is fixed by the decode target (there is no root ascription). A
+/// single-constructor sum elides the constructor (the generated code emits the payload directly), so this
+/// builds only the multi-constructor case. For a payload-LESS multi-constructor variant use
+/// [`qctor_nullary`], NOT `qctor(…, vec![])`: the canonical `Value.encode` of such a variant is `(<ctor>
+/// unit)` (it carries the erased Unit payload), and an empty-tail `(<ctor>)` does not decode in a guest.
 #[must_use]
 pub fn qctor(b: &mut Builder, ty: &str, ctor: &str, payload: Vec<StructId>) -> StructId {
     let _ = ty;
@@ -53,12 +55,48 @@ pub fn bare_ctor(b: &mut Builder, name: &str, payload: Vec<StructId>) -> StructI
     b.list(std::iter::once(head).chain(payload).collect())
 }
 
+/// A **multi-constructor NULLARY** variant `T.C` in the canonical `(<ctor> unit)` form — a bare-name ctor
+/// carrying the erased Unit payload as the [`unit`] atom. This is what the compiler's `Value.encode`
+/// PRODUCES for a payload-less variant of a multi-constructor sum (empirically pinned:
+/// `Value.encode(Method.Get)` renders `(Get unit)`, not the empty `(Get)`), so a Rust-built nullary value
+/// decodes byte-for-byte in a Cadenza guest. Use this — never `qctor(…, vec![])` — for a generated nullary
+/// builder: the empty-tail `(<ctor>)` a bare `qctor` with no payload would emit does NOT round-trip through a
+/// Cadenza `Value.decode`, which is the nullary-codegen mismatch this replaces. (A SINGLE-constructor nullary
+/// sum is a different case: it elides to the bare `unit` atom — see [`unit`] — and does not go through here.)
+/// The inverse is [`is_qctor_nullary`].
+#[must_use]
+pub fn qctor_nullary(b: &mut Builder, ty: &str, ctor: &str) -> StructId {
+    let u = unit(b);
+    qctor(b, ty, ctor, vec![u])
+}
+
+/// Whether `id` is the multi-constructor nullary variant `T.C` — the inverse of [`qctor_nullary`]. Matches
+/// the canonical `(<ctor> unit)` form, and is LIBERAL: it ALSO accepts the legacy empty `(<ctor>)` tail so a
+/// value from an older producer (or the pre-fix generated builder) still reads. `ty` is not part of the value
+/// (see [`as_qctor`]); the ctor name identifies the case.
+#[must_use]
+pub fn is_qctor_nullary(
+    arenas: &cadenza_ast::ast::Arenas,
+    id: StructId,
+    ty: &str,
+    ctor: &str,
+) -> bool {
+    match as_qctor(arenas, id, ty, ctor) {
+        // The canonical form the builder now emits: exactly one `unit` payload occurrence.
+        Some([one]) => is_unit(arenas, *one),
+        // LIBERAL: the legacy empty-tail `(<ctor>)` a pre-fix producer emitted still reads as nullary.
+        Some([]) => true,
+        _ => false,
+    }
+}
+
 /// The `unit` atom — the canonical Value form of a Unit value. The compiler's `Value.encode` renders Unit as
 /// the bare name atom `unit` (the same form the runtime's value renderer emits for a `Unit` payload), so a
 /// **nullary single-constructor** sum elides its constructor to exactly this atom, bare at the root:
 /// `(type Ack = | Ack)` encodes at the payload boundary as just `unit`, not `(Ack)` and not `(: unit Ack)`.
-/// (A *multi*-constructor nullary variant keeps its bare-name form `(Ctor)` — the elision is single-ctor
-/// only.) The inverse is [`is_unit`].
+/// (A *multi*-constructor nullary variant does NOT elide — it keeps its ctor head, carrying this same `unit`
+/// atom as its payload: `(Ctor unit)`, built by [`qctor_nullary`]. The single-ctor case erases the ctor too,
+/// leaving the bare `unit`.) The inverse is [`is_unit`].
 #[must_use]
 pub fn unit(b: &mut Builder) -> StructId {
     b.name("unit")
@@ -235,8 +273,8 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, is_unit, qctor, read_bytes, read_hash,
-        read_uint, record, record_field, uint_leaf, unit,
+        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, is_qctor_nullary, is_unit, qctor,
+        qctor_nullary, read_bytes, read_hash, read_uint, record, record_field, uint_leaf, unit,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Builder, CompoundCtor, Leaf, Radix};
@@ -290,12 +328,12 @@ mod tests {
     #[test]
     fn the_unit_atom_round_trips_and_is_the_single_ctor_nullary_elided_form() {
         // A nullary SINGLE-constructor sum (`type Ack = | Ack`) elides its constructor to the bare `unit`
-        // atom — the compiler's `Value.encode` of the erased Unit payload — NOT the bare-name `(Ack)` a
-        // multi-constructor nullary variant keeps. `unit` round-trips through `is_unit`, and the two forms
-        // are distinct: the elided value is the `unit` atom, not a `(…)` list.
+        // atom — the compiler's `Value.encode` of the erased Unit payload. `unit` round-trips through
+        // `is_unit`, and it is distinct from any `(…)` list form: the elided value is the `unit` atom itself.
         let arenas = built(unit);
         assert!(is_unit(&arenas, arenas.root));
-        // The multi-ctor nullary form `(Delivered)` is NOT the unit atom (it is a list, not the name `unit`).
+        // The multi-ctor nullary form `(Delivered unit)` (see `qctor_nullary`) is a LIST, so it is NOT itself
+        // the `unit` atom at its root — the `unit` lives one level down as its payload.
         let other = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
         assert!(!is_unit(&other, other.root));
         // The single-ctor-nullary form is the bare `unit` atom AT THE ROOT — no `(: unit Ack)` frame — so
@@ -310,6 +348,46 @@ mod tests {
             !is_unit(&framed, framed.root),
             "readers do not peel a root `(: unit Ack)` — decode is structural"
         );
+    }
+
+    #[test]
+    fn a_multi_ctor_nullary_variant_round_trips_in_the_canonical_ctor_unit_form() {
+        // The canonical `Value.encode` of a payload-LESS variant of a MULTI-constructor sum is `(<ctor>
+        // unit)` — the ctor head carrying the erased Unit payload as the `unit` atom — empirically pinned
+        // against the compiler: `Value.encode(Method.Get)` renders `(Get unit)`. `qctor_nullary` builds
+        // exactly that (NOT the empty `(Get)` a bare `qctor(…, vec![])` emits, which does not decode in a
+        // guest — the nullary-codegen mismatch this fixes), and `is_qctor_nullary` reads it back.
+        let arenas = built(|b| qctor_nullary(b, "Frame", "End"));
+        // Physically it is `(End unit)`: a ctor whose single payload occurrence is the `unit` atom.
+        let tail = as_qctor(&arenas, arenas.root, "Frame", "End").expect("an End(..)");
+        assert_eq!(
+            tail.len(),
+            1,
+            "canonical nullary carries a single unit payload, not an empty tail"
+        );
+        assert!(
+            is_unit(&arenas, tail[0]),
+            "the payload occurrence is the `unit` atom"
+        );
+        // And the inverse recognizes it, regardless of the (not-in-value) `ty`, and rejects a different ctor.
+        assert!(is_qctor_nullary(&arenas, arenas.root, "Frame", "End"));
+        assert!(is_qctor_nullary(&arenas, arenas.root, "AnyType", "End"));
+        assert!(!is_qctor_nullary(&arenas, arenas.root, "Frame", "Chunk"));
+    }
+
+    #[test]
+    fn is_qctor_nullary_is_liberal_on_the_legacy_empty_tail_form() {
+        // A value from an OLDER producer (or the pre-fix generated builder) is the empty-tail `(<ctor>)`.
+        // `is_qctor_nullary` still reads it as nullary so historic/cross-version values keep decoding, even
+        // though `qctor_nullary` no longer PRODUCES that form.
+        let legacy = built(|b| qctor(b, "Frame", "End", vec![]));
+        assert!(is_qctor_nullary(&legacy, legacy.root, "Frame", "End"));
+        // But a variant carrying a NON-unit payload (a genuine `Single` ctor) is NOT nullary.
+        let single = built(|b| {
+            let x = bytes_leaf(b, b"payload");
+            qctor(b, "Frame", "Chunk", vec![x])
+        });
+        assert!(!is_qctor_nullary(&single, single.root, "Frame", "Chunk"));
     }
 
     #[test]
