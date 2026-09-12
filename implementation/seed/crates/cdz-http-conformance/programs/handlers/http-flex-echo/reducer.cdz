@@ -35,11 +35,12 @@ def on-message(msg) =
              { requests = [], outcome = Outcome.Continue })
         | _ =>
             // The TERMINAL (End): in a body-stream, a message that is NOT a Chunk is End → echo the body back
-            // as a one-shot http.response 200 (Break). This matches BOTH the canonical End (Some(Frame.End),
-            // a nullary ctor with a unit payload — how Method.Get etc. encode) AND the current empty-payload
-            // form the generated frame_end emits, which decodes to None (a nullary-variant codegen quirk
-            // v-hivemind flagged in S3c; routed for a canonical (Ctor unit) codegen fix). "Not-a-Chunk = End"
-            // is a sound stream terminal-detection either way + harmless for this test fixture.
+            // as a one-shot http.response 200 (Break). The nullary-variant codegen gap is now CLOSED (#8901,
+            // a21000e362: contract-codegen emits canonical (Ctor unit) for nullary variants, so a Rust-built
+            // Frame.End decodes as Some(Frame.End) directly). We keep the liberal "not-a-Chunk = End" match
+            // DELIBERATELY: it handles BOTH the canonical Some(Frame.End) and any legacy empty-payload form
+            // (which decodes to None) — strictly more robust than an explicit Some(Frame.End) arm across the
+            // transition, and harmless for this fixture (only Chunk needs distinguishing from the terminal).
             (match state.get(b"body") with
              | Some(body) => respond(200, [], body)
              | None(_) => respond(200, [], b"")))
