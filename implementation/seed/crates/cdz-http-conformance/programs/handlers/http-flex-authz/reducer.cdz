@@ -1,0 +1,71 @@
+// FLEXIBLE-HANDLER guest fixture — DURABLE-INTERLEAVE variant (v-hivemind inc-16 S4 variant 1; operator-671:
+// a handler may message a DURABLE session mid-request + resume on the reply). Extends the basic http-flex-echo
+// with a real on_response + an authz durable-call. v-hivemind's S4 driver drives it as:
+//
+//   on_message(request-head) → emit TWO effects + Continue:
+//       (a) body-mode Whole (unbounded), and
+//       (b) a DURABLE authz call = a Request under a NON-HTTP contract-id (authz-id() below), payload
+//           b"is-this-allowed", continuation token b"authz". The driver classifies ANY effect whose id is not
+//           a flexible-HTTP id (body-mode/request-body-stream/response-stream) as a DurableCall, routes it, and
+//           folds the reply back via on_response correlated by the token.
+//   on_response(token b"authz", answer):
+//       Ok(b"allow") → remember allowed; if the body already ended, respond 200 echo now, else Continue.
+//       Ok(anything else / deny) → respond 403 immediately (deny-safe).
+//       Err → respond 502 (the authz call itself failed).
+//   on_message(request-body-stream Chunk) → stash body, Continue.  End (not-a-Chunk) → if allowed respond 200
+//       echo; if denied 403; if authz still pending, mark body-done + Continue (respond when the allow arrives).
+//
+// Robust to EITHER ordering of (authz reply) vs (body End): the 200 fires when BOTH authz==allow AND body
+// ended, whichever completes second. State (via the `state` host import): b"authz" (absent=pending / b"allow"),
+// b"body" (accumulated bytes), b"bodydone" (present once End seen). Dispatch/idioms mirror http-flex-echo +
+// reducer-statedispatch + reducer-putget; on_response shape mirrors root-router-baked. No http-request-head
+// import (else=head), so http-response's Header (via respond) is the only Header — no CDZ0201 collision.
+//
+// AUTHZ CONTRACT-ID: a stable 33-byte (Hash::LEN) NON-HTTP id I pick; shared with v-hivemind so their
+// DurableCall classifier + stub allow-reply (b"allow") match. Reply check: exactly b"allow" ⇒ allow, else deny.
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Frame, descriptor as body-stream-desc } from "http-request-body-stream"
+import { respond } from "http-lib"
+import { Outcome, Error, request, on-notification } from "reducer-lib"
+
+def authz-id() = (b"cdz-flex.authz.check.671........." : Bytes)
+
+def finish-200(body-opt) =
+  (match body-opt with
+   | Some(b) => respond(200, [], b)
+   | None(_) => respond(200, [], b""))
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == body-stream-desc().id then
+       (match (Value.decode(msg.payload) : Option(Frame)) with
+        | Some(Frame.Chunk(c)) =>
+            (state.put(b"body", c.body) ;
+             { requests = [], outcome = Outcome.Continue })
+        | _ =>
+            // End (not-a-Chunk): respond per authz state, or wait if authz still pending.
+            (match state.get(b"authz") with
+             | Some(a) => (if a == b"allow" then finish-200(state.get(b"body")) else respond(403, [], b"denied"))
+             | None(_) => (state.put(b"bodydone", b"1") ; { requests = [], outcome = Outcome.Continue })))
+     else
+       // HEAD (any non-body-stream contract): emit body-mode Whole + the durable authz call; Continue.
+       { requests = [ request(body-mode-desc().id,
+                             Value.encode(BodyMode.Whole({ max_body_size = Option.None })),
+                             msg.token),
+                      request(authz-id(), b"is-this-allowed", b"authz") ],
+         outcome = Outcome.Continue })
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  host state in
+    (match resp.answer with
+     | Ok(reply) =>
+        (if reply == b"allow" then
+           (state.put(b"authz", b"allow") ;
+            (match state.get(b"bodydone") with
+             | Some(_) => finish-200(state.get(b"body"))
+             | None(_) => { requests = [], outcome = Outcome.Continue }))
+         else
+           respond(403, [], b"denied"))
+     | Err(_) => respond(502, [], b"authz call failed"))
+
+export { on-message, on-response, on-notification }
