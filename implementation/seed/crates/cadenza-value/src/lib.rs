@@ -11,11 +11,11 @@
 //! - `String` → a `Str` leaf; `Bytes` → a `Bytes` leaf; an integer → an `Int` leaf (decimal).
 //!
 //! Values decode purely by STRUCTURE, never by a type/field NAME: a record is a `#record`, a list a
-//! `#list`, a variant a `(<Ctor> …)`. Encode via [`finish_value`] (the bare canonical form, no type
-//! tag). A legacy [`finish`]/[`ascribe`] wraps the payload in a root ascription `(: <value> <Type>)`,
-//! but that token is decorative — the readers peel it via [`unascribe`] and ignore it — and encode
-//! sites are being migrated off it (operator directive 2026-09-11: no type-ascription in the codec
-//! path). New sites use [`finish_value`].
+//! `#list`, a variant a `(<Ctor> …)`. Encode via [`finish_value`] — the ONLY encode entry point: the
+//! bare canonical value form, with NO root type-ascription wrapper (operator directive 2026-09-12: no
+//! type-ascription anywhere in the value encoding). The readers remain tolerant of a legacy root
+//! ascription `(: <value> <Type>)` via [`unascribe`] — so any bytes still carrying one decode fine —
+//! but nothing in this codec EMITS one.
 
 use bytes::Bytes;
 use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
@@ -28,37 +28,16 @@ pub use cadenza_ast::ast::{Arenas, Builder as ValueBuilder, StructId as ValueId}
 // --- builders ------------------------------------------------------------------------------------------
 
 /// Finish the AST at `value` and encode it to binary-AST bytes — **structurally, with NO root
-/// ascription wrapper**. This is the ascription-free encode entry point: the payload is the bare
-/// canonical value form, decoded purely by STRUCTURE (a record is a `#record`, a list is a `#list`,
-/// a variant is a `(<Ctor> …)` — never by a type/field NAME carried in a `(: value Type)` tag). It is
-/// the drop-in replacement for [`finish`]: the structural readers below (`record_field`, `read_list`,
-/// `read_ctor`, …) return the SAME value whether or not a root ascription is present, because they
-/// already peel one via [`unascribe`]. New encode sites should call this; existing `finish(…, ty)`
-/// sites migrate onto it as their type token is retired (operator directive 2026-09-11: eliminate
-/// type-ascription in the encode/decode path — decode by structure, not names).
+/// ascription wrapper**. This is the SOLE encode entry point: the payload is the bare canonical value
+/// form, decoded purely by STRUCTURE (a record is a `#record`, a list is a `#list`, a variant is a
+/// `(<Ctor> …)` — never by a type/field NAME carried in a `(: value Type)` tag). The structural readers
+/// below (`record_field`, `read_list`, `read_ctor`, …) decode this form directly; they also stay
+/// tolerant of a legacy root ascription via [`unascribe`], but nothing here emits one (operator
+/// directive 2026-09-12: no type-ascription anywhere in the value encoding).
 #[must_use]
 pub fn finish_value(b: Builder, value: StructId) -> Bytes {
     let arenas = b.finish(value);
     Bytes::from(cadenza_ast::codec::encode(&arenas))
-}
-
-/// Wrap `value` in the root ascription `(: value ty)`, finish the AST, and encode it to binary-AST bytes.
-///
-/// LEGACY: the `ty` token is decorative — every reader below decodes by structure and ignores it (see
-/// [`unascribe`]). Prefer [`finish_value`], which omits the wrapper entirely; this remains only for
-/// call sites not yet migrated off their type token.
-#[must_use]
-pub fn finish(mut b: Builder, value: StructId, ty: &str) -> Bytes {
-    let root = ascribe(&mut b, value, ty);
-    let arenas = b.finish(root);
-    Bytes::from(cadenza_ast::codec::encode(&arenas))
-}
-
-/// A root ascription `(: <value> <ty>)`.
-pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
-    let colon = b.name(":");
-    let ty = b.name(ty);
-    b.list(vec![colon, value, ty])
 }
 
 /// A constructor application `(<name> <payload>…)` — the ctor name as head, then its payload.
@@ -251,12 +230,14 @@ mod tests {
         assert_eq!(read_uint(&arenas, n), Some(200));
     }
 
-    /// The core mandate premise: decode is invariant to the root ascription. Encode the SAME value
-    /// both ways — ascription-free via [`finish_value`] and legacy-ascribed via [`finish`] — and assert
-    /// every structural reader returns the IDENTICAL result on both. Also pin that the ascription-free
-    /// form carries NO wrapper (its decoded root IS the record directly, needing no `unascribe`), while
-    /// the legacy form's root is the `(: …)` list that `unascribe` peels. This is what makes migrating
-    /// an encode site off its type token safe: the readers never looked at the token.
+    /// The core mandate premise: decode is invariant to a root ascription. The codec no longer EMITS
+    /// one (there is only [`finish_value`]), but the readers stay tolerant of legacy bytes that carry a
+    /// `(: <value> <Type>)` wrapper — so encode the SAME value both ways (ascription-free via
+    /// [`finish_value`], and with a manually-built root ascription) and assert every structural reader
+    /// returns the IDENTICAL result on both. Also pin that the ascription-free form carries NO wrapper
+    /// (its decoded root IS the record directly, needing no `unascribe`), while the ascribed form's root
+    /// is the `(: …)` list that `unascribe` peels. This pins the reader tolerance that keeps legacy
+    /// bytes decodable after the emitter was removed.
     #[test]
     fn structural_decode_is_invariant_to_root_ascription() {
         // Build a nested value: a record with a string field, an int field, a list, and a variant —
@@ -286,7 +267,12 @@ mod tests {
 
         let mut bb = Builder::new();
         let vb = build(&mut bb);
-        let ascribed = finish(bb, vb, "Widget"); // legacy ascribed
+        // Manually build a legacy root ascription `(: <value> Widget)` — the emitter is gone, but the
+        // readers must still decode bytes shaped this way.
+        let colon = bb.name(":");
+        let tyname = bb.name("Widget");
+        let root_ascription = bb.list(vec![colon, vb, tyname]);
+        let ascribed = finish_value(bb, root_ascription);
 
         assert_ne!(
             free, ascribed,

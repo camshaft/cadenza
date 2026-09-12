@@ -930,7 +930,7 @@ mod tests {
                 reason: rs,
             },
         );
-        let bytes = value::finish(b, deny, "Deny");
+        let bytes = value::finish_value(b, deny);
         assert_eq!(decode_deny(&bytes).status(), StatusCode::NOT_FOUND);
 
         // A 502 deny (the router's compile-error terminal) floors with 502, likewise honored.
@@ -944,7 +944,7 @@ mod tests {
                 reason: rs2,
             },
         );
-        let bytes2 = value::finish(b2, deny2, "Deny");
+        let bytes2 = value::finish_value(b2, deny2);
         assert_eq!(decode_deny(&bytes2).status(), StatusCode::BAD_GATEWAY);
 
         // An undecodable reason, and a status outside the valid HTTP range, both fall back to a plain 403 —
@@ -960,7 +960,7 @@ mod tests {
                 reason: rs3,
             },
         );
-        let bytes3 = value::finish(b3, deny3, "Deny");
+        let bytes3 = value::finish_value(b3, deny3);
         assert_eq!(decode_deny(&bytes3).status(), StatusCode::FORBIDDEN);
     }
 
@@ -1008,7 +1008,7 @@ mod tests {
                     body_hash,
                 },
             );
-            value::finish(b, rc, "ResponseCas")
+            value::finish_value(b, rc)
         };
         assert_eq!(
             decode_response_cas(&cas, &build(&raw)).await.status(),

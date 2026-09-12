@@ -23,7 +23,7 @@
 //! so the client passes the entry by NAME and can't get the wire wrong.
 //!
 //! No wasm runtime is needed — the value is built structurally via the shared `cadenza-value` toolkit (the same
-//! `record`/`list`/`ascribe`/`bare_ctor`/`finish` `Value.encode` uses). Light DEFAULT-features deploy tool
+//! `record`/`list`/`bare_ctor`/`finish_value` `Value.encode` uses). Light DEFAULT-features deploy tool
 //! (no `host`/wasmtime), sibling of `cdz-http-programhash` in `cdz-http-gateway`.
 //!
 //! Usage:

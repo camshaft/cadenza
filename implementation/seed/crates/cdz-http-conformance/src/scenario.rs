@@ -236,7 +236,7 @@ async fn wait_until_configured(gateway: &GatewayClient) -> Result<(), String> {
 /// Build the CAS's binary-AST `ServerConfig` document: bind `listen` (`127.0.0.1:0` for an ephemeral port)
 /// and enable the write path with `write_credential` (so the driver can seed by hash). No store tier ⇒ the
 /// CAS defaults to a single in-memory store (fresh per run). A `#record` with `cdz_cas_http::config`'s field
-/// names; the CAS decodes it ascription-tolerantly, so the value toolkit's root ascription is fine.
+/// names; the CAS decodes it structurally (ascription-tolerantly), so the bare canonical form is fine.
 fn cas_config(listen: &str, write_credential: &str) -> bytes::Bytes {
     use cdz_http_protocol::value;
     let mut b = value::ValueBuilder::new();
@@ -246,7 +246,7 @@ fn cas_config(listen: &str, write_credential: &str) -> bytes::Bytes {
         &mut b,
         vec![("listen", listen), ("write-credential", write)],
     );
-    value::finish(b, rec, "ServerConfig")
+    value::finish_value(b, rec)
 }
 
 /// Seed every component in the content-addressed store `dir` (a dir of `<base62-hash>.wasm` — the value-heap
