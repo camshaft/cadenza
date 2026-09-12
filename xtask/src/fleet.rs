@@ -12651,6 +12651,18 @@ fn gate_output_is_substituter_fetch_transient(output: &str) -> bool {
     output.contains("unable to download") || output.contains("HTTP error 5")
 }
 
+/// A gate-local RED where a nix auto-GC freed a store path / crane eval input MID-BUILD that the build was
+/// consuming — nix then reports it "does not exist" (e.g. crane's `findCargoFiles.nix`, or a `/nix/store/…`
+/// path that vanished). A transient GC/crane race, NOT a real failure: a plain re-run once GC settles goes
+/// green (concierge/v-streaming-contract 2026-09-12, a ~194GB mid-build auto-GC). Requires "does not exist"
+/// TOGETHER with a store-path/crane-input context, so a real sub-check failure — which reports "failed with
+/// exit code N" / "due to signal", never "does not exist" — is not misclassified. (And the advisory is only
+/// GUIDANCE anyway: a misread would at most cost one re-run, never let a real regression pass.)
+fn gate_output_is_gc_race_transient(output: &str) -> bool {
+    output.contains("does not exist")
+        && (output.contains("findCargoFiles.nix") || output.contains("/nix/store/"))
+}
+
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
@@ -12659,6 +12671,11 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
         "gate-local: NOTE — the failure output carries a nix SUBSTITUTER FETCH transient (a 5xx / \
          `unable to download` from the binary cache/CDN, NOT a test/compile failure); RE-RUN gate-local \
          (a retry usually hits the cache or a recovered substituter) before treating this as a regression."
+    } else if gate_output_is_gc_race_transient(captured) {
+        "gate-local: NOTE — the failure output shows a store path / crane eval input `does not exist`, the \
+         signature of a nix auto-GC freeing a path MID-BUILD (a GC/crane race, e.g. `findCargoFiles.nix` \
+         vanished under a concurrent ~GB auto-GC), NOT a test/compile failure; RE-RUN gate-local once GC \
+         settles before treating this as a regression."
     } else if crate::fast_gate_output_is_contention_kill(captured) {
         "gate-local: NOTE — a sub-check builder was KILLED (exit 137/143 or signal 9/15 = SIGKILL/SIGTERM \
          from the OOM-killer, a reaper, or the loop timeout under check-lease contention), NOT a test/compile \
@@ -19992,6 +20009,17 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(gate_local_hold_advisory(fetch502).contains("SUBSTITUTER FETCH"));
         assert!(gate_local_hold_advisory(fetch502).contains("RE-RUN"));
         assert!(!gate_local_hold_advisory(fetch502).contains("REAL sub-check"));
+        // A nix auto-GC freed a crane eval input MID-BUILD (findCargoFiles.nix vanished) → GC/crane race,
+        // advise RE-RUN, not a regression (concierge/v-streaming-contract 2026-09-12 false-red).
+        let gc_race = "error: getting status of \
+                       '/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-source/nix/findCargoFiles.nix': \
+                       No such file or directory\nerror: path does not exist";
+        assert!(gate_local_hold_advisory(gc_race).contains("GC"));
+        assert!(gate_local_hold_advisory(gc_race).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(gc_race).contains("REAL sub-check"));
+        // GUARD: a REAL builder failure that happens to name a /nix/store path but reports an exit code
+        // (NOT "does not exist") must NOT be misread as the GC race — stays REAL.
+        assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
         // The `unable to download` wrapper alone (no explicit HTTP code) still trips it.
         assert!(gate_output_is_substituter_fetch_transient(
             "error: unable to download 'foo'"
