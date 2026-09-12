@@ -2666,6 +2666,23 @@
           done
           echo "ok: reducer-fault-fixtures (reducer-trap + reducer-state, valid wasm + ProgramHashes + LFS)" > "$out"
         '';
+        # agentFixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step AGENT reducer-world guest —
+        # on-message emits one tool-call Request (fixed contract `b"cadenza-fixture-agent-tool"`), on-response
+        # emits one sink/output Request (`b"cadenza-fixture-agent-sink"`) + Close, exercising the request/
+        # response effect round-trip so the consumer can drive its dispatch/effect-outbox against a real agent.
+        # Inline (value-heap only, like echo). Shipped via git-LFS. SEPARATE from runtime pins (a fixture).
+        agentFixture = pkgs.runCommand "agent-fixture" { } ''
+          mkdir -p "$out/components"
+          cp ${cadenzaGuests."reducer-agent-cdz"} "$out/components/reducer-agent.wasm"
+          echo "reducer-agent=$(cat ${hashOf cadenzaGuests."reducer-agent-cdz" "reducer-agent-hash"})" > "$out/components/hashes.env"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        agentFixtureCheck = pkgs.runCommand "agent-fixture-check" { } ''
+          magic=$(head -c 4 ${agentFixture}/components/reducer-agent.wasm | od -An -tx1 | tr -d ' \n')
+          [ "$magic" = "0061736d" ] || { echo "reducer-agent.wasm not a wasm module (magic $magic)"; exit 1; }
+          grep -q '^reducer-agent=' ${agentFixture}/components/hashes.env || { echo "hashes.env missing reducer-agent entry"; exit 1; }
+          echo "ok: agent-fixture (reducer-agent 2-step agent guest, valid wasm + ProgramHash + LFS)" > "$out"
+        '';
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -7167,6 +7184,9 @@
         # reducer-state (calls state → HostBackend when the backend Errs) wasm blobs (git-LFS) for the
         # consumer's e2e ReducerFault classification test.
         packages.reducer-fault-fixtures = reducerFaultFixtures;
+        # agent-fixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step agent reducer-world guest
+        # (tool-call Request -> sink Request + Close), git-LFS, for driving the consumer dispatch/effect-outbox.
+        packages.agent-fixture = agentFixture;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8847,6 +8867,8 @@
             # reducer-fault-fixtures: reducer-trap + reducer-state blobs are valid wasm + have ProgramHashes.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-fault-fixtures`.
             reducer-fault-fixtures = reducerFaultFixturesCheck;
+            # agent-fixture: the 2-step agent guest blob is valid wasm + has a ProgramHash. STANDALONE.
+            agent-fixture = agentFixtureCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
