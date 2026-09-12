@@ -12,7 +12,7 @@
 //! `from_hash`, and read the underlying hash with `hash`. They render (Display) as the base62 of the
 //! hash they carry, tagged in Debug with their role.
 
-use crate::{Hash, HashTag};
+use crate::{ContractKind, Hash, HashTag};
 use std::fmt;
 
 /// Deserialize a [`Hash`] from a byte string — the on-wire form of every typed id (a `Bytes` leaf of the
@@ -114,7 +114,34 @@ macro_rules! hash_id {
 hash_id! {
     /// A contract-id: the hash of a contract declaration, which is also the schema hash of the values it
     /// carries (§1/§3). Routes and dispatch key on this; every event carries one as its `id`.
+    ///
+    /// A contract-id also carries its **mutation-vs-query class** (654(a)) in its leading tag byte — see
+    /// [`kind`](Self::kind) / [`of_kind`](Self::of_kind). The bare [`of`](Self::of) / [`TAG`](Self::TAG) name
+    /// the [`Mutation`](ContractKind::Mutation) class ([`HashTag::Contract`]), the default that every
+    /// pre-existing contract-id already carries.
     ContractId, HashTag::Contract
+}
+
+impl ContractId {
+    /// The contract-id of `bytes` for a given [`ContractKind`] (654(a)): the content hash tagged with the
+    /// class's [`route_tag`](ContractKind::route_tag), so the mutation-vs-query class rides in the id's
+    /// leading byte and the router reads it straight off the id. [`of`](Self::of) is exactly
+    /// `of_kind(bytes, ContractKind::Mutation)` — the default class — so a mutation contract-id is
+    /// byte-identical to the pre-654(a) id and nothing drifts; a query contract-id has the same digest but
+    /// the [`ContractQuery`](HashTag::ContractQuery) tag.
+    #[must_use]
+    pub fn of_kind(bytes: &[u8], kind: ContractKind) -> Self {
+        Self::from_hash(Hash::of(kind.route_tag(), bytes))
+    }
+
+    /// The mutation-vs-query class this contract-id routes as (654(a)), read straight out of its leading tag
+    /// byte — the router's decision needs no side table. `None` if the id's tag is not a contract tag (a
+    /// raw/foreign hash wrapped as a `ContractId` via [`from_hash`](Self::from_hash) names no class), so a
+    /// caller can tell a genuine contract-id's class from an untagged wrapper.
+    #[must_use]
+    pub fn kind(self) -> Option<ContractKind> {
+        self.hash().tag().and_then(ContractKind::from_tag)
+    }
 }
 
 hash_id! {
@@ -138,7 +165,44 @@ hash_id! {
 #[cfg(test)]
 mod tests {
     use super::{ContractId, ProgramHash, ReducerId};
-    use crate::{Hash, HashTag};
+    use crate::{ContractKind, Hash, HashTag};
+
+    #[test]
+    fn of_defaults_to_the_mutation_class_and_does_not_drift() {
+        // 654(a): the bare `of` mints a MUTATION contract-id — byte-identical to `of_kind(_, Mutation)` and
+        // to the pre-654(a) `Hash::of(HashTag::Contract, …)`, so no existing contract-id shifts.
+        let bytes = b"a-contract-declaration";
+        let m = ContractId::of(bytes);
+        assert_eq!(m, ContractId::of_kind(bytes, ContractKind::Mutation));
+        assert_eq!(m.hash(), Hash::of(HashTag::Contract, bytes));
+        assert_eq!(m.hash().tag(), Some(HashTag::Contract));
+    }
+
+    #[test]
+    fn the_class_rides_in_the_tag_byte_and_reads_back_from_the_id_alone() {
+        // A mutation and a query over the SAME declaration bytes share a digest but differ only in the
+        // leading tag byte — so the router reads the class straight off the id, no side table.
+        let bytes = b"temp.celsius";
+        let mutation = ContractId::of_kind(bytes, ContractKind::Mutation);
+        let query = ContractId::of_kind(bytes, ContractKind::Query);
+        assert_eq!(mutation.kind(), Some(ContractKind::Mutation));
+        assert_eq!(query.kind(), Some(ContractKind::Query));
+        assert_eq!(query.hash().tag(), Some(HashTag::ContractQuery));
+        // Same digest (the class is the tag, not hashed content here), distinct ids (the tag is identity).
+        assert_eq!(mutation.hash().digest(), query.hash().digest());
+        assert_ne!(mutation, query);
+    }
+
+    #[test]
+    fn a_non_contract_tagged_wrapper_names_no_class() {
+        // Wrapping a raw/foreign hash as a ContractId via `from_hash` names no mutation-vs-query class — its
+        // tag is not a contract tag — so `kind()` is None rather than misreporting a class.
+        let reducerish = ContractId::from_hash(Hash::of(HashTag::Reducer, b"x"));
+        assert_eq!(reducerish.kind(), None);
+        let mut raw = *Hash::of(HashTag::Contract, b"y").as_bytes();
+        raw[0] = 0xFF; // an unknown tag
+        assert_eq!(ContractId::from_hash(Hash::from_bytes(raw)).kind(), None);
+    }
 
     #[test]
     fn wraps_and_unwraps_a_hash() {

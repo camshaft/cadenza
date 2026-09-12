@@ -88,8 +88,9 @@ impl EdgeKind {
     /// The edge kind for a contract's handler chain: the contract-id *is* the edge kind. An `owner ->
     /// handler` edge of this kind, ordered by weight, is one link of the chain that answers `contract` for
     /// `owner` (§3/§4) — the handler chains and the spawn tree are the one routing substrate. Since a
-    /// contract-id is [`Contract`](HashTag::Contract)-tagged, these kinds are distinguishable from the
-    /// structural [`spawn`](Self::spawn) / [`watch_exit`](Self::watch_exit) kinds, which
+    /// contract-id is contract-tagged — [`Contract`](HashTag::Contract) for a mutation or
+    /// [`ContractQuery`](HashTag::ContractQuery) for a query (654(a)) — these kinds are distinguishable from
+    /// the structural [`spawn`](Self::spawn) / [`watch_exit`](Self::watch_exit) kinds, which
     /// [`contracts_for`](ReducerGraph::contracts_for) relies on.
     #[must_use]
     pub fn for_contract(contract: ContractId) -> Self {
@@ -252,7 +253,15 @@ pub trait ReducerGraph: Send + Sync {
         self.in_kinds(reducer)
             .await
             .into_iter()
-            .filter(|kind| kind.hash().tag() == Some(HashTag::Contract))
+            // A contract-id edge kind is either a mutation (HashTag::Contract) or a query
+            // (HashTag::ContractQuery) contract (654(a)); both are contract-ids and distinguishable from the
+            // structural spawn / watch-exit kinds, so accept either tag.
+            .filter(|kind| {
+                matches!(
+                    kind.hash().tag(),
+                    Some(HashTag::Contract | HashTag::ContractQuery)
+                )
+            })
             .map(|kind| ContractId::from_hash(kind.hash()))
             .collect()
     }
@@ -734,6 +743,32 @@ mod tests {
         // edge fronts only one contract; a reducer wired nowhere fronts none.
         assert_eq!(g.contracts_for(r("edge")).await, vec![c("http.get")]);
         assert!(g.contracts_for(r("owner")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn contracts_for_recognizes_a_query_contract_edge_kind_not_only_a_mutation() {
+        // 654(a): a query contract-id is ContractQuery-tagged, not Contract-tagged. `contracts_for` must
+        // recognize BOTH contract classes as contracts — otherwise a reducer that handles a query contract
+        // would be invisible to `list-handlers`. Wire a mutation and a query chain through one handler and a
+        // structural spawn in-edge, and confirm both contracts (and only them) come back.
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "handler"] {
+            g.insert(r(id)).await;
+        }
+        let mutation = ContractId::of_kind(b"http.post", crate::ContractKind::Mutation);
+        let query = ContractId::of_kind(b"http.get", crate::ContractKind::Query);
+        assert_eq!(query.hash().tag(), Some(HashTag::ContractQuery));
+        g.set_chain(r("owner"), mutation, vec![r("handler")]).await;
+        g.set_chain(r("owner"), query, vec![r("handler")]).await;
+        g.link(r("handler"), r("owner"), EdgeKind::spawn()).await; // structural: not a contract
+        let mut contracts = g.contracts_for(r("handler")).await;
+        contracts.sort_unstable();
+        let mut expected = vec![mutation, query];
+        expected.sort_unstable();
+        assert_eq!(
+            contracts, expected,
+            "both a mutation and a query contract front through the handler"
+        );
     }
 
     #[tokio::test]
