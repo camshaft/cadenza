@@ -731,4 +731,32 @@ mod canonical_value_form {
         let got: Vec<i32> = from_arenas(&arenas).expect("decode name-alias-headed list");
         assert_eq!(got, vec![10, 20, 30]);
     }
+
+    #[test]
+    fn decodes_present_optional_as_bare_value() {
+        // Platform/canonical convention for `Option`: a PRESENT optional field carries its BARE value
+        // (NOT this crate's `(v)` wrapper) ⇒ Some; an ABSENT field ⇒ None (via #[serde(default)], see
+        // `decodes_omitted_optional_and_nested_record`). This is how e.g. cdz-cas-http config encodes
+        // `read-credential`, so the reader must accept it.
+        let mut b = Builder::new();
+        let vlisten = string(&mut b, "0.0.0.0:9000");
+        let listen = field(&mut b, "listen", vlisten);
+        let vcred = string(&mut b, "secret");
+        let cred = field(&mut b, "credential", vcred); // PRESENT, bare Str value
+        let vn = int(&mut b, 1);
+        let fn_ = field(&mut b, "n", vn);
+        let nrec = b.compound(CompoundCtor::Record, &[fn_]);
+        let inner = field(&mut b, "inner", nrec);
+        let rec = b.compound(CompoundCtor::Record, &[listen, cred, inner]);
+        let arenas = b.finish(rec);
+        let got: Config = from_arenas(&arenas).expect("decode present bare optional");
+        assert_eq!(
+            got,
+            Config {
+                listen: "0.0.0.0:9000".into(),
+                credential: Some("secret".into()),
+                inner: Nested { n: 1 },
+            }
+        );
+    }
 }
