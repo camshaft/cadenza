@@ -1027,10 +1027,13 @@ enum WasmReducer {
 // `catch_unwind` turns into the reducer's `Crashed` lifecycle event (§7), the same as any other fold failure.
 #[async_trait]
 impl Reducer for WasmReducer {
-    async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+    async fn on_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let event = message_to_wit(&message);
         // Both worlds export the same `cadenza:platform/guest`, so the call is identical bar the world type.
-        let step = match self {
+        let call = match self {
             WasmReducer::Reducer { store, world } => {
                 world
                     .cadenza_platform_guest()
@@ -1043,14 +1046,16 @@ impl Reducer for WasmReducer {
                     .call_on_message(store, &event)
                     .await
             }
-        }
-        .expect("reducer on_message trapped");
-        step_from_wit(step).expect("reducer returned a malformed step")
+        };
+        fold_result("on_message", call)
     }
 
-    async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome) {
+    async fn on_response(
+        &mut self,
+        response: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let event = response_to_wit(&response);
-        let step = match self {
+        let call = match self {
             WasmReducer::Reducer { store, world } => {
                 world
                     .cadenza_platform_guest()
@@ -1063,14 +1068,16 @@ impl Reducer for WasmReducer {
                     .call_on_response(store, &event)
                     .await
             }
-        }
-        .expect("reducer on_response trapped");
-        step_from_wit(step).expect("reducer returned a malformed step")
+        };
+        fold_result("on_response", call)
     }
 
-    async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
+    async fn on_notification(
+        &mut self,
+        notification: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let event = notification_to_wit(&notification);
-        let step = match self {
+        let call = match self {
             WasmReducer::Reducer { store, world } => {
                 world
                     .cadenza_platform_guest()
@@ -1083,9 +1090,29 @@ impl Reducer for WasmReducer {
                     .call_on_notification(store, &event)
                     .await
             }
+        };
+        fold_result("on_notification", call)
+    }
+}
+
+/// Turn a guest reducer-export call result into the platform fold result, classifying a trap. A backend
+/// [`HostBackendError`] trap (a `state`/`blobs` failure) becomes [`ReducerFault::HostBackend`](crate::ReducerFault::HostBackend)
+/// (abort + retry the transaction); any other trap — a genuine guest panic/unreachable/abort — or a
+/// malformed returned step becomes [`ReducerFault::Guest`](crate::ReducerFault::Guest) (the reducer
+/// crashed). This is where the frozen option-returning WIT surface + the trapping host imports (§7) turn
+/// into the driver's retry-vs-crash decision; nothing derived from a phantom read/write is ever returned.
+fn fold_result(
+    op: &'static str,
+    call: wasmtime::Result<wit_reducer::Step>,
+) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+    use crate::ReducerFault;
+    match call {
+        Ok(step) => step_from_wit(step)
+            .map_err(|e| ReducerFault::Guest(format!("{op} returned a malformed step: {e:?}"))),
+        Err(e) if is_host_backend_trap(&e) => {
+            Err(ReducerFault::HostBackend(format!("{op}: {e}")))
         }
-        .expect("reducer on_notification trapped");
-        step_from_wit(step).expect("reducer returned a malformed step")
+        Err(e) => Err(ReducerFault::Guest(format!("{op} trapped: {e}"))),
     }
 }
 

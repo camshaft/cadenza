@@ -78,20 +78,29 @@ mod tests {
     struct BreakNow;
     #[async_trait]
     impl Reducer for BreakNow {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: ContractId::of(b"http-response"),
                     reason: m.payload,
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(
+            &mut self,
+            _: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -118,8 +127,11 @@ mod tests {
     struct EffectThenBreak;
     #[async_trait]
     impl Reducer for EffectThenBreak {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            _m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 vec![Request {
                     id: ContractId::of(b"an-effect"),
                     payload: Bytes::from_static(b"go"),
@@ -127,19 +139,25 @@ mod tests {
                     deadline: None,
                 }],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_response(
+            &mut self,
+            r: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: ContractId::of(b"http-response"),
                     reason: r.payload.unwrap_or_default(),
                 },
-            )
+            ))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 

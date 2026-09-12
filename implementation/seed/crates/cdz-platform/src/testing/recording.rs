@@ -20,8 +20,8 @@ use super::observation::{
 use crate::{
     ArgProbeSink, BlobStore, BlobStoreError, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind,
     Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, KvStoreError, Message, Notification,
-    Origin, Outcome, ProgramHash, ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId,
-    RejectedSink, Request, Response, RunError, RunSink, SpawnContext, Str,
+    Origin, Outcome, ProgramHash, ProgramStore, Provenance, Reducer, ReducerFault, ReducerGraph,
+    ReducerId, RejectedSink, Request, Response, RunError, RunSink, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -614,12 +614,23 @@ impl RecordingReducer {
     /// event to watchers). Called after the fold future resolves, so it no longer borrows `inner`.
     fn folded_or_record_failure(
         &self,
-        folded: std::thread::Result<(Vec<Request>, Outcome)>,
+        folded: std::thread::Result<Result<(Vec<Request>, Outcome), ReducerFault>>,
         during: EventKind,
         contract: ContractId,
-    ) -> (Vec<Request>, Outcome) {
+    ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         match folded {
-            Ok(result) => result,
+            Ok(Ok(result)) => Ok(result),
+            // A typed fold fault (a wasm reducer trapped — host-backend or guest): record it as a Failed
+            // event, then PROPAGATE the fault so the driver classifies it (retry vs crash). Unlike a panic,
+            // a typed fault is a controlled return, so we do not resume_unwind.
+            Ok(Err(fault)) => {
+                self.record(EventOp::Failed {
+                    during,
+                    contract,
+                    reason: Str::from(fault.to_string().as_str()),
+                });
+                Err(fault)
+            }
             Err(panic) => {
                 self.record(EventOp::Failed {
                     during,
@@ -646,7 +657,7 @@ fn panic_reason(panic: &(dyn Any + Send)) -> Str {
 
 #[async_trait]
 impl Reducer for RecordingReducer {
-    async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+    async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         let contract = message.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Message,
@@ -660,12 +671,12 @@ impl Reducer for RecordingReducer {
             .catch_unwind()
             .await;
         let (requests, outcome) =
-            self.folded_or_record_failure(folded, EventKind::Message, contract);
+            self.folded_or_record_failure(folded, EventKind::Message, contract)?;
         self.record_output(&requests, &outcome);
-        (requests, outcome)
+        Ok((requests, outcome))
     }
 
-    async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome) {
+    async fn on_response(&mut self, response: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         // A response carries its result in the payload: `Ok` bytes, or an `Err` runtime failure (§3). Split
         // it so the record shows the answer or the failure without wrapping.
         let (payload, error) = match &response.payload {
@@ -685,12 +696,12 @@ impl Reducer for RecordingReducer {
             .catch_unwind()
             .await;
         let (requests, outcome) =
-            self.folded_or_record_failure(folded, EventKind::Response, contract);
+            self.folded_or_record_failure(folded, EventKind::Response, contract)?;
         self.record_output(&requests, &outcome);
-        (requests, outcome)
+        Ok((requests, outcome))
     }
 
-    async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
+    async fn on_notification(&mut self, notification: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
         let contract = notification.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Notification,
@@ -704,9 +715,9 @@ impl Reducer for RecordingReducer {
             .catch_unwind()
             .await;
         let (requests, outcome) =
-            self.folded_or_record_failure(folded, EventKind::Notification, contract);
+            self.folded_or_record_failure(folded, EventKind::Notification, contract)?;
         self.record_output(&requests, &outcome);
-        (requests, outcome)
+        Ok((requests, outcome))
     }
 }
 

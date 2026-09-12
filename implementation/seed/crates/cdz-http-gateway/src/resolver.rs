@@ -373,20 +373,29 @@ mod tests {
     struct Handler(&'static [u8]);
     #[async_trait]
     impl Reducer for Handler {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            _m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: resp_id(),
                     reason: Bytes::from_static(self.0),
                 },
-            )
+            ))
         }
-        async fn on_response(&mut self, _: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(
+            &mut self,
+            _: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -397,8 +406,11 @@ mod tests {
     }
     #[async_trait]
     impl Reducer for Router {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 vec![Request {
                     id: dispatch_id(),
                     payload: encode_dispatch(&self.target, &m.payload),
@@ -406,19 +418,25 @@ mod tests {
                     deadline: None,
                 }],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_response(
+            &mut self,
+            r: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: resp_id(),
                     reason: r.payload.unwrap_or_default(),
                 },
-            )
+            ))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -480,8 +498,11 @@ mod tests {
     struct ControlSendThenBreak;
     #[async_trait]
     impl Reducer for ControlSendThenBreak {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            _m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 vec![Request {
                     id: control_send_id(),
                     payload: Bytes::from_static(b"ping"),
@@ -489,24 +510,30 @@ mod tests {
                     deadline: Some(Duration::from_millis(20)),
                 }],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        async fn on_response(
+            &mut self,
+            r: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
             let reason = if matches!(r.payload, Err(Error::Timeout)) {
                 Bytes::from_static(b"timed-out")
             } else {
                 Bytes::from_static(b"unexpected")
             };
-            (
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: resp_id(),
                     reason,
                 },
-            )
+            ))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -515,14 +542,23 @@ mod tests {
     struct HangForever;
     #[async_trait]
     impl Reducer for HangForever {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_message(
+            &mut self,
+            _m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_response(&mut self, _: Response) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_response(
+            &mut self,
+            _: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -533,8 +569,11 @@ mod tests {
     }
     #[async_trait]
     impl Reducer for RouterWithDeadline {
-        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
-            (
+        async fn on_message(
+            &mut self,
+            m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((
                 vec![Request {
                     id: dispatch_id(),
                     payload: encode_dispatch(&self.target, &m.payload),
@@ -542,24 +581,30 @@ mod tests {
                     deadline: Some(Duration::from_millis(20)),
                 }],
                 Outcome::Continue,
-            )
+            ))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        async fn on_response(
+            &mut self,
+            r: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
             let reason = if matches!(r.payload, Err(Error::Timeout)) {
                 Bytes::from_static(b"timed-out")
             } else {
                 Bytes::from_static(b"answered")
             };
-            (
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: resp_id(),
                     reason,
                 },
-            )
+            ))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
@@ -618,29 +663,38 @@ mod tests {
     struct ArmTimerThenBreak;
     #[async_trait]
     impl Reducer for ArmTimerThenBreak {
-        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        async fn on_message(
+            &mut self,
+            _m: Message,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
             // 10 ms fire-after, on the canonical timer contract (via the platform's own request builder).
             let arm = FireAfter {
                 duration: 10_000_000,
             }
             .into_request(Bytes::from_static(b"t1"));
-            (vec![arm], Outcome::Continue)
+            Ok((vec![arm], Outcome::Continue))
         }
-        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        async fn on_response(
+            &mut self,
+            r: Response,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
             let reason = match &r.payload {
                 Ok(bytes) if Fired::decode(bytes).is_some() => Bytes::from_static(b"fired"),
                 _ => Bytes::from_static(b"unexpected"),
             };
-            (
+            Ok((
                 Vec::new(),
                 Outcome::Break {
                     schema: resp_id(),
                     reason,
                 },
-            )
+            ))
         }
-        async fn on_notification(&mut self, _: Notification) -> (Vec<Request>, Outcome) {
-            (Vec::new(), Outcome::Continue)
+        async fn on_notification(
+            &mut self,
+            _: Notification,
+        ) -> Result<(Vec<Request>, Outcome), cdz_platform::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
         }
     }
 
