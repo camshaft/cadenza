@@ -178,6 +178,33 @@ if [ ! -e "$HUB/.claude/fleet/stop/$AGENT" ]; then
   printf 'tick\n' > "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null || true
 fi
 
+# ── KICKOFF-ENSURE (fresh-session kickoff-submission robustness, concierge-greenlit 2026-09-12, option c) ──
+# A freshly launched claude OCCASIONALLY does not process its positional "$KICKOFF" (boots to a bare ❯ →
+# /loop never arms → a cold-start stall; the SAME intermittent fresh-session-boot root as the concierge
+# flap). SELF-HEAL without changing the common path: spawn a DETACHED job (survives the `exec` below) that
+# after a grace checks whether the agent actually TICKED — its heartbeat mtime advanced past the
+# launch-time stamp above. Re-submits the kickoff ONLY if BOTH: (1) the heartbeat is STILL frozen at the
+# launch stamp (no /loop tick ran — a real first tick stamps its heartbeat at step 1, well within the
+# grace), AND (2) the pane shows the IDLE `❯` prompt (a confirmed dropped-kickoff stall, NOT a slow-but-
+# working first tick). DOUBLE-GUARDED so it can NEVER disturb a healthy launch (heartbeat advanced OR pane
+# working → no-op); worst case on a real stall is a no-op, never harm. Re-submit via the tmux paste-buffer
+# (reliable for a large prompt, unlike per-char send-keys) + Enter. Fail-open throughout.
+SESSION="$(tmux display-message -p '#S' 2>/dev/null || echo main)"
+LAUNCH_HB_MTIME="$(stat -c %Y "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null || echo 0)"
+(
+  sleep 90
+  cur_mtime="$(stat -c %Y "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null || echo 0)"
+  pane="$(tmux capture-pane -t "$SESSION:$AGENT" -p 2>/dev/null || true)"
+  if [ "$cur_mtime" = "$LAUNCH_HB_MTIME" ] && printf '%s\n' "$pane" | grep -qxE ' *❯ *'; then
+    # Confirmed dropped-kickoff stall: no tick ran AND the pane is idle. Re-submit the kickoff.
+    if tmux set-buffer -b "cdz-kickoff-$AGENT" "$KICKOFF" 2>/dev/null; then
+      tmux paste-buffer -d -b "cdz-kickoff-$AGENT" -t "$SESSION:$AGENT" 2>/dev/null || true
+      sleep 2
+      tmux send-keys -t "$SESSION:$AGENT" Enter 2>/dev/null || true
+    fi
+  fi
+) </dev/null >/dev/null 2>&1 &
+
 echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL effort=$EFFORT interval=$INTERVAL) in $WORKTREE"
 echo "           claude ${CLAUDE_ARGS[*]} <kickoff>"
 exec claude "${CLAUDE_ARGS[@]}" "$KICKOFF"
