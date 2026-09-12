@@ -293,4 +293,135 @@ mod tests {
         };
         assert_eq!(to_bytes(&v).unwrap(), to_bytes(&v).unwrap());
     }
+
+    // ── Shape goldens ─────────────────────────────────────────────────────────────────────────
+    // Pin the EXACT AST tree shape the serializer produces for each serde kind (the mapping
+    // contract documented on `ser`). These lock the format's wire: any future Serializer change
+    // that alters a shape fails here, which is the invariant every byte-neutral `*_wire.rs`
+    // migration depends on. `render` walks the built `Arenas` into a compact s-expr string.
+
+    fn render(a: &cadenza_ast::ast::Arenas) -> String {
+        render_node(a, a.root)
+    }
+
+    fn render_node(a: &cadenza_ast::ast::Arenas, id: cadenza_ast::ast::StructId) -> String {
+        use cadenza_ast::ast::Struct;
+        match &a.structure[id.0 as usize] {
+            Struct::Atom(l) => render_leaf(&a.leaves[l.0 as usize]),
+            Struct::List(items) => {
+                let parts: Vec<String> = items.iter().map(|&c| render_node(a, c)).collect();
+                format!("({})", parts.join(" "))
+            }
+        }
+    }
+
+    fn render_leaf(l: &cadenza_ast::ast::Leaf) -> String {
+        use cadenza_ast::ast::{CompoundCtor, Leaf};
+        match l {
+            Leaf::Bool(b) => b.to_string(),
+            Leaf::Int { value, .. } => {
+                let mut m: u128 = 0;
+                for &byte in &value.magnitude {
+                    m = (m << 8) | byte as u128;
+                }
+                if value.negative {
+                    format!("-{m}")
+                } else {
+                    format!("{m}")
+                }
+            }
+            Leaf::Str(s) => format!("{:?}", &**s),
+            Leaf::Char(c) => format!("#\\{c}"),
+            Leaf::Bytes(b) => format!("bytes{}", b.len()),
+            Leaf::Float(_) | Leaf::FloatNan | Leaf::FloatInf { .. } => "<float>".to_string(),
+            Leaf::Name(n) => (**n).to_string(),
+            Leaf::Ctor(c) => match c {
+                CompoundCtor::List => "list",
+                CompoundCtor::Tuple => "tuple",
+                CompoundCtor::Record => "record",
+                CompoundCtor::Map => "map",
+                CompoundCtor::Set => "set",
+            }
+            .to_string(),
+            Leaf::FieldPair => "=".to_string(),
+            Leaf::Member => ".".to_string(),
+            other => format!("<{other:?}>"),
+        }
+    }
+
+    #[test]
+    fn shape_primitives() {
+        assert_eq!(render(&to_arenas(&5u8).unwrap()), "5");
+        assert_eq!(render(&to_arenas(&-3i32).unwrap()), "-3");
+        assert_eq!(render(&to_arenas(&true).unwrap()), "true");
+        assert_eq!(render(&to_arenas(&"hi").unwrap()), "\"hi\"");
+    }
+
+    #[test]
+    fn shape_option_and_unit() {
+        // The AST-native Option idiom: None → the empty list, Some(v) → the one-element list.
+        assert_eq!(render(&to_arenas(&None::<u8>).unwrap()), "()");
+        assert_eq!(render(&to_arenas(&Some(7u8)).unwrap()), "(7)");
+        assert_eq!(render(&to_arenas(&()).unwrap()), "()");
+    }
+
+    #[test]
+    fn shape_seq_and_tuple() {
+        assert_eq!(
+            render(&to_arenas(&vec![1u8, 2, 3]).unwrap()),
+            "(list 1 2 3)"
+        );
+        assert_eq!(render(&to_arenas(&Vec::<u8>::new()).unwrap()), "(list)");
+        assert_eq!(render(&to_arenas(&(1u8, 2u8)).unwrap()), "(tuple 1 2)");
+    }
+
+    #[test]
+    fn shape_struct_map() {
+        let p = Point {
+            x: 1,
+            y: 2,
+            label: "p".into(),
+        };
+        assert_eq!(
+            render(&to_arenas(&p).unwrap()),
+            "(record (= \"x\" 1) (= \"y\" 2) (= \"label\" \"p\"))"
+        );
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), 1u8);
+        m.insert("b".to_string(), 2u8);
+        assert_eq!(
+            render(&to_arenas(&m).unwrap()),
+            "(map (= \"a\" 1) (= \"b\" 2))"
+        );
+    }
+
+    #[test]
+    fn shape_newtype_and_tuple_struct() {
+        assert_eq!(render(&to_arenas(&Wrapper(99)).unwrap()), "99"); // newtype is transparent
+        assert_eq!(render(&to_arenas(&Pair(1, -1)).unwrap()), "(tuple 1 -1)");
+        assert_eq!(render(&to_arenas(&Unit).unwrap()), "()");
+    }
+
+    #[test]
+    fn shape_enum_variants() {
+        assert_eq!(render(&to_arenas(&Shape::Empty).unwrap()), "(Empty)");
+        assert_eq!(
+            render(&to_arenas(&Shape::Circle(2.5)).unwrap()),
+            "(Circle <float>)"
+        );
+        assert_eq!(
+            render(&to_arenas(&Shape::Rect(3.0, 4.0)).unwrap()),
+            "(Rect <float> <float>)"
+        );
+        assert_eq!(
+            render(
+                &to_arenas(&Shape::Named {
+                    name: "sq".into(),
+                    sides: 4
+                })
+                .unwrap()
+            ),
+            "(Named (= \"name\" \"sq\") (= \"sides\" 4))"
+        );
+    }
 }
