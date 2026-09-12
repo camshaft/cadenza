@@ -111,6 +111,35 @@ fn sibling_path_deps(manifest: &str) -> Vec<String> {
     deps
 }
 
+/// Rewrite a projected crate's `Cargo.toml` to namespace its package name with `<prefix>-`, entirely in
+/// the manifest (NO source edits): (1) `[package] name = "<own>"` → `"<prefix>-<own>"`; (2) every sibling
+/// first-party path-dep gains `package = "<prefix>-<dep>"` while KEEPING its original key (so the crate's
+/// `use <dep_underscored>::…` is unchanged — cargo maps the key to the renamed package); (3) the original
+/// lib name is PRESERVED via an explicit `[lib] name` (the projected crates have no `[lib]` section, so
+/// their lib name would otherwise follow the renamed package). Used e.g. for Brazil's mandatory `amzn-`.
+fn prefix_manifest(text: &str, own: &str, prefix: &str, members: &[&str]) -> String {
+    // (1) the [package] name — replace the FIRST `name = "<own>"` (the package name precedes any
+    // `[[bin]] name`); the closing quote disambiguates from a longer name like `<own>-itest`.
+    let mut out = text.replacen(
+        &format!("name = \"{own}\""),
+        &format!("name = \"{prefix}-{own}\""),
+        1,
+    );
+    // (2) sibling path-deps → add `package = "<prefix>-<dep>"`. The closing quote in the match keeps
+    // `../cadenza-ast` from also matching `../cadenza-ast-serde`.
+    for d in members {
+        out = out.replace(
+            &format!("path = \"../{d}\""),
+            &format!("path = \"../{d}\", package = \"{prefix}-{d}\""),
+        );
+    }
+    // (3) preserve the original lib name so consumers' `use <own_underscored>::…` keeps resolving even
+    // though the package is renamed (the projected crates declare no `[lib]`, so append one).
+    let lib = own.replace('-', "_");
+    out.push_str(&format!("\n[lib]\nname = \"{lib}\"\n"));
+    out
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok((tier, out)) => {
@@ -146,6 +175,17 @@ fn run() -> Result<(String, PathBuf), String> {
             return Err(format!("missing tier crate source: {}", src.display()));
         }
         copy_crate(&src, &crates_dir.join(crate_name))?;
+    }
+
+    // 1b. Optionally namespace the projected crate names (Cargo.toml-only, e.g. Brazil's mandatory
+    //     `amzn-`): rename each [package] + rewrite sibling path-deps to the prefixed package, preserving
+    //     lib names so no source edit is needed.
+    if let Some(prefix) = &args.prefix {
+        for crate_name in &crates {
+            let mf = crates_dir.join(crate_name).join("Cargo.toml");
+            let text = read(&mf)?;
+            write(&mf, &prefix_manifest(&text, crate_name, prefix, &crates))?;
+        }
     }
 
     // 2. Write the projected workspace manifest + refresh doc. By DEFAULT no Cargo.lock is emitted —
@@ -438,6 +478,7 @@ struct Args {
     out: PathBuf,
     tier: String,
     emit_lock: bool,
+    prefix: Option<String>,
 }
 
 impl Args {
@@ -446,15 +487,17 @@ impl Args {
         let mut out = None;
         let mut tier = "codec".to_string();
         let mut emit_lock = false;
+        let mut prefix = None;
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--repo" => repo = Some(PathBuf::from(next(&mut it, "--repo")?)),
                 "--out" => out = Some(PathBuf::from(next(&mut it, "--out")?)),
                 "--tier" => tier = next(&mut it, "--tier")?,
                 "--emit-lock" => emit_lock = true,
+                "--prefix" => prefix = Some(next(&mut it, "--prefix")?),
                 "-h" | "--help" => {
                     return Err(
-                        "usage: cdz-source-export [--repo <dir>] --out <dir> [--tier codec|reducer|all] [--emit-lock]"
+                        "usage: cdz-source-export [--repo <dir>] --out <dir> [--tier codec|reducer|all] [--prefix <p>] [--emit-lock]"
                             .into(),
                     )
                 }
@@ -466,6 +509,7 @@ impl Args {
             out: out.ok_or("missing required --out <dir>")?,
             tier,
             emit_lock,
+            prefix,
         })
     }
 }
@@ -748,6 +792,41 @@ source = \"registry+https://x\"
             ]
         );
         assert!(tier_roots("bogus").is_err());
+    }
+
+    #[test]
+    fn prefix_manifest_renames_package_deps_and_preserves_lib() {
+        let manifest = "\
+[package]
+name = \"cdz-platform\"
+version = \"0.0.0\"
+
+[[bin]]
+name = \"cdz-platform-itest\"
+
+[dependencies]
+cadenza-ast = { path = \"../cadenza-ast\" }
+cadenza-ast-serde = { path = \"../cadenza-ast-serde\" }
+num-bigint = \"0.4\"
+";
+        let members = ["cdz-platform", "cadenza-ast", "cadenza-ast-serde"];
+        let out = prefix_manifest(manifest, "cdz-platform", "amzn", &members);
+        // (1) the package name is prefixed; the [[bin]] name is NOT (longer string, and only the first
+        // `name = "cdz-platform"` is replaced).
+        assert!(out.contains("name = \"amzn-cdz-platform\"\n"));
+        assert!(out.contains("name = \"cdz-platform-itest\"\n"));
+        // (2) sibling path-deps gain package=, keeping their original key; `../cadenza-ast` did NOT
+        // corrupt `../cadenza-ast-serde` (closing-quote match).
+        assert!(out.contains(
+            "cadenza-ast = { path = \"../cadenza-ast\", package = \"amzn-cadenza-ast\" }"
+        ));
+        assert!(out.contains(
+            "cadenza-ast-serde = { path = \"../cadenza-ast-serde\", package = \"amzn-cadenza-ast-serde\" }"
+        ));
+        // external deps are untouched.
+        assert!(out.contains("num-bigint = \"0.4\""));
+        // (3) the original lib name is preserved explicitly.
+        assert!(out.contains("[lib]\nname = \"cdz_platform\""));
     }
 
     #[test]

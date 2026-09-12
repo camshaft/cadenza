@@ -2533,7 +2533,7 @@
           installPhase = ''
             runHook preInstall
             implementation/seed/crates/cdz-source-export/target/release/cdz-source-export \
-              --repo . --out "$out" --tier all
+              --repo . --out "$out" --tier all --prefix amzn
             mkdir -p "$out/crates/cdz-platform/src/contracts"
             cp ${cdzPlatformContracts}/contracts/*.rs "$out/crates/cdz-platform/src/contracts/"
             runHook postInstall
@@ -2555,7 +2555,8 @@
             cd ./proj
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             # cdz-platform with host (the driving) + the codec crates, all sharing the ONE cadenza-ast.
-            cargo build --offline -p cdz-platform --features host -p cadenza-value -p cadenza-ast-serde
+            # Package names are amzn- prefixed (Brazil mandate); the `host` feature name is unchanged.
+            cargo build --offline -p amzn-cdz-platform --features host -p amzn-cadenza-value -p amzn-cadenza-ast-serde
             runHook postBuild
           '';
           installPhase = ''
