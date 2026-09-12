@@ -12,15 +12,16 @@
 //!
 //! ## The value shape
 //! The log is a canonical Cadenza value (the form `Value.encode`/`Value.decode` uses) so a guest checker
-//! decodes the whole log into a `List(LogRecord)` from `guests/log-schema.cdz`: a **name-headed** list wrapped
-//! at the root in the ascription `Value.decode` requires; each element is a single-constructor `LogRecord`, so
-//! its value is the bare **name-headed** record carrying its own `(: … LogRecord)` ascription; and its `entry`
-//! is an `Entry` **sum** in the bare-constructor form `(<Ctor> <record>)`. `Value.decode` matches constructor
+//! decodes the whole log into a `List(LogRecord)` from `guests/log-schema.cdz`: a bare **name-headed** list
+//! (post value-codec migration #8840 `Value.encode`/`Value.decode` are STRUCTURAL — no root `(: <list> List)`
+//! frame, and decode does not peel one); each element is a single-constructor `LogRecord`, so its value is the
+//! bare **name-headed** record with the constructor elided (no per-element `(: … LogRecord)` frame); and its
+//! `entry` is an `Entry` **sum** in the bare-constructor form `(<Ctor> <record>)`. `Value.decode` matches constructor
 //! and field names EXACTLY (no kebab/camel normalization) and reads a record's fields **canonically ordered**,
 //! so the constructors are the exact schema spellings (`Emitted`, `KvGet`, …), the field names the exact schema
 //! spellings (`eventKind`, `keysOnly`, …), and fields are emitted name-sorted (by `contract_value::record`):
 //! ```text
-//! (: (list (: <record> LogRecord)…) List)
+//! (list <record>…)                                                                    ; bare list + bare elements
 //! <record>  = (record (= entry <entry>) (= seq <u>) (= source <origin>) (= time <u>))   ; fields name-sorted
 //! <origin>  = (record (= host b"…") (= reducer b"…"))
 //! <entry>   = (KvPut (record (= key b"…") (= value b"…")))                               ; one schema ctor per kind
