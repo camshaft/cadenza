@@ -36,7 +36,24 @@
 wasmtime::component::bindgen!({
     world: "event-reducer-world",
     path: "wit/world.wit",
-    imports: { default: async },
+    // The store host imports (blobs.get/put, state.get/put/delete) are TRAPPABLE: with the `trappable`
+    // flag their generated Host methods return `wasmtime::Result<T>`, and an `Err` traps — unwinding the
+    // guest execution — instead of being lowered to a value. A genuine miss is still `Ok(None)`; only a
+    // real BACKEND FAILURE (I/O, auth) traps. The guest never observes the failure (the WIT surface stays
+    // option-returning); the reducer driver catches the trap, distinguishes it (a `HostBackendError`) from
+    // a guest panic, and the caller aborts + retries the fold — the transaction is the unit of correctness,
+    // so no state derived from a phantom read/write is ever committed. The name filters are the FULLY
+    // QUALIFIED `namespace:package/interface/func` form (a bare `get` matches no lookup key and the macro
+    // hard-errors on an unused rule); each keeps `async` since a name rule REPLACES (not adds to) the
+    // `default` rule.
+    imports: {
+        default: async,
+        "cadenza:platform/state/get": async | trappable,
+        "cadenza:platform/state/put": async | trappable,
+        "cadenza:platform/state/delete": async | trappable,
+        "cadenza:platform/blobs/get": async | trappable,
+        "cadenza:platform/blobs/put": async | trappable,
+    },
     exports: { default: async },
     // Derive equality on the generated records/variants so the conversion layer can be asserted field-for-
     // field in tests; every WIT type here is over bytes/enums, so `PartialEq`/`Eq` are well-defined.
@@ -292,45 +309,96 @@ impl cadenza::platform::run::Host for HostState {
     }
 }
 
+/// A host-import BACKEND failure (a [`BlobStore`](crate::BlobStore) / [`KvStore`](crate::KvStore) I/O or
+/// auth error), raised as a wasmtime trap so it UNWINDS the guest execution without the guest observing it
+/// (the WIT surface stays option-returning; a failure is never lowered to a value). The reducer driver
+/// distinguishes this from a guest-originated trap (panic / unreachable / abort) by downcasting the trap's
+/// error: a `HostBackendError` means "the transaction could not complete — abort + retry the fold", whereas
+/// a guest trap is a genuine reducer fault. See [`is_host_backend_trap`].
+#[derive(Debug)]
+pub struct HostBackendError {
+    /// The host op that failed (e.g. `"state.get"`).
+    pub op: &'static str,
+    /// The backend error's message.
+    pub source: String,
+}
+
+impl HostBackendError {
+    /// Build the wasmtime trap error for a failed host-import backend op.
+    fn trap(op: &'static str, source: &dyn std::fmt::Display) -> wasmtime::Error {
+        wasmtime::Error::new(HostBackendError {
+            op,
+            source: source.to_string(),
+        })
+    }
+}
+
+impl std::fmt::Display for HostBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "host backend error in {}: {}", self.op, self.source)
+    }
+}
+
+impl std::error::Error for HostBackendError {}
+
+/// Whether a guest-call error is a [`HostBackendError`] trap (a backend I/O/auth failure that unwound the
+/// guest) — anywhere in its source chain — as opposed to a guest-originated trap. The reducer driver uses
+/// this to tell the caller "abort + retry the fold" vs "the reducer faulted".
+pub fn is_host_backend_trap(err: &wasmtime::Error) -> bool {
+    err.chain().any(|e| e.is::<HostBackendError>())
+}
+
 impl cadenza::platform::blobs::Host for HostState {
-    async fn get(&mut self, hash: Vec<u8>) -> Option<Vec<u8>> {
-        // A malformed hash (not exactly `Hash::LEN` bytes) names nothing, so it reads back as absent.
-        let hash = Hash::from_bytes(<[u8; Hash::LEN]>::try_from(hash.as_slice()).ok()?);
-        // The `blobs` WIT import is infallible-shaped (`get -> option<list<u8>>`), so a backend error can't
-        // be surfaced to the guest here — `.ok().flatten()` collapses `Err`/`Ok(None)` to a miss. (Making
-        // the `blobs` WIT fallible is a separate guest-ABI change.)
-        self.blobs
-            .get(hash)
-            .await
+    async fn get(&mut self, hash: Vec<u8>) -> wasmtime::Result<Option<Vec<u8>>> {
+        // A malformed hash (not exactly `Hash::LEN` bytes) names nothing, so it reads back as absent
+        // (`Ok(None)`) — a total, non-trapping outcome, not a backend error.
+        let Some(hash) = <[u8; Hash::LEN]>::try_from(hash.as_slice())
             .ok()
-            .flatten()
-            .map(|bytes| bytes.to_vec())
+            .map(Hash::from_bytes)
+        else {
+            return Ok(None);
+        };
+        // A genuine miss is `Ok(None)`; a BACKEND ERROR traps (unwinds the guest) rather than masquerading
+        // as absent — the guest never sees it; the driver classifies the trap + the fold retries.
+        match self.blobs.get(hash).await {
+            Ok(found) => Ok(found.map(|bytes| bytes.to_vec())),
+            Err(e) => Err(HostBackendError::trap("blobs.get", &e)),
+        }
     }
 
-    async fn put(&mut self, bytes: Vec<u8>) -> Vec<u8> {
-        let bytes = Bytes::from(bytes);
-        // Infallible WIT (`put -> list<u8>`): return the content hash regardless. A failed persist can't be
-        // surfaced at this boundary (a fallible `blobs` WIT would let us); the hash is a pure function of the
-        // bytes, so we can always compute it.
-        match self.blobs.put(bytes.clone()).await {
-            Ok(hash) => hash.as_bytes().to_vec(),
-            Err(_) => Hash::of(crate::HashTag::Blob, &bytes).as_bytes().to_vec(),
+    async fn put(&mut self, bytes: Vec<u8>) -> wasmtime::Result<Vec<u8>> {
+        // A failed persist TRAPS (unwinds the guest) instead of silently returning the hash of un-stored
+        // bytes — a phantom write must not let the fold commit.
+        match self.blobs.put(Bytes::from(bytes)).await {
+            Ok(hash) => Ok(hash.as_bytes().to_vec()),
+            Err(e) => Err(HostBackendError::trap("blobs.put", &e)),
         }
     }
 }
 
 impl cadenza::platform::state::Host for HostState {
-    async fn get(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
-        self.kv.get(&key).await.map(|value| value.to_vec())
+    async fn get(&mut self, key: Vec<u8>) -> wasmtime::Result<Option<Vec<u8>>> {
+        // `Ok(None)` = genuine miss; `Err` = backend failure → trap (unwind the guest), never a phantom miss.
+        match self.kv.get(&key).await {
+            Ok(found) => Ok(found.map(|value| value.to_vec())),
+            Err(e) => Err(HostBackendError::trap("state.get", &e)),
+        }
     }
 
-    async fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.kv.put(Bytes::from(key), Bytes::from(value)).await;
+    async fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> wasmtime::Result<()> {
+        match self.kv.put(Bytes::from(key), Bytes::from(value)).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(HostBackendError::trap("state.put", &e)),
+        }
     }
 
-    async fn delete(&mut self, key: Vec<u8>) {
-        // The WIT `delete` reports nothing; the key-value store's whether-it-was-present is not surfaced.
-        self.kv.delete(&key).await;
+    async fn delete(&mut self, key: Vec<u8>) -> wasmtime::Result<()> {
+        // The WIT `delete` reports nothing; the store's whether-it-was-present is not surfaced. A backend
+        // failure traps.
+        match self.kv.delete(&key).await {
+            Ok(_existed) => Ok(()),
+            Err(e) => Err(HostBackendError::trap("state.delete", &e)),
+        }
     }
 }
 
@@ -1680,6 +1748,7 @@ mod tests {
     fn arg_probe_encodes_the_canonical_value_form() {
         use super::ap;
         use crate::contract_value::{as_bare_ctor, read_uint, record_field};
+        use cadenza_ast::ast::CompoundCtor;
         use cadenza_ast::codec;
 
         // probe-record { v: Big(5), tag: 42 } -> bare (record (= v (Big 5)) (= tag 42)) at the root: no
@@ -1843,14 +1912,16 @@ mod tests {
     async fn blobs_round_trip_and_a_malformed_hash_is_absent() {
         let mut host = host(ReducerId::of(b"me"));
         // `put` stores the bytes and returns their content hash; `get` reads them back by that hash.
-        let hash = Blobs::put(&mut host, b"a blob".to_vec()).await;
+        let hash = Blobs::put(&mut host, b"a blob".to_vec()).await.unwrap();
         assert_eq!(
-            Blobs::get(&mut host, hash).await.as_deref(),
+            Blobs::get(&mut host, hash).await.unwrap().as_deref(),
             Some(b"a blob".as_slice())
         );
         // A hash the store does not hold reads back as absent, and so does a malformed (wrong-length) hash.
         assert_eq!(
-            Blobs::get(&mut host, b"not a real hash".to_vec()).await,
+            Blobs::get(&mut host, b"not a real hash".to_vec())
+                .await
+                .unwrap(),
             None
         );
     }
@@ -1859,14 +1930,16 @@ mod tests {
     async fn state_get_put_delete() {
         let mut host = host(ReducerId::of(b"me"));
         // Absent key reads back as nothing; put then get returns the value; delete removes it.
-        assert_eq!(State::get(&mut host, b"k".to_vec()).await, None);
-        State::put(&mut host, b"k".to_vec(), b"v".to_vec()).await;
+        assert_eq!(State::get(&mut host, b"k".to_vec()).await.unwrap(), None);
+        State::put(&mut host, b"k".to_vec(), b"v".to_vec())
+            .await
+            .unwrap();
         assert_eq!(
-            State::get(&mut host, b"k".to_vec()).await.as_deref(),
+            State::get(&mut host, b"k".to_vec()).await.unwrap().as_deref(),
             Some(b"v".as_slice())
         );
-        State::delete(&mut host, b"k".to_vec()).await;
-        assert_eq!(State::get(&mut host, b"k".to_vec()).await, None);
+        State::delete(&mut host, b"k".to_vec()).await.unwrap();
+        assert_eq!(State::get(&mut host, b"k".to_vec()).await.unwrap(), None);
     }
 
     #[tokio::test]
