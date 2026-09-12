@@ -65,8 +65,22 @@ impl<'de> AstDeserializer<'de> {
         }
     }
 
+    /// This node with any leading type-ascription `(: value type)` peeled off — the canonical value-form
+    /// readers ignore the ascription token ("decode by structure, not names"; operator 2026-09-11), so we
+    /// do too. Iterates to peel nested ascriptions. Every node-access below goes through `cur()`, so an
+    /// ascribed value at ANY position decodes identically to a bare one — which is what lets this reader
+    /// replace a hand-written, ascription-tolerant platform decoder without changing the producer's bytes.
+    /// (This crate's own serializer never emits ascription, so `cur()` is a no-op on its own output.)
+    fn cur(&self) -> StructId {
+        let mut id = self.id;
+        while let Some(&inner) = self.arenas.as_form(id, ":").and_then(|tail| tail.first()) {
+            id = inner;
+        }
+        id
+    }
+
     fn node(&self) -> &'de Struct {
-        &self.arenas.structure[self.id.0 as usize]
+        &self.arenas.structure[self.cur().0 as usize]
     }
 
     /// The leaf at `id` if it is an `Atom`, else `None`.
@@ -78,7 +92,7 @@ impl<'de> AstDeserializer<'de> {
     }
 
     fn atom_leaf(&self) -> Result<&'de Leaf> {
-        self.leaf_at(self.id)
+        self.leaf_at(self.cur())
             .ok_or_else(|| Error::UnexpectedShape("expected a leaf atom, found a list".into()))
     }
 
@@ -100,16 +114,14 @@ impl<'de> AstDeserializer<'de> {
         }
     }
 
-    /// The children of a compound `(<ctor> child…)` after its ctor head; errors if the node is not a
-    /// compound of the expected constructor.
+    /// The children of a compound `(<ctor> child…)` after its head. Recognizes BOTH the native ctor-LEAF
+    /// head this crate's serializer emits AND the shadowable NAME-alias head the platform value-form uses
+    /// (`("record" …)` etc.), via [`Arenas::compound_form_of`] — so a platform-produced value decodes
+    /// without changing its bytes. Reads through `cur()`, so an ascribed compound is accepted too.
     fn compound_children(&self, expect: CompoundCtor) -> Result<&'de [StructId]> {
-        let items = self.as_list()?;
-        match items.first().and_then(|&h| self.leaf_at(h)) {
-            Some(Leaf::Ctor(c)) if *c == expect => Ok(&items[1..]),
-            _ => Err(Error::UnexpectedShape(format!(
-                "expected a {expect:?} compound"
-            ))),
-        }
+        self.arenas
+            .compound_form_of(self.cur(), expect)
+            .ok_or_else(|| Error::UnexpectedShape(format!("expected a {expect:?} compound")))
     }
 
     /// The `f64` a float leaf denotes (finite decimal, or a non-finite marker).
