@@ -32,6 +32,15 @@ fn int_u128(iv: &IntValue) -> Result<u128> {
     mag_to_u128(iv)
 }
 
+/// True if `id` is the canonical `unit` atom — a `Name` leaf spelled `"unit"` (cadenza-value::unit /
+/// contract_value::unit). The value-form uses it as a nullary variant's payload (`(VariantName unit)`).
+fn is_unit_atom(arenas: &Arenas, id: StructId) -> bool {
+    match &arenas.structure[id.0 as usize] {
+        Struct::Atom(l) => matches!(&arenas.leaves[l.0 as usize], Leaf::Name(n) if &**n == "unit"),
+        Struct::List(_) => false,
+    }
+}
+
 /// The signed value of `iv`, if it fits `i128`.
 fn int_i128(iv: &IntValue) -> Result<i128> {
     let mag = mag_to_u128(iv)?;
@@ -645,12 +654,15 @@ impl<'de> VariantAccess<'de> for VariantReader<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {
-        if self.payload.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::UnexpectedShape(
-                "expected a unit variant (no payload)".into(),
-            ))
+        match self.payload {
+            // This crate's own form: a unit variant has no payload.
+            [] => Ok(()),
+            // The canonical value-form's nullary-variant convention: `(VariantName unit)`, where the
+            // payload is the `unit` atom (Name "unit"; cadenza-value::unit / contract_value::unit).
+            [only] if is_unit_atom(self.arenas, *only) => Ok(()),
+            _ => Err(Error::UnexpectedShape(
+                "expected a unit variant (empty, or a lone `unit` payload)".into(),
+            )),
         }
     }
 
