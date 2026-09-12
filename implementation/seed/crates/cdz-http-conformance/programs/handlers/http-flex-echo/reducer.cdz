@@ -33,12 +33,16 @@ def on-message(msg) =
             // Whole delivers the full body as one Chunk: stash it, Continue to await End.
             (state.put(b"body", c.body) ;
              { requests = [], outcome = Outcome.Continue })
-        | Some(Frame.End) =>
-            // Body complete → echo it back as a one-shot http.response 200 (Break).
+        | _ =>
+            // The TERMINAL (End): in a body-stream, a message that is NOT a Chunk is End → echo the body back
+            // as a one-shot http.response 200 (Break). This matches BOTH the canonical End (Some(Frame.End),
+            // a nullary ctor with a unit payload — how Method.Get etc. encode) AND the current empty-payload
+            // form the generated frame_end emits, which decodes to None (a nullary-variant codegen quirk
+            // v-hivemind flagged in S3c; routed for a canonical (Ctor unit) codegen fix). "Not-a-Chunk = End"
+            // is a sound stream terminal-detection either way + harmless for this test fixture.
             (match state.get(b"body") with
              | Some(body) => respond(200, [], body)
-             | None(_) => respond(200, [], b""))
-        | None => respond(400, [], b"undecodable request-body-stream frame"))
+             | None(_) => respond(200, [], b"")))
      else
        // The HEAD (on_message #1; any non-body-stream contract) → choose Whole (unbounded) body-mode, emitted
        // as a fire-and-forget REQUEST effect; Continue to await the body-stream on_messages.
