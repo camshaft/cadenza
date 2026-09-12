@@ -178,7 +178,9 @@ pub enum ReducerFault {
 impl std::fmt::Display for ReducerFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::HostBackend(msg) => write!(f, "reducer fold aborted — host backend failure: {msg}"),
+            Self::HostBackend(msg) => {
+                write!(f, "reducer fold aborted — host backend failure: {msg}")
+            }
             Self::Guest(msg) => write!(f, "reducer fold crashed — guest fault: {msg}"),
         }
     }
@@ -246,7 +248,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for Counter {
-        async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+        async fn on_message(
+            &mut self,
+            message: Message,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             self.seen += 1;
             let request = Request {
                 id: self.downstream,
@@ -265,24 +270,32 @@ mod tests {
             Ok((vec![request], outcome))
         }
 
-        async fn on_response(&mut self, _response: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+        async fn on_response(
+            &mut self,
+            _response: Response,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             Ok((Vec::new(), Outcome::Continue))
         }
 
-        async fn on_notification(&mut self, notification: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
-            Ok(// Only the `propagate` notification does anything: forward it downstream. Every other
-            // control-plane event is ignored (returns no requests), which is the safe default.
-            if notification.id == self.propagate {
-                let request = Request {
-                    id: self.downstream,
-                    payload: notification.payload,
-                    continuation_token: Bytes::from_static(b"propagate"),
-                    deadline: None,
-                };
-                (vec![request], Outcome::Continue)
-            } else {
-                (Vec::new(), Outcome::Continue)
-            })
+        async fn on_notification(
+            &mut self,
+            notification: Notification,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+            Ok(
+                // Only the `propagate` notification does anything: forward it downstream. Every other
+                // control-plane event is ignored (returns no requests), which is the safe default.
+                if notification.id == self.propagate {
+                    let request = Request {
+                        id: self.downstream,
+                        payload: notification.payload,
+                        continuation_token: Bytes::from_static(b"propagate"),
+                        deadline: None,
+                    };
+                    (vec![request], Outcome::Continue)
+                } else {
+                    (Vec::new(), Outcome::Continue)
+                },
+            )
         }
     }
 
@@ -345,7 +358,8 @@ mod tests {
                 id: cid(b"propagate"),
                 payload: Bytes::from_static(b"new-handler"),
             })
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(out[0].id, cid(b"downstream"));
         assert_eq!(out[0].payload, Bytes::from_static(b"new-handler"));
         assert_eq!(o, Outcome::Continue);
@@ -355,7 +369,8 @@ mod tests {
                 id: cid(b"some-lifecycle-event"),
                 payload: Bytes::from_static(b"ignored"),
             })
-            .await.unwrap();
+            .await
+            .unwrap();
         assert!(out2.is_empty());
         assert_eq!(r.seen, 0, "notifications are not messages");
     }
@@ -370,7 +385,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Reducer for HostGate {
-        async fn on_message(&mut self, message: Message) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+        async fn on_message(
+            &mut self,
+            message: Message,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             Ok(if message.from.host == self.trusted_host {
                 let request = Request {
                     id: self.downstream,
@@ -383,10 +401,16 @@ mod tests {
                 (Vec::new(), Outcome::Continue)
             })
         }
-        async fn on_response(&mut self, _r: Response) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+        async fn on_response(
+            &mut self,
+            _r: Response,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             Ok((Vec::new(), Outcome::Continue))
         }
-        async fn on_notification(&mut self, _n: Notification) -> Result<(Vec<Request>, Outcome), ReducerFault> {
+        async fn on_notification(
+            &mut self,
+            _n: Notification,
+        ) -> Result<(Vec<Request>, Outcome), ReducerFault> {
             Ok((Vec::new(), Outcome::Continue))
         }
     }
