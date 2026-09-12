@@ -331,6 +331,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadenza-ast-serde"
+version = "0.1.0"
+dependencies = [
+ "cadenza-ast",
+ "serde",
+]
+
+[[package]]
 name = "cadenza-compile-abi"
 version = "0.1.0"
 dependencies = [

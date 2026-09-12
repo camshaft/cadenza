@@ -1,0 +1,28 @@
+# cadenza-ast-serde — a serde data format whose wire IS the canonical binary-AST.
+#
+# serde has a Serializer/Deserializer TRAIT model (the same one serde_json / ciborium plug into); this
+# crate is one more such format. `to_bytes::<T>` drives serde over `T` and builds a `cadenza_ast` value
+# tree via `Builder`, then `cadenza_ast::codec::encode`s it — so the OUTPUT is byte-for-byte the
+# canonical binary-AST (the ONE data-exchange format; no competing wire). `from_bytes::<T>` decodes the
+# binary-AST with `cadenza_ast::codec::decode` and drives serde's (type-directed) Deserializer over the
+# resulting tree. Any `#[derive(Serialize, Deserialize)]` type then round-trips through binary-AST for
+# free — the point of the ast-serde vertical: replace hand-written struct<->AST mapping boilerplate
+# (the cadenza-compile-abi *_wire.rs family) with derive.
+#
+# Its OWN crate (not folded into cadenza-ast) on purpose: cadenza-ast is a deliberately tiny-dep-floor,
+# no_std+alloc bottom crate that `cdz-runtime` (frozen-hash) builds; adding serde there would regress
+# that floor. This crate USES cadenza-ast (per the operator's "use the cadenza-ast crate for
+# serialization") and depends on serde — a host-side/tooling convenience layer, std-only.
+[package]
+name = "cadenza-ast-serde"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+serde = "1"
+
+[dev-dependencies]
+# The derive macros are only needed to exercise the format over real derived types in the tests; the
+# library itself is the FORMAT (Serializer/Deserializer), not a producer of derived impls.
+serde = { version = "1", features = ["derive"] }

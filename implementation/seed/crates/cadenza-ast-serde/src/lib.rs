@@ -1,0 +1,296 @@
+//! `cadenza-ast-serde` — a serde data format whose serialized bytes ARE the canonical binary-AST.
+//!
+//! serde defines a `Serializer`/`Deserializer` trait model that concrete formats (serde_json,
+//! ciborium, …) implement; this crate is one more such format, with `cadenza_ast`'s binary-AST as its
+//! wire. The entry points:
+//!
+//! - [`to_bytes`] drives serde's serialization over a `T: Serialize`, building a `cadenza_ast` value
+//!   tree via [`Builder`], then `cadenza_ast::codec::encode`s it — so the OUTPUT is byte-for-byte the
+//!   canonical binary-AST (the one data-exchange format; this is NOT a competing wire).
+//! - [`from_bytes`] `cadenza_ast::codec::decode`s the binary-AST and drives serde's (type-directed)
+//!   deserialization over the resulting tree.
+//! - [`to_arenas`] / [`from_arenas`] are the same, one step in from the bytes — for a caller that
+//!   already holds an [`Arenas`] (e.g. to compare a derived encoding against a hand-written one during
+//!   the `*_wire.rs` migration).
+//!
+//! Any `#[derive(Serialize, Deserialize)]` type thus round-trips through binary-AST for free. The
+//! value-model mapping is documented on [`ser`]; [`de`] is its type-directed dual.
+//!
+//! Scope: this is a HOST-SIDE / tooling convenience layer (std-only). The canonical wire remains the
+//! hand-written `cadenza_ast::codec`; this crate USES it and never forks it.
+
+pub mod de;
+pub mod error;
+pub mod ser;
+
+pub use de::AstDeserializer;
+pub use error::{Error, Result};
+pub use ser::AstSerializer;
+
+use cadenza_ast::ast::{Arenas, Builder};
+use cadenza_ast::codec;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+/// Serialize `value` into a `cadenza_ast` value tree (an [`Arenas`]) via serde. The tree is built with
+/// leaf deduplication (the `Builder`'s intern) exactly as every other binary-AST producer does; the
+/// caller `codec::encode`s it (or uses [`to_bytes`]).
+pub fn to_arenas<T>(value: &T) -> Result<Arenas>
+where
+    T: ?Sized + Serialize,
+{
+    let mut builder = Builder::new();
+    let root = value.serialize(AstSerializer {
+        builder: &mut builder,
+    })?;
+    Ok(builder.finish(root))
+}
+
+/// Serialize `value` to canonical binary-AST bytes.
+pub fn to_bytes<T>(value: &T) -> Result<Vec<u8>>
+where
+    T: ?Sized + Serialize,
+{
+    Ok(codec::encode(&to_arenas(value)?))
+}
+
+/// Deserialize a `T` from a `cadenza_ast` value tree previously produced by (or equivalent to) this
+/// format.
+pub fn from_arenas<T>(arenas: &Arenas) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    T::deserialize(AstDeserializer {
+        arenas,
+        id: arenas.root,
+    })
+}
+
+/// Deserialize a `T` from canonical binary-AST bytes.
+pub fn from_bytes<T>(bytes: &[u8]) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let arenas = codec::decode(bytes).ok_or(Error::MalformedBinaryAst)?;
+    from_arenas(&arenas)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+    use std::fmt::Debug;
+
+    /// Round-trip `v` through bytes and assert equality, and that the bytes decode as a valid AST.
+    fn round<T>(v: T)
+    where
+        T: Serialize + DeserializeOwned + PartialEq + Debug,
+    {
+        let bytes = to_bytes(&v).expect("serialize");
+        assert!(
+            codec::decode(&bytes).is_some(),
+            "output is not a valid canonical binary-AST for {v:?}"
+        );
+        let back: T = from_bytes(&bytes).expect("deserialize");
+        assert_eq!(v, back, "round-trip mismatch");
+    }
+
+    #[test]
+    fn primitives() {
+        round(true);
+        round(false);
+        round(0i32);
+        round(-1i32);
+        round(42u8);
+        round(i8::MIN);
+        round(i8::MAX);
+        round(i16::MIN);
+        round(i32::MIN);
+        round(i64::MIN);
+        round(i64::MAX);
+        round(u64::MAX);
+        round(u32::MAX);
+        round(i128::MIN);
+        round(i128::MAX);
+        round(u128::MAX);
+        round('a');
+        round('é');
+        round('🦀');
+        round(String::from("hello, world"));
+        round(String::new());
+    }
+
+    #[test]
+    fn floats() {
+        round(0.0f64);
+        round(-0.0f64);
+        round(1.5f64);
+        round(-0.25f64);
+        round(100.0f64);
+        round(f64::MIN);
+        round(f64::MAX);
+        round(1.2345678901234567f64);
+        round(0.0f32);
+        round(1.5f32);
+        round(-2.75f32);
+        round(f32::MAX);
+    }
+
+    #[test]
+    fn non_finite_floats() {
+        // NaN is not `PartialEq`-equal to itself, so check the classification directly.
+        let nan: f64 = from_bytes(&to_bytes(&f64::NAN).unwrap()).unwrap();
+        assert!(nan.is_nan());
+        let pinf: f64 = from_bytes(&to_bytes(&f64::INFINITY).unwrap()).unwrap();
+        assert_eq!(pinf, f64::INFINITY);
+        let ninf: f64 = from_bytes(&to_bytes(&f64::NEG_INFINITY).unwrap()).unwrap();
+        assert_eq!(ninf, f64::NEG_INFINITY);
+        let nan32: f32 = from_bytes(&to_bytes(&f32::NAN).unwrap()).unwrap();
+        assert!(nan32.is_nan());
+    }
+
+    #[test]
+    fn options_and_unit() {
+        round(Some(5i32));
+        round(None::<i32>);
+        round(Some(String::from("x")));
+        round(None::<String>);
+        round(Some(Some(1i32)));
+        round(());
+    }
+
+    #[test]
+    fn sequences_and_tuples() {
+        round(vec![1i32, 2, 3]);
+        round(Vec::<i32>::new());
+        round(vec![vec![1i32, 2], vec![3]]);
+        round((1i32, "two".to_string(), 3.0f64));
+        round((true,));
+        round([1u8, 2, 3, 4]);
+    }
+
+    #[test]
+    fn maps() {
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), 1i32);
+        m.insert("b".to_string(), 2);
+        round(m);
+        round(BTreeMap::<String, i32>::new());
+        let mut nested = BTreeMap::new();
+        nested.insert(1i32, vec![true, false]);
+        round(nested);
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Point {
+        x: i32,
+        y: i32,
+        label: String,
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Wrapper(u32);
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Pair(i32, i32);
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Unit;
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Nested {
+        inner: Point,
+        tags: Vec<String>,
+        maybe: Option<Box<Nested>>,
+    }
+
+    #[test]
+    fn structs() {
+        round(Point {
+            x: -3,
+            y: 7,
+            label: "origin-ish".into(),
+        });
+        round(Wrapper(99));
+        round(Pair(1, -1));
+        round(Unit);
+        round(Nested {
+            inner: Point {
+                x: 1,
+                y: 2,
+                label: "p".into(),
+            },
+            tags: vec!["a".into(), "b".into()],
+            maybe: Some(Box::new(Nested {
+                inner: Point {
+                    x: 0,
+                    y: 0,
+                    label: "".into(),
+                },
+                tags: vec![],
+                maybe: None,
+            })),
+        });
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    enum Shape {
+        Empty,
+        Circle(f64),
+        Rect(f64, f64),
+        Named { name: String, sides: u32 },
+    }
+
+    #[test]
+    fn enums() {
+        round(Shape::Empty);
+        round(Shape::Circle(2.5));
+        round(Shape::Rect(3.0, 4.0));
+        round(Shape::Named {
+            name: "square".into(),
+            sides: 4,
+        });
+        round(vec![
+            Shape::Empty,
+            Shape::Circle(1.0),
+            Shape::Named {
+                name: "tri".into(),
+                sides: 3,
+            },
+        ]);
+        round(Some(Shape::Rect(1.0, 2.0)));
+    }
+
+    #[test]
+    fn int_out_of_range_is_an_error() {
+        // A u64::MAX value cannot deserialize into a u8. Because the full u64 is handed to serde's
+        // `visit_u64`, serde's own width-range check rejects it (a descriptive "expected u8"), which
+        // is exactly the behavior we want — an out-of-range integer is a hard error, not a silent
+        // truncation.
+        let bytes = to_bytes(&(u64::MAX)).unwrap();
+        let r: Result<u8> = from_bytes(&bytes);
+        assert!(
+            r.is_err(),
+            "u64::MAX must not deserialize into u8, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_bytes_are_rejected() {
+        let r: Result<i32> = from_bytes(&[0xff, 0x00, 0x13, 0x37]);
+        assert_eq!(r, Err(Error::MalformedBinaryAst));
+    }
+
+    #[test]
+    fn output_is_deterministic() {
+        // The same value serializes to identical bytes every time (byte-determinism — the property
+        // the *_wire.rs byte-equality migration will lean on).
+        let v = Point {
+            x: 5,
+            y: 6,
+            label: "det".into(),
+        };
+        assert_eq!(to_bytes(&v).unwrap(), to_bytes(&v).unwrap());
+    }
+}
