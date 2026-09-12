@@ -37,6 +37,13 @@ cdz-platform = { path = "../cdz-platform" }
 # converts to binary). We decode it into a `ServerConfig` and assemble the tier stack. Light path-dep
 # (default features; only num-bigint + unicode-normalization, both std) already used across the seed.
 cadenza-ast = { path = "../cadenza-ast" }
+# serde + the binary-AST serde format: `ServerConfig` derives Deserialize and decodes THROUGH
+# cadenza-ast-serde instead of a hand-rolled binary-AST reader (operator 2026-09-12: any struct
+# decoding a binary-AST should use serde). Host-side crate, NOT in rcdzc's closure, so serde stays out
+# of the compiler. The Deserializer is canonical-value-form-tolerant (peels ascription, accepts the
+# name-alias record head), so it reads the SAME config bytes the hand-written decoder did.
+serde = { version = "1", features = ["derive"] }
+cadenza-ast-serde = { path = "../cadenza-ast-serde" }
 # Every byte buffer is `bytes::Bytes` (spec §12) — a blob's bytes, the request/response bodies.
 bytes = "1"
 # The HTTP SERVER: a hyper HTTP/1 server serves the store. hyper is driven via hyper-util's TokioIo;

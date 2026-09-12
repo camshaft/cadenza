@@ -21,13 +21,18 @@
 //! in-memory store.
 
 use crate::{BoundedDiskCache, MemoryCache, TieredBlobStore};
-use cadenza_ast::ast::{Arenas, CompoundCtor, StructId};
-use cadenza_ast::codec;
 use cdz_platform::{BlobStore, InMemoryBlobStore};
+use serde::Deserialize;
 use std::sync::Arc;
 
 /// A decoded server configuration.
-#[derive(Debug, Clone, Default)]
+///
+/// Decoded from a binary-AST record via `serde` (through [`cadenza_ast_serde`]). `rename_all =
+/// "kebab-case"` maps the fields to the record's kebab keys (`read-credential`, `max-body-bytes`, …);
+/// `default` (the struct is `Default`) fills every ABSENT field with its default (`None` for the
+/// options) — matching the old reader's "all fields optional" behavior.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct ServerConfig {
     pub listen: Option<String>,
     pub read_credential: Option<String>,
@@ -38,31 +43,34 @@ pub struct ServerConfig {
     pub s3: Option<S3Config>,
 }
 
-/// The on-disk cache tier config.
-#[derive(Debug, Clone)]
+/// The on-disk cache tier config. `dir` + `bytes` are REQUIRED when a `disk-cache` record is present
+/// (a missing one is a decode error — the serde analogue of the old `MissingField`).
+#[derive(Debug, Clone, Deserialize)]
 pub struct DiskCacheConfig {
     pub dir: String,
     pub bytes: usize,
 }
 
-/// The S3 durable-floor config.
-#[derive(Debug, Clone)]
+/// The S3 durable-floor config. `bucket` is REQUIRED; `prefix` defaults to empty; `region`/`endpoint`
+/// default to `None` when absent (matching the old reader).
+#[derive(Debug, Clone, Deserialize)]
 pub struct S3Config {
     pub bucket: String,
+    #[serde(default)]
     pub prefix: String,
+    #[serde(default)]
     pub region: Option<String>,
+    #[serde(default)]
     pub endpoint: Option<String>,
 }
 
 /// Why a config could not be decoded or its store assembled.
 #[derive(Debug)]
 pub enum ConfigError {
-    /// The bytes were not a valid binary-AST document.
-    Decode,
-    /// The document's root value is not a record.
-    NotARecord,
-    /// A required nested field was missing or the wrong type.
-    MissingField(&'static str),
+    /// The bytes could not be decoded into a `ServerConfig` — not a binary-AST document, the root is
+    /// not a record, a required field is missing or ill-typed, etc. Carries the serde decoder's reason
+    /// (it subsumes the old `Decode` / `NotARecord` / `MissingField` cases with a richer message).
+    Decode(String),
     /// A configured tier failed to initialize (e.g. the disk cache directory).
     Tier(String),
     /// The config asked for an S3 tier but the binary was built without `--features s3`.
@@ -72,9 +80,7 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Decode => write!(f, "config is not a valid binary-AST document"),
-            Self::NotARecord => write!(f, "config root value is not a record"),
-            Self::MissingField(field) => write!(f, "config missing/invalid field: {field}"),
+            Self::Decode(msg) => write!(f, "config decode failed: {msg}"),
             Self::Tier(msg) => write!(f, "config tier init failed: {msg}"),
             Self::S3Unsupported => write!(
                 f,
@@ -90,44 +96,15 @@ impl ServerConfig {
     /// Decode a binary-AST config document.
     ///
     /// # Errors
-    /// [`ConfigError::Decode`] if the bytes aren't binary-AST, [`ConfigError::NotARecord`] if the root isn't
-    /// a record, or [`ConfigError::MissingField`] if a present nested record is missing a required field.
+    /// [`ConfigError::Decode`] if the bytes aren't a valid binary-AST config record — not binary-AST, the
+    /// root isn't a record, or a present nested record is missing a required field (the serde reason is
+    /// carried in the error).
     pub fn decode(bytes: &[u8]) -> Result<Self, ConfigError> {
-        let arenas = codec::decode(bytes).ok_or(ConfigError::Decode)?;
-        let rec = unascribe(&arenas, arenas.root);
-        if arenas.compound_form_of(rec, CompoundCtor::Record).is_none() {
-            return Err(ConfigError::NotARecord);
-        }
-
-        let disk_cache = match record_field(&arenas, rec, "disk-cache") {
-            Some(dc) => Some(DiskCacheConfig {
-                dir: read_str(&arenas, dc, "dir")
-                    .ok_or(ConfigError::MissingField("disk-cache.dir"))?,
-                bytes: read_usize(&arenas, dc, "bytes")
-                    .ok_or(ConfigError::MissingField("disk-cache.bytes"))?,
-            }),
-            None => None,
-        };
-        let s3 = match record_field(&arenas, rec, "s3") {
-            Some(s) => Some(S3Config {
-                bucket: read_str(&arenas, s, "bucket")
-                    .ok_or(ConfigError::MissingField("s3.bucket"))?,
-                prefix: read_str(&arenas, s, "prefix").unwrap_or_default(),
-                region: read_str(&arenas, s, "region"),
-                endpoint: read_str(&arenas, s, "endpoint"),
-            }),
-            None => None,
-        };
-
-        Ok(Self {
-            listen: read_str(&arenas, rec, "listen"),
-            read_credential: read_str(&arenas, rec, "read-credential"),
-            write_credential: read_str(&arenas, rec, "write-credential"),
-            max_body_bytes: read_usize(&arenas, rec, "max-body-bytes"),
-            mem_cache_bytes: read_usize(&arenas, rec, "mem-cache-bytes"),
-            disk_cache,
-            s3,
-        })
+        // Decode the binary-AST config record straight into the struct via serde. The Deserializer is
+        // canonical-value-form-tolerant (peels a root `(: … Type)` ascription, accepts the shadowable
+        // `("record" …)` head and NAME-keyed field pairs), so it reads exactly the bytes the caller's
+        // `cdz convert --to bin` produces — no change to the config wire, just the reader.
+        cadenza_ast_serde::from_bytes(bytes).map_err(|e| ConfigError::Decode(e.to_string()))
     }
 
     /// The listen address (`host:port`), defaulting to `127.0.0.1:8080`.
@@ -187,43 +164,11 @@ impl ServerConfig {
     }
 }
 
-/// Strip a root ascription `(: value Type)` → `value` (or return `id` unchanged if it isn't one).
-fn unascribe(arenas: &Arenas, id: StructId) -> StructId {
-    arenas
-        .as_form(id, ":")
-        .and_then(|tail| tail.first().copied())
-        .unwrap_or(id)
-}
-
-/// The value node of record `rec`'s field named `name`, or `None` if absent. A record is a `Record`-ctor
-/// compound of `(= key value)` field pairs (ascription-tolerant, per the platform value convention).
-fn record_field(arenas: &Arenas, rec: StructId, name: &str) -> Option<StructId> {
-    let fields = arenas.compound_form_of(unascribe(arenas, rec), CompoundCtor::Record)?;
-    fields.iter().find_map(|&f| {
-        let kv = arenas.as_form(f, "=")?;
-        (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])
-    })
-}
-
-/// Read a string-valued field of `rec`.
-fn read_str(arenas: &Arenas, rec: StructId, name: &str) -> Option<String> {
-    arenas
-        .as_str(record_field(arenas, rec, name)?)
-        .map(str::to_string)
-}
-
-/// Read a non-negative-integer field of `rec` as a `usize`.
-fn read_usize(arenas: &Arenas, rec: StructId, name: &str) -> Option<usize> {
-    arenas
-        .as_int(record_field(arenas, rec, name)?)?
-        .to_u128()
-        .and_then(|u| usize::try_from(u).ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cadenza_ast::ast::{Builder, IntValue, Leaf, Radix, StructId};
+    use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix, StructId};
+    use cadenza_ast::codec;
     use std::sync::Arc as StdArc;
 
     // ---- fixture builders ---------------------------------------------------------------------------
@@ -304,7 +249,7 @@ mod tests {
     fn non_binary_ast_bytes_are_a_decode_error() {
         assert!(matches!(
             ServerConfig::decode(b"not a binary-ast document"),
-            Err(ConfigError::Decode)
+            Err(ConfigError::Decode(_))
         ));
     }
 

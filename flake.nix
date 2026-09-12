@@ -2836,6 +2836,9 @@
                 ./implementation/seed/crates/cdz-cas-http/src
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-cas-http/Cargo.lock
+                # cdz-cas-http's config decoder (de)serializes through cadenza-ast-serde.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
@@ -7722,6 +7725,9 @@
                 ./implementation/seed/crates/cdz-cas-http/src
                 ./implementation/seed/crates/cdz-cas-http/Cargo.toml
                 ./implementation/seed/crates/cdz-cas-http/Cargo.lock
+                # cdz-cas-http's config decoder (de)serializes through cadenza-ast-serde.
+                ./implementation/seed/crates/cadenza-ast-serde/src
+                ./implementation/seed/crates/cadenza-ast-serde/Cargo.toml
                 ./implementation/seed/crates/cadenza-ast/src
                 ./implementation/seed/crates/cadenza-ast/Cargo.toml
                 ./implementation/seed/crates/cdz-contract/src
