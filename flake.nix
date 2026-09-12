@@ -2495,6 +2495,75 @@
             runHook postInstall
           '';
         };
+        # sourceExportAll (v-nix-projection): the COMBINED source export — codec + reducer tiers in ONE
+        # workspace sharing a SINGLE cadenza-ast. A consumer needing BOTH (config via cadenza-ast-serde AND
+        # the reducer via cdz-platform) MUST vendor this one tree: vendoring the two separate tiers ships two
+        # cadenza-ast v0.1.0 copies at different paths, which collides at the consumer's lockfile stage
+        # (brazil-build sync "package collision ... cadenza-ast ... only one can be written unambiguously").
+        # Emits NO Cargo.lock (the consumer resolves from its own version set). Overlays the build-time-
+        # generated cdz-platform/src/contracts so the tree is self-contained. Refresh: `nix build .#source-export`.
+        sourceExportAll = pkgs.stdenvNoCC.mkDerivation {
+          pname = "source-export";
+          version = "0.0.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./implementation/seed/crates/cdz-source-export
+              ./implementation/seed/crates/cadenza-ast
+              ./implementation/seed/crates/cadenza-value
+              ./implementation/seed/crates/cadenza-ast-serde
+              ./implementation/seed/crates/cdz-platform
+              ./implementation/seed/crates/cdz-contract
+              ./implementation/seed/crates/cdz-str
+              ./Cargo.lock
+              ./rust-toolchain.toml
+            ];
+          };
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            chmod -R u+w .
+            export CARGO_HOME="$TMPDIR/cargo"
+            export HOME="$TMPDIR/home"
+            mkdir -p "$CARGO_HOME" "$HOME"
+            cargo build --release --offline \
+              --manifest-path implementation/seed/crates/cdz-source-export/Cargo.toml
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            implementation/seed/crates/cdz-source-export/target/release/cdz-source-export \
+              --repo . --out "$out" --tier all
+            mkdir -p "$out/crates/cdz-platform/src/contracts"
+            cp ${cdzPlatformContracts}/contracts/*.rs "$out/crates/cdz-platform/src/contracts/"
+            runHook postInstall
+          '';
+        };
+        # sourceExportAllCheck: PROVE the combined tree is self-contained by building it OFFLINE (no shipped
+        # lock, resolving from the pinned root-lock vendor seedCargoVendor) — cdz-platform WITH `--features
+        # host` (the wasmtime driving) + the codec crates, all against the ONE shared cadenza-ast. STANDALONE
+        # (NOT in local-gate). Run via `nix build .#checks.<sys>.source-export`.
+        sourceExportAllCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "source-export-check";
+          version = "0.0.0";
+          src = sourceExportAll;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            cp -r ${sourceExportAll} ./proj
+            chmod -R u+w ./proj
+            cd ./proj
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            # cdz-platform with host (the driving) + the codec crates, all sharing the ONE cadenza-ast.
+            cargo build --offline -p cdz-platform --features host -p cadenza-value -p cadenza-ast-serde
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: combined source export (codec + reducer, one shared cadenza-ast) builds --offline against the pinned vendor" > "$out"
+            runHook postInstall
+          '';
+        };
 
         # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
         # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
@@ -6981,6 +7050,10 @@
         # tree. Refresh: `nix build .#reducer-source-export && cp -r result <workspace>`. Build the
         # projected tree with `--features cdz-platform/host`. SEPARATE from the light codec package.
         packages.reducer-source-export = reducerSourceExport;
+        # source-export (v-nix-projection): the COMBINED codec+reducer export sharing ONE cadenza-ast — the
+        # one a consumer needing both tiers vendors (avoids the two-cadenza-ast lockfile collision). Refresh:
+        # `nix build .#source-export && cp -r result <workspace>`; build with `--features cdz-platform/host`.
+        packages.source-export = sourceExportAll;
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -8649,6 +8722,9 @@
             # pinned versions. HEAVY (wasmtime/cranelift closure); STANDALONE — NOT in local-gate. Run via
             # `nix build .#checks.<sys>.reducer-source-export`.
             reducer-source-export = reducerSourceExportCheck;
+            # source-export (combined codec+reducer, one shared cadenza-ast): builds it offline against the
+            # pinned vendor. STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.source-export`.
+            source-export = sourceExportAllCheck;
             # The END-TO-END conformance scenarios: one `http-conformance-<name>` per `runs/*.ml`, auto-discovered
             # (no manual wiring — drop a scenario, get a check). Each spawns the 3 real SUTs, seeds + configures
             # them, and drives the scenario against the stock gateway. STANDALONE — run via
