@@ -2679,15 +2679,17 @@
           echo "demo-echo-actor=$(cat ${hashOf cadenzaGuests."demo-echo-actor-cdz" "demo-echo-actor-hash"})" >> "$out/components/hashes.env"
           cp ${httpConformanceProgramsByName."demo-spawner"} "$out/components/demo-spawner.wasm"
           echo "demo-spawner=$(cat ${hashOf httpConformanceProgramsByName."demo-spawner" "demo-spawner-hash"})" >> "$out/components/hashes.env"
+          cp ${httpConformanceProgramsByName."demo-name-router"} "$out/components/demo-name-router.wasm"
+          echo "demo-name-router=$(cat ${hashOf httpConformanceProgramsByName."demo-name-router" "demo-name-router-hash"})" >> "$out/components/hashes.env"
           printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
         '';
         demoComponentsCheck = pkgs.runCommand "demo-components-check" { } ''
-          for w in demo-echo-actor demo-spawner; do
+          for w in demo-echo-actor demo-spawner demo-name-router; do
             magic=$(head -c 4 ${demoComponents}/components/$w.wasm | od -An -tx1 | tr -d ' \n')
             [ "$magic" = "0061736d" ] || { echo "$w.wasm not a wasm module (magic $magic)"; exit 1; }
             grep -q "^$w=" ${demoComponents}/components/hashes.env || { echo "hashes.env missing $w entry"; exit 1; }
           done
-          echo "ok: demo-components (demo-echo-actor + demo-spawner, valid wasm + ProgramHashes + LFS)" > "$out"
+          echo "ok: demo-components (demo-echo-actor + demo-spawner + demo-name-router, valid wasm + ProgramHashes + LFS)" > "$out"
         '';
         # agentFixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step AGENT reducer-world guest —
         # on-message emits one tool-call Request (fixed contract `b"cadenza-fixture-agent-tool"`), on-response
