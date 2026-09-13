@@ -762,7 +762,22 @@ pub(super) fn emit(
                 out.push(Lir::ConstI64(sh));
                 out.push(Lir::I64ShrS); // arithmetic → sign-extended
             }
-            Ok(()) // leaves [value:i64]
+            // The read assembled the value in an i64 accumulator, but the BINDER's SOLVED type may have
+            // narrowed to a ≤32-bit width when the binder is CONSUMED at a narrow width that DOES flow back
+            // by unification — a `u8`/`u16`/`u32` byte binder passed to a `UInt8`/`UInt16`/`UInt32` function
+            // param, or used as a narrow arith operand. Its machine slot is then i32 (`valtype_of`), so
+            // leaving an i64 fed that i32 consumer an i64 → "type mismatch: expected i32, found i64" at
+            // validation (the sibling of the `Bytes.of` CDZ0910 miscompile — same class, a consumer that DOES
+            // narrow `c`, so the fix belongs at the read). Narrow to the binder's solved machine width. A
+            // binder that stayed a general integer / `Int64` (the common case, and every synthesized
+            // dependent-size read — `Ty::int()`, so `off_plus` addends are unaffected) keeps its i64 result.
+            // (The `Bytes.of` element path does NOT narrow `c` — the element stays `Int64` — so that case is
+            // handled at its own consumer, `Core::BytesOf`, not here; the two paths never double-wrap because
+            // each fires only on its own solved width.)
+            if valtype_of(&type_of(db, id)) == Some(ValType::I32) {
+                out.push(Lir::I32WrapI64);
+            }
+            Ok(()) // leaves [value] at the binder's solved machine width (i64, or i32 when narrowed)
         }
         // A `BinRestRead` binds a FINAL unsized `(bytes rest)` segment: the tail of the scrutinee after
         // the fixed int prefix, as a fresh `Bytes` handle. Emit `bytes-slice(bytes, off, bytes-len - off)`.
