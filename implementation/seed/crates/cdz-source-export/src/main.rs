@@ -465,7 +465,16 @@ fn refresh_doc(tier: &str, crates: &[&str]) -> String {
          ```sh\n\
          cargo run -p cdz-source-export -- --repo <cadenza-repo> --out <this-tree> --tier {tier}\n\
          ```\n\n\
-         Or, drift-proof from the flake outputs: `nix build .#{attr}` and copy the result.\n"
+         Or, drift-proof from the flake outputs: `nix build .#{attr}` and copy the result.\n\n\
+         **After copying, refresh file mtimes.** The `nix build` result (and files copied from it) carry\n\
+         epoch (1970) mtimes, and `rsync -t` / `cp -p` preserve them. Cargo's rebuild detection is\n\
+         mtime-based, so a stale-but-newer-mtime `.rlib` in your target dir can shadow the refreshed\n\
+         sources — you get a confusing `E0433` for a symbol the refresh just added. Stamp the tree to\n\
+         \"now\" after copying so Cargo rebuilds:\n\n\
+         ```sh\n\
+         find <this-tree> -type f -exec touch {{}} +\n\
+         ```\n\n\
+         (Equivalently, copy with `rsync` WITHOUT `-t`, or `cp` without `-p`.)\n"
     )
 }
 
