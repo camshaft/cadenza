@@ -248,11 +248,11 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
     let (&head, tail) = items.split_first()?;
     Some(match arenas.as_name(head)? {
         "Unbounded" => {
-            // LIBERAL: the canonical form is `(Unbounded unit)` (a single `unit` payload), but also accept
-            // the legacy empty `(Unbounded)` so a value from an older producer still reads. Any other tail is
-            // not a nullary Unbounded.
+            // The SINGLE canonical value form is `(Unbounded unit)` — a nullary variant carries its erased
+            // Unit payload (core-semantics.md §231), and the guest `Value.decode` of `Bound` requires it. A
+            // payloadless `(Unbounded)` is not a value form, so reject it rather than admit a value the guest
+            // decoder would not.
             match tail {
-                [] => {}
                 [one] if is_unit(arenas, *one) => {}
                 _ => return None,
             }
@@ -1423,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nullary_unbounded_bound_encodes_as_ctor_unit_and_reads_liberally() {
+    fn the_nullary_unbounded_bound_encodes_and_reads_the_canonical_ctor_unit_form() {
         // REGRESSION: `Bound.Unbounded` is a multi-constructor NULLARY variant, so its canonical
         // `Value.encode` form is `(Unbounded unit)` — the ctor head carrying the erased Unit payload — NOT
         // the empty `(Unbounded)`. A guest checker `Value.decode`s the log's `Bound` (guests/log-schema.cdz),
@@ -1451,14 +1451,17 @@ mod tests {
             super::read_bound(&arenas, arenas.root),
             Some(Bound::Unbounded)
         );
-        // ...and is LIBERAL on the legacy empty `(Unbounded)` a pre-fix producer emitted.
+        // ...and REJECTS a payloadless `(Unbounded)`: that is not a value form (core-semantics.md §231), and
+        // the guest `Value.decode` of `Bound` would reject it, so read_bound does too — one canonical form,
+        // no Rust-accepts-what-Cadenza-rejects gap.
         let mut b2 = cadenza_ast::ast::Builder::new();
         let head = b2.name("Unbounded");
-        let legacy = b2.list(vec![head]);
-        let arenas2 = b2.finish(legacy);
+        let empty = b2.list(vec![head]);
+        let arenas2 = b2.finish(empty);
         assert_eq!(
             super::read_bound(&arenas2, arenas2.root),
-            Some(Bound::Unbounded)
+            None,
+            "a payloadless (Unbounded) is not the canonical (Unbounded unit) value form"
         );
     }
 }
