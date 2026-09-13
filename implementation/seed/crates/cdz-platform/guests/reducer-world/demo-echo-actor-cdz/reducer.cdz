@@ -1,0 +1,28 @@
+// The 769 demo ECHO ACTOR — a durable reducer that receives a ONE-WAY send and echoes the payload back to the
+// SOURCE, proving the send ACTOR PATTERN (operator 778: a request/response is TWO correlated one-way sends,
+// never an inline RPC reply). The name-router `send`s an `Echo` to this actor by the session id the spawner
+// bound in the name directory; the daemon delivers it wrapped as `Delivered { source = router sid, payload =
+// Echo bytes }` (operator 777 — the source rides the envelope, since a variable-length sid can't ride the
+// fixed-width hashed guest `sender.reducer`). This actor decodes the envelope and `send`s the SAME payload
+// straight back to `source` on the demo-echo contract — the reply leg. Durable: its binding survives across
+// requests, so the router keeps routing to it by sid.
+//
+//   on-message(Delivered) → send(target = env.source, contract = demo-echo, payload = env.payload); Continue.
+//   on-response / on-notification → inert (this actor only ever receives a one-way send; it never awaits).
+import { Delivered, descriptor as echo-desc } from "demo-echo"
+import { SendRequest, descriptor as send-desc } from "send"
+import { Outcome, Error, request, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Delivered)) with
+  | Some(Delivered.Delivered(env)) =>
+      { requests = [request(send-desc().id,
+                            Value.encode(SendRequest.SendRequest({ target = env.source,
+                                                                   contract = echo-desc().id,
+                                                                   payload = env.payload })),
+                            b"echo-reply")],
+        outcome = Outcome.Continue }
+  | None(_) =>
+      { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

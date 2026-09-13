@@ -1,0 +1,4 @@
+implementation/seed/crates/cdz-platform/contracts/userspace/demo-echo.cdz
+implementation/seed/crates/cdz-platform/contracts/kernel/send.cdz
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/guests/contract-id.cdz

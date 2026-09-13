@@ -2667,6 +2667,26 @@
           done
           echo "ok: reducer-fault-fixtures (reducer-trap + reducer-state, valid wasm + ProgramHashes + LFS)" > "$out"
         '';
+        # demoComponents (v-hivemind, 769 send actor-pattern DEMO): the deployable Cadenza guests for the
+        # name-routed send demo — for now the durable ECHO ACTOR (decodes the daemon's `Delivered {source,
+        # payload}` send-delivery envelope and `send`s the payload back to `source`). The spawner + name-router
+        # HTTP handlers join here as D3/D4 land. Building this COMPILES each guest (the gate: a Cadenza error
+        # fails the build) and stamps its ProgramHash; the daemon deploy path (v-hivemind-deploy) bootstraps
+        # these components. Standalone (NOT in local-gate), like reducer-fault-fixtures.
+        demoComponents = pkgs.runCommand "demo-components" { } ''
+          mkdir -p "$out/components"
+          cp ${cadenzaGuests."demo-echo-actor-cdz"} "$out/components/demo-echo-actor.wasm"
+          echo "demo-echo-actor=$(cat ${hashOf cadenzaGuests."demo-echo-actor-cdz" "demo-echo-actor-hash"})" >> "$out/components/hashes.env"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        demoComponentsCheck = pkgs.runCommand "demo-components-check" { } ''
+          for w in demo-echo-actor; do
+            magic=$(head -c 4 ${demoComponents}/components/$w.wasm | od -An -tx1 | tr -d ' \n')
+            [ "$magic" = "0061736d" ] || { echo "$w.wasm not a wasm module (magic $magic)"; exit 1; }
+            grep -q "^$w=" ${demoComponents}/components/hashes.env || { echo "hashes.env missing $w entry"; exit 1; }
+          done
+          echo "ok: demo-components (demo-echo-actor, valid wasm + ProgramHash + LFS)" > "$out"
+        '';
         # agentFixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step AGENT reducer-world guest —
         # on-message emits one tool-call Request (fixed contract `b"cadenza-fixture-agent-tool"`), on-response
         # emits one sink/output Request (`b"cadenza-fixture-agent-sink"`) + Close, exercising the request/
@@ -7277,6 +7297,9 @@
         # reducer-state (calls state → HostBackend when the backend Errs) wasm blobs (git-LFS) for the
         # consumer's e2e ReducerFault classification test.
         packages.reducer-fault-fixtures = reducerFaultFixtures;
+        # demo-components (v-hivemind, 769 send actor-pattern demo): the deployable demo guests (echo actor
+        # now; spawner + name-router as D3/D4 land). `nix build .#demo-components`.
+        packages.demo-components = demoComponents;
         # agent-fixture (v-nix-projection, for v-hivemind inc-8): a minimal 2-step agent reducer-world guest
         # (tool-call Request -> sink Request + Close), git-LFS, for driving the consumer dispatch/effect-outbox.
         packages.agent-fixture = agentFixture;
@@ -8966,6 +8989,9 @@
             # reducer-fault-fixtures: reducer-trap + reducer-state blobs are valid wasm + have ProgramHashes.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-fault-fixtures`.
             reducer-fault-fixtures = reducerFaultFixturesCheck;
+            # demo-components (v-hivemind, 769 demo): the demo guests (echo actor now) compile to valid wasm +
+            # have ProgramHashes. STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.demo-components`.
+            demo-components = demoComponentsCheck;
             # agent-fixture: the 2-step agent guest blob is valid wasm + has a ProgramHash. STANDALONE.
             agent-fixture = agentFixtureCheck;
             # hivemind-bootstrap: components valid wasm + hashes complete + contracts present. STANDALONE.

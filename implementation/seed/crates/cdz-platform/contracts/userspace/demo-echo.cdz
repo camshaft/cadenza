@@ -21,18 +21,36 @@
 type Echo =
   | Echo(Record(text: Bytes))
 
-// --- conformance proof: a fully-literal value, ascribed against the schema type ---
+// The SEND-DELIVERY envelope a peer receives (operator 777): when `cdz-platform.send` delivers a one-way
+// message, the daemon wraps the payload as `{ source, payload }` — `source` is the SENDER's raw session id
+// (it can't ride the guest `sender.reducer`, a fixed-width hash), `payload` is the original bytes. A receiving
+// guest decodes its `on-message` payload as `Option(Delivered)`, reads `source` (to reply back to) + `payload`
+// (the real message, here an `Echo`). Single-constructor, so the canonical form is the bare record — matching
+// the daemon's hand-encoded `{ source, payload }`. (Co-located with the demo, its only consumer today; this is
+// the daemon's send-delivery wire shape, not a demo-specific message — promote to a platform lib if reused.)
+type Delivered =
+  | Delivered(Record(source: Bytes, payload: Bytes))
+
+// --- conformance proofs: fully-literal values, ascribed against the schema types ---
 def an-echo() -> Echo =
   Echo.Echo({ text = b"world" })
+
+def a-delivered() -> Delivered =
+  Delivered.Delivered({ source = b"router-sid", payload = b"echo-payload-bytes" })
 
 @test
 def echo-conforms() =
   match an-echo() with
   | Echo.Echo(e) => if e.text == b"world" then unit else trap("echo text mismatch")
 
+@test
+def delivered-conforms() =
+  match a-delivered() with
+  | Delivered.Delivered(d) => if d.source == b"router-sid" then unit else trap("delivered source mismatch")
+
 // Self-reflecting uniform descriptor: a guest imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
 def descriptor() =
   contract-descriptor(Ast.module, "cdz-platform.demo-echo", "Echo", "Echo")
 
-export { Echo.*, descriptor }
+export { Echo.*, Delivered.*, descriptor }
