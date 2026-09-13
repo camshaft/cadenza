@@ -14,7 +14,7 @@
 //! (`cadenza-ast`) and hashes its canonical encoding — one canonical form shared with the compiler, never a
 //! parallel or lossy re-encoding.
 
-use crate::{Hash, HashTag};
+use crate::{ContractKind, Hash};
 use cadenza_ast::ast::{Arenas, Builder, CompoundCtor, Leaf, Struct, StructId};
 use cadenza_ast::{canon, codec};
 use std::sync::Arc;
@@ -35,6 +35,27 @@ pub fn contract_declaration(
     input: &str,
     output: &str,
 ) -> Vec<u8> {
+    // A bare declaration is a MUTATION contract — the default class (654(a)), byte-identical to the
+    // pre-654(a) form, so no contract-id drifts.
+    contract_declaration_with_kind(name, types, input, output, ContractKind::Mutation)
+}
+
+/// The canonical encoded declaration of a contract of a given [`ContractKind`] (654(a)). Identical to
+/// [`contract_declaration`] for a [`Mutation`](ContractKind::Mutation) — the default, byte-identical to the
+/// pre-654(a) form — and for a [`Query`](ContractKind::Query) it appends a trailing `(kind query)` marker so
+/// the mutation-vs-query class is committed in the declaration DIGEST itself, not only in the id's tag byte.
+/// The class is therefore reproducible from the declaration ALONE ([`kind_from_declaration`]), and
+/// [`contract_id_with_kind`] lifts it into the id's leading tag byte so the router still reads it without
+/// re-hashing. Mutation declarations carry NO marker, so every existing contract-id is unchanged (no
+/// flag-day); only a query contract's bytes differ.
+#[must_use]
+pub fn contract_declaration_with_kind(
+    name: &str,
+    types: impl FnOnce(&mut Builder) -> Vec<StructId>,
+    input: &str,
+    output: &str,
+    kind: ContractKind,
+) -> Vec<u8> {
     let mut b = Builder::new();
     let head = b.name("contract");
     let name_node = b.atom_leaf(Leaf::Str(Arc::from(name)));
@@ -46,14 +67,25 @@ pub fn contract_declaration(
     // recursive/mutually-referential types resolve within the named set).
     let input_ref = b.name(input);
     let output_ref = b.name(output);
-    let root = b.list(vec![head, name_node, types_node, input_ref, output_ref]);
+    let mut children = vec![head, name_node, types_node, input_ref, output_ref];
+    // A query contract appends a trailing `(kind query)` element (654(a)); a mutation appends NOTHING, so its
+    // declaration is byte-identical to the pre-654(a) form. Trailing keeps the fixed leading fields
+    // positionally stable, so a reader takes name/types/input/output positionally and tolerates the optional
+    // marker — no existing declaration's slots shift.
+    if kind.is_query() {
+        let kind_head = b.name("kind");
+        let query_name = b.name("query");
+        let kind_node = b.list(vec![kind_head, query_name]);
+        children.push(kind_node);
+    }
+    let root = b.list(children);
     let arenas = b.finish(root);
     // Canonicalize, then encode: the encoded bytes are what the contract-id is the hash of.
     let canonical = canon::canonicalize(&arenas).into_owned();
     codec::encode(&canonical)
 }
 
-/// The contract-id (§1): the [`Contract`](HashTag::Contract)-tagged [`Hash`] of a contract's canonical
+/// The contract-id (§1): the [`Contract`](crate::HashTag::Contract)-tagged [`Hash`] of a contract's canonical
 /// declaration. A pure function of `(name, types, input, output)` — the sole identity contracts route on —
 /// so two callers that declare the same contract compute the same id, and any difference in name, a type, or
 /// the input/output reference gives a different id.
@@ -64,10 +96,54 @@ pub fn contract_id(
     input: &str,
     output: &str,
 ) -> Hash {
+    // A bare id is a MUTATION contract-id — `HashTag::Contract`, byte-identical to the pre-654(a) id.
+    contract_id_with_kind(name, types, input, output, ContractKind::Mutation)
+}
+
+/// The contract-id of a contract of a given [`ContractKind`] (654(a)): the hash of its
+/// [kind-aware declaration](contract_declaration_with_kind), tagged with the class's
+/// [`route_tag`](ContractKind::route_tag). Both the digest (via the trailing `(kind query)` marker for a
+/// query) AND the leading tag byte commit to the class, so the id is reproducible from the declaration alone
+/// yet the router reads the class straight off the tag. A [`Mutation`](ContractKind::Mutation) is
+/// byte-identical to [`contract_id`]; a [`Query`](ContractKind::Query) has both a distinct digest (the
+/// marker) and the [`ContractQuery`](crate::HashTag::ContractQuery) tag.
+#[must_use]
+pub fn contract_id_with_kind(
+    name: &str,
+    types: impl FnOnce(&mut Builder) -> Vec<StructId>,
+    input: &str,
+    output: &str,
+    kind: ContractKind,
+) -> Hash {
     Hash::of(
-        HashTag::Contract,
-        &contract_declaration(name, types, input, output),
+        kind.route_tag(),
+        &contract_declaration_with_kind(name, types, input, output, kind),
     )
+}
+
+/// The [`ContractKind`] a canonical contract declaration encodes (654(a)) — the class read from the
+/// declaration bytes ALONE, without the id's tag byte. A trailing `(kind query)` element names a
+/// [`Query`](ContractKind::Query); its absence (the pre-654(a) form) names a [`Mutation`](ContractKind::Mutation).
+/// `None` if `bytes` do not decode to a `(contract …)` declaration, so a malformed input names no class
+/// rather than defaulting. This is what makes a contract-id reproducible from its declaration alone: recover
+/// the class here, then [`contract_id_with_kind`] re-derives the exact id (digest + tag).
+#[must_use]
+pub fn kind_from_declaration(bytes: &[u8]) -> Option<ContractKind> {
+    let value = codec::decode(bytes)?;
+    // The declaration root is the list `(contract <name> (types …) <input> <output> [ (kind query) ])`.
+    let children = value.as_form(value.root, "contract")?;
+    // A query is the presence of a trailing `(kind query)` element; anything else is a mutation.
+    let is_query = children
+        .last()
+        .and_then(|&last| value.as_form(last, "kind"))
+        .and_then(|kind_args| kind_args.first().copied())
+        .and_then(|arg| value.as_name(arg))
+        == Some("query");
+    Some(if is_query {
+        ContractKind::Query
+    } else {
+        ContractKind::Mutation
+    })
 }
 
 /// The contract NAME and [`contract_id`] read from a contract's `descriptor()` RETURN VALUE — the canonical
@@ -316,6 +392,81 @@ mod tests {
             id.to_string(),
             "01UUXRcMG63Ct66Z4TP7l6QfY7pvktdISpoHyTdJVtS70"
         );
+    }
+
+    #[test]
+    fn mutation_is_the_default_and_byte_identical_no_drift() {
+        // 654(a) slice 3: the bare `contract_declaration`/`contract_id` are exactly `_with_kind(Mutation)`,
+        // so no existing contract-id drifts and the golden above still pins the mutation form.
+        use super::{contract_declaration_with_kind, contract_id_with_kind};
+        use crate::ContractKind;
+        assert_eq!(
+            contract_declaration("temp.celsius", temp_type, "Temp", "Temp"),
+            contract_declaration_with_kind(
+                "temp.celsius",
+                temp_type,
+                "Temp",
+                "Temp",
+                ContractKind::Mutation
+            )
+        );
+        assert_eq!(
+            contract_id("temp.celsius", temp_type, "Temp", "Temp"),
+            contract_id_with_kind(
+                "temp.celsius",
+                temp_type,
+                "Temp",
+                "Temp",
+                ContractKind::Mutation
+            )
+        );
+    }
+
+    #[test]
+    fn a_query_declaration_commits_the_class_in_the_digest_and_is_reproducible() {
+        // A query declaration appends the `(kind query)` marker, so it differs from its mutation twin in the
+        // bytes/digest (not only the tag), the id carries the ContractQuery tag, and the class is recoverable
+        // from the declaration bytes ALONE — the reproducible-from-declaration invariant.
+        use super::{contract_declaration_with_kind, contract_id_with_kind, kind_from_declaration};
+        use crate::ContractKind;
+        let mutation_decl = contract_declaration("acct.balance", temp_type, "Temp", "Temp");
+        let query_decl = contract_declaration_with_kind(
+            "acct.balance",
+            temp_type,
+            "Temp",
+            "Temp",
+            ContractKind::Query,
+        );
+        assert_ne!(
+            mutation_decl, query_decl,
+            "the (kind query) marker changes the bytes"
+        );
+        // Class recovered from the declaration bytes alone.
+        assert_eq!(
+            kind_from_declaration(&mutation_decl),
+            Some(ContractKind::Mutation)
+        );
+        assert_eq!(
+            kind_from_declaration(&query_decl),
+            Some(ContractKind::Query)
+        );
+        // The query id: ContractQuery tag, digest over the marked declaration, distinct from the mutation.
+        let query_id = contract_id_with_kind(
+            "acct.balance",
+            temp_type,
+            "Temp",
+            "Temp",
+            ContractKind::Query,
+        );
+        assert_eq!(query_id.tag(), Some(HashTag::ContractQuery));
+        assert_ne!(
+            query_id.digest(),
+            contract_id("acct.balance", temp_type, "Temp", "Temp").digest()
+        );
+        // Reproducible: id == Hash::of(class tag, kind-aware declaration).
+        assert_eq!(query_id, Hash::of(HashTag::ContractQuery, &query_decl));
+        // Garbage names no class.
+        assert_eq!(kind_from_declaration(b"not a declaration"), None);
     }
 
     #[test]

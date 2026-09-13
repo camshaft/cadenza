@@ -21,8 +21,9 @@ mod hash;
 mod kind;
 
 pub use contract::{
-    contract_declaration, contract_id, declaration_from_descriptor, id_name_from_descriptor,
-    identity_from_descriptor,
+    contract_declaration, contract_declaration_with_kind, contract_id, contract_id_with_kind,
+    declaration_from_descriptor, id_name_from_descriptor, identity_from_descriptor,
+    kind_from_declaration,
 };
 pub use hash::{Hash, HashTag, Hasher, base62};
 pub use kind::ContractKind;
