@@ -71,9 +71,14 @@ pub fn qctor_nullary(b: &mut Builder, ty: &str, ctor: &str) -> StructId {
 }
 
 /// Whether `id` is the multi-constructor nullary variant `T.C` — the inverse of [`qctor_nullary`]. Matches
-/// the canonical `(<ctor> unit)` form, and is LIBERAL: it ALSO accepts the legacy empty `(<ctor>)` tail so a
-/// value from an older producer (or the pre-fix generated builder) still reads. `ty` is not part of the value
-/// (see [`as_qctor`]); the ctor name identifies the case.
+/// the SINGLE canonical value form `(<ctor> unit)` and ONLY that: per `core-semantics.md` §231 the canonical
+/// value form of a nullary variant is uniquely `(<ctor> unit)` (a bare `(<ctor>)` is surface/pattern sugar,
+/// never a value form), and the compiler's own `Value.decode` is correspondingly strict — the runtime
+/// descriptor models a nullary variant's payload as a Unit idx (`value_codec` §Sum), so a payloadless
+/// `(<ctor>)` value does not decode in a guest. Accepting it here too would let a Rust reader admit a value
+/// the Cadenza decoder rejects — the exact Rust↔Cadenza disagreement this whole path exists to close — so the
+/// empty-tail form is REJECTED (total: returns `false`, never panics). `ty` is not part of the value (see
+/// [`as_qctor`]); the ctor name identifies the case.
 #[must_use]
 pub fn is_qctor_nullary(
     arenas: &cadenza_ast::ast::Arenas,
@@ -81,13 +86,8 @@ pub fn is_qctor_nullary(
     ty: &str,
     ctor: &str,
 ) -> bool {
-    match as_qctor(arenas, id, ty, ctor) {
-        // The canonical form the builder now emits: exactly one `unit` payload occurrence.
-        Some([one]) => is_unit(arenas, *one),
-        // LIBERAL: the legacy empty-tail `(<ctor>)` a pre-fix producer emitted still reads as nullary.
-        Some([]) => true,
-        _ => false,
-    }
+    // Exactly one payload occurrence, and it is the `unit` atom — the sole canonical nullary value form.
+    matches!(as_qctor(arenas, id, ty, ctor), Some([one]) if is_unit(arenas, *one))
 }
 
 /// The `unit` atom — the canonical Value form of a Unit value. The compiler's `Value.encode` renders Unit as
@@ -376,13 +376,17 @@ mod tests {
     }
 
     #[test]
-    fn is_qctor_nullary_is_liberal_on_the_legacy_empty_tail_form() {
-        // A value from an OLDER producer (or the pre-fix generated builder) is the empty-tail `(<ctor>)`.
-        // `is_qctor_nullary` still reads it as nullary so historic/cross-version values keep decoding, even
-        // though `qctor_nullary` no longer PRODUCES that form.
-        let legacy = built(|b| qctor(b, "Frame", "End", vec![]));
-        assert!(is_qctor_nullary(&legacy, legacy.root, "Frame", "End"));
-        // But a variant carrying a NON-unit payload (a genuine `Single` ctor) is NOT nullary.
+    fn is_qctor_nullary_rejects_the_non_canonical_empty_tail_form() {
+        // The SINGLE canonical value form of a nullary variant is `(<ctor> unit)` (core-semantics.md §231),
+        // which the compiler's `Value.decode` requires (the runtime models a nullary payload as a Unit idx).
+        // A payloadless `(<ctor>)` is NOT a value form (only surface/pattern sugar), and the Cadenza decoder
+        // rejects it — so `is_qctor_nullary` rejects it too, rather than admitting a value Cadenza would not.
+        let empty = built(|b| qctor(b, "Frame", "End", vec![]));
+        assert!(
+            !is_qctor_nullary(&empty, empty.root, "Frame", "End"),
+            "a payloadless (End) is not the canonical (End unit) value form"
+        );
+        // A variant carrying a NON-unit payload (a genuine `Single` ctor) is likewise NOT nullary.
         let single = built(|b| {
             let x = bytes_leaf(b, b"payload");
             qctor(b, "Frame", "Chunk", vec![x])
