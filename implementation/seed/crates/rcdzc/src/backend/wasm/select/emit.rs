@@ -488,8 +488,21 @@ pub(super) fn emit(
                         out.push(Lir::ConstI32(byte)); // [buf, index, byte]
                     }
                     _ => {
-                        // A runtime UInt8 — emit its value (an i32 slot); it is in 0..=255 by its type.
+                        // A runtime element. `bytes-set` takes a RAW i32 byte, so the value MUST land as
+                        // i32. A `UInt8` param / `(UInt8.wrap n)` already lives in an i32 slot — but a
+                        // GENERAL-INTEGER element arrives as i64: `(list …)` unification does NOT flow the
+                        // `UInt8` element bound onto the element node (see `lower_bytes_of`), so a `bin`-
+                        // pattern byte binder (its `BinIntRead` assembles an i64) and any `Int64`-typed
+                        // element keep an i64 machine width. Emitting that i64 into the i32 `bytes-set` value
+                        // slot was the CDZ0910 miscompile ("type mismatch: expected i32, found i64" —
+                        // `Bytes.of([ u8(c) ])`, v-json-codec's JSON codec). Narrow an i64 element to its low
+                        // i32 (`bytes-set` masks to the low byte, matching the constant path's 0..=255); an
+                        // i32 element (`valtype_of == I32`) is used as-is.
+                        let elem_is_i64 = valtype_of(&type_of(db, elem)) == Some(ValType::I64);
                         emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [buf, index, byte]
+                        if elem_is_i64 {
+                            out.push(Lir::I32WrapI64); // [buf, index, byte:i32]
+                        }
                     }
                 }
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]  (bytes-set returns the buffer)
