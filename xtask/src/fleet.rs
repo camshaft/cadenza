@@ -6313,6 +6313,55 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
 /// `pane_shows_working`'s idle-prompt override (#8030) is what lets an idle concierge — whose persistent
 /// footer literally says "esc to interrupt" — read as NOT working here (without it this scan would skip the
 /// idle concierge too). Concierge-focused (the only agent whose watchdog runs inside its own tick).
+/// Minimum gap between out-of-band OPERATOR alerts about the concierge being down — so a flap (recreated
+/// every cron fire) sends ONE Slack alert per this window, not one every 5 min. 15 min: enough to keep
+/// noticing a persistent problem (~4/hr conveys "still flapping") without spamming a transient blip.
+const CONCIERGE_DOWN_ALERT_INTERVAL_SECS: u64 = 900;
+
+/// True iff an out-of-band operator alert is due: never alerted before (`None`) OR the last one is at least
+/// [`CONCIERGE_DOWN_ALERT_INTERVAL_SECS`] old. Pure so the dedup is unit-testable.
+fn concierge_down_alert_due(last_alert_age: Option<u64>) -> bool {
+    last_alert_age.is_none_or(|age| age >= CONCIERGE_DOWN_ALERT_INTERVAL_SECS)
+}
+
+/// Alert the OPERATOR, OUT OF BAND, that the protected concierge was found down/non-operational and is being
+/// auto-recovered — the "never goes down without anyone noticing" guarantee (operator 2026-09-13). The
+/// concierge is the operator's NORMAL Slack path, so when IT is down that path is broken; this delivers the
+/// alert straight to the `slack-bridge` daemon (a SEPARATE process that mirrors its inbox to the operator's
+/// Slack), bypassing the concierge entirely. Rate-limited via a stamp file so a flap sends one alert per
+/// [`CONCIERGE_DOWN_ALERT_INTERVAL_SECS`], not one per cron fire. Best-effort: it never blocks the recovery
+/// action itself, and it also writes/keeps the board `concierge-flap.alarm`-style visibility separately.
+fn alert_operator_concierge_down(fleet: &Fleet, agent: &str, reason: &str, now: u64) {
+    if !is_protected_role(agent) {
+        return; // this alert is worded for the protected concierge (the operator's channel); skip others
+    }
+    let stamp = fleet.root.join("concierge-down-alert.last");
+    if !concierge_down_alert_due(file_mtime_unix(&stamp).map(|m| now.saturating_sub(m))) {
+        return; // already alerted within the dedup window — don't spam the operator on a flap
+    }
+    deliver(
+        fleet,
+        &Message {
+            from: "fleet-guardian".to_string(),
+            to: "slack-bridge".to_string(),
+            kind: "status".to_string(),
+            subject: format!("⚠ concierge was DOWN — auto-recovering ({reason})"),
+            body: format!(
+                "The concierge ('{agent}') was found NOT up/operational; the out-of-band guardian is \
+                 auto-recovering it now ({reason}). Delivered straight to Slack via the bridge, BYPASSING \
+                 the concierge (the normal alert path, which is what was down). It should be back within a \
+                 minute. If these alerts keep arriving it is FLAPPING — the launch needs a human. \
+                 Rate-limited to one per ~15min."
+            ),
+            seq: next_seq(),
+            r#ref: String::new(),
+            in_reply_to: String::new(),
+            urgency: "high".to_string(),
+        },
+    );
+    let _ = std::fs::write(&stamp, format!("{now}\n")); // stamp the alert time for the dedup window
+}
+
 /// True iff a windowed PROTECTED agent should be restarted for being NON-OPERATIONAL: its heartbeat is stale
 /// past `stale` secs (the session is wedged/hung — window up but not ticking) AND it was not just restarted
 /// (`restarted_recently` — the WEDGE_RESTART_GRACE guard lets a fresh launch boot + run its first tick before
@@ -6386,6 +6435,10 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                     "  + RECREATED '{agent}' dead/torn-down window out-of-band (active but windowless — \
                      the concierge can't self-heal via its own in-tick watchdog). (self-heal)"
                 );
+                // NEVER goes down without the operator noticing (operator 2026-09-13): the concierge was
+                // down (windowless), so its own Slack path is broken → alert the operator OUT OF BAND via
+                // the slack-bridge daemon. Rate-limited so a flap doesn't spam.
+                alert_operator_concierge_down(fleet, agent, "window was down / torn down", now);
                 if flapping {
                     eprintln!(
                         "  ‼ FLAP: '{agent}' was recreated again within {WEDGE_RESTART_GRACE}s — the prior \
@@ -6453,6 +6506,12 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                     println!(
                         "  ⟳ out-of-band restarted non-operational '{agent}' (stale heartbeat >{stale}s)"
                     );
+                    alert_operator_concierge_down(
+                        fleet,
+                        agent,
+                        "window up but /loop heartbeat stale — wedged/hung, not ticking",
+                        now,
+                    );
                 }
                 RestartOutcome::RelaunchFailed => eprintln!(
                     "  ‼ '{agent}' operational-restart: RELAUNCH FAILED — no window now; the missing-window recreate re-creates it next fire."
@@ -6492,6 +6551,12 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                      watchdog structurally can't restart it). Durable state persists. (self-heal)"
                 );
                 println!("  ⟳ out-of-band restarted '{agent}' context wedge ({pct}%)");
+                alert_operator_concierge_down(
+                    fleet,
+                    agent,
+                    &format!("context wedge at the wall ({pct}%)"),
+                    now,
+                );
             }
             RestartOutcome::RelaunchFailed => eprintln!(
                 "  ‼ '{agent}' out-of-band wedge: RELAUNCH FAILED — no window now; `fleet up` re-creates it."
@@ -19939,6 +20004,24 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
+    }
+
+    #[test]
+    fn concierge_down_alert_due_fires_first_time_then_rate_limits() {
+        // Never alerted before → due immediately (the operator must notice the FIRST down).
+        assert!(concierge_down_alert_due(None));
+        // Within the dedup window → NOT due (don't spam the operator on a flap).
+        assert!(!concierge_down_alert_due(Some(0)));
+        assert!(!concierge_down_alert_due(Some(
+            CONCIERGE_DOWN_ALERT_INTERVAL_SECS - 1
+        )));
+        // At/after the window → due again (a persisting flap keeps the operator noticing).
+        assert!(concierge_down_alert_due(Some(
+            CONCIERGE_DOWN_ALERT_INTERVAL_SECS
+        )));
+        assert!(concierge_down_alert_due(Some(
+            CONCIERGE_DOWN_ALERT_INTERVAL_SECS + 100
+        )));
     }
 
     #[test]
