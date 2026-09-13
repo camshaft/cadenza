@@ -1,0 +1,56 @@
+// The send contract — a reducer routes a request to a SPECIFIC session by its session id (operator milestone
+// 769: "another handler that looks up the name, sends it a request with some kind of contract, and gets the
+// response"). An ordinary `Request` (`crate::Request`) addresses a CONTRACT, and the platform routes it to
+// the single handler that serves that contract; `send` is the sid-directed complement — the requester names
+// the TARGET session it wants to reach (e.g. the actor it just spawned, or one it resolved through the
+// name-directory), the CONTRACT to deliver on, and the opaque payload. The platform delivers the payload to
+// `target` as a message on `contract` stamped `from = requester`, and the target's answer folds back into the
+// requester's `on_response` — exactly the answering round-trip an ordinary tool-call gets, but to a chosen sid
+// rather than a contract's default handler.
+//
+// Like timer.cdz / spawn.cdz this file is the source of truth for the schema and is real Cadenza: `cargo xtask
+// codegen` (nix .#cdz-platform-contracts) validates it with the `cdz` binary and runs its conformance tests
+// before generating `src/contracts/send.rs` (the type declarations as Cadenza-AST builder calls) and wiring
+// `pub mod send` into `src/contracts/mod.rs`. Re-run after editing; `--check` fails if the generated file is
+// stale.
+//
+// ROUTING NOTE (daemon behaviour): the platform re-routes the inner request to `target` on `contract` and
+// reuses the ordinary answering path, so the target's reply arrives at the requester's `on_response` on the
+// INNER `contract` (correlated by the send request's continuation-token), NOT wrapped on the send contract.
+// `SendReply` is the declared output for schema completeness (the reply is opaque `Bytes` — the requester
+// interprets it exactly as it would the inner contract's own answer); a caller correlates the reply by the
+// token it chose for the send.
+
+// The request (this contract's input): deliver `payload` to session `target` as a message on `contract`.
+// `target` is a session id's bytes; `contract` is a ContractId's bytes (as `descriptor().id` yields).
+type SendRequest =
+  | SendRequest(Record(target: Bytes, contract: Bytes, payload: Bytes))
+
+// The reply (this contract's declared output): the target's opaque answer bytes, delivered back to the
+// requester's `on_response` correlated by the request's continuation-token.
+type SendReply =
+  | SendReply(Record(reply: Bytes))
+
+// --- conformance proofs: fully-literal values of each type, ascribed against the schema type ---
+def a-request() -> SendRequest =
+  SendRequest.SendRequest({ target = b"actor-session-id", contract = b"demo-contract-id", payload = b"hello" })
+
+def a-reply() -> SendReply =
+  SendReply.SendReply({ reply = b"hi back" })
+
+@test
+def request-conforms() =
+  match a-request() with
+  | SendRequest.SendRequest(r) => if r.target == b"actor-session-id" then unit else trap("send target mismatch")
+
+@test
+def reply-conforms() =
+  match a-reply() with
+  | SendReply.SendReply(r) => if r.reply == b"hi back" then unit else trap("send reply mismatch")
+
+// Self-reflecting uniform descriptor (operator shape): a reducer imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.send", "SendRequest", "SendReply")
+
+export { SendRequest.*, SendReply.*, descriptor }
