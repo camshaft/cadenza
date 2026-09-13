@@ -3,43 +3,67 @@
 // css"). The reducer IS the root router and serves a SELF-CONTAINED browser application: GET / returns one
 // styled HTML document whose inline JS runs the counter client-side (add / subtract update the display and
 // persist to localStorage). Modeled on browser-outpost's inline html-page (HTML + inline script served
-// verbatim by the dumb gateway), minus the AOT jco bundle — this is a plain page, so there are no extra asset
-// routes and no CAS blobs to pin beyond the guest + its runtime closure.
+// verbatim), minus the AOT jco bundle — a plain page, so there are no extra asset routes / CAS blobs to pin.
 //
-// WHY CLIENT-SIDE STATE (v-hivemind-verified, 2026-09-13): the live daemon runs the root-router as a
-// PER-REQUEST EPHEMERAL session — its `state` backend is a fresh in-memory scratch KV per spawn, discarded
-// when the reducer drops ("durable state is reached ONLY by emitting an effect that routes to a durable
-// session"). So a server-side `state.put` counter would never accumulate (every request computes from 0).
-// Running the count client-side (localStorage) gives a working, accumulating, refresh-persistent counter that
-// needs no durable session — exactly the "returning a browser application" the operator asked for. (A
-// server-authoritative durable counter, dispatching add/subtract to a durable Tier-2 session, is a possible
-// follow-up if shared/multi-client state is wanted.)
+// STATE IS CLIENT-SIDE (v-hivemind-verified): the live daemon runs the root-router as a PER-REQUEST EPHEMERAL
+// session (fresh in-memory scratch KV per spawn, discarded when the reducer drops), so a server-side counter
+// would never accumulate. Running the count in the tab (localStorage) gives a working, refresh-persistent
+// counter with no durable session — exactly "returning a browser application".
+//
+// TWO REQUEST-DELIVERY SHAPES (v-hivemind-root-caused the live 404): the request arrives EITHER as
+//   * the WHOLE `http-request` value (method: Method, path, query, headers, body) — what the conformance
+//     gateway (cdz-http-gateway) delivers to a root-router, and
+//   * the flexible `http-request-head` HEAD (method: String, path, query, headers — NO body) — what the LIVE
+//     hivemind daemon delivers first (inc-16 head-first model; flex-echo's shape).
+// A root-router that only decodes the whole Request 404s EVERY route on hivemind (the Head-shaped bytes fail to
+// decode as a 5-field Request -> None -> 404). So we DUAL-DECODE: try `Request` first (conformance), and on
+// None fall back to a local structural `Head` copy (live). The two are structurally unambiguous (5 fields with
+// an enum method + body vs 4 fields with a String method), so the fallback never misfires. Both carry
+// method + path, so ONE `route` helper serves both. `Head` is a LOCAL structural copy (like http-lib's own
+// `Request` copy) using http-response's `Header`, so there is ONE `Header` type in scope (no CDZ0201 collision
+// with http-lib's `respond`, and no need to import http-request-head).
+//
+// TERMINALS: every answer is a one-shot `http.response` (via http-lib `respond`) — the hivemind reactor's
+// on_terminal normalizes a one-shot http.response for a GET-only handler (v-hivemind), so no body-mode effect
+// is needed, and it renders on both gateways. (A GET-only page never reads a body.)
 //
 // SHIPPING (operator: NO daemon redeploy): built by the flake's program auto-discovery (nix build
 // .#cdz-http-conformance-programs -> result/counter.wasm), published to the CAS with its runtime closure by
-// v-hivemind-deploy, then installed as the root-router control key via bootstrap-router. The running daemon
-// serves it live on the next request.
-import { Method, Request, respond, deny, method-code } from "http-lib"
+// v-hivemind-deploy, then installed as the root-router control key via bootstrap-router (live pickup).
+import { Method, Request, respond, method-code } from "http-lib"
 import { Header } from "http-response"
 import { on-response, on-notification } from "reducer-lib"
 
-// The one document: a styled card with the current value big + centered and SUBTRACT / ADD buttons. The inline
-// JS reads the count from localStorage (default 0), renders it, and mutates + persists it on each click — so
-// the counter accumulates and survives a refresh, all in the tab. Single-quoted throughout (the whole document
-// is a b"..." byte literal), no backslash escapes, so the literal is literal (the browser-outpost convention).
+// Local structural copy of cdz-platform.http.request-head's `Head` (the live head-first delivery). Uses
+// http-response's `Header` (structurally identical to http-request-head's own Header) so only ONE Header type
+// is in scope. `method` is a String here ("GET"), matching the lean head contract.
+type Head =
+  | Head(Record(method: String, path: String, query: String, headers: List(Header)))
+
+// The one document: a styled card with the current value + SUBTRACT / ADD buttons. Inline JS reads the count
+// from localStorage (default 0), renders it, and mutates + persists it on each click — so the counter
+// accumulates and survives a refresh, all in the tab. Single-quoted throughout (the whole document is a
+// b"..." byte literal), no backslash escapes (the browser-outpost convention).
 def page() =
   respond(200,
     [Header.Header({ name = "content-type", value = "text/html; charset=utf-8" })],
     b"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Cadenza Counter</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:linear-gradient(135deg,#1e293b,#0f172a);color:#e2e8f0}.card{background:#111827;border:1px solid #1f2937;border-radius:20px;padding:2.5rem 3rem;box-shadow:0 20px 50px rgba(0,0,0,.45);text-align:center;min-width:280px}h1{margin:0 0 .25rem;font-size:1.1rem;font-weight:600;letter-spacing:.02em;color:#93c5fd}p.sub{margin:0 0 1.5rem;font-size:.8rem;color:#64748b}.value{font-size:5rem;font-weight:800;line-height:1;margin:.5rem 0 1.75rem;font-variant-numeric:tabular-nums;color:#f8fafc}.row{display:flex;gap:.75rem;justify-content:center}button.btn{width:64px;height:64px;border-radius:16px;border:0;font-size:2rem;font-weight:700;color:#0f172a;cursor:pointer;transition:transform .06s ease,filter .15s ease}button.btn:active{transform:translateY(2px)}button.sub-btn{background:linear-gradient(160deg,#fca5a5,#ef4444)}button.add-btn{background:linear-gradient(160deg,#86efac,#22c55e)}button.btn:hover{filter:brightness(1.08)}.foot{margin-top:1.5rem;font-size:.7rem;color:#475569}</style></head><body><main class='card'><h1>Cadenza Counter</h1><p class='sub'>a Cadenza reducer, served live from the CAS</p><div class='value' id='val'>0</div><div class='row'><button class='btn sub-btn' id='sub' aria-label='subtract'>&minus;</button><button class='btn add-btn' id='add' aria-label='add'>+</button></div><p class='foot'>root-router program &middot; browser app</p></main><script>(function(){var KEY='cadenza.counter';var n=parseInt(window.localStorage.getItem(KEY),10);if(isNaN(n))n=0;var val=document.getElementById('val');function render(){val.textContent=String(n);try{window.localStorage.setItem(KEY,String(n));}catch(e){}}document.getElementById('add').addEventListener('click',function(){n=n+1;render();});document.getElementById('sub').addEventListener('click',function(){n=n-1;render();});render();})();</script></body></html>")
 
-// GET-only, single-page: / serves the counter app; anything else 404; non-GET 405.
+// Route on (is-this-a-GET, path bytes): GET / serves the app; any other GET path 404s; a non-GET 405s. All
+// terminals are one-shot http.response (respond), which both gateways render.
+def route(is-get: Bool, path: Bytes) =
+  (if is-get then
+     (if path == b"/" then page() else respond(404, [], b"not found"))
+   else respond(405, [], b"method not allowed"))
+
+// Dual-decode: whole Request (conformance gateway) first, then the head-first Head (live hivemind daemon).
 def on-message(msg) =
   (match (Value.decode(msg.payload) : Option(Request)) with
    | Some(Request.Request(rq)) =>
-     (if method-code(rq.method) == method-code(Method.Get) then
-        (if String.to-bytes(rq.path) == b"/" then page()
-         else deny(404, b"not found"))
-      else deny(405, b"method not allowed"))
-   | None(_) => deny(404, b"not found"))
+     route(method-code(rq.method) == method-code(Method.Get), String.to-bytes(rq.path))
+   | None(_) =>
+     (match (Value.decode(msg.payload) : Option(Head)) with
+      | Some(Head.Head(h)) => route(String.to-bytes(h.method) == b"GET", String.to-bytes(h.path))
+      | None(_) => respond(404, [], b"not found")))
 
 export { on-message, on-response, on-notification }
