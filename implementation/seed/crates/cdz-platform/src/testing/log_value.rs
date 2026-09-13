@@ -38,7 +38,8 @@ use super::observation::{
     RunCall, SpawnInfo,
 };
 use crate::contract_value::{
-    bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+    bare_ctor, bytes_leaf, is_unit, qctor, qctor_nullary, read_bytes, read_uint, record,
+    record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Dir, EdgeKind, Error, Hash, HostId, Origin, ProgramHash, ReducerId,
@@ -219,13 +220,16 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     })
 }
 
-/// A scan `Bound` as a Cadenza **sum** — the canonical bare-constructor form `(unbounded)`,
-/// `(included <key>)`, or `(excluded <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
+/// A scan `Bound` as a Cadenza **sum** — the canonical bare-constructor form `(Unbounded unit)`,
+/// `(Included <key>)`, or `(Excluded <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
 /// `key` field is present only for included/excluded) is what lets a Cadenza checker `Value.decode` a log
-/// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability).
+/// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability). The
+/// nullary `Unbounded` carries the erased Unit payload as `(Unbounded unit)` — the canonical `Value.encode`
+/// form of a multi-ctor nullary variant (`Value.encode(Bound.Unbounded)` = `(Unbounded unit)`) — NOT the
+/// empty `(Unbounded)`, which a guest `Value.decode` against `guests/log-schema.cdz`'s `Bound` rejects.
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
     match bound {
-        Bound::Unbounded => qctor(b, "Bound", "Unbounded", vec![]),
+        Bound::Unbounded => qctor_nullary(b, "Bound", "Unbounded"),
         Bound::Included(key) => {
             let key = bytes_leaf(b, key);
             qctor(b, "Bound", "Included", vec![key])
@@ -244,8 +248,13 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
     let (&head, tail) = items.split_first()?;
     Some(match arenas.as_name(head)? {
         "Unbounded" => {
-            if !tail.is_empty() {
-                return None;
+            // LIBERAL: the canonical form is `(Unbounded unit)` (a single `unit` payload), but also accept
+            // the legacy empty `(Unbounded)` so a value from an older producer still reads. Any other tail is
+            // not a nullary Unbounded.
+            match tail {
+                [] => {}
+                [one] if is_unit(arenas, *one) => {}
+                _ => return None,
             }
             Bound::Unbounded
         }
@@ -1410,6 +1419,46 @@ mod tests {
         assert_eq!(
             super::read_bound(&arenas, lower),
             Some(Bound::Included(Bytes::from_static(b"a")))
+        );
+    }
+
+    #[test]
+    fn the_nullary_unbounded_bound_encodes_as_ctor_unit_and_reads_liberally() {
+        // REGRESSION: `Bound.Unbounded` is a multi-constructor NULLARY variant, so its canonical
+        // `Value.encode` form is `(Unbounded unit)` — the ctor head carrying the erased Unit payload — NOT
+        // the empty `(Unbounded)`. A guest checker `Value.decode`s the log's `Bound` (guests/log-schema.cdz),
+        // and a guest decode of the empty form fails, so the empty form silently broke every kv-scan log
+        // entry with an unbounded range. Pin the physical shape here so it can't regress.
+        let mut b = cadenza_ast::ast::Builder::new();
+        let v = super::bound_value(&mut b, &Bound::Unbounded);
+        let arenas = b.finish(v);
+        let cadenza_ast::ast::Struct::List(items) = arenas.get(arenas.root) else {
+            panic!("Unbounded must be a `(Unbounded …)` list, not an atom");
+        };
+        let items = items.clone();
+        assert_eq!(arenas.as_name(items[0]), Some("Unbounded"), "the ctor head");
+        assert_eq!(
+            items.len(),
+            2,
+            "canonical nullary carries a single unit payload, not an empty tail"
+        );
+        assert!(
+            crate::contract_value::is_unit(&arenas, items[1]),
+            "the payload occurrence is the `unit` atom"
+        );
+        // The reader round-trips the canonical `(Unbounded unit)` form...
+        assert_eq!(
+            super::read_bound(&arenas, arenas.root),
+            Some(Bound::Unbounded)
+        );
+        // ...and is LIBERAL on the legacy empty `(Unbounded)` a pre-fix producer emitted.
+        let mut b2 = cadenza_ast::ast::Builder::new();
+        let head = b2.name("Unbounded");
+        let legacy = b2.list(vec![head]);
+        let arenas2 = b2.finish(legacy);
+        assert_eq!(
+            super::read_bound(&arenas2, arenas2.root),
+            Some(Bound::Unbounded)
         );
     }
 }
