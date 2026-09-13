@@ -1,42 +1,52 @@
-// The send contract — a reducer routes a request to a SPECIFIC session by its session id (operator milestone
-// 769: "another handler that looks up the name, sends it a request with some kind of contract, and gets the
-// response"). An ordinary `Request` (`crate::Request`) addresses a CONTRACT, and the platform routes it to
-// the single handler that serves that contract; `send` is the sid-directed complement — the requester names
-// the TARGET session it wants to reach (e.g. the actor it just spawned, or one it resolved through the
-// name-directory), the CONTRACT to deliver on, and the opaque payload. The platform delivers the payload to
-// `target` as a message on `contract` stamped `from = requester`, and the target's answer folds back into the
-// requester's `on_response` — exactly the answering round-trip an ordinary tool-call gets, but to a chosen sid
-// rather than a contract's default handler.
+// The send contract — a reducer sends a ONE-WAY message to a SPECIFIC peer session by its session id
+// (operator milestone 769, refined by 777 + 778). An ordinary `Request` (`crate::Request`) addresses a
+// CONTRACT and the platform routes it to that contract's handler; `send` is the sid-directed complement — the
+// requester names the TARGET session it wants to reach (e.g. the actor it spawned, or one it resolved through
+// the name-directory), the CONTRACT the message is on, and the opaque payload. The platform delivers the
+// message to `target` and answers the requester with its DELIVERABILITY — NOT the peer's application reply.
+//
+// ONE-WAY + DELIVERABILITY (operator 778): send is fire-and-forget at the application level. Its response is a
+// `SendStatus` — whether the message was deliverable to the target (`Delivered`) or not (`Undeliverable{
+// reason }`) — never the peer's reply. The peer receives the message and processes it INDEPENDENTLY; if it
+// wants to answer, it sends ITS OWN one-way message back to the source (using the source sid it saw in the
+// delivered envelope). So a request/response is TWO correlated one-way sends (the actor pattern), not an RPC
+// round-trip. This is the most flexible shape (operator: "maybe we should say if the message was deliverable
+// or not as the response! That seems most flexible.").
+//
+// SELF-DESCRIBING DELIVERY (operator 777): the message the peer receives carries the CONTRACT it is on and the
+// SOURCE (the sender's session id) alongside the payload — so the peer sees WHAT contract + WHO sent it, and
+// can send a reply back to that source sid. The source is surfaced to the peer's guest envelope as the raw
+// sender sid (the platform `Origin`/`ReducerId` is a fixed-width content hash and cannot carry a variable-
+// length sid, so the daemon threads the real sender sid into the delivered message's `source` — a daemon-side
+// concern, not a field of this contract's input).
 //
 // Like timer.cdz / spawn.cdz this file is the source of truth for the schema and is real Cadenza: `cargo xtask
 // codegen` (nix .#cdz-platform-contracts) validates it with the `cdz` binary and runs its conformance tests
-// before generating `src/contracts/send.rs` (the type declarations as Cadenza-AST builder calls) and wiring
-// `pub mod send` into `src/contracts/mod.rs`. Re-run after editing; `--check` fails if the generated file is
-// stale.
-//
-// ROUTING NOTE (daemon behaviour): the platform re-routes the inner request to `target` on `contract` and
-// reuses the ordinary answering path, so the target's reply arrives at the requester's `on_response` on the
-// INNER `contract` (correlated by the send request's continuation-token), NOT wrapped on the send contract.
-// `SendReply` is the declared output for schema completeness (the reply is opaque `Bytes` — the requester
-// interprets it exactly as it would the inner contract's own answer); a caller correlates the reply by the
-// token it chose for the send.
+// before generating `src/contracts/send.rs` + wiring `pub mod send` into `src/contracts/mod.rs`.
 
-// The request (this contract's input): deliver `payload` to session `target` as a message on `contract`.
-// `target` is a session id's bytes; `contract` is a ContractId's bytes (as `descriptor().id` yields).
+// The request (this contract's input): deliver `payload` to session `target` as a ONE-WAY message on
+// `contract`. `target` is a session id's bytes; `contract` is a ContractId's bytes (as `descriptor().id`
+// yields). The daemon stamps the SOURCE (the requesting session's sid) onto the delivered message so the peer
+// can reply back to it.
 type SendRequest =
   | SendRequest(Record(target: Bytes, contract: Bytes, payload: Bytes))
 
-// The reply (this contract's declared output): the target's opaque answer bytes, delivered back to the
-// requester's `on_response` correlated by the request's continuation-token.
-type SendReply =
-  | SendReply(Record(reply: Bytes))
+// The response (this contract's output): the message's DELIVERABILITY (operator 778), NOT the peer's reply.
+// `Delivered` = the message was accepted for delivery to the target; `Undeliverable{ reason }` = it was not
+// (e.g. no such session / the target is not a bound reducer), with an opaque reason for the sender to surface.
+type SendStatus =
+  | Delivered
+  | Undeliverable(Record(reason: Bytes))
 
 // --- conformance proofs: fully-literal values of each type, ascribed against the schema type ---
 def a-request() -> SendRequest =
   SendRequest.SendRequest({ target = b"actor-session-id", contract = b"demo-contract-id", payload = b"hello" })
 
-def a-reply() -> SendReply =
-  SendReply.SendReply({ reply = b"hi back" })
+def a-delivered() -> SendStatus =
+  SendStatus.Delivered
+
+def an-undeliverable() -> SendStatus =
+  SendStatus.Undeliverable({ reason = b"no such session" })
 
 @test
 def request-conforms() =
@@ -44,13 +54,20 @@ def request-conforms() =
   | SendRequest.SendRequest(r) => if r.target == b"actor-session-id" then unit else trap("send target mismatch")
 
 @test
-def reply-conforms() =
-  match a-reply() with
-  | SendReply.SendReply(r) => if r.reply == b"hi back" then unit else trap("send reply mismatch")
+def delivered-conforms() =
+  match a-delivered() with
+  | SendStatus.Delivered => unit
+  | SendStatus.Undeliverable(_) => trap("expected Delivered")
+
+@test
+def undeliverable-conforms() =
+  match an-undeliverable() with
+  | SendStatus.Undeliverable(u) => if u.reason == b"no such session" then unit else trap("undeliverable reason mismatch")
+  | SendStatus.Delivered => trap("expected Undeliverable")
 
 // Self-reflecting uniform descriptor (operator shape): a reducer imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
 def descriptor() =
-  contract-descriptor(Ast.module, "cdz-platform.send", "SendRequest", "SendReply")
+  contract-descriptor(Ast.module, "cdz-platform.send", "SendRequest", "SendStatus")
 
-export { SendRequest.*, SendReply.*, descriptor }
+export { SendRequest.*, SendStatus.*, descriptor }
