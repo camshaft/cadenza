@@ -404,6 +404,7 @@ impl Fleet {
             "reap-leases.sh",
             "aea-refresh.sh",
             "disk-guard.sh",
+            "slack-bridge-guard.sh",
             "watchdog.sh",
         ] {
             let src = self.src.join(f);
@@ -2307,6 +2308,50 @@ fn ensure_disk_guard_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-5-min user-crontab line for the SLACK-BRIDGE liveness guard (v-fleet-tooling
+/// 2026-09-13), tagged `# fleet:slack-bridge-guard` so [`reconcile_tagged_crons`] can find/heal it. Runs the
+/// HUB copy of `slack-bridge-guard.sh`, which runs the bridge's own idempotent `revive.sh` when no bridge
+/// worker is up. WHY it matters: the operator's concierge-down alert (#8931) posts to Slack THROUGH the
+/// bridge (bypassing the down concierge), so the "never down without noticing" guarantee is only as reliable
+/// as the bridge — this keeps it up out-of-band even if the v-slack-bridge agent's own loop is down. 5 min:
+/// the alert path must recover fast; the guard is a cheap pgrep + idempotent no-op when the bridge is up.
+fn slack_bridge_guard_cron_line(hub_script: &str) -> String {
+    format!("*/5 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:slack-bridge-guard")
+}
+
+/// Ensure the `# fleet:slack-bridge-guard` per-5-min user-crontab entry exists + points at THIS hub's
+/// `slack-bridge-guard.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_reap_leases_cron`], INDEPENDENT of the other fleet crons. Skips silently if the script isn't
+/// materialized yet or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_slack_bridge_guard_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("slack-bridge-guard.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:slack-bridge-guard",
+        slack_bridge_guard_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-5-min user-crontab line for the autonomous CONCIERGE COMPACTION heartbeat
 /// (v-fleet-tooling 2026-09-03), tagged `# fleet:compact-nudge` so [`reconcile_tagged_crons`] can find/heal
 /// it. Runs the HUB copy of `compact-nudge.sh` → a worktree's `xtask fleet compact-nudge --session main` —
@@ -2488,6 +2533,11 @@ fn up(fleet: &Fleet) {
     // concierge note on a fresh escalation. Alarm-only (no auto-reclaim). Closes the no-early-warning gap the
     // 2026-09-13 root-FS-full incident hit. Independent + fail-open + drift-healed.
     ensure_disk_guard_cron(fleet);
+    // The slack-bridge liveness guard cron: `slack-bridge-guard.sh` runs the bridge's own idempotent
+    // revive.sh when no bridge worker is up, out-of-band from the v-slack-bridge agent — so the operator's
+    // concierge-down alert path (#8931, which posts through the bridge) can't fail silently. Independent +
+    // fail-open + drift-healed.
+    ensure_slack_bridge_guard_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -20085,6 +20135,23 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Empty dir / missing dir → no alarms (never a false alarm).
         let _ = std::fs::remove_dir_all(&dir);
         assert!(read_alarm_files(&dir).is_empty(), "missing dir → no alarms");
+    }
+
+    #[test]
+    fn slack_bridge_guard_cron_line_is_every_5min_silent_and_tagged() {
+        let line = slack_bridge_guard_cron_line("/hub/slack-bridge-guard.sh");
+        assert!(
+            line.starts_with("*/5 * * * * bash /hub/slack-bridge-guard.sh"),
+            "every-5-min (the alert path must recover fast), invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — a liveness probe never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:slack-bridge-guard"),
+            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
+        );
     }
 
     #[test]
