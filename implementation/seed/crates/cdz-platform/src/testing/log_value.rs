@@ -38,7 +38,7 @@ use super::observation::{
     RunCall, SpawnInfo,
 };
 use crate::contract_value::{
-    bare_ctor, bytes_leaf, is_unit, qctor, qctor_nullary, read_bytes, read_uint, record,
+    bare_ctor, bytes_leaf, is_qctor_nullary, qctor, qctor_nullary, read_bytes, read_uint, record,
     record_field, uint_leaf,
 };
 use crate::{
@@ -248,13 +248,13 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
     let (&head, tail) = items.split_first()?;
     Some(match arenas.as_name(head)? {
         "Unbounded" => {
-            // The SINGLE canonical value form is `(Unbounded unit)` — a nullary variant carries its erased
-            // Unit payload (core-semantics.md §231), and the guest `Value.decode` of `Bound` requires it. A
-            // payloadless `(Unbounded)` is not a value form, so reject it rather than admit a value the guest
-            // decoder would not.
-            match tail {
-                [one] if is_unit(arenas, *one) => {}
-                _ => return None,
+            // Delegate the nullary check to the shared `is_qctor_nullary` (symmetric with `bound_value`'s
+            // `qctor_nullary`): the SINGLE canonical value form is `(Unbounded unit)` — a nullary variant
+            // carries its erased Unit payload (core-semantics.md §231), which the guest `Value.decode` of
+            // `Bound` requires. A payloadless `(Unbounded)` is not a value form, so reject it rather than
+            // admit a value the guest decoder would not.
+            if !is_qctor_nullary(arenas, id, "Bound", "Unbounded") {
+                return None;
             }
             Bound::Unbounded
         }
