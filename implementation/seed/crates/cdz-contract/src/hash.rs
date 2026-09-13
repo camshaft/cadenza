@@ -38,7 +38,10 @@ use std::str::FromStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum HashTag {
-    /// A contract-id — the hash of a contract declaration (section 1).
+    /// A contract-id for a **mutation** contract — the hash of a contract declaration (section 1). A
+    /// mutation is routed to the durable single-writer session, so this is the default contract class and
+    /// every pre-existing contract-id carries it (654(a): the mutation-vs-query class rides in this leading
+    /// tag byte, so the router decides from the id alone; a query is [`ContractQuery`](Self::ContractQuery)).
     Contract = 1,
     /// A reducer/session id — the hash of a genesis (section 3).
     Reducer = 2,
@@ -50,6 +53,11 @@ pub enum HashTag {
     Blob = 5,
     /// A platform-internal well-known hash — e.g. a structural edge kind of the reducer graph.
     SystemProperty = 6,
+    /// A contract-id for a **query** contract (654(a)): same role as [`Contract`](Self::Contract) — it is a
+    /// contract-id — but this class routes to a FORKED read-only snapshot session, kept off the single-writer
+    /// critical path, instead of the durable single-writer session. The mutation-vs-query classification
+    /// travels in this leading tag byte so the router reads it straight out of the id (no side table).
+    ContractQuery = 7,
 }
 
 impl HashTag {
@@ -64,6 +72,7 @@ impl HashTag {
             4 => Some(Self::Host),
             5 => Some(Self::Blob),
             6 => Some(Self::SystemProperty),
+            7 => Some(Self::ContractQuery),
             _ => None,
         }
     }
@@ -527,6 +536,28 @@ mod tests {
         assert_eq!(Hash::from_bytes(raw).tag(), None);
         assert_eq!(HashTag::from_byte(2), Some(HashTag::Reducer));
         assert_eq!(HashTag::from_byte(0), None);
+    }
+
+    #[test]
+    fn hash_tag_byte_values_are_pinned_including_the_query_class() {
+        // The tag byte is a WIRE value — a stored/routed hash's leading byte — and 654(a)'s router reads the
+        // mutation-vs-query class straight out of it, so the ContractQuery byte (7) is a cross-agent contract
+        // that must not silently shift. Pin every tag's byte value; a change here is a deliberate flag-day.
+        assert_eq!(HashTag::Contract as u8, 1);
+        assert_eq!(HashTag::Reducer as u8, 2);
+        assert_eq!(HashTag::Program as u8, 3);
+        assert_eq!(HashTag::Host as u8, 4);
+        assert_eq!(HashTag::Blob as u8, 5);
+        assert_eq!(HashTag::SystemProperty as u8, 6);
+        assert_eq!(HashTag::ContractQuery as u8, 7);
+        assert_eq!(HashTag::from_byte(7), Some(HashTag::ContractQuery));
+        // A query hash is self-describing: its tag reads back as ContractQuery, digest unaffected by the tag.
+        let query = Hash::of(HashTag::ContractQuery, b"a-query-contract");
+        assert_eq!(query.tag(), Some(HashTag::ContractQuery));
+        assert_eq!(
+            query.digest(),
+            Hash::of(HashTag::Contract, b"a-query-contract").digest()
+        );
     }
 
     #[test]

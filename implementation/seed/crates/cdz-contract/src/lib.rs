@@ -18,9 +18,11 @@
 
 mod contract;
 mod hash;
+mod kind;
 
 pub use contract::{
     contract_declaration, contract_id, declaration_from_descriptor, id_name_from_descriptor,
     identity_from_descriptor,
 };
 pub use hash::{Hash, HashTag, Hasher, base62};
+pub use kind::ContractKind;
