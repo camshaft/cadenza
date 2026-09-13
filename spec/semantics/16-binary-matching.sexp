@@ -445,12 +445,12 @@
   "a bin-bound byte reused as a Bytes.of element round-trips (the u8 binder narrows to a UInt8 i32, not its i64 read width)"
   (doc
     "The `Bytes.of([ u8(c) ])` CDZ0910 miscompile regression: the `u8(c)` binder reads into an i64
-           accumulator, but reused as a `Bytes.of` element its solved type is `UInt8` (an i32 slot), so the
-           read narrows to i32 — else `bytes-set` sees an i64 where it wants i32 and the module fails
-           validation. Here `c` is decoded from a RUNTIME one-byte scrutinee (built from a param so it cannot
-           fold), rebuilt into a one-byte Bytes via `Bytes.of`, and read back: the byte round-trips unchanged.
-           The value 200 (> 127) also pins that the narrowing wrap keeps the low byte exactly, with no
-           spurious sign-extension. Both backends.")
+           accumulator, and `Bytes.of` does NOT narrow its element's type (list unification leaves the element
+           a general integer), so the value reaches `bytes-set` as an i64 where it wants a raw i32 byte —
+           unless the element is narrowed to i32 at that consumer. Here `c` is decoded from a RUNTIME one-byte
+           scrutinee (built from a param so it cannot fold), rebuilt into a one-byte Bytes via `Bytes.of`, and
+           read back: the byte round-trips unchanged. The value 200 (> 127) also pins that the narrowing wrap
+           keeps the low byte exactly, with no spurious sign-extension. Both backends.")
   (input
     (do
       (def (roundtrip (: inp Bytes))
@@ -458,6 +458,34 @@
           ((bin (u8 c)) (match (Bytes.at (Bytes.of #list(c)) 0) ((Some v) v) ((None _) -1)))
           (_ -1)))
       (def (main (: c0 Int64)) (roundtrip (Bytes.of #list((UInt8.of c0)))))
+      (export main)))
+  (call main (: 200 Int64))
+  (output (: 200 Int64)))
+
+; The COMPANION of the `Bytes.of`-element case above, at the OTHER consumer: a `u8(c)` byte binder passed to
+; a `UInt8` FUNCTION PARAM. Here the narrow width DOES flow back to the binder by unification (the param is
+; `UInt8`), so `c`'s solved type is `UInt8` (an i32 slot) — but its `BinIntRead` still assembles an i64, so
+; the call handed the i32 param an i64 → "type mismatch: expected i32, found i64" at validation. Same class as
+; the `Bytes.of` miscompile, but because THIS consumer narrows `c`, the fix is at the READ (narrow the i64 to
+; the binder's solved i32 width), not the consumer. Pinned so neither half of the pair can re-widen.
+(case
+  "a bin-bound byte passed to a UInt8 function param narrows to a UInt8 i32, not its i64 read width"
+  (doc
+    "The narrow-param sibling of the `Bytes.of` CDZ0910 miscompile: `c` decoded from a RUNTIME scrutinee
+           (built from a param so the `bin` cannot fold) is passed to `use8 : UInt8 → Int64`. The `UInt8`
+           param narrows `c` to an i32 slot, but the `BinIntRead` assembles an i64 — so without narrowing the
+           read to its solved i32 width the call feeds the i32 param an i64 and the module fails validation.
+           `use8` round-trips the byte back out (via a one-byte `Bytes.of`/`Bytes.at`) so the case also pins
+           the value: 200 (> 127) in, 200 out, unchanged. Both backends.")
+  (input
+    (do
+      (def (use8 (: x UInt8))
+        (match (Bytes.at (Bytes.of #list(x)) 0) ((Some v) v) ((None _) -1)))
+      (def (f (: inp Bytes))
+        (match inp
+          ((bin (u8 c) (bytes rest)) (use8 c))
+          (_ -1)))
+      (def (main (: c0 Int64)) (f (Bytes.of #list((UInt8.of c0) 7 7))))
       (export main)))
   (call main (: 200 Int64))
   (output (: 200 Int64)))
