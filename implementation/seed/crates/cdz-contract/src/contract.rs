@@ -395,6 +395,36 @@ mod tests {
     }
 
     #[test]
+    fn a_query_contract_id_byte_format_is_stable_a_golden() {
+        // The QUERY counterpart of `the_contract_id_byte_format_is_stable_a_golden` above. A query
+        // contract-id is a WIRE value the router keys on (via the ContractQuery tag byte) and a decode-confirm
+        // consumer (v-gateway-conformance) verifies byte-for-byte — and its declaration byte-shape (the
+        // trailing `(kind query)` marker) was self-grounded + gateway-confirmed, not read from the (unreadable)
+        // Membrain build-plan. So freeze the absolute output for the query form of
+        // `(contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp (kind query))`: if it drifts, the
+        // wire format changed — re-pin ONLY as a deliberate, re-derive-query-ids decision (query ids are not
+        // deployed yet, so an intentional marker-shape change from a build-plan is an additive re-pin here,
+        // never a reflexive "make the test pass"). The mutation golden is unaffected (byte-identical).
+        use super::contract_id_with_kind;
+        use crate::ContractKind;
+        let id = contract_id_with_kind(
+            "temp.celsius",
+            temp_type,
+            "Temp",
+            "Temp",
+            ContractKind::Query,
+        );
+        assert_eq!(id.tag(), Some(HashTag::ContractQuery));
+        // Distinct from the mutation twin in BOTH tag and digest (the marker changes the bytes).
+        let mutation = contract_id("temp.celsius", temp_type, "Temp", "Temp");
+        assert_ne!(id.digest(), mutation.digest());
+        assert_eq!(
+            id.to_string(),
+            "06vdvYIj4KNUp2NXrH17VfKVqXNaI5K5CmsLCpFyexjg0"
+        );
+    }
+
+    #[test]
     fn mutation_is_the_default_and_byte_identical_no_drift() {
         // 654(a) slice 3: the bare `contract_declaration`/`contract_id` are exactly `_with_kind(Mutation)`,
         // so no existing contract-id drifts and the golden above still pins the mutation form.
