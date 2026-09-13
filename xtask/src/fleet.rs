@@ -3488,6 +3488,38 @@ fn lint_loops(fleet: &Fleet) {
     }
 }
 
+/// Collect active fleet ALARM stamps: every `*.alarm` file directly in the hub `dir`, as
+/// `(filename, first-non-empty-line)`, sorted by name for stable output. A background monitor/cron RAISES an
+/// alarm by writing the file (content = a one-line reason) and CLEARS it by removing the file, so a present
+/// `.alarm` == an active condition worth surfacing (e.g. `concierge-flap.alarm`, `disk-pressure.alarm`). A
+/// missing/unreadable dir → empty (never a false alarm). Pure over the filesystem so `status` stays a thin
+/// printer and this is unit-testable against a temp dir.
+fn read_alarm_files(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.filter_map(Result::ok) {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".alarm") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&p).unwrap_or_default();
+        let line = body
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("(empty)")
+            .to_string();
+        out.push((name.to_string(), line));
+    }
+    out.sort();
+    out
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -3600,6 +3632,15 @@ fn status(fleet: &Fleet) {
              --publish-origin model pr-sync's own base-resets are EXPECTED + NOT logged (the hook only \
              records real NON-FF clobbers), so any entry is worth a look: `tail .claude/fleet/trunk-clobber.log`."
         );
+    }
+
+    // ALARMS — surface any `<hub>/.claude/fleet/*.alarm` stamp a background monitor/cron raised out-of-band,
+    // so the board is a single pane of glass for fleet-health alarms (not just per-agent staleness). A
+    // monitor CLEARS its alarm (removes the file) when the condition resolves, so any file present here is
+    // an ACTIVE alarm. Generic: surfaces `concierge-flap.alarm` (previously written but never shown) and the
+    // `disk-pressure.alarm` (root-FS byte pressure early-warning) alike, with no hardcoded alarm list.
+    for (name, body) in read_alarm_files(&fleet.root) {
+        println!("  🚨 ALARM {name}: {body}");
     }
 }
 
@@ -19743,6 +19784,40 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
+    }
+
+    #[test]
+    fn read_alarm_files_surfaces_alarm_stamps_and_ignores_non_alarms() {
+        let dir = std::env::temp_dir().join(format!("cdz-alarm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("disk-pressure.alarm"), "root FS 92% — 200G free\n").unwrap();
+        // Leading blank line: the surfaced text is the first NON-EMPTY, trimmed line.
+        std::fs::write(
+            dir.join("concierge-flap.alarm"),
+            "\n  flapped 3x in 10m  \n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("registry.json"), "{}").unwrap(); // not an alarm → ignored
+
+        let got = read_alarm_files(&dir);
+        assert_eq!(
+            got.len(),
+            2,
+            "only the two .alarm files are collected: {got:?}"
+        );
+        // Sorted by name → concierge-flap before disk-pressure.
+        assert_eq!(got[0].0, "concierge-flap.alarm");
+        assert_eq!(
+            got[0].1, "flapped 3x in 10m",
+            "first non-empty line, trimmed"
+        );
+        assert_eq!(got[1].0, "disk-pressure.alarm");
+        assert_eq!(got[1].1, "root FS 92% — 200G free");
+
+        // Empty dir / missing dir → no alarms (never a false alarm).
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read_alarm_files(&dir).is_empty(), "missing dir → no alarms");
     }
 
     #[test]
