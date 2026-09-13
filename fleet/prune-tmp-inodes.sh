@@ -24,6 +24,13 @@
 #      wall, and the owner confirmed >2h dirs are completed/safe) + the `*-out.txt`/`*-manifest.txt` sibling
 #      files. The owner (v-lean-oracle) is routed to stop leaking (clean each run dir on completion); this
 #      reaper is the safety net.
+#   E. MCS L1 TELEMETRY LOGS (operator note-700, 2026-09-13): `/tmp/mcs-telemetry-l1-*.log` — the MCS
+#      `L1_Linux` client (v2.7.4) writes ONE fire-and-forget JSON log FILE per `open_connection` event with
+#      no cleanup; the fleet's many agents connect constantly (~35 files/min observed) so these pile up and
+#      pressure /tmp inodes exactly like Class A. Reaped like A (own-user FILES, short age floor). IMPORTANT:
+#      a SEPARATE 37G `/tmp/mcs-telemetry/` DIRECTORY owned by user `mcs` needs root/sudo to remove — it is
+#      NOT touched here (the `-uid $(id -u)` filter can only ever match the fleet user's own log files), and
+#      is reported to the operator. Stopping the spray at its source is an upstream MCS-client fix.
 #
 # SAFETY (per-class gates + guards):
 #   1. THRESHOLD-GATED, PER CLASS: A/B sweep only when /tmp inode-use% >= INODE_THRESHOLD_PCT (default
@@ -53,6 +60,7 @@ set -euo pipefail
 TMPDIR_ROOT="${TMPDIR_ROOT:-/tmp}"
 INODE_THRESHOLD_PCT="${INODE_THRESHOLD_PCT:-80}"   # A/B sweep only when /tmp inode-use% is at/above this
 TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-15}"   # remove toolbox-telemetry-* older than this (minutes; primary accumulator, kept short so the always-on sweep clears more per pass)
+MCS_TELEMETRY_STALE_MIN="${MCS_TELEMETRY_STALE_MIN:-15}"  # Class E: remove own-user /tmp/mcs-telemetry-l1-*.log older than this (minutes; fire-and-forget MCS L1 logs, flushed instantly so 15min carries no live risk)
 STALE_MIN="${STALE_MIN:-120}"                      # remove claude task transcripts older than this (minutes)
 SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/above this — INDEPENDENT of INODE_THRESHOLD_PCT
 SCRATCH_STALE_MIN="${SCRATCH_STALE_MIN:-240}"      # remove agent-scratch dirs older than this (minutes, default 4h)
@@ -89,6 +97,9 @@ if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
   # Class A: toolbox EMF telemetry buffers (`/tmp/toolbox-telemetry-*`, whole dirs).
   telemetry="$(find "$TMPDIR_ROOT" -maxdepth 1 -name 'toolbox-telemetry-*' -mmin +"$TELEMETRY_STALE_MIN" 2>/dev/null | wc -l)"
 
+  # Class E: MCS L1 telemetry logs — own-user FILES only (`-uid`), so the mcs-owned dir is never a candidate.
+  mcs_logs="$(find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" -name 'mcs-telemetry-l1-*.log' -mmin +"$MCS_TELEMETRY_STALE_MIN" 2>/dev/null | wc -l)"
+
   # Class B: Claude task-root dirs (`/tmp/claude-<pid>/`). Enumerate as DIRS so the top-level
   # `claude-*-cwd` FILES are not treated as roots. `-print0`/read handles a (unlikely) space in a path.
   roots=()
@@ -105,6 +116,9 @@ if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
     # A: remove whole stale telemetry dirs (they are self-contained buffers).
     find "$TMPDIR_ROOT" -maxdepth 1 -name 'toolbox-telemetry-*' -mmin +"$TELEMETRY_STALE_MIN" \
       -exec rm -rf {} + 2>/dev/null || true
+    # E: remove own-user MCS L1 telemetry logs (fire-and-forget files; -uid guards against the mcs-owned dir).
+    find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" -name 'mcs-telemetry-l1-*.log' \
+      -mmin +"$MCS_TELEMETRY_STALE_MIN" -delete 2>/dev/null || true
     # B: remove stale claude transcript files, then reclaim their emptied dir trees + the cwd files.
     if [ "${#roots[@]}" -gt 0 ]; then
       find "${roots[@]}" -type f \( -name '*.output' -o -name '*.jsonl' \) \
@@ -115,9 +129,13 @@ if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
     after="$(iuse_pct)"
     printf 'prune-tmp-inodes: removed %s telemetry dir(s) + %s transcript file(s) + %s cwd file(s) + empty dirs; inode-use now %s%%\n' \
       "$telemetry" "$transcripts" "$cwds" "${after:-?}"
+    printf 'prune-tmp-inodes: removed %s MCS L1 telemetry log(s) (>%smin, own-user; the mcs-owned dir needs root)\n' \
+      "$mcs_logs" "$MCS_TELEMETRY_STALE_MIN"
   else
     printf 'prune-tmp-inodes: WOULD remove %s telemetry dir(s) (>%smin) + %s transcript file(s) + %s cwd file(s) (>%smin, excl journal.jsonl); rerun with --apply\n' \
       "$telemetry" "$TELEMETRY_STALE_MIN" "$transcripts" "$cwds" "$STALE_MIN"
+    printf 'prune-tmp-inodes: WOULD remove %s MCS L1 telemetry log(s) (>%smin, own-user); rerun with --apply\n' \
+      "$mcs_logs" "$MCS_TELEMETRY_STALE_MIN"
   fi
 else
   printf 'prune-tmp-inodes: inode-use %s%% below A/B threshold %s%% — skipping telemetry/transcript sweep.\n' "$iuse" "$INODE_THRESHOLD_PCT"
