@@ -6313,6 +6313,17 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
 /// `pane_shows_working`'s idle-prompt override (#8030) is what lets an idle concierge — whose persistent
 /// footer literally says "esc to interrupt" — read as NOT working here (without it this scan would skip the
 /// idle concierge too). Concierge-focused (the only agent whose watchdog runs inside its own tick).
+/// True iff a windowed PROTECTED agent should be restarted for being NON-OPERATIONAL: its heartbeat is stale
+/// past `stale` secs (the session is wedged/hung — window up but not ticking) AND it was not just restarted
+/// (`restarted_recently` — the WEDGE_RESTART_GRACE guard lets a fresh launch boot + run its first tick before
+/// this can fire again, so no restart spin). `hb_age = None` (never heartbeated / unreadable) → NOT restarted
+/// here: a brand-new window is covered by the missing-window recreate + the launch-time heartbeat, so we act
+/// only on a PROVEN-stale heartbeat. Pure so the out-of-band concierge operational guarantee is unit-testable
+/// without tmux.
+fn agent_non_operational(hb_age: Option<u64>, stale: u64, restarted_recently: bool) -> bool {
+    hb_age.is_some_and(|age| age > stale) && !restarted_recently
+}
+
 fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) {
     if fleet.stopfile(agent).exists() {
         return; // a stopped/rested agent stays down (stop-file is the durable rest signal)
@@ -6396,6 +6407,64 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
         }
         return; // a just-(re)created window boots its own loop — nothing to compact/nudge THIS run
     }
+
+    // OPERATIONAL GUARANTEE for the PROTECTED concierge (operator 2026-09-13: "as part of the watchdog make
+    // sure that window is up AND operational" — it had been down for HOURS). Reaching here, the window is
+    // PRESENT — but a present window is NOT proof the session is working: a context-wedged or hung claude
+    // keeps its window yet stops ticking, and the pane-%-parse wedge check below can MISS it (unparseable UI,
+    // or it reads as "working"), so such a concierge sat non-operational for hours with nothing reviving it
+    // (the missing-window recreate above never fires because the window is up). Ground truth is the
+    // HEARTBEAT: a protected agent whose /loop has not stamped a heartbeat within its stale window (2× its
+    // interval) is NON-OPERATIONAL regardless of the pane → RESTART it (kill the wedged/hung window +
+    // relaunch). Heartbeat-based, so no fragile pane parse; generous threshold (never false-kills a slow or
+    // legitimately long tick — a healthy concierge heartbeats at tick step 1) but bounded in minutes, not the
+    // multi-hour outages this closes. This runs BEFORE the pane-idle gate on purpose: a heartbeat stale past
+    // 2× interval means "not making progress" even if the pane shows a spinner. The WEDGE_RESTART_GRACE guard
+    // (via restarted_recently) gives a just-(re)launched session time to boot + tick before it can fire again.
+    if is_protected_role(agent) {
+        let interval = fleet
+            .load()
+            .agents
+            .iter()
+            .find(|x| x.name == agent)
+            .map(|a| parse_interval_secs(&a.interval))
+            .unwrap_or(1800);
+        let stale = stale_window_secs(interval, 2, 600);
+        let restarted_recently =
+            wedge_restart_age_secs(fleet, agent, now).is_some_and(|s| s < WEDGE_RESTART_GRACE);
+        if agent_non_operational(
+            heartbeat_age_secs(fleet, agent, now),
+            stale,
+            restarted_recently,
+        ) {
+            if dry_run {
+                println!(
+                    "  DRY-RUN would RESTART non-operational '{agent}' (window up but /loop heartbeat stale > {stale}s)"
+                );
+                return;
+            }
+            match restart_window(fleet, session, agent) {
+                RestartOutcome::Restarted => {
+                    stamp_wedge_restart(fleet, agent);
+                    eprintln!(
+                        "  ⟳ RESTARTED non-operational '{agent}' out-of-band — window was UP but its /loop \
+                         heartbeat was stale (>{stale}s): wedged/hung, not ticking. Durable state persists. (self-heal)"
+                    );
+                    println!(
+                        "  ⟳ out-of-band restarted non-operational '{agent}' (stale heartbeat >{stale}s)"
+                    );
+                }
+                RestartOutcome::RelaunchFailed => eprintln!(
+                    "  ‼ '{agent}' operational-restart: RELAUNCH FAILED — no window now; the missing-window recreate re-creates it next fire."
+                ),
+                RestartOutcome::KillFailed => eprintln!(
+                    "  ! '{agent}' operational-restart: tmux kill-window failed — retry next cron."
+                ),
+            }
+            return;
+        }
+    }
+
     let pane = capture_pane(session, agent);
     let ctx_pct = pane.as_deref().and_then(parse_context_pct);
     // ACT ONLY WHEN IDLE: a mid-tick concierge is either genuinely working or running its own in-tick
@@ -19870,6 +19939,22 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
+    }
+
+    #[test]
+    fn agent_non_operational_restarts_only_a_proven_stale_window_not_recently_restarted() {
+        let stale = 3600; // 60m = 2× a 30m concierge interval
+        // Fresh heartbeat (operational) → no restart.
+        assert!(!agent_non_operational(Some(120), stale, false));
+        // Stale heartbeat (wedged/hung, window up but not ticking), not recently restarted → RESTART.
+        assert!(agent_non_operational(Some(4000), stale, false));
+        // Stale heartbeat BUT just restarted → wait for it to boot (no restart spin).
+        assert!(!agent_non_operational(Some(4000), stale, true));
+        // Exactly at the bound → not yet (strictly greater, so a tick landing right at the window is safe).
+        assert!(!agent_non_operational(Some(3600), stale, false));
+        // Never heartbeated / unreadable → NOT restarted here (missing-window + launch-heartbeat cover a
+        // brand-new window; we act only on a proven-stale heartbeat).
+        assert!(!agent_non_operational(None, stale, false));
     }
 
     #[test]
