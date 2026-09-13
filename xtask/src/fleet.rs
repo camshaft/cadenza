@@ -3571,6 +3571,21 @@ fn read_alarm_files(dir: &Path) -> Vec<(String, String)> {
     out
 }
 
+/// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
+/// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
+/// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
+/// (never a false reading). Pure over the string so it's unit-testable without a real filesystem.
+fn parse_df_capacity(df_out: &str) -> Option<(u32, u64)> {
+    let data = df_out.lines().nth(1)?; // skip the header row
+    let cols: Vec<&str> = data.split_whitespace().collect();
+    if cols.len() < 5 {
+        return None;
+    }
+    let avail: u64 = cols[3].parse().ok()?;
+    let pct: u32 = cols[4].trim_end_matches('%').parse().ok()?;
+    Some((pct, avail))
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -3656,6 +3671,26 @@ fn status(fleet: &Fleet) {
     let trunk_om = trunk_vs_origin_main(&fleet.repo);
     if let Some((ahead, behind)) = trunk_om {
         println!("  trunk: {ahead} ahead / {behind} behind origin/main");
+    }
+
+    // Root-FS byte usage — the resource whose exhaustion (2026-09-13) wedged the fleet with NO early
+    // warning. Show it continuously on the board (the disk-guard cron only RAISES an alarm at 85%+, so the
+    // board otherwise shows nothing until the wall is near). Same `df -P /` the guard samples; silent if df
+    // is unavailable/unparseable (never a false reading); flag WARN/HIGH inline at the guard's thresholds.
+    if let Ok(out) = Command::new("df").args(["-P", "/"]).output()
+        && let Some((pct, avail_kib)) = parse_df_capacity(&String::from_utf8_lossy(&out.stdout))
+    {
+        let free_g = avail_kib as f64 / 1024.0 / 1024.0;
+        let flag = if pct >= 92 {
+            " ⚠HIGH"
+        } else if pct >= 85 {
+            " ⚠WARN"
+        } else {
+            ""
+        };
+        println!(
+            "  disk: {pct}% used, {free_g:.0}G free on / (disk-guard warn=85% high=92%){flag}"
+        );
     }
 
     // Trunk-ref-regression watch — OBSOLETE under the --publish-origin model, kept only as a genuine-
@@ -19835,6 +19870,19 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
+    }
+
+    #[test]
+    fn parse_df_capacity_reads_use_pct_and_avail_from_df_p() {
+        let out = "Filesystem     1024-blocks       Used Available Capacity Mounted on\n\
+                   /dev/nvme0n1p1  2621440000 2015000000 606440000      79% /\n";
+        let (pct, avail) = parse_df_capacity(out).unwrap();
+        assert_eq!(pct, 79, "Capacity column (field 5), % stripped");
+        assert_eq!(avail, 606440000, "Available column (field 4, 1K-blocks)");
+        // Unparseable / no data row → None (never a false reading).
+        assert!(parse_df_capacity("garbage").is_none());
+        assert!(parse_df_capacity("only a header line, no data row\n").is_none());
+        assert!(parse_df_capacity("").is_none());
     }
 
     #[test]
