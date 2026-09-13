@@ -13,6 +13,10 @@ use std::net::SocketAddr;
 pub mod base62;
 pub mod spec;
 
+/// Conformance-layer golden pin of the query ContractId wire format (654(a) slice 3). Test-only.
+#[cfg(test)]
+mod contract_query_golden;
+
 /// Process orchestration — spawn each SUT bin, wait for its ready line, kill it on drop.
 pub mod process;
 
