@@ -26,6 +26,16 @@
     // that the shipped page is the working app, not a static shell.
     { http = { method = "GET", path = "/" },
       expect = { status = 200, body-contains = "cadenza.counter" } },
+    // The operator's core ask is ADD and SUBTRACT buttons — pin that BOTH interactive controls are present
+    // in the served page, so a future edit can't silently ship a page missing a button while still passing
+    // the title/JS assertions above. (The inline JS wires clicks to these element ids.)
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body-contains = "id='add'" } },
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body-contains = "id='sub'" } },
+    // The value display the count renders into (the operator's "displays the current value").
+    { http = { method = "GET", path = "/" },
+      expect = { status = 200, body-contains = "id='val'" } },
     // An unmatched route denies 404 (the router's inline no-route branch).
     { http = { method = "GET", path = "/nope" },
       expect = { status = 404, body-contains = "not found" } },
