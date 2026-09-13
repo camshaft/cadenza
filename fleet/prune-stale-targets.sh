@@ -49,9 +49,9 @@ printf 'prune-stale-targets: hub=%s active-window=%smin target-stale=%smin idle-
   "$HUB" "$ACTIVE_WINDOW_MIN" "$TARGET_STALE_MIN" "$IDLE_TARGET_STALE_MIN" "$APPLY"
 
 pruned=0 skipped_alive=0 skipped_fresh=0 skipped_excl=0
-for tdir in "$WORKTREES"/*/target; do
-  [ -d "$tdir" ] || continue
-  agent="$(basename "$(dirname "$tdir")")"
+for wt in "$WORKTREES"/*/; do
+  [ -d "$wt" ] || continue
+  agent="$(basename "$wt")"
 
   case " $EXCLUDE_AGENTS " in *" $agent "*) skipped_excl=$((skipped_excl+1)); continue;; esac
 
@@ -67,28 +67,42 @@ for tdir in "$WORKTREES"/*/target; do
   # only reclaim a target/ that has been cold well beyond any tight-loop build.
   if [ "$alive" = 1 ]; then thresh="$IDLE_TARGET_STALE_MIN"; else thresh="$TARGET_STALE_MIN"; fi
 
-  t_age=$(( (now - $(stat -c %Y "$tdir")) / 60 ))
-  if [ "$t_age" -lt "$thresh" ]; then
-    if [ "$alive" = 1 ]; then skipped_alive=$((skipped_alive+1)); else skipped_fresh=$((skipped_fresh+1)); fi
-    continue
-  fi
+  # Scan EVERY cargo target/ under the worktree — the top-level <worktree>/target AND any NESTED one (e.g. a
+  # sub-project checkout at <worktree>/implementation/seed/crates/*/target). The old glob `*/target` matched
+  # ONLY the top level, so a nested NATIVE-cargo build tree was never reaped and grew unbounded — a stopped
+  # agent's implementation/seed/crates/cdz-agent-host/target reached 155G before a manual sweep had to
+  # reclaim it (root-FS-full incident 2026-09-13). `-prune` stops find descending once a `target` matches
+  # (a cargo target has no meaningful target-within-target, and it is far faster on a deep tree). The staleness
+  # + race-guard logic is applied PER target dir; the alive/excluded decision is per AGENT (its whole worktree).
+  # CACHEDIR.TAG guard: cargo writes that marker into every target/, so requiring it means we only ever delete
+  # a real cargo build dir — never a source directory that merely happens to be named `target`.
+  while IFS= read -r tdir; do
+    [ -d "$tdir" ] || continue
+    [ -f "$tdir/CACHEDIR.TAG" ] || continue
 
-  kind="$([ "$alive" = 1 ] && echo alive-idle || echo stopped)"
-  if [ "$APPLY" = 1 ]; then
-    # RACE GUARD: re-stat with a FRESH clock immediately before rm — if a build started during the scan,
-    # target/ mtime is now fresh (< thresh) → ABORT this prune (never rm a dir a build is writing into).
-    now2="$(date +%s)"
-    t_age2=$(( (now2 - $(stat -c %Y "$tdir" 2>/dev/null || echo "$now2")) / 60 ))
-    if [ "$t_age2" -lt "$thresh" ]; then
-      printf 'SKIP (build started mid-scan) %s (target_age now %sm < %sm)\n' "$tdir" "$t_age2" "$thresh"
-      skipped_fresh=$((skipped_fresh+1)); continue
+    t_age=$(( (now - $(stat -c %Y "$tdir" 2>/dev/null || echo "$now")) / 60 ))
+    if [ "$t_age" -lt "$thresh" ]; then
+      if [ "$alive" = 1 ]; then skipped_alive=$((skipped_alive+1)); else skipped_fresh=$((skipped_fresh+1)); fi
+      continue
     fi
-    printf 'PRUNE %s (%s; hb_age=%sm target_age=%sm)\n' "$tdir" "$kind" "$hb_age" "$t_age"
-    rm -rf "$tdir"
-  else
-    printf 'WOULD-PRUNE %s (%s; hb_age=%sm target_age=%sm thresh=%sm)\n' "$tdir" "$kind" "$hb_age" "$t_age" "$thresh"
-  fi
-  pruned=$((pruned+1))
+
+    kind="$([ "$alive" = 1 ] && echo alive-idle || echo stopped)"
+    if [ "$APPLY" = 1 ]; then
+      # RACE GUARD: re-stat with a FRESH clock immediately before rm — if a build started during the scan,
+      # target/ mtime is now fresh (< thresh) → ABORT this prune (never rm a dir a build is writing into).
+      now2="$(date +%s)"
+      t_age2=$(( (now2 - $(stat -c %Y "$tdir" 2>/dev/null || echo "$now2")) / 60 ))
+      if [ "$t_age2" -lt "$thresh" ]; then
+        printf 'SKIP (build started mid-scan) %s (target_age now %sm < %sm)\n' "$tdir" "$t_age2" "$thresh"
+        skipped_fresh=$((skipped_fresh+1)); continue
+      fi
+      printf 'PRUNE %s (%s; hb_age=%sm target_age=%sm)\n' "$tdir" "$kind" "$hb_age" "$t_age"
+      rm -rf "$tdir"
+    else
+      printf 'WOULD-PRUNE %s (%s; hb_age=%sm target_age=%sm thresh=%sm)\n' "$tdir" "$kind" "$hb_age" "$t_age" "$thresh"
+    fi
+    pruned=$((pruned+1))
+  done < <(find "$wt" -type d -name target -prune 2>/dev/null)
 done
 
 printf 'prune-stale-targets: %s target/ dir(s) %s; skipped alive=%s fresh=%s excluded=%s\n' \
