@@ -1,0 +1,97 @@
+// The 769 demo SPAWNER handler (increment D3) — an HTTP handler that spawns a DURABLE actor and BINDS it to a
+// name, proving the spawn + name-directory effects live over the gateway. POST the actor's ProgramHash bytes
+// as the body; the handler spawns a durable session running that program, binds it in the global name
+// directory under the fixed name "echo", and responds with the new session id. The name-router (D4) then
+// resolves "echo" and `send`s the actor a message.
+//
+// The full chain is two effects folded through on-response (the router/handler → effect → on-response idiom):
+//   on-message(request-head)  → POST: choose body-mode Whole (read the ProgramHash body); GET: usage text.
+//   on-message(body-stream)   → accumulate the body; on End, emit spawn(durable, program = body).
+//   on-response(SpawnResult)  → stash the child sid, emit name Bind("echo", sid).
+//   on-response(NameResult)   → respond 200 with the bound sid.
+//
+// ONE OUTPUT PATH — the response-stream (Head + Chunk + End Break), like a2a-server: it keeps a SINGLE Header
+// type (http-response-stream's) in scope, avoiding the http-response/http-lib `Header` collision (cdz's
+// type-name namespace is global across a guest's module closure).
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Frame as InFrame, descriptor as body-stream-desc } from "http-request-body-stream"
+import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
+import { SpawnRequest, SpawnSpec, SpawnResult, descriptor as spawn-desc } from "spawn"
+import { NameOp, NameResult, descriptor as name-desc } from "name-directory"
+import { Outcome, Error, on-notification, request } from "reducer-lib"
+
+// Local structural copy of the live head (method as a String), decoded from the gateway's request-head value.
+// A LOCAL header-shaped type keeps http-response's Header out of scope (see a2a-server's note).
+type ReqHeader = | ReqHeader(Record(name: String, value: String))
+type ReqHead =
+  | ReqHead(Record(method: String, path: String, query: String, headers: List(ReqHeader)))
+
+// ── Response builders (all over the response-stream path) ────────────────────────────────────────────────────
+def stream-head(ctype: String) =
+  request(resp-stream-desc().id,
+          Value.encode(OutFrame.Head({ status = 200,
+                                       headers = [OutHeader.Header({ name = "content-type", value = ctype })] })),
+          b"")
+
+def stream-chunk(body: Bytes) =
+  request(resp-stream-desc().id, Value.encode(OutFrame.Chunk({ body = body })), b"")
+
+def stream-end() =
+  Outcome.Close({ schema = resp-stream-desc().id, reason = Value.encode(OutFrame.End) })
+
+// A one-shot response over the stream path: Head + one Chunk, Break with End.
+def one-shot(ctype: String, body: Bytes) =
+  { requests = [ stream-head(ctype), stream-chunk(body) ], outcome = stream-end() }
+
+// ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
+def on-message(msg) =
+  host state in
+    (if msg.contract == body-stream-desc().id then
+       (match (Value.decode(msg.payload) : Option(InFrame)) with
+        | Some(InFrame.Chunk(c)) =>
+            (let prev = (match state.get(b"prog") with | Some(b) => b | None(_) => b"") in
+             (state.put(b"prog", Bytes.concat(prev, c.body)) ;
+              { requests = [], outcome = Outcome.Continue }))
+        | _ =>
+            // End → spawn a DURABLE actor running the ProgramHash carried in the accumulated body.
+            (let prog = (match state.get(b"prog") with | Some(b) => b | None(_) => b"") in
+             { requests = [request(spawn-desc().id,
+                                  Value.encode(SpawnRequest.SpawnRequest({ program = prog,
+                                                                          spec = SpawnSpec.SpawnSpec({ durable = true }) })),
+                                  b"spawn")],
+               outcome = Outcome.Continue }))
+     else
+       (match (Value.decode(msg.payload) : Option(ReqHead)) with
+        | Some(ReqHead.ReqHead(h)) =>
+            (if String.to-bytes(h.method) == b"POST" then
+               { requests = [request(body-mode-desc().id,
+                                    Value.encode(BodyMode.Whole({ max_body_size = Option.None })),
+                                    msg.token)],
+                 outcome = Outcome.Continue }
+             else
+               one-shot("text/plain; charset=utf-8",
+                        b"POST the echo actor's ProgramHash bytes to spawn a durable actor bound as 'echo'\n"))
+        | None(_) => one-shot("text/plain; charset=utf-8", b"bad request")))
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  host state in
+    (if resp.contract == spawn-desc().id then
+       (match resp.answer with
+        | Ok(payload) =>
+            (match (Value.decode(payload) : Option(SpawnResult)) with
+             | Some(SpawnResult.SpawnResult(r)) =>
+                 (state.put(b"sid", r.sid) ;
+                  { requests = [request(name-desc().id,
+                                       Value.encode(NameOp.Bind({ name = b"echo", value = r.sid })),
+                                       b"bind")],
+                    outcome = Outcome.Continue })
+             | None(_) => one-shot("text/plain; charset=utf-8", b"spawn: undecodable result"))
+        | Err(_) => one-shot("text/plain; charset=utf-8", b"spawn failed"))
+     else if resp.contract == name-desc().id then
+       (match state.get(b"sid") with
+        | Some(sid) => one-shot("text/plain; charset=utf-8", Bytes.concat(b"spawned + bound 'echo' -> ", sid))
+        | None(_) => one-shot("text/plain; charset=utf-8", b"bound (sid missing)"))
+     else
+       { requests = [], outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }
