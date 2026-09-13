@@ -1,0 +1,158 @@
+// A minimal STATELESS A2A (Agent-to-Agent protocol) SERVER guest (operator directive 2026-09-13, 764/766:
+// "build minimal STATELESS A2A + SSE now; HARD STOP before stateful task persistence"). A Cadenza root-router
+// guest that speaks the A2A wire protocol — JSON-RPC 2.0 over HTTP, plus SSE for streaming — entirely in
+// userspace over the flexible-handler interface the hivemind daemon exposes. Like the MCP server, the ENTIRE
+// request lifecycle (route decision, body intake, JSON-RPC dispatch, one-shot vs streamed response) lives in
+// this reducer; the platform is pure plumbing. JSON is handled WITHOUT any platform JSON-awareness (operator
+// 759): the reusable json-lib byte-scan extracts the JSON-RPC `id`, and responses are byte literals spliced
+// around it via Bytes.concat.
+//
+// SURFACE (the stateless slice — NO stateful tasks/get, tasks/cancel, or task store; that is the HARD STOP
+// boundary the operator paused before):
+//   1. Agent Card — GET /.well-known/agent.json → a one-shot application/json descriptor (a static card).
+//   2. message/send — POST JSON-RPC → read the whole body, respond with a completed Task result.
+//   3. message/stream — POST JSON-RPC → respond as SSE (text/event-stream): a status-update (working), an
+//      artifact-update, and a final status-update (completed, final:true).
+//
+// ONE OUTPUT PATH — the response-stream. Every response (the one-shots AND the SSE stream) is emitted as
+// http-response-stream Head + Chunk(s) + a terminal End Break. A one-shot is just Head + one Chunk + End; SSE
+// is Head + several `data:` Chunks + End. This keeps a SINGLE `Header` type in scope (http-response-stream's,
+// aliased OutHeader): http-lib's `respond` would drag in http-response's OWN `Header`, and the two same-named
+// types COLLIDE in one guest's module closure (the http-lib doc warns of exactly this). The response-stream
+// path needs no prior body-mode (the daemon's driver opens the response on Head), so a GET streams its answer
+// straight from the head with no body intake.
+//
+// TIMER NOTE: all SSE chunks are emitted in ONE fold (a NON-timer SSE proof). A guest-driven periodic timer
+// that self-wakes to push the next SSE frame on an interval is NOT wired to the ephemeral response-stream path
+// today (flagged to the concierge, ask 76xxx: it needs an S2c-for-timers bridge, which is persistence-adjacent
+// and behind the operator's HARD STOP). This proves the SSE framing end-to-end; the periodic drive is pending.
+//
+// LIFECYCLE (head-first delivery, like the counter + http-flex guests):
+//   on_message(request-head)              → GET: stream the answer directly; POST: choose body-mode Whole.
+//   on_message(request-body-stream Chunk) → accumulate the body (in-memory ephemeral scratch KV).
+//   on_message(request-body-stream End)   → dispatch the accumulated JSON-RPC body (send | stream | error).
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Frame as InFrame, descriptor as body-stream-desc } from "http-request-body-stream"
+import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
+import { contains, field-token } from "json-lib"
+
+// Local structural copy of the live head (method as a String, e.g. "GET"). Its `headers` field uses a LOCAL
+// header-shaped type (name/value): the binary-AST decode is structural (name-independent), so this decodes the
+// gateway's encoded head, and a local type keeps http-response's Header out of scope (which would collide with
+// http-response-stream's `Header`, since cdz's type-name namespace is global across the module closure). It is
+// also distinct from http-response-stream's Header-in-`Frame.Head`, which otherwise confuses the decode.
+type ReqHeader = | ReqHeader(Record(name: String, value: String))
+type ReqHead =
+  | ReqHead(Record(method: String, path: String, query: String, headers: List(ReqHeader)))
+
+// ── Documents ────────────────────────────────────────────────────────────────────────────────────────────────
+
+// The Agent Card (GET /.well-known/agent.json) — the A2A discovery descriptor, a static document.
+def agent-card() -> Bytes =
+  b"{\"name\":\"cadenza-hivemind-a2a\",\"description\":\"A minimal A2A agent served live from a Cadenza root-router guest over the hivemind gateway.\",\"url\":\"/\",\"version\":\"0.1.0\",\"protocolVersion\":\"0.2.0\",\"capabilities\":{\"streaming\":true,\"pushNotifications\":false,\"stateTransitionHistory\":false},\"defaultInputModes\":[\"text/plain\"],\"defaultOutputModes\":[\"text/plain\"],\"skills\":[{\"id\":\"echo\",\"name\":\"Echo\",\"description\":\"Replies with a fixed greeting.\",\"tags\":[\"echo\"]}]}"
+
+def index-body() -> Bytes =
+  b"cadenza a2a agent -- GET /.well-known/agent.json for the Agent Card; POST / with A2A JSON-RPC (message/send, message/stream)\n"
+
+// ── JSON-RPC 2.0 envelopes (the echoed id spliced in via Bytes.concat) ───────────────────────────────────────
+
+def result-envelope(id: Bytes, result: Bytes) -> Bytes =
+  Bytes.concat(b"{\"jsonrpc\":\"2.0\",\"id\":",
+    Bytes.concat(id,
+      Bytes.concat(b",\"result\":",
+        Bytes.concat(result, b"}"))))
+
+def method-error(id: Bytes) -> Bytes =
+  Bytes.concat(b"{\"jsonrpc\":\"2.0\",\"id\":",
+    Bytes.concat(id, b",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}"))
+
+// The synchronous message/send result: a COMPLETED Task with one text artifact.
+def completed-task() -> Bytes =
+  b"{\"id\":\"task-1\",\"contextId\":\"ctx-1\",\"kind\":\"task\",\"status\":{\"state\":\"completed\"},\"artifacts\":[{\"artifactId\":\"artifact-1\",\"parts\":[{\"kind\":\"text\",\"text\":\"pong from a Cadenza A2A agent, served live over the hivemind gateway\"}]}]}"
+
+// The message/stream update events (each becomes one SSE `data:` frame).
+def working-status() -> Bytes =
+  b"{\"taskId\":\"task-1\",\"contextId\":\"ctx-1\",\"kind\":\"status-update\",\"status\":{\"state\":\"working\"},\"final\":false}"
+
+def artifact-update() -> Bytes =
+  b"{\"taskId\":\"task-1\",\"contextId\":\"ctx-1\",\"kind\":\"artifact-update\",\"artifact\":{\"artifactId\":\"artifact-1\",\"parts\":[{\"kind\":\"text\",\"text\":\"pong from a Cadenza A2A agent (streamed over SSE)\"}]}}"
+
+def completed-status() -> Bytes =
+  b"{\"taskId\":\"task-1\",\"contextId\":\"ctx-1\",\"kind\":\"status-update\",\"status\":{\"state\":\"completed\"},\"final\":true}"
+
+// One SSE frame: `data: <jsonrpc-response>\n\n` (the text/event-stream wire framing).
+def sse-event(id: Bytes, result: Bytes) -> Bytes =
+  Bytes.concat(b"data: ", Bytes.concat(result-envelope(id, result), b"\n\n"))
+
+// ── Response builders (all over the response-stream path) ────────────────────────────────────────────────────
+
+def stream-head(ctype: String) =
+  request(resp-stream-desc().id,
+          Value.encode(OutFrame.Head({ status = 200,
+                                       headers = [OutHeader.Header({ name = "content-type", value = ctype })] })),
+          b"")
+
+def stream-chunk(body: Bytes) =
+  request(resp-stream-desc().id, Value.encode(OutFrame.Chunk({ body = body })), b"")
+
+def stream-end() =
+  Outcome.Close({ schema = resp-stream-desc().id, reason = Value.encode(OutFrame.End) })
+
+// A one-shot response over the stream path: Head + one Chunk, Break with End.
+def one-shot(ctype: String, body: Bytes) =
+  { requests = [ stream-head(ctype), stream-chunk(body) ], outcome = stream-end() }
+
+// message/stream → SSE: Head(text/event-stream + cache-control) + three update Chunks, Break with End. All
+// chunks in ONE fold (the non-timer SSE proof).
+def sse-out(id: Bytes) =
+  { requests = [ request(resp-stream-desc().id,
+                        Value.encode(OutFrame.Head({ status = 200,
+                                                     headers = [OutHeader.Header({ name = "content-type", value = "text/event-stream" }),
+                                                                OutHeader.Header({ name = "cache-control", value = "no-cache" })] })),
+                        b""),
+                 stream-chunk(sse-event(id, working-status())),
+                 stream-chunk(sse-event(id, artifact-update())),
+                 stream-chunk(sse-event(id, completed-status())) ],
+    outcome = stream-end() }
+
+// Dispatch the accumulated JSON-RPC request body on its `method`. `message/stream` is checked before
+// `message/send` (they share the `message/` prefix); the echoed `id` is extracted verbatim (preserving its
+// JSON type) via json-lib's field-token.
+def dispatch-rpc(body: Bytes) =
+  (let id = field-token(body, b"id", b"null") in
+   if contains(body, b"message/stream") then sse-out(id)
+   else if contains(body, b"message/send") then one-shot("application/json", result-envelope(id, completed-task()))
+   else one-shot("application/json", method-error(id)))
+
+// ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == body-stream-desc().id then
+       (match (Value.decode(msg.payload) : Option(InFrame)) with
+        | Some(InFrame.Chunk(c)) =>
+            (let prev = (match state.get(b"body") with | Some(b) => b | None(_) => b"") in
+             (state.put(b"body", Bytes.concat(prev, c.body)) ;
+              { requests = [], outcome = Outcome.Continue }))
+        | _ =>
+            // End (not-a-Chunk) → dispatch the accumulated JSON-RPC body.
+            (match state.get(b"body") with
+             | Some(body) => dispatch-rpc(body)
+             | None(_) => dispatch-rpc(b"")))
+     else
+       (match (Value.decode(msg.payload) : Option(ReqHead)) with
+        | Some(ReqHead.ReqHead(h)) =>
+            (if String.to-bytes(h.method) == b"GET" then
+               (if String.to-bytes(h.path) == b"/.well-known/agent.json"
+                then one-shot("application/json", agent-card())
+                else one-shot("text/plain; charset=utf-8", index-body()))
+             else
+               // POST (or any non-GET) → read the whole body, then dispatch on End.
+               { requests = [request(body-mode-desc().id,
+                                    Value.encode(BodyMode.Whole({ max_body_size = Option.None })),
+                                    msg.token)],
+                 outcome = Outcome.Continue })
+        | None(_) => one-shot("text/plain; charset=utf-8", b"not found")))
+
+export { on-message, on-response, on-notification }
