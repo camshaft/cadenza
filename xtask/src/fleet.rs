@@ -403,6 +403,7 @@ impl Fleet {
             "compact-nudge.sh",
             "reap-leases.sh",
             "aea-refresh.sh",
+            "disk-guard.sh",
             "watchdog.sh",
         ] {
             let src = self.src.join(f);
@@ -2261,6 +2262,51 @@ fn ensure_aea_refresh_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-15-min user-crontab line for the root-FS byte-pressure early-warning (v-fleet-tooling,
+/// concierge-greenlit 2026-09-13), tagged `# fleet:disk-guard` so [`reconcile_tagged_crons`] can find/heal
+/// it. Runs the HUB copy of `disk-guard.sh` → samples root-FS use%, RAISES `disk-pressure.alarm` at/above
+/// 85% (WARN) / 92% (HIGH) — surfaced by `fleet status` — and sends the concierge one rate-limited note on a
+/// fresh escalation. Alarm-only (no auto-reclaim). Closes the gap the 2026-09-13 root-FS-full incident hit
+/// (byte capacity was unmonitored; only /tmp inodes were). 15 min: disk fills over hours, so ample lead time.
+fn disk_guard_cron_line(hub_script: &str) -> String {
+    format!("*/15 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:disk-guard")
+}
+
+/// Ensure the `# fleet:disk-guard` per-15-min user-crontab entry exists + points at THIS hub's
+/// `disk-guard.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
+/// Skips silently if `disk-guard.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
+/// `fleet up`. The guard only ever reads `df` + writes an alarm stamp + (on a fresh escalation) sends one
+/// note, so it is safe to run frequently + spuriously.
+fn ensure_disk_guard_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("disk-guard.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:disk-guard",
+        disk_guard_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-5-min user-crontab line for the autonomous CONCIERGE COMPACTION heartbeat
 /// (v-fleet-tooling 2026-09-03), tagged `# fleet:compact-nudge` so [`reconcile_tagged_crons`] can find/heal
 /// it. Runs the HUB copy of `compact-nudge.sh` → a worktree's `xtask fleet compact-nudge --session main` —
@@ -2437,6 +2483,11 @@ fn up(fleet: &Fleet) {
     // re-minting the ~2h AEA cookie from the still-valid session so it never lapses mid-session (operator
     // note-709). Independent + fail-open + drift-healed; does not extend the session past its ceiling.
     ensure_aea_refresh_cron(fleet);
+    // The root-FS byte-pressure early-warning cron: `disk-guard.sh` samples root-FS use% every 15 min and
+    // RAISES `disk-pressure.alarm` (surfaced by `fleet status`) at 85% WARN / 92% HIGH + one rate-limited
+    // concierge note on a fresh escalation. Alarm-only (no auto-reclaim). Closes the no-early-warning gap the
+    // 2026-09-13 root-FS-full incident hit. Independent + fail-open + drift-healed.
+    ensure_disk_guard_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -19818,6 +19869,24 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Empty dir / missing dir → no alarms (never a false alarm).
         let _ = std::fs::remove_dir_all(&dir);
         assert!(read_alarm_files(&dir).is_empty(), "missing dir → no alarms");
+    }
+
+    #[test]
+    fn disk_guard_cron_line_is_every_15min_silent_and_tagged() {
+        let line = disk_guard_cron_line("/hub/disk-guard.sh");
+        // Every 15 min (disk fills over hours → ample lead time), runs the hub script, silent, tagged.
+        assert!(
+            line.starts_with("*/15 * * * * bash /hub/disk-guard.sh"),
+            "every-15-min, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — a disk sample never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:disk-guard"),
+            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
+        );
     }
 
     #[test]
