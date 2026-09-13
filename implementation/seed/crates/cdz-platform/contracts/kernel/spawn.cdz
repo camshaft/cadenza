@@ -1,0 +1,55 @@
+// The spawn contract — a reducer SPAWNS a child actor by emitting a request against this contract, and the
+// platform answers with the new session id to route to (operator milestone 769: "spawn a durable task via an
+// effect … the spawn should take a specification on how it should be spawned — durable or not … the response
+// would return the session id that we can now start routing to"). This is the effect-driven analog of the
+// system `Spawn` request: a reducer names a program (by ProgramHash bytes) + a spec, and the kernel launches
+// a session running it, then returns its sid as the correlated response (folds via on_response).
+//
+// Like timer.cdz / spawned.cdz this file is the source of truth for the schema and is real Cadenza: `cargo
+// xtask codegen` validates it with the `cdz` binary and generates `src/contracts/spawn.rs` (the type
+// declarations, as Cadenza-AST builder calls) and wires `pub mod spawn` into `src/contracts/mod.rs`. Re-run
+// `cargo xtask codegen` after editing; `--check` fails if the generated file is stale.
+//
+// SPEC (operator 769, minimal + extensible): `durable` chooses a DURABLE actor (persisted program binding,
+// survives + is addressable by sid across requests/nodes) vs an EPHEMERAL one (in-memory scratch, per-request
+// shape). Placement is deliberately NOT in the spec yet (operator open question — default node-local /
+// partition-by-sid); per-spawn limits + links (the settled spawn-capability design) are a later extension.
+
+// The spec: how to spawn. `durable = true` → a durable actor; `false` → ephemeral.
+type SpawnSpec =
+  | SpawnSpec(Record(durable: Bool))
+
+// The request (this contract's input): spawn `program` (a ProgramHash's bytes) under `spec`.
+type SpawnRequest =
+  | SpawnRequest(Record(program: Bytes, spec: SpawnSpec))
+
+// The response (this contract's output): the spawned session id, delivered back to the requester correlated by
+// the request's continuation-token (folds via on_response), so the requester can route messages to it.
+type SpawnResult =
+  | SpawnResult(Record(sid: Bytes))
+
+// --- conformance proofs: fully-literal values of each type, ascribed against the schema type ---
+def a-request() -> SpawnRequest =
+  SpawnRequest.SpawnRequest({ program = b"program-hash", spec = SpawnSpec.SpawnSpec({ durable = true }) })
+
+def a-result() -> SpawnResult =
+  SpawnResult.SpawnResult({ sid = b"session-id" })
+
+@test
+def request-conforms() =
+  match a-request() with
+  | SpawnRequest.SpawnRequest(r) =>
+      (match r.spec with
+       | SpawnSpec.SpawnSpec(s) => if s.durable then unit else trap("spec durable mismatch"))
+
+@test
+def result-conforms() =
+  match a-result() with
+  | SpawnResult.SpawnResult(r) => if r.sid == b"session-id" then unit else trap("sid mismatch")
+
+// Self-reflecting uniform descriptor (operator shape): a reducer imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.spawn", "SpawnRequest", "SpawnResult")
+
+export { SpawnSpec.*, SpawnRequest.*, SpawnResult.*, descriptor }

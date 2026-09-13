@@ -1,0 +1,16 @@
+// A timer test reducer that ARMS a long `fire-after` and IMMEDIATELY Closes in the same fold — proving the
+// hivemind daemon's ephemeral-timer bridge CANCELS a pending timer when the parent session closes (operator
+// 768: "close the spawned timer task when the parent closes, so we do not end up with tasks lingering").
+// The bridge holds each armed timer as a future in `reactor::drive`'s own local set (no detached task), so
+// when `drive` returns for ANY reason (here a Break) the set is dropped and every pending timer is cancelled
+// — it never fires into a gone parent, and nothing lingers. A ~1h duration guarantees the timer is still
+// pending at close, so a test asserting `drive` returns Closed WITHOUT the sim clock advancing an hour proves
+// the pending timer was dropped, not awaited/leaked.
+import { Envelope, descriptor as timer-desc } from "timer"
+import { Outcome, request, on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  { requests = [request(timer-desc().id, Value.encode(Envelope.FireAfter(3600000000000)), b"long")],
+    outcome = Outcome.Close({ schema = timer-desc().id, reason = b"closed-with-timer-pending" }) }
+
+export { on-message, on-response, on-notification }

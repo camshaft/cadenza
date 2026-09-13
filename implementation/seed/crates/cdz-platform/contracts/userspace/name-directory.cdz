@@ -1,0 +1,62 @@
+// The name-directory contract — a GLOBAL name→session-id directory (operator milestone 769: "a name
+// directory … an effect that can read or write to global names … spawn durable actors, give them names, and
+// then lookup their session id in the name directory and send them a message"). A reducer emits a request
+// against this contract to BIND a name to a session id, or LOOKUP a name's session id; the platform answers
+// with the correlated response (folds via on_response). Names are global + strongly consistent (backed by the
+// same Membrain quorum KV as the root-router key), so any node resolves the same name→sid.
+//
+// Like timer.cdz this file is the source of truth for the schema and is real Cadenza: `cargo xtask codegen`
+// validates it with the `cdz` binary and generates `src/contracts/name_directory.rs` and wires it into
+// `src/contracts/mod.rs`. Re-run `cargo xtask codegen` after editing.
+//
+// SURFACE (operator 769, minimal + extensible): Bind (write) + Lookup (read). Bind is LAST-WRITER-WINS — an
+// alias that can be rebound (a reject-if-exists / unique-name variant is a follow-on only if wanted). `name`
+// is raw bytes (a guest passes `String.to-bytes(name)`), keyed verbatim in the directory. A `List` op is a
+// later extension.
+
+// The request (this contract's input): bind a name to a sid, or look a name up.
+type NameOp =
+  | Bind(Record(name: Bytes, sid: Bytes))
+  | Lookup(Record(name: Bytes))
+
+// The response (this contract's output): `Bound` acknowledges a Bind; `Found`/`Absent` answer a Lookup.
+type NameResult =
+  | Bound
+  | Found(Record(sid: Bytes))
+  | Absent
+
+// --- conformance proofs: fully-literal values of each type, ascribed against the schema type ---
+def a-bind() -> NameOp =
+  NameOp.Bind({ name = b"greeter", sid = b"session-id" })
+
+def a-lookup() -> NameOp =
+  NameOp.Lookup({ name = b"greeter" })
+
+def a-found() -> NameResult =
+  NameResult.Found({ sid = b"session-id" })
+
+@test
+def bind-conforms() =
+  match a-bind() with
+  | NameOp.Bind(b) => if b.sid == b"session-id" then unit else trap("bind sid mismatch")
+  | NameOp.Lookup(_) => trap("expected Bind")
+
+@test
+def lookup-conforms() =
+  match a-lookup() with
+  | NameOp.Lookup(l) => if l.name == b"greeter" then unit else trap("lookup name mismatch")
+  | NameOp.Bind(_) => trap("expected Lookup")
+
+@test
+def found-conforms() =
+  match a-found() with
+  | NameResult.Found(f) => if f.sid == b"session-id" then unit else trap("found sid mismatch")
+  | NameResult.Bound => trap("expected Found")
+  | NameResult.Absent => trap("expected Found")
+
+// Self-reflecting uniform descriptor: a reducer imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.name-directory", "NameOp", "NameResult")
+
+export { NameOp.*, NameResult.*, descriptor }
