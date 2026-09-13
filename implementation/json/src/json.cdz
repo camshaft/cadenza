@@ -59,6 +59,16 @@ type StrParsed =
   | SOk(Record(str: Bytes, rest: Bytes))
   | SErr
 
+// The result of parsing a number: the lossless Num + the bytes after it, or a parse error. Internal.
+type NumParsed =
+  | NOk(Record(num: Num, rest: Bytes))
+  | NErr
+
+// A run of decimal digits accumulated into a BigInt `coeff` with their `count`, plus the remaining bytes.
+// Internal (the digit-accumulation carrier for the number parser).
+type Digits =
+  | Digits(Record(coeff: BigInt, count: Int64, rest: Bytes))
+
 // ── Whitespace ──────────────────────────────────────────────────────────────────────────────────────────
 // Drop leading JSON insignificant whitespace — space (32), tab (9), line feed (10), carriage return (13) —
 // and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
@@ -164,6 +174,86 @@ def parse-unicode(cu: Int64, rest: Bytes, acc: Bytes) -> StrParsed =
   else if cu >= 56320 and cu <= 57343 then StrParsed.SErr
   else parse-str(rest, Bytes.concat(acc, utf8(cu)))
 
+// ── I3: numbers (lossless, BigInt-backed) ───────────────────────────────────────────────────────────────
+// A JSON number is  -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?  and is stored LOSSLESSLY as
+// value = (if neg then -1 else 1) * coeff * 10^exp10:  `coeff` accumulates EVERY significant digit (integer
+// and fraction, concatenated) as a BigInt; `exp10` = (explicit exponent) - (number of fraction digits).
+// The verbatim token is retained as `raw`.
+
+// Accumulate consecutive decimal-digit bytes into a BigInt coefficient, counting them; stop at the first
+// non-digit (returning it as `rest`).
+def parse-digits(inp: Bytes, coeff: BigInt, count: Int64) -> Digits =
+  (match inp with
+   | b[u8(d), bytes(rest)] =>
+       if d >= 48 and d <= 57 then
+         parse-digits(rest, coeff * 10N + BigInt.of(Int64.of(d) - 48), count + 1)
+       else Digits({ coeff = coeff, count = count, rest = inp })
+   | _ => Digits({ coeff = coeff, count = count, rest = inp }))
+
+// Parse a number token from the front of `inp` (whose first byte is '-' or a digit). `orig` is retained for
+// slicing the verbatim `raw`. Threads through int -> frac -> exp, validating the JSON grammar at each stage.
+def parse-number(inp: Bytes) -> NumParsed =
+  (match inp with
+   | b[u8(45), bytes(rest)] => parse-int(true, rest, inp)
+   | _ => parse-int(false, inp, inp))
+
+// Integer part, enforcing the no-leading-zero rule: a lone '0' is fine (and may be followed by '.'/'e'/end),
+// but '0' immediately followed by another digit is invalid; '1'-'9' consumes the whole digit run.
+def parse-int(neg: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
+  (match inp with
+   | b[u8(48), bytes(rest)] =>
+       (match rest with
+        | b[u8(d2), bytes(_)] =>
+            if d2 >= 48 and d2 <= 57 then NumParsed.NErr
+            else parse-frac(neg, 0N, 0, rest, orig)
+        | _ => parse-frac(neg, 0N, 0, rest, orig))
+   | b[u8(d), bytes(_)] =>
+       if d >= 49 and d <= 57 then
+         (match parse-digits(inp, 0N, 0) with
+          | Digits(di) => parse-frac(neg, di.coeff, 0, di.rest, orig))
+       else NumParsed.NErr
+   | _ => NumParsed.NErr)
+
+// Optional fraction: a '.' MUST be followed by at least one digit. Each fraction digit extends `coeff` and
+// decrements `exp10` by one.
+def parse-frac(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
+  (match inp with
+   | b[u8(46), bytes(rest)] =>
+       (match parse-digits(rest, coeff, 0) with
+        | Digits(di) =>
+            if di.count == 0 then NumParsed.NErr
+            else parse-exp(neg, di.coeff, exp10 - di.count, di.rest, orig))
+   | _ => parse-exp(neg, coeff, exp10, inp, orig))
+
+// Optional exponent introducer 'e'/'E'.
+def parse-exp(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
+  (match inp with
+   | b[u8(101), bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | b[u8(69), bytes(rest)]  => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | _ => finish-number(neg, coeff, exp10, inp, orig))
+
+// Optional exponent sign.
+def parse-exp-sign(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
+  (match inp with
+   | b[u8(43), bytes(rest)] => parse-exp-digits(neg, coeff, exp10, true, rest, orig)
+   | b[u8(45), bytes(rest)] => parse-exp-digits(neg, coeff, exp10, false, rest, orig)
+   | _ => parse-exp-digits(neg, coeff, exp10, true, inp, orig))
+
+// Exponent digits (at least one required); folds the explicit exponent into `exp10`.
+def parse-exp-digits(neg: Bool, coeff: BigInt, exp10: Int64, epos: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
+  (match parse-digits(inp, 0N, 0) with
+   | Digits(di) =>
+       if di.count == 0 then NumParsed.NErr
+       else
+         let ev = Int64.of(di.coeff) in
+         finish-number(neg, coeff, (if epos then exp10 + ev else exp10 - ev), di.rest, orig))
+
+// Assemble the Num, slicing the verbatim `raw` token (the bytes of `orig` consumed before `rest`).
+def finish-number(neg: Bool, coeff: BigInt, exp10: Int64, rest: Bytes, orig: Bytes) -> NumParsed =
+  (match Bytes.slice(orig, 0, Bytes.len(orig) - Bytes.len(rest)) with
+   | Option.Some(raw) => NumParsed.NOk({ num = Num.Num({ neg = neg, coeff = coeff, exp10 = exp10, raw = raw }), rest = rest })
+   | Option.None      => NumParsed.NErr)
+
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
 // Parse a single JSON value from the front of `inp` (after leading whitespace). I1 recognizes the three
 // keyword literals by matching their exact bytes; strings/numbers/arrays/objects are added in I2-I4 (until
@@ -172,7 +262,8 @@ def parse-unicode(cu: Int64, rest: Bytes, acc: Bytes) -> StrParsed =
 // like `truer` is rejected there (its `rest` is non-empty / non-delimiter).
 //   null  = 110 117 108 108        true  = 116 114 117 101        false = 102 97 108 115 101
 def parse-value(inp: Bytes) -> Parsed =
-  (match skip-ws(inp) with
+  let s = skip-ws(inp) in
+  (match s with
    | b[u8(110), u8(117), u8(108), u8(108), bytes(rest)] =>
        Parsed.POk({ value = Json.JNull, rest = rest })
    | b[u8(116), u8(114), u8(117), u8(101), bytes(rest)] =>
@@ -181,9 +272,18 @@ def parse-value(inp: Bytes) -> Parsed =
        Parsed.POk({ value = Json.JBool(false), rest = rest })
    | b[u8(34), bytes(after)] =>
        (match parse-str(after, b"") with
-        | StrParsed.SOk(s) => Parsed.POk({ value = Json.JStr(s.str), rest = s.rest })
-        | StrParsed.SErr   => Parsed.PErr)
+        | StrParsed.SOk(sp) => Parsed.POk({ value = Json.JStr(sp.str), rest = sp.rest })
+        | StrParsed.SErr    => Parsed.PErr)
+   | b[u8(45), bytes(_)] => number-value(s)
+   | b[u8(dd), bytes(_)] =>
+       if dd >= 48 and dd <= 57 then number-value(s) else Parsed.PErr
    | _ => Parsed.PErr)
+
+// Dispatch a number value: parse the token and wrap it, or fail.
+def number-value(s: Bytes) -> Parsed =
+  (match parse-number(s) with
+   | NumParsed.NOk(n) => Parsed.POk({ value = Json.JNum(n.num), rest = n.rest })
+   | NumParsed.NErr   => Parsed.PErr)
 
 // ── The public decode entry ─────────────────────────────────────────────────────────────────────────────
 // Parse a complete JSON document: one value, optionally surrounded by whitespace, with NO trailing garbage.
@@ -208,6 +308,11 @@ def as-bool(v: Json) -> Option(Bool) =
 // The decoded (escape-resolved, UTF-8) bytes of a JStr, or None for any other value shape.
 def as-str-bytes(v: Json) -> Option(Bytes) =
   (match v with | Json.JStr(s) => Option.Some(s) | _ => Option.None)
+
+// The lossless Num of a JNum, or None for any other value shape. (Richer numeric accessors — as-int64 /
+// as-bigint / as-float — arrive in I6; Num's fields are directly readable meanwhile.)
+def num-of(v: Json) -> Option(Num) =
+  (match v with | Json.JNum(n) => Option.Some(n) | _ => Option.None)
 
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
@@ -389,4 +494,107 @@ def t-uni-reject-truncated() =
   // only three hex digits before the closing quote
   if rejects(b"\"\\u041\"") then unit else trap("\\u with fewer than four hex digits is rejected")
 
-export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes }
+// ── I3: number tests (lossless BigInt: value = sign * coeff * 10^exp10) ─────────────────────────────────
+
+def parses-num(inp: Bytes, wneg: Bool, wcoeff: Int64, wexp10: Int64) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) =>
+       (match num-of(v) with
+        | Option.Some(n) =>
+            (match n with
+             | Num.Num(r) => (r.neg == wneg) and (Int64.of(r.coeff) == wcoeff) and (r.exp10 == wexp10))
+        | Option.None => false)
+   | Option.None => false)
+
+def parses-num-raw(inp: Bytes, wraw: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) =>
+       (match num-of(v) with
+        | Option.Some(n) => (match n with | Num.Num(r) => r.raw == wraw)
+        | Option.None => false)
+   | Option.None => false)
+
+@test
+def t-num-zero() =
+  if parses-num(b"0", false, 0, 0) then unit else trap("0 -> coeff 0, exp10 0")
+
+@test
+def t-num-int() =
+  if parses-num(b"42", false, 42, 0) then unit else trap("42 -> coeff 42, exp10 0")
+
+@test
+def t-num-neg() =
+  if parses-num(b"-42", true, 42, 0) then unit else trap("-42 -> neg, coeff 42")
+
+@test
+def t-num-frac() =
+  // 3.14 -> coeff 314, exp10 -2  (value 314 * 10^-2)
+  if parses-num(b"3.14", false, 314, 0 - 2) then unit else trap("3.14 -> coeff 314, exp10 -2")
+
+@test
+def t-num-exp() =
+  if parses-num(b"1e3", false, 1, 3) then unit else trap("1e3 -> coeff 1, exp10 3")
+
+@test
+def t-num-frac-exp() =
+  // 1.5e2 -> coeff 15, exp10 (2 - 1) = 1  (value 150)
+  if parses-num(b"1.5e2", false, 15, 1) then unit else trap("1.5e2 -> coeff 15, exp10 1")
+
+@test
+def t-num-neg-frac() =
+  // -0.001 -> neg, coeff 1, exp10 -3
+  if parses-num(b"-0.001", true, 1, 0 - 3) then unit else trap("-0.001 -> neg coeff 1 exp10 -3")
+
+@test
+def t-num-cap-e-neg() =
+  if parses-num(b"1E-2", false, 1, 0 - 2) then unit else trap("1E-2 -> coeff 1 exp10 -2")
+
+@test
+def t-num-exp-plus() =
+  if parses-num(b"6e+1", false, 6, 1) then unit else trap("6e+1 -> coeff 6 exp10 1")
+
+@test
+def t-num-raw() =
+  if parses-num-raw(b"3.14", b"3.14") then unit else trap("the verbatim token 3.14 is retained as raw")
+
+@test
+def t-num-raw-neg() =
+  if parses-num-raw(b"-42", b"-42") then unit else trap("the verbatim token -42 is retained as raw")
+
+@test
+def t-num-trailing-ws() =
+  if parses-num(b"  42  ", false, 42, 0) then unit else trap("a number tolerates surrounding whitespace")
+
+@test
+def t-num-reject-leading-zero() =
+  if rejects(b"01") then unit else trap("a leading zero (01) is not a valid JSON number")
+
+@test
+def t-num-reject-no-int() =
+  if rejects(b".5") then unit else trap("a number must have an integer part (.5 is invalid)")
+
+@test
+def t-num-reject-bare-dot() =
+  if rejects(b"1.") then unit else trap("a '.' must be followed by at least one digit")
+
+@test
+def t-num-reject-empty-exp() =
+  if rejects(b"1e") then unit else trap("an exponent must have at least one digit")
+
+@test
+def t-num-reject-lone-minus() =
+  if rejects(b"-") then unit else trap("a lone minus is not a number")
+
+@test
+def t-num-reject-plus() =
+  if rejects(b"+5") then unit else trap("a leading plus is not a valid JSON number")
+
+@test
+def t-num-reject-double-dot() =
+  if rejects(b"1.2.3") then unit else trap("1.2.3 has trailing garbage after the number")
+
+@test
+def t-num-reject-trailing-garbage() =
+  if rejects(b"42x") then unit else trap("42x has trailing garbage")
+
+export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes, num-of }
