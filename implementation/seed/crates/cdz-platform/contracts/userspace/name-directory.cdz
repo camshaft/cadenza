@@ -1,44 +1,51 @@
-// The name-directory contract — a GLOBAL name→session-id directory (operator milestone 769: "a name
-// directory … an effect that can read or write to global names … spawn durable actors, give them names, and
-// then lookup their session id in the name directory and send them a message"). A reducer emits a request
-// against this contract to BIND a name to a session id, or LOOKUP a name's session id; the platform answers
-// with the correlated response (folds via on_response). Names are global + strongly consistent (backed by the
-// same Membrain quorum KV as the root-router key), so any node resolves the same name→sid.
+// The name-directory contract — a GLOBAL name→bytes directory (operator milestone 769; value shape 773). A
+// reducer emits a request against this contract to BIND a name to an opaque VALUE, or LOOKUP a name's value;
+// the platform answers with the correlated response (folds via on_response). Names + values are global +
+// strongly consistent (backed by the same Membrain quorum KV as the root-router key), so any node resolves
+// the same name→value.
+//
+// The value is ARBITRARY OPAQUE BYTES (operator 773): "the name directory should be able to store any bytes …
+// the value should just be bytes … a caller would have to know what the bytes mean. That way we can store CAS
+// hashes or inline values or whatever." So the directory does NOT type the value as a session id — a caller
+// stores whatever it wants (a session id, a CAS hash, an inline value) and interprets the bytes on lookup. The
+// spawn+name demo, for instance, binds a name to a spawned actor's session id ENCODED as bytes, and decodes it
+// on lookup before routing to the actor.
 //
 // Like timer.cdz this file is the source of truth for the schema and is real Cadenza: `cargo xtask codegen`
-// validates it with the `cdz` binary and generates `src/contracts/name_directory.rs` and wires it into
-// `src/contracts/mod.rs`. Re-run `cargo xtask codegen` after editing.
+// (nix .#cdz-platform-contracts) validates it with the `cdz` binary and generates `src/contracts/
+// name_directory.rs` and wires it into `src/contracts/mod.rs`.
 //
 // SURFACE (operator 769, minimal + extensible): Bind (write) + Lookup (read). Bind is LAST-WRITER-WINS — an
 // alias that can be rebound (a reject-if-exists / unique-name variant is a follow-on only if wanted). `name`
-// is raw bytes (a guest passes `String.to-bytes(name)`), keyed verbatim in the directory. A `List` op is a
-// later extension.
+// and `value` are raw bytes (a guest passes `String.to-bytes(name)` for a textual name), keyed verbatim in the
+// directory. A `List` op is a later extension.
 
-// The request (this contract's input): bind a name to a sid, or look a name up.
+// The request (this contract's input): bind a name to an opaque value, or look a name up.
 type NameOp =
-  | Bind(Record(name: Bytes, sid: Bytes))
+  | Bind(Record(name: Bytes, value: Bytes))
   | Lookup(Record(name: Bytes))
 
-// The response (this contract's output): `Bound` acknowledges a Bind; `Found`/`Absent` answer a Lookup.
+// The response (this contract's output): `Bound` acknowledges a Bind; `Found`/`Absent` answer a Lookup. The
+// `value` is the opaque bytes the binder stored — the caller interprets them.
 type NameResult =
   | Bound
-  | Found(Record(sid: Bytes))
+  | Found(Record(value: Bytes))
   | Absent
 
 // --- conformance proofs: fully-literal values of each type, ascribed against the schema type ---
 def a-bind() -> NameOp =
-  NameOp.Bind({ name = b"greeter", sid = b"session-id" })
+  NameOp.Bind({ name = b"greeter", value = b"session-id-bytes" })
 
 def a-lookup() -> NameOp =
   NameOp.Lookup({ name = b"greeter" })
 
 def a-found() -> NameResult =
-  NameResult.Found({ sid = b"session-id" })
+  NameResult.Found({ value = b"session-id-bytes" })
 
 @test
 def bind-conforms() =
   match a-bind() with
-  | NameOp.Bind(b) => if b.sid == b"session-id" then unit else trap("bind sid mismatch")
+  | NameOp.Bind(b) => if b.value == b"session-id-bytes" then unit else trap("bind value mismatch")
   | NameOp.Lookup(_) => trap("expected Bind")
 
 @test
@@ -50,7 +57,7 @@ def lookup-conforms() =
 @test
 def found-conforms() =
   match a-found() with
-  | NameResult.Found(f) => if f.sid == b"session-id" then unit else trap("found sid mismatch")
+  | NameResult.Found(f) => if f.value == b"session-id-bytes" then unit else trap("found value mismatch")
   | NameResult.Bound => trap("expected Found")
   | NameResult.Absent => trap("expected Found")
 
