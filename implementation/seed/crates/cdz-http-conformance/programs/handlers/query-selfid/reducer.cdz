@@ -1,0 +1,18 @@
+// GUEST==HOST query ContractId proof (654(a)): a handler that answers 200 with the GUEST-folded
+// `descriptor().id` of the temp.celsius QUERY contract (the `temp-query` lib) as the raw response body. The
+// scenario (runs/query-selfid.ml) asserts that body equals the EXACT 33-byte host golden — 0x07
+// (ContractQuery tag) ++ blake3 of the canonical `(kind query)`-marked declaration — proving the Cadenza
+// guest's `contract-descriptor-query` fold is byte-identical to the host `contract_id_with_kind(_, Query)`,
+// exercised through the real gateway serving path (not just a unit derivation). Complements the wire-format
+// unit golden in src/contract_query_golden.rs (host bytes) with a live guest-fold proof.
+//
+// Composed from the shared libs: the reducer-world boundary + inert on-response/on-notification from
+// reducer-lib, the `respond` terminal from http-lib, the `temp-query` query contract, and the contract-id
+// self-reflection lib it reflects through. No `Header` import (empty header list) — no CDZ0201 collision.
+import { respond } from "http-lib"
+import { descriptor as temp-query-desc } from "temp-query"
+import { on-response, on-notification } from "reducer-lib"
+
+def on-message(_msg) = respond(200, [], temp-query-desc().id)
+
+export { on-message, on-response, on-notification }

@@ -1,0 +1,13 @@
+// A QUERY contract fixture (654(a) slices 3/4): the query counterpart of the temp.celsius self-id contract
+// (guests/reducer-world/reducer-selfid-cdz/temp-celsius.cdz). IDENTICAL shape — type Temp = | Mk(f64), i.e.
+// the canonical declaration (contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp …) — but
+// self-reflected as a QUERY via `contract-descriptor-query`, so `descriptor().id` carries the 0x07
+// ContractQuery tag and the declaration carries the trailing `(kind query)` marker (the byte shape this
+// vertical confirmed for #8911). A consumer projects `descriptor().id`; it const-folds to the query routing
+// key, byte-identical to the host `contract_id_with_kind(_, Query)` golden
+// (06vdvYIj4KNUp2NXrH17VfKVqXNaI5K5CmsLCpFyexjg0). The query-selfid handler self-reflects through this to
+// prove the GUEST fold equals the HOST id end-to-end through the gateway.
+type Temp = | Mk(f64)
+import { contract-descriptor-query } from "contract-id"
+def descriptor() = contract-descriptor-query(Ast.module, "temp.celsius", "Temp", "Temp")
+export { descriptor }
