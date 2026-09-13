@@ -1,0 +1,85 @@
+// A minimal MCP (Model Context Protocol) SERVER guest (operator directive 2026-09-13, 761: "a simple MCP server
+// ... working with the handler interface we have" — one of the project's big goals: the gateway installs MCP
+// servers to enhance itself over time). A Cadenza root-router guest that speaks JSON-RPC 2.0 (MCP's wire
+// format) over the WebSocket path the daemon exposes — the same handler-driven-upgrade seam the ws-echo guest
+// (http-flex-ws) proved end-to-end. It showcases the handler interface: the ENTIRE lifecycle (upgrade decision,
+// protocol handshake, tool dispatch) lives in this reducer; the platform is pure plumbing.
+//
+// LIFECYCLE (identical shape to http-flex-ws + a JSON-RPC dispatch on each frame):
+//   on_message(request-head)               → emit BodyMode.Upgrade({subprotocol = Some("mcp")}); Continue.
+//   on_message(ws-event Connect{conn})     → quiet (MCP is client-driven: wait for the client's `initialize`).
+//   on_message(ws-event Frame{conn,data})  → parse the JSON-RPC request in `data`, dispatch, PUSH the JSON-RPC
+//                                             response via ws-send (echoing the request `id`); Continue.
+//   on_message(ws-event Disconnect{conn})  → Close.
+//
+// JSON WITHOUT JSON AWARENESS (operator 759): the JSON/JSON-RPC handling is PURE userspace — the reusable
+// json-lib (guest byte-scan over Bytes.at/slice/len) finds the method + extracts the request `id` token; the
+// responses are byte literals spliced around the echoed id via Bytes.concat. Minimal MCP surface: `initialize`,
+// `tools/list`, and a `tools/call` of one trivial tool (`ping` → "pong"). A notification (no `id`) → no response.
+import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
+import { Event, descriptor as ws-event-desc } from "ws-event"
+import { Send, descriptor as ws-send-desc } from "ws-send"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
+import { contains, field-token } from "json-lib"
+
+// ── JSON-RPC 2.0 response envelopes (byte literals spliced around the echoed id) ────────────────────────────
+
+def result-envelope(id: Bytes, result: Bytes) -> Bytes =
+  Bytes.concat(b"{\"jsonrpc\":\"2.0\",\"id\":",
+    Bytes.concat(id,
+      Bytes.concat(b",\"result\":",
+        Bytes.concat(result, b"}"))))
+
+def init-result() -> Bytes =
+  b"{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"cadenza-hivemind-mcp\",\"version\":\"0.1.0\"}}"
+
+def tools-list-result() -> Bytes =
+  b"{\"tools\":[{\"name\":\"ping\",\"description\":\"Health check; replies pong.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}"
+
+def ping-result() -> Bytes =
+  b"{\"content\":[{\"type\":\"text\",\"text\":\"pong from a Cadenza reducer, served live over the hivemind gateway WebSocket\"}],\"isError\":false}"
+
+def method-error(id: Bytes) -> Bytes =
+  Bytes.concat(b"{\"jsonrpc\":\"2.0\",\"id\":",
+    Bytes.concat(id, b",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}"))
+
+// Dispatch one inbound JSON-RPC request frame → an outbound response, or None for a notification (no id).
+// `tools/call` is matched before `tools/list` (both share the `tools/` prefix); the trivial tool ignores args.
+def rpc-dispatch(req: Bytes) -> Option(Bytes) =
+  if contains(req, b"\"id\":") then
+    (let id = field-token(req, b"id", b"null") in
+     if contains(req, b"tools/call") then Option.Some(result-envelope(id, ping-result()))
+     else if contains(req, b"tools/list") then Option.Some(result-envelope(id, tools-list-result()))
+     else if contains(req, b"initialize") then Option.Some(result-envelope(id, init-result()))
+     else Option.Some(method-error(id)))
+  else Option.None
+
+// ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
+
+def ws-push(conn: Bytes, data: Bytes) =
+  { requests = [request(ws-send-desc().id, Value.encode(Send.Send({ conn = conn, data = data })), b"")],
+    outcome = Outcome.Continue }
+
+def quiet() =
+  { requests = [], outcome = Outcome.Continue }
+
+// Dispatch an inbound WS frame: parse+handle the JSON-RPC request, pushing a response frame (or staying quiet
+// for a notification). A top-level match (not nested in an arm) so it parses like the shared-lib idiom.
+def on-frame(conn: Bytes, data: Bytes) =
+  (match rpc-dispatch(data) with
+   | Option.Some(resp) => ws-push(conn, resp)
+   | Option.None => quiet())
+
+def on-message(msg) =
+  (if msg.contract == ws-event-desc().id then
+     (match (Value.decode(msg.payload) : Option(Event)) with
+      | Some(Event.Connect(_)) => quiet()
+      | Some(Event.Frame(f)) => on-frame(f.conn, f.data)
+      | _ => { requests = [], outcome = Outcome.Close({ schema = ws-event-desc().id, reason = b"" }) })
+   else
+     { requests = [request(body-mode-desc().id,
+                          Value.encode(BodyMode.Upgrade({ subprotocol = Option.Some("mcp") })),
+                          msg.token)],
+       outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }
