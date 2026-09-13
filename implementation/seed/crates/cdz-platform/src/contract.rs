@@ -105,13 +105,16 @@ impl Contract {
     ) -> Self {
         // The declaration build + canonical encoding lives once in `cdz-contract` (so it can also run as a
         // wasm component that turns a schema into a hash); build it once here, store the bytes, and take the
-        // contract-id over exactly them. `ContractId::of_kind(_, Mutation)` is `Hash::of(HashTag::Contract,
-        // …)`, the same hash `cdz_contract::contract_id` computes — so the two agree by construction.
-        let declaration = Bytes::from(cdz_contract::contract_declaration(
+        // contract-id over exactly them. The declaration is kind-aware (654(a)): a mutation is byte-identical
+        // to the pre-654(a) form, a query appends a `(kind query)` marker so the class is committed in the
+        // digest too. `ContractId::of_kind` then lifts the class into the tag byte, so id + digest agree with
+        // `cdz_contract::contract_id_with_kind` by construction and the id is reproducible from the declaration.
+        let declaration = Bytes::from(cdz_contract::contract_declaration_with_kind(
             name.as_str(),
             types,
             input,
             output,
+            kind,
         ));
         let id = ContractId::of_kind(&declaration, kind);
         Self {
@@ -264,11 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn a_query_contract_carries_the_query_class_in_its_id_same_declaration_digest() {
-        // A query contract of the same (name, types, input, output) shares the mutation's declaration
-        // digest but carries the ContractQuery tag — so the router reads Query straight off the id, and the
-        // declaration bytes are identical (this slice is tag-only; the digest-commitment marker is a
-        // follow-up).
+    fn a_query_contract_commits_its_class_in_both_the_declaration_and_the_tag() {
+        // 654(a) slice 3: a query contract's declaration carries the `(kind query)` marker, so it differs
+        // from its mutation twin in BOTH the declaration bytes/digest AND the leading tag byte — the class is
+        // committed in the digest (reproducible from the declaration) and lifted to the tag (router reads it).
         use crate::{ContractKind, HashTag};
         let mutation = Contract::new(Str::from("account.balance"), temp_type, "Temp", "Temp");
         let query = Contract::new_with_kind(
@@ -281,10 +283,19 @@ mod tests {
         assert_eq!(query.kind(), ContractKind::Query);
         assert_eq!(query.id().kind(), Some(ContractKind::Query));
         assert_eq!(query.id().hash().tag(), Some(HashTag::ContractQuery));
-        // Same declaration + digest, distinct ids (only the tag differs).
-        assert_eq!(mutation.declaration(), query.declaration());
-        assert_eq!(mutation.id().hash().digest(), query.id().hash().digest());
+        // The marker changes the declaration bytes → distinct digest AND distinct id (not just the tag).
+        assert_ne!(mutation.declaration(), query.declaration());
+        assert_ne!(mutation.id().hash().digest(), query.id().hash().digest());
         assert_ne!(mutation.id(), query.id());
+        // The class is reproducible from the declaration bytes alone.
+        assert_eq!(
+            cdz_contract::kind_from_declaration(query.declaration()),
+            Some(ContractKind::Query)
+        );
+        assert_eq!(
+            cdz_contract::kind_from_declaration(mutation.declaration()),
+            Some(ContractKind::Mutation)
+        );
     }
 
     #[test]
