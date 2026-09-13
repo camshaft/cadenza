@@ -1,0 +1,167 @@
+// A REAL pure-userspace Cadenza JSON codec (operator directive 2026-09-13, 759/761/776): a genuine
+// recursive-descent tokenizer+parser and a structural encoder, over the guest Bytes primitives ONLY — the
+// compiler and runtime stay JSON-unaware. This REPLACES the #8933 byte-scan stopgap
+// (cdz-platform/guests/json-lib.cdz), which merely substring-searched for known tokens and spliced byte
+// literals; this one parses the full JSON grammar into a value AST and serializes it back.
+//
+// TWO OPERATOR REFINEMENTS (776) shape the design:
+//   * PARSER uses BINARY PATTERN MATCHING (`b[...]`) — "exactly what we built it for - parsers." The parser
+//     matches byte patterns / literal bytes / structural tokens directly and threads the REMAINING bytes as
+//     a `bytes(rest)` tail binding, rather than a manual Int64 cursor + Bytes.at. It reads cleanly: e.g.
+//     `| b[u8(110), u8(117), u8(108), u8(108), bytes(rest)] => ...` matches the literal bytes of `null`.
+//   * NUMBERS are LOSSLESS via BigInt (NOT f64, NOT verbatim-only). A JSON number is an exact decimal
+//     value = (if neg then -1 else 1) * coeff * 10^exp10, where `coeff` is a BigInt (arbitrary precision —
+//     every significant digit, exact) and `exp10` an Int64 power of ten. `raw` retains the canonical byte
+//     form for trivial lossless re-emit (e.g. echoing a JSON-RPC `id` verbatim). Accessors (I6) derive an
+//     Int64 / BigInt / Float64 on demand. (Option B, eager i64/f64, was rejected as lossy.)
+//
+// BUILD ORDER (gated increments, one per landing):
+//   I1 — value type (BigInt-backed Num) + whitespace + literals (null/true/false) + `parse` entry   [THIS SLICE]
+//   I2 — string decode (escapes " \ / b f n r t and \uXXXX incl surrogate pairs)
+//   I3 — number decode (int / frac / exp / negatives -> BigInt coeff + exp10, spec validation)
+//   I4 — array + object (recursive nesting)
+//   I5 — encoder (Json -> Bytes, correct escaping; BigInt -> decimal digits) + round-trip tests
+//   I6 — accessors (get / index / as-int64 / as-bigint / as-float / as-string) + JSON-RPC convenience
+//   I7 — migrate mcp-server + a2a-server off the stopgap (coordinate v-hivemind), retire json-lib exports
+//
+// Self-contained: imports nothing but the prelude, so a guest that adds src/json.cdz to its `libs` manifest
+// drags in no schemas (exactly like the stopgap it replaces).
+
+// ── The JSON value AST (a recursive sum; the whole type is declared up front, filled in across I1-I4) ───────
+// JStr and an object key hold the DECODED UTF-8 bytes (escapes already resolved), NOT the raw quoted token.
+type Json =
+  | JNull
+  | JBool(Bool)
+  | JNum(Num)
+  | JStr(Bytes)
+  | JArr(List(Json))
+  | JObj(List(Member))
+
+// A lossless JSON number: value = (if neg then -1 else 1) * coeff * 10^exp10. `coeff` is an arbitrary-
+// precision BigInt magnitude (all significant digits, exact); `exp10` shifts the decimal point; `raw` is the
+// canonical byte rendering (the verbatim input slice for a parsed number) for exact re-emit. (Filled by I3.)
+type Num = | Num(Record(neg: Bool, coeff: BigInt, exp10: Int64, raw: Bytes))
+
+// One object member: a decoded-string key and its value (a single-constructor sum used as a struct — the
+// checker-lib `Pair` idiom).
+type Member = | Member(Record(key: Bytes, value: Json))
+
+// ── Parse state ─────────────────────────────────────────────────────────────────────────────────────────
+// A parse step consumes a prefix of the input and yields either a value + the REMAINING bytes, or a parse
+// error. The remaining bytes are threaded via binary matching's `bytes(rest)` tail. Internal (not exported).
+type Parsed =
+  | POk(Record(value: Json, rest: Bytes))
+  | PErr
+
+// ── Whitespace ──────────────────────────────────────────────────────────────────────────────────────────
+// Drop leading JSON insignificant whitespace — space (32), tab (9), line feed (10), carriage return (13) —
+// and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
+def skip-ws(inp: Bytes) -> Bytes =
+  (match inp with
+   | b[u8(32), bytes(rest)] => skip-ws(rest)
+   | b[u8(9), bytes(rest)]  => skip-ws(rest)
+   | b[u8(10), bytes(rest)] => skip-ws(rest)
+   | b[u8(13), bytes(rest)] => skip-ws(rest)
+   | _ => inp)
+
+// ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
+// Parse a single JSON value from the front of `inp` (after leading whitespace). I1 recognizes the three
+// keyword literals by matching their exact bytes; strings/numbers/arrays/objects are added in I2-I4 (until
+// then a non-literal front is a PErr). No trailing-delimiter check here — the top-level `parse` requires
+// end-of-input, and a value inside a container (I4) is followed by a required ',' / ']' / '}', so a bareword
+// like `truer` is rejected there (its `rest` is non-empty / non-delimiter).
+//   null  = 110 117 108 108        true  = 116 114 117 101        false = 102 97 108 115 101
+def parse-value(inp: Bytes) -> Parsed =
+  (match skip-ws(inp) with
+   | b[u8(110), u8(117), u8(108), u8(108), bytes(rest)] =>
+       Parsed.POk({ value = Json.JNull, rest = rest })
+   | b[u8(116), u8(114), u8(117), u8(101), bytes(rest)] =>
+       Parsed.POk({ value = Json.JBool(true), rest = rest })
+   | b[u8(102), u8(97), u8(108), u8(115), u8(101), bytes(rest)] =>
+       Parsed.POk({ value = Json.JBool(false), rest = rest })
+   | _ => Parsed.PErr)
+
+// ── The public decode entry ─────────────────────────────────────────────────────────────────────────────
+// Parse a complete JSON document: one value, optionally surrounded by whitespace, with NO trailing garbage.
+// Returns None on any malformed input (a real parse, not a substring probe). `b[]` matches an empty tail —
+// i.e. the value consumed the whole (whitespace-trimmed) input.
+def parse(inp: Bytes) -> Option(Json) =
+  (match parse-value(inp) with
+   | Parsed.POk(r) =>
+       (match skip-ws(r.rest) with
+        | b[] => Option.Some(r.value)
+        | _   => Option.None)
+   | Parsed.PErr => Option.None)
+
+// ── Early accessors (the accessor surface grows in I6) ──────────────────────────────────────────────────
+def is-null(v: Json) -> Bool =
+  (match v with | Json.JNull => true | _ => false)
+
+// The boolean of a JBool, or None for any other value shape.
+def as-bool(v: Json) -> Option(Bool) =
+  (match v with | Json.JBool(b) => Option.Some(b) | _ => Option.None)
+
+// ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
+// A @test def returns unit on success and traps on failure (the ast.cdz idiom).
+
+def parses-null(inp: Bytes) -> Bool =
+  (match parse(inp) with | Option.Some(v) => is-null(v) | Option.None => false)
+
+def parses-bool(inp: Bytes, want: Bool) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-bool(v) with | Option.Some(b) => b == want | Option.None => false)
+   | Option.None => false)
+
+def rejects(inp: Bytes) -> Bool =
+  (match parse(inp) with | Option.None => true | Option.Some(_) => false)
+
+@test
+def t-null() =
+  if parses-null(b"null") then unit else trap("`null` parses to JNull")
+
+@test
+def t-true() =
+  if parses-bool(b"true", true) then unit else trap("`true` parses to JBool(true)")
+
+@test
+def t-false() =
+  if parses-bool(b"false", false) then unit else trap("`false` parses to JBool(false)")
+
+@test
+def t-leading-ws() =
+  if parses-null(b"   null") then unit else trap("leading whitespace before a value is skipped")
+
+@test
+def t-trailing-ws() =
+  if parses-bool(b"true   ", true) then unit else trap("trailing whitespace after a value is allowed")
+
+@test
+def t-surrounding-mixed-ws() =
+  if parses-bool(b" \t\r\n false \n ", false) then unit
+  else trap("space/tab/CR/LF around a value are all insignificant whitespace")
+
+@test
+def t-reject-empty() =
+  if rejects(b"") then unit else trap("empty input is not a JSON document")
+
+@test
+def t-reject-only-ws() =
+  if rejects(b"   ") then unit else trap("whitespace-only input has no value")
+
+@test
+def t-reject-trailing-garbage() =
+  if rejects(b"null null") then unit else trap("a second value after the first is trailing garbage")
+
+@test
+def t-reject-bareword-suffix() =
+  if rejects(b"truer") then unit else trap("`truer` is not the literal `true` — trailing `r` is garbage")
+
+@test
+def t-reject-truncated-literal() =
+  if rejects(b"nul") then unit else trap("a truncated keyword `nul` does not parse")
+
+@test
+def t-reject-unknown-token() =
+  if rejects(b"None") then unit else trap("an unknown token is rejected (strings/numbers arrive in I2/I3)")
+
+export { Json.*, Num.*, Member.*, parse, is-null, as-bool }

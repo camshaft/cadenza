@@ -1454,12 +1454,13 @@
           cad-test-compiler-ml = mkCadProjectTest { name = "compiler-ml"; dir = ./implementation/compiler-ml; };
           cad-test-choreography = mkCadProjectTest { name = "choreography"; dir = ./implementation/choreography; };
           cad-test-iterators = mkCadProjectTest { name = "iterators"; dir = ./implementation/iterators; };
+          cad-test-json = mkCadProjectTest { name = "json"; dir = ./implementation/json; };
         };
         # AGGREGATE over the 4 per-project tests — the required `cad-tests` context. A change to one project
         # rebuilds only that project's derivation; the aggregate re-links (cheap runCommand) and the other 3
         # cache-hit. Advisory-by-omission → unilateral cargo-twin retire once green.
         cdzCadTestsCheck = pkgs.runCommand "cdz-cad-tests" cdzCadProjectTests ''
-          echo "ok: cad-tests aggregate — cdz test on cad + compiler-ml + choreography + iterators (per-project split)" > "$out"
+          echo "ok: cad-tests aggregate — cdz test on cad + compiler-ml + choreography + iterators + json (per-project split)" > "$out"
         '';
 
         # ── test-shred: per-@test wasm matrix (v-test-shred; design/DESIGN-test-shred-per-test-caching.md) ──
