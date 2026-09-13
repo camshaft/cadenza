@@ -506,6 +506,24 @@ grow item.
   crate (default) vs the mock depending on the gateway crate's `codec`. Coordinate with the gateway-rewrite
   owner when one exists.
 - **Router deploy-templating** (§6.2): reuse `cdz rewrite` if it can target source markers, else scoped `sed`.
+- **Head-first root-router intake coverage** (gap surfaced by #8926): the conformance gateway delivers the
+  *whole* `http-request` value (`Request(method: Method-enum, path, query, headers, body)` — 5 fields), but
+  the **live hivemind** gateway delivers the flexible `http-request-head` `Head(method: String, path, query,
+  headers)` — 4 fields, no body, #8895) per inc-16 serving (operator note 670). A root-router that only
+  decodes the whole `Request` **passes conformance but 404s every route live** (the `Head` bytes fail the
+  5-field decode → `None` arm → deny 404; the tell is `POST` → 404 not 405). #8926 fixed the counter by
+  *dual-decoding* both shapes, but the harness has **no head-first delivery path**, so the `Head` path is
+  verified live-only and head-first-only regressions are invisible in-gate. The two shapes are structurally
+  unambiguous (field count + method String-vs-enum). **Plan:** add a per-scenario `intake = whole-request |
+  head-first` selector (default `whole-request`, so all existing scenarios are unchanged — additive, no golden
+  churn) and a head-first counterpart of a router scenario asserting correct routing under `Head` delivery.
+  **Delivery mechanism (the crux):** the harness drives programs only via the real gateway SUT, which owns the
+  delivered value shape — so head-first delivery should come from a head-first-capable gateway (inc-16's
+  serving side) the harness spins, reusing the *real* serving path so conformance matches live byte-for-byte
+  (a hand-rolled harness delivery would risk a *new* fidelity divergence). **Blocked on** inc-16/v-hivemind's
+  head-first serving being available in a gateway the harness can spin (their reactor/intake is mid-rework);
+  the `Head` contract itself is landed (#8895). Owner: this vertical (harness driver); coordinate the exact
+  delivered `Head` bytes with inc-16 before finalizing. Non-urgent (flagged by v-gateway-rewrite).
 
 Neither blocks starting the mock control server (slice 2); I'll raise anything genuinely load-bearing to the
 concierge as an `ask` and keep building on the defaults.
