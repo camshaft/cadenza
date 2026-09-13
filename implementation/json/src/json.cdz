@@ -53,6 +53,12 @@ type Parsed =
   | POk(Record(value: Json, rest: Bytes))
   | PErr
 
+// The result of decoding a string body: the decoded (escape-resolved) bytes + the bytes after the closing
+// quote, or a parse error. Internal.
+type StrParsed =
+  | SOk(Record(str: Bytes, rest: Bytes))
+  | SErr
+
 // ── Whitespace ──────────────────────────────────────────────────────────────────────────────────────────
 // Drop leading JSON insignificant whitespace — space (32), tab (9), line feed (10), carriage return (13) —
 // and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
@@ -63,6 +69,43 @@ def skip-ws(inp: Bytes) -> Bytes =
    | b[u8(10), bytes(rest)] => skip-ws(rest)
    | b[u8(13), bytes(rest)] => skip-ws(rest)
    | _ => inp)
+
+// ── Strings ─────────────────────────────────────────────────────────────────────────────────────────────
+// Output bytes are built two ways, BOTH avoiding `Bytes.of([bin-bound-byte])` which hits a seed codegen bug
+// (CDZ0910 "expected i32, found i64" — a `bin`-bound UInt8 used as a Bytes.of list element mis-widths; flagged
+// to v-binary-matching). A literal input byte is copied by SLICING it back out (Bytes.slice(inp,0,1)); an
+// escape emits a fixed byte via `bin` CONSTRUCTION b[u8(N)] with a constant. Both idioms compile clean.
+
+// Decode a string BODY (input is the bytes AFTER the opening quote), accumulating escape-resolved bytes into
+// `acc`. A closing quote (34) ends it; a backslash (92) begins an escape; a raw control byte (< 32) is
+// invalid per JSON (they must be escaped); any other byte — including a UTF-8 continuation byte — is copied
+// verbatim (as a 1-byte slice of the input). Running out of input before the closing quote is unterminated.
+//   (\uXXXX unicode escapes arrive in I2b; until then a `\u` is an invalid escape and rejects.)
+def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
+  (match inp with
+   | b[u8(34), bytes(rest)]  => StrParsed.SOk({ str = acc, rest = rest })
+   | b[u8(92), bytes(after)] => parse-escape(after, acc)
+   | b[u8(c), bytes(rest)]   =>
+       if c < 32 then StrParsed.SErr
+       else (match Bytes.slice(inp, 0, 1) with
+             | Option.Some(one) => parse-str(rest, Bytes.concat(acc, one))
+             | Option.None      => StrParsed.SErr)
+   | _ => StrParsed.SErr)
+
+// Decode the character AFTER a backslash and continue the string body. The eight JSON escapes:
+//   \" (34)  \\ (92)  \/ (47)  \b -> backspace (8)  \f -> formfeed (12)  \n (10)  \r (13)  \t (9)
+// Any other escape byte (or end of input) is an invalid escape. Each emits its byte via b[u8(N)] construction.
+def parse-escape(inp: Bytes, acc: Bytes) -> StrParsed =
+  (match inp with
+   | b[u8(34), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(34)]))
+   | b[u8(92), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(92)]))
+   | b[u8(47), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(47)]))
+   | b[u8(98), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(8)]))
+   | b[u8(102), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(12)]))
+   | b[u8(110), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(10)]))
+   | b[u8(114), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(13)]))
+   | b[u8(116), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(9)]))
+   | _ => StrParsed.SErr)
 
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
 // Parse a single JSON value from the front of `inp` (after leading whitespace). I1 recognizes the three
@@ -79,6 +122,10 @@ def parse-value(inp: Bytes) -> Parsed =
        Parsed.POk({ value = Json.JBool(true), rest = rest })
    | b[u8(102), u8(97), u8(108), u8(115), u8(101), bytes(rest)] =>
        Parsed.POk({ value = Json.JBool(false), rest = rest })
+   | b[u8(34), bytes(after)] =>
+       (match parse-str(after, b"") with
+        | StrParsed.SOk(s) => Parsed.POk({ value = Json.JStr(s.str), rest = s.rest })
+        | StrParsed.SErr   => Parsed.PErr)
    | _ => Parsed.PErr)
 
 // ── The public decode entry ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +148,10 @@ def is-null(v: Json) -> Bool =
 def as-bool(v: Json) -> Option(Bool) =
   (match v with | Json.JBool(b) => Option.Some(b) | _ => Option.None)
 
+// The decoded (escape-resolved, UTF-8) bytes of a JStr, or None for any other value shape.
+def as-str-bytes(v: Json) -> Option(Bytes) =
+  (match v with | Json.JStr(s) => Option.Some(s) | _ => Option.None)
+
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
 
@@ -114,6 +165,11 @@ def parses-bool(inp: Bytes, want: Bool) -> Bool =
 
 def rejects(inp: Bytes) -> Bool =
   (match parse(inp) with | Option.None => true | Option.Some(_) => false)
+
+def parses-str(inp: Bytes, want: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-str-bytes(v) with | Option.Some(s) => s == want | Option.None => false)
+   | Option.None => false)
 
 @test
 def t-null() =
@@ -162,6 +218,66 @@ def t-reject-truncated-literal() =
 
 @test
 def t-reject-unknown-token() =
-  if rejects(b"None") then unit else trap("an unknown token is rejected (strings/numbers arrive in I2/I3)")
+  if rejects(b"None") then unit else trap("an unknown token is rejected (numbers arrive in I3)")
 
-export { Json.*, Num.*, Member.*, parse, is-null, as-bool }
+// ── I2a: string decoding (simple escapes; \uXXXX arrives in I2b) ─────────────────────────────────────────
+
+@test
+def t-str-plain() =
+  if parses-str(b"\"hello\"", b"hello") then unit else trap("a plain string decodes to its bytes")
+
+@test
+def t-str-empty() =
+  if parses-str(b"\"\"", b"") then unit else trap("the empty string decodes to empty bytes")
+
+@test
+def t-str-escaped-quote() =
+  if parses-str(b"\"a\\\"b\"", b"a\"b") then unit else trap("\\\" decodes to a literal quote")
+
+@test
+def t-str-escaped-backslash() =
+  if parses-str(b"\"a\\\\b\"", b"a\\b") then unit else trap("\\\\ decodes to a single backslash")
+
+@test
+def t-str-escaped-solidus() =
+  if parses-str(b"\"a\\/b\"", b"a/b") then unit else trap("\\/ decodes to a solidus")
+
+@test
+def t-str-escaped-controls() =
+  // \n \t \r \b \f decode to LF(10) TAB(9) CR(13) BS(8) FF(12); build the expected bytes explicitly with
+  // b[u8(N)] rather than relying on b"..." literal escapes for \b/\f (their byte-literal meaning is not assumed).
+  let want =
+    Bytes.concat(b[u8(10)],
+      Bytes.concat(b[u8(9)],
+        Bytes.concat(b[u8(13)],
+          Bytes.concat(b[u8(8)], b[u8(12)])))) in
+  if parses-str(b"\"\\n\\t\\r\\b\\f\"", want) then unit
+  else trap("\\n \\t \\r \\b \\f decode to LF TAB CR BS FF")
+
+@test
+def t-str-surrounding-ws-and-trailing() =
+  if parses-str(b"  \"hi\"  ", b"hi") then unit else trap("a string value tolerates surrounding whitespace")
+
+@test
+def t-str-reject-unterminated() =
+  if rejects(b"\"abc") then unit else trap("a string with no closing quote is rejected")
+
+@test
+def t-str-reject-lone-backslash() =
+  if rejects(b"\"abc\\\"") then unit else trap("a trailing backslash (escaping the closing quote) leaves the string unterminated")
+
+@test
+def t-str-reject-bad-escape() =
+  if rejects(b"\"a\\xb\"") then unit else trap("\\x is not a valid JSON escape")
+
+@test
+def t-str-reject-raw-control() =
+  // a literal newline (byte 10) inside a string is a raw control char — JSON requires it be escaped
+  if rejects(b"\"a\nb\"") then unit else trap("a raw control character inside a string is rejected")
+
+@test
+def t-str-reject-bare-u-escape() =
+  // \u is not yet supported (I2b); until then it is an invalid escape and must reject (never silently accept)
+  if rejects(b"\"\\u0041\"") then unit else trap("\\u is rejected until I2b lands unicode escapes")
+
+export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes }
