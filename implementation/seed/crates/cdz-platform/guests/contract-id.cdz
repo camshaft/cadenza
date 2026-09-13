@@ -91,6 +91,21 @@ def declaration(const m: Ast, const name: String, const input: String, const out
 def contract-id(const m: Ast, const name: String, const input: String, const output: String) -> Bytes =
   Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m, name, input, output))))
 
+// The QUERY-class canonical declaration (654(a)): the mutation declaration plus a trailing `(kind query)`
+// marker, so the mutation-vs-query class is committed in the declaration DIGEST — byte-identical to the host
+// `cdz_contract::contract_declaration_with_kind(_, Query)`. Reuses `declaration` so the leading fields are
+// guaranteed identical; only the marker is appended (mutation declarations are unchanged, so no id drifts).
+def declaration-query(const m: Ast, const name: String, const input: String, const output: String) -> Ast =
+  match declaration(m, name, input, output) with
+  | Ast.List(base) => Ast.List(List.push(base, Ast.List([Ast.Name("kind"), Ast.Name("query")])))
+  | _ => trap("contract-id: declaration is not a list")
+
+// The QUERY contract-id: 0x07 ContractQuery tag ++ blake3 of the query declaration's encoding (654(a)) —
+// byte-identical to the host `contract_id_with_kind(_, Query)`. A query contract routes to a forked
+// read-only snapshot session; a router reads the 0x07 tag straight off this id (no side table).
+def contract-id-query(const m: Ast, const name: String, const input: String, const output: String) -> Bytes =
+  Bytes.concat(b"\x07", Blake3.of(Ast.encode(declaration-query(m, name, input, output))))
+
 // The WHOLE contract as its canonical declaration `(contract <name> (types …) <input> <output>)` run
 // through `Ast.encode` — Bytes, so it is runtime-representable (crosses module imports + reducer
 // instantiation, unlike the `contract` record whose Ast-typed fields are compile-time-only) yet fully
@@ -147,4 +162,27 @@ def contract-descriptor(const m: Ast, const name: String, const input: String, c
               declaration = contract-declaration(m, name, input, output) }
         | _ => trap("contract-id: not a contract module — expected a (do …) module AST"))
 
-export { contract-id, contract, contract-declaration , contract-descriptor }
+// The QUERY-class raw canonical declaration bytes (654(a)) — `Ast.encode(declaration-query(…))`, exactly
+// what the query id is the hash of (0x07 ++ blake3(declaration-query)). The query counterpart of
+// `contract-declaration`, byte-identical to the host `contract_declaration_with_kind(_, Query)`.
+def contract-declaration-query(const m: Ast, const name: String, const input: String, const output: String) -> Bytes =
+  Ast.encode(declaration-query(m, name, input, output))
+
+// The UNIFORM descriptor for a QUERY-class contract (654(a)): identical in shape to `contract-descriptor`
+// but its `id` carries the 0x07 ContractQuery tag and its `declaration` the `(kind query)` marker. A query
+// contract exports it as `def descriptor() = contract-descriptor-query(Ast.module, <name>, <input>,
+// <output>); export { descriptor }`; a reducer reads `descriptor().id` to route (the tag byte says query).
+// All fields fold at compile time, like `contract-descriptor`.
+def contract-descriptor-query(const m: Ast, const name: String, const input: String, const output: String) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes, declaration: Bytes) =
+  const(match m with
+        | Ast.List(_) =>
+            { id = contract-id-query(m, name, input, output),
+              name = name,
+              input = Ast.encode(Ast.Name(input)),
+              output = Ast.encode(Ast.Name(output)),
+              ast = Ast.encode(m),
+              declaration = contract-declaration-query(m, name, input, output) }
+        | _ => trap("contract-id: not a contract module — expected a (do …) module AST"))
+
+export { contract-id, contract, contract-declaration , contract-descriptor,
+         contract-id-query, contract-declaration-query, contract-descriptor-query }
