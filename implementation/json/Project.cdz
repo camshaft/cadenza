@@ -1,0 +1,28 @@
+// The project manifest for the pure-userspace Cadenza JSON codec library, written in Cadenza itself.
+// `cdz` reads these well-known top-level defs to know how to build / run / test the project.
+//
+//   cdz test          — search up for this Project.cdz and run its suite (like cargo)
+//   cdz test .        — same, naming this directory
+//
+// This is a SIDECAR package (mirrors implementation/{choreography,iterators,cad}): a self-contained,
+// prelude-only Cadenza library that targets the RUST compiler (rcdzc / `cdz`) so it works TODAY. It owns
+// a REAL JSON decoder + encoder (operator directive 2026-09-13, 759/761: JSON support is PURE userspace —
+// the compiler and runtime stay JSON-unaware; the codec runs over the guest Bytes primitives only). It
+// replaces the #8933 byte-scan stopgap (cdz-platform/guests/json-lib.cdz) as a drop-in: a guest speaking a
+// JSON wire protocol (MCP / A2A JSON-RPC over the WebSocket handler interface) adds src/json.cdz to its
+// `libs` manifest and `import { parse, encode, ... } from "json"`.
+//
+// Living here (not cdz-platform/guests/) buys a REAL gated `@test` suite: the flake's mkCadProjectTest
+// runs `cdz test implementation/json` as check `cad-test-json`, so the decode/encode/round-trip assertions
+// actually EXECUTE in the gate (a top-level guests/*.cdz lib is only ever compile-checked when a consumer
+// imports it). The single self-contained src/json.cdz is still importable by any guest's `libs` manifest.
+
+def name = "json"
+
+// Every source module under src/ (a wildcard, so a new module just drops into src/ and is picked up).
+def modules = ["src/*.cdz"]
+
+// The @test suite lives in the same module(s) — `cdz test` runs every @test across these.
+def tests = ["src/*.cdz"]
+
+def exclude = []
