@@ -1737,6 +1737,36 @@
   (live-objects 0))
 
 (case
+  "a Value.encode/Value.decode round-trip preserves a USER sum's NULLARY variant"
+  (doc
+    "The nullary-variant face of a USER multi-constructor sum `(type Shape (Circle Int64) (Dot))` — the
+           shape EVERY contract sum takes (cf. http-request-body-stream's `Frame.End`, a scan `Bound.Unbounded`,
+           an http `Method.Get`). `(: Dot Shape)` renders `(: (Dot unit) Shape)`: a MULTI-constructor nullary
+           variant does NOT elide its constructor (unlike a single-ctor sum, which erases to the bare `unit`), it
+           keeps its head and carries the erased Unit payload as the `unit` atom — `(Dot unit)`. `Value.decode
+           (Value.encode Dot) == Some Dot`; the outer match unwraps the decode, the inner match confirms the
+           `Dot` head survived (binding its erased unit `u`) and returns `n`, else a negative. `main 4` -> 4,
+           `main 8` -> 8 (distinct); a lost head or wrong variant gives a negative. This pins the USER-sum nullary
+           arm distinctly from the builtin `Option None` case above (Option decode has its own bare/turbofish
+           path) — it is the exact invariant the platform's contract value builders depend on: a Rust-built
+           `(Ctor unit)` for a nullary contract variant decodes as that variant. Runs on wasm + rust + rust-async.")
+  (input
+    (do
+      (type Shape (Circle Int64) (Dot))
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode (: Dot Shape))) (Option Shape))
+          ((Some s) (match s ((Dot u) n) ((Circle r) -1)))
+          ((None u) -2)))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 4 Int64))
+  (call main (: 8 Int64))
+  (output (: 8 Int64))
+  (live-objects 0))
+
+(case
   "a Value.encode/Value.decode round-trip preserves a MAP's entries"
   (doc
     "Extends the round-trips to a `(Map Int64 Int64)` — the R2 value-form `(map (k v) …)` shape, entries
