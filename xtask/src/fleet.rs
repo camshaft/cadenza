@@ -402,6 +402,7 @@ impl Fleet {
             "drain-nudge.sh",
             "compact-nudge.sh",
             "reap-leases.sh",
+            "aea-refresh.sh",
             "watchdog.sh",
         ] {
             let src = self.src.join(f);
@@ -2216,6 +2217,50 @@ fn ensure_reap_leases_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-30-min user-crontab line for the Midway AEA-cookie refresh (operator note-709,
+/// approved 2026-09-13), tagged `# fleet:aea-refresh` so [`reconcile_tagged_crons`] can find/heal it. Runs
+/// the HUB copy of `aea-refresh.sh` → `mwinit --refresh-aea`, silently re-minting the ~2h AEA cookie from a
+/// still-valid session so it never lapses MID-session (up to the ~12-20h session ceiling). 30 min gives the
+/// 2h cookie ~4× refresh margin, comfortably inside the operator's "~30-45min" ask.
+fn aea_refresh_cron_line(hub_script: &str) -> String {
+    format!("*/30 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:aea-refresh")
+}
+
+/// Ensure the `# fleet:aea-refresh` per-30-min user-crontab entry exists + points at THIS hub's
+/// `aea-refresh.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
+/// Skips silently if `aea-refresh.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
+/// `fleet up`. `mwinit --refresh-aea` re-mints from the existing valid session (no OTP), so the cron is a
+/// benign no-op when the cookie is already fresh.
+fn ensure_aea_refresh_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("aea-refresh.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:aea-refresh",
+        aea_refresh_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-5-min user-crontab line for the autonomous CONCIERGE COMPACTION heartbeat
 /// (v-fleet-tooling 2026-09-03), tagged `# fleet:compact-nudge` so [`reconcile_tagged_crons`] can find/heal
 /// it. Runs the HUB copy of `compact-nudge.sh` → a worktree's `xtask fleet compact-nudge --session main` —
@@ -2388,6 +2433,10 @@ fn up(fleet: &Fleet) {
     // stalls the whole merge gate) are cleared even when the destructive watchdog is disabled (concierge
     // coverage-hole 2026-09-11). Independent + fail-open + drift-healed.
     ensure_reap_leases_cron(fleet);
+    // The Midway AEA-cookie refresh cron: `aea-refresh.sh` → `mwinit --refresh-aea` every 30 min, silently
+    // re-minting the ~2h AEA cookie from the still-valid session so it never lapses mid-session (operator
+    // note-709). Independent + fail-open + drift-healed; does not extend the session past its ceiling.
+    ensure_aea_refresh_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -19692,6 +19741,25 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         assert!(
             line.ends_with("# fleet:reap-leases"),
+            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
+        );
+    }
+
+    #[test]
+    fn aea_refresh_cron_line_is_every_30min_silent_and_tagged() {
+        let line = aea_refresh_cron_line("/hub/aea-refresh.sh");
+        // Every 30 min (≥4× margin on the ~2h AEA cookie, inside the operator's ~30-45min ask), runs the hub
+        // script, silent, tagged for reconcile_tagged_crons to find/heal.
+        assert!(
+            line.starts_with("*/30 * * * * bash /hub/aea-refresh.sh"),
+            "every-30-min, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — an AEA refresh never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:aea-refresh"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
     }
