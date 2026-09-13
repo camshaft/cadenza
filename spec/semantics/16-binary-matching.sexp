@@ -35,9 +35,12 @@
 ; a catch-all arm or it is rejected CDZ0210 (core-semantics.md #Matching Is Exhaustive Or Rejected) — no
 ; special case, exactly like a non-exhaustive sum match.
 ;
-; A later generation realizes the `bin` form (it subsumes the seed's
-; `bytes` value form; options/realized-capability-set/). The seed does not realize it, so it
-; DECLINES these cases — they pin the contract the realization must meet.
+; The `bin` form subsumes the seed's `bytes` value form (options/realized-capability-set/). The seed
+; REALIZES `bin` on wasm+rust today — construction and matching both COMPILE AND RUN (a whole parser is
+; built on it), so these cases grade by value, not decline. A residue of cases still DECLINE where a
+; capability is genuinely unimplemented (a bare-envelope Bytes entry param on wasm, a computed dependent
+; size, a mid-stream bit-field run); each such case says so at its site. They pin the contract the
+; remaining realization must meet.
 ; ============================================================================================
 ; Construction — `(bin …)` in expression position builds a Bytes value
 ; ============================================================================================
@@ -428,6 +431,36 @@
            `i8` is `-128` — the extreme companion of the `(i8 -1)` ⇆ 255 round-trip.")
   (input (= (bin (i8 -128)) (Bytes.of #list(128))))
   (output (: true Bool)))
+
+; A `u8`/`u16`/`u32` segment BINDER decodes into an i64 accumulator (a `BinIntRead` always assembles i64),
+; but its SOLVED type may narrow to a ≤32-bit width when the binder is reused in a `UInt8`/`UInt16`/`UInt32`
+; context — most sharply as a `Bytes.of` element (`Bytes.of : (List UInt8) → Bytes`, so the element solves
+; to `UInt8`, an i32 machine slot). The read must then NARROW its i64 result to i32 to match the binder's
+; solved machine width, else a `bytes-set` (which takes a raw i32 byte) is handed an i64 and the module
+; fails wasm validation ("type mismatch: expected i32, found i64"). This was CDZ0910 — a real codegen
+; miscompile v-json-codec hit building the JSON codec. Pinned here so a future change can't re-widen it.
+; The scrutinee is built from a runtime param so the `bin` cannot fold to a constant (a folded byte would
+; not exercise the runtime `BinIntRead` at all).
+(case
+  "a bin-bound byte reused as a Bytes.of element round-trips (the u8 binder narrows to a UInt8 i32, not its i64 read width)"
+  (doc
+    "The `Bytes.of([ u8(c) ])` CDZ0910 miscompile regression: the `u8(c)` binder reads into an i64
+           accumulator, but reused as a `Bytes.of` element its solved type is `UInt8` (an i32 slot), so the
+           read narrows to i32 — else `bytes-set` sees an i64 where it wants i32 and the module fails
+           validation. Here `c` is decoded from a RUNTIME one-byte scrutinee (built from a param so it cannot
+           fold), rebuilt into a one-byte Bytes via `Bytes.of`, and read back: the byte round-trips unchanged.
+           The value 200 (> 127) also pins that the narrowing wrap keeps the low byte exactly, with no
+           spurious sign-extension. Both backends.")
+  (input
+    (do
+      (def (roundtrip (: inp Bytes))
+        (match inp
+          ((bin (u8 c)) (match (Bytes.at (Bytes.of #list(c)) 0) ((Some v) v) ((None _) -1)))
+          (_ -1)))
+      (def (main (: c0 Int64)) (roundtrip (Bytes.of #list((UInt8.of c0)))))
+      (export main)))
+  (call main (: 200 Int64))
+  (output (: 200 Int64)))
 
 ; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
 ; MULTI-BYTE-WIDTH extremes — where an off-by-one in the shift/mask byte-assembly or a sign-extension slip
