@@ -105,7 +105,64 @@ def parse-escape(inp: Bytes, acc: Bytes) -> StrParsed =
    | b[u8(110), bytes(rest)] => parse-str(rest, push-byte(acc, 10))
    | b[u8(114), bytes(rest)] => parse-str(rest, push-byte(acc, 13))
    | b[u8(116), bytes(rest)] => parse-str(rest, push-byte(acc, 9))
+   | b[u8(117), u8(h1), u8(h2), u8(h3), u8(h4), bytes(rest)] =>
+       (match hex4(h1, h2, h3, h4) with
+        | Option.None      => StrParsed.SErr
+        | Option.Some(cu)  => parse-unicode(cu, rest, acc))
    | _ => StrParsed.SErr)
+
+// ── I2b: unicode escapes (\uXXXX + surrogate pairs) ─────────────────────────────────────────────────────
+// The numeric value 0..15 of a hex digit byte, or None if it is not a hex digit ('0'-'9' 'A'-'F' 'a'-'f').
+def hex-val(b: UInt8) -> Option(Int64) =
+  if b >= 48 and b <= 57 then Option.Some(Int64.of(b) - 48)
+  else if b >= 65 and b <= 70 then Option.Some(Int64.of(b) - 55)
+  else if b >= 97 and b <= 102 then Option.Some(Int64.of(b) - 87)
+  else Option.None
+
+// Decode four hex-digit bytes (big-endian) into a 16-bit code UNIT (0..65535), or None if any is not hex.
+def hex4(b1: UInt8, b2: UInt8, b3: UInt8, b4: UInt8) -> Option(Int64) =
+  (match hex-val(b1) with
+   | Option.None => Option.None
+   | Option.Some(v1) =>
+       (match hex-val(b2) with
+        | Option.None => Option.None
+        | Option.Some(v2) =>
+            (match hex-val(b3) with
+             | Option.None => Option.None
+             | Option.Some(v3) =>
+                 (match hex-val(b4) with
+                  | Option.None => Option.None
+                  | Option.Some(v4) => Option.Some(v1 * 4096 + v2 * 256 + v3 * 16 + v4)))))
+
+// UTF-8 encode a Unicode scalar value `cp` (0..0x10FFFF, non-surrogate) into its 1–4 bytes. Byte fields are
+// masked (`/`,`%` by powers of 64) so each provably fits a UInt8; UInt8.of is the checked (ideal) narrowing.
+def utf8(cp: Int64) -> Bytes =
+  if cp < 128 then Bytes.of([UInt8.of(cp)])
+  else if cp < 2048 then
+    Bytes.of([UInt8.of(192 + cp / 64), UInt8.of(128 + cp % 64)])
+  else if cp < 65536 then
+    Bytes.of([UInt8.of(224 + cp / 4096), UInt8.of(128 + (cp / 64) % 64), UInt8.of(128 + cp % 64)])
+  else
+    Bytes.of([UInt8.of(240 + cp / 262144), UInt8.of(128 + (cp / 4096) % 64), UInt8.of(128 + (cp / 64) % 64), UInt8.of(128 + cp % 64)])
+
+// Resolve a decoded \uXXXX code unit `cu` to a scalar, handling UTF-16 surrogate pairs, then emit its UTF-8
+// bytes and continue the string body. A HIGH surrogate (0xD800..0xDBFF) MUST be followed by a `\u` LOW
+// surrogate (0xDC00..0xDFFF): combined to a supplementary scalar. A lone low surrogate, or a high surrogate
+// not followed by a valid low `\u`, is an invalid escape sequence.
+def parse-unicode(cu: Int64, rest: Bytes, acc: Bytes) -> StrParsed =
+  if cu >= 55296 and cu <= 56319 then
+    (match rest with
+     | b[u8(92), u8(117), u8(l1), u8(l2), u8(l3), u8(l4), bytes(rest2)] =>
+         (match hex4(l1, l2, l3, l4) with
+          | Option.None => StrParsed.SErr
+          | Option.Some(lo) =>
+              if lo >= 56320 and lo <= 57343 then
+                let cp = 65536 + (cu - 55296) * 1024 + (lo - 56320) in
+                parse-str(rest2, Bytes.concat(acc, utf8(cp)))
+              else StrParsed.SErr)
+     | _ => StrParsed.SErr)
+  else if cu >= 56320 and cu <= 57343 then StrParsed.SErr
+  else parse-str(rest, Bytes.concat(acc, utf8(cu)))
 
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
 // Parse a single JSON value from the front of `inp` (after leading whitespace). I1 recognizes the three
@@ -275,9 +332,61 @@ def t-str-reject-raw-control() =
   // a literal newline (byte 10) inside a string is a raw control char — JSON requires it be escaped
   if rejects(b"\"a\nb\"") then unit else trap("a raw control character inside a string is rejected")
 
+// ── I2b: unicode escape tests (\uXXXX + surrogate pairs) ────────────────────────────────────────────────
+
 @test
-def t-str-reject-bare-u-escape() =
-  // \u is not yet supported (I2b); until then it is an invalid escape and must reject (never silently accept)
-  if rejects(b"\"\\u0041\"") then unit else trap("\\u is rejected until I2b lands unicode escapes")
+def t-uni-ascii() =
+  // \u0041 -> "A" (U+0041, one UTF-8 byte)
+  if parses-str(b"\"\\u0041\"", b"A") then unit else trap("\\u0041 decodes to A")
+
+@test
+def t-uni-mixed() =
+  // surrounding literal chars: "a\u0041b" -> "aAb"
+  if parses-str(b"\"a\\u0041b\"", b"aAb") then unit else trap("\\u0041 amid literals decodes to A")
+
+@test
+def t-uni-two-byte() =
+  // \u00e9 -> é (U+00E9) -> UTF-8 0xC3 0xA9 (195 169)
+  if parses-str(b"\"\\u00e9\"", Bytes.of([195, 169])) then unit else trap("\\u00e9 -> C3 A9")
+
+@test
+def t-uni-three-byte() =
+  // \u20ac -> € (U+20AC) -> UTF-8 0xE2 0x82 0xAC (226 130 172)
+  if parses-str(b"\"\\u20ac\"", Bytes.of([226, 130, 172])) then unit else trap("\\u20ac -> E2 82 AC")
+
+@test
+def t-uni-uppercase-hex() =
+  // hex digits are case-insensitive: \u20AC == \u20ac
+  if parses-str(b"\"\\u20AC\"", Bytes.of([226, 130, 172])) then unit else trap("\\u20AC (uppercase) -> E2 82 AC")
+
+@test
+def t-uni-surrogate-pair() =
+  // \uD83D\uDE00 -> 😀 (U+1F600) -> UTF-8 0xF0 0x9F 0x98 0x80 (240 159 152 128)
+  if parses-str(b"\"\\uD83D\\uDE00\"", Bytes.of([240, 159, 152, 128])) then unit
+  else trap("\\uD83D\\uDE00 surrogate pair -> U+1F600 -> F0 9F 98 80")
+
+@test
+def t-uni-reject-lone-high() =
+  // a high surrogate not followed by a \u low surrogate is invalid
+  if rejects(b"\"\\uD83D\"") then unit else trap("a lone high surrogate is rejected")
+
+@test
+def t-uni-reject-lone-low() =
+  // a low surrogate with no preceding high surrogate is invalid
+  if rejects(b"\"\\uDE00\"") then unit else trap("a lone low surrogate is rejected")
+
+@test
+def t-uni-reject-high-then-nonlow() =
+  // high surrogate followed by a NON-surrogate \u escape is invalid
+  if rejects(b"\"\\uD83D\\u0041\"") then unit else trap("a high surrogate followed by a non-low \\u is rejected")
+
+@test
+def t-uni-reject-bad-hex() =
+  if rejects(b"\"\\u00zz\"") then unit else trap("\\u with non-hex digits is rejected")
+
+@test
+def t-uni-reject-truncated() =
+  // only three hex digits before the closing quote
+  if rejects(b"\"\\u041\"") then unit else trap("\\u with fewer than four hex digits is rejected")
 
 export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes }
