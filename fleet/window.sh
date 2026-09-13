@@ -154,6 +154,26 @@ schedules nothing): /loop $INTERVAL $TICK"
 # bogus "tool names") and the agent gets NO prompt. So the disallow flag goes FIRST (immediately
 # followed by another flag that stops its consumption), and the args END with the boolean
 # `--dangerously-skip-permissions`, so the final `"$KICKOFF"` lands as the positional prompt.
+# ── NATIVE AUTO-COMPACT HEADROOM (concierge-wedge fix, operator native-compact directive 2026-09-13) ──
+# Claude Code's native auto-compact is ON by default (`autoCompactEnabled: true`) and the launcher does
+# NOT disable it — but on the 1M-window model (opus-4-8[1m] on Bedrock) the DEFAULT trigger sits at ~967K
+# of the 1M window, only ~3% headroom. Auto-compact fires at a TURN BOUNDARY (before the next model
+# request), so a single HEAVY tick — reading a >1MB file, or a 30-window capture-pane sweep = 300K+ tokens
+# in ONE tool result — balloons from below 967K straight past the 1M wall WITHIN one turn, before any
+# boundary where compaction could fire. Result: the session hits 100% mid-turn and WEDGES (it can't submit,
+# and it can't self-`/compact` — that's an interactive command, not a tool). This is the recurring concierge
+# outage (the concierge is no-kill/no-auto-restart, so a wedge is fatal → manual resume).
+#
+# THE NATIVE FIX (operator's preferred path over an external `/compact` keystroke, verified viable against
+# claude 2.1.270: `--autocompact <auto|tokens>` is a real flag; `autoCompactWindow`/CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# are real config): LOWER the auto-compact window so compaction fires with enough HEADROOM that a single
+# heavy turn can't reach the wall. 600K on the 1M model leaves ~400K headroom — more than the biggest
+# plausible single-turn tool result — while still a large working context (bigger than the entire 200K
+# default window of non-1M models), so agents don't churn-compact. On a smaller-window model the flag caps
+# at that window (a no-op there). Non-destructive, native, needs NO watchdog and NO concurrency change.
+# Overridable: a per-agent AUTOCOMPACT from `describe`, else the env CDZ_AUTOCOMPACT_WINDOW, else 600K.
+: "${AUTOCOMPACT:=${CDZ_AUTOCOMPACT_WINDOW:-600000}}"
+
 CLAUDE_ARGS=()
 # Structural guard: every window EXCEPT the interactive roles (concierge, design) is denied the
 # human-question tool, so no unattended agent can pop an interactive prompt in its window. The
@@ -161,7 +181,7 @@ CLAUDE_ARGS=()
 if [ "${DISALLOW_ASK:-1}" = "1" ]; then
   CLAUDE_ARGS+=(--disallowedTools AskUserQuestion)
 fi
-CLAUDE_ARGS+=(--effort "$EFFORT" --model "$MODEL" --dangerously-skip-permissions)
+CLAUDE_ARGS+=(--effort "$EFFORT" --model "$MODEL" --autocompact "$AUTOCOMPACT" --dangerously-skip-permissions)
 
 # ── LAUNCH-TIME HEARTBEAT (concierge flap fix, concierge-approved 2026-09-12) ──
 # Stamp the agent's heartbeat NOW, at launch, so a session that is SLOW on its FIRST /loop tick — the
