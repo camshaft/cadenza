@@ -1,0 +1,89 @@
+// The COUNTER browser-app root-router (operator note 746: "make it a simple counter. Add and subtract.
+// And then it displays the current value ... make it look decent with some css"). Unlike browser-outpost
+// (which ships a jco-transpiled reducer to the tab and drives it client-side), this is a PURE-HTTP counter:
+// the reducer IS the root router, holds the count in durable `state`, and serves a fully-rendered HTML page
+// per request. No JS required — the ADD / SUBTRACT buttons are same-origin links that navigate to /add and
+// /subtract; the reducer folds each request, mutates the durable count, and re-renders the page with the new
+// value. This makes the demo robust (works with JS disabled) and shows the reducer model end-to-end: a browser
+// GET is a `message`, the response is the fold's terminal, state persists across requests via the host import.
+//
+// SHIPPING (operator: NO daemon redeploy): built by the flake's program auto-discovery (nix build
+// .#cdz-http-conformance-programs -> result/counter.wasm), published to the CAS with its FULL component
+// closure (runtime + nfc) by v-hivemind, then installed as the root-router control key via push-root-router.
+// The running daemon serves it live on the next request — the hot-swap the operator wants.
+//
+// STATE: the count is a single Int64 under one key. Stored as `Value.encode(n)` and read back via
+// `Value.decode : Option(Int64)` — the same binary-AST codec every payload uses (no bespoke int<->bytes).
+// Absent key => 0. add => n+1, subtract => n-1. `host state in` brings state.get/put into scope for the fold.
+import { Method, Request, respond, deny, method-code } from "http-lib"
+import { Header } from "http-response"
+import { on-response, on-notification } from "reducer-lib"
+
+// The durable count, wrapped in a declared sum so it round-trips through the binary-AST value codec: a bare
+// Int64 has no value-form descriptor (Value.decode into a scalar is rejected), but a declared type does — the
+// same reason every reducer decodes state/payloads into a declared sum/record, never a raw scalar.
+type Count = | Count(Int64)
+
+// The durable key the count lives under.
+def count-key() = (b"counter.value" : Bytes)
+
+// A single decimal digit (0..9) as its ASCII byte. A 10-arm match returning byte literals avoids any
+// Char->Bytes conversion (char-from-int -> String -> Bytes is untested in the reducer world); this is total.
+def digit(d: Int64) =
+  (match d with
+   | 0 => b"0" | 1 => b"1" | 2 => b"2" | 3 => b"3" | 4 => b"4"
+   | 5 => b"5" | 6 => b"6" | 7 => b"7" | 8 => b"8" | 9 => b"9" | _ => b"?")
+
+// Render a NON-NEGATIVE Int64 to its decimal bytes. Explicit recursion (the compiler-ml idiom — no
+// closures/fold in the guest List module): the low digit is n % 10, the rest is n / 10 rendered ahead of it.
+def render-nat(n: Int64) =
+  (if n < 10 then digit(n)
+   else Bytes.concat(render-nat(n / 10), digit(n % 10)))
+
+// Render a possibly-negative Int64 (a subtract below zero shows a leading minus).
+def render-int(n: Int64) =
+  (if n < 0 then Bytes.concat(b"-", render-nat(0 - n)) else render-nat(n))
+
+// The styled page: a card with the current value big + centered, and ADD / SUBTRACT link-buttons that
+// navigate to /add and /subtract (each re-renders with the new value). CSS is inline in a <style> block so
+// the whole app is one self-contained document (no extra asset routes / CAS blobs to pin).
+def page-head() =
+  (b"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Cadenza Counter</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:linear-gradient(135deg,#1e293b,#0f172a);color:#e2e8f0}.card{background:#111827;border:1px solid #1f2937;border-radius:20px;padding:2.5rem 3rem;box-shadow:0 20px 50px rgba(0,0,0,.45);text-align:center;min-width:280px}h1{margin:0 0 .25rem;font-size:1.1rem;font-weight:600;letter-spacing:.02em;color:#93c5fd}p.sub{margin:0 0 1.5rem;font-size:.8rem;color:#64748b}.value{font-size:5rem;font-weight:800;line-height:1;margin:.5rem 0 1.75rem;font-variant-numeric:tabular-nums;color:#f8fafc}.row{display:flex;gap:.75rem;justify-content:center}a.btn{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:16px;font-size:2rem;font-weight:700;text-decoration:none;color:#0f172a;transition:transform .06s ease,filter .15s ease;user-select:none}a.btn:active{transform:translateY(2px)}a.sub-btn{background:linear-gradient(160deg,#fca5a5,#ef4444)}a.add-btn{background:linear-gradient(160deg,#86efac,#22c55e)}a.btn:hover{filter:brightness(1.08)}.foot{margin-top:1.5rem;font-size:.7rem;color:#475569}</style></head><body><main class='card'><h1>Cadenza Counter</h1><p class='sub'>a Cadenza reducer, served live from the CAS</p><div class='value'>")
+
+def page-tail() =
+  (b"</div><div class='row'><a class='btn sub-btn' href='/subtract' aria-label='subtract'>&minus;</a><a class='btn add-btn' href='/add' aria-label='add'>+</a></div><p class='foot'>root-router program &middot; durable state</p></main></body></html>")
+
+// Render the full page for a given count.
+def page(n: Int64) =
+  respond(200,
+    [Header.Header({ name = "content-type", value = "text/html; charset=utf-8" })],
+    Bytes.concat(page-head(), Bytes.concat(render-int(n), page-tail())))
+
+// Read the durable count (absent / undecodable => 0).
+def read-count() =
+  (match state.get(count-key()) with
+   | Some(bytes) =>
+     (match (Value.decode(bytes) : Option(Count)) with
+      | Some(Count.Count(n)) => n
+      | None(_) => 0)
+   | None(_) => 0)
+
+// Store a new count and render the page for it (the value the browser then shows).
+def store-and-render(n: Int64) =
+  (state.put(count-key(), Value.encode(Count.Count(n))) ; page(n))
+
+// GET-only counter. / shows the current value; /add and /subtract fold the count and re-render. Wrap in
+// `host state in` so state.get/put are in scope for the whole fold.
+def on-message(msg) =
+  host state in
+    (match (Value.decode(msg.payload) : Option(Request)) with
+     | Some(Request.Request(rq)) =>
+       (if method-code(rq.method) == method-code(Method.Get) then
+          (if String.to-bytes(rq.path) == b"/" then page(read-count())
+           else if String.to-bytes(rq.path) == b"/add" then store-and-render(read-count() + 1)
+           else if String.to-bytes(rq.path) == b"/subtract" then store-and-render(read-count() - 1)
+           else deny(404, b"not found"))
+        else deny(405, b"method not allowed"))
+     | None(_) => deny(404, b"not found"))
+
+export { on-message, on-response, on-notification }
