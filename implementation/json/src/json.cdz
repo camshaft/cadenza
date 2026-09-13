@@ -71,15 +71,17 @@ def skip-ws(inp: Bytes) -> Bytes =
    | _ => inp)
 
 // ── Strings ─────────────────────────────────────────────────────────────────────────────────────────────
-// Output bytes are built two ways, BOTH avoiding `Bytes.of([bin-bound-byte])` which hits a seed codegen bug
-// (CDZ0910 "expected i32, found i64" — a `bin`-bound UInt8 used as a Bytes.of list element mis-widths; flagged
-// to v-binary-matching). A literal input byte is copied by SLICING it back out (Bytes.slice(inp,0,1)); an
-// escape emits a fixed byte via `bin` CONSTRUCTION b[u8(N)] with a constant. Both idioms compile clean.
+// Append one decoded byte to the accumulator, the IDEAL way (operator 781: write the ideal code, file the
+// gap, do NOT work around). NOTE: this currently hits a seed codegen bug — CDZ0910 "expected i32, found i64"
+// (a `bin`-bound UInt8 used as a Bytes.of list element is mis-widthed). Filed to v-binary-matching, fix in
+// flight; this ideal form passes once it lands. Until then the wasm gate (cad-test-json) is RED here BY DESIGN.
+def push-byte(acc: Bytes, c: UInt8) -> Bytes =
+  Bytes.concat(acc, Bytes.of([c]))
 
 // Decode a string BODY (input is the bytes AFTER the opening quote), accumulating escape-resolved bytes into
 // `acc`. A closing quote (34) ends it; a backslash (92) begins an escape; a raw control byte (< 32) is
 // invalid per JSON (they must be escaped); any other byte — including a UTF-8 continuation byte — is copied
-// verbatim (as a 1-byte slice of the input). Running out of input before the closing quote is unterminated.
+// verbatim. Running out of input before the closing quote is an unterminated-string error.
 //   (\uXXXX unicode escapes arrive in I2b; until then a `\u` is an invalid escape and rejects.)
 def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
@@ -87,24 +89,22 @@ def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
    | b[u8(92), bytes(after)] => parse-escape(after, acc)
    | b[u8(c), bytes(rest)]   =>
        if c < 32 then StrParsed.SErr
-       else (match Bytes.slice(inp, 0, 1) with
-             | Option.Some(one) => parse-str(rest, Bytes.concat(acc, one))
-             | Option.None      => StrParsed.SErr)
+       else parse-str(rest, push-byte(acc, c))
    | _ => StrParsed.SErr)
 
 // Decode the character AFTER a backslash and continue the string body. The eight JSON escapes:
 //   \" (34)  \\ (92)  \/ (47)  \b -> backspace (8)  \f -> formfeed (12)  \n (10)  \r (13)  \t (9)
-// Any other escape byte (or end of input) is an invalid escape. Each emits its byte via b[u8(N)] construction.
+// Any other escape byte (or end of input) is an invalid escape.
 def parse-escape(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
-   | b[u8(34), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(34)]))
-   | b[u8(92), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(92)]))
-   | b[u8(47), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(47)]))
-   | b[u8(98), bytes(rest)]  => parse-str(rest, Bytes.concat(acc, b[u8(8)]))
-   | b[u8(102), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(12)]))
-   | b[u8(110), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(10)]))
-   | b[u8(114), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(13)]))
-   | b[u8(116), bytes(rest)] => parse-str(rest, Bytes.concat(acc, b[u8(9)]))
+   | b[u8(34), bytes(rest)]  => parse-str(rest, push-byte(acc, 34))
+   | b[u8(92), bytes(rest)]  => parse-str(rest, push-byte(acc, 92))
+   | b[u8(47), bytes(rest)]  => parse-str(rest, push-byte(acc, 47))
+   | b[u8(98), bytes(rest)]  => parse-str(rest, push-byte(acc, 8))
+   | b[u8(102), bytes(rest)] => parse-str(rest, push-byte(acc, 12))
+   | b[u8(110), bytes(rest)] => parse-str(rest, push-byte(acc, 10))
+   | b[u8(114), bytes(rest)] => parse-str(rest, push-byte(acc, 13))
+   | b[u8(116), bytes(rest)] => parse-str(rest, push-byte(acc, 9))
    | _ => StrParsed.SErr)
 
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
