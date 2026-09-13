@@ -1,0 +1,38 @@
+// The demo ECHO contract — the tiny request/reply payload the 769 name-routed SEND demo passes between the
+// name-router and a spawned durable ECHO ACTOR. It is a DEMO/example userspace contract (like the outpost's
+// control-send), not a platform primitive: it exists so the actor-pattern demo has a real, typed, self-
+// describing message to exchange over the one-way `cdz-platform.send` effect (operator 769/777/778).
+//
+// THE ACTOR PATTERN (operator 778): send is one-way, so a request/response is TWO correlated one-way sends,
+// both on THIS contract:
+//   1. name-router  --send(target=actor,  contract=demo.echo, Echo{text})-->  actor
+//      (the actor's delivered envelope carries source = the router's sid, so it can reply back)
+//   2. actor        --send(target=router, contract=demo.echo, Echo{text'})-->  router
+//      (the router, a still-live ephemeral, awaits this inbound Echo and returns text' over HTTP)
+// The same `Echo` shape flows both ways; the sender's ROLE (which session it is) disambiguates request from
+// reply — the router only ever receives an Echo as the actor's answer, the actor only ever as the request.
+//
+// Like the platform contracts this file is the source of truth for the schema and is real Cadenza: `cargo
+// xtask codegen` (nix .#cdz-platform-contracts) validates it with the `cdz` binary + runs its conformance
+// tests before generating `src/contracts/demo_echo.rs` and wiring `pub mod demo_echo` into `contracts/mod.rs`.
+// A guest imports `{ Echo.*, descriptor as echo-desc } from "demo-echo"` and routes on `echo-desc().id`.
+
+// The one message the demo exchanges, both directions: opaque `text` bytes (a name to greet / the greeting).
+type Echo =
+  | Echo(Record(text: Bytes))
+
+// --- conformance proof: a fully-literal value, ascribed against the schema type ---
+def an-echo() -> Echo =
+  Echo.Echo({ text = b"world" })
+
+@test
+def echo-conforms() =
+  match an-echo() with
+  | Echo.Echo(e) => if e.text == b"world" then unit else trap("echo text mismatch")
+
+// Self-reflecting uniform descriptor: a guest imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.demo-echo", "Echo", "Echo")
+
+export { Echo.*, descriptor }
