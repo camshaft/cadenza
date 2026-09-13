@@ -1,0 +1,20 @@
+// A timer test reducer that ARMS a `fire-after` on its first event and BREAKS when the timer FIRES — the
+// arming-AND-folding half the inert `reducer-timer-cdz` lacks (its on-response is inert). Used to prove the
+// hivemind daemon's NODE-LOCAL ephemeral-timer bridge (operator 766/767): driven through `reactor::drive`
+// with a live inbox, the local in-memory timer must fire and deliver a `Fired` RESPONSE back into THIS
+// session, folded via `on-response` → Close. If the bridge routed the arm to the durable timer handler (the
+// old ephemeral behavior) the wake would never arrive and the session would never Break.
+//
+//   on-message(any)          → arm `fire-after` on the timer contract (a short delay); Continue.
+//   on-response(Fired)        → Close (the only response this guest can receive is its timer wake).
+import { Envelope, descriptor as timer-desc } from "timer"
+import { Outcome, Error, request, on-notification } from "reducer-lib"
+
+def on-message(_msg) =
+  { requests = [request(timer-desc().id, Value.encode(Envelope.FireAfter(1000000)), b"tick")],
+    outcome = Outcome.Continue }
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  { requests = [], outcome = Outcome.Close({ schema = resp.contract, reason = b"fired" }) }
+
+export { on-message, on-response, on-notification }

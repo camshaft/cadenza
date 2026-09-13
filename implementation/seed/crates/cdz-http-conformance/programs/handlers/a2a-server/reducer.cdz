@@ -11,8 +11,9 @@
 // boundary the operator paused before):
 //   1. Agent Card — GET /.well-known/agent.json → a one-shot application/json descriptor (a static card).
 //   2. message/send — POST JSON-RPC → read the whole body, respond with a completed Task result.
-//   3. message/stream — POST JSON-RPC → respond as SSE (text/event-stream): a status-update (working), an
-//      artifact-update, and a final status-update (completed, final:true).
+//   3. message/stream — POST JSON-RPC → respond as SSE (text/event-stream), TIMER-DRIVEN: open with Head + a
+//      working status-update, then emit the artifact-update and the final completed status-update (final:true)
+//      ON A ~1s TIMER — one message roughly every second, driven by the node-local ephemeral-timer bridge.
 //
 // ONE OUTPUT PATH — the response-stream. Every response (the one-shots AND the SSE stream) is emitted as
 // http-response-stream Head + Chunk(s) + a terminal End Break. A one-shot is just Head + one Chunk + End; SSE
@@ -22,10 +23,13 @@
 // path needs no prior body-mode (the daemon's driver opens the response on Head), so a GET streams its answer
 // straight from the head with no body intake.
 //
-// TIMER NOTE: all SSE chunks are emitted in ONE fold (a NON-timer SSE proof). A guest-driven periodic timer
-// that self-wakes to push the next SSE frame on an interval is NOT wired to the ephemeral response-stream path
-// today (flagged to the concierge, ask 76xxx: it needs an S2c-for-timers bridge, which is persistence-adjacent
-// and behind the operator's HARD STOP). This proves the SSE framing end-to-end; the periodic drive is pending.
+// TIMER-DRIVEN SSE (operator 765/766/767): message/stream does NOT blast its chunks in one fold. It opens the
+// stream + arms a `fire-after` timer on the timer contract; the daemon's node-local ephemeral-timer bridge
+// fires it back as a `Fired` RESPONSE, folded by `on-response`, which emits the next SSE chunk + re-arms — so
+// the stream advances ~once per second, exercising the timer capability end-to-end. REQUIRES the ephemeral-
+// timer bridge in the daemon (a bridge-less daemon would route the arm to the durable timer handler and the
+// stream would never advance) — deploy this guest only AFTER the daemon carries that bridge. HARD STOP still
+// honored: NO stateful task store / tasks-get / tasks-cancel / S2c.
 //
 // LIFECYCLE (head-first delivery, like the counter + http-flex guests):
 //   on_message(request-head)              → GET: stream the answer directly; POST: choose body-mode Whole.
@@ -34,7 +38,8 @@
 import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
 import { Frame as InFrame, descriptor as body-stream-desc } from "http-request-body-stream"
 import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
-import { Outcome, on-response, on-notification, request } from "reducer-lib"
+import { Envelope, descriptor as timer-desc } from "timer"
+import { Outcome, Error, on-notification, request } from "reducer-lib"
 import { contains, field-token } from "json-lib"
 
 // Local structural copy of the live head (method as a String, e.g. "GET"). Its `headers` field uses a LOCAL
@@ -103,27 +108,24 @@ def stream-end() =
 def one-shot(ctype: String, body: Bytes) =
   { requests = [ stream-head(ctype), stream-chunk(body) ], outcome = stream-end() }
 
-// message/stream → SSE: Head(text/event-stream + cache-control) + three update Chunks, Break with End. All
-// chunks in ONE fold (the non-timer SSE proof).
-def sse-out(id: Bytes) =
+// Arm a node-local timer ~1s out (operator 765/766/767): the ephemeral-timer bridge fires it back as a
+// `Fired` RESPONSE folded by `on-response`, which emits the NEXT SSE chunk — so the stream is TIMER-DRIVEN
+// (one message ~every second), exercising the timer capability, not blasted in one fold.
+def timer-arm() =
+  request(timer-desc().id, Value.encode(Envelope.FireAfter(1000000000)), b"a2a-tick")
+
+// message/stream, tick 0 → open the SSE response: Head(text/event-stream) + the first update Chunk (working),
+// then ARM the timer and Continue (the session stays open; `on-response` drives the rest). The caller stores
+// the echoed id + the tick counter in ephemeral state so `on-response` can emit the following chunks.
+def sse-begin(id: Bytes) =
   { requests = [ request(resp-stream-desc().id,
                         Value.encode(OutFrame.Head({ status = 200,
                                                      headers = [OutHeader.Header({ name = "content-type", value = "text/event-stream" }),
                                                                 OutHeader.Header({ name = "cache-control", value = "no-cache" })] })),
                         b""),
                  stream-chunk(sse-event(id, working-status())),
-                 stream-chunk(sse-event(id, artifact-update())),
-                 stream-chunk(sse-event(id, completed-status())) ],
-    outcome = stream-end() }
-
-// Dispatch the accumulated JSON-RPC request body on its `method`. `message/stream` is checked before
-// `message/send` (they share the `message/` prefix); the echoed `id` is extracted verbatim (preserving its
-// JSON type) via json-lib's field-token.
-def dispatch-rpc(body: Bytes) =
-  (let id = field-token(body, b"id", b"null") in
-   if contains(body, b"message/stream") then sse-out(id)
-   else if contains(body, b"message/send") then one-shot("application/json", result-envelope(id, completed-task()))
-   else one-shot("application/json", method-error(id)))
+                 timer-arm() ],
+    outcome = Outcome.Continue }
 
 // ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -136,10 +138,19 @@ def on-message(msg) =
              (state.put(b"body", Bytes.concat(prev, c.body)) ;
               { requests = [], outcome = Outcome.Continue }))
         | _ =>
-            // End (not-a-Chunk) → dispatch the accumulated JSON-RPC body.
-            (match state.get(b"body") with
-             | Some(body) => dispatch-rpc(body)
-             | None(_) => dispatch-rpc(b"")))
+            // End → dispatch the accumulated JSON-RPC body. `message/stream` is checked before `message/send`
+            // (shared `message/` prefix); the echoed id is extracted verbatim via json-lib's field-token.
+            // message/stream stores the id + tick counter in ephemeral state and OPENS the timer-driven SSE
+            // stream (the following chunks are emitted by on-response on each timer Fired). message/send stays
+            // a synchronous one-shot.
+            (let body = (match state.get(b"body") with | Some(b) => b | None(_) => b"") in
+             (let id = field-token(body, b"id", b"null") in
+              if contains(body, b"message/stream") then
+                (state.put(b"a2a-id", id) ;
+                 (state.put(b"a2a-seq", b"1") ;
+                  sse-begin(id)))
+              else if contains(body, b"message/send") then one-shot("application/json", result-envelope(id, completed-task()))
+              else one-shot("application/json", method-error(id)))))
      else
        (match (Value.decode(msg.payload) : Option(ReqHead)) with
         | Some(ReqHead.ReqHead(h)) =>
@@ -154,5 +165,24 @@ def on-message(msg) =
                                     msg.token)],
                  outcome = Outcome.Continue })
         | None(_) => one-shot("text/plain; charset=utf-8", b"not found")))
+
+// The timer wake (766/767 ephemeral-timer bridge): each `Fired` advances the message/stream SSE by one chunk.
+// seq "1" → emit the artifact-update chunk + re-arm the ~1s timer; seq "2" → emit the final completed-status
+// chunk and CLOSE the stream (End). No stored id/seq (not a stream request) → inert Continue.
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  host state in
+    (match state.get(b"a2a-id") with
+     | Some(id) =>
+         (match state.get(b"a2a-seq") with
+          | Some(seq) =>
+              (if seq == b"1" then
+                 (state.put(b"a2a-seq", b"2") ;
+                  { requests = [ stream-chunk(sse-event(id, artifact-update())), timer-arm() ],
+                    outcome = Outcome.Continue })
+               else
+                 { requests = [ stream-chunk(sse-event(id, completed-status())) ],
+                   outcome = stream-end() })
+          | None(_) => { requests = [], outcome = Outcome.Continue })
+     | None(_) => { requests = [], outcome = Outcome.Continue })
 
 export { on-message, on-response, on-notification }
