@@ -27,7 +27,7 @@
 //! payload against a contract as opaque bytes; what the types mean is the concern of the programs on each
 //! end.
 
-use crate::{Bytes, ContractId, Str};
+use crate::{Bytes, ContractId, ContractKind, Str};
 use cadenza_ast::ast::{Builder, StructId};
 
 /// A contract: a `(name, input type, output type)` declaration whose canonical encoding hashes to its
@@ -36,8 +36,13 @@ use cadenza_ast::ast::{Builder, StructId};
 #[derive(Clone)]
 pub struct Contract {
     /// The contract-id: the hash of the canonical declaration, computed once at construction (the getter
-    /// just returns it — hashing every call would be wasteful).
+    /// just returns it — hashing every call would be wasteful). The id's leading tag byte carries the
+    /// contract's mutation-vs-query class (654(a)) — see [`kind`](Contract::kind).
     id: ContractId,
+    /// The contract's mutation-vs-query class (654(a)): a mutation routes to the durable single-writer
+    /// session, a query to a forked read-only snapshot session. It is stamped into [`id`](Contract::id)'s
+    /// tag byte at construction, so the router reads it straight off the id.
+    kind: ContractKind,
     /// The contract's name — kept for the [`name`](Contract::name) accessor; it is also encoded inside the
     /// declaration (which is what the id is taken over).
     name: Str,
@@ -80,19 +85,38 @@ impl Contract {
         input: &str,
         output: &str,
     ) -> Self {
+        // A bare `new` declares a MUTATION contract — the default class (654(a)), byte-identical to the
+        // pre-654(a) contract (same declaration bytes, `HashTag::Contract` tag), so no id drifts.
+        Self::new_with_kind(name, types, input, output, ContractKind::Mutation)
+    }
+
+    /// Declare a contract of a given [`ContractKind`] (654(a)) — a [`Query`](ContractKind::Query) for a
+    /// read-only contract routed to a forked snapshot session, or a [`Mutation`](ContractKind::Mutation)
+    /// (what [`new`](Contract::new) mints) for the durable single-writer path. The class is stamped into the
+    /// [`id`](Contract::id)'s leading tag byte via [`ContractId::of_kind`], so the router reads it straight
+    /// off the id with no side table. A mutation is byte-identical to `new`; a query shares the declaration
+    /// digest but carries the [`ContractQuery`](crate::HashTag::ContractQuery) tag.
+    pub fn new_with_kind(
+        name: Str,
+        types: impl FnOnce(&mut Builder) -> Vec<StructId>,
+        input: &str,
+        output: &str,
+        kind: ContractKind,
+    ) -> Self {
         // The declaration build + canonical encoding lives once in `cdz-contract` (so it can also run as a
         // wasm component that turns a schema into a hash); build it once here, store the bytes, and take the
-        // contract-id over exactly them. `ContractId::of` is `Hash::of(HashTag::Contract, …)`, the same hash
-        // `cdz_contract::contract_id` computes — so the two agree by construction.
+        // contract-id over exactly them. `ContractId::of_kind(_, Mutation)` is `Hash::of(HashTag::Contract,
+        // …)`, the same hash `cdz_contract::contract_id` computes — so the two agree by construction.
         let declaration = Bytes::from(cdz_contract::contract_declaration(
             name.as_str(),
             types,
             input,
             output,
         ));
-        let id = ContractId::of(&declaration);
+        let id = ContractId::of_kind(&declaration, kind);
         Self {
             id,
+            kind,
             name,
             declaration,
         }
@@ -104,6 +128,15 @@ impl Contract {
     #[must_use]
     pub fn id(&self) -> ContractId {
         self.id
+    }
+
+    /// The contract's mutation-vs-query class (654(a)) — [`Mutation`](ContractKind::Mutation) routes to the
+    /// durable single-writer session, [`Query`](ContractKind::Query) to a forked read-only snapshot. It is
+    /// the class stamped into [`id`](Contract::id)'s tag byte, so `contract.kind()` equals
+    /// `contract.id().kind().unwrap()`.
+    #[must_use]
+    pub fn kind(&self) -> ContractKind {
+        self.kind
     }
 
     /// The contract's name.
@@ -207,6 +240,51 @@ mod tests {
     fn name_reads_back() {
         let c = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
         assert_eq!(c.name().as_str(), "temp.celsius");
+    }
+
+    #[test]
+    fn new_is_a_mutation_and_equals_new_with_kind_mutation() {
+        // 654(a): a bare `new` is a MUTATION — its id, kind, and declaration are identical to
+        // `new_with_kind(_, Mutation)`, so no existing contract drifts (the byte-stable golden below still
+        // holds for `new`).
+        use crate::ContractKind;
+        let plain = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
+        let explicit = Contract::new_with_kind(
+            Str::from("temp.celsius"),
+            temp_type,
+            "Temp",
+            "Temp",
+            ContractKind::Mutation,
+        );
+        assert_eq!(plain.kind(), ContractKind::Mutation);
+        assert_eq!(plain.id(), explicit.id());
+        assert_eq!(plain.declaration(), explicit.declaration());
+        // The kind is exactly what the id's tag byte carries.
+        assert_eq!(plain.id().kind(), Some(ContractKind::Mutation));
+    }
+
+    #[test]
+    fn a_query_contract_carries_the_query_class_in_its_id_same_declaration_digest() {
+        // A query contract of the same (name, types, input, output) shares the mutation's declaration
+        // digest but carries the ContractQuery tag — so the router reads Query straight off the id, and the
+        // declaration bytes are identical (this slice is tag-only; the digest-commitment marker is a
+        // follow-up).
+        use crate::{ContractKind, HashTag};
+        let mutation = Contract::new(Str::from("account.balance"), temp_type, "Temp", "Temp");
+        let query = Contract::new_with_kind(
+            Str::from("account.balance"),
+            temp_type,
+            "Temp",
+            "Temp",
+            ContractKind::Query,
+        );
+        assert_eq!(query.kind(), ContractKind::Query);
+        assert_eq!(query.id().kind(), Some(ContractKind::Query));
+        assert_eq!(query.id().hash().tag(), Some(HashTag::ContractQuery));
+        // Same declaration + digest, distinct ids (only the tag differs).
+        assert_eq!(mutation.declaration(), query.declaration());
+        assert_eq!(mutation.id().hash().digest(), query.id().hash().digest());
+        assert_ne!(mutation.id(), query.id());
     }
 
     #[test]
