@@ -6423,6 +6423,37 @@ fn concierge_down_alert_due(last_alert_age: Option<u64>) -> bool {
 /// live claude-proc count (all readable without privilege) so a pattern (e.g. an OOM during a memory spike —
 /// note there is NO swap on this box, so a spike kills hard) becomes visible across incidents. What it CANNOT
 /// read unprivileged (the kernel OOM log via `dmesg`/`journalctl -k`) is named in the line for a human.
+/// The cgroup-v2 OOM-kill counter for the current process's memory cgroup (walking up to the nearest
+/// ancestor that exposes `memory.events`), readable UNPRIVILEGED. This is the SMOKING GUN for the recurring
+/// concierge deaths: a kernel OOM kill is a SIGKILL with no graceful exit — the tmux window just vanishes,
+/// looking exactly like "clean tick then gone" — and this counter increments when it happens, so a death
+/// whose forensics show a HIGHER count than the prior death is attributable to memory pressure WITHOUT a
+/// privileged `dmesg`. `None` if cgroup-v2 / the file isn't found.
+fn cgroup_oom_kills() -> Option<u64> {
+    let cg = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let rel = cg
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))?
+        .trim()
+        .trim_start_matches('/')
+        .to_string();
+    let mut dir = std::path::PathBuf::from("/sys/fs/cgroup").join(&rel);
+    for _ in 0..6 {
+        if let Ok(s) = std::fs::read_to_string(dir.join("memory.events"))
+            && let Some(n) = s
+                .lines()
+                .find_map(|l| l.strip_prefix("oom_kill "))
+                .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            return Some(n);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 fn capture_death_forensics(fleet: &Fleet, agent: &str, reason: &str, now: u64) -> String {
     let loadavg = std::fs::read_to_string("/proc/loadavg")
         .ok()
@@ -6448,8 +6479,11 @@ fn capture_death_forensics(fleet: &Fleet, agent: &str, reason: &str, now: u64) -
                 .ok()
         })
         .unwrap_or(0);
+    let oom_kills = cgroup_oom_kills()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
     let line = format!(
-        "t={now} DOWN agent={agent} reason=\"{reason}\" load=[{}] mem_avail={:.0}G swap_free={:.0}G claude_procs={claude_procs} (kernel-OOM needs a privileged dmesg/journalctl -k check)",
+        "t={now} DOWN agent={agent} reason=\"{reason}\" load=[{}] mem_avail={:.0}G swap_free={:.0}G claude_procs={claude_procs} cgroup_oom_kills={oom_kills} (if cgroup_oom_kills rose since the prior death, the kernel OOM-killed it — memory pressure, not a wedge)",
         loadavg,
         g(kb("MemAvailable:")),
         g(kb("SwapFree:")),
