@@ -1328,6 +1328,32 @@
   (output (: -2 Int64)))
 
 (case
+  "a runtime b-literal match probes at a DYNAMIC offset after a dependent-size body (magic trailer)"
+  (doc
+    "`(bin (u8 n) (bytes body n) b\"!\")` — a length-prefixed body followed by a 1-byte magic trailer.
+           The `b\"!\"` literal sits at the DYNAMIC offset `1 + n` (past the runtime-sized body), so its
+           per-byte equality probe reads through the `off_plus` runtime addend — the dynamic-offset branch of
+           the GAP-1b probe (the STATIC-offset cases above do not exercise it). `frame([3,10,20,30,33])`:
+           n=3, body=[10,20,30], trailer 33='!' → matches, Bytes.len(body)=3. A wrong trailer byte (not '!')
+           falls through to -1 — pins that the literal is actually checked at the computed dynamic offset,
+           not skipped.")
+  (input
+    (do
+      (def (frame (: inp Bytes))
+        (match inp
+          ((bin (u8 n) (bytes body n) b"!") (Bytes.len body))
+          (_ -1)))
+      ; scrutinee = [len=3, 10, 20, 30, trailer]; trailer=c0. c0=33='!' → matches (len body 3);
+      ; c0=63='?' → the b"!" probe fails → -1.
+      (def (main (: c0 Int64))
+        (frame (Bytes.of #list(3 10 20 30 (UInt8.of c0)))))
+      (export main)))
+  (call main (: 33 Int64))
+  (output (: 3 Int64))
+  (call main (: 63 Int64))
+  (output (: -1 Int64)))
+
+(case
   "a structural byte-wrap around a runtime splice (u8-literal form, encoder array-wrap)"
   (doc
     "`(bin (u8 91) (bytes inner) (u8 93))` — the codec's `wrap-arr` today (becomes `b\"[\" … b\"]\"`
