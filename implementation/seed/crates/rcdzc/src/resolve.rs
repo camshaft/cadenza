@@ -5877,11 +5877,13 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "bin").unwrap_or(&[]);
     let mut segs = Vec::with_capacity(tail.len());
     for &seg in tail {
-        // A bare `b"…"` byte-string literal in segment position — a multi-byte match-by-equality /
-        // emit-verbatim literal segment (the multi-byte generalization of `(u8 <lit>)`; `spec/semantics/
-        // 16-binary-matching.sexp`). It is NOT a `(<kind> <slot>)` list; it carries its own bytes, so the
-        // segment's `slot` IS the literal atom (read downstream via `constant_bytes_value`).
-        if db.ast.as_bytes(seg).is_some() {
+        // A bare `b"…"` byte-string OR `"…"` string literal in segment position — a multi-byte
+        // match-by-equality / emit-verbatim literal segment (the multi-byte generalization of `(u8 <lit>)`;
+        // `spec/semantics/16-binary-matching.sexp`). A string literal contributes its UTF-8 bytes (a
+        // `String`'s value IS its flat UTF-8 bytes), so `"null"` and `b"null"` mean the same 4 bytes; `b"…"`
+        // additionally spells arbitrary / non-UTF-8 bytes. It is NOT a `(<kind> <slot>)` list; it carries its
+        // own bytes, so the segment's `slot` IS the literal atom (read downstream via `as_literal_bytes`).
+        if db.ast.as_literal_bytes(seg).is_some() {
             segs.push(crate::resolved::Segment {
                 kind: crate::resolved::SegKind::BytesLit,
                 slot: seg,

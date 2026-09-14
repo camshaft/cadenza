@@ -382,7 +382,7 @@ pub(super) fn lower_match_bin(
                     }
                     // A `b"…"` literal segment already had its equality decided by `bin_match_decode` (a
                     // mismatch there returned `None` → this arm was skipped), so it needs no separate probe.
-                    if db.ast.as_bytes(seg.slot).is_some() {
+                    if db.ast.as_literal_bytes(seg.slot).is_some() {
                         continue;
                     }
                     match (core_of(db, seg.slot), dec) {

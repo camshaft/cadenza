@@ -16,10 +16,11 @@
 ;   (bytes b)                         splice all of b (build); bind the REST (match, final segment only)
 ;   (bytes b n)                       exactly n bytes; n MAY be a name bound by an earlier segment
 ;                                       (dependent size) — the crown jewel, entirely value-level
-;   b"…"                              a bare byte-string LITERAL segment: emit these exact bytes (build) /
-;                                       match them by equality then continue (match) — the MULTI-BYTE
-;                                       generalization of the single-byte literal `(u8 34)`. Known length,
-;                                       so legal at ANY position (`b"null" (bytes rest)`, `b"[" x b"]"`).
+;   b"…"  /  "…"                      a bare LITERAL segment: emit these exact bytes (build) / match them by
+;                                       equality then continue (match) — the MULTI-BYTE generalization of
+;                                       the single-byte literal `(u8 34)`. A `"…"` string literal means its
+;                                       UTF-8 bytes (`"null"` ≡ `b"null"`); `b"…"` also spells non-UTF-8
+;                                       bytes. Known length, so legal at ANY position (`"null" (bytes rest)`).
 ; A literal in the slot means match-by-equality (magic numbers, opcodes) — the direct analogue of the
 ; existing literal patterns `(match 2 (2 "two") …)`. In MATCH position a segment binder decodes a general
 ; integer (a `(u16 m)` binder is a plain integer, losslessly holding the decoded field).
@@ -1382,6 +1383,59 @@
   (output (: 3 Int64))
   (call main (: 63 Int64))
   (output (: -1 Int64)))
+
+; -- A plain STRING literal `"…"` is also a literal segment: it contributes its UTF-8 bytes, so `"null"` ≡
+; `b"null"` for both construction and match. `b"…"` remains for arbitrary / non-UTF-8 bytes; `"…"` is the
+; readable form for valid text. (Operator: allow string literals in addition to byte-string literals.)
+(case
+  "a string-literal construction segment emits its UTF-8 bytes verbatim (ASCII ≡ the b-literal)"
+  (doc
+    "`(bin \"AB\" (u8 67))` emits the UTF-8 bytes of `\"AB\"` (65, 66) then u8 67 — identical to
+           `(bin b\"AB\" (u8 67))`. A string literal in segment position means its UTF-8 bytes.")
+  (input (= (bin "AB" (u8 67)) (Bytes.of #list(65 66 67))))
+  (output (: true Bool)))
+
+(case
+  "a string-literal construction segment encodes a MULTI-BYTE codepoint as UTF-8"
+  (doc
+    "`(bin \"é\")` emits the two UTF-8 bytes of U+00E9 — 0xC3 0xA9 (195, 169) — NOT a single char. Pins
+           that a string-literal segment contributes the string's flat UTF-8 encoding (the whole point of
+           reusing the String value form), so a non-ASCII literal is well-defined.")
+  (input (= (bin "é") (Bytes.of #list(195 169))))
+  (output (: true Bool)))
+
+(case
+  "a string-literal match segment dispatches by equality over a constant scrutinee (≡ the b-literal)"
+  (doc
+    "`(bin \"null\" (bytes rest))` over the CONSTANT scrutinee `b\"null,x\"` matches the 4 UTF-8 bytes
+           of `\"null\"` then binds the rest — identical to the `b\"null\"` arm. rest = `,x`, length 2.")
+  (input
+    (match (Bytes.of #list(110 117 108 108 44 120))
+      ((bin "null" (bytes rest)) (Bytes.len rest))
+      (_ -1)))
+  (output (: 2 Int64)))
+
+(case
+  "a runtime string-literal match dispatches on a keyword / structural prefix (≡ the b-literal)"
+  (doc
+    "`classify(inp)` matches `\"null\"` and `\"[\"` string literals over a RUNTIME `Bytes` param — the
+           readable parser dispatch, identical semantics to the `b\"…\"` form. `n`(110)→null→1, `[`(91)→4,
+           else 0.")
+  (input
+    (do
+      (def (classify (: inp Bytes))
+        (match inp
+          ((bin "null" (bytes rest)) 1)
+          ((bin "[" (bytes rest)) 4)
+          (_ 0)))
+      (def (main (: c0 Int64)) (classify (Bytes.of #list((UInt8.of c0) 117 108 108))))
+      (export main)))
+  (call main (: 110 Int64))
+  (output (: 1 Int64))
+  (call main (: 91 Int64))
+  (output (: 4 Int64))
+  (call main (: 120 Int64))
+  (output (: 0 Int64)))
 
 (case
   "a structural byte-wrap around a runtime splice (u8-literal form, encoder array-wrap)"

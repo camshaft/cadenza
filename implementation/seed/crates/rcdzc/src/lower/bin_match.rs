@@ -195,16 +195,36 @@ pub(super) fn lower_bin_build(
                         "constructing a utf8 bin segment is not supported (utf8 is pattern-only)",
                     ));
                 }
-                // A `b"…"` literal segment emits its bytes VERBATIM. `slot` IS the constant `b"…"` value
-                // (a `Core::ConstBytes`/`BytesOf`), so — reached only alongside a runtime sibling — flush the
-                // open runs then splice it as a constant piece, identical to a constant `(bytes b)` splice.
+                // A `b"…"`/`"…"` literal segment emits its bytes VERBATIM. Reached only alongside a runtime
+                // sibling: flush the open runs, then splice a SYNTHESIZED constant `Bytes` piece built from
+                // the literal's bytes (`as_literal_bytes` — UTF-8 for a string literal). Synthesizing (rather
+                // than pushing `seg.slot`) is uniform across both leaf kinds: a `"…"` slot's own core is a
+                // `String`, not a `Bytes`, so it could not be spliced into the `bytes-concat` chain directly.
                 SegKind::BytesLit => {
-                    if let Core::Poison(r) = core_of(db, seg.slot) {
-                        return Core::Poison(r);
-                    }
+                    let lit = db
+                        .ast
+                        .as_literal_bytes(seg.slot)
+                        .expect("a BytesLit segment's slot is a byte-string/string literal (resolve guarantees)")
+                        .to_vec();
                     flush_ints(db, &mut int_run, &mut pieces);
                     flush_bits(db, &mut bits_run, &mut pieces);
-                    pieces.push(seg.slot);
+                    let elems: Vec<StructId> = lit
+                        .iter()
+                        .map(|&b| {
+                            db.push_atom(crate::ast::Leaf::Int {
+                                value: IntValue::from_i64(b as i64),
+                                radix: crate::ast::Radix::Dec,
+                            })
+                        })
+                        .collect();
+                    let piece = synth_core(
+                        db,
+                        Core::BytesOf {
+                            elems: std::rc::Rc::from(elems),
+                        },
+                        crate::ty::Ty::Bytes,
+                    );
+                    pieces.push(piece);
                 }
             }
         }
@@ -375,7 +395,7 @@ pub(super) fn lower_bin_build(
                 );
                 let lit = db
                     .ast
-                    .as_bytes(seg.slot)
+                    .as_literal_bytes(seg.slot)
                     .expect(
                         "a BytesLit segment's slot is a byte-string literal (resolve guarantees)",
                     )
@@ -622,7 +642,7 @@ pub(super) fn bin_match_decode(
                 );
                 let lit = db
                     .ast
-                    .as_bytes(seg.slot)
+                    .as_literal_bytes(seg.slot)
                     .expect(
                         "a BytesLit segment's slot is a byte-string literal (resolve guarantees)",
                     )
@@ -840,7 +860,11 @@ pub(super) fn bin_dynamic_offset(
                 if bits != 0 {
                     return None;
                 }
-                let n = db.ast.as_bytes(seg.slot).map(|b| b.len()).unwrap_or(0);
+                let n = db
+                    .ast
+                    .as_literal_bytes(seg.slot)
+                    .map(|b| b.len())
+                    .unwrap_or(0);
                 off += n as u32;
             }
         }

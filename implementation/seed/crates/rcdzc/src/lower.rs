@@ -5506,7 +5506,7 @@ fn build_bin_arm_predicate(
             // bounds, and a following segment's static offset counts past it.
             SegKind::BytesLit => db
                 .ast
-                .as_bytes(s.slot)
+                .as_literal_bytes(s.slot)
                 .map(|b| b.len() as u32 * 8)
                 .unwrap_or(0),
             _ => 0,
@@ -5720,7 +5720,7 @@ fn build_bin_arm_predicate(
         // literal's length) has ANDed in and short-circuited, so every read is in bounds. The offset may be
         // dynamic (a literal after a dependent-size segment — §4a); `bin_dynamic_offset` threads the runtime
         // addend, recomputed per byte to keep each read's size node fresh (the dependent-sum idiom above).
-        if let Some(lit) = db.ast.as_bytes(seg.slot).map(|b| b.to_vec()) {
+        if let Some(lit) = db.ast.as_literal_bytes(seg.slot).map(|b| b.to_vec()) {
             for (j, &b) in lit.iter().enumerate() {
                 let Some((byte_offset, off_plus)) = bin_dynamic_offset(db, scrutinee, segs, i)
                 else {
