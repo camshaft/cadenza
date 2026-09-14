@@ -6415,6 +6415,58 @@ fn concierge_down_alert_due(last_alert_age: Option<u64>) -> bool {
 /// Slack), bypassing the concierge entirely. Rate-limited via a stamp file so a flap sends one alert per
 /// [`CONCIERGE_DOWN_ALERT_INTERVAL_SECS`], not one per cron fire. Best-effort: it never blocks the recovery
 /// action itself, and it also writes/keeps the board `concierge-flap.alarm`-style visibility separately.
+/// Gather cheaply-/unprivileged-accessible host forensics at the moment the concierge is found down, append
+/// a line to a bounded rotating `<hub>/concierge-death.log`, and return a one-line summary to fold into the
+/// operator alert. WHY: these deaths have been UNDIAGNOSABLE — a session ends a clean tick, then its window
+/// vanishes while idle (not a context wedge — autocompact works; not a crash-on-launch — manual launches
+/// survive), because nothing captured the host state at death. This records load + available memory + swap +
+/// live claude-proc count (all readable without privilege) so a pattern (e.g. an OOM during a memory spike —
+/// note there is NO swap on this box, so a spike kills hard) becomes visible across incidents. What it CANNOT
+/// read unprivileged (the kernel OOM log via `dmesg`/`journalctl -k`) is named in the line for a human.
+fn capture_death_forensics(fleet: &Fleet, agent: &str, reason: &str, now: u64) -> String {
+    let loadavg = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| "?".to_string());
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let kb = |key: &str| -> Option<u64> {
+        meminfo
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+    let g = |k: Option<u64>| k.map(|v| v as f64 / 1024.0 / 1024.0).unwrap_or(-1.0);
+    let claude_procs = Command::new("pgrep")
+        .args(["-cx", "claude"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .unwrap_or(0);
+    let line = format!(
+        "t={now} DOWN agent={agent} reason=\"{reason}\" load=[{}] mem_avail={:.0}G swap_free={:.0}G claude_procs={claude_procs} (kernel-OOM needs a privileged dmesg/journalctl -k check)",
+        loadavg,
+        g(kb("MemAvailable:")),
+        g(kb("SwapFree:")),
+    );
+    // Bounded rotating log: keep the last 200 incidents so it never becomes its own disk hog.
+    let log = fleet.root.join("concierge-death.log");
+    let mut lines: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.push(line.clone());
+    let start = lines.len().saturating_sub(200);
+    let _ = std::fs::write(&log, lines[start..].join("\n") + "\n");
+    line
+}
+
 fn alert_operator_concierge_down(fleet: &Fleet, agent: &str, reason: &str, now: u64) {
     if !is_protected_role(agent) {
         return; // this alert is worded for the protected concierge (the operator's channel); skip others
@@ -6423,6 +6475,9 @@ fn alert_operator_concierge_down(fleet: &Fleet, agent: &str, reason: &str, now: 
     if !concierge_down_alert_due(file_mtime_unix(&stamp).map(|m| now.saturating_sub(m))) {
         return; // already alerted within the dedup window — don't spam the operator on a flap
     }
+    // Snapshot the host state at death (rate-limited with the alert) into concierge-death.log + the alert
+    // body, so the recurring "clean tick then window vanishes" deaths finally leave forensic evidence.
+    let forensics = capture_death_forensics(fleet, agent, reason, now);
     deliver(
         fleet,
         &Message {
@@ -6434,8 +6489,9 @@ fn alert_operator_concierge_down(fleet: &Fleet, agent: &str, reason: &str, now: 
                 "The concierge ('{agent}') was found NOT up/operational; the out-of-band guardian is \
                  auto-recovering it now ({reason}). Delivered straight to Slack via the bridge, BYPASSING \
                  the concierge (the normal alert path, which is what was down). It should be back within a \
-                 minute. If these alerts keep arriving it is FLAPPING — the launch needs a human. \
-                 Rate-limited to one per ~15min."
+                 minute. If these alerts keep arriving it is FLAPPING — the launch needs a human.\n\
+                 Host at detection: {forensics}\n\
+                 (full trail: .claude/fleet/concierge-death.log) Rate-limited to one per ~15min."
             ),
             seq: next_seq(),
             r#ref: String::new(),
