@@ -1603,12 +1603,14 @@ pub enum SegKind {
     /// A byte-sequence segment `(bytes b [n])`: splice all of `b` (build) / bind the rest or exactly `n`
     /// bytes (match). `size` is the optional dependent-size occurrence (`n`); `None` = unsized (final).
     Bytes { size: Option<StructId> },
-    /// A byte-string LITERAL segment: a bare `b"…"` in segment position — the multi-byte generalization of
-    /// a single-byte literal `(u8 34)` match-by-equality (`spec/semantics/16-binary-matching.sexp`). In
+    /// A byte-string LITERAL segment: a bare `b"…"` OR `"…"` in segment position — the multi-byte
+    /// generalization of a single-byte literal `(u8 34)` match-by-equality (`spec/semantics/
+    /// 16-binary-matching.sexp`). A `"…"` string literal contributes its UTF-8 bytes (a `String`'s value IS
+    /// its flat UTF-8 bytes), so `"null"` ≡ `b"null"`; `b"…"` additionally spells non-UTF-8 bytes. In
     /// CONSTRUCTION it emits the literal bytes verbatim; in MATCH it consumes exactly `len(literal)` bytes
     /// and equality-checks them (failing the arm on a mismatch OR short input). The length is
     /// compile-time-known, so — unlike an unsized `Bytes` — a `BytesLit` is legal in ANY position (not just
-    /// final). The literal value is read from the `slot` occurrence via `constant_bytes_value`.
+    /// final). The literal bytes are read from the `slot` occurrence via `Arenas::as_literal_bytes`.
     BytesLit,
     /// A UTF-8 string segment `(utf8 s n)`: `size` is the dependent-size occurrence (`n`, an earlier
     /// integer segment binder). In pattern position it reads exactly `n` bytes and DECODES them as
