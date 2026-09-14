@@ -1,5 +1,65 @@
 use super::*;
 
+/// IF-JOIN PER-ARM DROP planner (v-memory-safety). Walk the NESTED If-tree rooted at `node` and, for a heap
+/// let-binding `binder` (its wasm `slot`), plan an rc-aware `op_drop` on the DEAD arm of EACH If where the
+/// binding DIVERGES — escapes one arm (W) but is dead on the other (D). This generalizes the former
+/// single-level (let-body top-If only) check to catch a divergence at an INNER If (the return-your-own-
+/// scrutinee heap-drain: the outer len-If is uniform-W, only the inner digit-If diverges — recursing arm
+/// dead vs base arm returns the scrutinee). Populates `plan` keyed by the divergent If NODE (the `Core::If`
+/// consumer removes+fires it once, dropping AFTER that arm's reads). Escape is `dup_sites`-aware so the
+/// per-arm verdict matches the post-body whole-body one (a retain-dup'd consume is not an escape).
+///
+/// SOUNDNESS (no path double-drops, no UAF): at a divergent If we plan the drop on the D arm and recurse
+/// ONLY the W arm — the binding is dead on D, so it cannot diverge deeper there (nothing to re-plan). At a
+/// uniform-W If both arms are live → recurse both (divergence may be deeper). A uniform-D If is unreachable
+/// in recursion (an ancestor recurses only into a W arm, where escape is true, so `(false,false)` occurs
+/// only at the root, where the whole body is dead ⇒ the post-body scope-drop reclaims it — not suppressed).
+/// So on every execution path the binding is dropped EXACTLY once (the deepest divergent If's D arm the path
+/// takes) OR escapes exactly once (returned), never both, never twice.
+fn plan_ifjoin_arm_drops(
+    db: &mut Db,
+    node: StructId,
+    aliases: &HashSet<StructId>,
+    slot: u32,
+    dup_sites: &HashSet<StructId>,
+    plan: &mut HashMap<StructId, Vec<(u32, bool)>>,
+) {
+    let Core::If { then_, else_, .. } = core_of(db, node) else {
+        return;
+    };
+    // Escape of the SLOT's handle on an arm = ANY of its alias ids escapes there. The runtime bin-match
+    // materialization binds `(inner, Param(p))` (inner ALIASES the param — same handle, no dup: a `tee`),
+    // and the drain's return arms reference `Param(p)` DIRECTLY while `inner` is used only for borrows. So
+    // the divergence lives on the aliased PARAM, not the `inner` binding whose slot the drop reclaims —
+    // union them (any-alias escapes) to see it.
+    let esc = |db: &mut Db, arm: StructId| -> bool {
+        aliases.iter().any(|&a| {
+            binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup_sites))
+        })
+    };
+    let et = esc(db, then_);
+    let ee = esc(db, else_);
+    match (et, ee) {
+        (true, true) => {
+            plan_ifjoin_arm_drops(db, then_, aliases, slot, dup_sites, plan);
+            plan_ifjoin_arm_drops(db, else_, aliases, slot, dup_sites, plan);
+        }
+        (true, false) => {
+            plan.entry(node)
+                .or_default()
+                .push((slot, /* d_is_then = */ false));
+            plan_ifjoin_arm_drops(db, then_, aliases, slot, dup_sites, plan);
+        }
+        (false, true) => {
+            plan.entry(node)
+                .or_default()
+                .push((slot, /* d_is_then = */ true));
+            plan_ifjoin_arm_drops(db, else_, aliases, slot, dup_sites, plan);
+        }
+        (false, false) => {}
+    }
+}
+
 /// Whether `id` is a NESTED-COMPOUND `Core::Proj` whose emit DUP'd the extracted child into a standalone
 /// OWNED handle — i.e. the SAME gate the `Core::Proj` emit (this file) uses to `dup`-child + `drop`-record:
 /// operand is OWNED (a fresh producer, e.g. `(mk i)`) + NOT slot-materialized + the projected element is a
@@ -4193,32 +4253,33 @@ pub(super) fn emit(
             // before that arm's join value. Uses the UPFRONT `dup_sites` (populated at function entry), so
             // the per-arm escape verdict matches the post-body loop's whole-body one. Fires ONLY on a
             // genuine divergence (W xor D); uniform-D is handled by the post-body drop, uniform-W kept live.
-            if let Core::If { then_, else_, .. } = core_of(db, body) {
-                let mut plan: Vec<(u32, bool)> = Vec::new();
-                for &(binder, slot, _value) in &heap_bindings {
-                    let esc_then = binding_escapes_dup_aware(
-                        db,
-                        then_,
-                        EscapeTarget::Binder(binder),
-                        false,
-                        Some(&out.dup_sites),
-                    );
-                    let esc_else = binding_escapes_dup_aware(
-                        db,
-                        else_,
-                        EscapeTarget::Binder(binder),
-                        false,
-                        Some(&out.dup_sites),
-                    );
-                    // DIVERGENT iff it escapes exactly one arm; the D (dead) arm is the one it does NOT
-                    // escape → drop there.
-                    if esc_then != esc_else {
-                        plan.push((slot, /* d_is_then = */ !esc_then));
+            // Walk the body's NESTED If-tree (not only the top let-body If): a heap binding can be
+            // divergent at an INNER If — the return-your-own-scrutinee heap-drain shape `match inp ((bin (u8
+            // d)(bytes r)) (if <digit?> (drain r) inp)) (_ inp)` lowers to `Let{(inp, Param), OUTER-if}`
+            // whose outer if is UNIFORM-W (both arms escape inp: the base arm returns it, the then arm nests
+            // the divergent inner if) → the single-level check found no divergence and the recursing arm
+            // LEAKED inp per frame. The recursive planner (below) plans the D-arm drop at EACH divergent If,
+            // recursing only the W arm (dead on D ⇒ no deeper divergence), so no path double-drops.
+            let dup_sites = out.dup_sites.clone();
+            for &(binder, slot, value) in &heap_bindings {
+                // Alias set = the binding + the bare ref it aliases (a materialized bin-match scrutinee's
+                // value is `Param(p)`/`LocalRef(p)`: `inner` and the source hold the SAME handle in two
+                // slots, so an escape of EITHER is an escape of the slot's handle).
+                let mut aliases = HashSet::from([binder]);
+                match core_of(db, value) {
+                    Core::Param { binder: b } | Core::LocalRef { binder: b } => {
+                        aliases.insert(b);
                     }
+                    _ => {}
                 }
-                if !plan.is_empty() {
-                    out.ifjoin_arm_drops.insert(body, plan);
-                }
+                plan_ifjoin_arm_drops(
+                    db,
+                    body,
+                    &aliases,
+                    slot,
+                    &dup_sites,
+                    &mut out.ifjoin_arm_drops,
+                );
             }
             emit(db, body, &extended, floor, high, scratch_ty, layout, out)?;
             // DROP a dead heap binding. DUP-AWARE escape: a CONSUMING occurrence that is a Perceus retain
