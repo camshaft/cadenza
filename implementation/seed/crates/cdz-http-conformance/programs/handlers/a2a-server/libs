@@ -1,5 +1,5 @@
 implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
-implementation/seed/crates/cdz-platform/guests/json-lib.cdz
+implementation/json/src/json.cdz
 implementation/seed/crates/cdz-platform/contracts/userspace/http-body-mode.cdz
 implementation/seed/crates/cdz-platform/contracts/userspace/http-request-body-stream.cdz
 implementation/seed/crates/cdz-platform/contracts/userspace/http-response-stream.cdz

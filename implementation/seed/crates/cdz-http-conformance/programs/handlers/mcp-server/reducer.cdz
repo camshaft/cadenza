@@ -12,15 +12,18 @@
 //                                             response via ws-send (echoing the request `id`); Continue.
 //   on_message(ws-event Disconnect{conn})  → Close.
 //
-// JSON WITHOUT JSON AWARENESS (operator 759): the JSON/JSON-RPC handling is PURE userspace — the reusable
-// json-lib (guest byte-scan over Bytes.at/slice/len) finds the method + extracts the request `id` token; the
-// responses are byte literals spliced around the echoed id via Bytes.concat. Minimal MCP surface: `initialize`,
-// `tools/list`, and a `tools/call` of one trivial tool (`ping` → "pong"). A notification (no `id`) → no response.
+// JSON WITHOUT JSON AWARENESS (operator 759): the JSON/JSON-RPC handling is PURE userspace — the real `json`
+// codec (I7, #76433) PARSES the request into a value AST, reads the TOP-LEVEL `method` + `id` fields, and
+// exact-matches the method (so a method name appearing inside a params string can no longer misfire dispatch,
+// and the tools/call-vs-tools/list prefix hazard is gone); the `id` round-trips VERBATIM via `encode`. The
+// responses are still byte literals spliced around the echoed id via Bytes.concat. Minimal MCP surface:
+// `initialize`, `tools/list`, and a `tools/call` of one trivial tool (`ping` → "pong"). Notification (no `id`)
+// → no response; malformed JSON → no response.
 import { BodyMode, descriptor as body-mode-desc } from "http-body-mode"
 import { Event, descriptor as ws-event-desc } from "ws-event"
 import { Send, descriptor as ws-send-desc } from "ws-send"
 import { Outcome, on-response, on-notification, request } from "reducer-lib"
-import { contains, field-token } from "json-lib"
+import { parse, get, as-str-bytes, encode } from "json"
 
 // ── JSON-RPC 2.0 response envelopes (byte literals spliced around the echoed id) ────────────────────────────
 
@@ -43,16 +46,27 @@ def method-error(id: Bytes) -> Bytes =
   Bytes.concat(b"{\"jsonrpc\":\"2.0\",\"id\":",
     Bytes.concat(id, b",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}"))
 
-// Dispatch one inbound JSON-RPC request frame → an outbound response, or None for a notification (no id).
-// `tools/call` is matched before `tools/list` (both share the `tools/` prefix); the trivial tool ignores args.
+// Dispatch one inbound JSON-RPC request frame → an outbound response, or None for a notification (no id) or
+// malformed JSON. Parse into an AST, read the TOP-LEVEL `id` + `method`, and EXACT-match the method (the
+// trivial `ping` tool ignores args). `id` is re-encoded verbatim so it round-trips (string / number / null).
 def rpc-dispatch(req: Bytes) -> Option(Bytes) =
-  if contains(req, b"\"id\":") then
-    (let id = field-token(req, b"id", b"null") in
-     if contains(req, b"tools/call") then Option.Some(result-envelope(id, ping-result()))
-     else if contains(req, b"tools/list") then Option.Some(result-envelope(id, tools-list-result()))
-     else if contains(req, b"initialize") then Option.Some(result-envelope(id, init-result()))
-     else Option.Some(method-error(id)))
-  else Option.None
+  (match parse(req) with
+   | Option.None => Option.None
+   | Option.Some(root) =>
+       (match get(root, b"id") with
+        | Option.None => Option.None
+        | Option.Some(id-json) =>
+            let id = encode(id-json) in
+            (match get(root, b"method") with
+             | Option.None => Option.Some(method-error(id))
+             | Option.Some(m) =>
+                 (match as-str-bytes(m) with
+                  | Option.None => Option.Some(method-error(id))
+                  | Option.Some(method) =>
+                      if method == b"tools/call" then Option.Some(result-envelope(id, ping-result()))
+                      else if method == b"tools/list" then Option.Some(result-envelope(id, tools-list-result()))
+                      else if method == b"initialize" then Option.Some(result-envelope(id, init-result()))
+                      else Option.Some(method-error(id))))))
 
 // ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
 
