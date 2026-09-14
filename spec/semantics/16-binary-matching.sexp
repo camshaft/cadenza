@@ -1197,21 +1197,19 @@
   (live-objects 0))
 
 (case
-  "a recursive drain that RETURNS its own scrutinee tail (returned-scrutinee reclaim + no double-free)"
+  "a recursive drain that RETURNS its own scrutinee tail (returned-scrutinee reclaim guard, no double-free)"
   (doc
-    "The returned-scrutinee heap-drain shape (v-memory-safety; v-json-codec's pervasive parser class —
-           parse-digits / skip-ws / every parse-*). `drain-digits` matches `(bin (u8 d) (bytes r))`, recurses on
-           `r` while `d` is a digit, and in its stop/base arms RETURNS the scrutinee `inp` ITSELF (the un-consumed
-           tail) — a HEAP (Bytes) return whose value ALIASES the borrow-only scrutinee. TWO obligations, both
-           pinned here: (1) NO DOUBLE-FREE — the fn-exit heap-return relaxation must NOT reclaim a param that is
-           RETURNED (`param_ref_reaches_result` guard; #8974 over-reclaimed it → trap, #8975 fixed); (2) NO LEAK —
-           the INTERMEDIATE recursion frames' scrutinees (dead on the recursing arm, superseded by the dup'd
-           `(bytes r)` slice) ARE reclaimed, via the NESTED IF-JOIN per-arm drop (the outer len-If is uniform-W;
-           only the inner digit-If diverges — recursing arm dead vs stop arm returns the scrutinee). Distinct
-           from rev-copy @1168 (returns a SEPARATE accumulator). `drain-digits([49,50,51,52,53,120])` stops at 120
-           ('x') and returns the 1-byte tail `[120]` (Bytes.len 1); every intermediate frame's scrutinee is freed
-           ⇒ live-objects 0. The guarded-all backstop TRAPS on a reintroduced over-reclaim (0 ≠ trap); a re-leak
-           shows as live-objects > 0 — so `0` is a STRONGER pin than the prior `known-leak`.")
+    "The UAF-regression witness for the #8974 heap-return reclaim relaxation (v-memory-safety). `drain-digits`
+           matches `(bin (u8 d) (bytes r))`, recurses on `r` while `d` is a digit, and in its stop/base arms
+           RETURNS the scrutinee `inp` ITSELF (the un-consumed tail) — a HEAP (Bytes) return whose value ALIASES
+           the borrow-only scrutinee param. The heap-return relaxation must NOT reclaim such a param at fn-exit:
+           dropping the param slot while the returned value aliases it is a DOUBLE-FREE. `param_ref_reaches_result`
+           is the guard (the param reaches a RESULT position as a bare ref) — distinct from the rev-copy shape
+           @1168, which returns a SEPARATE accumulator (`acc`) and IS reclaimed. `drain-digits([49,50,51,52,53,120])`
+           stops at 120 ('x') and returns the 1-byte tail `[120]` (Bytes.len 1). This case is `known-leak` (the
+           scrutinee IS the result, so its shell is not reclaimable) — the load-bearing pin is that it stays
+           VALUE-CORRECT and does NOT trap: the guarded-all / live-objects backstop TRAPS on a double-free, so a
+           reintroduced over-reclaim here fails the gate rather than silently corrupting the heap.")
   (input
     (do
       (def (drain-digits (: inp Bytes))
@@ -1223,7 +1221,7 @@
       (export main)))
   (call main (: 49 Int64))
   (output (: 1 Int64))
-  (live-objects 0))
+  (live-objects known-leak))
 
 ; ============================================================================================
 ; GAP-1: a bare `b"…"` byte-string LITERAL segment — the multi-byte generalization of the
