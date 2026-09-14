@@ -520,6 +520,35 @@ def rpc-error(id: Json, code: Int64, msg: Bytes, data: Option(Json)) -> Bytes =
     Member.Member({ key = b"id", value = id }),
     Member.Member({ key = b"error", value = err })]))
 
+// ── I6: numeric read accessors (exact + total — a non-integer or out-of-range value is None, never a trap) ─
+// 10^n as a BigInt (n >= 0).
+def bigint-pow10(n: Int64) -> BigInt =
+  if n <= 0 then 1N else bigint-pow10(n - 1) * 10N
+
+// The EXACT integer value of a JNum, or None if `v` is not a number OR the number is not integral. With
+// value = (neg ? -1 : 1) * coeff * 10^exp10, it is integral when exp10 >= 0, or when 10^|exp10| divides coeff.
+def as-bigint(v: Json) -> Option(BigInt) =
+  (match num-of(v) with
+   | Option.None => Option.None
+   | Option.Some(nm) =>
+       (match nm with
+        | Num.Num(r) =>
+            let mag = if r.exp10 >= 0 then Option.Some(r.coeff * bigint-pow10(r.exp10))
+                      else let d = bigint-pow10(0 - r.exp10) in
+                           if r.coeff % d == 0N then Option.Some(r.coeff / d) else Option.None in
+            (match mag with
+             | Option.None    => Option.None
+             | Option.Some(m) => Option.Some(if r.neg then BigInt.neg(m) else m))))
+
+// The value as an Int64, or None if `v` is not an integer number OR does not fit the signed 64-bit range.
+def as-int64(v: Json) -> Option(Int64) =
+  (match as-bigint(v) with
+   | Option.None => Option.None
+   | Option.Some(b) =>
+       let hi = 9223372036854775807N in
+       let lo = BigInt.neg(9223372036854775808N) in
+       if b < lo or b > hi then Option.None else Option.Some(Int64.of(b)))
+
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
 
@@ -1160,4 +1189,57 @@ def t-rpc-error-with-data() =
      == b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\",\"data\":[1]}}" then unit
   else trap("rpc-error with an optional data field")
 
-export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object, get, index, int64-decimal, num-from-int64, rpc-result, rpc-error }
+// ── I6: numeric read accessor tests ─────────────────────────────────────────────────────────────────────
+def i64-is(inp: Bytes, want: Int64) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-int64(v) with | Option.Some(x) => x == want | Option.None => false)
+   | Option.None => false)
+def i64-none(inp: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-int64(v) with | Option.None => true | _ => false)
+   | Option.None => false)
+def bigint-is(inp: Bytes, want: BigInt) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-bigint(v) with | Option.Some(x) => x == want | Option.None => false)
+   | Option.None => false)
+def bigint-none(inp: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-bigint(v) with | Option.None => true | _ => false)
+   | Option.None => false)
+
+@test
+def t-as-int64-plain() = if i64-is(b"42", 42) then unit else trap("as-int64 of 42")
+
+@test
+def t-as-int64-neg() = if i64-is(b"-7", 0 - 7) then unit else trap("as-int64 of a negative")
+
+@test
+def t-as-int64-exp() = if i64-is(b"1e3", 1000) then unit else trap("as-int64 folds a positive exponent")
+
+@test
+def t-as-int64-exp-divides-out() = if i64-is(b"150e-1", 15) then unit else trap("150e-1 is the integer 15")
+
+@test
+def t-as-int64-fractional-none() = if i64-none(b"3.14") then unit else trap("as-int64 of a fractional number is None")
+
+@test
+def t-as-int64-non-number-none() = if i64-none(b"\"x\"") then unit else trap("as-int64 of a non-number is None")
+
+@test
+def t-as-int64-overflow-none() =
+  if i64-none(b"99999999999999999999") then unit else trap("as-int64 of a value past the 64-bit range is None")
+
+@test
+def t-as-bigint-exact-large() =
+  if bigint-is(b"99999999999999999999", 99999999999999999999N) then unit
+  else trap("as-bigint is exact beyond the Int64 range")
+
+@test
+def t-as-bigint-neg() =
+  if bigint-is(b"-100", BigInt.neg(100N)) then unit else trap("as-bigint of a negative")
+
+@test
+def t-as-bigint-fractional-none() =
+  if bigint-none(b"1.5") then unit else trap("as-bigint of a non-integer is None")
+
+export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object, get, index, int64-decimal, num-from-int64, rpc-result, rpc-error, as-bigint, as-int64 }
