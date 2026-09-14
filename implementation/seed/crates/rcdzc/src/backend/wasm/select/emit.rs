@@ -1,5 +1,86 @@
 use super::*;
 
+/// NESTED IF-JOIN per-arm drop planner (v-memory-safety, join-liveness aware). Walk the If-subtree at
+/// `node` and, for the `slot`'s handle (alias set = the binding ∪ the bare ref its value materializes — a
+/// runtime bin-match scrutinee's `Let{(inner, Param(p))}`, where the return arms reference `Param(p)`
+/// directly while `inner` is used only for borrows), plan a D-arm drop at EACH DIVERGENT nested If.
+///
+/// An arm is DEAD for the binding only if it neither ESCAPES it (dup-aware) NOR CONSUMES it: escape via the
+/// result is caught by `binding_escapes_dup_aware`, and a live-carrying CONSUME (a call arg — INCLUDING a
+/// recursive-call arg that threads the binding onward — or a ctor field) by `count_param_consumes` (which,
+/// unlike the dup-aware escape, is NOT fooled by a dup_site: a dup'd recursive-call arg still counts). This
+/// count guard is the join-liveness fix for the #8976 UAF: `binding_escapes_dup_aware(Some(dup_sites))`
+/// returns false for a binding consumed at a dup_site ("the slot survives, drop it"), which is sound only at
+/// the WHOLE-BODY scope where `dup_sites` was balanced — at a nested If where the binding threads into a
+/// RECURSIVE continuation that reads it, the count guard keeps it LIVE (v-json-codec's parse-* OOB). A
+/// `(bytes r)` dup-before-slice is NOT a consume of the binding (it mints a fresh slice, `count==0`), so
+/// drain-digits still reclaims its dead scrutinee. `count_restfrom=false`: a RestFrom mints a new value, not
+/// a live carry of the binding.
+fn ifjoin_arm_dead(
+    db: &mut Db,
+    arm: StructId,
+    aliases: &HashSet<StructId>,
+    dup: &HashSet<StructId>,
+) -> bool {
+    for &a in aliases {
+        if binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup)) {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        let mut n = 0usize;
+        count_param_consumes(db, arm, a, &mut seen, &mut n, false);
+        if n != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// NESTED IF-JOIN per-arm drop planner (v-memory-safety, join-liveness aware). Walk the If-subtree at
+/// `node` and, for the `slot`'s handle (alias set = the binding ∪ the bare ref its value materializes — a
+/// runtime bin-match scrutinee's `Let{(inner, Param(p))}`, whose return arms reference `Param(p)` directly
+/// while `inner` is used only for borrows), plan a D-arm drop at EACH nested If where the binding DIVERGES:
+/// one arm is DEAD ([`ifjoin_arm_dead`]: neither escapes nor is live-consumed) and the other is LIVE. The
+/// caller keeps the ORIGINAL dup-aware single-level check for the ROOT (let-body) If and runs this nested
+/// walk ONLY when the binding escapes the whole body (post-body scope-drop suppressed → a nested drop is the
+/// SOLE reclaim, never a double).
+///
+/// SOUNDNESS (no path double-drops): at a divergent If, plan the drop on the DEAD arm and recurse ONLY the
+/// LIVE arm (dead ⇒ no deeper divergence). Both-live → recurse both. Both-dead → stop (leak-safe).
+fn plan_ifjoin_nested(
+    db: &mut Db,
+    node: StructId,
+    aliases: &HashSet<StructId>,
+    slot: u32,
+    dup: &HashSet<StructId>,
+    plan: &mut HashMap<StructId, Vec<(u32, bool)>>,
+) {
+    let Core::If { then_, else_, .. } = core_of(db, node) else {
+        return;
+    };
+    let then_dead = ifjoin_arm_dead(db, then_, aliases, dup);
+    let else_dead = ifjoin_arm_dead(db, else_, aliases, dup);
+    match (then_dead, else_dead) {
+        (false, false) => {
+            plan_ifjoin_nested(db, then_, aliases, slot, dup, plan);
+            plan_ifjoin_nested(db, else_, aliases, slot, dup, plan);
+        }
+        (true, false) => {
+            plan.entry(node)
+                .or_default()
+                .push((slot, /* d_is_then = */ true));
+            plan_ifjoin_nested(db, else_, aliases, slot, dup, plan);
+        }
+        (false, true) => {
+            plan.entry(node)
+                .or_default()
+                .push((slot, /* d_is_then = */ false));
+            plan_ifjoin_nested(db, then_, aliases, slot, dup, plan);
+        }
+        (true, true) => {}
+    }
+}
+
 /// Whether `id` is a NESTED-COMPOUND `Core::Proj` whose emit DUP'd the extracted child into a standalone
 /// OWNED handle — i.e. the SAME gate the `Core::Proj` emit (this file) uses to `dup`-child + `drop`-record:
 /// operand is OWNED (a fresh producer, e.g. `(mk i)`) + NOT slot-materialized + the projected element is a
@@ -4194,30 +4275,104 @@ pub(super) fn emit(
             // the per-arm escape verdict matches the post-body loop's whole-body one. Fires ONLY on a
             // genuine divergence (W xor D); uniform-D is handled by the post-body drop, uniform-W kept live.
             if let Core::If { then_, else_, .. } = core_of(db, body) {
+                let dup_sites = out.dup_sites.clone();
                 let mut plan: Vec<(u32, bool)> = Vec::new();
-                for &(binder, slot, _value) in &heap_bindings {
+                for &(binder, slot, value) in &heap_bindings {
                     let esc_then = binding_escapes_dup_aware(
                         db,
                         then_,
                         EscapeTarget::Binder(binder),
                         false,
-                        Some(&out.dup_sites),
+                        Some(&dup_sites),
                     );
                     let esc_else = binding_escapes_dup_aware(
                         db,
                         else_,
                         EscapeTarget::Binder(binder),
                         false,
-                        Some(&out.dup_sites),
+                        Some(&dup_sites),
                     );
                     // DIVERGENT iff it escapes exactly one arm; the D (dead) arm is the one it does NOT
                     // escape → drop there.
+                    let mut root_dropped_then = false;
+                    let mut root_dropped_else = false;
                     if esc_then != esc_else {
-                        plan.push((slot, /* d_is_then = */ !esc_then));
+                        let d_is_then = !esc_then;
+                        plan.push((slot, d_is_then));
+                        if d_is_then {
+                            root_dropped_then = true;
+                        } else {
+                            root_dropped_else = true;
+                        }
+                    }
+                    // NESTED IF-JOIN re-fix (join-liveness aware): a binding can diverge at an INNER If (the
+                    // return-your-own-scrutinee heap-drain — the outer len-If is uniform, only the inner
+                    // digit-If diverges). Gate + arm-selection over the ALIAS UNION {binder} ∪ {the bare ref
+                    // its value materializes}: the bin-match scrutinee `Let{(inner, Param(p))}` has `inner`
+                    // BORROW-only (never escapes the body) while the RETURN arms reference `Param(p)` — so a
+                    // binder-only gate misses it. Run ONLY when an alias escapes the WHOLE body (post-body
+                    // scope-drop suppressed → the nested drop is the SOLE reclaim, no double), and recurse the
+                    // arm(s) the ROOT did NOT already drop (never double-drop a root D arm).
+                    let mut aliases = HashSet::from([binder]);
+                    match core_of(db, value) {
+                        Core::Param { binder: b } | Core::LocalRef { binder: b } => {
+                            aliases.insert(b);
+                        }
+                        _ => {}
+                    }
+                    let esc_body = aliases.iter().any(|&a| {
+                        binding_escapes_dup_aware(
+                            db,
+                            body,
+                            EscapeTarget::Binder(a),
+                            false,
+                            Some(&dup_sites),
+                        )
+                    });
+                    // BODY-LEVEL SAFETY GATE (join-liveness): run the nested reclaim ONLY when the binding is
+                    // NEVER live-CONSUMED anywhere in the body (`count_param_consumes==0` for every alias) — it
+                    // is purely BORROWED (`bytes-len`/`get`), DUP-before-SLICEd (`(bytes r)` mints a fresh
+                    // owned slice), or RETURNED. This is the pure recursive-DRAIN shape (drain-digits /
+                    // parse-digits: the scrutinee is never a call arg — the recursion threads a fresh SLICE,
+                    // not the scrutinee). It EXCLUDES a DISPATCHER that re-passes its scrutinee to another
+                    // parser (parse-value → `number-value(s)`) or an arm that returns a slice-VIEW while the
+                    // scrutinee is consumed elsewhere: there a per-arm drop frees a buffer the join / re-match
+                    // still reads (the #8976 UAF). Conservative — a wrong skip only forgoes reclaim (leak),
+                    // never a UAF.
+                    let never_consumed = aliases.iter().all(|&a| {
+                        let mut seen = HashSet::new();
+                        let mut n = 0usize;
+                        count_param_consumes(db, body, a, &mut seen, &mut n, false);
+                        n == 0
+                    });
+                    if esc_body && never_consumed {
+                        if !root_dropped_then {
+                            plan_ifjoin_nested(
+                                db,
+                                then_,
+                                &aliases,
+                                slot,
+                                &dup_sites,
+                                &mut out.ifjoin_arm_drops,
+                            );
+                        }
+                        if !root_dropped_else {
+                            plan_ifjoin_nested(
+                                db,
+                                else_,
+                                &aliases,
+                                slot,
+                                &dup_sites,
+                                &mut out.ifjoin_arm_drops,
+                            );
+                        }
                     }
                 }
-                if !plan.is_empty() {
-                    out.ifjoin_arm_drops.insert(body, plan);
+                for (slot, d_is_then) in plan {
+                    out.ifjoin_arm_drops
+                        .entry(body)
+                        .or_default()
+                        .push((slot, d_is_then));
                 }
             }
             emit(db, body, &extended, floor, high, scratch_ty, layout, out)?;
