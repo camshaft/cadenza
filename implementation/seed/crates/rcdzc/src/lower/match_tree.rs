@@ -306,10 +306,15 @@ pub(super) fn lower_match_bin(
                         // Admitted broadly; a shape whose offset / size is not computable declines cleanly in
                         // `build_bin_arm_predicate` / `decode_bin_field_runtime` (a Poison, not a miscompile).
                         crate::resolved::SegKind::Utf8 { .. } => true,
+                        // A `b"…"` literal segment in a RUNTIME match is not lowered yet (GAP-1b): the const
+                        // scrutinee path equality-matches it in `bin_match_decode`, but the runtime predicate
+                        // builder does not yet emit the multi-byte equality probe. Decline cleanly.
+                        crate::resolved::SegKind::BytesLit => false,
                     });
                     if !ok {
                         return Core::Poison(Reject::unsupported(
-                            "a runtime bin match with a bit-field or non-final unsized bytes segment is not lowered",
+                            "a runtime bin match with a bit-field, non-final unsized bytes, or byte-string \
+                             literal segment is not lowered",
                         ));
                     }
                     let Some(else_body) = acc else {
@@ -374,6 +379,11 @@ pub(super) fn lower_match_bin(
                     // A slot is a literal probe iff it is NOT a bare name. Read its constant value.
                     if db.ast.as_name(seg.slot).is_some() {
                         continue; // a binder — no probe
+                    }
+                    // A `b"…"` literal segment already had its equality decided by `bin_match_decode` (a
+                    // mismatch there returned `None` → this arm was skipped), so it needs no separate probe.
+                    if db.ast.as_bytes(seg.slot).is_some() {
+                        continue;
                     }
                     match (core_of(db, seg.slot), dec) {
                         (Core::ConstInt(lit), BinDecoded::Int(got)) => {

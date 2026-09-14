@@ -1766,6 +1766,19 @@ impl Arenas {
         }
     }
 
+    /// The bytes of a byte-string-literal (`b"…"`) `Atom`, if `id` is one — the `Bytes` sibling of
+    /// [`Arenas::as_str`]. Used to recognize a bare `b"…"` bin segment (a multi-byte match-by-equality /
+    /// emit-verbatim literal segment, the multi-byte generalization of `(u8 <lit>)`).
+    pub fn as_bytes(&self, id: StructId) -> Option<&[u8]> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Bytes(b) => Some(b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The value of an `Int` leaf as a `usize`, if `id` is an atom of a non-negative `Int` that fits.
     /// Used to read small index metadata (e.g. the SEC-F1 `(resource N)` param index) off the tree.
     pub fn as_int_usize(&self, id: StructId) -> Option<usize> {

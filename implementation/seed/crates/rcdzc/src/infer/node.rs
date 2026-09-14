@@ -905,6 +905,22 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ));
                         }
                     }
+                    // A `b"…"` byte-string LITERAL segment is byte-aligned (it emits/matches whole bytes) and
+                    // has a compile-time-known length, so — unlike an unsized `bytes` — it is legal in ANY
+                    // position. Only the byte-boundary invariant applies.
+                    crate::resolved::SegKind::BytesLit => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                format!(
+                                    "a bin byte-string literal segment must start on a byte boundary, but \
+                                     {} of bit-fields precede it — {}",
+                                    open_bits_phrase(bit_cursor),
+                                    bits_to_byte_boundary_hint(bit_cursor),
+                                ),
+                            ));
+                        }
+                    }
                 }
                 collect(db, seg.slot, out);
                 // A segment's VALUE must match its KIND *and*, for an integer segment, its WIDTH TYPE. A
@@ -1013,6 +1029,9 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             );
                         }
                     }
+                    // A `b"…"` literal segment carries its own bytes (the slot IS the literal), so it is
+                    // inherently a well-typed `Bytes` value — there is no value-vs-kind check to make.
+                    crate::resolved::SegKind::BytesLit => {}
                 }
                 match &seg.kind {
                     crate::resolved::SegKind::Bytes { size: Some(n) } => collect(db, *n, out),
