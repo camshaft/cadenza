@@ -7515,6 +7515,48 @@ fn bytes_param_view_escapes(
         .any(|c| bytes_param_view_escapes(db, c, p, seen))
 }
 
+/// Whether the param — or a `Core::Let` binding transitively bound to a BARE ref of it (the runtime
+/// bin-match scrutinee materialization `Let{(inner, Param(p))}`) — reaches a RESULT (tail) position of
+/// `body` as a bare ref, i.e. is RETURNED directly. Such a return ALIASES the param slot the fn-exit
+/// reclaim drop frees, so reclaiming would DOUBLE-FREE it: the drain-that-returns-its-own-scrutinee UAF
+/// (`match inp (… (drain rest …)) (_ inp)` — the base/stop arm yields the scrutinee itself). This is the
+/// gap that `count_param_consumes` (an operand of a CONSUMING op only) and `bytes_param_view_escapes` (a
+/// `Bytes.slice`/`compact`/`from-bytes` VIEW only) both miss — a bare return is neither. Tails are recursed
+/// precisely through `Let`/`If`/`Match`/`Seq`; any OTHER tail node (a `Call`/ctor/`BinBuild`/`BytesConcat`
+/// — a FRESH or COPIED value, never a bare alias of the param slot) is safe; an unhandled tail shape
+/// (`MatchSum`/`Block`) is treated as reaching (conservative — a wrong TRUE only forgoes the reclaim = a
+/// leak, never a UAF). `aliases` seeds with the param binder; the `Let` arm grows it with each binding
+/// whose value is a bare ref to a current alias (so the materialized `inner` scrutinee counts too).
+fn param_ref_reaches_result(db: &mut Db, id: StructId, aliases: &HashSet<StructId>) -> bool {
+    if aliases.iter().any(|&a| is_ref_to(db, id, a)) {
+        return true;
+    }
+    match core_of(db, id) {
+        Core::Let { bindings, body } => {
+            let mut ext = aliases.clone();
+            for (b, v) in bindings.iter() {
+                if ext.iter().any(|&a| is_ref_to(db, *v, a)) {
+                    ext.insert(*b);
+                }
+            }
+            param_ref_reaches_result(db, body, &ext)
+        }
+        Core::If { then_, else_, .. } => {
+            param_ref_reaches_result(db, then_, &aliases.clone())
+                || param_ref_reaches_result(db, else_, aliases)
+        }
+        Core::Match { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            bodies
+                .into_iter()
+                .any(|b| param_ref_reaches_result(db, b, aliases))
+        }
+        Core::Seq { tail, .. } => param_ref_reaches_result(db, tail, aliases),
+        Core::MatchSum { .. } | Core::Block { .. } => true,
+        _ => false,
+    }
+}
+
 fn def_nonlooped_reclaims_param(
     db: &mut Db,
     callee: usize,
@@ -7551,9 +7593,12 @@ fn def_nonlooped_reclaims_param(
     }
     // AXIS B: no heap child of the param escapes into the result.
     //   - A SCALAR (non-heap) return trivially embeds no heap child of the param (any param type).
-    //   - A HEAP return is admitted ONLY for a BYTES param that is never the source of a raw view/consume
+    //   - A HEAP return is admitted ONLY for a BYTES param that (i) is never the source of a raw view/consume
     //     op (`bytes_param_view_escapes`: `Bytes.slice`/`Bytes.compact`/`String.from-bytes`, which carry a
-    //     shell-alias into a value). A Bytes param's OTHER result-reaching derivatives are all safe — a
+    //     shell-alias into a value) AND (ii) is never RETURNED as a bare ref (`param_ref_reaches_result` —
+    //     the drain-that-yields-its-own-scrutinee `(_ inp)`, which aliases the param slot the fn-exit drop
+    //     frees ⇒ a DOUBLE-FREE; the gap `count_param_consumes`/`bytes_param_view_escapes` both miss).
+    //     A Bytes param's OTHER result-reaching derivatives are all safe — a
     //     bin-match `(bytes rest)`/`(bytes body n)` DUPs before slicing (own ref) and `bytes-get`/`len` are
     //     scalar — so with no view-escape (and `count_param_consumes==0` below excluding a whole-param
     //     embed/consume: `Bytes.concat`/ctor/call), NO shell-alias reaches the result → reclaiming the
@@ -7565,7 +7610,8 @@ fn def_nonlooped_reclaims_param(
     //     JSON codec encoder, v-json-codec I7).
     if is_heap_type(&type_of(db, body)) {
         let bytes_reclaimable = matches!(param_ty.strip_nominal(), Ty::Bytes)
-            && !bytes_param_view_escapes(db, body, param_binder, &mut HashSet::new());
+            && !bytes_param_view_escapes(db, body, param_binder, &mut HashSet::new())
+            && !param_ref_reaches_result(db, body, &HashSet::from([param_binder]));
         if !bytes_reclaimable {
             return false;
         }
