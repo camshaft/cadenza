@@ -490,6 +490,32 @@
   (call main (: 200 Int64))
   (output (: 200 Int64)))
 
+; A SELF-RECURSIVE `bin`-matching function whose arm body is a NESTED `if` and which threads an INCREMENTING
+; Int64 accumulator through the self-call — the shape that made the Perceus/RC dup-site emit go EXPONENTIAL
+; (#8953): the walking occurrence check under the `if`-arm re-scanned the arm subtrees at every level, and the
+; dup-site marker re-descended the shared match-continuation. Both are now O(1) off the occurrence oracle +
+; the per-binder marker memo, so the shape COMPILES (a reintroduced exponential would HANG this gate) and
+; RUNS to the right value. The scrutinee is built from a param so the `bin` cannot fold to a constant (it must
+; exercise the runtime decode + the recursive reclaim). KNOWN-LEAK: the recursive `(bytes rest)` tail-slices
+; are NOT reclaimed on this shape (`live-objects` = 3, not 0) — a PRE-EXISTING recursive-bin-match reclaim
+; gap (INDEPENDENT of #8953, which was exactness-preserving: it changed WHICH sites are marked by nothing, so
+; it neither caused nor cures this leak). This is v-json-codec's parser shape, so it matters; routed to
+; v-memory-safety (reclaim owner). Marked `known-leak` so it grades (guarding the compile/hang + value) and
+; a future recursive-bin-match reclaim fix surfaces here as a tighten-candidate (drop the marker → expect 0).
+(case
+  "a self-recursive bin-match with a nested-if body and a threaded incrementing accumulator compiles and runs (reclaim non-exponential regression guard, #8953; recursive bytes-rest reclaim is a known-leak)"
+  (input
+    (do
+      (def (count-ge (: inp Bytes) (: acc Int64))
+        (match inp
+          ((bin (u8 c) (bytes rest)) (if (>= c 48) (count-ge rest (+ acc 1)) (count-ge rest acc)))
+          (_ acc)))
+      (def (main (: c0 Int64)) (count-ge (Bytes.of #list((UInt8.of c0) 10 50)) 0))
+      (export main)))
+  (call main (: 60 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak))
+
 ; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
 ; MULTI-BYTE-WIDTH extremes — where an off-by-one in the shift/mask byte-assembly or a sign-extension slip
 ; would surface: u16 at its max (65535 = every bit set across two bytes), u32 at its max (four bytes all
