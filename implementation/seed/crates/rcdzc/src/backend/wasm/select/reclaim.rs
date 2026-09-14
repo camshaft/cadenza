@@ -2838,59 +2838,85 @@ pub(super) fn build_occurrence_bitsets(
         .max()
         .map_or(0, |m| m + 1)
         .div_ceil(64);
+    if words == 0 {
+        // No tracked binders → the caller's per-binder loop is empty; nothing to memoize.
+        return HashMap::new();
+    }
+    // Phase 1 — ENUMERATE every node reachable from `body` and its child-id list, CYCLE-SAFE (the `memo`
+    // keys double as the seen-set, so the back-edges a SELF-RECURSIVE function's cyclic Core graph carries
+    // terminate the walk). Seed each node's OWN binder bit. A `LocalRef`/`Param` is a LEAF (no children
+    // traversed) exactly as the previous post-order builder treated it. `order` records discovery
+    // (pre-order: parent before children) so the fixpoint below can sweep it in REVERSE.
     let mut memo: HashMap<StructId, Vec<u64>> = HashMap::new();
-    let mut in_progress: HashSet<StructId> = HashSet::new();
-    occurrence_bitset_rec(db, body, index, words, &mut memo, &mut in_progress);
-    memo
-}
-
-/// Returns `(bits, tainted)` for the subtree at `id`. `tainted` iff a cyclic back-edge was hit on this
-/// path (then the result is NOT memoized — same rule as [`binder_occurs_rec`]).
-pub(super) fn occurrence_bitset_rec(
-    db: &mut Db,
-    id: StructId,
-    index: &HashMap<StructId, usize>,
-    words: usize,
-    memo: &mut HashMap<StructId, Vec<u64>>,
-    in_progress: &mut HashSet<StructId>,
-) -> (Vec<u64>, bool) {
-    if let Some(bits) = memo.get(&id) {
-        return (bits.clone(), false);
-    }
-    if in_progress.contains(&id) {
-        // Cyclic back-edge: no NEW occurrence on this path; taint so the caller does not memoize a
-        // cycle-artifact all-zeros.
-        return (vec![0u64; words], true);
-    }
-    let (bits, tainted) = match core_of(db, id) {
-        Core::LocalRef { binder: b } | Core::Param { binder: b } => {
-            let mut bits = vec![0u64; words];
-            if let Some(&i) = index.get(&b) {
-                bits[i / 64] |= 1u64 << (i % 64);
-            }
-            (bits, false)
+    let mut children: HashMap<StructId, Vec<StructId>> = HashMap::new();
+    let mut order: Vec<StructId> = Vec::new();
+    let mut stack: Vec<StructId> = vec![body];
+    while let Some(id) = stack.pop() {
+        if memo.contains_key(&id) {
+            continue;
         }
-        _ => {
-            in_progress.insert(id);
-            let mut bits = vec![0u64; words];
-            let mut tainted = false;
-            for c in core_child_ids(db, id) {
-                let (cb, t) = occurrence_bitset_rec(db, c, index, words, memo, in_progress);
-                for (w, cw) in bits.iter_mut().zip(cb.iter()) {
-                    *w |= *cw;
+        let (bits, is_leaf_ref) = match core_of(db, id) {
+            Core::LocalRef { binder: b } | Core::Param { binder: b } => {
+                let mut bits = vec![0u64; words];
+                if let Some(&i) = index.get(&b) {
+                    bits[i / 64] |= 1u64 << (i % 64);
                 }
-                tainted |= t;
+                (bits, true)
             }
-            in_progress.remove(&id);
-            (bits, tainted)
+            _ => (vec![0u64; words], false),
+        };
+        memo.insert(id, bits);
+        order.push(id);
+        let cs = if is_leaf_ref {
+            Vec::new()
+        } else {
+            core_child_ids(db, id)
+        };
+        for &c in &cs {
+            if !memo.contains_key(&c) {
+                stack.push(c);
+            }
         }
-    };
-    // A definite result (no taint on this path) is safe to memoize; a tainted one is withheld exactly as
-    // `binder_occurs_rec` withholds a tainted `false`.
-    if !tainted {
-        memo.insert(id, bits.clone());
+        children.insert(id, cs);
     }
-    (bits, tainted)
+    // Phase 2 — MONOTONE UNION FIXPOINT: `bitset[n] |= ⋃ bitset[child]` until no bit changes. Bits only
+    // ever SET (never clear), over a finite width × finite node set, so it CONVERGES (this is the whole
+    // point: the previous recursive builder LEFT CYCLIC nodes un-memoized — a "tainted" MISS — so the O(1)
+    // oracle lookups [`binder_occurs_via_oracle`/`binder_absent_in_subtree`] fell back to the walking
+    // `binder_occurs`, which ALSO cannot cache a cyclic result → an EXPONENTIAL re-walk of the SCC and a
+    // non-terminating `cdz test` emit for a self-recursive `bin`-matching function). Sweeping `order` in
+    // REVERSE (children before parents) lands most occurrences in one pass for the common acyclic body; a
+    // cyclic SCC needs only the few extra passes its back-edge depth forces. The result is EXACT
+    // reachability — `bitset[n]` bit `i` == `binder_occurs(n, binders[i])` for EVERY reachable node (the
+    // public `binder_occurs` starts a fresh `in_progress`, so it too computes context-free reachability) —
+    // now memoized for ALL nodes, including the cyclic ones the old builder skipped. EXACTNESS-PRESERVING:
+    // on an acyclic node the value is byte-identical to the old post-order union; a cyclic node now answers
+    // in O(1) with the SAME value the walking fallback would have returned, so WHICH dup sites Perceus marks
+    // is unchanged — only the pathological re-walk is gone.
+    loop {
+        let mut changed = false;
+        for idx in (0..order.len()).rev() {
+            let id = order[idx];
+            let mut child_union = vec![0u64; words];
+            for &c in &children[&id] {
+                if let Some(cb) = memo.get(&c) {
+                    for (a, w) in child_union.iter_mut().zip(cb.iter()) {
+                        *a |= *w;
+                    }
+                }
+            }
+            let bits = memo.get_mut(&id).expect("node seeded in phase 1");
+            for (w, cw) in bits.iter_mut().zip(child_union.iter()) {
+                let before = *w;
+                *w |= *cw;
+                changed |= *w != before;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    memo
 }
 
 /// Returns `(occurs, tainted)` — `tainted` iff the walk hit an `in_progress` back-edge, in which case the
