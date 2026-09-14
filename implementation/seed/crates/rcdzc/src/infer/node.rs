@@ -845,12 +845,19 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // A `(bin …)` construction: check STATIC well-formedness (CDZ0220 — decidable from the segment
         // list alone), then descend into each segment's value slot for its own faults. Well-formedness:
         // the running bit-cursor from `bits` segments must close to a whole byte before any byte-aligned
-        // segment (int/bytes) and at the end (`binary-syntax`: the whole `bin` is byte-aligned); an
-        // unsized `(bytes b)` (no dependent size) is only legal as the FINAL segment. A non-const `bits`
-        // width already became a CDZ0220 `Poison` at resolve.
+        // segment (int/bytes) and at the end (`binary-syntax`: the whole `bin` is byte-aligned). A
+        // non-const `bits` width already became a CDZ0220 `Poison` at resolve.
+        //
+        // Direction note: this arm is reached ONLY for a `bin` in EXPRESSION position (a CONSTRUCTION) —
+        // `collect` descends into a match's scrutinee, arm bodies and guards, but NEVER into an arm's
+        // PATTERN, so a `bin` PATTERN never lands here (a pattern's segment rules are enforced in match
+        // lowering: `lower/match_tree.rs` / `lower/bin_match.rs`). Hence the "a non-final unsized `(bytes
+        // b)` must be sized" rule is NOT applied here: it is a MATCH-only rule (spec 16 — the explicit
+        // size only exists to know the consume-length when DECODING). In construction a non-final unsized
+        // `(bytes b)` splices all of `b` (pure concatenation, unambiguous — `lower_bin_build` handles it).
         Resolved::Bin { segs } => {
             let mut bit_cursor: u32 = 0; // open bits since the last byte boundary
-            for (i, seg) in segs.iter().enumerate() {
+            for seg in segs.iter() {
                 match &seg.kind {
                     crate::resolved::SegKind::Bits { k } => bit_cursor += k,
                     crate::resolved::SegKind::Int { .. } => {
@@ -866,7 +873,7 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ));
                         }
                     }
-                    crate::resolved::SegKind::Bytes { size } => {
+                    crate::resolved::SegKind::Bytes { .. } => {
                         if !bit_cursor.is_multiple_of(8) {
                             out.push(Reject::coded(
                                 Code::IllFormedBinary,
@@ -878,14 +885,10 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             ));
                         }
-                        // An UNSIZED bytes segment (splice-all / bind-rest) is legal only as the last
-                        // segment — a non-final unsized bytes has no defined boundary.
-                        if size.is_none() && i + 1 != segs.len() {
-                            out.push(Reject::coded(
-                                Code::IllFormedBinary,
-                                "a non-final bin bytes segment must have an explicit size (bytes b n)",
-                            ));
-                        }
+                        // NOTE: the "a non-final unsized `(bytes b)` must be sized" rule is intentionally
+                        // NOT enforced here — it is a MATCH-only rule (see the direction note above), and
+                        // this arm is only reached for constructions, where an unsized non-final splice is
+                        // legal (splice-all). Match patterns enforce the size requirement in lowering.
                     }
                     // A `utf8` segment is byte-aligned (a string is a byte sequence); it is always sized,
                     // so there is no non-final-unsized fault to check (unlike `bytes`).
