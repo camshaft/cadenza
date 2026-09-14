@@ -7481,6 +7481,40 @@ fn callee_called_from_lifted_body(db: &mut Db, callee: usize) -> bool {
 ///     A heap-RETURNING borrow-only def needs the general escaped-child analysis → left to leak (follow-up).
 /// SOUND-CONSERVATIVE: every gate is default-deny (under-admit = LEAK). v-mem's corpus-wide guarded-all is
 /// the empirical double-free backstop.
+/// Whether the Bytes param `p` is ever the DIRECT source of a raw VIEW/consume op that can carry an ALIAS
+/// of its shell into a value — `Bytes.slice` (a view aliasing the parent backing), `Bytes.compact`, or
+/// `String.from-bytes` (both transfer/consume the operand out). These are exactly the Bytes ops that
+/// `binding_escapes` recurses `tail_borrowed:false` (escaping) on, and that `count_param_consumes` does NOT
+/// count. A bin-match `(bytes rest)`/`(bytes body n)` (`BinRestRead`/`BinSizedRead`) does the OPPOSITE —
+/// DUP-before-slice, so its slice owns an INDEPENDENT ref (safe even if it reaches the result), and a
+/// `bytes-get`/`bytes-len` reads a scalar (no heap child). So a Bytes param that is NEVER a source here (and
+/// is `count_param_consumes==0`) has no shell-alias reaching the result → safe to reclaim at fn-exit even
+/// with a heap return. Walks all children (`false` on a shared-node re-visit via `seen`).
+fn bytes_param_view_escapes(
+    db: &mut Db,
+    id: StructId,
+    p: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    let src: Option<StructId> = match core_of(db, id) {
+        Core::BytesSlice { bytes, .. } => Some(bytes),
+        Core::BytesCompact { operand } => Some(operand),
+        Core::StrFromBytes { bytes, .. } => Some(bytes),
+        _ => None,
+    };
+    if let Some(s) = src
+        && is_ref_to(db, s, p)
+    {
+        return true;
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| bytes_param_view_escapes(db, c, p, seen))
+}
+
 fn def_nonlooped_reclaims_param(
     db: &mut Db,
     callee: usize,
@@ -7515,9 +7549,26 @@ fn def_nonlooped_reclaims_param(
     if !is_heap_type(&param_ty) {
         return false;
     }
-    // AXIS B: SCALAR (non-heap) return — no heap child of the param can escape into the result.
+    // AXIS B: no heap child of the param escapes into the result.
+    //   - A SCALAR (non-heap) return trivially embeds no heap child of the param (any param type).
+    //   - A HEAP return is admitted ONLY for a BYTES param that is never the source of a raw view/consume
+    //     op (`bytes_param_view_escapes`: `Bytes.slice`/`Bytes.compact`/`String.from-bytes`, which carry a
+    //     shell-alias into a value). A Bytes param's OTHER result-reaching derivatives are all safe — a
+    //     bin-match `(bytes rest)`/`(bytes body n)` DUPs before slicing (own ref) and `bytes-get`/`len` are
+    //     scalar — so with no view-escape (and `count_param_consumes==0` below excluding a whole-param
+    //     embed/consume: `Bytes.concat`/ctor/call), NO shell-alias reaches the result → reclaiming the
+    //     borrowed scrutinee at fn-exit is sound though the drain RETURNS a splice-built heap Bytes. A SUM/
+    //     LIST/RECORD param stays scalar-return-gated: its `SumPayload`/`SumExpect`/`Proj` borrowed children
+    //     read as non-escaping yet alias the parent shell (the tr3 ctor-embed UAF `(Term.Abs w (payload
+    //     p))`) — a hazard this Bytes-only relaxation deliberately does not touch. Closes the heap-
+    //     accumulator recursive-drain leak (drain-append / escape-str / encode-elems / encode-members — the
+    //     JSON codec encoder, v-json-codec I7).
     if is_heap_type(&type_of(db, body)) {
-        return false;
+        let bytes_reclaimable = matches!(param_ty.strip_nominal(), Ty::Bytes)
+            && !bytes_param_view_escapes(db, body, param_binder, &mut HashSet::new());
+        if !bytes_reclaimable {
+            return false;
+        }
     }
     // AXIS B: borrow-only — the param is never consumed / returned / escaped as the whole value.
     let mut seen = HashSet::new();
