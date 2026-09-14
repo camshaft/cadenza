@@ -3273,6 +3273,16 @@ fn agent_reads_stale(
     true
 }
 
+/// Is a STALE agent so deeply stale it is almost certainly WEDGED (window up but not ticking) rather than
+/// just having missed a tick? True when it is stale AND its heartbeat has been frozen past 2× the stale
+/// window (= 4× its interval). A slow/long tick can push a heartbeat past the 2×-interval stale window, but
+/// a heartbeat cold for 4× the interval is not a slow tick — it is hung/wedged and (if the watchdog is
+/// disabled) NOT being auto-recovered. Surfaced louder on the board so an overnight wedge can't hide behind
+/// the ordinary "STALE — the watchdog re-arms it" line. Pure so it is unit-testable.
+fn agent_deeply_stale(is_stale: bool, hb_age: u64, window_secs: u64) -> bool {
+    is_stale && hb_age > window_secs.saturating_mul(2)
+}
+
 /// Is `line` the redundant title line of `<name>`'s status file — `# <name> status` or
 /// `# <name> — status` (any heading/emphasis/dash punctuation)? Matched so it's skipped in favor of the
 /// first REAL status line. Strips only markdown markers and the `—`/`|` separators (NOT the `-` inside a
@@ -3652,6 +3662,8 @@ fn status(fleet: &Fleet) {
         "AGENT", "ROLE", "MODEL", "STATUS", "WINDOW", "HB-AGE"
     );
     let mut stale = 0usize;
+    let mut wedged = 0usize;
+    let mut wedged_names: Vec<String> = Vec::new();
     for a in &reg.agents {
         let has_window = live_windows.iter().any(|w| w == &a.name);
         let window = if has_window { "live" } else { "-" };
@@ -3686,10 +3698,24 @@ fn status(fleet: &Fleet) {
                     window_secs,
                     trunk_commit_age,
                 );
+                let is_wedged = agent_deeply_stale(is_stale, age, window_secs);
                 if is_stale {
                     stale += 1;
                 }
-                (fmt_age(age), if is_stale { " ⚠STALE" } else { "" })
+                if is_wedged {
+                    wedged += 1;
+                    wedged_names.push(a.name.clone());
+                }
+                (
+                    fmt_age(age),
+                    if is_wedged {
+                        " ⚠⚠WEDGED"
+                    } else if is_stale {
+                        " ⚠STALE"
+                    } else {
+                        ""
+                    },
+                )
             }
         };
         println!(
@@ -3705,8 +3731,16 @@ fn status(fleet: &Fleet) {
     }
     if stale > 0 {
         println!(
-            "\n  ⚠ {stale} active agent(s) STALE (heartbeat past their stale window) — \
-             `cargo xtask fleet watchdog` will re-arm them."
+            "\n  ⚠ {stale} active agent(s) STALE (heartbeat past their stale window) — the watchdog \
+             re-arms these WHEN IT IS ACTIVE (`cargo xtask fleet watchdog`)."
+        );
+    }
+    if wedged > 0 {
+        println!(
+            "  ⚠⚠ {wedged} of those are WEDGED (heartbeat frozen > 4× their interval — window up but NOT \
+             ticking): {}. A heartbeat cold this long is not a slow tick; if the watchdog is disabled \
+             (no-window-kill) these are NOT being auto-recovered — restart them by hand or re-enable recovery.",
+            wedged_names.join(", ")
         );
     }
 
@@ -20054,6 +20088,19 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             line.ends_with("# fleet:reap-leases"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
+    }
+
+    #[test]
+    fn agent_deeply_stale_flags_only_a_long_frozen_heartbeat() {
+        let win = 3600; // 60m stale window (= 2× a 30m interval); deeply-stale bound = 2×win = 2h
+        // Not stale at all → never wedged.
+        assert!(!agent_deeply_stale(false, 100_000, win));
+        // Stale but within 2× the window (a slow/long tick can do this) → STALE, not WEDGED.
+        assert!(!agent_deeply_stale(true, win + 60, win));
+        assert!(!agent_deeply_stale(true, win * 2, win)); // exactly 2× → not yet (strictly greater)
+        // Frozen well past 2× the window (e.g. the 16h membrain wedge) → WEDGED.
+        assert!(agent_deeply_stale(true, win * 2 + 1, win));
+        assert!(agent_deeply_stale(true, 16 * 3600, win));
     }
 
     #[test]
