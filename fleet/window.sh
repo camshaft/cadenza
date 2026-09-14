@@ -225,6 +225,25 @@ LAUNCH_HB_MTIME="$(stat -c %Y "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null 
   fi
 ) </dev/null >/dev/null 2>&1 &
 
+# ── OOM PROTECTION for the concierge (operator-approved 2026-09-14, option 2) ──
+# The recurring concierge deaths were KERNEL OOM KILLS: the fleet's cgroup oom_kill counter climbs, the box
+# has NO swap, and the fleet spikes toward host RAM (~345G/494G) — a SIGKILL'd claude leaves no graceful exit,
+# so its tmux window just vanishes ("clean tick then window gone"). The operator approved sparing the
+# CONCIERGE specifically: give its process a strongly-negative OOM score (-900) so the kernel picks another
+# victim (peers auto-recover via the out-of-band guardian; the concierge is the operator's only channel).
+# Lowering oom_score_adj below 0 needs CAP_SYS_RESOURCE, so this uses a NOPASSWD `choom` sudoers grant (the
+# operator installs it: `bythewc ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *`). oom_score_adj is
+# PRESERVED across execve, so setting it on THIS shell's pid ($$) now carries to the claude that replaces it
+# below. FAIL-OPEN: if the grant isn't in place yet (sudo/choom errors), log + launch UNPROTECTED — never
+# block the concierge on the protection (the guardian still recovers + alerts on an OOM kill regardless).
+if [ "$AGENT" = "concierge" ] && command -v choom >/dev/null 2>&1; then
+  if sudo -n choom -n -900 -p $$ >/dev/null 2>&1; then
+    echo "window.sh: concierge OOM-protected (oom_score_adj=-900 — the kernel will spare it under memory pressure)"
+  else
+    echo "window.sh: concierge NOT OOM-protected — the NOPASSWD choom grant is missing; launching anyway (guardian still recovers+alerts on an OOM kill). Grant: 'bythewc ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *'" >&2
+  fi
+fi
+
 echo "window.sh: launching '$AGENT' (role=$ROLE model=$MODEL effort=$EFFORT interval=$INTERVAL) in $WORKTREE"
 echo "           claude ${CLAUDE_ARGS[*]} <kickoff>"
 exec claude "${CLAUDE_ARGS[@]}" "$KICKOFF"
