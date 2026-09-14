@@ -140,6 +140,32 @@ fn prefix_manifest(text: &str, own: &str, prefix: &str, members: &[&str]) -> Str
     out
 }
 
+/// Ensure the projected crate's `[package]` carries `publish = false`. A projection is a DO-NOT-EDIT
+/// vendored copy whose source of truth is upstream Cadenza, so a consumer that vendors it (e.g. a
+/// binary-only Brazil package) must never publish the copy. Idempotent: if a `publish` key is already
+/// declared (some upstream crates set it), the manifest is left untouched; otherwise `publish = false`
+/// is inserted right after the `[package]` header so it lands in the package section. Cargo.toml-only,
+/// unconditional (independent of `--prefix`).
+fn ensure_publish_false(text: &str) -> String {
+    if text.lines().any(|l| l.trim_start().starts_with("publish")) {
+        return text.to_string();
+    }
+    match text.find("[package]") {
+        Some(i) => {
+            let after = text[i..]
+                .find('\n')
+                .map(|n| i + n + 1)
+                .unwrap_or(text.len());
+            let mut out = String::with_capacity(text.len() + 16);
+            out.push_str(&text[..after]);
+            out.push_str("publish = false\n");
+            out.push_str(&text[after..]);
+            out
+        }
+        None => text.to_string(),
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok((tier, out)) => {
@@ -177,7 +203,15 @@ fn run() -> Result<(String, PathBuf), String> {
         copy_crate(&src, &crates_dir.join(crate_name))?;
     }
 
-    // 1b. Optionally namespace the projected crate names (Cargo.toml-only, e.g. Brazil's mandatory
+    // 1b. Every projected crate is a DO-NOT-EDIT vendored copy → mark its [package] `publish = false`
+    //     (unconditional, idempotent) so a consumer that vendors the projection never publishes it.
+    for crate_name in &crates {
+        let mf = crates_dir.join(crate_name).join("Cargo.toml");
+        let text = read(&mf)?;
+        write(&mf, &ensure_publish_false(&text))?;
+    }
+
+    // 1c. Optionally namespace the projected crate names (Cargo.toml-only, e.g. Brazil's mandatory
     //     `amzn-`): rename each [package] + rewrite sibling path-deps to the prefixed package, preserving
     //     lib names so no source edit is needed.
     if let Some(prefix) = &args.prefix {
@@ -836,6 +870,24 @@ num-bigint = \"0.4\"
         assert!(out.contains("num-bigint = \"0.4\""));
         // (3) the original lib name is preserved explicitly.
         assert!(out.contains("[lib]\nname = \"cdz_platform\""));
+    }
+
+    #[test]
+    fn ensure_publish_false_inserts_when_absent_and_is_idempotent() {
+        // absent → inserted right under [package], before other keys.
+        let m = "[package]\nname = \"cadenza-ast\"\nversion = \"0.0.0\"\n\n[dependencies]\n";
+        let out = ensure_publish_false(m);
+        assert_eq!(
+            out,
+            "[package]\npublish = false\nname = \"cadenza-ast\"\nversion = \"0.0.0\"\n\n[dependencies]\n"
+        );
+        // idempotent: running again does not add a second key.
+        assert_eq!(ensure_publish_false(&out), out);
+        // already declared (any value) → left untouched.
+        let has = "[package]\nname = \"cadenza-value\"\npublish = false\n";
+        assert_eq!(ensure_publish_false(has), has);
+        let has_true = "[package]\nname = \"x\"\npublish = true\n";
+        assert_eq!(ensure_publish_false(has_true), has_true);
     }
 
     #[test]
