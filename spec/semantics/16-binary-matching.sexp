@@ -534,7 +534,7 @@
 ; reclaim fix lands, this flips to `live-objects 0` alongside `count-ge`. The value (byte count) is exact either
 ; way, so a wrong reclaim shows as a census drift, not a value flip. Scrutinee built from a param (no fold).
 (case
-  "a mutually-recursive two-function bin-match rest-drain compiles and runs (recursive bytes-rest reclaim known-leak, mutual-recursion bracket)"
+  "a mutually-recursive two-function bin-match rest-drain compiles, runs, AND fully reclaims (the per-frame borrowed `(bytes rest)` scrutinee is dropped in BOTH members — the callee_called_from_lifted_body fix now excludes any db.defs body from the lifted-body scan, so a partner's visible recursive call no longer suppresses the drop; mutual-recursion bracket for #8955)"
   (input
     (do
       (def (drain-a (: b Bytes) (: acc Int64))
@@ -549,7 +549,7 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
 ; MULTI-BYTE-WIDTH extremes — where an off-by-one in the shift/mask byte-assembly or a sign-extension slip
