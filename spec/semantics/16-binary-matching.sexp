@@ -516,6 +516,31 @@
   (output (: 2 Int64))
   (live-objects known-leak))
 
+; A MUTUALLY-recursive TWO-function bin-match rest-drain — the mutual-recursion bracket for the recursive
+; bin-match `(bytes rest)` reclaim gap the self-recursive `count-ge` above surfaced. v-memory-safety root-caused
+; the leak to a self-recursion spine-consume reclaim rule that skips the BORROWED scrutinee's closing drop; this
+; case brackets whether the SAME misfire reaches a mutual (ping-pong) recursion. Each function borrows its Bytes
+; scrutinee (dup+slice → `rest`) and hands `rest` to its partner. Currently `known-leak` (same class); when the
+; reclaim fix lands, this flips to `live-objects 0` alongside `count-ge`. The value (byte count) is exact either
+; way, so a wrong reclaim shows as a census drift, not a value flip. Scrutinee built from a param (no fold).
+(case
+  "a mutually-recursive two-function bin-match rest-drain compiles and runs (recursive bytes-rest reclaim known-leak, mutual-recursion bracket)"
+  (input
+    (do
+      (def (drain-a (: b Bytes) (: acc Int64))
+        (match b
+          ((bin (u8 c) (bytes rest)) (drain-b rest (+ acc 1)))
+          (_ acc)))
+      (def (drain-b (: b Bytes) (: acc Int64))
+        (match b
+          ((bin (u8 c) (bytes rest)) (drain-a rest (+ acc 1)))
+          (_ acc)))
+      (def (main (: c0 Int64)) (drain-a (Bytes.of #list((UInt8.of c0) 20 30 40)) 0))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 4 Int64))
+  (live-objects known-leak))
+
 ; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
 ; MULTI-BYTE-WIDTH extremes — where an off-by-one in the shift/mask byte-assembly or a sign-extension slip
 ; would surface: u16 at its max (65535 = every bit set across two bytes), u32 at its max (four bytes all
