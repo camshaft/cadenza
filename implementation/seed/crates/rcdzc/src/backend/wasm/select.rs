@@ -7431,22 +7431,25 @@ fn callee_called_from_lifted_body(db: &mut Db, callee: usize) -> bool {
             .into_iter()
             .any(|ch| walk(db, ch, callee, seen))
     }
-    // EXCLUDE the callee's OWN body: a SELF-recursive call from `callee`'s own lifted body is a DIRECT
-    // `Core::Call { callee }`, which the `db.defs` call-site index DOES see — so AXIS A's per-site owned-arg
-    // check already accounts for it (the self-call's arg is verified `Owned` like any other site). The
-    // lifted-body gate exists only for an INVISIBLE edge (an eta-wrapper's `call_indirect`/forwarded call
-    // that the direct index misses); the visible self-edge is not that hazard. Without this exclusion a
-    // borrow-only-heap-param SELF-RECURSIVE def (a runtime bin-match `count-ge inp` that dup+slices its
-    // Bytes scrutinee and recurses on the slice) is lifted, sees its own recursive call here, and is wrongly
-    // excluded → its borrowed scrutinee shell LEAKS one frame per recursion (v-memory-safety: the recursive
-    // `(bytes rest)` reclaim gap, #8955). A call from ANY OTHER lifted body is still caught (only the
-    // self-body is skipped), so the eta-wrapper UAF protection is intact.
-    let own_body = db.defs.get(callee).and_then(|d| d.body);
+    // EXCLUDE every lifted body that is ALSO a `db.defs` body: this gate exists only for an INVISIBLE call
+    // edge — an eta-wrapper's `call_indirect`/forwarded call that the `db.defs`-ONLY call-site index
+    // (`ensure_call_site_index` walks exactly `db.defs` bodies) misses. A lifted body that IS a def body
+    // (a SELF- or MUTUALLY-recursive def hoisted to the funcref table as a combinator — its body is the
+    // def's own body) has its `Core::Call { callee }` edges recorded in that index, so AXIS A's per-site
+    // owned-arg check already accounts for them (the recursive/partner call's arg is verified `Owned` like
+    // any other site). Only a SYNTHETIC lifted body (in `db.lifted` but NOT any def's body — a closure /
+    // eta-wrapper) carries the invisible edge this gate must still catch. Without this a borrow-only-heap-
+    // param SELF-recursive def (`count-ge`, #8955) OR a MUTUALLY-recursive pair (`drain-a`↔`drain-b`, the
+    // partner's def body calls back — #8964-adjacent) is lifted, sees its own/partner recursive call here,
+    // and is wrongly excluded → its borrowed `(bytes rest)` scrutinee shell LEAKS one frame per recursion.
+    // AXIS A + AXIS B (borrow-only `count_param_consumes==0` + scalar return) still gate each def, so a
+    // param that is consumed / escapes a child into a heap result stays excluded (no over-drop / UAF).
+    let def_bodies: HashSet<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
     let lifted_bodies: Vec<StructId> = db
         .lifted
         .iter()
         .map(|l| l.body)
-        .filter(|&b| Some(b) != own_body)
+        .filter(|b| !def_bodies.contains(b))
         .collect();
     let mut seen = HashSet::new();
     lifted_bodies
