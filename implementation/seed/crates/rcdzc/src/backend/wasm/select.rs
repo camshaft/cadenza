@@ -2708,16 +2708,29 @@ fn emit_tail(
                 never_diverges,
                 &root,
             );
+            let scalar_shell_ok = sum_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
+            // LOOPING all-scalar owned shell (v-memory-safety, @1996 per-iteration husk): an owned,
+            // freshly-stashed, ALL-SCALAR-payload `Some` shell whose match LOOPS (a member tail-call arm —
+            // `(match (Bytes.at b i) ((Some v) (self b (+ i 1) (+ acc v))) ((None) …))`) leaks ONE shell per
+            // iteration, because the general `sum_shell_reclaim_ok` reclaim was gated `!arms_tail_call` (its
+            // post-match drop can't run on the looping path). Reclaim it EXACTLY as the owned-single-VIEW path
+            // (`matchsum_view_shell_reclaim_ok`) does: split across BOTH exits — the fall-through arms via the
+            // post-match drop (`reclaim_shell` below), the looping arms via a pre-back-edge deep-drop threaded
+            // through `scrut_shell_reclaim` into `emit_loop_iteration`. SOUND: `sum_shell_reclaim_ok`'s
+            // ALL-SCALAR-payload floor proves no shell-payload HANDLE aliases out / threads into a back-edge
+            // (the extracted scalar `v` is COPIED into `acc + v`), so freeing the shell before the `br` is
+            // safe — the same alias-safety the non-tail arm relies on.
+            let looped_scalar_shell = arms_tail_call && scalar_shell_ok;
             let reclaim_shell = view_reclaim
-                || (!arms_tail_call
-                    && (sum_shell_reclaim_ok(
-                        db,
-                        scrutinee,
-                        &scrut_ty,
-                        stashed_slot,
-                        never_diverges,
-                        &root,
-                    ) || param_reclaim));
+                || looped_scalar_shell
+                || (!arms_tail_call && (scalar_shell_ok || param_reclaim));
             // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
@@ -2782,22 +2795,23 @@ fn emit_tail(
             } else {
                 None
             };
-            let base_tl: Option<TailLoop> = if view_reclaim && arms_tail_call {
-                let shell_slot = stashed_slot
-                    .expect("matchsum_view_shell_reclaim_ok implies a stashed I32 slot")
-                    .0;
-                tl.map(|t| TailLoop {
-                    scrut_shell_reclaim: Some(shell_slot),
-                    ..t
-                })
-            } else if let Some(slot) = selfloop_scrut_slot {
-                tl.map(|t| TailLoop {
-                    selfloop_scrut_slot: Some(slot),
-                    ..t
-                })
-            } else {
-                tl
-            };
+            let base_tl: Option<TailLoop> =
+                if (view_reclaim || looped_scalar_shell) && arms_tail_call {
+                    let shell_slot = stashed_slot
+                        .expect("view/looped-scalar shell reclaim implies a stashed I32 slot")
+                        .0;
+                    tl.map(|t| TailLoop {
+                        scrut_shell_reclaim: Some(shell_slot),
+                        ..t
+                    })
+                } else if let Some(slot) = selfloop_scrut_slot {
+                    tl.map(|t| TailLoop {
+                        selfloop_scrut_slot: Some(slot),
+                        ..t
+                    })
+                } else {
+                    tl
+                };
             // Overlay the cross-fn return_call shell drop. When there is no enclosing loop context
             // (`base_tl` is None — a NON-looped fn like the fallible-parser `pf` whose only tail call is a
             // cross-fn `return_call` to a peer), construct a MINIMAL TailLoop (empty members ⇒ `member_which`
