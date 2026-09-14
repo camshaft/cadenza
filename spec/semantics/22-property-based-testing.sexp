@@ -1767,6 +1767,35 @@
   (live-objects 0))
 
 (case
+  "a Value.encode/Value.decode round-trip preserves a nullary-FIRST variant beside a record-payload sibling (SendStatus shape)"
+  (doc
+    "The exact live shape of the platform's SendStatus contract sum — `(type SendStatus (Delivered)
+           (Undeliverable (Record (reason Bytes))))` — where the NULLARY variant is FIRST (discriminant 0) and its
+           sibling carries a RECORD. This differs from the `Shape`/`Dot` case above (nullary SECOND, scalar
+           sibling): it pins that a nullary variant at discriminant 0, beside a record-payload variant, still
+           round-trips through the COMPILED wasm decoder. `(: Delivered SendStatus)` encodes `(Delivered unit)` (a
+           multi-ctor nullary keeps its head + carries the erased Unit as the `unit` atom); decode matches the
+           `Delivered` head at disc 0 and rebuilds it. `main 4` -> 4, `main 8` -> 8 (distinct); a lost head, a
+           mis-discriminated variant, or a decode that trips on the record sibling gives a negative. Regression
+           floor for the 769 D5 SendStatus.Delivered decode (nullary-FIRST + record-sibling axes). Runs on wasm +
+           rust + rust-async.")
+  (input
+    (do
+      (type SendStatus (Delivered) (Undeliverable (Record (reason Bytes))))
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode (: Delivered SendStatus))) (Option SendStatus))
+          ((Some s) (match s ((Delivered u) n) ((Undeliverable r) -2)))
+          ((None u) -1)))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 4 Int64))
+  (call main (: 8 Int64))
+  (output (: 8 Int64))
+  (live-objects 0))
+
+(case
   "a Value.encode/Value.decode round-trip preserves a MAP's entries"
   (doc
     "Extends the round-trips to a `(Map Int64 Int64)` — the R2 value-form `(map (k v) …)` shape, entries
