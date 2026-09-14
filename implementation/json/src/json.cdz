@@ -364,6 +364,74 @@ def parse(inp: Bytes) -> Option(Json) =
         | _   => Option.None)
    | Parsed.PErr => Option.None)
 
+// ── I5: encoder (Json -> Bytes) ─────────────────────────────────────────────────────────────────────────
+// Serialize a JSON value to compact (no insignificant whitespace) UTF-8 JSON bytes. Round-trips: re-parsing
+// encode(v) yields a value equal to v, and for already-compact canonical input, encode(parse(inp)) == inp.
+
+// One ASCII lowercase-hex digit byte for n in 0..15.
+def hex-digit(n: Int64) -> UInt8 =
+  if n < 10 then UInt8.of(48 + n) else UInt8.of(87 + n)
+
+// The \u00XX escape for a C0 control byte (0..31) with no shorter named escape.
+def u-escape(c: UInt8) -> Bytes =
+  let n = Int64.of(c) in
+  b[b"\\u00", u8(hex-digit(n / 16)), u8(hex-digit(n % 16))]
+
+// Escape a decoded string's bytes into JSON string-body bytes: the reverse of parse-str's decoding. `"` and
+// `\` are backslash-escaped; the C0 controls with named escapes use them; other C0 controls use \u00XX; all
+// other bytes (incl multibyte UTF-8) pass through verbatim. ('/' is not escaped — escaping it is optional.)
+// The scrutinee arms stay u8(N): matching a b"..." literal over a RUNTIME Bytes value is GAP-1b (not yet
+// landed), and bytes 0x08/0x0C have no b"..." escape anyway. The CONSTRUCTED accumulator reads as the JSON
+// it emits — a bytes() splice of the accumulator followed by the literal escape it appends.
+def escape-str(inp: Bytes, acc: Bytes) -> Bytes =
+  (match inp with
+   | b[u8(34), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\""])
+   | b[u8(92), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\\"])
+   | b[u8(8), bytes(rest)]  => escape-str(rest, b[bytes(acc), b"\\b"])
+   | b[u8(12), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\f"])
+   | b[u8(10), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\n"])
+   | b[u8(13), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\r"])
+   | b[u8(9), bytes(rest)]  => escape-str(rest, b[bytes(acc), b"\\t"])
+   | b[u8(c), bytes(rest)]  =>
+       if c < 32 then escape-str(rest, b[bytes(acc), bytes(u-escape(c))])
+       else escape-str(rest, b[bytes(acc), u8(c)])
+   | _ => acc)
+
+// A quoted, escaped JSON string from decoded bytes.
+def encode-string(s: Bytes) -> Bytes =
+  b[b"\"", bytes(escape-str(s, b"")), b"\""]
+
+// Encode a JSON value. A JNum re-emits its verbatim `raw` bytes (exact, lossless; a from-coeff decimal
+// renderer arrives with the number constructors in I6).
+def encode(v: Json) -> Bytes =
+  (match v with
+   | Json.JNull    => b"null"
+   | Json.JBool(bl) => if bl then b"true" else b"false"
+   | Json.JNum(n)  => (match n with | Num.Num(r) => r.raw)
+   | Json.JStr(s)  => encode-string(s)
+   | Json.JArr(xs) => b[b"[", bytes(encode-elems(xs)), b"]"]
+   | Json.JObj(ms) => b[b"{", bytes(encode-members(ms)), b"}"])
+
+// Comma-join encoded array elements.
+def encode-elems(xs: List(Json)) -> Bytes =
+  (match xs with
+   | [] => b""
+   | [h, .. t] =>
+       (match t with
+        | [] => encode(h)
+        | _  => b[bytes(encode(h)), b",", bytes(encode-elems(t))]))
+
+// Comma-join encoded "key":value object members.
+def encode-members(ms: List(Member)) -> Bytes =
+  (match ms with
+   | [] => b""
+   | [m, .. t] =>
+       let piece = (match m with
+                    | Member.Member(r) => b[bytes(encode-string(r.key)), b":", bytes(encode(r.value))]) in
+       (match t with
+        | [] => piece
+        | _  => b[bytes(piece), b",", bytes(encode-members(t))]))
+
 // ── Early accessors (the accessor surface grows in I6) ──────────────────────────────────────────────────
 def is-null(v: Json) -> Bool =
   (match v with | Json.JNull => true | _ => false)
@@ -828,4 +896,75 @@ def t-obj-reject-trailing-comma() =
 def t-obj-reject-bare-open() =
   if rejects(b"{") then unit else trap("a lone { is rejected")
 
-export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
+// ── I5: encoder round-trip tests ────────────────────────────────────────────────────────────────────────
+// parse then encode; the encoder emits COMPACT JSON (no insignificant whitespace) and re-escapes strings,
+// so for a compact input the result is byte-identical, and for a spaced input it normalizes to compact.
+// (These assertions are syntax-independent of how the encoder builds its bytes, so they equally guard the
+// forthcoming readable `bin`-literal retrofit once GAP-1/GAP-2 land — behavior is pinned, only syntax changes.)
+
+def encodes-to(inp: Bytes, expected: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => encode(v) == expected
+   | Option.None    => false)
+
+@test
+def t-enc-null() =
+  if encodes-to(b"null", b"null") then unit else trap("null re-emits as null")
+
+@test
+def t-enc-bools() =
+  if encodes-to(b"true", b"true") and encodes-to(b"false", b"false") then unit
+  else trap("true/false re-emit verbatim")
+
+@test
+def t-enc-num-raw() =
+  if encodes-to(b"42", b"42") and encodes-to(b"-3.14e10", b"-3.14e10") then unit
+  else trap("a number re-emits its verbatim raw token (lossless)")
+
+@test
+def t-enc-num-strips-ws() =
+  if encodes-to(b"  42  ", b"42") then unit else trap("surrounding whitespace is not part of the value")
+
+@test
+def t-enc-str-plain() =
+  if encodes-to(b"\"hi\"", b"\"hi\"") then unit else trap("a plain string round-trips")
+
+@test
+def t-enc-str-escaped-quote() =
+  if encodes-to(b"\"a\\\"b\"", b"\"a\\\"b\"") then unit else trap("an escaped quote round-trips")
+
+@test
+def t-enc-str-escaped-newline() =
+  if encodes-to(b"\"a\\nb\"", b"\"a\\nb\"") then unit else trap("a \\n escape round-trips")
+
+@test
+def t-enc-array-compact() =
+  if encodes-to(b"[1,2,3]", b"[1,2,3]") then unit else trap("a compact array round-trips")
+
+@test
+def t-enc-array-strips-ws() =
+  if encodes-to(b"[ 1, 2 ]", b"[1,2]") then unit else trap("array whitespace normalizes to compact")
+
+@test
+def t-enc-array-empty() =
+  if encodes-to(b"[]", b"[]") then unit else trap("an empty array round-trips")
+
+@test
+def t-enc-object-compact() =
+  if encodes-to(b"{\"a\":1,\"b\":2}", b"{\"a\":1,\"b\":2}") then unit
+  else trap("a compact object round-trips")
+
+@test
+def t-enc-object-strips-ws() =
+  if encodes-to(b"{ \"a\" : 1 }", b"{\"a\":1}") then unit else trap("object whitespace normalizes to compact")
+
+@test
+def t-enc-object-empty() =
+  if encodes-to(b"{}", b"{}") then unit else trap("an empty object round-trips")
+
+@test
+def t-enc-nested() =
+  if encodes-to(b"{\"x\":[1,{\"y\":true}],\"z\":null}", b"{\"x\":[1,{\"y\":true}],\"z\":null}") then unit
+  else trap("a nested object/array structure round-trips compactly")
+
+export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
