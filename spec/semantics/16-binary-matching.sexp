@@ -1198,19 +1198,22 @@
   (live-objects 0))
 
 (case
-  "a recursive drain that RETURNS its own scrutinee tail (returned-scrutinee reclaim guard, no double-free)"
+  "a recursive drain that RETURNS its own scrutinee tail (returned-scrutinee reclaim + no double-free)"
   (doc
-    "The UAF-regression witness for the #8974 heap-return reclaim relaxation (v-memory-safety). `drain-digits`
-           matches `(bin (u8 d) (bytes r))`, recurses on `r` while `d` is a digit, and in its stop/base arms
-           RETURNS the scrutinee `inp` ITSELF (the un-consumed tail) — a HEAP (Bytes) return whose value ALIASES
-           the borrow-only scrutinee param. The heap-return relaxation must NOT reclaim such a param at fn-exit:
-           dropping the param slot while the returned value aliases it is a DOUBLE-FREE. `param_ref_reaches_result`
-           is the guard (the param reaches a RESULT position as a bare ref) — distinct from the rev-copy shape
-           @1168, which returns a SEPARATE accumulator (`acc`) and IS reclaimed. `drain-digits([49,50,51,52,53,120])`
-           stops at 120 ('x') and returns the 1-byte tail `[120]` (Bytes.len 1). This case is `known-leak` (the
-           scrutinee IS the result, so its shell is not reclaimable) — the load-bearing pin is that it stays
-           VALUE-CORRECT and does NOT trap: the guarded-all / live-objects backstop TRAPS on a double-free, so a
-           reintroduced over-reclaim here fails the gate rather than silently corrupting the heap.")
+    "The returned-scrutinee heap-drain shape (v-memory-safety; v-json-codec's pervasive parser class). `drain-
+           digits` matches `(bin (u8 d) (bytes r))`, recurses on the DUP'd `(bytes r)` slice while `d` is a digit,
+           and in its stop/base arms RETURNS the scrutinee `inp` ITSELF (the un-consumed tail) — a HEAP (Bytes)
+           return whose value ALIASES the borrow-only scrutinee. THREE obligations pinned: (1) no DOUBLE-FREE —
+           the fn-exit heap-return relaxation must not reclaim a param that is RETURNED (`param_ref_reaches_result`;
+           #8974 over-reclaimed → trap, #8975 fixed); (2) the INTERMEDIATE recursion frames' scrutinees (dead on
+           the recursing arm — inp is borrow-only there, superseded by the dup'd slice) ARE reclaimed via the
+           NESTED IF-JOIN per-arm drop; (3) join-liveness — the nested drop fires ONLY when the arm is DEAD
+           (neither escapes NOR live-CONSUMES inp: `count_param_consumes==0`), so a drain that THREADS its
+           scrutinee into the recursive call keeps it LIVE (the #8976 UAF: dropping a scrutinee still read by the
+           recursive continuation). Distinct from rev-copy @1168 (returns a SEPARATE accumulator).
+           `drain-digits([49,50,51,52,53,120])` stops at 120 ('x'), returns the 1-byte tail `[120]` (Bytes.len 1);
+           every intermediate frame's scrutinee is freed ⇒ live-objects 0. The guarded-all backstop TRAPS on a
+           reintroduced over-reclaim (0 ≠ trap); a re-leak shows as live-objects > 0.")
   (input
     (do
       (def (drain-digits (: inp Bytes))
@@ -1222,6 +1225,40 @@
       (export main)))
   (call main (: 49 Int64))
   (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "a recursive drain that THREADS its scrutinee into the recursion (join-liveness UAF-regression witness)"
+  (doc
+    "The #8976 double-free witness (v-memory-safety; v-json-codec's parse-number/parse-int OOB shape). `pnum`
+           strips an optional '-' and calls `pint(rest, orig=inp)`; `pint` drains digits, THREADING the shared
+           `orig` UNCHANGED through every recursive frame, and `fin` finally slices `orig[0 .. len(orig)-len(rest)]`
+           for the verbatim token. Unlike the drain-digits scrutinee (dead on the recursing arm), `orig` is LIVE
+           across the whole recursion — it is CONSUMED (a recursive-call arg) on the arm that also recurses. The
+           nested IF-JOIN per-arm drop MUST NOT reclaim such a threaded binding: dropping `orig` on a frame while
+           a later frame / the final `fin` slice still reads it is a USE-AFTER-FREE (an OOB read of a freed cell)
+           — exactly what #8976 did before the `count_param_consumes==0` join-liveness guard. The load-bearing pin
+           is VALUE-CORRECT + NO TRAP: the guarded-all / live-objects backstop TRAPS on a reintroduced over-reclaim
+           here, so a future nested-drop broadening that forgets the count guard fails the gate. `known-leak`
+           (`orig`'s intermediate frames are conservatively NOT reclaimed — safe direction, the shared-slice
+           residual tracked separately).")
+  (input
+    (do
+      (def (fin (: rest Bytes) (: orig Bytes))
+        (match (Bytes.slice orig 0 (- (Bytes.len orig) (Bytes.len rest)))
+          ((Some raw) (Bytes.len raw)) ((None) -1)))
+      (def (pint (: inp Bytes) (: orig Bytes))
+        (match inp
+          ((bin (u8 d) (bytes rest)) (if (<= d 57) (pint rest orig) (fin inp orig)))
+          (_ (fin inp orig))))
+      (def (pnum (: inp Bytes))
+        (match inp
+          ((bin (u8 m) (bytes rest)) (if (= m 45) (pint rest inp) (pint inp inp)))
+          (_ -1)))
+      (def (main (: c0 Int64)) (pnum (Bytes.of #list((UInt8.of c0) 50 51))))
+      (export main)))
+  (call main (: 49 Int64))
+  (output (: 3 Int64))
   (live-objects known-leak))
 
 ; ============================================================================================
