@@ -4003,8 +4003,8 @@ pass	a non-exhaustive scalar match names the wildcard gap and offers an add-wild
 pass	a non-exhaustive sum match names the uncovered variant and offers an add-arms fix
 pass	a non-final splice in a quote pattern is rejected CDZ0221
 pass	a non-final unquote-splice in a quote pattern is ill-formed
-pass	a non-final unsized bytes segment is an ill-formed binary form
-pass	a non-final unsized bytes segment is ill-formed
+pass	a non-final unsized bytes splice in construction concatenates (size is match-only)
+pass	a non-final unsized bytes splice built at runtime concatenates (append shape)
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a non-integer exponent in a Unit.^ power is named, not silently shipped
 pass	a non-integer exponent in a Unit.^ power is rejected

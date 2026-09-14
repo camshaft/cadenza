@@ -22,7 +22,9 @@
 ;
 ; Byte-alignment is STATIC: the whole `bin` must be byte-aligned. `bits` widths are compile-time
 ; constants so their running sum is checkable at compile time; a `bin` whose bits do not close a byte, a
-; non-final unsized `bytes`, or a `bits` width that is not a constant is an ILL-FORMED BINARY FORM,
+; non-final unsized `bytes` IN A MATCH PATTERN (a decode needs a defined boundary — this restriction is
+; MATCH-only; in CONSTRUCTION an unsized non-final `(bytes b)` legally splices all of b, pure
+; concatenation), or a `bits` width that is not a constant is an ILL-FORMED BINARY FORM,
 ; rejected CDZ0220 (options/diagnostics-schema/, the CDZ02xx types-and-patterns band). FIT is by TYPE, not
 ; a runtime check: a fixed-width segment requires its exact width type (`(u8 v)` takes `UInt8`, `(bits v k)`
 ; takes `(UInt k)`), so a value that does not fit the segment is a COMPILE-TIME TYPE ERROR (CDZ0203), never
@@ -276,9 +278,17 @@
   (error CDZ0220 (message "total 4 bits") (message "add 4 more bits to reach 1 byte")))
 
 (case
-  "a non-final unsized bytes segment is an ill-formed binary form"
-  (input (do (def (main) (bin (bytes (Bytes.of #list(1))) (u8 2))) (export main)))
-  (error CDZ0220))
+  "a non-final unsized bytes splice in construction concatenates (size is match-only)"
+  (doc
+    "`(bin (bytes (Bytes.of #list(1))) (u8 2))` places an unsized `(bytes b)` BEFORE another segment
+           in CONSTRUCTION (expression) position. The explicit-size requirement on a non-final `(bytes b n)`
+           is a MATCH-only rule (it exists only to know the consume-length when DECODING); in construction
+           there is nothing to consume, so an unsized non-final `(bytes b)` simply splices all of `b` and the
+           following segment is appended — pure, unambiguous concatenation. Here it builds [1, 2]. (Operator:
+           `there's no reason constructing a bytes non-final segment would need an explicit size; that's only
+           for pattern matching`.)")
+  (input (= (bin (bytes (Bytes.of #list(1))) (u8 2)) (Bytes.of #list(1 2))))
+  (output (: true Bool)))
 
 (case
   "a bit-field with a negative width is ill-formed (width must be a constant natural)"
@@ -1118,14 +1128,66 @@
   (error CDZ0220))
 
 (case
-  "a non-final unsized bytes segment is ill-formed"
+  "a non-final unsized bytes splice built at runtime concatenates (append shape)"
   (doc
-    "`(bin (bytes a) (u8 1))` places an unsized `(bytes a)` before another segment: an unsized
-           bytes segment consumes all remaining bytes, so anything after it can never be reached, an
-           ill-formed binary form rejected CDZ0220. Pins that an unsized `bytes` is legal only as the
-           final segment (a sized `(bytes a n)` may appear anywhere).")
-  (input (bin (bytes (Bytes.of #list(1 2))) (u8 1)))
-  (error CDZ0220))
+    "`(bin (bytes acc) (u8 c))` with a RUNTIME `acc : Bytes` (a param, not a constant) — the JSON
+           codec's `append-byte(acc, c)` encoder shape. The unsized non-final `(bytes acc)` splices all of
+           `acc` then appends the byte `c`, built at run time via `bytes-concat`. The explicit-size rule is
+           MATCH-only, so no size is needed here. `append([10,20], 30)` builds [10, 20, 30], length 3.
+           Pins that an unsized `(bytes b)` is legal as a non-final CONSTRUCTION segment (a matching `(bytes
+           b)` pattern is still final-only, enforced in match lowering).")
+  (input
+    (do
+      (def (append (: acc Bytes) (: c UInt8)) (bin (bytes acc) (u8 c)))
+      (def (main (: c0 Int64)) (Bytes.len (append (Bytes.of #list((UInt8.of c0) 20)) (UInt8.of 30))))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 3 Int64)))
+
+(case
+  "two adjacent unsized bytes splices in construction concatenate (join shape)"
+  (doc
+    "`(bin (bytes a) (bytes b))` splices two runtime `Bytes` values back to back — the codec's
+           `join(a, b)` = `b[bytes(a), bytes(b)]`. The FIRST `(bytes a)` is a non-final unsized splice
+           (legal in construction, the GAP-2 relaxation); the second is the final splice. Built at run time
+           via `bytes-concat`. `join([1,2],[3,4])` builds [1,2,3,4], length 4. Co-authored from the JSON
+           codec (v-json-codec).")
+  (input
+    (do
+      (def (join (: a Bytes) (: b Bytes)) (bin (bytes a) (bytes b)))
+      (def (main (: c0 Int64)) (Bytes.len (join (Bytes.of #list((UInt8.of c0) 2)) (Bytes.of #list(3 4)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 4 Int64)))
+
+(case
+  "a recursive construction-splice accumulator drains a scrutinee (rev-copy shape, reclaim guard)"
+  (doc
+    "`rev-copy(inp, acc)` matches `(bin (u8 c) (bytes rest))` and recurses `rev-copy(rest, (bin
+           (bytes acc) (u8 c)))` — a MATCH decode driving a recursive CONSTRUCTION splice-append (the
+           accumulator idiom the codec recurses on). Combines the GAP-2 construction splice with a
+           self-recursive drain, so it also exercises the Perceus/reclaim path for construction splices (the
+           construction-side analogue of the #8953 match-side shape). `rev-copy([65,66,67,68], [])` copies
+           4 bytes → length 4. Co-authored from the JSON codec (v-json-codec). Pinned `(live-objects
+           known-leak)`: MEASURED live-objects=4 (not 0) — this recursive drain returns a HEAP `Bytes`
+           accumulator built by construction splice, so v-memory-safety's #8962 scrutinee-drop fix (which
+           requires a SCALAR return) does not fire, and the recursive `(bytes rest)` scrutinee slices +
+           accumulator intermediates are not reclaimed. Value (byte count 4) is EXACT — the GAP-2
+           construction splice compiles and runs correctly; the leak is a distinct reclaim residual routed to
+           v-memory-safety (the heap-accumulator recursive-drain class, beyond their scalar-return fix).
+           Flip to `live-objects 0` when that class is closed.")
+  (input
+    (do
+      (def (push (: acc Bytes) (: c UInt8)) (bin (bytes acc) (u8 c)))
+      (def (rev-copy (: inp Bytes) (: acc Bytes))
+        (match inp
+          ((bin (u8 c) (bytes rest)) (rev-copy rest (push acc c)))
+          (_ acc)))
+      (def (main (: c0 Int64)) (Bytes.len (rev-copy (Bytes.of #list((UInt8.of c0) 66 67 68)) (Bytes.of #list()))))
+      (export main)))
+  (call main (: 65 Int64))
+  (output (: 4 Int64))
+  (live-objects known-leak))
 
 (case
   "a bit-field width that is not a compile-time constant is ill-formed"
