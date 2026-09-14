@@ -586,13 +586,15 @@ fn bake_constant_leaves_keeps_runtime_leaves_and_bakes_only_constants() {
 }
 
 #[test]
-fn constant_value_form_bare_is_the_framed_value_without_the_type_frame() {
-    // The bare compile-time encoder (Axis-2 provider-path foundation) must produce EXACTLY the runtime
-    // `value-encode` op's bare output for a constant. Verified at the AST level (codec is canonical, so
-    // AST equivalence ⇒ byte equivalence): the bare doc is the framed `constant_value_form`'s value node
-    // WITHOUT the `(: value Type)` frame, carrying the same constant leaves. Both derive the value from
-    // the SAME `const_value_ast` the corpus-verified framed path uses, and the reducer boundary is bare
-    // (v-ah+v-runtime ruling 2026-08-12), so these bytes are what the per-event value-encode would emit.
+fn constant_value_form_emits_the_bare_value_no_ascription_frame() {
+    // The constant compile-time encoder must produce EXACTLY the runtime `value-encode` op's bare output
+    // for a constant. As of operator-806 (#8963), `constant_value_form` ITSELF is bare — the `(: value
+    // Type)` frame was removed — so it now emits the SAME bytes as `constant_value_form_bare` (both are
+    // just `const_value_ast` codec-encoded). Verified at the AST level (codec is canonical, so AST
+    // equivalence ⇒ byte equivalence): BOTH docs are the bare value node with NO `(: value Type)` frame,
+    // carrying the same constant leaves — the mandate invariant that the constant escape carries no
+    // ascription. The reducer boundary is bare both directions, so these bytes are what the per-event
+    // value-encode would emit.
     use crate::lower::{constant_value_form, constant_value_form_bare};
     use crate::testkit::parse;
     let src = "(module m (def (main) (tuple 3 1)) (export main))";
@@ -640,13 +642,19 @@ fn constant_value_form_bare_is_the_framed_value_without_the_type_frame() {
         want_ints,
         "bare carries the constants 3 and 1"
     );
-    // FRAMED: the SAME value, WITH the `:` frame — the contrast that shows bare = framed minus the frame.
+    // POST-#8963 (operator-806): `constant_value_form` is now ALSO bare — the `(: value type)` frame was
+    // removed — so it emits the SAME bare doc as `constant_value_form_bare`, carrying NO ascription frame.
     assert!(
-        names(&framed_a).contains(":"),
-        "the framed doc has the `(: value type)` frame"
+        !names(&framed_a).contains(":"),
+        "post-#8963 `constant_value_form` carries NO `(: value type)` frame either"
     );
     assert!(has_tuple_ctor(&framed_a));
     assert_eq!(ints(&framed_a), want_ints);
+    // Both are now the identical bare form (the mandate outcome) — byte-equal, not just structurally.
+    assert_eq!(
+        bare, framed,
+        "post-#8963 constant_value_form == constant_value_form_bare (both emit the bare value form)"
+    );
 }
 
 #[test]
@@ -658,7 +666,7 @@ fn a_bytes_provider_member_with_a_constant_result_pre_encodes_the_static_bytes()
     // assert the emitted component writes EXACTLY `constant_value_form_bare(result).len()` bytes as static
     // `i32.store8`s (the pre-encode path — a per-event reducer would value-encode via a runtime call and
     // emit no such per-byte store run). The bytes' CORRECTNESS is pinned by
-    // `constant_value_form_bare_is_the_framed_value_without_the_type_frame`; this pins the EMIT takes the
+    // `constant_value_form_emits_the_bare_value_no_ascription_frame`; this pins the EMIT takes the
     // pre-encode path. (Formerly RAN the reducer via `cdz_run::run_reducer_bytes` to compare the output
     // list<u8> to those bytes — dropped with the cdz-run dep migration; the run half has no value-level
     // corpus home because the list<u8> reducer boundary output is the wire bytes themselves.)
