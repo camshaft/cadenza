@@ -1199,8 +1199,8 @@
 ; exactly len(literal) bytes and equality-checks them (a same-length MISMATCH or a SHORT input
 ; fails the arm). Compile-time-known length, so a `b"…"` segment is legal at ANY position (unlike
 ; an unsized `(bytes b)`). Co-authored with v-json-codec (readable parser dispatch / encoder
-; wrappers). NOTE: matching a `b"…"` segment over a RUNTIME scrutinee is not yet lowered (declines,
-; GAP-1b); the CONSTANT-scrutinee match below already dispatches by literal equality.
+; wrappers). Both a CONSTANT scrutinee (folded equality) and a RUNTIME scrutinee (a per-byte equality
+; probe folded into the arm predicate, past the length floor) dispatch on a `b"…"` literal.
 ; ============================================================================================
 
 (case
@@ -1258,6 +1258,74 @@
       ((bin b"null" (bytes rest)) (Bytes.len rest))
       (_ -1)))
   (output (: -1 Int64)))
+
+; -- GAP-1b: RUNTIME-scrutinee b"…" literal match (the parser dispatch). `build_bin_arm_predicate` folds
+; the literal's length into the fixed prefix and ANDs a per-byte equality probe; a following `(bytes rest)`
+; reads past it. This is what the JSON codec's `classify`/`parse-*` dispatch runs on a `Bytes` PARAM.
+(case
+  "a runtime b-literal match dispatches on mixed-length keyword / structural prefixes"
+  (doc
+    "`classify(inp)` matches `b\"null\"` (4-byte keyword), `b\"true\"` (4), and `b\"[\"` (1-byte
+           structural) over a RUNTIME `Bytes` param — the parser's core dispatch, arms of DIFFERENT literal
+           lengths coexisting, each independently checking its prefix and falling through on a miss. Built
+           from a param so the scrutinee is runtime (not const-folded). `n`(110)→null→1, `t`(116)→true→2,
+           `[`(91)→4, anything else→0.")
+  (input
+    (do
+      (def (classify (: inp Bytes))
+        (match inp
+          ((bin b"null" (bytes rest)) 1)
+          ((bin b"true" (bytes rest)) 2)
+          ((bin b"[" (bytes rest)) 4)
+          (_ 0)))
+      (def (mk (: c0 Int64) (: c1 Int64) (: c2 Int64) (: c3 Int64))
+        (Bytes.of #list((UInt8.of c0) (UInt8.of c1) (UInt8.of c2) (UInt8.of c3))))
+      (def (main (: c0 Int64))
+        ; classify a 4-byte input whose first byte is c0; 110='n'ull -> 1, 116='t'rue -> 2, 91='[' (plus
+        ; filler) -> 4, else 0. The trailing bytes complete "null"/"true" only for those two leads.
+        (classify (mk c0 117 108 108)))
+      (export main)))
+  (call main (: 110 Int64))
+  (output (: 1 Int64))
+  (call main (: 120 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "a runtime b-literal match binds the rest after a structural prefix"
+  (doc
+    "`after-open(inp)` matches `b\"[\"` over a RUNTIME param then binds + reads the rest — the length
+           past the 1-byte literal. `after-open(\"[1,2]\")` = 4 (rest = `1,2]`); a non-`[` lead falls
+           through to -1.")
+  (input
+    (do
+      (def (after-open (: inp Bytes))
+        (match inp
+          ((bin b"[" (bytes rest)) (Bytes.len rest))
+          (_ -1)))
+      (def (main (: c0 Int64))
+        (after-open (Bytes.of #list((UInt8.of c0) 49 44 50 93))))
+      (export main)))
+  (call main (: 91 Int64))
+  (output (: 4 Int64))
+  (call main (: 120 Int64))
+  (output (: -1 Int64)))
+
+(case
+  "a runtime b-literal match falls through on a same-length mismatch and short input"
+  (doc
+    "Runtime negative probes for the b\"…\" equality: a same-length MISMATCH and a SHORT input both fail
+           the `b\"null\"` arm and fall through. `m` matches `b\"null\" (bytes rest)` else -1; over the
+           runtime 4-byte input `[c0,117,88,88]` a `n`(110) lead still mismatches (bytes 3-4 are 'XX'), and
+           the 3-byte build (c0,117,108) is too short — both -1.")
+  (input
+    (do
+      (def (m (: inp Bytes)) (match inp ((bin b"null" (bytes rest)) (Bytes.len rest)) (_ -1)))
+      (def (main (: c0 Int64))
+        (+ (m (Bytes.of #list((UInt8.of c0) 117 88 88)))
+           (m (Bytes.of #list((UInt8.of c0) 117 108)))))
+      (export main)))
+  (call main (: 110 Int64))
+  (output (: -2 Int64)))
 
 (case
   "a structural byte-wrap around a runtime splice (u8-literal form, encoder array-wrap)"
