@@ -1408,11 +1408,12 @@ pub(super) fn sum_variant_payload_types(
     Some(out)
 }
 
-/// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
-/// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
-/// variant HEAD is built by [`variant_head_ast`] (bare normally, qualified `(. Type Variant)` when the
-/// sum has a prelude-shadowed variant), so the runtime template writes the identical head the constant
-/// bake does.
+/// One variant's value-form template: the BARE `(<variant-head> payload…)` (value-codec migration,
+/// operator 806 — NO `(: … SumType)` ascription frame; decode is type-directed off the caller's expected
+/// type, not the embedded type name), payload leaves as holes reached via `sum-payload`. Arity shapes the
+/// value + the hole paths (see [`sum_form_template`]). The variant HEAD is built by [`variant_head_ast`]
+/// (bare normally, qualified `(. Type Variant)` when the sum has a prelude-shadowed variant), so the
+/// runtime template writes the identical head the constant bake does.
 pub(super) fn variant_form_template(
     db: &mut Db,
     decl: StructId,
@@ -1421,7 +1422,6 @@ pub(super) fn variant_form_template(
     sum_ty: &crate::ty::Ty,
 ) -> Option<ValueFormTemplate> {
     let mut b = crate::ast::Builder::new();
-    let colon = b.name(":");
     let mut leaves: Vec<PendingLeaf> = Vec::new();
     // The VALUE: `(<variant-head> payload…)`.
     let value = {
@@ -1459,11 +1459,13 @@ pub(super) fn variant_form_template(
         }
         b.list(children)
     };
-    // The TYPE node — the sum's full type surface: a bare `Sign` for a monomorphic sum, `(Option
-    // Int64)` for a generic instantiation (`type_ast`'s `Ty::Sum` arm renders both from the solved
-    // type). So `(: (Some 5) (Option Int64))` — the corpus parameterized form.
-    let type_node = type_ast(&mut b, sum_ty, &db.name_ctx())?;
-    let root = b.list(vec![colon, value, type_node]);
+    // STRUCTURAL (value-codec migration, operator 806 "get rid of it"): the value IS the root — no
+    // `(: value SumType)` ascription frame. Decode is type-directed off the caller's expected type
+    // (the runtime escape's result `Ty`), never the embedded type name, so a runtime-escape / reducer-
+    // result / closure-resource sum now emits the bare `(Ctor payload…)` — identical to the Value.encode
+    // intrinsic (`sum_shape_descriptor`) and the daemon. `sum_ty` no longer contributes a type node.
+    let _ = sum_ty;
+    let root = value;
     let arenas = b.finish(root);
     let bytes = crate::codec::encode(&arenas);
     let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;

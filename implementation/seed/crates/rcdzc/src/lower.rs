@@ -1637,12 +1637,12 @@ pub fn constant_string_value(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
 /// is name-free); this does NO in-wasm formatting — it is a compile-time serialization.
 pub fn constant_value_form(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
     let mut b = crate::ast::Builder::new();
-    let colon = b.name(":");
+    // STRUCTURAL (value-codec migration, operator 806 "get rid of it"): the value IS the root — no
+    // `(: value type)` ascription frame. This R1 constant-escape now emits the bare value form, identical
+    // to the R2 runtime escape (`variant_form_template`) and the `Value.encode` intrinsic; the host
+    // decodes structurally against the escape's known result type, not an embedded type name.
     let value = const_value_ast(db, &mut b, id)?;
-    let ty = crate::infer::type_of(db, id);
-    let type_ast = type_ast(&mut b, &ty, &db.name_ctx())?;
-    let root = b.list(vec![colon, value, type_ast]);
-    Some(crate::codec::encode(&b.finish(root)))
+    Some(crate::codec::encode(&b.finish(value)))
 }
 
 /// The BARE canonical value document of a fully-constant compound at `id` — [`constant_value_form`] WITHOUT
