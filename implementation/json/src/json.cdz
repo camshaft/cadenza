@@ -8,7 +8,7 @@
 //   * PARSER uses BINARY PATTERN MATCHING (`b[...]`) — "exactly what we built it for - parsers." The parser
 //     matches byte patterns / literal bytes / structural tokens directly and threads the REMAINING bytes as
 //     a `bytes(rest)` tail binding, rather than a manual Int64 cursor + Bytes.at. It reads cleanly: e.g.
-//     `| b[b"null", bytes(rest)] => ...` matches the literal bytes of `null` and binds the remainder as rest.
+//     `| b["null", bytes(rest)] => ...` matches the literal bytes of `null` and binds the remainder as rest.
 //   * NUMBERS are LOSSLESS via BigInt (NOT f64, NOT verbatim-only). A JSON number is an exact decimal
 //     value = (if neg then -1 else 1) * coeff * 10^exp10, where `coeff` is a BigInt (arbitrary precision —
 //     every significant digit, exact) and `exp10` an Int64 power of ten. `raw` retains the canonical byte
@@ -83,10 +83,10 @@ type ObjParsed =
 // and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
 def skip-ws(inp: Bytes) -> Bytes =
   (match inp with
-   | b[b" ",  bytes(rest)] => skip-ws(rest)
-   | b[b"\t", bytes(rest)] => skip-ws(rest)
-   | b[b"\n", bytes(rest)] => skip-ws(rest)
-   | b[b"\r", bytes(rest)] => skip-ws(rest)
+   | b[" ",  bytes(rest)] => skip-ws(rest)
+   | b["\t", bytes(rest)] => skip-ws(rest)
+   | b["\n", bytes(rest)] => skip-ws(rest)
+   | b["\r", bytes(rest)] => skip-ws(rest)
    | _ => inp)
 
 // ── Strings ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -101,8 +101,8 @@ def push-byte(acc: Bytes, c: UInt8) -> Bytes =
 // escapes — including UTF-16 surrogate pairs — are handled by parse-escape -> parse-unicode below.)
 def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
-   | b[b"\"", bytes(rest)]  => StrParsed.SOk({ str = acc, rest = rest })
-   | b[b"\\", bytes(after)] => parse-escape(after, acc)
+   | b["\"", bytes(rest)]  => StrParsed.SOk({ str = acc, rest = rest })
+   | b["\\", bytes(after)] => parse-escape(after, acc)
    | b[u8(c), bytes(rest)]   =>
        if c < 32 then StrParsed.SErr
        else parse-str(rest, push-byte(acc, c))
@@ -113,15 +113,15 @@ def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
 // Any other escape byte (or end of input) is an invalid escape.
 def parse-escape(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
-   | b[b"\"", bytes(rest)] => parse-str(rest, push-byte(acc, 34))
-   | b[b"\\", bytes(rest)] => parse-str(rest, push-byte(acc, 92))
-   | b[b"/",  bytes(rest)] => parse-str(rest, push-byte(acc, 47))
-   | b[b"b",  bytes(rest)] => parse-str(rest, push-byte(acc, 8))
-   | b[b"f",  bytes(rest)] => parse-str(rest, push-byte(acc, 12))
-   | b[b"n",  bytes(rest)] => parse-str(rest, push-byte(acc, 10))
-   | b[b"r",  bytes(rest)] => parse-str(rest, push-byte(acc, 13))
-   | b[b"t",  bytes(rest)] => parse-str(rest, push-byte(acc, 9))
-   | b[b"u", u8(h1), u8(h2), u8(h3), u8(h4), bytes(rest)] =>
+   | b["\"", bytes(rest)] => parse-str(rest, push-byte(acc, 34))
+   | b["\\", bytes(rest)] => parse-str(rest, push-byte(acc, 92))
+   | b["/",  bytes(rest)] => parse-str(rest, push-byte(acc, 47))
+   | b["b",  bytes(rest)] => parse-str(rest, push-byte(acc, 8))
+   | b["f",  bytes(rest)] => parse-str(rest, push-byte(acc, 12))
+   | b["n",  bytes(rest)] => parse-str(rest, push-byte(acc, 10))
+   | b["r",  bytes(rest)] => parse-str(rest, push-byte(acc, 13))
+   | b["t",  bytes(rest)] => parse-str(rest, push-byte(acc, 9))
+   | b["u", u8(h1), u8(h2), u8(h3), u8(h4), bytes(rest)] =>
        (match hex4(h1, h2, h3, h4) with
         | Option.None      => StrParsed.SErr
         | Option.Some(cu)  => parse-unicode(cu, rest, acc))
@@ -168,7 +168,7 @@ def utf8(cp: Int64) -> Bytes =
 def parse-unicode(cu: Int64, rest: Bytes, acc: Bytes) -> StrParsed =
   if cu >= 55296 and cu <= 56319 then
     (match rest with
-     | b[b"\\u", u8(l1), u8(l2), u8(l3), u8(l4), bytes(rest2)] =>
+     | b["\\u", u8(l1), u8(l2), u8(l3), u8(l4), bytes(rest2)] =>
          (match hex4(l1, l2, l3, l4) with
           | Option.None => StrParsed.SErr
           | Option.Some(lo) =>
@@ -200,14 +200,14 @@ def parse-digits(inp: Bytes, coeff: BigInt, count: Int64) -> Digits =
 // slicing the verbatim `raw`. Threads through int -> frac -> exp, validating the JSON grammar at each stage.
 def parse-number(inp: Bytes) -> NumParsed =
   (match inp with
-   | b[b"-", bytes(rest)] => parse-int(true, rest, inp)
+   | b["-", bytes(rest)] => parse-int(true, rest, inp)
    | _ => parse-int(false, inp, inp))
 
 // Integer part, enforcing the no-leading-zero rule: a lone '0' is fine (and may be followed by '.'/'e'/end),
 // but '0' immediately followed by another digit is invalid; '1'-'9' consumes the whole digit run.
 def parse-int(neg: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[b"0", bytes(rest)] =>
+   | b["0", bytes(rest)] =>
        (match rest with
         | b[u8(d2), bytes(_)] =>
             if d2 >= 48 and d2 <= 57 then NumParsed.NErr
@@ -224,7 +224,7 @@ def parse-int(neg: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
 // decrements `exp10` by one.
 def parse-frac(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[b".", bytes(rest)] =>
+   | b[".", bytes(rest)] =>
        (match parse-digits(rest, coeff, 0) with
         | Digits(di) =>
             if di.count == 0 then NumParsed.NErr
@@ -234,15 +234,15 @@ def parse-frac(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) 
 // Optional exponent introducer 'e'/'E'.
 def parse-exp(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[b"e", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
-   | b[b"E", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | b["e", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | b["E", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
    | _ => finish-number(neg, coeff, exp10, inp, orig))
 
 // Optional exponent sign.
 def parse-exp-sign(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[b"+", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, true, rest, orig)
-   | b[b"-", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, false, rest, orig)
+   | b["+", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, true, rest, orig)
+   | b["-", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, false, rest, orig)
    | _ => parse-exp-digits(neg, coeff, exp10, true, inp, orig))
 
 // Exponent digits (at least one required); folds the explicit exponent into `exp10`.
@@ -262,26 +262,26 @@ def finish-number(neg: Bool, coeff: BigInt, exp10: Int64, rest: Bytes, orig: Byt
 
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
 // Parse a single JSON value from the front of `inp` (after leading whitespace): the three keyword literals
-// (`b"null"`/`b"true"`/`b"false"`), a string (`"`), an array (`[`), an object (`{`), or a number (`-` or a
+// (`"null"`/`"true"`/`"false"`), a string (`"`), an array (`[`), an object (`{`), or a number (`-` or a
 // digit). No trailing-delimiter check here — the top-level `parse` requires end-of-input, and a value inside
 // a container is followed by a required ',' / ']' / '}', so a bareword like `truer` is rejected there (its
 // `rest` is non-empty / non-delimiter).
 def parse-value(inp: Bytes) -> Parsed =
   let s = skip-ws(inp) in
   (match s with
-   | b[b"null", bytes(rest)] =>
+   | b["null", bytes(rest)] =>
        Parsed.POk({ value = Json.JNull, rest = rest })
-   | b[b"true", bytes(rest)] =>
+   | b["true", bytes(rest)] =>
        Parsed.POk({ value = Json.JBool(true), rest = rest })
-   | b[b"false", bytes(rest)] =>
+   | b["false", bytes(rest)] =>
        Parsed.POk({ value = Json.JBool(false), rest = rest })
-   | b[b"\"", bytes(after)] =>
+   | b["\"", bytes(after)] =>
        (match parse-str(after, b"") with
         | StrParsed.SOk(sp) => Parsed.POk({ value = Json.JStr(sp.str), rest = sp.rest })
         | StrParsed.SErr    => Parsed.PErr)
-   | b[b"[", bytes(after)] => parse-array(after)
-   | b[b"{", bytes(after)] => parse-object(after)
-   | b[b"-", bytes(_)] => number-value(s)
+   | b["[", bytes(after)] => parse-array(after)
+   | b["{", bytes(after)] => parse-object(after)
+   | b["-", bytes(_)] => number-value(s)
    | b[u8(dd), bytes(_)] =>
        if dd >= 48 and dd <= 57 then number-value(s) else Parsed.PErr
    | _ => Parsed.PErr)
@@ -296,7 +296,7 @@ def number-value(s: Bytes) -> Parsed =
 // An array is  [ ws (value (ws , ws value)*)? ws ]  — `inp` is the bytes AFTER the opening '['.
 def parse-array(inp: Bytes) -> Parsed =
   (match skip-ws(inp) with
-   | b[b"]", bytes(rest)] => Parsed.POk({ value = Json.JArr([]), rest = rest })
+   | b["]", bytes(rest)] => Parsed.POk({ value = Json.JArr([]), rest = rest })
    | _ =>
        (match parse-array-elems(inp) with
         | ArrParsed.AErr    => Parsed.PErr
@@ -308,8 +308,8 @@ def parse-array-elems(inp: Bytes) -> ArrParsed =
    | Parsed.PErr    => ArrParsed.AErr
    | Parsed.POk(r)  =>
        (match skip-ws(r.rest) with
-        | b[b"]", bytes(rest)] => ArrParsed.AOk({ elems = [r.value], rest = rest })
-        | b[b",", bytes(rest)] =>
+        | b["]", bytes(rest)] => ArrParsed.AOk({ elems = [r.value], rest = rest })
+        | b[",", bytes(rest)] =>
             (match parse-array-elems(rest) with
              | ArrParsed.AErr   => ArrParsed.AErr
              | ArrParsed.AOk(a) => ArrParsed.AOk({ elems = [r.value, .. a.elems], rest = a.rest }))
@@ -318,7 +318,7 @@ def parse-array-elems(inp: Bytes) -> ArrParsed =
 // An object is  { ws (string ws : ws value (ws , ws string ws : ws value)*)? ws }  — `inp` is AFTER '{'.
 def parse-object(inp: Bytes) -> Parsed =
   (match skip-ws(inp) with
-   | b[b"}", bytes(rest)] => Parsed.POk({ value = Json.JObj([]), rest = rest })
+   | b["}", bytes(rest)] => Parsed.POk({ value = Json.JObj([]), rest = rest })
    | _ =>
        (match parse-object-members(inp) with
         | ObjParsed.OErr   => Parsed.PErr
@@ -327,19 +327,19 @@ def parse-object(inp: Bytes) -> Parsed =
 // Parse one "key": value member (key MUST be a JSON string), then ',' (more) or '}' (done).
 def parse-object-members(inp: Bytes) -> ObjParsed =
   (match skip-ws(inp) with
-   | b[b"\"", bytes(after)] =>
+   | b["\"", bytes(after)] =>
        (match parse-str(after, b"") with
         | StrParsed.SErr   => ObjParsed.OErr
         | StrParsed.SOk(k) =>
             (match skip-ws(k.rest) with
-             | b[b":", bytes(afterc)] =>
+             | b[":", bytes(afterc)] =>
                  (match parse-value(afterc) with
                   | Parsed.PErr   => ObjParsed.OErr
                   | Parsed.POk(v) =>
                       (match skip-ws(v.rest) with
-                       | b[b"}", bytes(rest)] =>
+                       | b["}", bytes(rest)] =>
                            ObjParsed.OOk({ members = [Member.Member({ key = k.str, value = v.value })], rest = rest })
-                       | b[b",", bytes(rest)] =>
+                       | b[",", bytes(rest)] =>
                            (match parse-object-members(rest) with
                             | ObjParsed.OErr   => ObjParsed.OErr
                             | ObjParsed.OOk(o) =>
@@ -371,24 +371,24 @@ def hex-digit(n: Int64) -> UInt8 =
 // The \u00XX escape for a C0 control byte (0..31) with no shorter named escape.
 def u-escape(c: UInt8) -> Bytes =
   let n = Int64.of(c) in
-  b[b"\\u00", u8(hex-digit(n / 16)), u8(hex-digit(n % 16))]
+  b["\\u00", u8(hex-digit(n / 16)), u8(hex-digit(n % 16))]
 
 // Escape a decoded string's bytes into JSON string-body bytes: the reverse of parse-str's decoding. `"` and
 // `\` are backslash-escaped; the C0 controls with named escapes use them; other C0 controls use \u00XX; all
 // other bytes (incl multibyte UTF-8) pass through verbatim. ('/' is not escaped — escaping it is optional.)
-// Each scrutinee arm reads as the character it escapes (runtime-scrutinee b"..." match, GAP-1b); only
-// backspace (0x08) and form-feed (0x0C) keep u8(N), since a b"..." literal has no escape for those bytes.
+// Each scrutinee arm reads as the character it escapes (plain string-literal bin segment, e.g. `"\""`); only
+// backspace (0x08) and form-feed (0x0C) keep u8(N), since a text literal has no source escape for those bytes.
 // The CONSTRUCTED accumulator likewise reads as the JSON it emits — a bytes() splice of the accumulator
-// followed by the literal escape it appends.
+// followed by the literal escape it appends (e.g. `"\\b"`, the two ASCII bytes `\` `b`).
 def escape-str(inp: Bytes, acc: Bytes) -> Bytes =
   (match inp with
-   | b[b"\"", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\""])
-   | b[b"\\", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\\"])
-   | b[u8(8), bytes(rest)]  => escape-str(rest, b[bytes(acc), b"\\b"])
-   | b[u8(12), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\f"])
-   | b[b"\n", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\n"])
-   | b[b"\r", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\r"])
-   | b[b"\t", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\t"])
+   | b["\"", bytes(rest)] => escape-str(rest, b[bytes(acc), "\\\""])
+   | b["\\", bytes(rest)] => escape-str(rest, b[bytes(acc), "\\\\"])
+   | b[u8(8), bytes(rest)]  => escape-str(rest, b[bytes(acc), "\\b"])
+   | b[u8(12), bytes(rest)] => escape-str(rest, b[bytes(acc), "\\f"])
+   | b["\n", bytes(rest)] => escape-str(rest, b[bytes(acc), "\\n"])
+   | b["\r", bytes(rest)] => escape-str(rest, b[bytes(acc), "\\r"])
+   | b["\t", bytes(rest)] => escape-str(rest, b[bytes(acc), "\\t"])
    | b[u8(c), bytes(rest)]  =>
        if c < 32 then escape-str(rest, b[bytes(acc), bytes(u-escape(c))])
        else escape-str(rest, b[bytes(acc), u8(c)])
@@ -396,7 +396,7 @@ def escape-str(inp: Bytes, acc: Bytes) -> Bytes =
 
 // A quoted, escaped JSON string from decoded bytes.
 def encode-string(s: Bytes) -> Bytes =
-  b[b"\"", bytes(escape-str(s, b"")), b"\""]
+  b["\"", bytes(escape-str(s, b"")), "\""]
 
 // Encode a JSON value. A JNum re-emits its verbatim `raw` bytes (exact, lossless; a from-coeff decimal
 // renderer arrives with the number constructors in I6).
@@ -406,8 +406,8 @@ def encode(v: Json) -> Bytes =
    | Json.JBool(bl) => if bl then b"true" else b"false"
    | Json.JNum(n)  => (match n with | Num.Num(r) => r.raw)
    | Json.JStr(s)  => encode-string(s)
-   | Json.JArr(xs) => b[b"[", bytes(encode-elems(xs)), b"]"]
-   | Json.JObj(ms) => b[b"{", bytes(encode-members(ms)), b"}"])
+   | Json.JArr(xs) => b["[", bytes(encode-elems(xs)), "]"]
+   | Json.JObj(ms) => b["{", bytes(encode-members(ms)), "}"])
 
 // Comma-join encoded array elements.
 def encode-elems(xs: List(Json)) -> Bytes =
@@ -416,7 +416,7 @@ def encode-elems(xs: List(Json)) -> Bytes =
    | [h, .. t] =>
        (match t with
         | [] => encode(h)
-        | _  => b[bytes(encode(h)), b",", bytes(encode-elems(t))]))
+        | _  => b[bytes(encode(h)), ",", bytes(encode-elems(t))]))
 
 // Comma-join encoded "key":value object members.
 def encode-members(ms: List(Member)) -> Bytes =
@@ -424,10 +424,10 @@ def encode-members(ms: List(Member)) -> Bytes =
    | [] => b""
    | [m, .. t] =>
        let piece = (match m with
-                    | Member.Member(r) => b[bytes(encode-string(r.key)), b":", bytes(encode(r.value))]) in
+                    | Member.Member(r) => b[bytes(encode-string(r.key)), ":", bytes(encode(r.value))]) in
        (match t with
         | [] => piece
-        | _  => b[bytes(piece), b",", bytes(encode-members(t))]))
+        | _  => b[bytes(piece), ",", bytes(encode-members(t))]))
 
 // ── Early accessors (the accessor surface grows in I6) ──────────────────────────────────────────────────
 def is-null(v: Json) -> Bool =
@@ -485,7 +485,7 @@ def int-digits(n: Int64, acc: Bytes) -> Bytes =
 // Render an Int64 to decimal JSON-number bytes (leading '-' when negative). (Int64 minimum is unsupported —
 // its magnitude overflows negation; JSON-RPC codes and ordinary values never reach it.)
 def int64-decimal(n: Int64) -> Bytes =
-  if n < 0 then b[b"-", bytes(int-digits(0 - n, b""))]
+  if n < 0 then b["-", bytes(int-digits(0 - n, b""))]
   else int-digits(n, b"")
 
 // A JSON integer value from an Int64 (exact): coeff = |n| as BigInt, exp10 = 0, raw = its decimal rendering.
