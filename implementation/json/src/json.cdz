@@ -69,6 +69,15 @@ type NumParsed =
 type Digits =
   | Digits(Record(coeff: BigInt, count: Int64, rest: Bytes))
 
+// The result of parsing an array's elements / an object's members: the collected list + the bytes after the
+// closing bracket, or a parse error. Internal (carriers for the recursive container parsers).
+type ArrParsed =
+  | AOk(Record(elems: List(Json), rest: Bytes))
+  | AErr
+type ObjParsed =
+  | OOk(Record(members: List(Member), rest: Bytes))
+  | OErr
+
 // ── Whitespace ──────────────────────────────────────────────────────────────────────────────────────────
 // Drop leading JSON insignificant whitespace — space (32), tab (9), line feed (10), carriage return (13) —
 // and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
@@ -274,6 +283,8 @@ def parse-value(inp: Bytes) -> Parsed =
        (match parse-str(after, b"") with
         | StrParsed.SOk(sp) => Parsed.POk({ value = Json.JStr(sp.str), rest = sp.rest })
         | StrParsed.SErr    => Parsed.PErr)
+   | b[u8(91), bytes(after)]  => parse-array(after)
+   | b[u8(123), bytes(after)] => parse-object(after)
    | b[u8(45), bytes(_)] => number-value(s)
    | b[u8(dd), bytes(_)] =>
        if dd >= 48 and dd <= 57 then number-value(s) else Parsed.PErr
@@ -284,6 +295,62 @@ def number-value(s: Bytes) -> Parsed =
   (match parse-number(s) with
    | NumParsed.NOk(n) => Parsed.POk({ value = Json.JNum(n.num), rest = n.rest })
    | NumParsed.NErr   => Parsed.PErr)
+
+// ── I4: arrays + objects (recursive, mutually recursive with parse-value) ───────────────────────────────
+// An array is  [ ws (value (ws , ws value)*)? ws ]  — `inp` is the bytes AFTER the opening '['.
+def parse-array(inp: Bytes) -> Parsed =
+  (match skip-ws(inp) with
+   | b[u8(93), bytes(rest)] => Parsed.POk({ value = Json.JArr([]), rest = rest })
+   | _ =>
+       (match parse-array-elems(inp) with
+        | ArrParsed.AErr    => Parsed.PErr
+        | ArrParsed.AOk(a)  => Parsed.POk({ value = Json.JArr(a.elems), rest = a.rest })))
+
+// Parse one element, then either ',' (more) or ']' (done). Builds the list forward via [head, .. tail].
+def parse-array-elems(inp: Bytes) -> ArrParsed =
+  (match parse-value(inp) with
+   | Parsed.PErr    => ArrParsed.AErr
+   | Parsed.POk(r)  =>
+       (match skip-ws(r.rest) with
+        | b[u8(93), bytes(rest)] => ArrParsed.AOk({ elems = [r.value], rest = rest })
+        | b[u8(44), bytes(rest)] =>
+            (match parse-array-elems(rest) with
+             | ArrParsed.AErr   => ArrParsed.AErr
+             | ArrParsed.AOk(a) => ArrParsed.AOk({ elems = [r.value, .. a.elems], rest = a.rest }))
+        | _ => ArrParsed.AErr))
+
+// An object is  { ws (string ws : ws value (ws , ws string ws : ws value)*)? ws }  — `inp` is AFTER '{'.
+def parse-object(inp: Bytes) -> Parsed =
+  (match skip-ws(inp) with
+   | b[u8(125), bytes(rest)] => Parsed.POk({ value = Json.JObj([]), rest = rest })
+   | _ =>
+       (match parse-object-members(inp) with
+        | ObjParsed.OErr   => Parsed.PErr
+        | ObjParsed.OOk(o) => Parsed.POk({ value = Json.JObj(o.members), rest = o.rest })))
+
+// Parse one "key": value member (key MUST be a JSON string), then ',' (more) or '}' (done).
+def parse-object-members(inp: Bytes) -> ObjParsed =
+  (match skip-ws(inp) with
+   | b[u8(34), bytes(after)] =>
+       (match parse-str(after, b"") with
+        | StrParsed.SErr   => ObjParsed.OErr
+        | StrParsed.SOk(k) =>
+            (match skip-ws(k.rest) with
+             | b[u8(58), bytes(afterc)] =>
+                 (match parse-value(afterc) with
+                  | Parsed.PErr   => ObjParsed.OErr
+                  | Parsed.POk(v) =>
+                      (match skip-ws(v.rest) with
+                       | b[u8(125), bytes(rest)] =>
+                           ObjParsed.OOk({ members = [Member.Member({ key = k.str, value = v.value })], rest = rest })
+                       | b[u8(44), bytes(rest)] =>
+                           (match parse-object-members(rest) with
+                            | ObjParsed.OErr   => ObjParsed.OErr
+                            | ObjParsed.OOk(o) =>
+                                ObjParsed.OOk({ members = [Member.Member({ key = k.str, value = v.value }), .. o.members], rest = o.rest }))
+                       | _ => ObjParsed.OErr))
+             | _ => ObjParsed.OErr))
+   | _ => ObjParsed.OErr)
 
 // ── The public decode entry ─────────────────────────────────────────────────────────────────────────────
 // Parse a complete JSON document: one value, optionally surrounded by whitespace, with NO trailing garbage.
@@ -313,6 +380,14 @@ def as-str-bytes(v: Json) -> Option(Bytes) =
 // as-bigint / as-float — arrive in I6; Num's fields are directly readable meanwhile.)
 def num-of(v: Json) -> Option(Num) =
   (match v with | Json.JNum(n) => Option.Some(n) | _ => Option.None)
+
+// The elements of a JArr, or None for any other value shape.
+def as-array(v: Json) -> Option(List(Json)) =
+  (match v with | Json.JArr(xs) => Option.Some(xs) | _ => Option.None)
+
+// The members of a JObj, or None for any other value shape.
+def as-object(v: Json) -> Option(List(Member)) =
+  (match v with | Json.JObj(ms) => Option.Some(ms) | _ => Option.None)
 
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
@@ -597,4 +672,160 @@ def t-num-reject-double-dot() =
 def t-num-reject-trailing-garbage() =
   if rejects(b"42x") then unit else trap("42x has trailing garbage")
 
-export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes, num-of }
+// ── I4: array + object tests (recursive nesting) ────────────────────────────────────────────────────────
+
+def arr-len(inp: Bytes) -> Int64 =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-array(v) with | Option.Some(xs) => List.len(xs) | Option.None => 0 - 1)
+   | Option.None => 0 - 1)
+
+def obj-len(inp: Bytes) -> Int64 =
+  (match parse(inp) with
+   | Option.Some(v) => (match as-object(v) with | Option.Some(ms) => List.len(ms) | Option.None => 0 - 1)
+   | Option.None => 0 - 1)
+
+// The key bytes of the first member of a parsed object, or None.
+def obj-key0(inp: Bytes) -> Option(Bytes) =
+  (match parse(inp) with
+   | Option.Some(v) =>
+       (match as-object(v) with
+        | Option.Some(ms) =>
+            (match List.at(ms, 0) with
+             | Option.Some(m) => (match m with | Member.Member(r) => Option.Some(r.key))
+             | Option.None => Option.None)
+        | Option.None => Option.None)
+   | Option.None => Option.None)
+
+@test
+def t-arr-empty() =
+  if arr-len(b"[]") == 0 then unit else trap("[] is an empty array")
+
+@test
+def t-arr-one() =
+  if arr-len(b"[1]") == 1 then unit else trap("[1] has one element")
+
+@test
+def t-arr-three() =
+  if arr-len(b"[1,2,3]") == 3 then unit else trap("[1,2,3] has three elements")
+
+@test
+def t-arr-mixed() =
+  // [true, null, "x"] — three elements of different kinds
+  (match parse(b"[true, null, \"x\"]") with
+   | Option.Some(v) =>
+       (match as-array(v) with
+        | Option.Some(xs) => if List.len(xs) == 3 then unit else trap("mixed array len 3")
+        | Option.None => trap("is array"))
+   | Option.None => trap("[true, null, \"x\"] parses"))
+
+@test
+def t-arr-ws() =
+  if arr-len(b"[ 1 , 2 ]") == 2 then unit else trap("whitespace between array tokens is insignificant")
+
+@test
+def t-arr-nested() =
+  // [[1],[2,3]] — outer len 2; second inner element is an array of len 2
+  (match parse(b"[[1],[2,3]]") with
+   | Option.Some(v) =>
+       (match as-array(v) with
+        | Option.Some(xs) =>
+            (match List.at(xs, 1) with
+             | Option.Some(inner) =>
+                 (match as-array(inner) with
+                  | Option.Some(ys) => if List.len(ys) == 2 then unit else trap("inner array len 2")
+                  | Option.None => trap("inner is an array"))
+             | Option.None => trap("outer has a 2nd element"))
+        | Option.None => trap("outer is an array"))
+   | Option.None => trap("[[1],[2,3]] parses"))
+
+@test
+def t-obj-empty() =
+  if obj-len(b"{}") == 0 then unit else trap("{} is an empty object")
+
+@test
+def t-obj-one() =
+  if obj-len(b"{\"a\":1}") == 1 then unit else trap("{\"a\":1} has one member")
+
+@test
+def t-obj-two() =
+  if obj-len(b"{\"a\":1,\"b\":2}") == 2 then unit else trap("two members")
+
+@test
+def t-obj-key() =
+  (match obj-key0(b"{\"name\":true}") with
+   | Option.Some(k) => if k == b"name" then unit else trap("first key is 'name'")
+   | Option.None => trap("object has a first key"))
+
+@test
+def t-obj-ws() =
+  if obj-len(b"{ \"a\" : 1 }") == 1 then unit else trap("whitespace around object tokens is insignificant")
+
+@test
+def t-obj-nested() =
+  // {"a":{"b":2}} — one member whose value is an object of one member
+  (match parse(b"{\"a\":{\"b\":2}}") with
+   | Option.Some(v) =>
+       (match as-object(v) with
+        | Option.Some(ms) =>
+            (match List.at(ms, 0) with
+             | Option.Some(m) =>
+                 (match m with
+                  | Member.Member(r) =>
+                      (match as-object(r.value) with
+                       | Option.Some(inner) => if List.len(inner) == 1 then unit else trap("inner object len 1")
+                       | Option.None => trap("member value is an object")))
+             | Option.None => trap("object has a member"))
+        | Option.None => trap("outer is an object"))
+   | Option.None => trap("{\"a\":{\"b\":2}} parses"))
+
+@test
+def t-obj-array-value() =
+  // {"arr":[1,2]} — member value is an array of len 2
+  (match parse(b"{\"arr\":[1,2]}") with
+   | Option.Some(v) =>
+       (match as-object(v) with
+        | Option.Some(ms) =>
+            (match List.at(ms, 0) with
+             | Option.Some(m) =>
+                 (match m with
+                  | Member.Member(r) =>
+                      (match as-array(r.value) with
+                       | Option.Some(xs) => if List.len(xs) == 2 then unit else trap("array value len 2")
+                       | Option.None => trap("member value is an array")))
+             | Option.None => trap("object has a member"))
+        | Option.None => trap("is an object"))
+   | Option.None => trap("{\"arr\":[1,2]} parses"))
+
+@test
+def t-arr-reject-trailing-comma() =
+  if rejects(b"[1,]") then unit else trap("a trailing comma in an array is rejected")
+
+@test
+def t-arr-reject-missing-comma() =
+  if rejects(b"[1 2]") then unit else trap("two array elements need a comma between them")
+
+@test
+def t-arr-reject-unterminated() =
+  if rejects(b"[1,") then unit else trap("an unterminated array is rejected")
+
+@test
+def t-arr-reject-bare-open() =
+  if rejects(b"[") then unit else trap("a lone [ is rejected")
+
+@test
+def t-obj-reject-unquoted-key() =
+  if rejects(b"{a:1}") then unit else trap("an unquoted object key is rejected")
+
+@test
+def t-obj-reject-missing-colon() =
+  if rejects(b"{\"a\" 1}") then unit else trap("a missing colon is rejected")
+
+@test
+def t-obj-reject-trailing-comma() =
+  if rejects(b"{\"a\":1,}") then unit else trap("a trailing comma in an object is rejected")
+
+@test
+def t-obj-reject-bare-open() =
+  if rejects(b"{") then unit else trap("a lone { is rejected")
+
+export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
