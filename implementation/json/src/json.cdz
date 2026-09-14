@@ -475,6 +475,51 @@ def index(v: Json, i: Int64) -> Option(Json) =
   if i < 0 then Option.None
   else (match v with | Json.JArr(xs) => List.at(xs, i) | _ => Option.None)
 
+// ── I6: Int64 number rendering + constructor (pure userspace — no BigInt→bytes needed) ──────────────────
+// Render a NON-NEGATIVE Int64 to its decimal digit bytes, most-significant first (each step peels the least
+// significant digit and prepends the higher digits ahead of the accumulator).
+def int-digits(n: Int64, acc: Bytes) -> Bytes =
+  if n < 10 then b[u8(UInt8.of(48 + n)), bytes(acc)]
+  else int-digits(n / 10, b[u8(UInt8.of(48 + n % 10)), bytes(acc)])
+
+// Render an Int64 to decimal JSON-number bytes (leading '-' when negative). (Int64 minimum is unsupported —
+// its magnitude overflows negation; JSON-RPC codes and ordinary values never reach it.)
+def int64-decimal(n: Int64) -> Bytes =
+  if n < 0 then b[b"-", bytes(int-digits(0 - n, b""))]
+  else int-digits(n, b"")
+
+// A JSON integer value from an Int64 (exact): coeff = |n| as BigInt, exp10 = 0, raw = its decimal rendering.
+def num-from-int64(n: Int64) -> Json =
+  let mag = if n < 0 then 0 - n else n in
+  Json.JNum(Num.Num({ neg = n < 0, coeff = BigInt.of(mag), exp10 = 0, raw = int64-decimal(n) }))
+
+// ── I6: JSON-RPC 2.0 response builders (the dynamic part is just the id; result payloads are the caller's) ─
+// Success response bytes: {"jsonrpc":"2.0","id":<id>,"result":<result>}. `id` is the request id Json node
+// (from get(root, b"id")) — re-emitted VERBATIM (JStr / JNum via Num.raw / JNull), never coerced.
+def rpc-result(id: Json, result: Json) -> Bytes =
+  encode(Json.JObj([
+    Member.Member({ key = b"jsonrpc", value = Json.JStr(b"2.0") }),
+    Member.Member({ key = b"id", value = id }),
+    Member.Member({ key = b"result", value = result })]))
+
+// Error response bytes: {"jsonrpc":"2.0","id":<id>,"error":{"code":<code>,"message":<msg>[,"data":<data>]}}.
+// `data` is optional (Option.None omits the field). `msg` is raw bytes, JSON-escaped on emit.
+def rpc-error(id: Json, code: Int64, msg: Bytes, data: Option(Json)) -> Bytes =
+  let err = (match data with
+             | Option.Some(d) =>
+                 Json.JObj([
+                   Member.Member({ key = b"code", value = num-from-int64(code) }),
+                   Member.Member({ key = b"message", value = Json.JStr(msg) }),
+                   Member.Member({ key = b"data", value = d })])
+             | Option.None =>
+                 Json.JObj([
+                   Member.Member({ key = b"code", value = num-from-int64(code) }),
+                   Member.Member({ key = b"message", value = Json.JStr(msg) })])) in
+  encode(Json.JObj([
+    Member.Member({ key = b"jsonrpc", value = Json.JStr(b"2.0") }),
+    Member.Member({ key = b"id", value = id }),
+    Member.Member({ key = b"error", value = err })]))
+
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
 
@@ -1058,4 +1103,61 @@ def t-index-negative() =
 def t-index-non-array() =
   if index-is-none(b"{\"a\":1}", 0) then unit else trap("index on a non-array is None")
 
-export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object, get, index }
+// ── I6: number rendering + JSON-RPC builder tests ───────────────────────────────────────────────────────
+def int-encodes(n: Int64, expected: Bytes) -> Bool = encode(num-from-int64(n)) == expected
+def id-of(s: Bytes) -> Json = (match parse(s) with | Option.Some(v) => v | Option.None => Json.JNull)
+
+@test
+def t-int-zero() = if int-encodes(0, b"0") then unit else trap("0 renders as 0")
+
+@test
+def t-int-pos() = if int-encodes(42, b"42") then unit else trap("42 renders as 42")
+
+@test
+def t-int-neg() = if int-encodes(0 - 32601, b"-32601") then unit else trap("-32601 renders with a leading minus")
+
+@test
+def t-int-large() = if int-encodes(1000000, b"1000000") then unit else trap("a multi-digit int renders every digit")
+
+@test
+def t-int-roundtrips() =
+  // a constructed integer re-parses to the same compact token (coeff/neg/exp10/raw are consistent)
+  if encode(num-from-int64(0 - 7)) == b"-7"
+     and (match parse(encode(num-from-int64(12345))) with | Option.Some(_) => true | Option.None => false)
+  then unit else trap("a constructed integer round-trips through parse")
+
+@test
+def t-rpc-result-num-id() =
+  if rpc-result(id-of(b"7"), id-of(b"true")) == b"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":true}" then unit
+  else trap("rpc-result with a numeric id")
+
+@test
+def t-rpc-result-string-id-verbatim() =
+  if rpc-result(id-of(b"\"abc\""), id-of(b"[1,2]")) == b"{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"result\":[1,2]}" then unit
+  else trap("rpc-result round-trips a string id verbatim")
+
+@test
+def t-rpc-result-null-id() =
+  if rpc-result(id-of(b"null"), id-of(b"{}")) == b"{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{}}" then unit
+  else trap("rpc-result with a null id")
+
+@test
+def t-rpc-result-preserves-big-id() =
+  // a numeric id larger than f64-exact must survive VERBATIM (lossless — the whole point of Num.raw)
+  if rpc-result(id-of(b"12345678901234567890"), id-of(b"1"))
+     == b"{\"jsonrpc\":\"2.0\",\"id\":12345678901234567890,\"result\":1}" then unit
+  else trap("rpc-result preserves a large integer id verbatim")
+
+@test
+def t-rpc-error-basic() =
+  if rpc-error(id-of(b"7"), 0 - 32601, b"Method not found", Option.None)
+     == b"{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}" then unit
+  else trap("rpc-error without data")
+
+@test
+def t-rpc-error-with-data() =
+  if rpc-error(id-of(b"null"), 0 - 32700, b"Parse error", Option.Some(id-of(b"[1]")))
+     == b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\",\"data\":[1]}}" then unit
+  else trap("rpc-error with an optional data field")
+
+export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object, get, index, int64-decimal, num-from-int64, rpc-result, rpc-error }
