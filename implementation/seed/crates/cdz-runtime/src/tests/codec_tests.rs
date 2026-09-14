@@ -3375,3 +3375,48 @@ fn shared_map_copy_path_cpu_scaling_probe() {
         op_drop(base);
     }
 }
+
+/// Regression (cross-lane, routed 2026-09-14 from v-hivemind via concierge, blocked 769 D5): a
+/// DAEMON-encoded NULLARY multi-ctor value (`SendStatus.Delivered`, the canonical `(Delivered unit)`
+/// ctor-wrapping-unit form emitted by the host `cadenza_value` builder `qctor_nullary` AND the guest's
+/// `Value.encode`) must DECODE against the compiler-generated `SendStatus` descriptor — the first
+/// daemon-encoded-nullary → guest-decoded case. The compiler's `shape_of` maps a nullary variant's payload
+/// to `Shape::Unit` (rcdzc value_form.rs: `payload_tys.len() == 0 => ShapeNode::Unit`), and the runtime Sum
+/// arm decodes `(Delivered unit)` as disc 0 with a `unit`-atom payload. Pins that this round-trips so a
+/// future value-form change can't silently break daemon→guest nullary delivery again.
+#[test]
+fn value_decode_daemon_encoded_nullary_multictor_variant() {
+    reset();
+    // SendStatus = | Delivered | Undeliverable(Record(reason: Bytes))
+    // desc: [0]=Unit, [1]=Bytes, [2]=Record{reason→1}, [3]=Sum{Delivered→0, Undeliverable→2}, root=3.
+    // (This is exactly what rcdzc `shape_of` generates: nullary Delivered → Unit; Undeliverable → Record.)
+    let desc: &[u8] = &[
+        0x04, // table_len
+        0x05, // [0] Unit
+        0x04, // [1] Bytes
+        0x08, 0x01, 0x06, b'r', b'e', b'a', b's', b'o', b'n', 0x01, // [2] Record{reason→1}
+        0x09, 0x02, 0x09, b'D', b'e', b'l', b'i', b'v', b'e', b'r', b'e', b'd', 0x00, 0x0d, b'U',
+        b'n', b'd', b'e', b'l', b'i', b'v', b'e', b'r', b'a', b'b', b'l', b'e',
+        0x02, // [3] Sum
+        0x03, // root = 3
+    ];
+    // The EXACT daemon-encoded bytes for qctor_nullary(SendStatus, Delivered) = (Delivered unit).
+    let bytes: &[u8] = &[
+        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\0\1
+        0x02, // leaf_count = 2
+        0x0a, 0x09, b'D', b'e', b'l', b'i', b'v', b'e', b'r', b'e',
+        b'd', // leaf0 NAME "Delivered"
+        0x0a, 0x04, b'u', b'n', b'i', b't', // leaf1 NAME "unit"
+        0x03, // struct_count = 3
+        0x00, 0x00, // struct0 ATOM leaf0
+        0x00, 0x01, // struct1 ATOM leaf1
+        0x01, 0x02, 0x00, 0x01, // struct2 LIST len2 [struct0, struct1]
+        0x02, // root = struct2
+    ];
+    let h = op_value_decode(bytes, desc);
+    assert_ne!(
+        h,
+        Handle::NULL,
+        "SendStatus.Delivered nullary must decode, not NULL"
+    );
+}
