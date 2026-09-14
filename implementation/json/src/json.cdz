@@ -454,6 +454,27 @@ def as-array(v: Json) -> Option(List(Json)) =
 def as-object(v: Json) -> Option(List(Member)) =
   (match v with | Json.JObj(ms) => Option.Some(ms) | _ => Option.None)
 
+// ── I6: navigation accessors ────────────────────────────────────────────────────────────────────────────
+// The value of the FIRST member whose key equals `key`, or None if absent. (JSON allows duplicate keys;
+// first-wins is the common convention and matches a left-to-right object read.)
+def get-member(ms: List(Member), key: Bytes) -> Option(Json) =
+  (match ms with
+   | [] => Option.None
+   | [m, .. t] =>
+       (match m with
+        | Member.Member(r) => if r.key == key then Option.Some(r.value) else get-member(t, key)))
+
+// The value of object field `key`, or None if `v` is not an object / the key is absent. `key` is the
+// DECODED key bytes (as `parse` stores them), so a caller looks up `get(v, b"id")` directly.
+def get(v: Json, key: Bytes) -> Option(Json) =
+  (match v with | Json.JObj(ms) => get-member(ms, key) | _ => Option.None)
+
+// The i-th element (0-based) of an array, or None if `v` is not an array / `i` is out of range. A negative
+// `i` is None (never a trap) — accessors are total.
+def index(v: Json, i: Int64) -> Option(Json) =
+  if i < 0 then Option.None
+  else (match v with | Json.JArr(xs) => List.at(xs, i) | _ => Option.None)
+
 // ── Tests (executed by `cdz test implementation/json`, gated as check cad-test-json) ────────────────────
 // A @test def returns unit on success and traps on failure (the ast.cdz idiom).
 
@@ -964,4 +985,77 @@ def t-enc-nested() =
   if encodes-to(b"{\"x\":[1,{\"y\":true}],\"z\":null}", b"{\"x\":[1,{\"y\":true}],\"z\":null}") then unit
   else trap("a nested object/array structure round-trips compactly")
 
-export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
+// ── I6: navigation accessor tests ───────────────────────────────────────────────────────────────────────
+// get(v, key): encode the looked-up value and compare to the expected JSON bytes.
+def get-encodes(inp: Bytes, key: Bytes, expected: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match get(v, key) with
+                        | Option.Some(gv) => encode(gv) == expected
+                        | Option.None     => false)
+   | Option.None => false)
+
+// get(v, key) yields None (absent key / non-object).
+def get-is-none(inp: Bytes, key: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match get(v, key) with | Option.None => true | _ => false)
+   | Option.None => false)
+
+// index(v, i): encode the element and compare.
+def index-encodes(inp: Bytes, i: Int64, expected: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match index(v, i) with
+                        | Option.Some(e) => encode(e) == expected
+                        | Option.None    => false)
+   | Option.None => false)
+
+// index(v, i) yields None (out of range / non-array).
+def index-is-none(inp: Bytes, i: Int64) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => (match index(v, i) with | Option.None => true | _ => false)
+   | Option.None => false)
+
+@test
+def t-get-hit() =
+  if get-encodes(b"{\"a\":1,\"b\":[2,3]}", b"b", b"[2,3]") then unit
+  else trap("get returns the value of an object field")
+
+@test
+def t-get-first-of-duplicate() =
+  if get-encodes(b"{\"k\":1,\"k\":2}", b"k", b"1") then unit
+  else trap("get returns the FIRST member for a duplicate key")
+
+@test
+def t-get-string-key() =
+  if get-encodes(b"{\"name\":\"jo\"}", b"name", b"\"jo\"") then unit
+  else trap("get looks up by decoded key bytes and returns the string value")
+
+@test
+def t-get-absent() =
+  if get-is-none(b"{\"a\":1}", b"b") then unit else trap("get on an absent key is None")
+
+@test
+def t-get-non-object() =
+  if get-is-none(b"[1,2,3]", b"a") then unit else trap("get on a non-object is None")
+
+@test
+def t-index-hit() =
+  if index-encodes(b"[10,20,30]", 1, b"20") then unit else trap("index returns the i-th array element")
+
+@test
+def t-index-first() =
+  if index-encodes(b"[{\"a\":1},true]", 0, b"{\"a\":1}") then unit
+  else trap("index 0 returns the first element")
+
+@test
+def t-index-oob() =
+  if index-is-none(b"[1,2]", 5) then unit else trap("index out of range is None")
+
+@test
+def t-index-negative() =
+  if index-is-none(b"[1,2]", 0 - 1) then unit else trap("index with a negative position is None")
+
+@test
+def t-index-non-array() =
+  if index-is-none(b"{\"a\":1}", 0) then unit else trap("index on a non-array is None")
+
+export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object, get, index }
