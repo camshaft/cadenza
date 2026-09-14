@@ -8,7 +8,7 @@
 //   * PARSER uses BINARY PATTERN MATCHING (`b[...]`) — "exactly what we built it for - parsers." The parser
 //     matches byte patterns / literal bytes / structural tokens directly and threads the REMAINING bytes as
 //     a `bytes(rest)` tail binding, rather than a manual Int64 cursor + Bytes.at. It reads cleanly: e.g.
-//     `| b[u8(110), u8(117), u8(108), u8(108), bytes(rest)] => ...` matches the literal bytes of `null`.
+//     `| b[b"null", bytes(rest)] => ...` matches the literal bytes of `null` and binds the remainder as rest.
 //   * NUMBERS are LOSSLESS via BigInt (NOT f64, NOT verbatim-only). A JSON number is an exact decimal
 //     value = (if neg then -1 else 1) * coeff * 10^exp10, where `coeff` is a BigInt (arbitrary precision —
 //     every significant digit, exact) and `exp10` an Int64 power of ten. `raw` retains the canonical byte
@@ -83,29 +83,26 @@ type ObjParsed =
 // and return the remaining bytes. A clean recursive binary match: peel one whitespace byte, recurse on rest.
 def skip-ws(inp: Bytes) -> Bytes =
   (match inp with
-   | b[u8(32), bytes(rest)] => skip-ws(rest)
-   | b[u8(9), bytes(rest)]  => skip-ws(rest)
-   | b[u8(10), bytes(rest)] => skip-ws(rest)
-   | b[u8(13), bytes(rest)] => skip-ws(rest)
+   | b[b" ",  bytes(rest)] => skip-ws(rest)
+   | b[b"\t", bytes(rest)] => skip-ws(rest)
+   | b[b"\n", bytes(rest)] => skip-ws(rest)
+   | b[b"\r", bytes(rest)] => skip-ws(rest)
    | _ => inp)
 
 // ── Strings ─────────────────────────────────────────────────────────────────────────────────────────────
-// Append one decoded byte to the accumulator, the IDEAL way (operator 781: write the ideal code, file the
-// gap, do NOT work around). NOTE: this currently hits a seed codegen bug — CDZ0910 "expected i32, found i64"
-// (a `bin`-bound UInt8 used as a Bytes.of list element is mis-widthed). Filed to v-binary-matching, fix in
-// flight; this ideal form passes once it lands. Until then the wasm gate (cad-test-json) is RED here BY DESIGN.
+// Append one decoded byte to the accumulator via `bin` construction: splice the accumulator, then the byte.
 def push-byte(acc: Bytes, c: UInt8) -> Bytes =
-  Bytes.concat(acc, Bytes.of([c]))
+  b[bytes(acc), u8(c)]
 
 // Decode a string BODY (input is the bytes AFTER the opening quote), accumulating escape-resolved bytes into
 // `acc`. A closing quote (34) ends it; a backslash (92) begins an escape; a raw control byte (< 32) is
 // invalid per JSON (they must be escaped); any other byte — including a UTF-8 continuation byte — is copied
-// verbatim. Running out of input before the closing quote is an unterminated-string error.
-//   (\uXXXX unicode escapes arrive in I2b; until then a `\u` is an invalid escape and rejects.)
+// verbatim. Running out of input before the closing quote is an unterminated-string error. (\uXXXX unicode
+// escapes — including UTF-16 surrogate pairs — are handled by parse-escape -> parse-unicode below.)
 def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
-   | b[u8(34), bytes(rest)]  => StrParsed.SOk({ str = acc, rest = rest })
-   | b[u8(92), bytes(after)] => parse-escape(after, acc)
+   | b[b"\"", bytes(rest)]  => StrParsed.SOk({ str = acc, rest = rest })
+   | b[b"\\", bytes(after)] => parse-escape(after, acc)
    | b[u8(c), bytes(rest)]   =>
        if c < 32 then StrParsed.SErr
        else parse-str(rest, push-byte(acc, c))
@@ -116,15 +113,15 @@ def parse-str(inp: Bytes, acc: Bytes) -> StrParsed =
 // Any other escape byte (or end of input) is an invalid escape.
 def parse-escape(inp: Bytes, acc: Bytes) -> StrParsed =
   (match inp with
-   | b[u8(34), bytes(rest)]  => parse-str(rest, push-byte(acc, 34))
-   | b[u8(92), bytes(rest)]  => parse-str(rest, push-byte(acc, 92))
-   | b[u8(47), bytes(rest)]  => parse-str(rest, push-byte(acc, 47))
-   | b[u8(98), bytes(rest)]  => parse-str(rest, push-byte(acc, 8))
-   | b[u8(102), bytes(rest)] => parse-str(rest, push-byte(acc, 12))
-   | b[u8(110), bytes(rest)] => parse-str(rest, push-byte(acc, 10))
-   | b[u8(114), bytes(rest)] => parse-str(rest, push-byte(acc, 13))
-   | b[u8(116), bytes(rest)] => parse-str(rest, push-byte(acc, 9))
-   | b[u8(117), u8(h1), u8(h2), u8(h3), u8(h4), bytes(rest)] =>
+   | b[b"\"", bytes(rest)] => parse-str(rest, push-byte(acc, 34))
+   | b[b"\\", bytes(rest)] => parse-str(rest, push-byte(acc, 92))
+   | b[b"/",  bytes(rest)] => parse-str(rest, push-byte(acc, 47))
+   | b[b"b",  bytes(rest)] => parse-str(rest, push-byte(acc, 8))
+   | b[b"f",  bytes(rest)] => parse-str(rest, push-byte(acc, 12))
+   | b[b"n",  bytes(rest)] => parse-str(rest, push-byte(acc, 10))
+   | b[b"r",  bytes(rest)] => parse-str(rest, push-byte(acc, 13))
+   | b[b"t",  bytes(rest)] => parse-str(rest, push-byte(acc, 9))
+   | b[b"u", u8(h1), u8(h2), u8(h3), u8(h4), bytes(rest)] =>
        (match hex4(h1, h2, h3, h4) with
         | Option.None      => StrParsed.SErr
         | Option.Some(cu)  => parse-unicode(cu, rest, acc))
@@ -156,13 +153,13 @@ def hex4(b1: UInt8, b2: UInt8, b3: UInt8, b4: UInt8) -> Option(Int64) =
 // UTF-8 encode a Unicode scalar value `cp` (0..0x10FFFF, non-surrogate) into its 1–4 bytes. Byte fields are
 // masked (`/`,`%` by powers of 64) so each provably fits a UInt8; UInt8.of is the checked (ideal) narrowing.
 def utf8(cp: Int64) -> Bytes =
-  if cp < 128 then Bytes.of([UInt8.of(cp)])
+  if cp < 128 then b[u8(UInt8.of(cp))]
   else if cp < 2048 then
-    Bytes.of([UInt8.of(192 + cp / 64), UInt8.of(128 + cp % 64)])
+    b[u8(UInt8.of(192 + cp / 64)), u8(UInt8.of(128 + cp % 64))]
   else if cp < 65536 then
-    Bytes.of([UInt8.of(224 + cp / 4096), UInt8.of(128 + (cp / 64) % 64), UInt8.of(128 + cp % 64)])
+    b[u8(UInt8.of(224 + cp / 4096)), u8(UInt8.of(128 + (cp / 64) % 64)), u8(UInt8.of(128 + cp % 64))]
   else
-    Bytes.of([UInt8.of(240 + cp / 262144), UInt8.of(128 + (cp / 4096) % 64), UInt8.of(128 + (cp / 64) % 64), UInt8.of(128 + cp % 64)])
+    b[u8(UInt8.of(240 + cp / 262144)), u8(UInt8.of(128 + (cp / 4096) % 64)), u8(UInt8.of(128 + (cp / 64) % 64)), u8(UInt8.of(128 + cp % 64))]
 
 // Resolve a decoded \uXXXX code unit `cu` to a scalar, handling UTF-16 surrogate pairs, then emit its UTF-8
 // bytes and continue the string body. A HIGH surrogate (0xD800..0xDBFF) MUST be followed by a `\u` LOW
@@ -171,17 +168,17 @@ def utf8(cp: Int64) -> Bytes =
 def parse-unicode(cu: Int64, rest: Bytes, acc: Bytes) -> StrParsed =
   if cu >= 55296 and cu <= 56319 then
     (match rest with
-     | b[u8(92), u8(117), u8(l1), u8(l2), u8(l3), u8(l4), bytes(rest2)] =>
+     | b[b"\\u", u8(l1), u8(l2), u8(l3), u8(l4), bytes(rest2)] =>
          (match hex4(l1, l2, l3, l4) with
           | Option.None => StrParsed.SErr
           | Option.Some(lo) =>
               if lo >= 56320 and lo <= 57343 then
                 let cp = 65536 + (cu - 55296) * 1024 + (lo - 56320) in
-                parse-str(rest2, Bytes.concat(acc, utf8(cp)))
+                parse-str(rest2, b[bytes(acc), bytes(utf8(cp))])
               else StrParsed.SErr)
      | _ => StrParsed.SErr)
   else if cu >= 56320 and cu <= 57343 then StrParsed.SErr
-  else parse-str(rest, Bytes.concat(acc, utf8(cu)))
+  else parse-str(rest, b[bytes(acc), bytes(utf8(cu))])
 
 // ── I3: numbers (lossless, BigInt-backed) ───────────────────────────────────────────────────────────────
 // A JSON number is  -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?  and is stored LOSSLESSLY as
@@ -203,14 +200,14 @@ def parse-digits(inp: Bytes, coeff: BigInt, count: Int64) -> Digits =
 // slicing the verbatim `raw`. Threads through int -> frac -> exp, validating the JSON grammar at each stage.
 def parse-number(inp: Bytes) -> NumParsed =
   (match inp with
-   | b[u8(45), bytes(rest)] => parse-int(true, rest, inp)
+   | b[b"-", bytes(rest)] => parse-int(true, rest, inp)
    | _ => parse-int(false, inp, inp))
 
 // Integer part, enforcing the no-leading-zero rule: a lone '0' is fine (and may be followed by '.'/'e'/end),
 // but '0' immediately followed by another digit is invalid; '1'-'9' consumes the whole digit run.
 def parse-int(neg: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[u8(48), bytes(rest)] =>
+   | b[b"0", bytes(rest)] =>
        (match rest with
         | b[u8(d2), bytes(_)] =>
             if d2 >= 48 and d2 <= 57 then NumParsed.NErr
@@ -227,7 +224,7 @@ def parse-int(neg: Bool, inp: Bytes, orig: Bytes) -> NumParsed =
 // decrements `exp10` by one.
 def parse-frac(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[u8(46), bytes(rest)] =>
+   | b[b".", bytes(rest)] =>
        (match parse-digits(rest, coeff, 0) with
         | Digits(di) =>
             if di.count == 0 then NumParsed.NErr
@@ -237,15 +234,15 @@ def parse-frac(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) 
 // Optional exponent introducer 'e'/'E'.
 def parse-exp(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[u8(101), bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
-   | b[u8(69), bytes(rest)]  => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | b[b"e", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
+   | b[b"E", bytes(rest)] => parse-exp-sign(neg, coeff, exp10, rest, orig)
    | _ => finish-number(neg, coeff, exp10, inp, orig))
 
 // Optional exponent sign.
 def parse-exp-sign(neg: Bool, coeff: BigInt, exp10: Int64, inp: Bytes, orig: Bytes) -> NumParsed =
   (match inp with
-   | b[u8(43), bytes(rest)] => parse-exp-digits(neg, coeff, exp10, true, rest, orig)
-   | b[u8(45), bytes(rest)] => parse-exp-digits(neg, coeff, exp10, false, rest, orig)
+   | b[b"+", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, true, rest, orig)
+   | b[b"-", bytes(rest)] => parse-exp-digits(neg, coeff, exp10, false, rest, orig)
    | _ => parse-exp-digits(neg, coeff, exp10, true, inp, orig))
 
 // Exponent digits (at least one required); folds the explicit exponent into `exp10`.
@@ -264,28 +261,27 @@ def finish-number(neg: Bool, coeff: BigInt, exp10: Int64, rest: Bytes, orig: Byt
    | Option.None      => NumParsed.NErr)
 
 // ── The value dispatch ──────────────────────────────────────────────────────────────────────────────────
-// Parse a single JSON value from the front of `inp` (after leading whitespace). I1 recognizes the three
-// keyword literals by matching their exact bytes; strings/numbers/arrays/objects are added in I2-I4 (until
-// then a non-literal front is a PErr). No trailing-delimiter check here — the top-level `parse` requires
-// end-of-input, and a value inside a container (I4) is followed by a required ',' / ']' / '}', so a bareword
-// like `truer` is rejected there (its `rest` is non-empty / non-delimiter).
-//   null  = 110 117 108 108        true  = 116 114 117 101        false = 102 97 108 115 101
+// Parse a single JSON value from the front of `inp` (after leading whitespace): the three keyword literals
+// (`b"null"`/`b"true"`/`b"false"`), a string (`"`), an array (`[`), an object (`{`), or a number (`-` or a
+// digit). No trailing-delimiter check here — the top-level `parse` requires end-of-input, and a value inside
+// a container is followed by a required ',' / ']' / '}', so a bareword like `truer` is rejected there (its
+// `rest` is non-empty / non-delimiter).
 def parse-value(inp: Bytes) -> Parsed =
   let s = skip-ws(inp) in
   (match s with
-   | b[u8(110), u8(117), u8(108), u8(108), bytes(rest)] =>
+   | b[b"null", bytes(rest)] =>
        Parsed.POk({ value = Json.JNull, rest = rest })
-   | b[u8(116), u8(114), u8(117), u8(101), bytes(rest)] =>
+   | b[b"true", bytes(rest)] =>
        Parsed.POk({ value = Json.JBool(true), rest = rest })
-   | b[u8(102), u8(97), u8(108), u8(115), u8(101), bytes(rest)] =>
+   | b[b"false", bytes(rest)] =>
        Parsed.POk({ value = Json.JBool(false), rest = rest })
-   | b[u8(34), bytes(after)] =>
+   | b[b"\"", bytes(after)] =>
        (match parse-str(after, b"") with
         | StrParsed.SOk(sp) => Parsed.POk({ value = Json.JStr(sp.str), rest = sp.rest })
         | StrParsed.SErr    => Parsed.PErr)
-   | b[u8(91), bytes(after)]  => parse-array(after)
-   | b[u8(123), bytes(after)] => parse-object(after)
-   | b[u8(45), bytes(_)] => number-value(s)
+   | b[b"[", bytes(after)] => parse-array(after)
+   | b[b"{", bytes(after)] => parse-object(after)
+   | b[b"-", bytes(_)] => number-value(s)
    | b[u8(dd), bytes(_)] =>
        if dd >= 48 and dd <= 57 then number-value(s) else Parsed.PErr
    | _ => Parsed.PErr)
@@ -300,7 +296,7 @@ def number-value(s: Bytes) -> Parsed =
 // An array is  [ ws (value (ws , ws value)*)? ws ]  — `inp` is the bytes AFTER the opening '['.
 def parse-array(inp: Bytes) -> Parsed =
   (match skip-ws(inp) with
-   | b[u8(93), bytes(rest)] => Parsed.POk({ value = Json.JArr([]), rest = rest })
+   | b[b"]", bytes(rest)] => Parsed.POk({ value = Json.JArr([]), rest = rest })
    | _ =>
        (match parse-array-elems(inp) with
         | ArrParsed.AErr    => Parsed.PErr
@@ -312,8 +308,8 @@ def parse-array-elems(inp: Bytes) -> ArrParsed =
    | Parsed.PErr    => ArrParsed.AErr
    | Parsed.POk(r)  =>
        (match skip-ws(r.rest) with
-        | b[u8(93), bytes(rest)] => ArrParsed.AOk({ elems = [r.value], rest = rest })
-        | b[u8(44), bytes(rest)] =>
+        | b[b"]", bytes(rest)] => ArrParsed.AOk({ elems = [r.value], rest = rest })
+        | b[b",", bytes(rest)] =>
             (match parse-array-elems(rest) with
              | ArrParsed.AErr   => ArrParsed.AErr
              | ArrParsed.AOk(a) => ArrParsed.AOk({ elems = [r.value, .. a.elems], rest = a.rest }))
@@ -322,7 +318,7 @@ def parse-array-elems(inp: Bytes) -> ArrParsed =
 // An object is  { ws (string ws : ws value (ws , ws string ws : ws value)*)? ws }  — `inp` is AFTER '{'.
 def parse-object(inp: Bytes) -> Parsed =
   (match skip-ws(inp) with
-   | b[u8(125), bytes(rest)] => Parsed.POk({ value = Json.JObj([]), rest = rest })
+   | b[b"}", bytes(rest)] => Parsed.POk({ value = Json.JObj([]), rest = rest })
    | _ =>
        (match parse-object-members(inp) with
         | ObjParsed.OErr   => Parsed.PErr
@@ -331,19 +327,19 @@ def parse-object(inp: Bytes) -> Parsed =
 // Parse one "key": value member (key MUST be a JSON string), then ',' (more) or '}' (done).
 def parse-object-members(inp: Bytes) -> ObjParsed =
   (match skip-ws(inp) with
-   | b[u8(34), bytes(after)] =>
+   | b[b"\"", bytes(after)] =>
        (match parse-str(after, b"") with
         | StrParsed.SErr   => ObjParsed.OErr
         | StrParsed.SOk(k) =>
             (match skip-ws(k.rest) with
-             | b[u8(58), bytes(afterc)] =>
+             | b[b":", bytes(afterc)] =>
                  (match parse-value(afterc) with
                   | Parsed.PErr   => ObjParsed.OErr
                   | Parsed.POk(v) =>
                       (match skip-ws(v.rest) with
-                       | b[u8(125), bytes(rest)] =>
+                       | b[b"}", bytes(rest)] =>
                            ObjParsed.OOk({ members = [Member.Member({ key = k.str, value = v.value })], rest = rest })
-                       | b[u8(44), bytes(rest)] =>
+                       | b[b",", bytes(rest)] =>
                            (match parse-object-members(rest) with
                             | ObjParsed.OErr   => ObjParsed.OErr
                             | ObjParsed.OOk(o) =>
@@ -363,6 +359,75 @@ def parse(inp: Bytes) -> Option(Json) =
         | b[] => Option.Some(r.value)
         | _   => Option.None)
    | Parsed.PErr => Option.None)
+
+// ── I5: encoder (Json -> Bytes) ─────────────────────────────────────────────────────────────────────────
+// Serialize a JSON value to compact (no insignificant whitespace) UTF-8 JSON bytes. Round-trips: re-parsing
+// encode(v) yields a value equal to v, and for already-compact canonical input, encode(parse(inp)) == inp.
+
+// One ASCII lowercase-hex digit byte for n in 0..15.
+def hex-digit(n: Int64) -> UInt8 =
+  if n < 10 then UInt8.of(48 + n) else UInt8.of(87 + n)
+
+// The \u00XX escape for a C0 control byte (0..31) with no shorter named escape.
+def u-escape(c: UInt8) -> Bytes =
+  let n = Int64.of(c) in
+  b[b"\\u00", u8(hex-digit(n / 16)), u8(hex-digit(n % 16))]
+
+// Escape a decoded string's bytes into JSON string-body bytes: the reverse of parse-str's decoding. `"` and
+// `\` are backslash-escaped; the C0 controls with named escapes use them; other C0 controls use \u00XX; all
+// other bytes (incl multibyte UTF-8) pass through verbatim. ('/' is not escaped — escaping it is optional.)
+// Each scrutinee arm reads as the character it escapes (runtime-scrutinee b"..." match, GAP-1b); only
+// backspace (0x08) and form-feed (0x0C) keep u8(N), since a b"..." literal has no escape for those bytes.
+// The CONSTRUCTED accumulator likewise reads as the JSON it emits — a bytes() splice of the accumulator
+// followed by the literal escape it appends.
+def escape-str(inp: Bytes, acc: Bytes) -> Bytes =
+  (match inp with
+   | b[b"\"", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\""])
+   | b[b"\\", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\\\"])
+   | b[u8(8), bytes(rest)]  => escape-str(rest, b[bytes(acc), b"\\b"])
+   | b[u8(12), bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\f"])
+   | b[b"\n", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\n"])
+   | b[b"\r", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\r"])
+   | b[b"\t", bytes(rest)] => escape-str(rest, b[bytes(acc), b"\\t"])
+   | b[u8(c), bytes(rest)]  =>
+       if c < 32 then escape-str(rest, b[bytes(acc), bytes(u-escape(c))])
+       else escape-str(rest, b[bytes(acc), u8(c)])
+   | _ => acc)
+
+// A quoted, escaped JSON string from decoded bytes.
+def encode-string(s: Bytes) -> Bytes =
+  b[b"\"", bytes(escape-str(s, b"")), b"\""]
+
+// Encode a JSON value. A JNum re-emits its verbatim `raw` bytes (exact, lossless; a from-coeff decimal
+// renderer arrives with the number constructors in I6).
+def encode(v: Json) -> Bytes =
+  (match v with
+   | Json.JNull    => b"null"
+   | Json.JBool(bl) => if bl then b"true" else b"false"
+   | Json.JNum(n)  => (match n with | Num.Num(r) => r.raw)
+   | Json.JStr(s)  => encode-string(s)
+   | Json.JArr(xs) => b[b"[", bytes(encode-elems(xs)), b"]"]
+   | Json.JObj(ms) => b[b"{", bytes(encode-members(ms)), b"}"])
+
+// Comma-join encoded array elements.
+def encode-elems(xs: List(Json)) -> Bytes =
+  (match xs with
+   | [] => b""
+   | [h, .. t] =>
+       (match t with
+        | [] => encode(h)
+        | _  => b[bytes(encode(h)), b",", bytes(encode-elems(t))]))
+
+// Comma-join encoded "key":value object members.
+def encode-members(ms: List(Member)) -> Bytes =
+  (match ms with
+   | [] => b""
+   | [m, .. t] =>
+       let piece = (match m with
+                    | Member.Member(r) => b[bytes(encode-string(r.key)), b":", bytes(encode(r.value))]) in
+       (match t with
+        | [] => piece
+        | _  => b[bytes(piece), b",", bytes(encode-members(t))]))
 
 // ── Early accessors (the accessor surface grows in I6) ──────────────────────────────────────────────────
 def is-null(v: Json) -> Bool =
@@ -828,4 +893,75 @@ def t-obj-reject-trailing-comma() =
 def t-obj-reject-bare-open() =
   if rejects(b"{") then unit else trap("a lone { is rejected")
 
-export { Json.*, Num.*, Member.*, parse, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
+// ── I5: encoder round-trip tests ────────────────────────────────────────────────────────────────────────
+// parse then encode; the encoder emits COMPACT JSON (no insignificant whitespace) and re-escapes strings,
+// so for a compact input the result is byte-identical, and for a spaced input it normalizes to compact.
+// (These assertions are syntax-independent of how the encoder builds its bytes, so they equally guard the
+// forthcoming readable `bin`-literal retrofit once GAP-1/GAP-2 land — behavior is pinned, only syntax changes.)
+
+def encodes-to(inp: Bytes, expected: Bytes) -> Bool =
+  (match parse(inp) with
+   | Option.Some(v) => encode(v) == expected
+   | Option.None    => false)
+
+@test
+def t-enc-null() =
+  if encodes-to(b"null", b"null") then unit else trap("null re-emits as null")
+
+@test
+def t-enc-bools() =
+  if encodes-to(b"true", b"true") and encodes-to(b"false", b"false") then unit
+  else trap("true/false re-emit verbatim")
+
+@test
+def t-enc-num-raw() =
+  if encodes-to(b"42", b"42") and encodes-to(b"-3.14e10", b"-3.14e10") then unit
+  else trap("a number re-emits its verbatim raw token (lossless)")
+
+@test
+def t-enc-num-strips-ws() =
+  if encodes-to(b"  42  ", b"42") then unit else trap("surrounding whitespace is not part of the value")
+
+@test
+def t-enc-str-plain() =
+  if encodes-to(b"\"hi\"", b"\"hi\"") then unit else trap("a plain string round-trips")
+
+@test
+def t-enc-str-escaped-quote() =
+  if encodes-to(b"\"a\\\"b\"", b"\"a\\\"b\"") then unit else trap("an escaped quote round-trips")
+
+@test
+def t-enc-str-escaped-newline() =
+  if encodes-to(b"\"a\\nb\"", b"\"a\\nb\"") then unit else trap("a \\n escape round-trips")
+
+@test
+def t-enc-array-compact() =
+  if encodes-to(b"[1,2,3]", b"[1,2,3]") then unit else trap("a compact array round-trips")
+
+@test
+def t-enc-array-strips-ws() =
+  if encodes-to(b"[ 1, 2 ]", b"[1,2]") then unit else trap("array whitespace normalizes to compact")
+
+@test
+def t-enc-array-empty() =
+  if encodes-to(b"[]", b"[]") then unit else trap("an empty array round-trips")
+
+@test
+def t-enc-object-compact() =
+  if encodes-to(b"{\"a\":1,\"b\":2}", b"{\"a\":1,\"b\":2}") then unit
+  else trap("a compact object round-trips")
+
+@test
+def t-enc-object-strips-ws() =
+  if encodes-to(b"{ \"a\" : 1 }", b"{\"a\":1}") then unit else trap("object whitespace normalizes to compact")
+
+@test
+def t-enc-object-empty() =
+  if encodes-to(b"{}", b"{}") then unit else trap("an empty object round-trips")
+
+@test
+def t-enc-nested() =
+  if encodes-to(b"{\"x\":[1,{\"y\":true}],\"z\":null}", b"{\"x\":[1,{\"y\":true}],\"z\":null}") then unit
+  else trap("a nested object/array structure round-trips compactly")
+
+export { Json.*, Num.*, Member.*, parse, encode, is-null, as-bool, as-str-bytes, num-of, as-array, as-object }
