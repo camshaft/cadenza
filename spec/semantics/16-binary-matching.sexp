@@ -1179,7 +1179,10 @@
            accumulator intermediates are not reclaimed. Value (byte count 4) is EXACT — the GAP-2
            construction splice compiles and runs correctly; the leak is a distinct reclaim residual routed to
            v-memory-safety (the heap-accumulator recursive-drain class, beyond their scalar-return fix).
-           Flip to `live-objects 0` when that class is closed.")
+           NOW CLOSED: the AXIS-B heap-return relaxation reclaims a borrow-only BYTES scrutinee even for a
+           heap return, gated on `bytes_param_view_escapes` (the param is never a raw `Bytes.slice`/
+           `Bytes.compact`/`String.from-bytes` source — its only result-reaching derivatives are the DUP'd
+           `(bytes rest)` slice + scalar reads, no shell alias). live-objects 4 → 0.")
   (input
     (do
       (def (push (: acc Bytes) (: c UInt8)) (bin (bytes acc) (u8 c)))
@@ -1191,7 +1194,7 @@
       (export main)))
   (call main (: 65 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ============================================================================================
 ; GAP-1: a bare `b"…"` byte-string LITERAL segment — the multi-byte generalization of the
