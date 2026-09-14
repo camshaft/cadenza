@@ -2274,6 +2274,10 @@ pub(super) fn collect_dup_sites(
         // Read by the `Core::Proj` arm via `binder_must_escapes`.
         let must_escapes = binder_must_escape(db, body, binder, false);
         let _me_guard = MustEscapesGuard::install(must_escapes);
+        // FRESH per-binder dup-marker memo (the guards above change per binder, so a cached bool is valid
+        // only within THIS binder's walk); RAII-restored on scope-exit / unwind. Bounds the marker's
+        // re-descent of a multiply-reached subtree to O(1) per (node, ctx). See [`DUP_MARK_MEMO`].
+        let _dup_memo_guard = DupMarkMemoGuard::install();
         // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
         // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
         mark_binder_dups(db, body, binder, true, false, sites);
@@ -2408,6 +2412,43 @@ impl MustEscapesGuard {
 impl Drop for MustEscapesGuard {
     fn drop(&mut self) {
         BINDER_MUST_ESCAPES.with(|c| c.set(self.prev));
+    }
+}
+
+thread_local! {
+    // Per-binder memo for [`mark_binder_dups_inner`]: `(node, consuming, live_after, in_proj_operand) →
+    // occurrence-bool`. Bounds the dup-site marker's re-descent of a subtree reached via MULTIPLE paths (a
+    // sum-match continuation shared across arms via `mark_cont_dups`; a node reached through both an `If`'s
+    // arms) to O(1) on a repeat visit — with the occurrence walks already O(1) off the oracle, this raw
+    // marker re-descent is the residual exponential of the self-recursive `bin`-matching `cdz test` emit hang
+    // (json-codec I3). EXACTNESS-PRESERVING: the marker's result is a pure function of `(id, binder,
+    // consuming, live_after, in_proj_operand)` + the immutable Core + the per-binder guards (oracle /
+    // `BINDER_NEVER_ESCAPES` / `BINDER_MUST_ESCAPES`, all FIXED within one binder's walk), so the bool is
+    // cacheable; and the dup SITES a subtree marks were ALREADY inserted into the shared `sites` set on the
+    // FIRST visit (a `HashSet` — idempotent), so a memo HIT need only RETURN the bool: it drops NO site
+    // (never a UAF — the unsound direction the marker guards against) and inserts none twice. Installed FRESH
+    // per binder in `collect_dup_sites` (the guards change per binder); RAII-restored so a panicking
+    // `mark_binder_dups` cannot leak a stale memo into the next binder / `collect_dup_sites`.
+    static DUP_MARK_MEMO: std::cell::RefCell<HashMap<(StructId, bool, bool, bool), bool>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// RAII guard installing a FRESH empty [`DUP_MARK_MEMO`] for one `mark_binder_dups` binder, restoring the
+/// prior map on drop (normal return OR panic unwind) — nesting-safe, the [`OracleGuard`] twin.
+struct DupMarkMemoGuard {
+    prev: HashMap<(StructId, bool, bool, bool), bool>,
+}
+
+impl DupMarkMemoGuard {
+    fn install() -> Self {
+        let prev = DUP_MARK_MEMO.with(|m| std::mem::take(&mut *m.borrow_mut()));
+        DupMarkMemoGuard { prev }
+    }
+}
+
+impl Drop for DupMarkMemoGuard {
+    fn drop(&mut self) {
+        DUP_MARK_MEMO.with(|m| *m.borrow_mut() = std::mem::take(&mut self.prev));
     }
 }
 
@@ -2838,59 +2879,85 @@ pub(super) fn build_occurrence_bitsets(
         .max()
         .map_or(0, |m| m + 1)
         .div_ceil(64);
+    if words == 0 {
+        // No tracked binders → the caller's per-binder loop is empty; nothing to memoize.
+        return HashMap::new();
+    }
+    // Phase 1 — ENUMERATE every node reachable from `body` and its child-id list, CYCLE-SAFE (the `memo`
+    // keys double as the seen-set, so the back-edges a SELF-RECURSIVE function's cyclic Core graph carries
+    // terminate the walk). Seed each node's OWN binder bit. A `LocalRef`/`Param` is a LEAF (no children
+    // traversed) exactly as the previous post-order builder treated it. `order` records discovery
+    // (pre-order: parent before children) so the fixpoint below can sweep it in REVERSE.
     let mut memo: HashMap<StructId, Vec<u64>> = HashMap::new();
-    let mut in_progress: HashSet<StructId> = HashSet::new();
-    occurrence_bitset_rec(db, body, index, words, &mut memo, &mut in_progress);
-    memo
-}
-
-/// Returns `(bits, tainted)` for the subtree at `id`. `tainted` iff a cyclic back-edge was hit on this
-/// path (then the result is NOT memoized — same rule as [`binder_occurs_rec`]).
-pub(super) fn occurrence_bitset_rec(
-    db: &mut Db,
-    id: StructId,
-    index: &HashMap<StructId, usize>,
-    words: usize,
-    memo: &mut HashMap<StructId, Vec<u64>>,
-    in_progress: &mut HashSet<StructId>,
-) -> (Vec<u64>, bool) {
-    if let Some(bits) = memo.get(&id) {
-        return (bits.clone(), false);
-    }
-    if in_progress.contains(&id) {
-        // Cyclic back-edge: no NEW occurrence on this path; taint so the caller does not memoize a
-        // cycle-artifact all-zeros.
-        return (vec![0u64; words], true);
-    }
-    let (bits, tainted) = match core_of(db, id) {
-        Core::LocalRef { binder: b } | Core::Param { binder: b } => {
-            let mut bits = vec![0u64; words];
-            if let Some(&i) = index.get(&b) {
-                bits[i / 64] |= 1u64 << (i % 64);
-            }
-            (bits, false)
+    let mut children: HashMap<StructId, Vec<StructId>> = HashMap::new();
+    let mut order: Vec<StructId> = Vec::new();
+    let mut stack: Vec<StructId> = vec![body];
+    while let Some(id) = stack.pop() {
+        if memo.contains_key(&id) {
+            continue;
         }
-        _ => {
-            in_progress.insert(id);
-            let mut bits = vec![0u64; words];
-            let mut tainted = false;
-            for c in core_child_ids(db, id) {
-                let (cb, t) = occurrence_bitset_rec(db, c, index, words, memo, in_progress);
-                for (w, cw) in bits.iter_mut().zip(cb.iter()) {
-                    *w |= *cw;
+        let (bits, is_leaf_ref) = match core_of(db, id) {
+            Core::LocalRef { binder: b } | Core::Param { binder: b } => {
+                let mut bits = vec![0u64; words];
+                if let Some(&i) = index.get(&b) {
+                    bits[i / 64] |= 1u64 << (i % 64);
                 }
-                tainted |= t;
+                (bits, true)
             }
-            in_progress.remove(&id);
-            (bits, tainted)
+            _ => (vec![0u64; words], false),
+        };
+        memo.insert(id, bits);
+        order.push(id);
+        let cs = if is_leaf_ref {
+            Vec::new()
+        } else {
+            core_child_ids(db, id)
+        };
+        for &c in &cs {
+            if !memo.contains_key(&c) {
+                stack.push(c);
+            }
         }
-    };
-    // A definite result (no taint on this path) is safe to memoize; a tainted one is withheld exactly as
-    // `binder_occurs_rec` withholds a tainted `false`.
-    if !tainted {
-        memo.insert(id, bits.clone());
+        children.insert(id, cs);
     }
-    (bits, tainted)
+    // Phase 2 — MONOTONE UNION FIXPOINT: `bitset[n] |= ⋃ bitset[child]` until no bit changes. Bits only
+    // ever SET (never clear), over a finite width × finite node set, so it CONVERGES (this is the whole
+    // point: the previous recursive builder LEFT CYCLIC nodes un-memoized — a "tainted" MISS — so the O(1)
+    // oracle lookups [`binder_occurs_via_oracle`/`binder_absent_in_subtree`] fell back to the walking
+    // `binder_occurs`, which ALSO cannot cache a cyclic result → an EXPONENTIAL re-walk of the SCC and a
+    // non-terminating `cdz test` emit for a self-recursive `bin`-matching function). Sweeping `order` in
+    // REVERSE (children before parents) lands most occurrences in one pass for the common acyclic body; a
+    // cyclic SCC needs only the few extra passes its back-edge depth forces. The result is EXACT
+    // reachability — `bitset[n]` bit `i` == `binder_occurs(n, binders[i])` for EVERY reachable node (the
+    // public `binder_occurs` starts a fresh `in_progress`, so it too computes context-free reachability) —
+    // now memoized for ALL nodes, including the cyclic ones the old builder skipped. EXACTNESS-PRESERVING:
+    // on an acyclic node the value is byte-identical to the old post-order union; a cyclic node now answers
+    // in O(1) with the SAME value the walking fallback would have returned, so WHICH dup sites Perceus marks
+    // is unchanged — only the pathological re-walk is gone.
+    loop {
+        let mut changed = false;
+        for idx in (0..order.len()).rev() {
+            let id = order[idx];
+            let mut child_union = vec![0u64; words];
+            for &c in &children[&id] {
+                if let Some(cb) = memo.get(&c) {
+                    for (a, w) in child_union.iter_mut().zip(cb.iter()) {
+                        *a |= *w;
+                    }
+                }
+            }
+            let bits = memo.get_mut(&id).expect("node seeded in phase 1");
+            for (w, cw) in bits.iter_mut().zip(child_union.iter()) {
+                let before = *w;
+                *w |= *cw;
+                changed |= *w != before;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    memo
 }
 
 /// Returns `(occurs, tainted)` — `tainted` iff the walk hit an `in_progress` back-edge, in which case the
@@ -3025,7 +3092,41 @@ pub(super) fn payload_or_proj_chain_roots_at_binder(
 /// an enclosing `Core::Proj` (an `arr-get`-borrowed intermediate) — used to suppress a redundant child-dup
 /// mark on a nested projection in a chain (only the OUTERMOST consuming projection dups its child). Every
 /// other recursion resets it to `false` (via the `mark_binder_dups` wrapper the closures call).
+///
+/// MEMOIZING wrapper (see [`DUP_MARK_MEMO`]): serves a repeat visit of the SAME `(id, consuming, live_after,
+/// in_proj_operand)` in O(1), bounding the marker's re-descent of a multiply-reached subtree (shared match
+/// continuation / `If`-arm join) — the residual exponential of the self-recursive `bin`-match emit hang once
+/// the occurrence walks are O(1) off the oracle. Only the BOOL is cached; the dup SITES were already inserted
+/// on the first visit (idempotent `HashSet`), so a hit re-inserts nothing and drops nothing (never a UAF).
 pub(super) fn mark_binder_dups_inner(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    consuming: bool,
+    live_after: bool,
+    in_proj_operand: bool,
+    sites: &mut HashSet<StructId>,
+) -> bool {
+    let memo_key = (id, consuming, live_after, in_proj_operand);
+    if let Some(cached) = DUP_MARK_MEMO.with(|m| m.borrow().get(&memo_key).copied()) {
+        return cached;
+    }
+    let result = mark_binder_dups_body(
+        db,
+        id,
+        binder,
+        consuming,
+        live_after,
+        in_proj_operand,
+        sites,
+    );
+    DUP_MARK_MEMO.with(|m| {
+        m.borrow_mut().insert(memo_key, result);
+    });
+    result
+}
+
+fn mark_binder_dups_body(
     db: &mut Db,
     id: StructId,
     binder: StructId,
@@ -3645,8 +3746,15 @@ pub(super) fn mark_binder_dups_inner(
             let mut occ = HashMap::new();
             let aliases_as_result =
                 |db: &mut Db, arm: StructId, occ: &mut HashMap<StructId, bool>| {
+                    // Read the arm's occurrence off the O(1) oracle (complete for cyclic Core after the
+                    // fixpoint rewrite of `build_occurrence_bitsets`); fall back to the walking scan only on
+                    // an oracle MISS. Without the oracle this WALKED each arm with a FRESH cache at EVERY
+                    // nested `If`, re-scanning overlapping subtrees — the exponential second axis of the
+                    // self-recursive `bin`-matching `cdz test` emit hang (the number parser's `if d>=48 &&
+                    // d<=57 …` chains). Same exactness-preserving lever as the `seq` pre-pass.
                     !consuming
-                        && binder_occurs(db, arm, binder, occ)
+                        && binder_occurs_via_oracle(binder, arm)
+                            .unwrap_or_else(|| binder_occurs(db, arm, binder, occ))
                         && binding_escapes(db, arm, binder, false)
                         && !binding_escapes(db, arm, binder, true)
                 };
