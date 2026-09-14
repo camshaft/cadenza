@@ -5501,6 +5501,14 @@ fn build_bin_arm_predicate(
                 .and_then(|v| v.to_i64())
                 .map(|c| c.max(0) as u32 * 8)
                 .unwrap_or(0),
+            // A `b"…"` literal segment contributes its (compile-time-known) length to the fixed prefix, so
+            // the length floor (`bytes-len >= total`) guarantees the per-byte equality reads below are in
+            // bounds, and a following segment's static offset counts past it.
+            SegKind::BytesLit => db
+                .ast
+                .as_bytes(s.slot)
+                .map(|b| b.len() as u32 * 8)
+                .unwrap_or(0),
             _ => 0,
         })
         .sum();
@@ -5704,6 +5712,58 @@ fn build_bin_arm_predicate(
     for (i, seg) in segs.iter().enumerate() {
         // A bare-name slot is a binder, not a literal probe.
         if db.ast.as_name(seg.slot).is_some() {
+            continue;
+        }
+        // A `b"…"` byte-string LITERAL segment: AND a per-byte equality probe into the predicate — for each
+        // literal byte `lit[j]`, read the byte at `offset + j` (a `BinIntRead` of width 1) and compare it to
+        // `lit[j]`. Reached ONLY after the length floor (`bytes-len {==|>=} total (+Σn)`, which counts the
+        // literal's length) has ANDed in and short-circuited, so every read is in bounds. The offset may be
+        // dynamic (a literal after a dependent-size segment — §4a); `bin_dynamic_offset` threads the runtime
+        // addend, recomputed per byte to keep each read's size node fresh (the dependent-sum idiom above).
+        if let Some(lit) = db.ast.as_bytes(seg.slot).map(|b| b.to_vec()) {
+            for (j, &b) in lit.iter().enumerate() {
+                let Some((byte_offset, off_plus)) = bin_dynamic_offset(db, scrutinee, segs, i)
+                else {
+                    return Err(Reject::unsupported(
+                        "a runtime bin byte-string literal after a non-final unsized bytes / utf8 segment is not probed",
+                    ));
+                };
+                let read = synth_core(
+                    db,
+                    Core::BinIntRead {
+                        bytes: scrutinee,
+                        byte_offset: byte_offset + j as u32,
+                        off_plus,
+                        width: 1,
+                        signed: false,
+                        little_endian: false,
+                    },
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                let lit_node = synth_core(
+                    db,
+                    Core::ConstInt(IntValue::from_i64(b as i64)),
+                    crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                );
+                let eq = synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Eq,
+                        lhs: read,
+                        rhs: lit_node,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+                pred = synth_core(
+                    db,
+                    Core::And {
+                        lhs: pred,
+                        rhs: eq,
+                        is_and: true,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+            }
             continue;
         }
         let read = match &seg.kind {
