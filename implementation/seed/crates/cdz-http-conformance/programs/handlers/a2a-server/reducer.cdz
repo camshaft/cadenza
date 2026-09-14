@@ -4,8 +4,8 @@
 // userspace over the flexible-handler interface the hivemind daemon exposes. Like the MCP server, the ENTIRE
 // request lifecycle (route decision, body intake, JSON-RPC dispatch, one-shot vs streamed response) lives in
 // this reducer; the platform is pure plumbing. JSON is handled WITHOUT any platform JSON-awareness (operator
-// 759): the reusable json-lib byte-scan extracts the JSON-RPC `id`, and responses are byte literals spliced
-// around it via Bytes.concat.
+// 759): the real `json` codec (I7) parses the JSON-RPC body into a value AST and reads the top-level `method`
+// + `id`; the responses are byte literals spliced around the echoed id via Bytes.concat.
 //
 // SURFACE (the stateless slice — NO stateful tasks/get, tasks/cancel, or task store; that is the HARD STOP
 // boundary the operator paused before):
@@ -40,7 +40,7 @@ import { Frame as InFrame, descriptor as body-stream-desc } from "http-request-b
 import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
 import { Envelope, descriptor as timer-desc } from "timer"
 import { Outcome, Error, on-notification, request } from "reducer-lib"
-import { contains, field-token } from "json-lib"
+import { parse, get, as-str-bytes, encode } from "json"
 
 // Local structural copy of the live head (method as a String, e.g. "GET"). Its `headers` field uses a LOCAL
 // header-shaped type (name/value): the binary-AST decode is structural (name-independent), so this decodes the
@@ -138,19 +138,26 @@ def on-message(msg) =
              (state.put(b"body", Bytes.concat(prev, c.body)) ;
               { requests = [], outcome = Outcome.Continue }))
         | _ =>
-            // End → dispatch the accumulated JSON-RPC body. `message/stream` is checked before `message/send`
-            // (shared `message/` prefix); the echoed id is extracted verbatim via json-lib's field-token.
-            // message/stream stores the id + tick counter in ephemeral state and OPENS the timer-driven SSE
-            // stream (the following chunks are emitted by on-response on each timer Fired). message/send stays
-            // a synchronous one-shot.
+            // End → dispatch the accumulated JSON-RPC body. The real `json` codec (I7) PARSES it, reads the
+            // TOP-LEVEL `method` + `id`, and EXACT-matches the method (so a method name inside a params string
+            // can no longer misfire dispatch, and the message/stream-vs-message/send prefix hazard is gone);
+            // the echoed `id` round-trips VERBATIM via `encode`. message/stream stores the id + tick counter in
+            // ephemeral state and OPENS the timer-driven SSE stream (following chunks emitted by on-response on
+            // each timer Fired); message/send stays a synchronous one-shot; malformed JSON / no method → error.
             (let body = (match state.get(b"body") with | Some(b) => b | None(_) => b"") in
-             (let id = field-token(body, b"id", b"null") in
-              if contains(body, b"message/stream") then
-                (state.put(b"a2a-id", id) ;
-                 (state.put(b"a2a-seq", b"1") ;
-                  sse-begin(id)))
-              else if contains(body, b"message/send") then one-shot("application/json", result-envelope(id, completed-task()))
-              else one-shot("application/json", method-error(id)))))
+             (match parse(body) with
+              | Option.None => one-shot("application/json", method-error(b"null"))
+              | Option.Some(root) =>
+                  (let id = (match get(root, b"id") with | Option.Some(j) => encode(j) | Option.None => b"null") in
+                   (match (match get(root, b"method") with | Option.Some(m) => as-str-bytes(m) | Option.None => Option.None) with
+                    | Option.Some(method) =>
+                        if method == b"message/stream" then
+                          (state.put(b"a2a-id", id) ;
+                           (state.put(b"a2a-seq", b"1") ;
+                            sse-begin(id)))
+                        else if method == b"message/send" then one-shot("application/json", result-envelope(id, completed-task()))
+                        else one-shot("application/json", method-error(id))
+                    | Option.None => one-shot("application/json", method-error(id))))))
      else
        (match (Value.decode(msg.payload) : Option(ReqHead)) with
         | Some(ReqHead.ReqHead(h)) =>
