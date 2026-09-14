@@ -16,6 +16,10 @@
 ;   (bytes b)                         splice all of b (build); bind the REST (match, final segment only)
 ;   (bytes b n)                       exactly n bytes; n MAY be a name bound by an earlier segment
 ;                                       (dependent size) — the crown jewel, entirely value-level
+;   b"…"                              a bare byte-string LITERAL segment: emit these exact bytes (build) /
+;                                       match them by equality then continue (match) — the MULTI-BYTE
+;                                       generalization of the single-byte literal `(u8 34)`. Known length,
+;                                       so legal at ANY position (`b"null" (bytes rest)`, `b"[" x b"]"`).
 ; A literal in the slot means match-by-equality (magic numbers, opcodes) — the direct analogue of the
 ; existing literal patterns `(match 2 (2 "two") …)`. In MATCH position a segment binder decodes a general
 ; integer (a `(u16 m)` binder is a plain integer, losslessly holding the decoded field).
@@ -1188,6 +1192,100 @@
   (call main (: 65 Int64))
   (output (: 4 Int64))
   (live-objects known-leak))
+
+; ============================================================================================
+; GAP-1: a bare `b"…"` byte-string LITERAL segment — the multi-byte generalization of the
+; single-byte literal `(u8 34)`. CONSTRUCTION emits the literal bytes verbatim; MATCH consumes
+; exactly len(literal) bytes and equality-checks them (a same-length MISMATCH or a SHORT input
+; fails the arm). Compile-time-known length, so a `b"…"` segment is legal at ANY position (unlike
+; an unsized `(bytes b)`). Co-authored with v-json-codec (readable parser dispatch / encoder
+; wrappers). NOTE: matching a `b"…"` segment over a RUNTIME scrutinee is not yet lowered (declines,
+; GAP-1b); the CONSTANT-scrutinee match below already dispatches by literal equality.
+; ============================================================================================
+
+(case
+  "a b-literal construction segment emits its bytes verbatim"
+  (doc
+    "`(bin b\"AB\" (u8 67))` emits the two literal bytes of `b\"AB\"` (65, 66) then the u8 67 — the
+           multi-byte generalization of `(u8 65)`. Builds `(Bytes.of #list(65 66 67))`.")
+  (input (= (bin b"AB" (u8 67)) (Bytes.of #list(65 66 67))))
+  (output (: true Bool)))
+
+(case
+  "a b-literal wraps a runtime bytes splice (encoder array-wrap shape)"
+  (doc
+    "`(bin b\"[\" (bytes inner) b\"]\")` — the codec's `arr(inner)` wrap: emit the literal `[` (91),
+           splice the runtime `inner`, emit the literal `]` (93), built via bytes-concat. `arr([49,50])`
+           builds [91,49,50,93], length 4.")
+  (input
+    (do
+      (def (arr (: inner Bytes)) (bin b"[" (bytes inner) b"]"))
+      (def (main (: c0 Int64)) (Bytes.len (arr (Bytes.of #list((UInt8.of c0) 50)))))
+      (export main)))
+  (call main (: 49 Int64))
+  (output (: 4 Int64)))
+
+(case
+  "a b-literal match segment dispatches by equality over a constant scrutinee (keyword prefix)"
+  (doc
+    "`(bin b\"null\" (bytes rest))` over the CONSTANT scrutinee `b\"null,x\"` matches the 4 literal
+           bytes then binds the rest — the parser's keyword dispatch. rest = `,x`, length 2. (Runtime
+           scrutinee dispatch is GAP-1b; the constant path folds the equality here.)")
+  (input
+    (match (Bytes.of #list(110 117 108 108 44 120))
+      ((bin b"null" (bytes rest)) (Bytes.len rest))
+      (_ -1)))
+  (output (: 2 Int64)))
+
+(case
+  "a b-literal match over a constant scrutinee falls through on a same-length mismatch"
+  (doc
+    "`b\"nuXX\"` (same length as the literal `b\"null\"` but two bytes differ) FAILS the first arm and
+           falls through to the wildcard — the equality probe rejects a mismatch.")
+  (input
+    (match (Bytes.of #list(110 117 88 88))
+      ((bin b"null" (bytes rest)) (Bytes.len rest))
+      (_ -1)))
+  (output (: -1 Int64)))
+
+(case
+  "a b-literal match over a constant scrutinee falls through on short input"
+  (doc
+    "`b\"nul\"` (3 bytes, shorter than the 4-byte literal `b\"null\"`) FAILS the first arm — a literal
+           longer than the remaining input cannot match — and falls through to the wildcard.")
+  (input
+    (match (Bytes.of #list(110 117 108))
+      ((bin b"null" (bytes rest)) (Bytes.len rest))
+      (_ -1)))
+  (output (: -1 Int64)))
+
+(case
+  "a structural byte-wrap around a runtime splice (u8-literal form, encoder array-wrap)"
+  (doc
+    "`(bin (u8 91) (bytes inner) (u8 93))` — the codec's `wrap-arr` today (becomes `b\"[\" … b\"]\"`
+           once a b-literal reads better; identical splice). `wrap-arr([49,50])` builds [91,49,50,93],
+           length 4. Co-authored from the JSON codec (v-json-codec).")
+  (input
+    (do
+      (def (wrap-arr (: inner Bytes)) (bin (u8 91) (bytes inner) (u8 93)))
+      (def (main (: c0 Int64)) (Bytes.len (wrap-arr (Bytes.of #list((UInt8.of c0) 50)))))
+      (export main)))
+  (call main (: 49 Int64))
+  (output (: 4 Int64)))
+
+(case
+  "a separator byte joins two runtime splices (comma-join)"
+  (doc
+    "`(bin (bytes a) (u8 44) (bytes b))` splices `a`, emits a comma (44), splices `b` — the codec's
+           element-join step. `comma-join([97],[98])` builds [97,44,98], length 3. Co-authored from the
+           JSON codec (v-json-codec).")
+  (input
+    (do
+      (def (comma-join (: a Bytes) (: b Bytes)) (bin (bytes a) (u8 44) (bytes b)))
+      (def (main (: c0 Int64)) (Bytes.len (comma-join (Bytes.of #list((UInt8.of c0))) (Bytes.of #list(98)))))
+      (export main)))
+  (call main (: 97 Int64))
+  (output (: 3 Int64)))
 
 (case
   "a bit-field width that is not a compile-time constant is ill-formed"

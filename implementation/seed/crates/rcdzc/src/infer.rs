@@ -359,6 +359,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
             // A `utf8` segment decodes its bytes to a well-formed `String` (a non-match on ill-formed).
             Some(crate::resolved::SegKind::Utf8 { .. }) => Ty::String,
+            // A `b"…"` literal segment binds no value (it is a literal probe / verbatim emit), so nothing
+            // references it as a binder; type it `Bytes` defensively.
+            Some(crate::resolved::SegKind::BytesLit) => Ty::Bytes,
             None => Ty::Any,
         },
         // A MAP PATTERN binder: a VALUE binder (`key = Some`) has the map's VALUE type; the REST binder
@@ -4251,7 +4254,9 @@ fn seg_value_ty(kind: &crate::resolved::SegKind) -> Option<Ty> {
             (*width as u32) * 8,
         ))),
         crate::resolved::SegKind::Bits { k } => Some(Ty::Int(crate::ty::IntTy::fixed(false, *k))),
-        crate::resolved::SegKind::Bytes { .. } | crate::resolved::SegKind::Utf8 { .. } => None,
+        crate::resolved::SegKind::Bytes { .. }
+        | crate::resolved::SegKind::Utf8 { .. }
+        | crate::resolved::SegKind::BytesLit => None,
     }
 }
 
@@ -5739,6 +5744,7 @@ fn seg_kind_name(kind: &crate::resolved::SegKind) -> &'static str {
         crate::resolved::SegKind::Bits { .. } => "bit-field",
         crate::resolved::SegKind::Bytes { .. } => "bytes",
         crate::resolved::SegKind::Utf8 { .. } => "utf8",
+        crate::resolved::SegKind::BytesLit => "byte-string literal",
     }
 }
 

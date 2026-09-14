@@ -69,6 +69,9 @@ pub(super) fn lower_bin_build(
         // A `utf8` segment is a PATTERN-only construct here — building a `(utf8 s n)` (splice a String's
         // bytes) is not yet lowered; route it to the const-build loop, which declines cleanly.
         SegKind::Utf8 { .. } => false,
+        // A `b"…"` literal segment is a compile-time constant — never forces the runtime path (it folds
+        // into the constant bytes, or emits as a const piece alongside a runtime sibling).
+        SegKind::BytesLit => false,
     });
     if any_runtime {
         // Build the `bin` as a sequence of PIECES concatenated at run time (`Core::BytesConcat`): each
@@ -191,6 +194,17 @@ pub(super) fn lower_bin_build(
                     return Core::Poison(Reject::unsupported(
                         "constructing a utf8 bin segment is not supported (utf8 is pattern-only)",
                     ));
+                }
+                // A `b"…"` literal segment emits its bytes VERBATIM. `slot` IS the constant `b"…"` value
+                // (a `Core::ConstBytes`/`BytesOf`), so — reached only alongside a runtime sibling — flush the
+                // open runs then splice it as a constant piece, identical to a constant `(bytes b)` splice.
+                SegKind::BytesLit => {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    flush_ints(db, &mut int_run, &mut pieces);
+                    flush_bits(db, &mut bits_run, &mut pieces);
+                    pieces.push(seg.slot);
                 }
             }
         }
@@ -351,6 +365,22 @@ pub(super) fn lower_bin_build(
                 return Core::Poison(Reject::unsupported(
                     "constructing a utf8 bin segment is not supported (utf8 is pattern-only)",
                 ));
+            }
+            // A `b"…"` literal segment emits its bytes VERBATIM — `slot` IS the `b"…"` value (resolve only
+            // built a `BytesLit` for a byte-string-literal atom), so append its bytes to the constant buffer.
+            SegKind::BytesLit => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a literal segment"
+                );
+                let lit = db
+                    .ast
+                    .as_bytes(seg.slot)
+                    .expect(
+                        "a BytesLit segment's slot is a byte-string literal (resolve guarantees)",
+                    )
+                    .to_vec();
+                raw.extend(lit);
             }
         }
     }
@@ -579,6 +609,33 @@ pub(super) fn bin_match_decode(
                 out.push(BinDecoded::Str(s.to_string()));
                 off += n;
             }
+            // A `b"…"` literal segment: consume exactly `len(literal)` bytes and EQUALITY-CHECK them against
+            // the literal. A short remainder OR a mismatch is a NON-MATCH (return `None` → fall through to
+            // the next arm), exactly like an unequal `(u8 <lit>)` probe. The length is compile-time-known, so
+            // a `BytesLit` is legal at ANY position (unlike an unsized `bytes`). Push a positional
+            // `ByteRange` so `out` stays index-aligned with `segs` (the literal binds nothing; the probe
+            // loop skips it — the equality is decided HERE).
+            SegKind::BytesLit => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a literal segment"
+                );
+                let lit = db
+                    .ast
+                    .as_bytes(seg.slot)
+                    .expect(
+                        "a BytesLit segment's slot is a byte-string literal (resolve guarantees)",
+                    )
+                    .to_vec();
+                if off + lit.len() > raw.len() {
+                    return None; // short input → the literal cannot match
+                }
+                if raw[off..off + lit.len()] != lit[..] {
+                    return None; // byte mismatch → non-match
+                }
+                out.push(BinDecoded::ByteRange(off, off + lit.len()));
+                off += lit.len();
+            }
         }
     }
     // Whole-scrutinee accounting: after the last segment, any open bits or leftover bytes are a non-match
@@ -673,8 +730,10 @@ pub(super) fn bin_static_offset(
             }
             // A bytes / utf8 segment before the target makes the offset dynamic (variable length) — not
             // built yet. (A bit-field run mid-byte at this point would also be ill-formed; `bits != 0`
-            // means the preceding structure did not byte-align, so decline.)
-            SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
+            // means the preceding structure did not byte-align, so decline.) A `b"…"` literal has a static
+            // width, but the runtime matcher declines a `BytesLit` at admissibility (GAP-1b), so this is
+            // unreached; decline defensively to keep the static-offset walk conservative.
+            SegKind::Bytes { .. } | SegKind::Utf8 { .. } | SegKind::BytesLit => return None,
         }
     }
     // The target segment starts at a byte boundary only if the preceding bit-field run closed a whole
@@ -773,6 +832,17 @@ pub(super) fn bin_dynamic_offset(
             }
             // A NON-FINAL UNSIZED rest is ill-formed (CDZ0220).
             SegKind::Bytes { size: None } => return None,
+            // A `b"…"` literal segment consumes exactly `len(literal)` bytes — a STATIC byte contribution
+            // (the length is compile-time-known). This keeps the offset walk correct for a segment that
+            // FOLLOWS a literal (e.g. `b"[" (bytes rest)`), the foundation the GAP-1b runtime predicate
+            // builds on; the runtime matcher still declines a `BytesLit` arm at admissibility for now.
+            SegKind::BytesLit => {
+                if bits != 0 {
+                    return None;
+                }
+                let n = db.ast.as_bytes(seg.slot).map(|b| b.len()).unwrap_or(0);
+                off += n as u32;
+            }
         }
     }
     if bits != 0 {
@@ -1064,6 +1134,12 @@ pub(super) fn decode_bin_field_runtime(
         }
         SegKind::Bytes { .. } => Core::Poison(Reject::unsupported(
             "a runtime bin non-final sized-bytes binder is not supported",
+        )),
+        // A `b"…"` literal segment binds nothing (it is an equality probe / verbatim emit), so no binder
+        // decode ever targets it; and the runtime matcher declines a `BytesLit` arm at admissibility
+        // (GAP-1b). Unreached — decline defensively rather than fabricate a value.
+        SegKind::BytesLit => Core::Poison(Reject::unsupported(
+            "a runtime bin byte-string literal match segment is not lowered (GAP-1b)",
         )),
     }
 }

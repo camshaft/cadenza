@@ -1603,6 +1603,13 @@ pub enum SegKind {
     /// A byte-sequence segment `(bytes b [n])`: splice all of `b` (build) / bind the rest or exactly `n`
     /// bytes (match). `size` is the optional dependent-size occurrence (`n`); `None` = unsized (final).
     Bytes { size: Option<StructId> },
+    /// A byte-string LITERAL segment: a bare `b"…"` in segment position — the multi-byte generalization of
+    /// a single-byte literal `(u8 34)` match-by-equality (`spec/semantics/16-binary-matching.sexp`). In
+    /// CONSTRUCTION it emits the literal bytes verbatim; in MATCH it consumes exactly `len(literal)` bytes
+    /// and equality-checks them (failing the arm on a mismatch OR short input). The length is
+    /// compile-time-known, so — unlike an unsized `Bytes` — a `BytesLit` is legal in ANY position (not just
+    /// final). The literal value is read from the `slot` occurrence via `constant_bytes_value`.
+    BytesLit,
     /// A UTF-8 string segment `(utf8 s n)`: `size` is the dependent-size occurrence (`n`, an earlier
     /// integer segment binder). In pattern position it reads exactly `n` bytes and DECODES them as
     /// strict UTF-8 — a well-formed sequence binds `s : String`, an ill-formed one is a NON-MATCH (never

@@ -5877,6 +5877,18 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "bin").unwrap_or(&[]);
     let mut segs = Vec::with_capacity(tail.len());
     for &seg in tail {
+        // A bare `b"…"` byte-string literal in segment position — a multi-byte match-by-equality /
+        // emit-verbatim literal segment (the multi-byte generalization of `(u8 <lit>)`; `spec/semantics/
+        // 16-binary-matching.sexp`). It is NOT a `(<kind> <slot>)` list; it carries its own bytes, so the
+        // segment's `slot` IS the literal atom (read downstream via `constant_bytes_value`).
+        if db.ast.as_bytes(seg).is_some() {
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::BytesLit,
+                slot: seg,
+                little_endian: false,
+            });
+            continue;
+        }
         // Each segment is a list `(<kind> <slot> [modifier]…)`.
         let Struct::List(parts) = db.ast.get(seg) else {
             return Resolved::Poison(Reject::coded(
