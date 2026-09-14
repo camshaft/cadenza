@@ -7431,7 +7431,23 @@ fn callee_called_from_lifted_body(db: &mut Db, callee: usize) -> bool {
             .into_iter()
             .any(|ch| walk(db, ch, callee, seen))
     }
-    let lifted_bodies: Vec<StructId> = db.lifted.iter().map(|l| l.body).collect();
+    // EXCLUDE the callee's OWN body: a SELF-recursive call from `callee`'s own lifted body is a DIRECT
+    // `Core::Call { callee }`, which the `db.defs` call-site index DOES see — so AXIS A's per-site owned-arg
+    // check already accounts for it (the self-call's arg is verified `Owned` like any other site). The
+    // lifted-body gate exists only for an INVISIBLE edge (an eta-wrapper's `call_indirect`/forwarded call
+    // that the direct index misses); the visible self-edge is not that hazard. Without this exclusion a
+    // borrow-only-heap-param SELF-RECURSIVE def (a runtime bin-match `count-ge inp` that dup+slices its
+    // Bytes scrutinee and recurses on the slice) is lifted, sees its own recursive call here, and is wrongly
+    // excluded → its borrowed scrutinee shell LEAKS one frame per recursion (v-memory-safety: the recursive
+    // `(bytes rest)` reclaim gap, #8955). A call from ANY OTHER lifted body is still caught (only the
+    // self-body is skipped), so the eta-wrapper UAF protection is intact.
+    let own_body = db.defs.get(callee).and_then(|d| d.body);
+    let lifted_bodies: Vec<StructId> = db
+        .lifted
+        .iter()
+        .map(|l| l.body)
+        .filter(|&b| Some(b) != own_body)
+        .collect();
     let mut seen = HashSet::new();
     lifted_bodies
         .into_iter()

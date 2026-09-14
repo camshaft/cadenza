@@ -503,7 +503,7 @@
 ; v-memory-safety (reclaim owner). Marked `known-leak` so it grades (guarding the compile/hang + value) and
 ; a future recursive-bin-match reclaim fix surfaces here as a tighten-candidate (drop the marker → expect 0).
 (case
-  "a self-recursive bin-match with a nested-if body and a threaded incrementing accumulator compiles and runs (reclaim non-exponential regression guard, #8953; recursive bytes-rest reclaim is a known-leak)"
+  "a self-recursive bin-match with a nested-if body and a threaded incrementing accumulator compiles, runs, AND fully reclaims (reclaim non-exponential regression guard, #8953; the per-frame borrowed `(bytes rest)` scrutinee is now dropped — #8955 fixed by the callee_called_from_lifted_body self-edge exclusion, so a self-recursive borrow-only bin-match scrutinee is epilogue-reclaimed)"
   (input
     (do
       (def (count-ge (: inp Bytes) (: acc Int64))
@@ -514,7 +514,7 @@
       (export main)))
   (call main (: 60 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A MUTUALLY-recursive TWO-function bin-match rest-drain — the mutual-recursion bracket for the recursive
 ; bin-match `(bytes rest)` reclaim gap the self-recursive `count-ge` above surfaced. v-memory-safety root-caused
