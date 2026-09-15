@@ -13740,3 +13740,52 @@
   (output (: 12 Int64))
   (call main (: 10 Int64))
   (output (: 30 Int64)))
+
+; hofpipe1 — REGRESSION PIN (v-core-opt): a higher-order iterator pipeline `filter -> map -> fold` over a
+; recursive `Iter` sum, where each driver (ifilter/imap/ifold) both APPLIES its closure param AND re-threads
+; that same param on the recursive back-edge, and the `map` closure `(fn (x) (* x k))` CAPTURES the free var
+; `k`. This is the exact shape that #8997 (reclaim: borrowed-closure-operand dup/exit-drop rebalance) MIS-
+; COMPILED: it dropped the load-bearing per-iteration `dup` of the applied-and-rethreaded closure param,
+; premature-freeing the closure/captures so `ifold` returned its initial `acc` (0) instead of the sum —
+; reverted in #8998 (67ae92f592). The VALUE is the correctness invariant here — a closure-reclaim change must
+; never alter it (that is precisely what #8997 did). Census is `known-leak`: this shape retains the Iter spine
+; + the capturing map closure (a separately-tracked reclaim gap, same class as hc2 — the capturing-closure
+; reclaim lane owns collapsing it), so the durable guard is the hard value pin, leak tolerated as a tracked gap.
+(case
+  "hofpipe1 a higher-order filter->map->fold pipeline applies AND re-threads a CAPTURING closure param per recursion (value pin: #8997 miscompiled it to 0)"
+  (doc
+    "The Box-of-closure regression fence. `main(k)` runs `1..6 |> filter even |> map (* k) |> fold (+) 0`
+           through three recursive higher-order drivers, each of which applies its closure param and passes
+           the SAME param forward on its self-recursive edge (`(ifold (. c 1) (f acc (. c 0)) f)`), with the
+           map closure capturing `k`. The applied-and-rethreaded closure param is genuinely live-after the
+           apply, so its per-iteration retain is load-bearing; a reclaim change that treats the apply as a
+           pure borrow (dropping that retain) premature-frees the closure and the fold reads a freed/zeroed
+           accumulator. k=3: evens {2,4,6} -> {6,12,18} -> 36. k=10: {2,4,6} -> {20,40,60} -> 120.")
+  (input
+    (do
+      (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
+      (def
+        (from-list xs)
+        (match xs (#list() (Nil unit)) (#list(h (.. t)) (Cons #tuple(h (from-list t))))))
+      (def
+        (ifilter it p)
+        (match
+          it
+          ((Nil _) (Nil unit))
+          ((Cons c) (if (p (. c 0)) (Cons #tuple((. c 0) (ifilter (. c 1) p))) (ifilter (. c 1) p)))))
+      (def
+        (imap it f)
+        (match it ((Nil _) (Nil unit)) ((Cons c) (Cons #tuple((f (. c 0)) (imap (. c 1) f))))))
+      (def (ifold it acc f) (match it ((Nil _) acc) ((Cons c) (ifold (. c 1) (f acc (. c 0)) f))))
+      (def
+        (main (: k Int64))
+        (ifold
+          (imap (ifilter (from-list #list(1 2 3 4 5 6)) (fn (x) (= 0 (% x 2)))) (fn (x) (* x k)))
+          0
+          (fn (a x) (+ a x))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 36 Int64))
+  (call main (: 10 Int64))
+  (output (: 120 Int64))
+  (live-objects known-leak))
