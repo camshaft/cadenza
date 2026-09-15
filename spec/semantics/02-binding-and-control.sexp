@@ -720,6 +720,31 @@
   (input (do (def (main) (if (and true (= 0 (/ 1 0))) 1 0)) (export main)))
   (error CDZ0304 (message "divide by zero")))
 
+; The OPTIMIZER-HOIST-SAFETY twin of the short-circuit family (v-core-opt): the same repeated GUARDED
+; trapping expression appears in TWO separate `if` branches, so a whole-program CSE (O2's global-cse) that
+; naively shared the repeat would have to hoist `(/ 100 b)` to a `let` BEFORE the guards — evaluating it
+; unconditionally and TRAPPING at b=0, a miscompile. The correct behavior keeps each occurrence branch-local
+; (rcdzc's `global_cse_does_not_hoist_a_repeat_whose_other_occurrence_is_branch_local` gate), so b=0 skips
+; both divisions → 0. Pinned here as a VALUE case AND swept O0..O3 by `checks.<sys>.opt-sweep` (the tiered-opt
+; level-equivalence gate): a future CSE/LICM change that hoists the guarded trap would diverge O2/O3 from
+; O0/O1 (0 → trap) and be caught, on BOTH backends. A higher opt level must never change what a program MEANS.
+(case
+  "a repeated GUARDED trapping expression is not hoisted past its guard by the optimizer (CSE branch-local safety)"
+  (doc
+    "`(+ (if (= b 0) 0 (/ 100 b)) (if (= b 0) 0 (/ 100 b)))`: the divisor `b` is guarded by `(= b 0)` in
+           BOTH occurrences, so at b=0 neither division runs → 0 (no trap); b=5 → 20+20 = 40. The repeat is a
+           CSE temptation, but sharing it would hoist the guarded `(/ 100 b)` out of its guard and trap at
+           b=0 — so the optimizer must keep it branch-local. This is the trap-preservation twin of the
+           and/or short-circuit cases above, and the opt-level-equivalence invariant (O0..O3 must agree).")
+  (input
+    (do
+      (def (main (: b Int64)) (+ (if (= b 0) 0 (/ 100 b)) (if (= b 0) 0 (/ 100 b))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 5 Int64))
+  (output (: 40 Int64)))
+
 (case
   "a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin"
   (doc
