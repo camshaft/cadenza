@@ -14,12 +14,20 @@
 # to run frequently. It targets ONLY the concierge (the one agent whose watchdog runs inside its own tick;
 # every other agent IS compacted by the concierge-tick watchdog).
 #
-# WHY A WRAPPER (not a raw `cargo xtask` in the crontab): the fleet HUB is a BARE repo (no cargo project),
-# so `cargo xtask` needs a real worktree. This picks a worktree with a BUILT `xtask` binary and runs it
-# DIRECTLY (no cargo → no rebuild on the cron hot path). The scan reads the shared HUB registry + talks to
-# the tmux SERVER via `--session` (no $TMUX needed), so ANY worktree's binary works; freshest just means the
-# least-stale scan logic. Same tracked→runtime split as drain-nudge.sh: TRACKED at <repo>/fleet/, RUN from
-# the hub copy `fleet up` materializes into <hub>/.claude/fleet/.
+# WHY A WRAPPER + REBUILD-FROM-SOURCE (not a raw `cargo xtask` in the crontab, not a prebuilt binary): the
+# fleet HUB is a BARE repo (no cargo project), so `cargo xtask` needs a real worktree. This picks the
+# FRESHEST-HEAD worktree (an active agent's — it syncs to main each tick) and runs the scan there via `cargo
+# xtask` (= `cargo run`, which REBUILDS from that worktree's current source), so the running binary is
+# guaranteed to match the freshest landed code. This CLOSES the stale-binary deploy gap (#8570, applied here
+# 2026-09-15): compact-nudge is the CONCIERGE's ONLY self-heal path (the in-tick watchdog structurally can't
+# compact/restart the concierge), and it is where fleet-tooling's concierge fixes LAND — so a freshly-landed
+# concierge fix (e.g. the flap-relaunch auto-compact headroom, #8985) must be LIVE within a tick, not gated
+# on some worktree happening to have rebuilt. The prior prebuilt-binary pick (freshest-HEAD, but its binary
+# could be STALE if the worktree synced without rebuilding) could silently run pre-fix logic. Warm after the
+# first build (cargo freshness → a no-op rebuild on most fires; it only recompiles right after a landing).
+# The scan reads the shared HUB registry + talks to the tmux SERVER via `--session` (no $TMUX needed). Same
+# tracked→runtime split as watchdog.sh/drain-nudge.sh: TRACKED at <repo>/fleet/, RUN from the hub copy `fleet
+# up` materializes into <hub>/.claude/fleet/.
 set -uo pipefail
 
 # SINGLETON GUARD: a scan captures the concierge pane + may send-keys; flock -n so only one runs at a time
@@ -34,21 +42,24 @@ WORKTREES="$(cd "$HUB/../worktrees" 2>/dev/null && pwd || true)"
 [ -n "${WORKTREES:-}" ] && [ -d "$WORKTREES" ] || { echo "compact-nudge: no worktrees dir under $HUB/../worktrees — skip." >&2; exit 0; }
 SESSION="${CDZ_FLEET_SESSION:-main}"
 
-# Pick a worktree with a BUILT xtask binary, preferring the freshest HEAD (least-stale scan logic).
+# Pick the worktree with the FRESHEST HEAD (an active agent's — it has the newest landed source) that is a
+# Cargo project (has xtask/Cargo.toml), so `cargo xtask` can rebuild + run there. Mirrors watchdog.sh: we run
+# `cargo xtask` FROM this worktree (not a prebuilt binary), so the running binary always matches its current
+# source — the deploy-gap fix.
 best="" best_ct=-1
 for wt in "$WORKTREES"/*/; do
-  bin="${wt}target/release/xtask"
-  [ -x "$bin" ] || continue
+  [ -f "${wt}xtask/Cargo.toml" ] || continue
   ct="$(git -C "$wt" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
-  if [ "$ct" -gt "$best_ct" ]; then best_ct="$ct"; best="$bin"; fi
+  if [ "$ct" -gt "$best_ct" ]; then best_ct="$ct"; best="$wt"; fi
 done
-[ -n "$best" ] || { echo "compact-nudge: no worktree with a built target/release/xtask yet — skip (a fleet up/build provides one)." >&2; exit 0; }
+[ -n "$best" ] || { echo "compact-nudge: no worktree with an xtask Cargo project — skip (a fleet up provides one)." >&2; exit 0; }
 
-# Best-effort + exit 0: a compact-nudge is benign (a `/compact` keystroke into an IDLE pane, or a restart of
-# a wall-wedged window — both watchdog-grace-guarded); a nonzero here (a tmux hiccup, or a stale binary
-# lacking the subcommand) is not worth alarming — the next fire retries, and worktrees pick up the subcommand
-# as they rebuild. Capture the output so the .last-run stamp below records the result.
-_out="$("$best" fleet compact-nudge --session "$SESSION" 2>&1)"
+# Run the scan from the freshest worktree. `cargo xtask` (= cargo run) rebuilds from its current source first,
+# so the running binary matches that worktree's HEAD (the deploy-gap fix). Best-effort + exit 0: a
+# compact-nudge is benign (a `/compact` keystroke into an IDLE pane, or a restart of a wall-wedged window —
+# both watchdog-grace-guarded); a nonzero here (a tmux hiccup, or a transient build error) is not worth
+# alarming — the next fire retries. Capture the output so the .last-run stamp below records the result.
+_out="$( cd "$best" && cargo xtask fleet compact-nudge --session "$SESSION" 2>&1 )"
 _rc=$?
 
 # SILENT-CRON OBSERVABILITY (matches drain-nudge.sh / prune-*.sh; concierge convention 2026-08-29): OVERWRITE
@@ -56,8 +67,8 @@ _rc=$?
 # content is the last result. The scan is quiet on a no-op pass (concierge below the band / mid-tick), so the
 # summary may be empty — the mtime is the proof either way. Best-effort, never fails the run.
 _stamp="$(dirname "${BASH_SOURCE[0]}")/compact-nudge.last-run"
-printf '%s rc=%s %s\n' \
-  "$(date -Is 2>/dev/null || echo now)" "$_rc" "$(printf '%s' "$_out" | tail -1)" \
+printf '%s rc=%s wt=%s %s\n' \
+  "$(date -Is 2>/dev/null || echo now)" "$_rc" "$(basename "$best")" "$(printf '%s' "$_out" | tail -1)" \
   > "$_stamp" 2>/dev/null || true
 
 [ "$_rc" = 0 ] || echo "compact-nudge: scan exited nonzero — next fire retries." >&2
