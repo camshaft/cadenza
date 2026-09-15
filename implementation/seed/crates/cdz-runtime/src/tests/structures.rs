@@ -165,6 +165,81 @@ fn bytes_round_trip() {
 }
 
 #[test]
+fn bytes_new_builds_a_leaf_in_one_call_matching_alloc_plus_set() {
+    reset();
+    // Empty list → the shared IMMORTAL empty-BYTES singleton (census-excluded), len 0.
+    let e = op_bytes_new(Vec::new());
+    assert_eq!(op_bytes_len(e), 0);
+    assert_eq!(render(e, &Shape::Bytes), "b\"\"");
+    // Non-empty: small (inline) and large (heap) both round-trip via bytes-get/len AND compare EQUAL
+    // to a bytes-alloc + per-byte-set twin — one canonical value regardless of how it was built.
+    for len in [3u32, INLINE_RAW_CAP as u32, INLINE_RAW_CAP as u32 + 5] {
+        let data: Vec<u8> = (0..len).map(|i| (i & 0xff) as u8).collect();
+        let bulk = op_bytes_new(data.clone());
+        assert_eq!(op_bytes_len(bulk), len, "bytes-new len {len}");
+        for i in 0..len {
+            assert_eq!(
+                op_bytes_get(bulk, i),
+                i & 0xff,
+                "bytes-new byte {i} of {len}"
+            );
+        }
+        let indexed = op_bytes_alloc(len);
+        for i in 0..len {
+            op_bytes_set(indexed, i, i & 0xff);
+        }
+        assert!(
+            champ_eq(bulk, indexed),
+            "bytes-new == bytes-alloc+set twin (len {len})"
+        );
+        // Inline/heap classification matches bytes-alloc's INLINE_RAW_CAP boundary.
+        if len <= INLINE_RAW_CAP as u32 {
+            assert!(!raw_is_heap(bulk), "<=cap bytes-new is inline (len {len})");
+        } else {
+            assert!(raw_is_heap(bulk), ">cap bytes-new is heap (len {len})");
+        }
+        op_drop(bulk);
+        op_drop(indexed);
+    }
+}
+
+#[test]
+fn bytes_read_returns_the_whole_buffer_and_flattens_a_rope() {
+    reset();
+    // Flat leaf: bytes-read is the inverse of bytes-new.
+    let src: Vec<u8> = vec![1, 2, 3, 255, 0, 42];
+    let b = op_bytes_new(src.clone());
+    assert_eq!(op_bytes_read(b), src, "bytes-read round-trips bytes-new");
+    // bytes-read BORROWS: rc/live-node count unchanged across a read; a second read returns the same
+    // content; then one drop frees it (the op consumes nothing).
+    let live = live_nodes();
+    assert_eq!(op_bytes_read(b), src, "second read (borrow, not consume)");
+    assert_eq!(
+        live_nodes(),
+        live,
+        "bytes-read allocates/frees no heap node (borrow)"
+    );
+    op_drop(b);
+    // Rope (concat consumes both): bytes-read flattens to the logical content.
+    let left = op_bytes_new(vec![10, 20]);
+    let right = op_bytes_new(vec![30]);
+    let rope = op_bytes_concat(left, right);
+    assert_eq!(
+        op_bytes_read(rope),
+        vec![10u8, 20, 30],
+        "bytes-read flattens a concat rope to its logical bytes"
+    );
+    op_drop(rope);
+    // Totality: empty and null/immediate both read as the empty list.
+    assert_eq!(op_bytes_read(op_bytes_new(Vec::new())), Vec::<u8>::new());
+    assert_eq!(
+        op_bytes_read(Handle::NULL),
+        Vec::<u8>::new(),
+        "null reads as empty (cross-kind total)"
+    );
+}
+
+#[test]
 fn bytes_alloc_small_is_inline_large_is_heap_and_both_round_trip() {
     reset();
     let before = live_nodes();
