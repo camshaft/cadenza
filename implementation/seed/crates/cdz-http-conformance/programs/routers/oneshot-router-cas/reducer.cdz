@@ -1,0 +1,37 @@
+// A ONESHOT ROUTER whose route decision is a CAS-BODY response terminal (D11.3, v-hivemind). Where the
+// oneshot-router (sibling) hands off by dispatch target (Name/CasTarget), THIS router terminates the request
+// itself with an http.response-cas — a response whose BODY lives in the CAS, named by its content hash. The
+// daemon (emit_oneshot) resolves body_hash from the node CAS and streams the blob; a dangling hash -> 500/502.
+//
+// HEAD-ONLY, BREAK-ONLY, NO EFFECTS — a valid oneshot router (the daemon's classifier rejects a Continue-ing or
+// effectful router). It Breaks on the opening message with the http.response-cas terminal; it never reads the
+// body and emits no requests. Unlike the http-casref HANDLER (which `blobs.put`s the body at runtime to get the
+// hash — a handler MAY emit effects), a router must NOT emit effects, so the body_hash is BAKED: it is the CAS
+// content-address (HashTag::Blob) of a FIXED body payload the e2e seeds into the node CAS via CasBlobStore.put.
+//
+// THE BAKED body_hash below is Hash::of(HashTag::Blob, BODY) where
+//   BODY = "cas-backed body served by the oneshot-router (D11.3)"  (52 bytes)
+// so v-hivemind's e2e seeds exactly BODY (put -> the same 33-byte Blob hash), installs this router, requests
+// any path, and asserts 200 with the streamed CAS body == BODY. (Resolution is tag-agnostic — a Blob or Program
+// hash of the same bytes both resolve — but this bakes the exact Blob-tagged hash `put` returns.)
+//
+// Self-contained (does NOT compose http-lib): it imports the ResponseCas terminal types + descriptor directly
+// from the http-response-cas contract, so http-response's `Header` is NOT pulled in — avoiding the CDZ0201
+// collision between the two identical `Header` types (the http-casref idiom).
+import { ResponseCas, Header, descriptor as response-cas-descriptor } from "http-response-cas"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+// The baked CAS content-address (HashTag::Blob = 0x05 tag byte + 32-byte blake3 digest) of the fixed BODY.
+def body-hash() =
+  b"\x05\x1c\x5a\x15\xb9\x95\xc8\x6f\xd4\xd1\xca\x68\x5f\xfa\xb7\x11\xfd\xec\x3c\x7f\x80\x6a\x07\x67\x4f\xe9\xa9\x6c\x59\x22\xa7\x98\x76"
+
+// Break with the CAS-body response terminal on the opening message — head-only, no body read, no effects.
+def on-message(_msg) =
+  { requests = ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64)))),
+    outcome = Outcome.Close({ schema = response-cas-descriptor().id,
+                              reason = Value.encode(ResponseCas.ResponseCas({
+                                status = 200,
+                                headers = [Header.Header({ name = "content-type", value = "application/octet-stream" })],
+                                body_hash = body-hash() })) }) }
+
+export { on-message, on-response, on-notification }
