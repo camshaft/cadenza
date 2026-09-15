@@ -75,10 +75,14 @@ function parseSexp(toks: string[]): Sexp | null {
 }
 
 /// A MidiEvent form is `(: (tuple <on> <chan> <note> <vel> <tick>) MidiEvent)` — a 3-element list
-/// [":", (tuple …), "MidiEvent"] whose middle child is a 6-element list ["tuple", on, chan, note, vel, tick].
+/// The middle child is a 6-element list ["tuple", on, chan, note, vel, tick]. The renderer emits the tuple
+/// either BARE — `(tuple on chan note vel tick)` (the structural form since #8847, 34da3e4b17, which dropped
+/// the `(: value type)` ascription) — or, on the legacy ascribed path, wrapped as `(: (tuple …) MidiEvent)`
+/// i.e. [":", (tuple …), "MidiEvent"]. Accept BOTH: unwrap the ascription when present, then match the tuple.
 function eventOf(form: Sexp): MidiEventRow | null {
-  if (!Array.isArray(form) || form.length !== 3 || form[0] !== ":" || form[2] !== "MidiEvent") return null;
-  const tup = form[1];
+  if (!Array.isArray(form)) return null;
+  // Legacy ascribed wrapper: (: (tuple …) MidiEvent) — unwrap to the inner tuple.
+  const tup = form.length === 3 && form[0] === ":" && form[2] === "MidiEvent" ? form[1] : form;
   if (!Array.isArray(tup) || tup.length !== 6 || tup[0] !== "tuple") return null;
   const [, on, chan, note, vel, tick] = tup as string[];
   if (on !== "true" && on !== "false") return null;

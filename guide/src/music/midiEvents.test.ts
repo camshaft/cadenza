@@ -46,6 +46,20 @@ test("finds MidiEvent forms regardless of the outer type-wrapper nesting", () =>
   assert.equal(p.rows[0].note, 67);
 });
 
+test("parses the BARE structural render (#8847) — tuples with no (: … MidiEvent) ascription", () => {
+  // Since #8847 (34da3e4b17) the value renderer drops the `(: value type)` ascription and emits the bare
+  // head-first form: `#list(#tuple(…) …)` (which tokenizes to `(list (tuple …) …)`). eventOf must match the
+  // bare 6-tuple directly (the MidiEvent tag is gone). This is what the live /music page + check:music-preload
+  // now receive; the ascribed form above stays supported for the legacy render path.
+  const bare = `#list(#tuple(true 0 60 90 0) #tuple(false 0 60 0 960) #tuple(true 0 64 90 960) #tuple(false 0 64 0 1920))`;
+  const p = parseMidiEvents(bare);
+  assert.ok(p.ok, "bare structural render parses as a MidiEvent list");
+  if (!p.ok) return;
+  assert.equal(p.rows.length, 4, "four events");
+  assert.deepEqual(p.rows[0], { on: true, chan: 0, note: 60, vel: 90, tick: 0 });
+  assert.equal(isBalanced(p.rows), true, "the bare-rendered stream is balanced");
+});
+
 test("ok:false for a non-MidiEvent value (a Bool or Int list), so the page falls back to scalar render", () => {
   assert.equal(parseMidiEvents(`(: true Bool)`).ok, false, "a Bool (R1/R3-balanced result) is not a MIDI list");
   assert.equal(parseMidiEvents(`(: (list 60 64 67) (List Int64))`).ok, false, "an Int64 list (R2 chord-notes) is not a MIDI list");
