@@ -8573,6 +8573,39 @@
               cargoCmd = "cargo run --locked --package xtask-mandates --profile release";
             };
 
+            # charterLintCheck — the CHARTER-DRIFT gate (v-nix 2026-09-15, wiring v-fleet-tooling's #8575
+            # `cargo xtask fleet lint-loops`). It lints the TRACKED charter (`fleet/AGENTS-fleet.md` + every
+            # `fleet/loops/*.md`) for STALE `cargo xtask fleet <sub> [--flag]` references — the #8322
+            # rename-drift class where a renamed/removed subcommand silently misleads every agent that
+            # re-reads its charter each tick. The valid set is DERIVED from the clap FleetCmd tree baked into
+            # `xtaskBin`, so it self-updates as the CLI evolves (no hardcoded list to rot).
+            #
+            # SHAPE (v-nix's call, replying to v-ft's offer): SHELL the already-built `xtaskBin` rather than
+            # extract a standalone crate — the lint is charter-file-bound + cheap to RUN, so a standalone
+            # crate's independent-closure caching win is marginal, and reusing `xtaskBin` (warm across the
+            # fleet — quoteCorpusGate/baselineDriftAssert already consume it) means ZERO extra compile here.
+            # The one wrinkle v-ft flagged — `fleet/` is repo-root, OUTSIDE the xtask crate closure, so
+            # `seedSrc` does not carry it — is solved WITHOUT widening any src: `lint_loops` reads its charter
+            # files from `Paths::resolve`'s `CDZ_REPO_ROOT`-override seam (the same relocatability seam the
+            # per-subcommand nix apps use), so we point it at a MINIMAL fileset carrying ONLY the two linted
+            # inputs. That scopes the derivation's input hash to EXACTLY the charter files → it re-runs only
+            # when a role body / the contract changes, never on an unrelated fleet/ script edit.
+            charterSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [ ./fleet/AGENTS-fleet.md ./fleet/loops ];
+            };
+            charterLintCheck = pkgs.runCommand "cargo-xtask-lint-loops"
+              { nativeBuildInputs = [ xtaskBin ]; } ''
+              set -euo pipefail
+              # CDZ_REPO_ROOT → the minimal charter-only source; `fleet.src` = $CDZ_REPO_ROOT/fleet, so
+              # lint_loops reads AGENTS-fleet.md + loops/*.md from here (no cargo repo / registry needed —
+              # resolve_hub falls back cleanly and the LintLoops arm touches only fleet.src). Exit 1 + a
+              # per-file stale list on drift makes this a real gate, not advisory.
+              export CDZ_REPO_ROOT=${charterSrc}
+              xtask fleet lint-loops
+              echo "ok: charter-lint-loops — every fleet subcommand/flag reference across the 16 tracked charter files (AGENTS-fleet.md + 15 loops/*.md) resolves to a real subcommand + flag (#8575)" > "$out"
+            '';
+
             # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
             # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
             # EXACTLY the 9 merge-required contexts (ruleset-10 MINUS test-macos, which is native x86/macos
@@ -8647,6 +8680,13 @@
                   # fleet-wide `cdz fmt --check` gate on the 6 canonical domain src dirs. Cheap front-end
                   # (cached seedCompiler bin, no store/runtime), green-confirmed standalone before the fold.
                   cdzFmtCheck
+                  # charterLintCheck FOLDED IN (v-nix 2026-09-15, wiring v-ft #8575): a STALE
+                  # `cargo xtask fleet <sub>` ref in a role body / the contract (the #8322 rename-drift
+                  # class) now BLOCKS the merge path — teeth a required-status can't give under self-merge,
+                  # and it stops a renamed/removed subcommand from silently misleading every agent that
+                  # re-reads its charter each tick. Cheap: shells the warm xtaskBin over a 2-input charter
+                  # fileset (no compile here). Green-confirmed on the current 16 charter files before the fold.
+                  charterLintCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
                   wasmtimeSingleHolderAssert compilerPureLibraryAssert memberRegistrationAssert
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
@@ -8937,6 +8977,9 @@
             # mandate-lint: cargo xtask lint-mandates (no-integration-tests + future mechanizable mandates).
             # Folded into localGate's FAIL-SET (above) so a violation blocks the merge path (operator).
             mandate-lint = mandateLintCheck;
+            # charter-lint: cargo xtask fleet lint-loops (charter-drift guard, #8575). Folded into
+            # localGate's FAIL-SET (above) so a stale fleet-subcommand ref in a role body blocks merge.
+            charter-lint = charterLintCheck;
             # cdz-fmt-check: cdz fmt --check on the 6 canonical domain src dirs (v-code-cleanliness seq-282).
             # Folded into localGate's FAIL-SET (below) — the AUTHORITATIVE fleet-wide fmt gate.
             cdz-fmt-check = cdzFmtCheck;
