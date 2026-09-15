@@ -621,3 +621,36 @@ fn a_bare_literal_compared_against_a_bigint_still_grounds_to_bigint() {
         "(module m (def (f (: x BigInt)) (if (< x 5) 1 0)) (def (main) (f (BigInt.of 2))) (export main))",
     );
 }
+
+#[test]
+fn the_sibling_operand_classifier_family_stays_bounded_on_computed_operands() {
+    // COVERAGE-PINNING companion to the seq-925 fix above. Several contextual-literal-grounding
+    // classifiers share the same shape as `literal_comparison_bigint_context`: they climb from a bare
+    // literal to a binary operator and demand `type_of(sibling)` to ground the literal — the width climb
+    // `literal_binop_context_ty`, its float twin `literal_binop_float32_context`, and the quantity twin
+    // `qty_magnitude_context_ty`. An audit (2026-09-15) confirmed NONE of them exhibit the re-entry
+    // blow-up the BigInt path did (their sibling is typically a parameter, whose `type_of` is cheap and
+    // does not route back through the literal), and that a comparison whose BOTH operands are computed
+    // (`(= (+ (* n 2) 1) (- n 1))`) is likewise bounded. Pin these so a future change to any classifier
+    // in the family — or a re-introduction of an unmemoized sibling cycle — trips this test rather than
+    // silently returning to a deep recursion that only the wasm 1 MiB browser stack would surface.
+    let peak = |src: &str| {
+        let mut db = crate::db::Db::load(parse(src));
+        let _ = crate::diagnostics(&mut db);
+        db.max_descent_depth
+    };
+    for src in [
+        // Width-grounding comparison: a computed operand beside a fixed-width parameter.
+        "(module m (def (f (: n UInt8)) (= (+ n 1) n)) (def (main) (f 4)) (export main))",
+        // Width climb through arith (the `literal_binop_context_ty` spine) over a fixed-width parameter.
+        "(module m (def (f (: n UInt8)) (+ (+ n 1) n)) (def (main) (f 4)) (export main))",
+        // A comparison whose BOTH operands are computed expressions (no bare-literal operand at all).
+        "(module m (def (f n) (= (+ (* n 2) 1) (- n 1))) (def (main) (f 4)) (export main))",
+    ] {
+        let d = peak(src);
+        assert!(
+            d < 64,
+            "the sibling-operand classifier family must infer in bounded depth (was {d}): {src}"
+        );
+    }
+}
