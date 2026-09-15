@@ -435,6 +435,17 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
             };
             elem_scalar && recur(db, list, true)
         }
+        // `Bytes.at` READS a raw byte VALUE (an `Int64` — `bytes-get` returns the byte itself, no borrowed-
+        // handle `dup`, core.rs:500) — it BORROWS the buffer exactly like `BytesLen` and produces a SCALAR
+        // that holds NO alias into it. So a `Bytes.at` over `binder` is an UNCONDITIONAL borrow → recurse the
+        // buffer borrowed; the scalar element threaded into a back-edge arg does not escape `binder`. (Unlike
+        // `BytesSlice`/`StrAt`, which mint a byte-SLICE VIEW that aliases the container — a heap child that
+        // can escape; those stay unlisted here → `_ => false`, deny = leak, and are gated separately by the
+        // MatchSum arm's `collect_consuming_payload_sites` view-escape fence.) v-memory-safety: this is the
+        // `BytesLen`-vs-`Bytes.at` asymmetry that suppressed the invariant loop-param drop on a per-byte
+        // fold (`sum-bytes b i acc`) — `Bytes.len` had a borrow arm, `Bytes.at` did not, so the payload
+        // inlined as `SumExpect(BytesAt b i)` in the recursive-call arg fell to the deny fallback.
+        Core::BytesAt { bytes, .. } => recur(db, bytes, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
