@@ -566,3 +566,58 @@ fn a_loop_invariant_in_both_the_condition_and_the_body_is_hoisted_once() {
         "no `(* n 2)` remains inside the loop body (the body copy reads the hoisted slot): {code:?}"
     );
 }
+
+#[test]
+fn a_comparison_of_a_computed_operand_against_a_bare_param_infers_in_bounded_depth() {
+    // Operator-elevated (seq 925): a THREE-NODE expression — `(= (+ n 1) n)`, `(= (* n 2) n)`, or a
+    // guarded match arm `(< x 0)` — used to drive the demand-query recursion to the DESCENT_DEPTH_LIMIT
+    // (1024). The cycle was in `infer::literal_comparison_bigint_context`: to decide whether a bare
+    // integer comparison-operand grounds to `BigInt`, it demands `type_of(sibling)`; when NEITHER operand
+    // has a memoized type yet (a computed expr beside a bare parameter), computing the sibling's type
+    // re-demands THIS operand's type, which re-enters the check on the same node — an unbounded ping-pong
+    // stopped only by the depth guard. Native's 512 MB compile worker survived it; the wasm browser
+    // compiler's 1 MiB shadow stack OVERFLOWED (memory-access-out-of-bounds), violating decline-don't-crash
+    // on the browser surface. A re-entry guard (`db.comparison_bigint_probe`) breaks the cycle: the literal
+    // keeps its default type, which is always the safe fallback (the grounding is best-effort contextual
+    // typing, never load-bearing). This pins the peak recursion depth PROPORTIONAL to the (tiny) input —
+    // profile-independent, unlike a native stack-overflow which is fragile to frame size.
+    let peak = |src: &str| {
+        let mut db = crate::db::Db::load(parse(src));
+        let _ = crate::diagnostics(&mut db);
+        db.max_descent_depth
+    };
+    // Each of these is a shallow program; before the fix each reached the 1024 depth limit. A generous
+    // bound of 64 leaves ample headroom for legitimate descent while still catching the ~1024 blowup.
+    for src in [
+        "(module m (def (f n) (= (+ n 1) n)) (def (main) (f 4)) (export main))",
+        "(module m (def (f n) (= (* n 2) n)) (def (main) (f 4)) (export main))",
+        "(module m (def (f n) (= (/ n 2) n)) (def (main) (f 4)) (export main))",
+        "(module m (def (f n) (match n ((guard x (< x 0)) -1) (_ 1))) (def (main) (f 4)) (export main))",
+    ] {
+        let d = peak(src);
+        assert!(
+            d < 64,
+            "a three-node comparison must infer in bounded depth (was {d}, the runaway ~1024): {src}"
+        );
+    }
+}
+
+#[test]
+fn a_bare_literal_compared_against_a_bigint_still_grounds_to_bigint() {
+    // NO REGRESSION of the feature `literal_comparison_bigint_context` exists for (seq-257): a BARE integer
+    // literal compared against a concretely-`BigInt` sibling grounds to `BigInt` so the comparison
+    // type-checks (rather than a CDZ0301 fixed-vs-BigInt mismatch). The re-entry guard added above must not
+    // disturb this — a genuine `BigInt` sibling's type resolves WITHOUT routing back through the literal, so
+    // no re-entry fires and the grounding still applies. Both `(= x 5)` and `(< x 5)` with `x : BigInt`
+    // must compile (the `5` takes `BigInt`) and evaluate correctly.
+    let compile = |src: &str| {
+        compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a bare literal compared to a BigInt grounds and compiles")
+    };
+    compile(
+        "(module m (def (f (: x BigInt)) (if (= x 5) 1 0)) (def (main) (f (BigInt.of 5))) (export main))",
+    );
+    compile(
+        "(module m (def (f (: x BigInt)) (if (< x 5) 1 0)) (def (main) (f (BigInt.of 2))) (export main))",
+    );
+}

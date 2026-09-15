@@ -199,6 +199,7 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
         ));
     }
     db.descent_depth += 1;
+    db.max_descent_depth = db.max_descent_depth.max(db.descent_depth);
     let c = compute(db, id);
     db.descent_depth -= 1;
     trace!(target: "rcdzc::lower", node = id.0, core = ?c, "lowered");
