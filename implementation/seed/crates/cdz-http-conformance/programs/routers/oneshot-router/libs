@@ -1,2 +1,4 @@
 implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
 implementation/seed/crates/cdz-http-conformance/programs/lib/http-lib.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/http-dispatch-name.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/http-dispatch-cas.cdz

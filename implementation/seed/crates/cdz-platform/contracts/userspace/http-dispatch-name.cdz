@@ -1,0 +1,25 @@
+// The HTTP-outpost NAME-RESOLVED DISPATCH contract (D16 sibling flip): hand a request off to a target
+// subprogram named by a NAME-DIRECTORY key the host resolve_names to a cas target. Sibling of
+// http-dispatch-cas (direct content-address); the target distinction rides in the CONTRACT-ID (operator:
+// sibling contracts, not an enum). Replaces the former http-dispatch `Target.Name` variant.
+//
+// `name` is opaque bytes (a `String.to-bytes` key), consistent with the bytes-typed name directory; `input`
+// the bytes delivered to the resolved subprogram as its first message (a oneshot daemon that replays the
+// ORIGINAL request to a fresh ephemeral session leaves it empty). Userspace: emitted on descriptor().id.
+type DispatchName = | DispatchName(Record(name: Bytes, input: Bytes))
+
+def a-dispatch-name() -> DispatchName =
+  DispatchName.DispatchName({ name = b"echo", input = b"" })
+
+@test
+def dispatch-name-conforms() =
+  match a-dispatch-name() with
+  | DispatchName.DispatchName(d) =>
+    if (d.name == b"echo") and (d.input == b"")
+    then unit
+    else trap("http-dispatch-name field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.dispatch-name", "DispatchName", "DispatchName")
+export { DispatchName.*, descriptor }

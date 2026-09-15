@@ -14,7 +14,7 @@
 import { Outcome } from "reducer-lib"
 import { Header, Response, descriptor as response-descriptor } from "http-response"
 import { Deny, descriptor as deny-descriptor } from "http-deny"
-import { Dispatch, Target, descriptor as dispatch-descriptor } from "http-dispatch"
+import { DispatchCas, descriptor as dispatch-cas-descriptor } from "http-dispatch-cas"
 import { descriptor as control-send-descriptor } from "control-send"
 
 // The types no single wire contract owns: the request method (http-request + http-route-table each define
@@ -29,7 +29,7 @@ type Route =
 
 // The COMPUTED contract-ids the guests tag their effect/terminal payloads with — each userspace contract's own
 // `descriptor().id` (the same id the gateway's effect resolver derives; one source of truth, no baked markers).
-def dispatch-contract() = dispatch-descriptor().id
+def dispatch-cas-contract() = dispatch-cas-descriptor().id
 def http-response-schema() = response-descriptor().id
 def deny-schema() = deny-descriptor().id
 def control-send-contract() = control-send-descriptor().id
@@ -68,11 +68,11 @@ def deny(status: Int64, reason: Bytes) =
                               reason = Value.encode(Deny.Deny({ status = status, reason = reason })) }) }
 
 // Emit a dispatch effect naming a handler by CAS TARGET (its ProgramHash) + the request input; continue
-// (awaiting the response). The classic dispatch-by-hash is the `Target.CasTarget` variant of the enum target;
-// a oneshot router names a handler by `Target.Name` instead (see programs/routers/oneshot-router).
+// (awaiting the response). Dispatch-by-hash rides the http.dispatch-cas contract; a oneshot router names a
+// handler by NAME on the sibling http.dispatch-name contract instead (see programs/routers/oneshot-router).
 def dispatch(handler: Bytes, input: Bytes) =
-  { requests = [ { contract = dispatch-contract(),
-                   payload = Value.encode(Dispatch.Dispatch({ target = Target.CasTarget(handler), input = input })),
+  { requests = [ { contract = dispatch-cas-contract(),
+                   payload = Value.encode(DispatchCas.DispatchCas({ target = handler, input = input })),
                    token = b"root-dispatch",
                    deadlineNanos = (None : Option(UInt64)) } ],
     outcome = Outcome.Continue }
@@ -99,6 +99,6 @@ def control-send-deadline(payload: Bytes, deadline-nanos: UInt64) =
     outcome = Outcome.Continue }
 
 export { Method.*, Request.*, Route.*,
-         dispatch-contract, http-response-schema, deny-schema, control-send-contract,
+         dispatch-cas-contract, http-response-schema, deny-schema, control-send-contract,
          no-requests, method-code, respond-encoded, respond, respond-routes, deny, dispatch,
          control-send, control-send-deadline }
