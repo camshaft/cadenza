@@ -3653,6 +3653,51 @@ fn read_alarm_files(dir: &Path) -> Vec<(String, String)> {
     out
 }
 
+/// Parse the `rc=<n>` exit-code field from a `.last-run` stamp's last line, if present. The wrapper crons
+/// (compact-nudge / reap-leases / aea-refresh / drain-nudge / watchdog) write `<ts> rc=<n> <summary>`; the
+/// others (cpu-monitor, disk-guard, prune-*) have no `rc=` field. Returns the parsed code, or `None` when
+/// there is no `rc=` token (that cron is not rc-instrumented → not a failure). Pure so the tokenizer is
+/// unit-tested.
+fn parse_last_run_rc(last_line: &str) -> Option<u64> {
+    last_line
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("rc=").and_then(|n| n.parse::<u64>().ok()))
+}
+
+/// Collect ERRORING fleet crons: every `<hub>/*.last-run` stamp whose last non-empty line reports a NONZERO
+/// `rc=` — a wrapper cron that FIRED but whose command FAILED (e.g. compact-nudge's `cargo: command not found`
+/// rc=127, 2026-09-15, which silently broke the concierge self-heal until a manual `.last-run` audit caught
+/// it). Returns `(filename, rc, last-line)` sorted by name. A stamp with no `rc=` field, an empty stamp, or an
+/// unreadable dir → skipped (never a false failure). Pure over the fs so `status` stays a thin printer and this
+/// is unit-testable. (A cron that silently STOPPED scheduling — its stamp goes stale rather than erroring — is
+/// a separate, interval-aware check, not covered here.)
+fn cron_health_failures(dir: &Path) -> Vec<(String, u64, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.filter_map(Result::ok) {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".last-run") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&p).unwrap_or_default();
+        let Some(last) = body.lines().map(str::trim).rfind(|l| !l.is_empty()) else {
+            continue;
+        };
+        if let Some(rc) = parse_last_run_rc(last)
+            && rc != 0
+        {
+            out.push((name.to_string(), rc, last.to_string()));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
 /// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
 /// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
@@ -3796,6 +3841,17 @@ fn status(fleet: &Fleet) {
         };
         println!(
             "  disk: {pct}% used, {free_g:.0}G free on / (disk-guard warn=85% high=92%){flag}"
+        );
+    }
+
+    // CRON HEALTH — surface any control-plane cron whose LAST run ERRORED (nonzero `rc=` in its `.last-run`
+    // stamp). This auto-detects the failure class that silently broke the concierge self-heal (compact-nudge
+    // `cargo: command not found` rc=127, 2026-09-15) — previously only a manual `.last-run` audit found it, by
+    // chance. A cron with no `rc=` field (cpu-monitor/disk-guard/prune-*) is not flagged (not rc-instrumented).
+    for (name, rc, line) in cron_health_failures(&fleet.root) {
+        println!(
+            "  ⚠ CRON {name} last run FAILED (rc={rc}): {line} — a control-plane cron errored; check its \
+             wrapper (PATH/toolchain?) or `.last-run`."
         );
     }
 
@@ -20464,6 +20520,73 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Empty dir / missing dir → no alarms (never a false alarm).
         let _ = std::fs::remove_dir_all(&dir);
         assert!(read_alarm_files(&dir).is_empty(), "missing dir → no alarms");
+    }
+
+    #[test]
+    fn parse_last_run_rc_extracts_the_rc_field() {
+        // The compact-nudge regression that motivated this: rc=127.
+        assert_eq!(
+            parse_last_run_rc(
+                "2026-09-15T12:05:03+00:00 rc=127 wt=concierge cargo: command not found"
+            ),
+            Some(127)
+        );
+        assert_eq!(
+            parse_last_run_rc("2026-09-15T12:00:02+00:00 rc=0 ok"),
+            Some(0)
+        );
+        // No rc= field (cpu-monitor/disk-guard/prune-*) → None (not rc-instrumented, not a failure).
+        assert_eq!(
+            parse_last_run_rc("2026-09-15T12:00:02+00:00 band=OK use=58%"),
+            None
+        );
+        assert_eq!(parse_last_run_rc(""), None);
+        // A non-numeric rc= is ignored (defensive).
+        assert_eq!(parse_last_run_rc("rc=oops"), None);
+    }
+
+    #[test]
+    fn cron_health_failures_flags_only_nonzero_rc_stamps() {
+        let dir = std::env::temp_dir().join(format!("cdz-cronhealth-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Erroring wrapper cron → flagged.
+        std::fs::write(
+            dir.join("compact-nudge.last-run"),
+            "2026-09-15T12:05:03+00:00 rc=127 wt=concierge cargo: command not found\n",
+        )
+        .unwrap();
+        // Healthy wrapper cron → NOT flagged.
+        std::fs::write(
+            dir.join("reap-leases.last-run"),
+            "2026-09-15T12:00:02+00:00 rc=0 ok\n",
+        )
+        .unwrap();
+        // Non-rc-instrumented cron → NOT flagged (no rc= field).
+        std::fs::write(
+            dir.join("disk-guard.last-run"),
+            "2026-09-15T12:00:02+00:00 band=OK use=58%\n",
+        )
+        .unwrap();
+        // A non-.last-run file → ignored.
+        std::fs::write(dir.join("registry.json"), "{}").unwrap();
+
+        let got = cron_health_failures(&dir);
+        assert_eq!(
+            got.len(),
+            1,
+            "only the nonzero-rc stamp is flagged: {got:?}"
+        );
+        assert_eq!(got[0].0, "compact-nudge.last-run");
+        assert_eq!(got[0].1, 127);
+        assert!(got[0].2.contains("cargo: command not found"));
+
+        // Missing dir → no failures (never a false positive).
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            cron_health_failures(&dir).is_empty(),
+            "missing dir → no failures"
+        );
     }
 
     #[test]
