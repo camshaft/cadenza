@@ -13789,3 +13789,52 @@
   (call main (: 10 Int64))
   (output (: 120 Int64))
   (live-objects known-leak))
+
+; hofpipe2 — the EMPTY-CAPTURE companion of hofpipe1, and the EXACT shape #8997 miscompiled (guide-0411's
+; `filter even -> map (* 3) -> fold (+)`, all EMPTY-capture closures — the reclaimable `hc1` class, distinct
+; from hofpipe1's capturing `hc2` class). Same applied-AND-rethreaded closure-param edge through three
+; recursive drivers; the only free variable is the fold `seed`, threaded as `acc` (NOT captured by a closure),
+; so the map/filter/fold closures carry no environment. Pins the value across two seeds (seed=0 -> 36,
+; seed=100 -> 136) as the semantics-corpus guard for the miscompile that previously only guide-exec-0411 caught.
+(case
+  "hofpipe2 an EMPTY-CAPTURE filter->map->fold pipeline applies AND re-threads a closure param per recursion (value pin: the exact #8997 miscompile shape)"
+  (doc
+    "The empty-capture twin of hofpipe1 and the precise guide-0411 shape #8997 miscompiled to 0. `main(seed)`
+           runs `1..6 |> filter even |> map (* 3) |> fold (+) seed` through three recursive higher-order drivers,
+           each applying its closure param and re-threading the SAME param on its self-recursive edge. Every
+           closure is empty-capture (the fold seed is threaded as `acc`, not captured), so this exercises the
+           reclaimable combinator class (hc1) rather than the capturing-leak class (hc2). seed=0: 6+12+18=36;
+           seed=100: 100+36=136. The value is the correctness invariant; a closure-reclaim change must preserve
+           it — #8997 dropped the load-bearing per-iteration retain of the rethreaded closure and returned the
+           bare seed.")
+  (input
+    (do
+      (type Iter (Nil unit) (Cons (Tuple Int64 Iter)))
+      (def
+        (from-list xs)
+        (match xs (#list() (Nil unit)) (#list(h (.. t)) (Cons #tuple(h (from-list t))))))
+      (def
+        (ifilter it p)
+        (match
+          it
+          ((Nil _) (Nil unit))
+          ((Cons c) (if (p (. c 0)) (Cons #tuple((. c 0) (ifilter (. c 1) p))) (ifilter (. c 1) p)))))
+      (def
+        (imap it f)
+        (match it ((Nil _) (Nil unit)) ((Cons c) (Cons #tuple((f (. c 0)) (imap (. c 1) f))))))
+      (def (ifold it acc f) (match it ((Nil _) acc) ((Cons c) (ifold (. c 1) (f acc (. c 0)) f))))
+      (def
+        (main (: seed Int64))
+        (ifold
+          (imap (ifilter (from-list #list(1 2 3 4 5 6)) (fn (x) (= 0 (% x 2)))) (fn (x) (* x 3)))
+          seed
+          (fn (a x) (+ a x))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 36 Int64))
+  (call main (: 100 Int64))
+  (output (: 136 Int64))
+  ; known-leak: measured 29 live objects — the retention is the Iter/tuple SPINE (from-list builds 6 nodes,
+  ; filter/map rebuild ~3 each) that is not reclaimed, NOT the empty-capture closures; same tracked reclaim
+  ; gap class as hofpipe1. The durable guard here is the hard value pin; the spine-reclaim lane owns the flip.
+  (live-objects known-leak))
