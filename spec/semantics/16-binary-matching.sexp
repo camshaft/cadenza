@@ -2380,15 +2380,18 @@
            SAME bin — splitting the decode across nested matches declines.) mode 1: frames
            [10],[20 30],[1·40] → 10·1+50·2+40·3 = 230; mode 2: one 3-byte frame → 18·1 = 18;
            mode 3: EMPTY stream → base case → 0.
-           LEAK (v-memory-safety, pinned `known-leak 3 1 0`): the per-iteration `Bytes.at` Option HUSK inside
-           the recursive `sum-bytes` loop is now RECLAIMED (the self-loop-tail all-scalar shell reclaim,
-           threaded through `scrut_shell_reclaim` into `emit_loop_iteration`), which cut the leak from 7→3
-           (mode 1). The RESIDUAL 3/1/0 (constant per frame — one `body` value each) is a SEPARATE class:
-           `sum-bytes`'s borrowed-INVARIANT `body` param is not reclaimed after the borrowing recursive call
-           (the loop-param reclaim is suppressed when the loop body holds the `Bytes.at` MatchSum — cf.
-           `s_lenonly` reclaims a Bytes.len-only recursive borrow to 0). Tracked; flip to `0` when that
-           recursive-borrow-param class is closed. The exact `known-leak N` pins the husk reclaim (a
-           regression back to 7 FAILS the direct-path drift guard).")
+           FULLY RECLAIMED (v-memory-safety, `live-objects 0`): two reclaim classes had to close for this
+           multi-frame recursive drain to reach 0. (1) The per-iteration `Bytes.at` Option HUSK inside the
+           recursive `sum-bytes` loop (the self-loop-tail all-scalar shell reclaim, threaded through
+           `scrut_shell_reclaim` into `emit_loop_iteration`; #8983) — cut 7→3. (2) `sum-bytes`'s borrowed-
+           INVARIANT `body` param, not reclaimed after the borrowing recursive call: the loop-param exit-drop
+           analysis (`param_only_borrowed_or_backedge_rec`) had a `BytesLen`-vs-`Bytes.at` asymmetry — `Bytes.len`
+           was recognized as a borrow but `Bytes.at` was not, so the scalar byte payload inlined as
+           `SumExpect(BytesAt b i)` in the recursive-call arg fell to the deny fallback and suppressed the
+           invariant-param drop (cf. `s_lenonly`, a `Bytes.len`-only recursive borrow, already reclaimed to 0).
+           Adding a `Bytes.at` borrow arm (scalar `Int64` element, no alias into the buffer — unlike a
+           `Bytes.slice`/`Str.at` VIEW) closed it, cutting the residual 3/1/0 → 0/0/0. `live-objects 0` is now
+           an EXACT drift guard; the guarded-all / live-objects backstop TRAPS on a reintroduced over-reclaim.")
   (input
     (do
       (def
@@ -2422,7 +2425,7 @@
   (output (: 18 Int64))
   (call main (: 3 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 3 1 0))
+  (live-objects 0))
 
 (case
   "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
