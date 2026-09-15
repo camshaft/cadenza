@@ -1,33 +1,31 @@
-// The ONESHOT ROOT ROUTER (D11 oneshot-dispatch model, v-hivemind ingress rewrite). Unlike root-router-baked
-// (which bakes handler ProgramHashes, dispatches BY HASH on an Outcome.Continue, and folds the handler's
-// response through on-response), this router is driven HEAD-ONLY by the daemon (drive_router) and BREAKS
-// (Outcome.Close) — never Continues — handing the request off to a handler BY ALIAS.
+// The ONESHOT ROOT ROUTER (D11 oneshot-dispatch model, v-hivemind ingress rewrite; operator 2026-09-15:
+// "just support the single shot router interface that delegates to an ephemeral session", one interface, no
+// backward-compat). The daemon drives this router HEAD-ONLY (drive_router) and it BREAKS (Outcome.Close) —
+// never Continues — handing the request off to a handler BY ALIAS. The daemon reads the Break reason record's
+// `alias` field, resolves it to a bound handler ProgramHash (drive::bind_name / resolve_name, a name
+// directory), and spawns a FRESH ephemeral session for that handler, replaying the ORIGINAL request to it.
 //
 // THE ONESHOT CONTRACT (v-hivemind daemon-side):
 //   * The router sees the http-request HEAD only and must NOT read the body (the daemon replays the ORIGINAL
 //     request — head + unread body — to the resolved handler; that is the whole point of head-only).
 //   * It must BREAK (terminal), never Continue, and import no effects — a Continue-ing or effectful router is
-//     rejected by the daemon's classifier.
-//   * It Breaks under the http.dispatch SCHEMA (the same contract-id the classic subprogram-dispatch uses, so
-//     no daemon decode change) with a reason carrying a NON-EMPTY `alias` field (the D11 http-dispatch
-//     extension). The daemon reads `alias` generically (record_field), resolves it to a bound handler
-//     ProgramHash (drive::bind_name / resolve_name, a name directory), and spawns+drives that handler with the
-//     original request. An unbound alias resolves to a 404 daemon-side.
+//     rejected by the daemon's classifier (classify_router_terminal: Continue => 500; any emitted
+//     request/effect => 500).
+//   * It Breaks UNDER the http.dispatch contract-id (schema) with a reason that is a value-doc RECORD carrying
+//     ONE field named `alias` (non-empty bytes) = the handler alias. The daemon decodes the reason GENERICALLY
+//     (record_field "alias"), so the reason is a plain alias record — NOT the classic subprogram-hash dispatch
+//     shape. This is the ONLY dispatch interface the oneshot router speaks (no subprogram fallback path).
 //
 // Dispatch-BY-ALIAS needs NO build-time hash injection: the router names a stable alias ("echo") as a literal,
-// and the alias is resolved at dispatch time — so this source ships pristine (no placeholder handler markers,
-// no deploy templating), unlike root-router-baked.
+// resolved at dispatch time — so this source ships pristine (no placeholder handler markers, no deploy
+// templating), unlike root-router-baked (the conformance gateway's classic dispatch-by-hash router).
 //
 // TWO REQUEST-DELIVERY SHAPES (mirrors counter): the request arrives either as the whole `http-request`
 // `Request` value (the conformance gateway) or the head-first `Head` (method: String — the live hivemind
 // daemon, no body). We dual-decode: try `Request` first, then a local structural `Head` copy. Both carry the
 // path, so ONE `route` helper serves both. `Head` uses http-response's `Header` (structurally identical to
 // http-request-head's own Header) so only ONE `Header` type is in scope (no CDZ0201 collision with `respond`).
-//
-// SHIPPING: built by the flake's program auto-discovery (nix build .#cdz-http-conformance-programs ->
-// result/oneshot-router.wasm); v-hivemind publishes it to the CAS + installs it as the oneshot root router.
 import { Request, respond, dispatch-contract, no-requests } from "http-lib"
-import { Dispatch } from "http-dispatch"
 import { Header } from "http-response"
 import { Outcome, on-response, on-notification } from "reducer-lib"
 
@@ -36,12 +34,19 @@ import { Outcome, on-response, on-notification } from "reducer-lib"
 type Head =
   | Head(Record(method: String, path: String, query: String, headers: List(Header)))
 
-// The BREAK terminal: hand off to a handler BY ALIAS via the http.dispatch schema. Empty subprogram/input — the
-// daemon replays the ORIGINAL request to the resolved handler, so an alias router supplies neither.
+// The oneshot route-decision reason: a value-doc record with a single `alias` field. Single-ctor record newtype
+// (Value.encode elides the ctor + ascribes the inner record with the type name), so the encoded value is
+// `(: #record((= alias b"echo")) RouteTarget)`; the daemon reads `record_field(reason, "alias")` generically.
+type RouteTarget =
+  | RouteTarget(Record(alias: Bytes))
+
+// The BREAK terminal: hand off to a handler BY ALIAS. Break under the http.dispatch contract-id (schema) with
+// the alias record as the reason. No subprogram / no router-supplied input — the daemon replays the ORIGINAL
+// request to the resolved handler's fresh ephemeral session.
 def dispatch-alias(alias: Bytes) =
   { requests = no-requests(),
     outcome = Outcome.Close({ schema = dispatch-contract(),
-                              reason = Value.encode(Dispatch.Dispatch({ subprogram = b"", input = b"", alias = alias })) }) }
+                              reason = Value.encode(RouteTarget.RouteTarget({ alias = alias })) }) }
 
 // Route on path (BYTES equality; runtime String-eq is declined): /echo -> Break dispatching alias "echo"; a
 // trivial GET / fast-path -> a direct one-shot http.response 200 (the optional smoke, proving a router MAY also
