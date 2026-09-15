@@ -13272,6 +13272,13 @@ const NIX_GATE_MAX_JOBS: &str = "4";
 /// it reports the complete set. Cost is bounded: only a RED gate does the extra work (a GREEN gate builds
 /// every constituent anyway), and `--max-jobs 4` already caps that extra work to 4-wide. Kept consistent
 /// with v-nix's `apps.gate` (`nix run .#gate`, #5303), which added `--keep-going` on the convenience surface.
+///
+/// `--fallback` (transient-substituter resilience 2026-09-15): if a binary substitute can't be fetched — a
+/// cachix hiccup, a network blip, or a CA-derivation REALISATION lookup erroring (the HTTP 522 that halted
+/// every agent's gate-local + all direct-to-main landings until cachix's origin recovered) — build that path
+/// FROM SOURCE instead of hard-failing. Purely additive: never fails a build that would otherwise pass; worst
+/// case a slower source-built but GREEN gate during an outage, versus a fleet-wide RED landing block. v-nix
+/// may also set `fallback = true` in nix.conf for fleet-wide coverage; this hardens the gate path itself.
 /// `--option eval-cache false` (concierge+v-nix stale-nix fix 2026-08-29): `/etc/nix/nix.conf` runs
 /// `lazy-trees = true` + `eval-cache = true`, and on a DIRTY worktree the lazy tree-fingerprint
 /// UNDER-invalidates the per-user eval-cache (`~/.cache/nix/eval-cache-v6`) — so nix serves a STALE
@@ -13282,13 +13289,21 @@ const NIX_GATE_MAX_JOBS: &str = "4";
 /// `run_gate_local_bounded`) — eval-cache speed is untouched for every other nix invocation. v-nix owns
 /// the nix side + verifies; if the standalone corpus checks outside local-gate also need it, that is a
 /// system `nix.conf` question surfaced to the operator, not this wrapper.
-fn nix_gate_argv(target: &str) -> [String; 10] {
+fn nix_gate_argv(target: &str) -> [String; 11] {
     [
         "build".into(),
         target.into(),
         "--no-link".into(),
         "--print-out-paths".into(),
         "--keep-going".into(),
+        // --fallback (transient-substituter resilience, 2026-09-15): if a binary substitute can't be
+        // fetched — a cachix hiccup, a network blip, or a CA-derivation REALISATION lookup erroring (the
+        // HTTP 522 that halted every agent's gate-local + all direct-to-main landings until cachix's origin
+        // recovered) — build that path FROM SOURCE instead of hard-failing the gate. Purely additive: it
+        // never fails a build that would otherwise pass; the worst case is a slower (source-built) but GREEN
+        // gate during a substituter outage, versus a fleet-wide RED landing block. (For full fleet-wide
+        // coverage v-nix may also set `fallback = true` in nix.conf — this flag hardens the gate path itself.)
+        "--fallback".into(),
         "--max-jobs".into(),
         NIX_GATE_MAX_JOBS.into(),
         "--option".into(),
@@ -20231,6 +20246,13 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             argv.iter().any(|a| a == "--keep-going"),
             "gate-local must pass --keep-going so one red run surfaces every failing sub-check"
+        );
+        // --fallback (transient-substituter resilience): a substitute/CA-realisation fetch failure (a cachix
+        // 522, a network blip) must degrade to a SOURCE build, never hard-fail the gate → no fleet-wide
+        // landing block on a transient cache hiccup.
+        assert!(
+            argv.iter().any(|a| a == "--fallback"),
+            "gate-local must pass --fallback so a transient substituter/realisation failure builds from source instead of red-ing the gate"
         );
         // --max-jobs <NIX_GATE_MAX_JOBS>: the derivation-parallelism cap that keeps one gate from melting
         // the box (load-85 saturation). The flag and its value MUST stay ADJACENT (nix pairs them).
