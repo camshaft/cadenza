@@ -846,12 +846,12 @@
   (output (: -1 Int64))
   (call main (: 14 Int64))
   (output (: 4 Int64))
-  ; Per-call (B2 #5101): the seen-set accumulator leak SCALES with the number of `Set.insert seen h`
-  ; before the walk stops, then plateaus — 1/2/4/5/4 inserts → 3/5/9/9/9 live. The whole-case
-  ; `known-leak 3` only matched call 0 (target 9, 1 insert); the true per-call vector is recorded here.
-  ; Underlying leak = a runtime Set/CHAMP accumulator + per-iteration walk cells not reclaimed (routed
-  ; to v-core-opt; distinct from the 3050 String-view/backing class). (v-memory-safety, coord v-corpus-harness)
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): was a per-iteration seen-set accumulator leak (vector 3/5/9/9/9 —
+  ; the CHAMP accumulator + walk cells). Closed by the `Set.contains` borrow arm (the varying `seen` set is
+  ; read via `Set.contains` AND rebuilt via `Set.insert seen h` — a reclaimed-rebox base-consume; once
+  ; `Set.contains` is recognized as a borrow, the old per-iteration versions are reclaimed on the back-edge
+  ; and the final one at loop exit). Census 0 on all five calls; values 1/2/4/-1/4.
+  (live-objects 0))
 
 (case
   "HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution"
@@ -889,9 +889,10 @@
   (output (: 105 Int64))
   (call main (: 1 Int64))
   (output (: 100 Int64))
-  ; per-call (B2): the seen-set orbit accumulator scales with iteration length then plateaus (was coarse
-  ; whole-case known-leak 2, matched only call 0). true vector: 2/1/1/0. (v-memory-safety re-baseline, coord v-corpus-harness)
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): was a seen-set orbit accumulator leak (vector 2/1/1/0). Same class as
+  ; the two-sum above — the varying `seen` set read via `Set.contains` + rebuilt via `Set.insert`; closed by
+  ; the `Set.contains` borrow arm. Census 0 on all four calls; values 104/8/105/100.
+  (live-objects 0))
 
 (case
   "spc1 an INVARIANT Set param probed via Set.contains in a self-loop is reclaimed at loop exit (live-objects 0)"
