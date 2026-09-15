@@ -790,12 +790,31 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store};
 
 /// The wasmtime [`Engine`] reducer components are compiled and run on: async (host imports may await) with the
 /// component model enabled. One engine is shared by every reducer on a host — it is the compilation context,
 /// cheap to clone, and holds no per-instance state.
-fn reducer_engine() -> Result<Engine, wasmtime::Error> {
+///
+/// **Instance allocation is POOLING, not the on-demand default.** The on-demand allocator `mmap`s a FRESH
+/// linear memory for every reducer instantiation (every fold). Under a burst of concurrent independent folds
+/// those per-fold `mmap`s serialize on the process-wide `mmap_lock`, a kernel convoy that (measured on the live
+/// gateway rig) capped effective fold concurrency at ~8 regardless of the 64 available cores AND added ~26ms of
+/// kernel syscall time to the per-request floor even with zero contention. The pooling allocator instead
+/// pre-reserves a slab of linear-memory slots ONCE and REUSES them across folds (a slot is reset via `madvise`,
+/// not a fresh `mmap`), so a burst of independent folds no longer contends the `mmap_lock`. This is purely an
+/// allocation-strategy change: it parallelizes INDEPENDENT folds across pre-allocated slots and does not change
+/// determinism — a single session's fold is still driven serially through `&mut Store`.
+///
+/// The pool is sized from the node's [`ResourceLimits`]: each pooled memory slot's growth ceiling
+/// ([`PoolingAllocationConfig::max_memory_size`]) is the node's per-reducer `max_linear_memory_bytes` (the same
+/// ceiling `reducer_store_limits`/`arm_store_safety` already enforce), and the per-slot address-space
+/// RESERVATION ([`Config::memory_reservation`]) stays at least 4 GiB so wasm32 linear-memory bounds checks are
+/// still elided. The concurrent-slot COUNTS keep wasmtime's vetted defaults (1000 each), which far exceed any
+/// plausible gateway fold burst (target concurrency is ≤64) and absorb the extra core-instances/memories a
+/// reducer that composes content-addressed deps (the value-heap runtime) transitively holds — the per-component
+/// caps are left unlimited, so composition never fails to instantiate.
+fn reducer_engine(limits: &ResourceLimits) -> Result<Engine, wasmtime::Error> {
     let mut config = Config::new();
     // Async so an awaiting host import (a disk/network KV or blob read) parks only the reducer, not the host
     // thread (§3/§9).
@@ -808,6 +827,22 @@ fn reducer_engine() -> Result<Engine, wasmtime::Error> {
     // Crashed, §7) rather than taking down tokio. Cheap when un-ticked (an atomic the compiled code checks at
     // loop backedges/calls), so it is always enabled; only the ticker is runtime-gated.
     config.epoch_interruption(true);
+
+    // Pooling instance allocator (see the doc above): pre-reserve + reuse a slab of linear-memory slots instead
+    // of mmap'ing fresh memory per fold, removing the process-mmap_lock convoy that capped fold concurrency and
+    // added the ~26ms/request kernel floor.
+    let mem_ceiling = limits.max_linear_memory_bytes as u64;
+    // Keep the per-slot address reservation at least 4 GiB — wasmtime's 64-bit default — so wasm32 memories skip
+    // bounds checks; only grow it if a node configures a larger per-reducer ceiling (max_memory_size must be
+    // <= memory_reservation, else Engine::new rejects the config).
+    config.memory_reservation(mem_ceiling.max(4 * 1024 * 1024 * 1024));
+    let mut pool = PoolingAllocationConfig::new();
+    // Cap each pooled memory's growth ceiling to the node's per-reducer linear-memory limit — the same ceiling
+    // arm_store_safety enforces via StoreLimits, so growth past it is rejected consistently. The reservation
+    // above still elides bounds checks; this only bounds how far a memory may commit.
+    pool.max_memory_size(limits.max_linear_memory_bytes);
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
+
     Engine::new(&config)
 }
 
@@ -944,7 +979,7 @@ impl ReducerHost {
     /// Build the shared engine and wire one linker per reducer kind — once per host — carrying the node's
     /// resource `limits` to arm each reducer store with.
     fn new(limits: ResourceLimits) -> Result<Self, wasmtime::Error> {
-        let engine = reducer_engine()?;
+        let engine = reducer_engine(&limits)?;
         let mut ordinary_linker = Linker::new(&engine);
         add_host_imports(&mut ordinary_linker, ReducerKind::Ordinary)?;
         let mut event_linker = Linker::new(&engine);
@@ -2732,6 +2767,125 @@ mod tests {
         assert!(
             result.is_err(),
             "a runaway guest must trap once its epoch budget is exhausted, not run forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reducer_engine_pools_instances_serving_many_concurrent_live_memories() {
+        // The pooling instance allocator (`reducer_engine`): a burst of INDEPENDENT folds must instantiate from
+        // a pre-reserved, reused linear-memory slab rather than mmap fresh memory per fold — the per-fold mmap
+        // the on-demand default did serialized on the process mmap_lock, capping fold concurrency ~8 and adding
+        // the ~26ms/request kernel floor this switch removes. Prove BOTH halves against real wasmtime:
+        //   - the engine builds with the pooling strategy (a mis-sized config would error at `Engine::new`);
+        //   - many instances — each with its OWN linear memory it writes then reads back — are held ALIVE AT
+        //     ONCE and all round-trip their own memory. Holding them concurrently is the assertion: it needs
+        //     that many pooled slots simultaneously, so an under-sized pool (too few total_memories /
+        //     total_core_instances / total_stacks) would fail to instantiate here rather than silently in prod.
+        // This is the exact shape of a concurrent gateway fold burst; determinism is unchanged (independent
+        // instances across slots, never one session's fold parallelized).
+        use wasmtime::{Instance, Module, Store};
+
+        let engine = super::reducer_engine(&super::ResourceLimits::default())
+            .expect("pooling engine builds");
+        // A tiny core module with its own linear memory + a fn that stores then loads a value — so each instance
+        // genuinely uses (and isolates) a pooled memory slot.
+        let wasm = wat::parse_str(
+            r#"(module
+                 (memory (export "mem") 1)
+                 (func (export "roundtrip") (param i32) (result i32)
+                   (i32.store (i32.const 0) (local.get 0))
+                   (i32.load (i32.const 0))))"#,
+        )
+        .expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        // Instantiate many instances and HOLD THEM ALL ALIVE (a Vec of live stores) — more than the ~64 target
+        // concurrency — so the pool must serve that many slots simultaneously.
+        const CONCURRENT: i32 = 96;
+        let mut live = Vec::with_capacity(CONCURRENT as usize);
+        for _ in 0..CONCURRENT {
+            let mut store = Store::new(&engine, ());
+            // The engine enables epoch_interruption (arm_store_safety arms real stores + the runtime ticks the
+            // epoch); this isolated test drives no ticker, so a deadline past the never-advancing epoch keeps
+            // the round-trip from tripping the default (0 >= 0) interrupt.
+            store.set_epoch_deadline(u64::MAX);
+            let instance = Instance::new_async(&mut store, &module, &[])
+                .await
+                .expect("instantiate from the pool");
+            live.push((store, instance));
+        }
+        // Each live instance round-trips a distinct value through its OWN memory — proving the pooled slots are
+        // isolated, not aliased.
+        for (i, (store, instance)) in live.iter_mut().enumerate() {
+            let roundtrip = instance
+                .get_typed_func::<i32, i32>(&mut *store, "roundtrip")
+                .expect("export");
+            assert_eq!(
+                roundtrip
+                    .call_async(&mut *store, i as i32)
+                    .await
+                    .expect("call"),
+                i as i32,
+                "each pooled instance round-trips its own memory in isolation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pooled_reducer_grows_its_memory_up_to_the_ceiling_and_is_rejected_past_it() {
+        // Pins the pooling sizing invariant (reducer_engine): max_memory_size = the node's per-reducer
+        // max_linear_memory_bytes, with the per-slot address reservation kept >= 4 GiB. A pooled memory must
+        // still GROW WITHIN its slot up to that ceiling (the "pooling memories never move" rule only bites when
+        // growth would exceed the RESERVATION, which is >> the ceiling here — so it must NOT false-reject a
+        // legitimate grow) AND memory.grow past the ceiling must return -1 (capped, not OOMing the host). This
+        // is the exact mis-sizing regression class flagged for pooling configs; the sibling
+        // `a_guest_that_exhausts_memory_traps...` covers only the DEFAULT on-demand engine + StoreLimits, not
+        // this pooling path.
+        use wasmtime::{Instance, Module, Store};
+
+        // A small, page-aligned ceiling (4 wasm pages = 256 KiB) so the test needs no real memory.
+        const PAGE: usize = 64 * 1024;
+        let limits = super::ResourceLimits {
+            max_linear_memory_bytes: 4 * PAGE,
+            ..super::ResourceLimits::default()
+        };
+        let engine = super::reducer_engine(&limits).expect("pooling engine builds");
+        // memory.grow returns the previous page count on success, or -1 (0xffff_ffff as i32) on failure.
+        let wasm = wat::parse_str(
+            r#"(module
+                 (memory 1)
+                 (func (export "grow") (param i32) (result i32) (memory.grow (local.get 0))))"#,
+        )
+        .expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        let mut store = Store::new(&engine, ());
+        // The engine enables epoch_interruption; no ticker here, so a deadline past the never-advancing epoch
+        // keeps grow from tripping the default (0 >= 0) interrupt.
+        store.set_epoch_deadline(u64::MAX);
+        let instance = Instance::new_async(&mut store, &module, &[])
+            .await
+            .expect("instantiate from the pool");
+        let grow = instance
+            .get_typed_func::<i32, i32>(&mut store, "grow")
+            .expect("export");
+
+        // Start at 1 page; grow by 2 -> 3 pages, within the 4-page ceiling. memory.grow returns the previous
+        // size (1), NOT -1 — the pooled slot commits within its reservation without moving.
+        assert_eq!(
+            grow.call_async(&mut store, 2)
+                .await
+                .expect("grow within ceiling"),
+            1,
+            "a pooled memory must grow up to its max_memory_size ceiling (no false 'never move' reject)"
+        );
+        // Now at 3 pages; grow by 2 more -> 5 pages, PAST the 4-page ceiling. Capped: memory.grow returns -1.
+        assert_eq!(
+            grow.call_async(&mut store, 2)
+                .await
+                .expect("grow call returns"),
+            -1,
+            "a pooled memory growing past its max_memory_size ceiling is rejected (-1), not granted"
         );
     }
 

@@ -88,6 +88,10 @@ wasmtime = { version = "37", default-features = false, features = [
     "cranelift",
     "component-model",
     "async",
+    # The pooling instance allocator (`host::reducer_engine`): reducer folds instantiate from a pre-reserved,
+    # reused linear-memory slab instead of mmap'ing fresh memory per fold (which serialized on the process
+    # mmap_lock under burst concurrency). Not in the `runtime` set with `default-features = false`, so name it.
+    "pooling-allocator",
 ], optional = true }
 # jemalloc as the global allocator for the integration-test EXECUTABLE only (behind the `itest-alloc` feature,
 # off by default, so the routine workspace build/gate never pulls it — and `host` as a library does not, so a
