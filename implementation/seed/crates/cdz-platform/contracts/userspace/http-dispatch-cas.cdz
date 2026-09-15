@@ -1,0 +1,28 @@
+// The HTTP-outpost DIRECT-CAS DISPATCH contract (D16 sibling flip): hand a request off to a target subprogram
+// named by its DIRECT content address (ProgramHash) — no name-directory lookup. Sibling of http-dispatch-name
+// (resolve-by-name), mirroring http-response (inline) / http-response-cas (by-hash): the dispatch-target
+// distinction rides in the CONTRACT-ID, not a variant (operator: sibling contracts, not an enum — like
+// http-deny is a separate terminal from http-response). Replaces the former http-dispatch `Target` enum.
+//
+// `target` is the target's 33-byte ProgramHash (1 HashTag byte + 32-byte digest — the SAME width as a
+// ContractId, so a hand-built literal must be padded to 33 bytes); `input` the bytes delivered to the
+// subprogram as its first message (typically an encoded http-request; a oneshot daemon that replays the
+// ORIGINAL request leaves it empty). Userspace (this dir): a reducer emits it on descriptor().id and the
+// gateway/daemon route on the same computed id — one source of truth.
+type DispatchCas = | DispatchCas(Record(target: Bytes, input: Bytes))
+
+def a-dispatch-cas() -> DispatchCas =
+  DispatchCas.DispatchCas({ target = b"a-33-byte-program-hash-goes-here.", input = b"the-request-bytes" })
+
+@test
+def dispatch-cas-conforms() =
+  match a-dispatch-cas() with
+  | DispatchCas.DispatchCas(d) =>
+    if (d.target == b"a-33-byte-program-hash-goes-here.") and (d.input == b"the-request-bytes")
+    then unit
+    else trap("http-dispatch-cas field mismatch")
+
+import { contract-descriptor } from "contract-id"
+def descriptor() =
+  contract-descriptor(Ast.module, "cdz-platform.http.dispatch-cas", "DispatchCas", "DispatchCas")
+export { DispatchCas.*, descriptor }

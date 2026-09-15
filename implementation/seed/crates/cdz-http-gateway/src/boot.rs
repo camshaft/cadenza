@@ -396,7 +396,7 @@ fn canonical_ids() -> Ids {
         c.id()
     }
     Ids {
-        dispatch: id(cdz_platform::contracts::http_dispatch::contract()),
+        dispatch: id(cdz_platform::contracts::http_dispatch_cas::contract()),
         request: id(cdz_platform::contracts::http_request::contract()),
         response: id(cdz_platform::contracts::http_response::contract()),
         response_cas: id(cdz_platform::contracts::http_response_cas::contract()),

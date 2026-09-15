@@ -5,9 +5,10 @@
 //! computed ids of `cdz_platform::contracts::*`, injected at construction — never hard-coded markers) and
 //! never inspects a payload beyond the envelope a given effect needs.
 //!
-//! Effects handled: **`http.dispatch`** — decode `Dispatch { target, input }` (the `target` is the enum
-//! `CasTarget(content-address) | Name(name)`; this gateway resolves `CasTarget` directly, `Name` is the live
-//! daemon's model), fetch + spawn the subprogram from the store by its `ProgramHash`, RECURSIVELY drive it
+//! Effects handled: **`http.dispatch-cas`** — decode `DispatchCas { target, input }` (a DIRECT
+//! content-address dispatch; `target` is the target's `ProgramHash`), fetch + spawn the subprogram from the
+//! store, RECURSIVELY drive it. The sibling **`http.dispatch-name`** (resolve-by-name) is the live daemon's
+//! model — this conformance gateway has no name directory and wires only the cas dispatch.
 //! (a handler may itself dispatch,
 //! bounded by a recursion budget), and fold its terminal `Break` reason back as the dispatch answer.
 //! **`control.send`** (§3) — forward the opaque payload UP the control link and register the emitter so the
@@ -59,8 +60,9 @@ pub struct GatewayResolver {
     /// The content-addressed store the gateway fetches subprograms from (the HTTP CAS in production, a
     /// native store in tests).
     store: Arc<dyn ProgramStore>,
-    /// The `http.dispatch` effect's contract-id — `cdz_platform::contracts::http_dispatch::contract().id()`
-    /// in production; a test id in unit tests. A request on this id is a dispatch.
+    /// The `http.dispatch-cas` effect's contract-id — `cdz_platform::contracts::http_dispatch_cas::contract().id()`
+    /// in production; a test id in unit tests. A request on this id is a direct-CAS dispatch (the sibling
+    /// `http.dispatch-name` is the live daemon's model — this gateway has no name directory).
     dispatch_id: ContractId,
     /// The contract-id the dispatched subprogram's opening `Message` carries (the `http-request` id in
     /// production), so the handler folds its input through `on_message` typed as the request it handles.
@@ -215,28 +217,18 @@ impl GatewayResolver {
         });
     }
 
-    /// Decode a `Dispatch { target, input }` effect, spawn the target subprogram from the store, drive it
-    /// (with a depth-decremented child resolver so it may dispatch in turn), and return its terminal `Break`
-    /// reason — the value that folds back as the dispatch answer. The `target` is the enum
-    /// `CasTarget(content-address) | Name(name)`: the conformance gateway resolves a `CasTarget` directly
-    /// (the classic dispatch-by-hash); it has NO name directory, so a `Name` target is unsupported here —
-    /// name resolution is the live daemon's model. `None` on any failure (undecodable effect, unsupported
-    /// target, bad hash, unspawnable program, no terminal break).
+    /// Decode a `DispatchCas { target, input }` effect (the `http.dispatch-cas` contract — direct
+    /// content-address dispatch), spawn the target subprogram from the store, drive it (with a
+    /// depth-decremented child resolver so it may dispatch in turn), and return its terminal `Break` reason —
+    /// the value that folds back as the dispatch answer. `target` is the target's 33-byte `ProgramHash`
+    /// (spawned directly, no lookup). The sibling `http.dispatch-name` (resolve-by-name) is the live daemon's
+    /// model — the conformance gateway has no name directory and only wires the cas dispatch. `None` on any
+    /// failure (undecodable effect, bad hash, unspawnable program, no terminal break).
     async fn run_dispatch<R: Runtime>(self: &Arc<Self>, effect: &[u8]) -> Option<Bytes> {
         let arenas = value::decode(effect)?;
         let rec = value::unascribe(&arenas, arenas.root);
-        let target = value::record_field(&arenas, rec, "target")?;
+        let subprogram = value::read_bytes(&arenas, value::record_field(&arenas, rec, "target")?)?;
         let input = value::read_bytes(&arenas, value::record_field(&arenas, rec, "input")?)?;
-
-        // The dispatch target enum: `CasTarget(hash)` is a direct content address; `Name(bytes)` resolves via
-        // a name directory the conformance gateway does not have (the live daemon owns name resolution), so a
-        // `Name` target is unsupported here.
-        let subprogram = match value::read_ctor(&arenas, target)? {
-            "CasTarget" => {
-                value::read_bytes(&arenas, *value::ctor_payload(&arenas, target)?.first()?)?
-            }
-            _ => return None,
-        };
 
         let hash = ProgramHash::try_from(subprogram.as_ref()).ok()?;
         let reducer = self
@@ -366,7 +358,7 @@ mod tests {
     // --- test reducers -----------------------------------------------------------------------------------
 
     fn dispatch_id() -> ContractId {
-        ContractId::of(b"cdz-platform.http.dispatch")
+        ContractId::of(b"cdz-platform.http.dispatch-cas")
     }
     fn request_id() -> ContractId {
         ContractId::of(b"cdz-platform.http.request")
@@ -375,16 +367,15 @@ mod tests {
         ContractId::of(b"cdz-platform.http.response")
     }
 
-    /// Encode a `Dispatch { target: CasTarget(hash), input }` effect payload (name-sorted record,
-    /// structural — no root ascription) the way a guest's `Value.encode` would — reusing the shared value
-    /// toolkit. The target is the enum's `CasTarget` variant (a direct content address).
+    /// Encode a `DispatchCas { target, input }` effect payload (name-sorted record, structural — no root
+    /// ascription) the way a guest's `Value.encode` would — reusing the shared value toolkit. `target` is the
+    /// target's `ProgramHash` bytes (a direct content address).
     fn encode_dispatch(subprogram: &ProgramHash, input: &[u8]) -> Bytes {
-        use cdz_http_protocol::value::{ValueBuilder, bare_ctor, bytes_leaf, finish_value, record};
+        use cdz_http_protocol::value::{ValueBuilder, bytes_leaf, finish_value, record};
         let mut b = ValueBuilder::new();
         let input_leaf = bytes_leaf(&mut b, input);
-        let sub_leaf = bytes_leaf(&mut b, subprogram.hash().as_bytes());
-        let target = bare_ctor(&mut b, "CasTarget", vec![sub_leaf]);
-        let r = record(&mut b, vec![("input", input_leaf), ("target", target)]);
+        let target_leaf = bytes_leaf(&mut b, subprogram.hash().as_bytes());
+        let r = record(&mut b, vec![("input", input_leaf), ("target", target_leaf)]);
         finish_value(b, r)
     }
 

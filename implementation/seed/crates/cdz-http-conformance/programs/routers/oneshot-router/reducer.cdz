@@ -1,32 +1,24 @@
-// The ONESHOT ROOT ROUTER (D11 oneshot-dispatch model, v-hivemind ingress rewrite; operator 2026-09-15:
-// "just support the single shot router interface that delegates to an ephemeral session", one interface, no
-// backward-compat). The daemon drives this router HEAD-ONLY (drive_router) and it BREAKS (Outcome.Close) —
-// never Continues — handing the request off to a handler BY ALIAS. The daemon reads the Break reason record's
-// `alias` field, resolves it to a bound handler ProgramHash (drive::bind_name / resolve_name, a name
-// directory), and spawns a FRESH ephemeral session for that handler, replaying the ORIGINAL request to it.
+// The ONESHOT ROOT ROUTER (D11.2 oneshot-dispatch + D16 sibling-contract flip; v-hivemind ingress). The
+// daemon drives this router HEAD-ONLY (drive_router) and it BREAKS (Outcome.Close) — never Continues, imports
+// no effects — handing the request off to a handler by NAME or by direct CAS target. A Continue-ing or
+// effectful router is rejected by the daemon's classifier.
 //
-// THE ONESHOT CONTRACT (v-hivemind daemon-side):
-//   * The router sees the http-request HEAD only and must NOT read the body (the daemon replays the ORIGINAL
-//     request — head + unread body — to the resolved handler; that is the whole point of head-only).
-//   * It must BREAK (terminal), never Continue, and import no effects — a Continue-ing or effectful router is
-//     rejected by the daemon's classifier (classify_router_terminal: Continue => 500; any emitted
-//     request/effect => 500).
-//   * It Breaks UNDER the http.dispatch contract-id (schema) with a `Dispatch` record whose `target` is the
-//     well-typed enum `Target = CasTarget(content-address) | Name(name-bytes)` (operator 2026-09-15: the
-//     dispatch target is an enum, not an alias string). This router names a handler by `Target.Name(b"echo")`;
-//     the daemon reads `record_field("target")`, matches the `Name` ctor, and resolve_names it to a cas target.
-//
-// Dispatch-BY-ALIAS needs NO build-time hash injection: the router names a stable alias ("echo") as a literal,
-// resolved at dispatch time — so this source ships pristine (no placeholder handler markers, no deploy
-// templating), unlike root-router-baked (the conformance gateway's classic dispatch-by-hash router).
+// D16 SIBLING CONTRACTS (operator: sibling contracts, not an enum — mirrors http.response / http.response-cas):
+// the dispatch-target distinction rides in the CONTRACT-ID the router Breaks UNDER, not a variant:
+//   * BREAK http.dispatch-name with DispatchName(Record(name, input)) — the daemon resolve_names `name` (a
+//     name-directory key) to a cas target, spawns a FRESH ephemeral session, and replays the ORIGINAL request.
+//   * BREAK http.dispatch-cas with DispatchCas(Record(target, input)) — `target` is a handler's 33-byte
+//     ProgramHash; the daemon spawns it DIRECTLY (no lookup). (The former http.dispatch Target enum is retired.)
+// `input` is empty here — the daemon replays the original request, so a oneshot router supplies none.
 //
 // TWO REQUEST-DELIVERY SHAPES (mirrors counter): the request arrives either as the whole `http-request`
 // `Request` value (the conformance gateway) or the head-first `Head` (method: String — the live hivemind
 // daemon, no body). We dual-decode: try `Request` first, then a local structural `Head` copy. Both carry the
 // path, so ONE `route` helper serves both. `Head` uses http-response's `Header` (structurally identical to
 // http-request-head's own Header) so only ONE `Header` type is in scope (no CDZ0201 collision with `respond`).
-import { Request, respond, dispatch-contract, no-requests } from "http-lib"
-import { Dispatch, Target } from "http-dispatch"
+import { Request, respond, no-requests } from "http-lib"
+import { DispatchName, descriptor as dispatch-name-descriptor } from "http-dispatch-name"
+import { DispatchCas, descriptor as dispatch-cas-descriptor } from "http-dispatch-cas"
 import { Header } from "http-response"
 import { Outcome, on-response, on-notification } from "reducer-lib"
 
@@ -35,23 +27,33 @@ import { Outcome, on-response, on-notification } from "reducer-lib"
 type Head =
   | Head(Record(method: String, path: String, query: String, headers: List(Header)))
 
-// The BREAK terminal: hand off to a handler by NAME via the shared http.dispatch enum target. Break under the
-// http.dispatch contract-id (schema) with a `Dispatch` record whose `target` is `Target.Name(name)` — the
-// daemon reads `record_field(reason, "target")` -> the Target enum, matches the `Name` ctor, and resolve_names
-// the name to a cas target. Empty `input`: the daemon replays the ORIGINAL request to the resolved handler's
-// fresh ephemeral session. (A resolve-free route could instead use `Target.CasTarget(hash)`.)
+// BREAK terminal: hand off to a handler BY NAME (http.dispatch-name). The daemon resolve_names `name` to a cas
+// target and drives it with the original request. Empty input (the daemon replays the original request).
 def dispatch-name(name: Bytes) =
   { requests = no-requests(),
-    outcome = Outcome.Close({ schema = dispatch-contract(),
-                              reason = Value.encode(Dispatch.Dispatch({ target = Target.Name(name), input = b"" })) }) }
+    outcome = Outcome.Close({ schema = dispatch-name-descriptor().id,
+                              reason = Value.encode(DispatchName.DispatchName({ name = name, input = b"" })) }) }
 
-// Route on path (BYTES equality; runtime String-eq is declined): /echo -> Break dispatching alias "echo"; a
-// trivial GET / fast-path -> a direct one-shot http.response 200 (the optional smoke, proving a router MAY also
-// terminate directly); anything else -> 404 deny (a one-shot http.response the edge renders).
+// BREAK terminal: hand off to a handler by DIRECT CAS target (http.dispatch-cas) — `target` is a 33-byte
+// ProgramHash the daemon spawns directly, no name lookup. The baked hash below is the http-flex-echo handler's
+// ProgramHash (03Mxlm5GLdFnbDTV3No7fR3FEul1D124nwntSAcpl12Pv), so the /direct-echo route dispatches to it
+// WITHOUT a name binding — exercising the Cas dispatch sibling.
+def dispatch-cas(target: Bytes) =
+  { requests = no-requests(),
+    outcome = Outcome.Close({ schema = dispatch-cas-descriptor().id,
+                              reason = Value.encode(DispatchCas.DispatchCas({ target = target, input = b"" })) }) }
+
+def flex-echo-hash() =
+  b"\x03\x71\x37\xed\xf3\xc1\x20\x74\xdd\x32\xef\x76\xf2\xa4\xb6\x64\x16\xea\x4e\x0e\xe2\xc5\xfc\x2b\xbc\x0e\xe9\xad\xe7\x4b\x09\xfe\x57"
+
+// Route on path (BYTES equality; runtime String-eq is declined): /echo -> dispatch by NAME "echo";
+// /direct-echo -> dispatch by direct CAS target (the baked flex-echo hash); GET / -> a direct 200 http.response
+// smoke (proving a router MAY also terminate directly); anything else -> 404 deny.
 def route(path: Bytes) =
   (if path == b"/echo" then dispatch-name(b"echo")
-   else (if path == b"/" then respond(200, [], b"oneshot router: dispatch by alias")
-         else respond(404, [], b"not found")))
+   else (if path == b"/direct-echo" then dispatch-cas(flex-echo-hash())
+         else (if path == b"/" then respond(200, [], b"oneshot router: dispatch by name or cas target")
+               else respond(404, [], b"not found"))))
 
 // Dual-decode: whole Request (conformance gateway) first, then the head-first Head (live hivemind daemon). We
 // read only the path (never the body) — head-only. A malformed request -> 404.
