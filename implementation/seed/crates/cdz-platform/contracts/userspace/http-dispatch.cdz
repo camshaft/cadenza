@@ -5,40 +5,18 @@
 // response folds back as the dispatch answer. Userspace (this dir): a Cadenza reducer emits it on this
 // contract's COMPUTED id (via `descriptor().id`, no baked marker) and the gateway's effect resolver routes
 // on the same descriptor-derived id — one source of truth. No Rust binding is generated.
-//
-// `alias` (the D11 oneshot-router extension): a handler ALIAS the DAEMON resolves to a bound handler
-// `ProgramHash` at dispatch time (`drive::bind_name` / `resolve_name`, a name directory) — as opposed to the
-// classic dispatch-by-`subprogram`-hash the gateway resolver does. EMPTY `alias` = ABSENT = the classic
-// subprogram-hash dispatch (backward compatible); a NON-EMPTY `alias` = an alias dispatch (the daemon prefers
-// `alias` over `subprogram`, replaying the ORIGINAL request to the resolved handler, so an alias router need
-// not populate `subprogram`/`input`). Both the gateway resolver and the daemon read the fields GENERICALLY via
-// `record_field` (structural, order-independent), and the contract-id is NAME-derived, so adding this field
-// changes neither the id nor the classic subprogram-dispatch path.
-type Dispatch = | Dispatch(Record(subprogram: Bytes, input: Bytes, alias: Bytes))
+type Dispatch = | Dispatch(Record(subprogram: Bytes, input: Bytes))
 
 def a-dispatch() -> Dispatch =
-  Dispatch.Dispatch({ subprogram = b"a-33-byte-program-hash-goes-here.", input = b"the-request-bytes", alias = b"" })
-
-// An ALIAS dispatch: no subprogram hash / no router-supplied input — the daemon resolves the alias to a bound
-// handler and replays the original request to it.
-def an-alias-dispatch() -> Dispatch =
-  Dispatch.Dispatch({ subprogram = b"", input = b"", alias = b"echo" })
+  Dispatch.Dispatch({ subprogram = b"a-33-byte-program-hash-goes-here.", input = b"the-request-bytes" })
 
 @test
 def dispatch-conforms() =
   match a-dispatch() with
   | Dispatch.Dispatch(d) =>
-    if (d.subprogram == b"a-33-byte-program-hash-goes-here.") and (d.input == b"the-request-bytes") and (d.alias == b"")
+    if (d.subprogram == b"a-33-byte-program-hash-goes-here.") and (d.input == b"the-request-bytes")
     then unit
     else trap("dispatch field mismatch")
-
-@test
-def alias-dispatch-conforms() =
-  match an-alias-dispatch() with
-  | Dispatch.Dispatch(d) =>
-    if (d.alias == b"echo") and (d.subprogram == b"") and (d.input == b"")
-    then unit
-    else trap("alias dispatch field mismatch")
 
 import { contract-descriptor } from "contract-id"
 def descriptor() =
