@@ -42,6 +42,12 @@ WORKTREES="$(cd "$HUB/../worktrees" 2>/dev/null && pwd || true)"
 [ -n "${WORKTREES:-}" ] && [ -d "$WORKTREES" ] || { echo "compact-nudge: no worktrees dir under $HUB/../worktrees — skip." >&2; exit 0; }
 SESSION="${CDZ_FLEET_SESSION:-main}"
 
+# CRON PATH: cron runs with a MINIMAL PATH (/usr/bin:/bin) and the crontab sets no PATH= — but `cargo` lives
+# in the user's toolchain dir (~/.cargo/bin, ~/.local/bin), NOT there. Without this, `cargo xtask` below dies
+# with `cargo: command not found` (rc 127) EVERY fire → the concierge's only self-heal cron silently broken
+# (regression caught 2026-09-15). Prepend the toolchain dirs so `cargo` resolves under cron.
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
 # Pick the worktree with the FRESHEST HEAD (an active agent's — it has the newest landed source) that is a
 # Cargo project (has xtask/Cargo.toml), so `cargo xtask` can rebuild + run there. Mirrors watchdog.sh: we run
 # `cargo xtask` FROM this worktree (not a prebuilt binary), so the running binary always matches its current
@@ -59,8 +65,22 @@ done
 # compact-nudge is benign (a `/compact` keystroke into an IDLE pane, or a restart of a wall-wedged window —
 # both watchdog-grace-guarded); a nonzero here (a tmux hiccup, or a transient build error) is not worth
 # alarming — the next fire retries. Capture the output so the .last-run stamp below records the result.
-_out="$( cd "$best" && cargo xtask fleet compact-nudge --session "$SESSION" 2>&1 )"
-_rc=$?
+# FALLBACK: if `cargo` is STILL unresolvable (an unusual host / a toolchain not at the expected dirs), do NOT
+# hard-fail with rc 127 — the concierge's only self-heal must not go dark. Run the freshest worktree's PREBUILT
+# binary directly (may be slightly stale, but WORKS — the pre-#8989 behavior), so we degrade gracefully rather
+# than break.
+if command -v cargo >/dev/null 2>&1; then
+  _out="$( cd "$best" && cargo xtask fleet compact-nudge --session "$SESSION" 2>&1 )"
+  _rc=$?
+elif [ -x "${best}target/release/xtask" ]; then
+  _out="$("${best}target/release/xtask" fleet compact-nudge --session "$SESSION" 2>&1)"
+  _rc=$?
+  _out="cargo unavailable → ran prebuilt binary: $_out"
+else
+  echo "compact-nudge: cargo not found AND no prebuilt ${best}target/release/xtask — skip (a fleet up/build provides one)." >&2
+  _rc=0
+  _out="skip: no cargo + no prebuilt binary"
+fi
 
 # SILENT-CRON OBSERVABILITY (matches drain-nudge.sh / prune-*.sh; concierge convention 2026-08-29): OVERWRITE
 # a `.last-run` next to this script — its MTIME is liveness proof the (silent) cron actually FIRED, and its

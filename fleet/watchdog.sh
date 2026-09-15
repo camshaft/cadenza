@@ -36,6 +36,13 @@ WORKTREES="$(cd "$HUB/../worktrees" 2>/dev/null && pwd || true)"
 [ -n "${WORKTREES:-}" ] && [ -d "$WORKTREES" ] || { echo "watchdog: no worktrees dir under $HUB/../worktrees — skip." >&2; exit 0; }
 SESSION="${CDZ_FLEET_SESSION:-main}"
 
+# CRON PATH: cron runs with a MINIMAL PATH (/usr/bin:/bin) and the crontab sets no PATH=, but `cargo` lives in
+# the user's toolchain dir (~/.cargo/bin, ~/.local/bin), NOT there — so a bare `cargo xtask` below would die
+# with `cargo: command not found` (rc 127). Prepend the toolchain dirs so `cargo` resolves under cron. (This
+# latent gap bit compact-nudge.sh once it moved to rebuild-from-source, 2026-09-15; fixed here too so a
+# re-enabled watchdog cron never hits the same 127.)
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
 # Pick the worktree with the FRESHEST HEAD (an active agent's — it has the newest landed source). Unlike
 # drain-nudge.sh (which runs a prebuilt binary), we run `cargo xtask` FROM this worktree so cargo rebuilds
 # the binary from its current source — guaranteeing the watchdog runs the freshest code, not a stale binary.
