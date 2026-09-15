@@ -1,0 +1,64 @@
+// The ONESHOT ROOT ROUTER (D11 oneshot-dispatch model, v-hivemind ingress rewrite). Unlike root-router-baked
+// (which bakes handler ProgramHashes, dispatches BY HASH on an Outcome.Continue, and folds the handler's
+// response through on-response), this router is driven HEAD-ONLY by the daemon (drive_router) and BREAKS
+// (Outcome.Close) — never Continues — handing the request off to a handler BY ALIAS.
+//
+// THE ONESHOT CONTRACT (v-hivemind daemon-side):
+//   * The router sees the http-request HEAD only and must NOT read the body (the daemon replays the ORIGINAL
+//     request — head + unread body — to the resolved handler; that is the whole point of head-only).
+//   * It must BREAK (terminal), never Continue, and import no effects — a Continue-ing or effectful router is
+//     rejected by the daemon's classifier.
+//   * It Breaks under the http.dispatch SCHEMA (the same contract-id the classic subprogram-dispatch uses, so
+//     no daemon decode change) with a reason carrying a NON-EMPTY `alias` field (the D11 http-dispatch
+//     extension). The daemon reads `alias` generically (record_field), resolves it to a bound handler
+//     ProgramHash (drive::bind_name / resolve_name, a name directory), and spawns+drives that handler with the
+//     original request. An unbound alias resolves to a 404 daemon-side.
+//
+// Dispatch-BY-ALIAS needs NO build-time hash injection: the router names a stable alias ("echo") as a literal,
+// and the alias is resolved at dispatch time — so this source ships pristine (no placeholder handler markers,
+// no deploy templating), unlike root-router-baked.
+//
+// TWO REQUEST-DELIVERY SHAPES (mirrors counter): the request arrives either as the whole `http-request`
+// `Request` value (the conformance gateway) or the head-first `Head` (method: String — the live hivemind
+// daemon, no body). We dual-decode: try `Request` first, then a local structural `Head` copy. Both carry the
+// path, so ONE `route` helper serves both. `Head` uses http-response's `Header` (structurally identical to
+// http-request-head's own Header) so only ONE `Header` type is in scope (no CDZ0201 collision with `respond`).
+//
+// SHIPPING: built by the flake's program auto-discovery (nix build .#cdz-http-conformance-programs ->
+// result/oneshot-router.wasm); v-hivemind publishes it to the CAS + installs it as the oneshot root router.
+import { Request, respond, dispatch-contract, no-requests } from "http-lib"
+import { Dispatch } from "http-dispatch"
+import { Header } from "http-response"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+// Local structural copy of cdz-platform.http.request-head's `Head` (the live head-first delivery; `method` is a
+// String here, "GET"/"POST"), using http-response's `Header` so only one `Header` type is in scope.
+type Head =
+  | Head(Record(method: String, path: String, query: String, headers: List(Header)))
+
+// The BREAK terminal: hand off to a handler BY ALIAS via the http.dispatch schema. Empty subprogram/input — the
+// daemon replays the ORIGINAL request to the resolved handler, so an alias router supplies neither.
+def dispatch-alias(alias: Bytes) =
+  { requests = no-requests(),
+    outcome = Outcome.Close({ schema = dispatch-contract(),
+                              reason = Value.encode(Dispatch.Dispatch({ subprogram = b"", input = b"", alias = alias })) }) }
+
+// Route on path (BYTES equality; runtime String-eq is declined): /echo -> Break dispatching alias "echo"; a
+// trivial GET / fast-path -> a direct one-shot http.response 200 (the optional smoke, proving a router MAY also
+// terminate directly); anything else -> 404 deny (a one-shot http.response the edge renders).
+def route(path: Bytes) =
+  (if path == b"/echo" then dispatch-alias(b"echo")
+   else (if path == b"/" then respond(200, [], b"oneshot router: dispatch by alias")
+         else respond(404, [], b"not found")))
+
+// Dual-decode: whole Request (conformance gateway) first, then the head-first Head (live hivemind daemon). We
+// read only the path (never the body) — head-only. A malformed request -> 404.
+def on-message(msg) =
+  (match (Value.decode(msg.payload) : Option(Request)) with
+   | Some(Request.Request(rq)) => route(String.to-bytes(rq.path))
+   | None(_) =>
+     (match (Value.decode(msg.payload) : Option(Head)) with
+      | Some(Head.Head(h)) => route(String.to-bytes(h.path))
+      | None(_) => respond(404, [], b"not found")))
+
+export { on-message, on-response, on-notification }

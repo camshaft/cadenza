@@ -68,9 +68,11 @@ def deny(status: Int64, reason: Bytes) =
                               reason = Value.encode(Deny.Deny({ status = status, reason = reason })) }) }
 
 // Emit a dispatch effect naming a handler ProgramHash + the request input; continue (awaiting the response).
+// `alias = b""` = the classic dispatch-BY-HASH (empty alias = absent); the alias field is the D11 oneshot-router
+// extension a HEAD-only router uses to Break by name instead (see programs/routers/oneshot-router).
 def dispatch(handler: Bytes, input: Bytes) =
   { requests = [ { contract = dispatch-contract(),
-                   payload = Value.encode(Dispatch.Dispatch({ subprogram = handler, input = input })),
+                   payload = Value.encode(Dispatch.Dispatch({ subprogram = handler, input = input, alias = b"" })),
                    token = b"root-dispatch",
                    deadlineNanos = (None : Option(UInt64)) } ],
     outcome = Outcome.Continue }
