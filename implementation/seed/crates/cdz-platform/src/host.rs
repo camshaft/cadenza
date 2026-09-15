@@ -3152,4 +3152,271 @@ mod tests {
     // content hash, so it cannot reproduce the convention), so the behavioural test lands with v-rust-backend's
     // first runtime-importing guest. The address parsing + dependency detection are unit-tested above, and the
     // instantiate-and-alias mirrors the value-heap composition `cdz-run` performs against real components.
+
+    // ── Warm per-fold EXECUTION-cost measurement (operator: "how expensive is it to run a single reducer
+    // function? if it's not like 200µs it's not fast enough") ──────────────────────────────────────────────
+    //
+    // Measures the cost to EXECUTE one reducer fold (a single `on_message` invocation) on a WARM instance —
+    // instantiate ONCE, then drive N folds through the exact production fold path (`message_to_wit` encode →
+    // the wasmtime component `call_on_message` lift/lower + guest execute → `step_from_wit` decode). This is
+    // the per-invocation execution cost ISOLATED from instantiate (measured once, up front) and from the
+    // durable/consensus round-trip (there is none here — a bare in-memory store, no network, no reply-wait).
+    //
+    // `#[ignore]` + env-gated: there is no committed `.wasm` reducer fixture (the Cadenza reducer-echo guest is
+    // built by the wasm CI job / nix `reducerEchoComponent`). The real Cadenza guest imports the value-heap
+    // runtime, which itself imports the nfc component — the whole content-addressed closure must be in the CAS
+    // for the compose path to resolve. Point `CDZ_REDUCER_ECHO_WASM` at the reducer-echo component and
+    // `CDZ_COMPONENT_STORE_DIR` at a nix `cdz-component-store` directory holding that closure (its `*.wasm`
+    // files are named by content hash; seeding extras is harmless — the CAS keys by content). Run with
+    // `--nocapture` to see the report:
+    //   CDZ_REDUCER_ECHO_WASM=/nix/store/…-cdz-platform-reducer-echo-cdz-component \
+    //   CDZ_COMPONENT_STORE_DIR=/nix/store/…-cdz-component-store \
+    //     cargo test -p cdz-platform --features host --release -- --ignored --nocapture warm_per_fold
+    #[tokio::test]
+    #[ignore = "env-gated micro-benchmark; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR"]
+    async fn warm_per_fold_execution_cost_of_a_single_reducer_function() {
+        use std::time::{Duration, Instant};
+
+        let Ok(path) = std::env::var("CDZ_REDUCER_ECHO_WASM") else {
+            eprintln!(
+                "CDZ_REDUCER_ECHO_WASM unset — skipping the per-fold execution-cost measurement"
+            );
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read the reducer-echo wasm component");
+
+        // Seed the reducer-echo component AND the whole component-store closure (heap-runtime + nfc + …) into
+        // the CAS. Spawn pays the whole instantiate cost (composing the dependency graph) up front — so the
+        // timed loop below measures only fold EXECUTION on the resulting warm instance.
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(bytes.clone())).await.unwrap();
+        let mut seeded = 0usize;
+        if let Ok(dir) = std::env::var("CDZ_COMPONENT_STORE_DIR") {
+            for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+                let p = entry.expect("dir entry").path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                    cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                        .await
+                        .unwrap();
+                    seeded += 1;
+                }
+            }
+        }
+        eprintln!("seeded reducer-echo + {seeded} component-store component(s) into the CAS");
+
+        let program = ProgramHash::of(&bytes);
+        let store = wasm_program_store(Arc::new(cas));
+        let Some(mut reducer) = store.spawn(program, ord(b"bench-reducer")).await else {
+            eprintln!(
+                "spawn DECLINED — is CDZ_COMPONENT_STORE_DIR the closure matching this reducer-echo build?"
+            );
+            return;
+        };
+
+        // A minimal well-formed message the echo guest folds cleanly (it copies the fields back as one request
+        // and continues — no validation, no kv writes, no host-import round-trips: pure fold compute).
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        // Sanity: one fold on a fresh instance succeeds (one echoed request, Continue) before we time it.
+        let (reqs, outcome) = reducer
+            .on_message(base.clone())
+            .await
+            .expect("the fold succeeds");
+        assert_eq!(reqs.len(), 1, "echo guest emits exactly one request");
+        assert_eq!(outcome, crate::Outcome::Continue);
+        drop(reducer);
+
+        // Production drives ONE fold per instance: the gateway instantiates the reducer per request, and the
+        // composed value-heap runtime is not reset between folds — so a reused instance accumulates heap
+        // allocations and eventually traps (`realloc: beyond end of memory`). The honest "cost to run a single
+        // reducer function" is therefore the FIRST fold on a freshly instantiated component. We re-instantiate
+        // per sample and time ONLY `on_message` (the spawn/instantiate is untimed — that is the separately
+        // measured init cost, not the operator's execution question here).
+
+        // Warm-up on fresh instances (settle caches / cranelift code / pooling slabs) — discarded.
+        for _ in 0..1_000 {
+            let mut r = store
+                .spawn(program, ord(b"bench-reducer"))
+                .await
+                .expect("warm-up spawn");
+            let _ = r.on_message(base.clone()).await.expect("warm-up fold");
+        }
+
+        const N: usize = 5_000;
+
+        // Attribution part A — the host-side ENCODE (`message_to_wit`) in isolation, so we can attribute the
+        // full-fold cost between encode and the wasmtime call+decode.
+        let encode_start = Instant::now();
+        for _ in 0..N {
+            let wit = super::message_to_wit(&base);
+            std::hint::black_box(&wit);
+        }
+        let encode_total = encode_start.elapsed();
+
+        // The fold itself: fresh instance per sample, time ONLY `on_message` (encode + wasmtime call + decode).
+        let mut samples: Vec<Duration> = Vec::with_capacity(N);
+        for _ in 0..N {
+            let mut r = store
+                .spawn(program, ord(b"bench-reducer"))
+                .await
+                .expect("spawn a fresh instance");
+            let msg = base.clone();
+            let t = Instant::now();
+            let out = r.on_message(msg).await.expect("timed fold");
+            samples.push(t.elapsed());
+            std::hint::black_box(&out);
+            drop(r);
+        }
+
+        // Discriminator: cold (first) fold on a FRESH instance vs warm (subsequent) folds on the SAME instance.
+        // If the warm fold is far cheaper, the fresh-instance cost is first-touch overhead (page-faulting the
+        // pooling memory slab / first value-heap use), not steady-state fold compute — which changes the lever.
+        // Bounded folds per instance (the composed value-heap is not reset between folds and eventually traps).
+        const INSTANCES: usize = 500;
+        const FOLDS_PER: usize = 6;
+        let mut cold_first: Vec<Duration> = Vec::with_capacity(INSTANCES);
+        let mut warm_rest: Vec<Duration> = Vec::with_capacity(INSTANCES * (FOLDS_PER - 1));
+        for _ in 0..INSTANCES {
+            let mut r = store
+                .spawn(program, ord(b"bench-reducer"))
+                .await
+                .expect("spawn a fresh instance");
+            for f in 0..FOLDS_PER {
+                let msg = base.clone();
+                let t = Instant::now();
+                match r.on_message(msg).await {
+                    Ok(out) => {
+                        let dt = t.elapsed();
+                        std::hint::black_box(&out);
+                        if f == 0 {
+                            cold_first.push(dt)
+                        } else {
+                            warm_rest.push(dt)
+                        }
+                    }
+                    // A later fold may trap once the un-reset heap fills — stop folding this instance.
+                    Err(_) => break,
+                }
+            }
+        }
+        let med = |v: &mut Vec<Duration>| {
+            v.sort_unstable();
+            v.get(v.len() / 2).copied().unwrap_or_default()
+        };
+        let cold_med = med(&mut cold_first);
+        let warm_med = med(&mut warm_rest);
+
+        // Lever discriminator: does per-fold cost scale with payload SIZE? O(bytes) ⇒ the message's byte-lists
+        // are copied across the component boundary with per-element overhead (lever: bulk copy). O(1) ⇒ a fixed
+        // per-call boundary cost independent of size (lever: cut per-fold boundary crossings). Fresh instance
+        // per fold (production per-request model); small sample per size.
+        let mut size_rows: Vec<(usize, Duration, usize)> = Vec::new();
+        for &sz in &[4usize, 256, 4096, 65536] {
+            let payload = Bytes::from(vec![0x5au8; sz]);
+            let m = crate::Message {
+                id: crate::ContractId::of(b"echo-contract"),
+                payload,
+                from: crate::Origin {
+                    reducer: crate::ReducerId::of(b"caller"),
+                    host: crate::HostId::of(b"node"),
+                },
+                continuation_token: Bytes::from_static(b"tok"),
+            };
+            let mut v: Vec<Duration> = Vec::with_capacity(400);
+            for _ in 0..400 {
+                let mut r = store
+                    .spawn(program, ord(b"bench-reducer"))
+                    .await
+                    .expect("spawn a fresh instance");
+                let msg = m.clone();
+                let t = Instant::now();
+                match r.on_message(msg).await {
+                    Ok(out) => {
+                        v.push(t.elapsed());
+                        std::hint::black_box(&out);
+                    }
+                    Err(_) => break,
+                }
+            }
+            let n = v.len();
+            size_rows.push((sz, med(&mut v), n));
+        }
+
+        samples.sort_unstable();
+        let pct = |p: f64| samples[((p * (N as f64 - 1.0)).round() as usize).min(N - 1)];
+        let sum: Duration = samples.iter().sum();
+        let mean = sum / N as u32;
+        let encode_mean = encode_total / N as u32;
+        // Full-fold mean minus the isolated encode ≈ the wasmtime call (lift/lower + guest execute) + decode.
+        let call_decode_mean = mean.saturating_sub(encode_mean);
+
+        let us = |d: Duration| d.as_secs_f64() * 1e6;
+        eprintln!(
+            "── per-fold reducer EXECUTION cost (N={N}, reducer-echo, fresh instance/fold, warm engine) ──"
+        );
+        eprintln!(
+            "  fold (on_message)  mean={:.2}µs  p50={:.2}µs  p90={:.2}µs  p99={:.2}µs  min={:.2}µs  max={:.2}µs",
+            us(mean),
+            us(pct(0.50)),
+            us(pct(0.90)),
+            us(pct(0.99)),
+            us(samples[0]),
+            us(samples[N - 1])
+        );
+        eprintln!(
+            "  attribution: encode(message_to_wit)={:.2}µs  call+decode(wasmtime lift/lower+guest+decode)={:.2}µs",
+            us(encode_mean),
+            us(call_decode_mean)
+        );
+        eprintln!(
+            "  cold-vs-warm: cold(fresh-instance fold #1) median={:.2}µs  warm(same-instance fold #2..{})  median={:.2}µs  ⇒ fresh-instance overhead≈{:.2}µs",
+            us(cold_med),
+            FOLDS_PER,
+            us(warm_med),
+            us(cold_med.saturating_sub(warm_med))
+        );
+        for (sz, m, n) in &size_rows {
+            if *n == 0 {
+                eprintln!(
+                    "  payload-size sweep: {sz:>6} B payload ⇒ TRAPPED (un-reset heap exhausted on the first fold)"
+                );
+            } else {
+                eprintln!(
+                    "  payload-size sweep: {:>6} B payload ⇒ fold median={:.2}µs (≈{:.2}µs/byte over the 4 B base)",
+                    sz,
+                    us(*m),
+                    if *sz > 4 {
+                        (us(*m) - us(size_rows[0].1)) / (*sz as f64 - 4.0)
+                    } else {
+                        0.0
+                    }
+                );
+            }
+        }
+        eprintln!(
+            "  operator bar: {} the ~200µs bar (p50={:.2}µs)",
+            if us(pct(0.50)) < 200.0 {
+                "CLEARS"
+            } else {
+                "OVER"
+            },
+            us(pct(0.50))
+        );
+
+        // The measurement asserts nothing about the absolute number (that is the operator's bar, reported
+        // above) — only that the fold path stayed sane (finite, non-zero) so a broken run is not read as a win.
+        assert!(
+            us(mean) > 0.0 && us(mean) < 1e6,
+            "per-fold mean is implausible: {:.2}µs",
+            us(mean)
+        );
+    }
 }
