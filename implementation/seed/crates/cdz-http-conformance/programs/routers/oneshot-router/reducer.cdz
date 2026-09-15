@@ -11,10 +11,10 @@
 //   * It must BREAK (terminal), never Continue, and import no effects — a Continue-ing or effectful router is
 //     rejected by the daemon's classifier (classify_router_terminal: Continue => 500; any emitted
 //     request/effect => 500).
-//   * It Breaks UNDER the http.dispatch contract-id (schema) with a reason that is a value-doc RECORD carrying
-//     ONE field named `alias` (non-empty bytes) = the handler alias. The daemon decodes the reason GENERICALLY
-//     (record_field "alias"), so the reason is a plain alias record — NOT the classic subprogram-hash dispatch
-//     shape. This is the ONLY dispatch interface the oneshot router speaks (no subprogram fallback path).
+//   * It Breaks UNDER the http.dispatch contract-id (schema) with a `Dispatch` record whose `target` is the
+//     well-typed enum `Target = CasTarget(content-address) | Name(name-bytes)` (operator 2026-09-15: the
+//     dispatch target is an enum, not an alias string). This router names a handler by `Target.Name(b"echo")`;
+//     the daemon reads `record_field("target")`, matches the `Name` ctor, and resolve_names it to a cas target.
 //
 // Dispatch-BY-ALIAS needs NO build-time hash injection: the router names a stable alias ("echo") as a literal,
 // resolved at dispatch time — so this source ships pristine (no placeholder handler markers, no deploy
@@ -26,6 +26,7 @@
 // path, so ONE `route` helper serves both. `Head` uses http-response's `Header` (structurally identical to
 // http-request-head's own Header) so only ONE `Header` type is in scope (no CDZ0201 collision with `respond`).
 import { Request, respond, dispatch-contract, no-requests } from "http-lib"
+import { Dispatch, Target } from "http-dispatch"
 import { Header } from "http-response"
 import { Outcome, on-response, on-notification } from "reducer-lib"
 
@@ -34,25 +35,21 @@ import { Outcome, on-response, on-notification } from "reducer-lib"
 type Head =
   | Head(Record(method: String, path: String, query: String, headers: List(Header)))
 
-// The oneshot route-decision reason: a value-doc record with a single `alias` field. Single-ctor record newtype
-// (Value.encode elides the ctor + ascribes the inner record with the type name), so the encoded value is
-// `(: #record((= alias b"echo")) RouteTarget)`; the daemon reads `record_field(reason, "alias")` generically.
-type RouteTarget =
-  | RouteTarget(Record(alias: Bytes))
-
-// The BREAK terminal: hand off to a handler BY ALIAS. Break under the http.dispatch contract-id (schema) with
-// the alias record as the reason. No subprogram / no router-supplied input — the daemon replays the ORIGINAL
-// request to the resolved handler's fresh ephemeral session.
-def dispatch-alias(alias: Bytes) =
+// The BREAK terminal: hand off to a handler by NAME via the shared http.dispatch enum target. Break under the
+// http.dispatch contract-id (schema) with a `Dispatch` record whose `target` is `Target.Name(name)` — the
+// daemon reads `record_field(reason, "target")` -> the Target enum, matches the `Name` ctor, and resolve_names
+// the name to a cas target. Empty `input`: the daemon replays the ORIGINAL request to the resolved handler's
+// fresh ephemeral session. (A resolve-free route could instead use `Target.CasTarget(hash)`.)
+def dispatch-name(name: Bytes) =
   { requests = no-requests(),
     outcome = Outcome.Close({ schema = dispatch-contract(),
-                              reason = Value.encode(RouteTarget.RouteTarget({ alias = alias })) }) }
+                              reason = Value.encode(Dispatch.Dispatch({ target = Target.Name(name), input = b"" })) }) }
 
 // Route on path (BYTES equality; runtime String-eq is declined): /echo -> Break dispatching alias "echo"; a
 // trivial GET / fast-path -> a direct one-shot http.response 200 (the optional smoke, proving a router MAY also
 // terminate directly); anything else -> 404 deny (a one-shot http.response the edge renders).
 def route(path: Bytes) =
-  (if path == b"/echo" then dispatch-alias(b"echo")
+  (if path == b"/echo" then dispatch-name(b"echo")
    else (if path == b"/" then respond(200, [], b"oneshot router: dispatch by alias")
          else respond(404, [], b"not found")))
 
