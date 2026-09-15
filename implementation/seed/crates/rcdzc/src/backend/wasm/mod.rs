@@ -627,11 +627,11 @@ pub fn emit(
                 // The wrapper reclaims the def's owned result handle after the canonical write (deep-drop).
                 used.insert("drop");
             }
-            // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out (`bytes-len` +
-            // `bytes-get` loop) and drops the handle — register those so the wrapper body resolves them.
+            // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out in ONE bulk
+            // `bytes-read` call (see `emit_result_copy_bytes`), not the old `bytes-len` + `bytes-get` loop,
+            // and drops the handle — register those so the wrapper body resolves them.
             if matches!(w.result, serialize::ResultLower::CopyBytes) {
-                used.insert("bytes-len");
-                used.insert("bytes-get");
+                used.insert("bytes-read");
                 used.insert("drop");
             }
             // A flat single-scalar-field record result (FlatScalarField) reads the one field off the def's
@@ -647,8 +647,9 @@ pub fn emit(
             for m in w.mem_leaf_params.iter().flatten() {
                 match m {
                     (serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, drop_after) => {
-                        used.insert("bytes-alloc");
-                        used.insert("bytes-set");
+                        // One bulk `bytes-new((ptr,len))` copy-in (see `emit_bytes_leaf_copy_in`), not the
+                        // old `bytes-alloc` + per-byte `bytes-set` loop.
+                        used.insert("bytes-new");
                         if *drop_after {
                             used.insert("drop");
                         }

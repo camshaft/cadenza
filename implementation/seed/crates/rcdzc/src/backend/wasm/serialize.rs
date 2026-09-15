@@ -2913,8 +2913,9 @@ impl FieldRebuild {
                 }
             }
             FieldRebuild::BytesLeaf => {
-                out("bytes-alloc");
-                out("bytes-set");
+                // One bulk `bytes-new((ptr,len))` copy-in (see `emit_bytes_leaf_copy_in`), not the old
+                // `bytes-alloc` + per-byte `bytes-set` loop.
+                out("bytes-new");
             }
             FieldRebuild::Sum(r) => {
                 r.arm_true.collect_ops(out);
@@ -2974,10 +2975,10 @@ impl SumArgArm {
                     f.collect_box_ops(out);
                 }
             }
-            // A `list<u8>` payload copies its bytes into a guest `Bytes`.
+            // A `list<u8>` payload copies its bytes into a guest `Bytes` — one bulk `bytes-new((ptr,len))`
+            // (see `emit_bytes_leaf_copy_in`), not the old `bytes-alloc` + per-byte `bytes-set` loop.
             SumArmPayload::Bytes => {
-                out("bytes-alloc");
-                out("bytes-set");
+                out("bytes-new");
             }
             // An enum payload builds the inner all-nullary cell via `sum-new`.
             SumArmPayload::Enum => out("sum-new"),
@@ -3296,79 +3297,33 @@ fn emit_cell_rebuild(
 }
 
 /// Emit the copy-in for one `BytesLeaf`: the list crossed the boundary as `(ptr, len)` at flattened core
-/// params `ptr_leaf` (= `*cursor`) and `ptr_leaf + 1`. Allocate a guest `Bytes` of `len` (`bytes-alloc`),
-/// then loop `j in 0..len` copying `bytes-set(buf, j, i32.load8_u(ptr + j))` out of linear memory 0 (the
-/// core module owns it under `wrapper_needs_memory`). Leaves the final `buf` handle on the stack (the caller
-/// `arr-set`s it AS-IS). `buf`/`ctr` are the two reusable scratch locals; the surrounding stack (`[arr, i]`)
-/// is untouched — the `block`/`loop` are `[]->[]` and every statement is stack-balanced. An empty list
-/// (`len == 0`) allocates a zero-length `Bytes` and the loop exits immediately.
+/// params `ptr_leaf` (= `*cursor`) and `ptr_leaf + 1`. Build the guest `Bytes` in ONE bulk call —
+/// `bytes-new((ptr, len))` — instead of `bytes-alloc` + a per-byte `bytes-set` loop (the ~1.9us/byte
+/// reducer-fold marshaling cost, operator seq 916). The marshaling-boundary bytes are already CONTIGUOUS in
+/// linear memory 0 (the core module owns it under `wrapper_needs_memory`), so the `list<u8>` arg lowers to
+/// exactly the `(ptr_leaf, len_leaf)` core params the canon adapter copies across into the runtime heap.
+/// Leaves the fresh `Bytes` handle on the stack (the caller `arr-set`s it AS-IS); the surrounding stack
+/// (`[arr, i]`) is untouched — this is a balanced `[] -> [handle]`. An empty list (`len == 0`) yields the
+/// shared immortal empty-`Bytes` singleton. The `buf`/`ctr` scratch locals are no longer needed (the bulk
+/// call carries no loop), kept in the signature so callers need not renumber their reserved scratch.
 fn emit_bytes_leaf_copy_in(
     ptr_leaf: u32,
-    buf: u32,
-    ctr: u32,
+    _buf: u32,
+    _ctr: u32,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
     let len_leaf = ptr_leaf + 1;
-    // buf = bytes-alloc(len)
-    out.push(op::LOCAL_GET);
-    uleb128(len_leaf as u64, out);
-    out.push(op::CALL);
-    uleb128(imp("bytes-alloc"), out);
-    out.push(op::LOCAL_SET);
-    uleb128(buf as u64, out);
-    // ctr = 0
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(0, out);
-    out.push(op::LOCAL_SET);
-    uleb128(ctr as u64, out);
-    // block { loop { if ctr >= len br 1; buf = bytes-set(buf, ctr, load8(ptr + ctr)); ctr += 1; br 0 } }
-    out.push(op::BLOCK);
-    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
-    out.push(op::LOOP);
-    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
-    // if ctr >= len -> br 1 (exit block)
-    out.push(op::LOCAL_GET);
-    uleb128(ctr as u64, out);
-    out.push(op::LOCAL_GET);
-    uleb128(len_leaf as u64, out);
-    out.push(op::I32_GE_U);
-    out.push(op::BR_IF);
-    uleb128(1, out);
-    // buf = bytes-set(buf, ctr, i32.load8_u(ptr + ctr))
-    out.push(op::LOCAL_GET);
-    uleb128(buf as u64, out);
-    out.push(op::LOCAL_GET);
-    uleb128(ctr as u64, out);
+    // handle = bytes-new(ptr, len) — the `list<u8>` arg is canon-lowered to the `(ptr, len)` pair, read
+    // straight out of linear memory 0; one cross-component call replaces the alloc + per-byte-set loop.
     out.push(op::LOCAL_GET);
     uleb128(ptr_leaf as u64, out);
     out.push(op::LOCAL_GET);
-    uleb128(ctr as u64, out);
-    out.push(op::I32_ADD);
-    out.push(op::I32_LOAD8_U);
-    out.push(0x00); // align 2^0
-    out.push(0x00); // offset 0
+    uleb128(len_leaf as u64, out);
     out.push(op::CALL);
-    uleb128(imp("bytes-set"), out);
-    out.push(op::LOCAL_SET);
-    uleb128(buf as u64, out);
-    // ctr += 1
-    out.push(op::LOCAL_GET);
-    uleb128(ctr as u64, out);
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(1, out);
-    out.push(op::I32_ADD);
-    out.push(op::LOCAL_SET);
-    uleb128(ctr as u64, out);
-    // br 0 (loop back)
-    out.push(op::BR);
-    uleb128(0, out);
-    out.push(op::END); // end loop
-    out.push(op::END); // end block
-    // leave buf on the stack for the caller's arr-set
-    out.push(op::LOCAL_GET);
-    uleb128(buf as u64, out);
+    uleb128(imp("bytes-new"), out);
+    // leaves the Bytes handle on the stack for the caller's arr-set ([] -> [handle]).
 }
 
 /// Emit the lift for one top-level `list<scalar>` param: the list crossed the boundary as `(ptr, len)` at
@@ -3507,16 +3462,20 @@ fn emit_result_spill(
 }
 
 /// Lower a `list<u8>`/`Bytes` RESULT member (a def returning a value-heap Bytes handle) to the canonical
-/// `list<u8>` return: allocate an N-byte buffer via `cabi_realloc`, copy the runtime bytes into it, then
-/// write the `(ptr, len)` pair into a `cabi_realloc`'d 8-byte return area and return that retptr. Mirrors
-/// the copy-out half of [`emit_bytes_roundtrip_apply_body`] (a single-export bytes provider) but sources
-/// its buffer/retarea from `cabi_realloc` like [`emit_result_spill`], so it composes as ONE member of a
-/// multi-member typed interface. `rec`/`retptr` are the two scratch i32 locals the caller reserved; three
-/// more (`n`, `buf`, `i`) come from `next_local`.
+/// `list<u8>` return in ONE bulk call — `bytes-read(rec)` — instead of `bytes-len` + a per-byte `bytes-get`
+/// copy loop (the ~1.9us/byte reducer-fold marshaling cost, operator seq 916). `bytes-read` is canon-lowered
+/// with Memory+Realloc options, so its `list<u8>` result (2 flats > `MAX_FLAT_RESULTS`) is written by the
+/// adapter — allocating the buffer via the guest's OWN `cabi_realloc` in guest memory 0 — into a
+/// caller-provided 8-byte return area as `(ptr, len)` at `[+0]`/`[+4]`. That area IS the member's canonical
+/// `list<u8>` return, so we allocate it, hand it to `bytes-read` as the trailing retptr arg, and return it
+/// directly — no second buffer, no copy loop. `bytes-read` BORROWS `rec` (rc unchanged), so we still DROP the
+/// owned def-result handle afterwards, exactly as the old `bytes-get` path did. `rec`/`retptr` are the two
+/// scratch i32 locals the caller reserved; `next_local` is no longer drawn from (the bulk call has no loop
+/// scratch), kept in the signature so callers need not change.
 fn emit_result_copy_bytes(
     rec: u32,
     retptr: u32,
-    next_local: &mut u32,
+    _next_local: &mut u32,
     realloc_abs: u64,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
@@ -3538,54 +3497,9 @@ fn emit_result_copy_bytes(
         out.push(op::CALL);
         uleb128(imp(name), out);
     };
-    let (n, buf, i) = (*next_local, *next_local + 1, *next_local + 2);
-    *next_local += 3;
     // rec = the def's result Bytes handle (currently on the stack).
     set(rec, out);
-    // n = bytes-len(rec)
-    get(rec, out);
-    call("bytes-len", out);
-    set(n, out);
-    // buf = cabi_realloc(orig=0, orig_size=0, align=1, size=n)
-    const_i32(0, out);
-    const_i32(0, out);
-    const_i32(1, out);
-    get(n, out);
-    out.push(op::CALL);
-    uleb128(realloc_abs, out);
-    set(buf, out);
-    // COPY LOOP: i = 0; while i < n { store8(buf + i, bytes-get(rec, i)); i++ }
-    const_i32(0, out);
-    set(i, out);
-    out.push(op::BLOCK);
-    out.push(wasm_abi::BLOCK_EMPTY);
-    out.push(op::LOOP);
-    out.push(wasm_abi::BLOCK_EMPTY);
-    {
-        get(i, out);
-        get(n, out);
-        out.push(op::I32_GE_U);
-        out.push(op::BR_IF);
-        uleb128(1, out);
-        get(buf, out);
-        get(i, out);
-        out.push(op::I32_ADD);
-        get(rec, out);
-        get(i, out);
-        call("bytes-get", out);
-        out.push(op::I32_STORE8);
-        out.push(0x00);
-        out.push(0x00);
-        get(i, out);
-        const_i32(1, out);
-        out.push(op::I32_ADD);
-        set(i, out);
-        out.push(op::BR);
-        uleb128(0, out);
-    }
-    out.push(op::END);
-    out.push(op::END);
-    // retptr = cabi_realloc(0, 0, align=4, size=8) — the (ptr,len) return area.
+    // retptr = cabi_realloc(orig=0, orig_size=0, align=4, size=8) — the (ptr,len) return area bytes-read fills.
     const_i32(0, out);
     const_i32(0, out);
     const_i32(4, out);
@@ -3593,21 +3507,15 @@ fn emit_result_copy_bytes(
     out.push(op::CALL);
     uleb128(realloc_abs, out);
     set(retptr, out);
-    // retptr[0] = buf (ptr), retptr[4] = n (len) — i32 stores, 4-byte aligned.
+    // bytes-read(rec, retptr) -> () : one bulk call writes retptr[0]=guest ptr, retptr[4]=len (the buffer
+    // allocated in guest memory 0 by the canon adapter's realloc). Args: buf first, then the trailing retptr.
+    get(rec, out);
     get(retptr, out);
-    get(buf, out);
-    out.push(op::I32_STORE);
-    out.push(0x02);
-    out.push(0x00);
-    get(retptr, out);
-    get(n, out);
-    out.push(op::I32_STORE);
-    out.push(0x02);
-    out.push(0x04);
-    // Drop the def result handle (the wrapper consumed it into the buffer).
+    call("bytes-read", out);
+    // Drop the owned def result handle (bytes-read only BORROWED it).
     get(rec, out);
     call("drop", out);
-    // Return the area pointer.
+    // Return the area pointer (the member's canonical (ptr,len) list<u8> return).
     get(retptr, out);
 }
 
