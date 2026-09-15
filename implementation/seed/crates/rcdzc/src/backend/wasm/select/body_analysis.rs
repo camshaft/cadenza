@@ -409,6 +409,21 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
                 }
             })
         }
+        // Applying a closure at FULL arity BORROWS the closure cell: the lifted body reads its captures via
+        // `arr-get(env, …)` and the emit does NOT consume the cell (`CallClosure` SITE-A, emit.rs — a BORROWED
+        // operand is left un-dropped for its owner to reclaim). So the closure OPERAND is a read → recurse it
+        // borrowed (a direct `Param(binder)` closure operand is then a pure borrow, exactly like calling `f`
+        // each iteration and identity-passing it on the back-edge). The ARGS are consume/result positions
+        // (each is passed INTO the lifted fn) → recurse unborrowed, so `binder` handed as an ARG (`(binder x)`
+        // where binder is a different heap value, or `(f binder)`) still DENIES — the owner-reclaim exit-drop
+        // then fires only for a closure param that is borrow-only + invariant, reclaiming its dead cell (and
+        // its dup'd captures, via the runtime dtor) once at loop exit. No double-free: the call did not consume
+        // it and no arm returns it. v-memory-safety: the closure-param twin of the `Bytes.at` borrow arm — it
+        // closes the tuple/Box-of-closure per-call retention family (a recursion-forced closure driver leaked
+        // one env cell per exit because `CallClosure` was not recognized as a borrow of its invariant operand).
+        Core::CallClosure { closure, args } => {
+            recur(db, closure, true) && args.iter().all(|&a| recur(db, a, false))
+        }
         // BORROW ops: their heap operand is read without consuming → recurse it with `borrowed = true` (a
         // direct `Param` operand is then a pure borrow; a nested `SumPayload{Param}` / borrow chain threads
         // the flag). Other fields (a `Proj` index, a slice bound) are scalars that don't hold `binder`.

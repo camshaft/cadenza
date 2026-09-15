@@ -20146,7 +20146,10 @@
   (output (: 10 Int64))
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): the list-stored capturing closure extracted via List.at and applied is
+  ; a BORROW at the apply site — now consistently classified so (dup-side + exit-drop balance, see ftp1), so no
+  ; residual closure/capture husk. Census 0 both calls, values 10/3.
+  (live-objects 0))
 
 (case
   "ck2 a closure DOUBLED inside one collection literal AND applied directly runs (dup-counted per occurrence)"
@@ -20172,7 +20175,10 @@
   (output (: 5 Int64))
   (call main (: 0 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): the DOUBLED-in-literal closure still dups per occurrence for the two
+  ; list slots (the genuine multi-occurrence retain, unchanged), but the APPLIED extracted copy is a borrow, so
+  ; the closure+capture retention is now balanced — census 0 both calls, value 5 for any n.
+  (live-objects 0))
 
 ; A CONSTANT argument passed to a NARROW-typed parameter is range-checked against the parameter's declared
 ; width, exactly as a direct `(: 200 Int8)` is — β-reduction carries the parameter's annotation onto the
@@ -20267,9 +20273,10 @@
   (output (: 60363 Int64))
   (call main (: 7 Int64))
   (output (: 223037 Int64))
-  ; flat 4 live at every call (breaker census 2026-08-30) — the Box-of-closure retention family,
-  ; same class as the B multi-apply residuals (v-core-opt); #5766 tolerate-fewer passes the collapse.
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): was flat 4 live per call (the four `drive` closures) — the Box-of-closure
+  ; retention family, closed by the borrowed-closure-operand dup/exit-drop balance (see ftp1). Each closure
+  ; param `f` is now reclaimed once at its loop exit; census 0/0/0, values 0/60363/223037.
+  (live-objects 0))
 
 (case
   "ftp1 a fn-typed param NESTED in a tuple re-emits its (-> Int64 Int64) annotation through the cadenza hop"
@@ -20296,10 +20303,14 @@
   (output (: 21 Int64))
   (call main (: 40 Int64))
   (output (: 120 Int64))
-  ; leak-1 per call on the faithful 04zoq8 debug runtime (one retained closure husk); the recursion-forced
-  ; drive builds the heap so the count is a real residual (a bare-const call folds to 0 live). Precise count
-  ; form per v-corpus-harness (catches a leak-COUNT regression, tighter than lm1's bare marker).
-  (live-objects known-leak 1))
+  ; FULLY RECLAIMED (v-memory-safety): was leak-1 per call — one retained closure env-cell husk because the
+  ; invariant closure PARAM `f`, both APPLIED `(f acc)` and identity-rethreaded on the self-loop back-edge, was
+  ; DUP'd once per iteration (`mark_binder_dups` treated the `CallClosure` closure operand as consuming) and
+  ; only its loop-exit drop reclaimed one ref. Fixed by making the dup-side treat a BORROWED closure operand as
+  ; `is_borrow` (consistent with `binding_escapes_dup_aware`) + adding the `CallClosure` borrow arm to the
+  ; invariant-param exit-drop analysis. rc-trace now: 1 alloc / 1 drop / freed. `live-objects 0` is an exact
+  ; drift guard (the guarded-all backstop TRAPS on a reintroduced over-reclaim).
+  (live-objects 0))
 
 ; nzx1: the EQUALITY/ORDER split on the two float specials, juxtaposed in ONE matrix. Cadenza's `=`
 ; is the canonical TOTAL structural equality (distinguishes -0.0 from +0.0; NaN self-equal) while
