@@ -216,6 +216,17 @@ pub trait Reducer: Send {
         &mut self,
         notification: Notification,
     ) -> Result<(Vec<Request>, Outcome), ReducerFault>;
+
+    /// DEBUG leak-census hook: the count of live value-heap cells the reducer's composed runtime holds right
+    /// now, if it composes a value-heap runtime that exposes a `live-objects` census (only the debug-counters
+    /// build does; the shipped runtime reports 0). `None` by default — a reducer with no value-heap runtime,
+    /// no census export, or a non-wasm backend has no count to report; overridden only by the wasm reducer.
+    /// Used by the host-run-nets-live-objects-0 leak gate to assert a fold nets to its pre-fold baseline (no
+    /// per-fold cell leak), and to catch a host that holds an owned value-heap resource handle without freeing
+    /// it. Not a production control-plane path — a diagnostic.
+    async fn live_object_census(&mut self) -> Option<u32> {
+        None
+    }
 }
 
 #[cfg(test)]

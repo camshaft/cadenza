@@ -1034,7 +1034,13 @@ impl ReducerHost {
         let mut store = Store::new(&self.engine, host);
         arm_store_safety(&mut store);
         let world = pre.instantiate_async(&mut store).await?;
-        Ok(WasmReducer::Reducer { store, world })
+        // The fast path composes NO content-addressed runtime (a no-deps guest), so there is no heap instance
+        // to retain for the census.
+        Ok(WasmReducer::Reducer {
+            store,
+            world,
+            heap: None,
+        })
     }
 }
 
@@ -1048,6 +1054,12 @@ enum WasmReducer {
     Reducer {
         store: Store<HostState>,
         world: EventReducerWorld,
+        /// The composed value-heap runtime instance, retained so a debug leak-census can read its
+        /// `live-objects` export ([`live_object_census`](WasmReducer::live_object_census)). `None` for a
+        /// no-dependency guest (the fast path composes no runtime) or when capture was not requested. Cheap to
+        /// hold — a wasmtime component [`Instance`](wasmtime::component::Instance) is a lightweight store
+        /// handle; the instance itself lives in the store regardless, so retaining the handle costs nothing.
+        heap: Option<wasmtime::component::Instance>,
     },
     /// A TEST-ONLY arg-probe-world guest (§9 arg-value capture): exports the same reducer `guest` (so the
     /// harness drives it identically) but imports `arg-probe` instead of the platform capabilities.
@@ -1069,7 +1081,7 @@ impl Reducer for WasmReducer {
         let event = message_to_wit(&message);
         // Both worlds export the same `cadenza:platform/guest`, so the call is identical bar the world type.
         let call = match self {
-            WasmReducer::Reducer { store, world } => {
+            WasmReducer::Reducer { store, world, .. } => {
                 world
                     .cadenza_platform_guest()
                     .call_on_message(store, &event)
@@ -1091,7 +1103,7 @@ impl Reducer for WasmReducer {
     ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let event = response_to_wit(&response);
         let call = match self {
-            WasmReducer::Reducer { store, world } => {
+            WasmReducer::Reducer { store, world, .. } => {
                 world
                     .cadenza_platform_guest()
                     .call_on_response(store, &event)
@@ -1113,7 +1125,7 @@ impl Reducer for WasmReducer {
     ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
         let event = notification_to_wit(&notification);
         let call = match self {
-            WasmReducer::Reducer { store, world } => {
+            WasmReducer::Reducer { store, world, .. } => {
                 world
                     .cadenza_platform_guest()
                     .call_on_notification(store, &event)
@@ -1127,6 +1139,28 @@ impl Reducer for WasmReducer {
             }
         };
         fold_result("on_notification", call)
+    }
+
+    /// Read the composed value-heap runtime's `live-objects` census (mirrors cdz-run's `read_live_objects`,
+    /// but async since the platform store is async). `None` unless this reducer retained a composed heap
+    /// instance (the compose path) whose runtime exposes the census export (the debug-counters build). Reads
+    /// the retained instance directly — the export is not re-exported by the guest world, so this handle is
+    /// the only way to reach it (see [`Instantiator::bind_dependencies`]).
+    async fn live_object_census(&mut self) -> Option<u32> {
+        let WasmReducer::Reducer { store, heap, .. } = self else {
+            return None;
+        };
+        let heap = heap.as_ref()?;
+        let iface = heap.get_export_index(&mut *store, None, "cadenza:runtime/heap")?;
+        let idx = heap.get_export_index(&mut *store, Some(&iface), "live-objects")?;
+        let func = heap.get_func(&mut *store, idx)?;
+        let mut out = [wasmtime::component::Val::U32(0)];
+        func.call_async(&mut *store, &[], &mut out).await.ok()?;
+        func.post_return_async(&mut *store).await.ok()?;
+        match out.into_iter().next()? {
+            wasmtime::component::Val::U32(n) => Some(n),
+            _ => None,
+        }
     }
 }
 
@@ -1355,11 +1389,18 @@ impl Instantiator {
     /// declared. This is what makes a Cadenza guest's `cadenza:runtime/heap@…+<hash>` import (and any other
     /// content-addressed component dependency) resolvable — the runtime and its peers come from the store,
     /// not a native host. `Box::pin` because it recurses across an `await` (a dependency of a dependency).
+    ///
+    /// `heap_out` captures the composed value-heap runtime instance (the `cadenza:runtime/heap` dependency) so
+    /// a debug leak-census can later read its `live-objects` export — see
+    /// [`WasmReducer::live_object_census`]. It captures only THIS level's heap dependency (the recursive call
+    /// for a dependency's OWN sub-dependencies passes `&mut None`), and only the heap-runtime import; every
+    /// other dependency is composed and dropped as before. `&mut None` (the production path) captures nothing.
     fn bind_dependencies<'a>(
         &'a self,
         store: &'a mut Store<HostState>,
         linker: &'a mut Linker<HostState>,
         component: &'a Component,
+        heap_out: &'a mut Option<wasmtime::component::Instance>,
     ) -> Pin<Box<dyn Future<Output = Result<(), wasmtime::Error>> + Send + 'a>> {
         Box::pin(async move {
             for dep in component_dependencies(&self.host.engine, component) {
@@ -1371,9 +1412,11 @@ impl Instantiator {
                 })?;
                 // The dependency is instantiated against a linker holding only ITS OWN dependencies — a pure
                 // content-addressed component (the value-heap runtime, NFC, …) takes no platform host
-                // imports, only sub-dependencies from the store.
+                // imports, only sub-dependencies from the store. The recursion captures no heap (its own
+                // sub-deps are not this component's runtime).
                 let mut dep_linker = Linker::new(&self.host.engine);
-                self.bind_dependencies(store, &mut dep_linker, &dep_component)
+                let mut sub_heap = None;
+                self.bind_dependencies(store, &mut dep_linker, &dep_component, &mut sub_heap)
                     .await?;
                 let dep_instance = dep_linker
                     .instantiate_async(&mut *store, &dep_component)
@@ -1385,6 +1428,11 @@ impl Instantiator {
                     &dep_component,
                     &dep_instance,
                 )?;
+                // Retain the value-heap runtime instance for the debug census (after aliasing, so the alias
+                // above keeps its borrow). Only the heap-runtime import — other deps are not censused.
+                if dep.import_name.contains("cadenza:runtime/heap") {
+                    *heap_out = Some(dep_instance);
+                }
             }
             Ok(())
         })
@@ -1418,7 +1466,8 @@ impl Instantiator {
                     |s| s,
                 )
                 .ok()?;
-                self.bind_dependencies(&mut store, &mut linker, &component)
+                // The arg-probe guest is a test harness; it is not censused, so capture no heap instance.
+                self.bind_dependencies(&mut store, &mut linker, &component, &mut None)
                     .await
                     .ok()?;
                 arg_probe_world::ArgProbeWorld::instantiate_async(&mut store, &component, &linker)
@@ -1454,7 +1503,9 @@ impl Instantiator {
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
             let bind_t = self.observe_start();
-            self.bind_dependencies(&mut store, &mut linker, &component)
+            // Capture the composed value-heap runtime instance for the debug leak-census.
+            let mut heap = None;
+            self.bind_dependencies(&mut store, &mut linker, &component, &mut heap)
                 .await
                 .ok()?;
             self.observe_end(bind_t, InstantiateSubStep::BindDependencies);
@@ -1463,7 +1514,7 @@ impl Instantiator {
                 .await
                 .ok()?;
             self.observe_end(world_t, InstantiateSubStep::WorldInstantiate);
-            WasmReducer::Reducer { store, world }
+            WasmReducer::Reducer { store, world, heap }
         };
         Some(Box::new(reducer))
     }
@@ -3630,5 +3681,113 @@ mod tests {
             .expect("a fold on the override-composed runtime succeeds");
         assert_eq!(reqs.len(), 1, "echo guest emits exactly one request");
         assert_eq!(outcome, crate::Outcome::Continue);
+    }
+
+    // The host-run-nets-live-objects-0 GATE (operator seq-916 host-owns-and-frees assignment): a leak-clean
+    // reducer fold must return the composed value-heap's live-cell count to its PRE-FOLD baseline (v-runtime's
+    // trusted-signal invariant — immortals are excluded from the count, so net-0 is achievable; delta-per-fold
+    // is the robust form even if a stateful reducer has a nonzero steady baseline). Composes the DEBUG-COUNTERS
+    // runtime via the override seam (the shipped runtime's live-objects is always 0) and reads it through the
+    // retained heap instance ([`WasmReducer::live_object_census`]). This censuses the REAL platform fold path
+    // (spawn → on_message through WasmReducer), so it also catches a future Mode-2 host-held value-heap handle
+    // that a host forgot to free.
+    //
+    // It currently FAILS BY DESIGN: the reducer-export emit does not yet drop the incoming-envelope + outgoing-
+    // step shells (≈13 value-heap cells/fold; v-runtime rc-trace), so a fold does NOT net to baseline. That is
+    // the intended forcing function + co-verify — it auto-flips GREEN when v-cdz-wasm-codegen lands the shell-
+    // drops; drop `#[ignore]` then to GATE the reclaim regression. `#[ignore]` keeps it out of the routine gate
+    // meanwhile.
+    #[tokio::test]
+    #[ignore = "env-gated census gate; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM"]
+    async fn a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline() {
+        let (Ok(path), Ok(dir), Ok(dbg)) = (
+            std::env::var("CDZ_REDUCER_ECHO_WASM"),
+            std::env::var("CDZ_COMPONENT_STORE_DIR"),
+            std::env::var("CDZ_DEBUG_RUNTIME_WASM"),
+        ) else {
+            eprintln!(
+                "census gate env unset (need CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM) — skipping"
+            );
+            return;
+        };
+        let guest = std::fs::read(&path).expect("read the reducer-echo component");
+        let debug_heap = std::fs::read(&dbg).expect("read the debug-counters runtime component");
+
+        // The guest's value-heap runtime dependency hash — overridden to the debug-counters build so
+        // live-objects is a real census (the shipped build reports 0). Its nfc sub-dep (same hash as release)
+        // resolves from the seeded component-store dir.
+        let engine = super::reducer_engine(&super::ResourceLimits::default()).expect("engine");
+        let component =
+            wasmtime::component::Component::from_binary(&engine, &guest).expect("parse component");
+        let heap_hash = super::component_dependencies(&engine, &component)
+            .into_iter()
+            .find(|d| d.import_name.contains("cadenza:runtime/heap"))
+            .expect("the reducer-echo guest imports the value-heap runtime")
+            .hash;
+
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(guest.clone())).await.unwrap();
+        for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+            let p = entry.expect("dir entry").path();
+            if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                    .await
+                    .unwrap();
+            }
+        }
+        let program = ProgramHash::of(&guest);
+        let store = wasm_program_store(Arc::new(cas))
+            .with_component_override(heap_hash, Bytes::from(debug_heap));
+        let mut reducer = store
+            .spawn(program, ord(b"census"))
+            .await
+            .expect("spawn the guest composed against the debug-counters runtime");
+
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        // Pre-fold baseline on the fresh instance (immortals excluded ⇒ typically 0 for the stateless echo).
+        let baseline = reducer.live_object_census().await.expect(
+            "the debug-counters runtime exposes live-objects (is CDZ_DEBUG_RUNTIME_WASM the debug build?)",
+        );
+        eprintln!("census gate: pre-fold baseline live-objects = {baseline}");
+
+        // After each fold the count should return to baseline (net-0 per fold). Bounded — a reused instance
+        // traps after ~hundreds of folds while the emit reclaim is pending.
+        const FOLDS: usize = 5;
+        let mut last = baseline;
+        let mut leaked = false;
+        for i in 1..=FOLDS {
+            let _ = reducer
+                .on_message(base.clone())
+                .await
+                .expect("fold succeeds");
+            last = reducer.live_object_census().await.expect("census reads");
+            if last != baseline {
+                leaked = true;
+            }
+            eprintln!(
+                "census gate: after fold {i}: live-objects = {last} (delta from baseline = {})",
+                last as i64 - baseline as i64
+            );
+        }
+        let per_fold = (last as i64 - baseline as i64) / FOLDS as i64;
+        eprintln!(
+            "census gate: per-fold leak ≈ {per_fold} value-heap cell(s) (target 0 once the reducer-export shell-drops land)"
+        );
+
+        // The trusted-signal invariant. FAILS BY DESIGN until the shell-drop reclaim lands (auto-flips GREEN
+        // then); `#[ignore]` keeps it out of the routine gate meanwhile.
+        assert!(
+            !leaked,
+            "reducer fold leaked value-heap cells (≈{per_fold}/fold) — reducer-export shell-drop reclaim not yet landed; census not net-0"
+        );
     }
 }
