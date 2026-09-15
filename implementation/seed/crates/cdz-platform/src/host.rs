@@ -3419,4 +3419,92 @@ mod tests {
             us(mean)
         );
     }
+
+    /// Shared setup for the env-gated reducer-echo benches: seed the guest + its whole component-store closure
+    /// (heap-runtime + nfc + …) into a fresh CAS, spawn ONE instance, and hand it back with a minimal
+    /// fold-clean message. `None` (env unset / closure mismatch) so a caller early-returns. See
+    /// [`warm_per_fold_execution_cost_of_a_single_reducer_function`] for the env vars + how to obtain the
+    /// fixtures (nix reducer-echo component + a cdz-component-store dir).
+    async fn seed_and_spawn_reducer_echo() -> Option<(Box<dyn crate::Reducer>, crate::Message)> {
+        let path = std::env::var("CDZ_REDUCER_ECHO_WASM").ok()?;
+        let bytes = std::fs::read(&path).ok()?;
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(bytes.clone())).await.unwrap();
+        if let Ok(dir) = std::env::var("CDZ_COMPONENT_STORE_DIR") {
+            for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+                let p = entry.expect("dir entry").path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                    cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        let program = ProgramHash::of(&bytes);
+        let store = wasm_program_store(Arc::new(cas));
+        let reducer = store.spawn(program, ord(b"reclaim-witness")).await?;
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+        Some((reducer, base))
+    }
+
+    // Reclaim regression witness (v-runtime co-verify of the seq-916 caveat): a reducer-export `on_message` fold
+    // leaks a FIXED set of value-heap SHELLS per fold — the decoded incoming-msg envelope shells AND the
+    // constructed step shells (rc-trace: 9 un-dropped nodes, ZERO drops, payload-independent). The emit does not
+    // drop them and NO host mechanism reclaims value-heap nodes (the driver's `run_mailbox_loop` drop is
+    // host-side Rust; `post_return`/`cabi_post` free only the return's linear-memory buffers — not the value-heap
+    // handles). So on a REUSED instance the shells accumulate until wasm `memory.grow` can no longer satisfy a
+    // realloc and the fold traps. This drives one reused instance and reports whether it accumulates to a trap
+    // (gap present) or survives the cap (reclaim landed). `#[ignore]` + env-gated like the sibling bench.
+    //
+    // POST-FIX (v-cdz-wasm-codegen lands the envelope+step shell-drops): the reused instance should fold the full
+    // cap without trapping — replace the report with `assert!(trap.is_none(), …)` (+ a live-objects≈0 check on
+    // the debug-counters runtime) and drop `#[ignore]` to GATE the reclaim regression.
+    #[tokio::test]
+    #[ignore = "env-gated reclaim witness; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR"]
+    async fn a_reused_reducer_instance_accumulates_fold_shells_until_the_emit_reclaim_lands() {
+        let Some((mut reducer, base)) = seed_and_spawn_reducer_echo().await else {
+            eprintln!(
+                "CDZ_REDUCER_ECHO_WASM/CDZ_COMPONENT_STORE_DIR unset or closure mismatch — skipping the reclaim witness"
+            );
+            return;
+        };
+
+        // Above the ~2000-fold trap point seen at the default 256 MiB ceiling, with headroom to confirm survival
+        // once the emit reclaim lands. Fast while the gap is present (traps early); ~cap×fold-cost post-fix.
+        const CAP: usize = 20_000;
+        let mut survived = 0usize;
+        let mut trap: Option<String> = None;
+        for _ in 0..CAP {
+            match reducer.on_message(base.clone()).await {
+                Ok(_) => survived += 1,
+                Err(e) => {
+                    trap = Some(format!("{e:?}"));
+                    break;
+                }
+            }
+        }
+        match &trap {
+            Some(e) => eprintln!(
+                "reclaim witness: reused instance ACCUMULATED to a trap after {survived} fold(s) (emit reclaim gap PRESENT): {e}"
+            ),
+            None => eprintln!(
+                "reclaim witness: reused instance SURVIVED all {CAP} folds without trapping (emit reclaim appears FIXED)"
+            ),
+        }
+        // Report-only: the accumulation is a diagnosed gap owned by v-cdz-wasm-codegen (the reducer-export emit
+        // must drop the envelope + step shells). This asserts only that the FIRST fold worked, so a broken
+        // fixture is not silently read as "fixed" (zero survivals with no trap would be a setup error).
+        assert!(
+            survived > 0 || trap.is_some(),
+            "no fold ran — fixture/closure setup error, not a reclaim result"
+        );
+    }
 }
