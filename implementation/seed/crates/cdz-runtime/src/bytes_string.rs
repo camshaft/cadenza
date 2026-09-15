@@ -113,6 +113,37 @@ pub(crate) fn op_bytes_len(buf: Handle) -> u32 {
     })
 }
 
+/// `bytes-new` (heap op, appended seq 916) — build a fresh Bytes leaf from a whole `list<u8>` in ONE call
+/// (alloc + bulk-copy), the bulk twin of `bytes-alloc` + N× `bytes-set`. The LIFT-side marshaling-boundary op:
+/// the compiler emits it to lift a host-provided byte slice (a reducer event field, already contiguous in
+/// guest linear memory) into a heap Bytes in ONE cross-component call instead of one call/byte. Mirrors
+/// `op_str_new` minus UTF-8 validation: an EMPTY slice → the shared IMMORTAL empty-BYTES singleton (reuse the
+/// `op_bytes_alloc` len==0 mint-once path); else a fresh owned leaf holding `data` VERBATIM (`alloc` stores it
+/// inline when ≤INLINE_RAW_CAP, on the heap when larger). A CONSTRUCTOR — produces a NEW owned Bytes and
+/// CONSUMES nothing (`data` arrives by value, not as a handle). Called by `Guest::bytes_new`.
+pub(crate) fn op_bytes_new(data: Vec<u8>) -> Handle {
+    if data.is_empty() {
+        return op_bytes_alloc(0); // the shared IMMORTAL empty-BYTES singleton (mint-once, census-excluded)
+    }
+    alloc(Vec::new(), data)
+}
+
+/// `bytes-read` (heap op, appended seq 916) — return the WHOLE logical byte content of `buf` as a `Vec<u8>` in
+/// ONE call, the bulk twin of N× `bytes-get` and the LOWER-side companion of `bytes-new`. The compiler emits it
+/// to lower a heap Bytes back to a host byte slice (a reducer result) in ONE cross-component call instead of one
+/// call/byte. Mirrors `op_str_get`: FLATTEN a rope (`bytes-concat`/`bytes-slice`, whose `raw` holds header
+/// bytes, not content) to a leaf first — unobservable + content-preserving — so the read sees the ACTUAL bytes,
+/// then copy the leaf's `raw` out. An INSPECTOR — BORROWS `buf` (rc unchanged; the caller owns the drop, like
+/// `str-get`/`bytes-get`). A null/immediate handle reads as the empty list (cross-kind totality). Called by
+/// `Guest::bytes_read`.
+pub(crate) fn op_bytes_read(buf: Handle) -> Vec<u8> {
+    if is_immediate(buf) {
+        return Vec::new(); // cross-kind totality: a bytes buffer is never itself an immediate
+    }
+    bytes_flatten(buf);
+    with_node(buf, Vec::new(), |n| n.raw.as_slice().to_vec())
+}
+
 // ─── Bytes rope: O(1) concat/slice over shared leaves, flatten-on-read ────────────────────
 // A Bytes value is a rope of shared slices/concats bottoming out in leaves, so `bytes-concat` and
 // `bytes-slice` are O(1) and copy no bytes until observed — killing the O(n²) copy cascade a compiler

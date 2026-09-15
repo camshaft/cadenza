@@ -993,6 +993,44 @@ pub mod exports {
                     let result0 = T::map_merge(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bytes_new_cabi<T: Guest>(
+                    arg0: *mut u8,
+                    arg1: usize,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let len0 = arg1;
+                    let result1 = T::bytes_new(
+                        _rt::Vec::from_raw_parts(arg0.cast(), len0, len0),
+                    );
+                    _rt::as_i32(result1)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_bytes_read_cabi<T: Guest>(arg0: i32) -> *mut u8 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::bytes_read(arg0 as u32);
+                    let ptr1 = (&raw mut _RET_AREA.0).cast::<u8>();
+                    let vec2 = (result0).into_boxed_slice();
+                    let ptr2 = vec2.as_ptr().cast::<u8>();
+                    let len2 = vec2.len();
+                    ::core::mem::forget(vec2);
+                    *ptr1.add(::core::mem::size_of::<*const u8>()).cast::<usize>() = len2;
+                    *ptr1.add(0).cast::<*mut u8>() = ptr2.cast_mut();
+                    ptr1
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn __post_return_bytes_read<T: Guest>(arg0: *mut u8) {
+                    let l0 = *arg0.add(0).cast::<*mut u8>();
+                    let l1 = *arg0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let base2 = l0;
+                    let len2 = l1;
+                    _rt::cabi_dealloc(base2, len2 * 1, 1);
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1586,6 +1624,32 @@ pub mod exports {
                     ///    Iterates `b` and re-inserts into `a` (canonical CHAMP insert overwrites → `b` wins); the empty map
                     ///    is the identity on both sides. APPENDED last (frozen-contract rule). See `op_map_merge`.
                     fn map_merge(a: u32, b: u32) -> u32;
+                    /// 98 — a with b's entries merged in, b wins on conflict (consumes both)
+                    ///  bytes-new(data) -> handle
+                    ///    Build a fresh Bytes leaf from a whole `list<u8>` in ONE call — alloc + bulk-copy the entire slice, the
+                    ///    bulk twin of `bytes-alloc` + N× `bytes-set`. The MARSHALING-boundary op: the compiler emits it to LIFT
+                    ///    a host-provided byte slice (a reducer event field, materialized contiguously in guest linear memory by
+                    ///    the canonical ABI) into a heap Bytes in ONE cross-component call instead of one call per byte (the
+                    ///    ~1.9us/byte reducer-fold cost — operator seq 916). Mirrors `str-new` minus UTF-8 validation: an empty
+                    ///    list yields the shared IMMORTAL empty-Bytes singleton; else a fresh owned leaf holding the bytes
+                    ///    VERBATIM. A CONSTRUCTOR — produces a NEW owned Bytes and CONSUMES nothing (`data` crosses by value, not
+                    ///    as a handle). INDISTINGUISHABLE from a `bytes-alloc`+`bytes-set`-built buffer by
+                    ///    `bytes-len`/`bytes-get`/equality; `bytes-alloc`/`bytes-set`/`bytes-get` stay for indexed callers.
+                    ///    APPENDED last (frozen-contract rule — a new op goes at the end so no existing op's index shifts). See
+                    ///    `op_bytes_new`.
+                    fn bytes_new(data: _rt::Vec<u8>) -> u32;
+                    /// 99 — fresh Bytes leaf from a whole list<u8> in one call (bulk-copy)
+                    ///  bytes-read(buf) -> list<u8>
+                    ///    Return the WHOLE logical byte content of a Bytes `buf` as a `list<u8>` in ONE call — the bulk twin of
+                    ///    N× `bytes-get`, the LOWER-side companion of `bytes-new`. The MARSHALING-boundary op: the compiler emits
+                    ///    it to LOWER a heap Bytes back to a host byte slice (a reducer result) in ONE cross-component call
+                    ///    instead of one call per byte. Mirrors `str-get`: FLATTENS `buf` first (it may be a
+                    ///    `bytes-concat`/`bytes-slice` rope whose node `raw` holds header bytes, NOT content — the read must see
+                    ///    the actual bytes), unobservably (content-preserving), then hands the flat leaf's bytes back. An
+                    ///    INSPECTOR — BORROWS `buf` (rc unchanged; the caller owns the drop, like `str-get`/`bytes-get`). A null
+                    ///    or immediate handle reads as the empty list (cross-kind totality). APPENDED last (frozen-contract rule).
+                    ///    See `op_bytes_read`.
+                    fn bytes_read(buf: u32) -> _rt::Vec<u8>;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1950,7 +2014,18 @@ pub mod exports {
                         "cadenza:runtime/heap#map-merge")] unsafe extern "C" fn
                         export_map_merge(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_map_merge_cabi::<$ty > (arg0, arg1)
-                        } } };
+                        } } #[unsafe (export_name = "cadenza:runtime/heap#bytes-new")]
+                        unsafe extern "C" fn export_bytes_new(arg0 : * mut u8, arg1 :
+                        usize,) -> i32 { unsafe { $($path_to_types)*::
+                        _export_bytes_new_cabi::<$ty > (arg0, arg1) } } #[unsafe
+                        (export_name = "cadenza:runtime/heap#bytes-read")] unsafe extern
+                        "C" fn export_bytes_read(arg0 : i32,) -> * mut u8 { unsafe {
+                        $($path_to_types)*:: _export_bytes_read_cabi::<$ty > (arg0) } }
+                        #[unsafe (export_name =
+                        "cabi_post_cadenza:runtime/heap#bytes-read")] unsafe extern "C"
+                        fn _post_return_bytes_read(arg0 : * mut u8,) { unsafe {
+                        $($path_to_types)*:: __post_return_bytes_read::<$ty > (arg0) } }
+                        };
                     };
                 }
                 #[doc(hidden)]
@@ -2157,10 +2232,10 @@ pub(crate) use __export_runtime_impl as export;
 #[unsafe(link_section = "component-type:wit-bindgen:0.41.0:cadenza:runtime:runtime:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2567] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x89\x13\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2620] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbe\x13\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x9c\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\xa1\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2212,10 +2287,11 @@ lize\x01%\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x014\x01@\x01\x05
 bytesy\0y\x04\0\x0bhash-blake3\x015\x01@\x02\x06handley\x05discsy\0y\x04\0\x09as\
 t-print\x016\x04\0\x0aast-encode\x016\x01@\x02\x0cbytes-handley\x05discsy\0y\x04\
 \0\x0aast-decode\x017\x04\0\x0dmark-immortal\x01\x0b\x04\0\x12mark-immortal-deep\
-\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x09map-merge\x01\x1e\x04\0\x14cadenz\
-a:runtime/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07r\
-untime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227\
-.1\x10wit-bindgen-rust\x060.41.0";
+\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x09map-merge\x01\x1e\x01p}\x01@\x01\x04\
+data8\0y\x04\0\x09bytes-new\x019\x01@\x01\x03bufy\08\x04\0\x0abytes-read\x01:\x04\
+\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\
+\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compone\
+nt\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

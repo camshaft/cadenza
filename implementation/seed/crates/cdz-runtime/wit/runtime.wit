@@ -563,6 +563,32 @@ interface heap {
   //    Iterates `b` and re-inserts into `a` (canonical CHAMP insert overwrites → `b` wins); the empty map
   //    is the identity on both sides. APPENDED last (frozen-contract rule). See `op_map_merge`.
   map-merge: func(a: u32, b: u32) -> u32;              // 98 — a with b's entries merged in, b wins on conflict (consumes both)
+
+  //  bytes-new(data) -> handle
+  //    Build a fresh Bytes leaf from a whole `list<u8>` in ONE call — alloc + bulk-copy the entire slice, the
+  //    bulk twin of `bytes-alloc` + N× `bytes-set`. The MARSHALING-boundary op: the compiler emits it to LIFT
+  //    a host-provided byte slice (a reducer event field, materialized contiguously in guest linear memory by
+  //    the canonical ABI) into a heap Bytes in ONE cross-component call instead of one call per byte (the
+  //    ~1.9us/byte reducer-fold cost — operator seq 916). Mirrors `str-new` minus UTF-8 validation: an empty
+  //    list yields the shared IMMORTAL empty-Bytes singleton; else a fresh owned leaf holding the bytes
+  //    VERBATIM. A CONSTRUCTOR — produces a NEW owned Bytes and CONSUMES nothing (`data` crosses by value, not
+  //    as a handle). INDISTINGUISHABLE from a `bytes-alloc`+`bytes-set`-built buffer by
+  //    `bytes-len`/`bytes-get`/equality; `bytes-alloc`/`bytes-set`/`bytes-get` stay for indexed callers.
+  //    APPENDED last (frozen-contract rule — a new op goes at the end so no existing op's index shifts). See
+  //    `op_bytes_new`.
+  bytes-new: func(data: list<u8>) -> u32;              // 99 — fresh Bytes leaf from a whole list<u8> in one call (bulk-copy)
+
+  //  bytes-read(buf) -> list<u8>
+  //    Return the WHOLE logical byte content of a Bytes `buf` as a `list<u8>` in ONE call — the bulk twin of
+  //    N× `bytes-get`, the LOWER-side companion of `bytes-new`. The MARSHALING-boundary op: the compiler emits
+  //    it to LOWER a heap Bytes back to a host byte slice (a reducer result) in ONE cross-component call
+  //    instead of one call per byte. Mirrors `str-get`: FLATTENS `buf` first (it may be a
+  //    `bytes-concat`/`bytes-slice` rope whose node `raw` holds header bytes, NOT content — the read must see
+  //    the actual bytes), unobservably (content-preserving), then hands the flat leaf's bytes back. An
+  //    INSPECTOR — BORROWS `buf` (rc unchanged; the caller owns the drop, like `str-get`/`bytes-get`). A null
+  //    or immediate handle reads as the empty list (cross-kind totality). APPENDED last (frozen-contract rule).
+  //    See `op_bytes_read`.
+  bytes-read: func(buf: u32) -> list<u8>;              // 100 — whole buffer content as a list<u8> in one call (borrows buf)
 }
 
 world runtime {
