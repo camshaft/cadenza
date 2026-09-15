@@ -1543,6 +1543,17 @@ pub struct Db {
     /// [`DESCENT_DEPTH_LIMIT`].
     pub(crate) descent_depth: u32,
 
+    /// The PEAK [`descent_depth`] reached this compile — a high-water mark, only ever raised. It is the
+    /// observable proxy for "did the demand-query recursion stay proportional to input size": a small,
+    /// shallow program must keep this small. A runaway inference/lowering cycle (a node re-demanding its
+    /// own in-flight type — e.g. the `literal_comparison_bigint_context` sibling ping-pong an
+    /// `(= (+ n 1) n)` used to trigger) drives it toward [`DESCENT_DEPTH_LIMIT`] on native (which the
+    /// 512 MB worker survives) while OVERFLOWING the wasm browser compiler's 1 MiB shadow stack — so a
+    /// regression is invisible on native but crashes in the browser. A test asserts this stays bounded
+    /// for the shallow-input forms, catching such a re-entry regression profile-independently (depth is
+    /// the same debug/release, unlike a native stack-overflow which is fragile to frame size).
+    pub(crate) max_descent_depth: u32,
+
     /// The current recursive-descent depth of a LAYOUT core-tree WALK (`collect_call_callees`,
     /// `collect_closure_codes`) — a SEPARATE counter from [`descent_depth`], deliberately NOT shared. These
     /// walks call [`crate::lower::core_of`] at each node (which uses `descent_depth` for its OWN recursion),
@@ -1903,6 +1914,18 @@ pub struct Db {
     /// (`solving_params`/`solve_recursive_params`, which grounds a self-tail-recursive param by RE-reading
     /// its body) completely untouched. See `expected_arrow_for_lambda`.
     pub(crate) arrow_lambdas_in_progress: crate::fxhash::FxHashSet<StructId>,
+
+    /// Guard against a re-entrant cycle in `infer::literal_comparison_bigint_context`. That check grounds a
+    /// bare integer literal comparison-operand to `BigInt` when its sibling is concretely `BigInt`, which it
+    /// tests by demanding `type_of(sibling)`. When NEITHER operand is a bare literal-with-known-type — e.g.
+    /// `(= (+ n 1) n)`, whose operands are a computed expr and a parameter — computing the sibling's type
+    /// transitively re-demands THIS literal's type, which re-enters the check on the SAME node, and neither
+    /// operand's type is memoized yet (both in flight) so the two ping-pong until the descent depth guard
+    /// (native ~512 MB worker survives; the wasm 1 MiB browser stack OOBs — the decline-don't-crash
+    /// violation this bounds). Holds the literal nodes whose grounding check is on the stack; a re-entry for
+    /// a node already here returns `false` (the literal keeps its default type — always the safe fallback,
+    /// since the grounding is a best-effort contextual typing, never load-bearing for correctness).
+    pub(crate) comparison_bigint_probe: crate::fxhash::FxHashSet<StructId>,
 
     /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
     /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
@@ -3314,6 +3337,7 @@ impl Db {
             structural_reductions: 0,
             fold_type_fault: None,
             descent_depth: 0,
+            max_descent_depth: 0,
             walk_depth: 0,
             callee_visited: crate::fxhash::FxHashSet::default(),
             closure_code_visited: crate::fxhash::FxHashSet::default(),
@@ -3362,6 +3386,7 @@ impl Db {
             param_types: crate::fxhash::FxHashMap::default(),
             scheme_rigid_vars: None,
             arrow_lambdas_in_progress: crate::fxhash::FxHashSet::default(),
+            comparison_bigint_probe: crate::fxhash::FxHashSet::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
             scc_result_typing: crate::fxhash::FxHashSet::default(),
             solving_schemes: crate::fxhash::FxHashSet::default(),

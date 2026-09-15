@@ -62,6 +62,7 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
         return Ty::Any;
     }
     db.descent_depth += 1;
+    db.max_descent_depth = db.max_descent_depth.max(db.descent_depth);
     let t = compute(db, id);
     // If `id` is a handler SEED node with a still-free-var type, ground the state type NOW (first demand,
     // at type-check) against the resume next-states — so the fully-ground state type is what gets memoized
@@ -1434,7 +1435,23 @@ fn literal_comparison_bigint_context(db: &mut Db, id: StructId) -> bool {
     // reading its type is also the termination guard: `type_of` on a bare-literal sibling would re-enter
     // THIS check from the sibling (`(= 5 6)`: 5 reads 6, 6 reads 5, …). A `BigInt`-suffixed `5N` is an
     // ANNOTATION node (`as_int` is `None`), so it is still consulted.
-    db.ast.as_int(sibling).is_none() && matches!(type_of(db, sibling), Ty::BigInt)
+    if db.ast.as_int(sibling).is_some() {
+        return false;
+    }
+    // RE-ENTRY GUARD. Reading the sibling's type below can transitively re-demand THIS literal's type
+    // (`(= (+ n 1) n)`: the computed operand's type solve walks back to this operand), which re-enters
+    // this check on the SAME node while neither operand's type is memoized yet — an unbounded ping-pong
+    // caught only by the descent depth guard (which the wasm 1 MiB stack OOBs before reaching). If `id`'s
+    // grounding check is already on the stack, break: the literal keeps its default type. Safe because the
+    // BigInt grounding is a best-effort contextual typing — declining it only falls back to the default
+    // Int64, never load-bearing for correctness; a genuine `(= n 5)` with `n : BigInt` has a sibling whose
+    // type resolves WITHOUT routing back through this literal, so it is unaffected.
+    if !db.comparison_bigint_probe.insert(id) {
+        return false;
+    }
+    let sibling_is_bigint = matches!(type_of(db, sibling), Ty::BigInt);
+    db.comparison_bigint_probe.remove(&id);
+    sibling_is_bigint
 }
 
 mod width_faults;
