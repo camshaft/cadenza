@@ -93,6 +93,28 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// watchdog sweeps every ~4 min, so this permits at most one restart per agent per ~10 min.
 const WEDGE_RESTART_GRACE: u64 = 600;
 
+/// Cooldown (seconds) of a STABLY-RECOVERED concierge before the out-of-band guardian auto-clears a raised
+/// `concierge-flap.alarm`. The flap stamp is REWRITTEN (mtime bumped) on every recurrence, so an alarm whose
+/// mtime has aged past this without a rewrite means the flap has NOT recurred for a full concierge interval;
+/// combined with a fresh heartbeat (the concierge is currently ticking) that is "stably recovered" → the
+/// board 🚨 has served its purpose and should clear itself, exactly as `disk-pressure.alarm` clears below its
+/// WARN band. Without this the flap alarm is WRITE-ONLY and lingers on `fleet status` forever after a single
+/// flap, crying wolf indefinitely and desensitizing the operator to a genuine one. 30min = one concierge
+/// interval of uninterrupted healthy ticking; long enough that we never clear mid-flap.
+const FLAP_ALARM_CLEAR_SECS: u64 = 1800;
+
+/// Auto-compact window (tokens) to relaunch a FLAPPING protected concierge with — smaller than window.sh's
+/// 600K default so a fresh session compacts EARLIER, with more headroom, and SURVIVES its heavy first tick
+/// (charter + a deep inbox drain + a 30-window status sweep) instead of ballooning past the 1M wall mid-turn
+/// and re-wedging (which tears the window down → the recreate FLAP the operator hit: down ~1h, 2026-09-15).
+/// The 600K default leaves ~400K headroom yet STILL wedges — a single heavy first-tick turn ingests >400K in
+/// one shot, before the turn boundary where auto-compact could fire — so a flap-recovery relaunch needs MORE
+/// headroom, not the same. 400K → ~600K headroom, larger than that observed single-turn ingest. Used ONLY on
+/// the flap-recovery relaunch (a healthy launch keeps the 600K default); injected as `CDZ_AUTOCOMPACT_WINDOW`
+/// on the launch, which window.sh already honors as its `AUTOCOMPACT` source. Trades a bit more churn-compact
+/// for actually coming back up — the right trade when the operator's only interface is flapping.
+const FLAP_RELAUNCH_AUTOCOMPACT_WINDOW: u64 = 400000;
+
 /// How long the backgrounded-wait TOKEN COUNT must stay FROZEN (unchanged since its first-seen fingerprint
 /// stamp) before the watchdog treats a "Waiting for task" hang as a DEAD task (concierge gap #2). Long
 /// enough to span ≥1 prior watchdog sweep (sweeps run ~4min) so it reflects "frozen across sweeps" — a
@@ -2572,7 +2594,7 @@ fn up(fleet: &Fleet) {
         let _ = std::fs::remove_file(fleet.stopfile(&a.name));
         ensure_worktree(fleet, a);
         ensure_inbox(fleet, &a.name);
-        ensure_window(fleet, &session, a);
+        ensure_window(fleet, &session, a, None);
     }
     println!(
         "fleet up: {} active agent(s) ensured in tmux session '{session}'.",
@@ -3928,7 +3950,7 @@ fn add(
     if in_tmux() {
         let session = tmux_current_session();
         let a = reg.agents.last().unwrap().clone();
-        ensure_window(fleet, &session, &a);
+        ensure_window(fleet, &session, &a, None);
     } else {
         println!(
             "  (not in tmux — run `cargo xtask fleet up` from your tmux session to launch it.)"
@@ -4044,7 +4066,7 @@ fn resume(fleet: &Fleet, name: &str) {
     let session = tmux_current_session();
     ensure_worktree(fleet, a);
     ensure_inbox(fleet, name);
-    ensure_window(fleet, &session, a);
+    ensure_window(fleet, &session, a, None);
     let verb = if was_stopped {
         "reactivated (status stopped → active, stop-file cleared)"
     } else {
@@ -6603,7 +6625,15 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                 .find(|x| x.name == agent)
                 .cloned()
             {
-                ensure_window(fleet, session, &a);
+                // A FLAPPING concierge (recreated within grace, prior session died before heartbeat) is
+                // almost always re-wedging on its heavy first tick → relaunch with MORE auto-compact headroom
+                // so this recreate actually SURVIVES (operator 2026-09-15: "make the FIRST recreate succeed").
+                let recreate_autocompact = if flapping {
+                    Some(FLAP_RELAUNCH_AUTOCOMPACT_WINDOW)
+                } else {
+                    None
+                };
+                ensure_window(fleet, session, &a, recreate_autocompact);
                 stamp_wedge_restart(fleet, agent);
                 eprintln!(
                     "  + RECREATED '{agent}' dead/torn-down window out-of-band (active but windowless — \
@@ -6670,7 +6700,12 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
                 );
                 return;
             }
-            match restart_window(fleet, session, agent) {
+            match restart_window(
+                fleet,
+                session,
+                agent,
+                Some(FLAP_RELAUNCH_AUTOCOMPACT_WINDOW),
+            ) {
                 RestartOutcome::Restarted => {
                     stamp_wedge_restart(fleet, agent);
                     eprintln!(
@@ -6696,6 +6731,33 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
             }
             return;
         }
+        // STABLY RECOVERED → self-clear a stale `concierge-flap.alarm`. Reaching here the protected concierge
+        // has a live window AND a fresh heartbeat (the non-operational branch above did not fire). If a flap
+        // alarm was raised but has NOT been rewritten for a full cooldown (no recurrence — the flap-recreate
+        // path rewrites the stamp each time), the concierge has stably recovered and the board 🚨 has served
+        // its purpose → remove it. Without this the flap alarm is write-only and lingers forever after a
+        // single flap, crying wolf and desensitizing the operator (exactly the self-clearing lifecycle that
+        // `disk-pressure.alarm` already has below its WARN band). Best-effort; a failed unlink just retries
+        // next sweep.
+        if flap_alarm_should_clear(
+            flap_alarm_age_secs(fleet, now),
+            heartbeat_age_secs(fleet, agent, now),
+            stale,
+            FLAP_ALARM_CLEAR_SECS,
+        ) {
+            let alarm = fleet.root.join("concierge-flap.alarm");
+            if dry_run {
+                println!(
+                    "  DRY-RUN would CLEAR stale '{}' ('{agent}' stably recovered — no flap for {FLAP_ALARM_CLEAR_SECS}s)",
+                    alarm.display()
+                );
+            } else if std::fs::remove_file(&alarm).is_ok() {
+                eprintln!(
+                    "  ✓ cleared stale concierge-flap.alarm — '{agent}' has stably recovered (window up, \
+                     heartbeat fresh, no flap for ≥{FLAP_ALARM_CLEAR_SECS}s). (self-heal)"
+                );
+            }
+        }
     }
 
     let pane = capture_pane(session, agent);
@@ -6717,7 +6779,12 @@ fn compact_nudge_scan(fleet: &Fleet, session: &str, agent: &str, dry_run: bool) 
             println!("  DRY-RUN would AUTO-RESTART '{agent}' (out-of-band; context wedge {pct}%)");
             return;
         }
-        match restart_window(fleet, session, agent) {
+        match restart_window(
+            fleet,
+            session,
+            agent,
+            Some(FLAP_RELAUNCH_AUTOCOMPACT_WINDOW),
+        ) {
             RestartOutcome::Restarted => {
                 stamp_wedge_restart(fleet, agent);
                 eprintln!(
@@ -6935,7 +7002,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     "watchdog: '{}' is active with NO live window → recreating it (self-heal a dead/torn-down window).",
                     a.name
                 );
-                ensure_window(fleet, &session, a);
+                ensure_window(fleet, &session, a, None);
                 stamp_wedge_restart(fleet, &a.name);
                 wedge_restarts += 1;
             } else if !tmux_ok {
@@ -7174,7 +7241,9 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         a.name, stuck_count
                     );
                 } else {
-                    match restart_window(fleet, &session, &a.name) {
+                    // A drain-stall is an inbox-drift restart, NOT context saturation → keep the default
+                    // auto-compact window (no override).
+                    match restart_window(fleet, &session, &a.name, None) {
                         RestartOutcome::Restarted => {
                             stamp_wedge_restart(fleet, &a.name); // shared thrash-guard
                             clear_drain_nudge(fleet, &a.name); // reset the count for the fresh session
@@ -7452,7 +7521,14 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             }
                         );
                     } else {
-                        match restart_window(fleet, &session, &a.name) {
+                        // Compact-declined single-turn saturation → relaunch with more headroom so the
+                        // fresh session doesn't re-saturate the same way.
+                        match restart_window(
+                            fleet,
+                            &session,
+                            &a.name,
+                            Some(FLAP_RELAUNCH_AUTOCOMPACT_WINDOW),
+                        ) {
                             RestartOutcome::Restarted => {
                                 stamp_wedge_restart(fleet, &a.name);
                                 wedge_restarts += 1;
@@ -7560,7 +7636,14 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         a.name
                     );
                 } else {
-                    match restart_window(fleet, &session, &a.name) {
+                    // A 100% context wedge → relaunch with more headroom so the fresh session compacts
+                    // earlier and doesn't immediately re-wedge (the same fix as the concierge flap path).
+                    match restart_window(
+                        fleet,
+                        &session,
+                        &a.name,
+                        Some(FLAP_RELAUNCH_AUTOCOMPACT_WINDOW),
+                    ) {
                         RestartOutcome::Restarted => {
                             stamp_wedge_restart(fleet, &a.name);
                             wedge_restarts += 1;
@@ -8648,6 +8731,32 @@ fn stamp_compact_nudge(fleet: &Fleet, name: &str) {
 /// `should_auto_restart_wedge`.
 fn wedge_restart_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
     file_mtime_unix(&fleet.root.join("wedge-restart").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Age (seconds) since the `concierge-flap.alarm` was last (re)written (its mtime), or `None` if no alarm is
+/// currently raised. The flap-recreate path REWRITES the file on every recurrence, so this is "time since the
+/// last flap" — an old age means the flap has stopped recurring. Gates `flap_alarm_should_clear`.
+fn flap_alarm_age_secs(fleet: &Fleet, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("concierge-flap.alarm")).map(|m| now.saturating_sub(m))
+}
+
+/// Whether a raised `concierge-flap.alarm` should be CLEARED — i.e. the concierge has STABLY recovered. Pure
+/// so the exact recovery condition is unit-testable. True iff BOTH: (a) the alarm exists and its mtime has
+/// aged past `cooldown` (the flap has NOT recurred for that long — a recurrence rewrites the stamp, resetting
+/// its age), AND (b) the concierge heartbeat is FRESH (`hb_age <= stale` — it is currently ticking, not itself
+/// down/wedged). Returns false while the flap is still recent (never clear mid-flap) or the heartbeat is stale
+/// (not actually healthy yet), and false when no alarm is raised (`None`). Mirrors the self-clearing lifecycle
+/// of `disk-pressure.alarm`, which the disk-guard clears once usage falls back below its WARN band.
+fn flap_alarm_should_clear(
+    alarm_age_secs: Option<u64>,
+    hb_age_secs: Option<u64>,
+    stale: u64,
+    cooldown: u64,
+) -> bool {
+    match (alarm_age_secs, hb_age_secs) {
+        (Some(alarm_age), Some(hb_age)) => alarm_age >= cooldown && hb_age <= stale,
+        _ => false,
+    }
 }
 
 /// Record that we auto-restarted this agent's window for a context wedge (touch
@@ -11675,7 +11784,25 @@ fn tmux_windows_checked(session: &str) -> Option<Vec<String>> {
 /// Idempotent: if the window already exists we leave it running (do not relaunch — that would kill a
 /// live agent). A stopped agent whose window is gone is not relaunched by `up`; only `active` reach
 /// here.
-fn ensure_window(fleet: &Fleet, session: &str, a: &Agent) {
+/// Build the tmux `new-window` cmdline that runs `window.sh <name>`, optionally prefixed with a
+/// `CDZ_AUTOCOMPACT_WINDOW=<n>` env assignment. Pure so the quoting + env prefix is unit-tested. window.sh
+/// reads `CDZ_AUTOCOMPACT_WINDOW` as its `AUTOCOMPACT` default source, so a shell `VAR=val window.sh name`
+/// sets the auto-compact window for THAT launch only — used to relaunch a flapping concierge with more
+/// headroom (see `FLAP_RELAUNCH_AUTOCOMPACT_WINDOW`); `None` gives the plain cmdline (window.sh's 600K default).
+fn window_launch_cmdline(sh: &Path, name: &str, autocompact_override: Option<u64>) -> String {
+    let base = format!(
+        "{} {}",
+        shell_quote(&sh.to_string_lossy()),
+        shell_quote(name)
+    );
+    match autocompact_override {
+        // `n` is a plain integer + the var name is a fixed literal, so no quoting is needed on the prefix.
+        Some(n) => format!("CDZ_AUTOCOMPACT_WINDOW={n} {base}"),
+        None => base,
+    }
+}
+
+fn ensure_window(fleet: &Fleet, session: &str, a: &Agent, autocompact_override: Option<u64>) {
     if tmux_windows(session).iter().any(|w| w == &a.name) {
         println!("  = window '{}' already live — left running", a.name);
         return;
@@ -11683,11 +11810,7 @@ fn ensure_window(fleet: &Fleet, session: &str, a: &Agent) {
     let sh = fleet.window_sh();
     // `new-window -d` (detached) so bringing up many agents doesn't yank the operator's focus around.
     let target = format!("{session}:");
-    let cmdline = format!(
-        "{} {}",
-        shell_quote(&sh.to_string_lossy()),
-        shell_quote(&a.name)
-    );
+    let cmdline = window_launch_cmdline(&sh, &a.name, autocompact_override);
     let status = Command::new("tmux")
         .args(["new-window", "-d", "-t", &target, "-n", &a.name, &cmdline])
         .current_dir(&fleet.repo)
@@ -11754,7 +11877,12 @@ enum RestartOutcome {
 /// re-reads its charter + re-arms its loop from where it left off. Composes the existing `kill_window` +
 /// the same detached `new-window` launch `ensure_window` uses, so a restarted window is identical to a
 /// freshly-`up`ped one. Relaunches by NAME into the same session, matching `ensure_window`.
-fn restart_window(fleet: &Fleet, session: &str, name: &str) -> RestartOutcome {
+fn restart_window(
+    fleet: &Fleet,
+    session: &str,
+    name: &str,
+    autocompact_override: Option<u64>,
+) -> RestartOutcome {
     match kill_window(session, name) {
         // TmuxError on the kill: don't relaunch (we couldn't prove the old one is gone — a relaunch
         // could duplicate the window). Report so the caller escalates instead.
@@ -11764,11 +11892,11 @@ fn restart_window(fleet: &Fleet, session: &str, name: &str) -> RestartOutcome {
     }
     let sh = fleet.window_sh();
     let target = format!("{session}:");
-    let cmdline = format!(
-        "{} {}",
-        shell_quote(&sh.to_string_lossy()),
-        shell_quote(name)
-    );
+    // A restart triggered BY context saturation (a 100% wedge, a pre-wall compact-decline, or a flapping
+    // concierge) relaunches with MORE auto-compact headroom (`autocompact_override`) so the fresh session
+    // doesn't immediately re-saturate the same way and re-wedge; a plain restart (e.g. a drain-stall) passes
+    // `None` and keeps window.sh's default.
+    let cmdline = window_launch_cmdline(&sh, name, autocompact_override);
     let ok = Command::new("tmux")
         .args(["new-window", "-d", "-t", &target, "-n", name, &cmdline])
         .current_dir(&fleet.repo)
@@ -20225,6 +20353,70 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Never heartbeated / unreadable → NOT restarted here (missing-window + launch-heartbeat cover a
         // brand-new window; we act only on a proven-stale heartbeat).
         assert!(!agent_non_operational(None, stale, false));
+    }
+
+    #[test]
+    fn flap_alarm_clears_only_when_concierge_stably_recovered() {
+        let stale = 3600; // 60m = 2× a 30m concierge interval
+        let cooldown = FLAP_ALARM_CLEAR_SECS; // 30m without a re-flap
+        // Recovered: alarm aged past cooldown (no recurrence) AND heartbeat fresh → CLEAR.
+        assert!(flap_alarm_should_clear(
+            Some(2000),
+            Some(120),
+            stale,
+            cooldown
+        ));
+        // Flap still recent (alarm rewritten within cooldown) → do NOT clear mid-flap.
+        assert!(!flap_alarm_should_clear(
+            Some(300),
+            Some(120),
+            stale,
+            cooldown
+        ));
+        // Heartbeat stale (concierge not actually healthy yet) → do NOT clear even if the alarm is old.
+        assert!(!flap_alarm_should_clear(
+            Some(2000),
+            Some(4000),
+            stale,
+            cooldown
+        ));
+        // No alarm raised → nothing to clear.
+        assert!(!flap_alarm_should_clear(None, Some(120), stale, cooldown));
+        // Boundaries: alarm age exactly at cooldown AND heartbeat exactly at the stale bound → clear (the
+        // clear side is inclusive on both, the safe direction — we only clear a proven-healthy concierge).
+        assert!(flap_alarm_should_clear(
+            Some(cooldown),
+            Some(stale),
+            stale,
+            cooldown
+        ));
+        // One tick under the cooldown → not yet.
+        assert!(!flap_alarm_should_clear(
+            Some(cooldown - 1),
+            Some(120),
+            stale,
+            cooldown
+        ));
+    }
+
+    #[test]
+    fn window_launch_cmdline_injects_autocompact_only_when_overridden() {
+        let sh = Path::new("/hub/.claude/fleet/window.sh");
+        // No override → plain quoted `window.sh <name>`, no env prefix.
+        assert_eq!(
+            window_launch_cmdline(sh, "concierge", None),
+            "'/hub/.claude/fleet/window.sh' 'concierge'"
+        );
+        // Override → a `CDZ_AUTOCOMPACT_WINDOW=<n>` env prefix window.sh honors as its AUTOCOMPACT source.
+        assert_eq!(
+            window_launch_cmdline(sh, "concierge", Some(400000)),
+            "CDZ_AUTOCOMPACT_WINDOW=400000 '/hub/.claude/fleet/window.sh' 'concierge'"
+        );
+        // The agent name is shell-quoted (a name with a quote can't break the launch).
+        assert_eq!(
+            window_launch_cmdline(sh, "a'b", None),
+            "'/hub/.claude/fleet/window.sh' 'a'\\''b'"
+        );
     }
 
     #[test]
