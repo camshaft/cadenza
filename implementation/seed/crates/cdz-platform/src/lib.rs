@@ -66,7 +66,10 @@ pub use cdz_contract::{ContractKind, Hash, HashTag, Hasher, base62};
 // instantiates it as a reducer. Behind the `host` feature — the integration harness wraps it as any other
 // `ProgramStore` to drive real wasm reducers.
 #[cfg(feature = "host")]
-pub use host::{HostBackendError, WasmProgramStore, is_host_backend_trap};
+pub use host::{
+    HostBackendError, InstantiateObserver, InstantiateSubStep, WasmProgramStore,
+    is_host_backend_trap,
+};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, KvStoreError, prefix_range};
 pub use lifecycle::{Lifecycle, lifecycle_contract};
