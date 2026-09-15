@@ -1,0 +1,165 @@
+// The DURABLE-ECHO handler (v-hivemind's read_at_version A/B) — a SINGLE guest that collapses the 769 demo
+// spawner + name-router into one lazy-spawn fold, so it can be bound at the HTTP entry name "echo" WITHOUT
+// colliding with its own internal name-directory binding. It is an ephemeral HTTP handler (driven by a bare
+// http-request, one per /echo); per request it finds-or-lazily-spawns a DURABLE echo actor bound under the
+// DISTINCT internal name "durable-actor" (never "echo", its own HTTP entry), then routes the request to that
+// durable session (the send actor-pattern) and returns the actor's echoed reply over HTTP.
+//
+// WHY A SINGLE GUEST (v-hivemind ask 078319): the fixed root router dispatches ONLY /echo -> dispatch-name
+// "echo"; the old triad (demo-spawner + demo-name-router) hardcoded the internal actor name "echo", so the one
+// global name_key("echo") had to be both "the program the ingress spawns for /echo" AND "the durable actor sid
+// the router forwards to" — irreducibly colliding. Collapsing to one guest bound at names:echo, with the
+// durable actor under a DISTINCT internal name, dissolves the collision, reuses the existing /echo route (no
+// root re-cut), and folds the one-time spawn into the first request (no separate /spawn POST). The durable
+// actor program is demo-echo-actor, its ProgramHash baked below (deploy pins it in the CAS as 05YhUk6L…).
+//
+// THE FOLD (the actor pattern, operator 778 — a request/response is TWO correlated one-way sends):
+//   on-message(request-head)  → stash the echo text (query, default "world"); Lookup("durable-actor").
+//   on-response(Lookup)       → Found{sid}: send(target=sid, demo-echo, Echo{text}); Continue (STAY OPEN to
+//                               await the actor's reply). Absent: spawn(durable, demo-echo-actor); Continue.
+//   on-response(SpawnResult)  → stash the child sid; Bind("durable-actor", sid); Continue.
+//   on-response(Bind)         → send(target=sid, demo-echo, Echo{text}); Continue (await the reply).
+//   on-response(SendStatus)   → Delivered: Continue (deliverability, NOT the reply — keep awaiting). 778.
+//                               Undeliverable: surface the reason over HTTP.
+//   on-message(demo-echo)     → the ACTOR'S REPLY: a Delivered{ source, payload } envelope (operator 777)
+//                               whose payload is the echoed Echo. Decode it and respond the text over HTTP.
+// The two name-directory responses are disambiguated by token (b"lookup" vs b"bind"). The lazy spawn is not
+// atomic across concurrent cold requests (a race can spawn two actors, the second Bind winning) — fine for a
+// fixture; steady-state /echo hits the bound durable actor via Lookup->Found.
+//
+// ONE OUTPUT PATH — the response-stream (Head + Chunk + End Break), like the spawner/name-router: it keeps a
+// SINGLE Header type in scope, avoiding the http-response `Header` collision (cdz's type-name namespace is
+// global per guest's module closure).
+import { Frame as OutFrame, Header as OutHeader, descriptor as resp-stream-desc } from "http-response-stream"
+import { SpawnRequest, SpawnSpec, SpawnResult, descriptor as spawn-desc } from "spawn"
+import { NameOp, NameResult, descriptor as name-desc } from "name-directory"
+import { SendRequest, SendStatus, descriptor as send-desc } from "send"
+import { Echo, Delivered, descriptor as echo-desc } from "demo-echo"
+import { Outcome, Error, on-notification, request } from "reducer-lib"
+
+// Local structural copy of the live head (method as a String), decoded from the gateway's request-head value.
+// A LOCAL header-shaped type keeps http-response's Header out of scope (see the spawner's note).
+type ReqHeader = | ReqHeader(Record(name: String, value: String))
+type ReqHead =
+  | ReqHead(Record(method: String, path: String, query: String, headers: List(ReqHeader)))
+
+// The demo-echo-actor ProgramHash (33 bytes: tag 0x03 = Program, then the digest of its compiled component).
+// Baked so a cold /echo can lazily spawn the durable session with no request body. Recompute with
+// `cdz-http-programhash --escaped <demo-echo-actor.wasm>` (nix `.#demo-components`); deploy pins the SAME wasm
+// in the CAS (base62 05YhUk6LlIpV6wlXtTqQJpYkQORJApFKYIPA1DDz93uWy).
+def actor-hash() =
+  b"\x03\xad\xa2\x78\x3b\x92\xf7\x84\x66\xcd\xe4\x48\xf1\xb0\x72\x22\x38\xe8\x1e\x98\xc7\x64\x63\x3b\x28\x58\xf8\xfa\x83\x3c\x2b\x8c\x74"
+
+// The DISTINCT internal name-directory name for the durable actor — never "echo" (this guest's HTTP entry).
+def actor-name() = b"durable-actor"
+
+// ── Response builders (all over the response-stream path) ────────────────────────────────────────────────────
+def stream-head(ctype: String) =
+  request(resp-stream-desc().id,
+          Value.encode(OutFrame.Head({ status = 200,
+                                       headers = [OutHeader.Header({ name = "content-type", value = ctype })] })),
+          b"")
+
+def stream-chunk(body: Bytes) =
+  request(resp-stream-desc().id, Value.encode(OutFrame.Chunk({ body = body })), b"")
+
+def stream-end() =
+  Outcome.Close({ schema = resp-stream-desc().id, reason = Value.encode(OutFrame.End) })
+
+// A one-shot response over the stream path: Head + one Chunk, Break with End.
+def one-shot(ctype: String, body: Bytes) =
+  { requests = [ stream-head(ctype), stream-chunk(body) ], outcome = stream-end() }
+
+// Emit an Echo{text} send to the durable actor `sid`; STAY OPEN (Continue) to await the reply.
+def send-to(sid: Bytes, text: Bytes) =
+  { requests = [request(send-desc().id,
+                       Value.encode(SendRequest.SendRequest({
+                         target = sid,
+                         contract = echo-desc().id,
+                         payload = Value.encode(Echo.Echo({ text = text })) })),
+                       b"send")],
+    outcome = Outcome.Continue }
+
+// ── The reducer fold ────────────────────────────────────────────────────────────────────────────────────────
+def on-message(msg) =
+  host state in
+    (if msg.contract == echo-desc().id then
+       // The actor's REPLY (operator 777/778): a Delivered{ source, payload } envelope whose payload is the
+       // echoed Echo. Respond the text over HTTP — this closes the round-trip.
+       (match (Value.decode(msg.payload) : Option(Delivered)) with
+        | Some(Delivered.Delivered(env)) =>
+            (match (Value.decode(env.payload) : Option(Echo)) with
+             | Some(Echo.Echo(e)) => one-shot("text/plain; charset=utf-8", e.text)
+             | None(_) => one-shot("text/plain; charset=utf-8", b"reply: undecodable echo\n"))
+        | None(_) => one-shot("text/plain; charset=utf-8", b"reply: undecodable envelope\n"))
+     else
+       // The initial HTTP request-head: take the echo text from the query (default "world"), stash it, and
+       // resolve the DISTINCT internal name "durable-actor"; the send fires once the lookup resolves (or after
+       // a lazy spawn + bind).
+       (match (Value.decode(msg.payload) : Option(ReqHead)) with
+        | Some(ReqHead.ReqHead(h)) =>
+            (let text = (if String.to-bytes(h.query) == b"" then b"world" else String.to-bytes(h.query)) in
+             (state.put(b"text", text) ;
+              { requests = [request(name-desc().id,
+                                   Value.encode(NameOp.Lookup({ name = actor-name() })),
+                                   b"lookup")],
+                outcome = Outcome.Continue }))
+        | None(_) => one-shot("text/plain; charset=utf-8", b"bad request\n")))
+
+def on-response(resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  host state in
+    (if resp.contract == name-desc().id then
+       (if resp.token == b"lookup" then
+          // Lookup("durable-actor"): Found → send to the existing durable actor; Absent → lazy-spawn it.
+          (match resp.answer with
+           | Ok(payload) =>
+               (match (Value.decode(payload) : Option(NameResult)) with
+                | Some(NameResult.Found(f)) =>
+                    (state.put(b"sid", f.value) ;
+                     (let text = (match state.get(b"text") with | Some(t) => t | None(_) => b"world") in
+                      send-to(f.value, text)))
+                | Some(NameResult.Absent) =>
+                    { requests = [request(spawn-desc().id,
+                                         Value.encode(SpawnRequest.SpawnRequest({
+                                           program = actor-hash(),
+                                           spec = SpawnSpec.SpawnSpec({ durable = true }) })),
+                                         b"spawn")],
+                      outcome = Outcome.Continue }
+                | Some(NameResult.Bound) => one-shot("text/plain; charset=utf-8", b"lookup: unexpected Bound\n")
+                | None(_) => one-shot("text/plain; charset=utf-8", b"lookup: undecodable result\n"))
+           | Err(_) => one-shot("text/plain; charset=utf-8", b"lookup failed\n"))
+        else
+          // Bind("durable-actor", sid) completed for a freshly-spawned actor → send it the stashed Echo.
+          (match state.get(b"sid") with
+           | Some(sid) =>
+               (let text = (match state.get(b"text") with | Some(t) => t | None(_) => b"world") in
+                send-to(sid, text))
+           | None(_) => one-shot("text/plain; charset=utf-8", b"bound (sid missing)\n")))
+     else if resp.contract == spawn-desc().id then
+       // Spawned the durable actor → stash its sid and Bind it under the DISTINCT internal name.
+       (match resp.answer with
+        | Ok(payload) =>
+            (match (Value.decode(payload) : Option(SpawnResult)) with
+             | Some(SpawnResult.SpawnResult(r)) =>
+                 (state.put(b"sid", r.sid) ;
+                  { requests = [request(name-desc().id,
+                                       Value.encode(NameOp.Bind({ name = actor-name(), value = r.sid })),
+                                       b"bind")],
+                    outcome = Outcome.Continue })
+             | None(_) => one-shot("text/plain; charset=utf-8", b"spawn: undecodable result\n"))
+        | Err(_) => one-shot("text/plain; charset=utf-8", b"spawn failed\n"))
+     else if resp.contract == send-desc().id then
+       // Deliverability (operator 778), NOT the reply: Delivered → keep awaiting the actor's inbound on-message;
+       // Undeliverable → surface the reason over HTTP.
+       (match resp.answer with
+        | Ok(payload) =>
+            (match (Value.decode(payload) : Option(SendStatus)) with
+             | Some(SendStatus.Delivered) => { requests = [], outcome = Outcome.Continue }
+             | Some(SendStatus.Undeliverable(u)) =>
+                 one-shot("text/plain; charset=utf-8", Bytes.concat(b"undeliverable: ", u.reason))
+             | None(_) => one-shot("text/plain; charset=utf-8", b"send: undecodable status\n"))
+        | Err(_) => one-shot("text/plain; charset=utf-8", b"send failed\n"))
+     else
+       { requests = [], outcome = Outcome.Continue })
+
+export { on-message, on-response, on-notification }

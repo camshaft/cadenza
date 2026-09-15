@@ -1,0 +1,6 @@
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/http-response-stream.cdz
+implementation/seed/crates/cdz-platform/contracts/kernel/spawn.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/name-directory.cdz
+implementation/seed/crates/cdz-platform/contracts/kernel/send.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/demo-echo.cdz
