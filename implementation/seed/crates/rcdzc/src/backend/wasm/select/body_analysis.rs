@@ -435,6 +435,20 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
             };
             elem_scalar && recur(db, list, true)
         }
+        // `Map.lookup` READS a value at a key — it BORROWS the map (like `ListAt` borrows the list; core.rs:
+        // the boxed key is dropped after, the map is untouched). SOUND only when the VALUE is a SCALAR: a heap
+        // value is a live child aliasing the map that, if the Some-payload escapes, makes borrowing-the-map-
+        // then-dropping-it-at-the-loop-base a UAF (the #4917 view-producer class) → deny for a heap value
+        // (conservative, leak-safe). The scalar-value case (the dictionary-lookup fold `(match (Map.lookup m k)
+        // ((Some v) …scalar…))` inlining the payload as `SumPayload(MapLookup m k)`) borrows the map → the
+        // invariant map param gets its loop-exit reclaim. The exact `ListAt` scalar-element pattern, for Map.
+        Core::MapLookup { map, .. } => {
+            let val_scalar = match type_of(db, map).strip_nominal() {
+                Ty::Map(_, v) => !is_heap_type(v),
+                _ => false,
+            };
+            val_scalar && recur(db, map, true)
+        }
         // `Bytes.at` READS a raw byte VALUE (an `Int64` — `bytes-get` returns the byte itself, no borrowed-
         // handle `dup`, core.rs:500) — it BORROWS the buffer exactly like `BytesLen` and produces a SCALAR
         // that holds NO alias into it. So a `Bytes.at` over `binder` is an UNCONDITIONAL borrow → recurse the
@@ -448,13 +462,13 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::BytesAt { bytes, .. } => recur(db, bytes, true),
         // SCALAR-returning collection PROBES borrow their container(s) and yield a SCALAR (a `Bool`/`Int64`)
         // that holds NO alias into the collection — exactly like `BytesLen`/`ListLen`. `Set.contains`/
-        // `Map.lookup`-size read without consuming (core.rs: the boxed key/elem is dropped after; the
+        // `Set.len`/`Map.size` read without consuming (core.rs: the boxed key/elem is dropped after; the
         // collection is untouched), so a container `binder` read only via these in a loop is BORROW-only →
-        // recurse it borrowed and it gets its invariant loop-exit reclaim. (`Map.lookup` is DELIBERATELY
-        // omitted — it returns an `Option<V>` whose payload ALIASES the map for a heap `V`; that view is gated
-        // by the MatchSum arm's `collect_consuming_payload_sites` fence, not admitted raw here.) v-memory-
-        // safety: the `Set.contains`/`Set.len`/`Map.size` twin of the `Bytes.at` borrow arm — an invariant
-        // Set/Map param probed in a self-loop leaked its whole shell because the probe fell to `_ => false`.
+        // recurse it borrowed and it gets its invariant loop-exit reclaim. (`Map.lookup` has its OWN arm above
+        // WITH a scalar-VALUE guard — it returns an `Option<V>` whose payload aliases the map for a heap `V`,
+        // so only a scalar value is admitted.) v-memory-safety: the `Set.contains`/`Set.len`/`Map.size` twin of
+        // the `Bytes.at` borrow arm — an invariant Set/Map param probed in a self-loop leaked its whole shell
+        // because the probe fell to `_ => false`.
         Core::SetLen { set } => recur(db, set, true),
         Core::MapSize { map } => recur(db, map, true),
         Core::SetContains { set, elem, .. } => recur(db, set, true) && recur(db, elem, true),

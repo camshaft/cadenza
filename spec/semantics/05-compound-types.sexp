@@ -3794,7 +3794,11 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 50500 Int64))
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): the invariant scalar-valued Map param `m`, read only via
+  ; `(Map.lookup m i)` in the `getsum` self-loop, is now reclaimed at loop exit — `Map.lookup` gained a
+  ; scalar-VALUE-guarded borrow arm in `param_only_borrowed_or_backedge_rec` (the Map twin of `List.at`; a
+  ; heap value would alias the map and stays denied). Was a constant map-shell leak. rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)"
@@ -3819,7 +3823,10 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 22140 Int64))
-  (live-objects known-leak))
+  ; FULLY RECLAIMED (v-memory-safety): the map-as-loop-carried-borrow — `walk` threads the invariant scalar-
+  ; valued Map `m` and does a fresh `(Map.lookup m i)` each of 40 frames — now reclaims `m` at loop exit via
+  ; the scalar-value-guarded `Map.lookup` borrow arm. Was a constant map-shell leak; rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk"
