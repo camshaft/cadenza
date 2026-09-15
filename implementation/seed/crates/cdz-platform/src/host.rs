@@ -1222,6 +1222,37 @@ fn imports_arg_probe(engine: &Engine, component: &Component) -> bool {
         .any(|(name, _)| name.starts_with("cadenza:test-arg-probe/arg-probe"))
 }
 
+/// A sub-step of turning a program into a live reducer, for per-request init-cost attribution (the raw
+/// material for a `wasm_instantiate_us{sub_step}` metric). The steps compose the `instantiate_program` cost:
+/// `ComponentLoad` (fetch + compile-or-cache-hit the component from the content store), `BindDependencies`
+/// (compose path only — instantiate each content-addressed dependency, e.g. the value-heap runtime, into the
+/// store), and `WorldInstantiate` (instantiate the world onto a fresh store: linear-memory alloc + CoW image +
+/// VMContext). A fast-path (dependency-free) instantiate fires `ComponentLoad` + `WorldInstantiate`; the
+/// compose path adds `BindDependencies`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstantiateSubStep {
+    /// Fetching + compiling (or cache-hitting) the program's component from the content-addressed store.
+    ComponentLoad,
+    /// Compose path only: instantiating each content-addressed dependency (the value-heap runtime, …) into the
+    /// store — the per-request cost that cannot use the cached pre-instantiated fast path.
+    BindDependencies,
+    /// Instantiating the world onto a fresh store: linear-memory allocation + CoW image copy + VMContext setup.
+    WorldInstantiate,
+}
+
+/// An embedder hook to record per-request reducer-instantiation sub-step timings. cdz-platform stays
+/// DEP-FREE: it only times its own [`InstantiateSubStep`]s and calls this observer; the embedder (the Membrain
+/// daemon) records the durations into its metrics reporter as `wasm_instantiate_us{sub_step}` (the
+/// Prometheus-scrapable init-cost attribution the perf lane reads). A `None` observer — the default — pays
+/// ZERO: no `Instant` is taken and no call is made, so an un-observed host has no measurement overhead.
+/// Install one at node assembly with [`WasmProgramStore::with_instantiate_observer`].
+pub trait InstantiateObserver: Send + Sync {
+    /// Record that `sub_step` of a reducer instantiation took `elapsed`. Called once per sub-step per
+    /// instantiation, on the instantiate path (router-spawn AND fold callers alike). Must be cheap + non-blocking
+    /// (it runs inline on the instantiate path); record into a metric/counter, do not do I/O.
+    fn record(&self, sub_step: InstantiateSubStep, elapsed: std::time::Duration);
+}
+
 /// The per-host instantiation core: the reducer-independent machinery for turning a program's content-
 /// addressed bytes into a live reducer, and the pure-run capability the synchronous `run` host import (§3)
 /// is served from. It holds only host-wide state — the wasm engine and per-kind linkers ([`ReducerHost`]),
@@ -1245,6 +1276,10 @@ struct Instantiator {
     /// `run` on this host, so a repeated pure run — including one a fold makes and one nested inside it —
     /// skips execution. Sound because a pure run is deterministic (empty capabilities, null birth).
     memo: Mutex<crate::run::Cache>,
+    /// Optional embedder hook for per-request instantiate-cost attribution (`wasm_instantiate_us{sub_step}`).
+    /// `None` (the default) pays zero — no `Instant`, no call. Set at assembly via
+    /// [`WasmProgramStore::with_instantiate_observer`]. See [`InstantiateObserver`].
+    observer: Option<Arc<dyn InstantiateObserver>>,
 }
 
 impl Instantiator {
@@ -1257,7 +1292,24 @@ impl Instantiator {
             cas,
             compiled: Mutex::new(HashMap::new()),
             memo: Mutex::new(crate::run::Cache::new(crate::run::Cache::DEFAULT_CAPACITY)),
+            observer: None,
         })
+    }
+
+    /// Start timing an instantiate sub-step: `Some(Instant)` only if an observer is installed, so an
+    /// un-observed host takes no clock reading (zero overhead). Pair with [`observe_end`](Self::observe_end).
+    #[inline]
+    fn observe_start(&self) -> Option<std::time::Instant> {
+        self.observer.as_ref().map(|_| std::time::Instant::now())
+    }
+
+    /// Record the elapsed time of `step` to the observer, if one is installed and `start` was taken. A no-op
+    /// when un-observed.
+    #[inline]
+    fn observe_end(&self, start: Option<std::time::Instant>, step: InstantiateSubStep) {
+        if let (Some(obs), Some(t)) = (self.observer.as_ref(), start) {
+            obs.record(step, t.elapsed());
+        }
     }
 
     /// The compiled component whose bytes `hash` addresses, loaded from the store and cached by content
@@ -1333,7 +1385,9 @@ impl Instantiator {
         kind: ReducerKind,
         host_state: HostState,
     ) -> Option<Box<dyn Reducer>> {
+        let load_t = self.observe_start();
         let component = self.component(program.hash()).await?;
+        self.observe_end(load_t, InstantiateSubStep::ComponentLoad);
         let has_deps = !component_dependencies(&self.host.engine, &component).is_empty();
         let reducer = if imports_arg_probe(&self.host.engine, &component) {
             // TEST-ONLY arg-probe-world guest (§9): it imports `arg-probe` (not the platform capabilities) and
@@ -1371,7 +1425,10 @@ impl Instantiator {
             // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
             // per-kind linker (the engine, linker, and pre are all shared).
             let pre = self.host.preinstantiate(&component, kind).ok()?;
-            self.host.instantiate(&pre, host_state).await.ok()?
+            let world_t = self.observe_start();
+            let reducer = self.host.instantiate(&pre, host_state).await.ok()?;
+            self.observe_end(world_t, InstantiateSubStep::WorldInstantiate);
+            reducer
         } else {
             // Compose path: the component imports dependencies (the value-heap runtime, …) that must be
             // resolved from the store and instantiated into THIS store, so a fresh per-spawn linker is built
@@ -1381,12 +1438,16 @@ impl Instantiator {
             arm_store_safety(&mut store);
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
+            let bind_t = self.observe_start();
             self.bind_dependencies(&mut store, &mut linker, &component)
                 .await
                 .ok()?;
+            self.observe_end(bind_t, InstantiateSubStep::BindDependencies);
+            let world_t = self.observe_start();
             let world = EventReducerWorld::instantiate_async(&mut store, &component, &linker)
                 .await
                 .ok()?;
+            self.observe_end(world_t, InstantiateSubStep::WorldInstantiate);
             WasmReducer::Reducer { store, world }
         };
         Some(Box::new(reducer))
@@ -1606,6 +1667,24 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_provenance(mut self, make_provenance: ProvenanceFactory) -> Self {
         self.make_provenance = make_provenance;
+        self
+    }
+
+    /// Install an [`InstantiateObserver`] to record per-request instantiate sub-step timings
+    /// (`wasm_instantiate_us{sub_step}`) — the embedder (the Membrain daemon) records them into its metrics
+    /// reporter. Set once at node ASSEMBLY, before any reducer is spawned: the observer lives on the shared
+    /// instantiation core, which at assembly time is still uniquely held (refcount 1), so this mutates it in
+    /// place; called after a reducer has cloned the core it is a no-op (guarded in debug). Un-observed hosts
+    /// (the default, no observer) pay zero — no clock reading, no call.
+    #[must_use]
+    pub fn with_instantiate_observer(mut self, observer: Arc<dyn InstantiateObserver>) -> Self {
+        match Arc::get_mut(&mut self.inst) {
+            Some(inst) => inst.observer = Some(observer),
+            None => debug_assert!(
+                false,
+                "with_instantiate_observer must be called at assembly, before the instantiation core is shared"
+            ),
+        }
         self
     }
 
@@ -2886,6 +2965,76 @@ mod tests {
                 .expect("grow call returns"),
             -1,
             "a pooled memory growing past its max_memory_size ceiling is rejected (-1), not granted"
+        );
+    }
+
+    #[test]
+    fn the_instantiate_observer_records_sub_steps_only_when_installed() {
+        // The dep-free instantiate-cost hook (InstantiateObserver): an un-observed host pays ZERO (no clock
+        // reading, observe_end a no-op), and an installed observer receives exactly the sub-steps recorded, in
+        // order. This pins the hook contract the Membrain embedder wires to wasm_instantiate_us{sub_step}; the
+        // sub-steps firing during a real instantiate_program are exercised end-to-end on the rig / itest once an
+        // observer is installed there.
+        use super::{InstantiateObserver, InstantiateSubStep, Instantiator};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        #[derive(Default)]
+        struct Rec(Mutex<Vec<InstantiateSubStep>>);
+        impl InstantiateObserver for Rec {
+            fn record(&self, sub_step: InstantiateSubStep, _elapsed: Duration) {
+                self.0.lock().expect("rec lock").push(sub_step);
+            }
+        }
+
+        // Un-observed (the default): no clock is taken and observe_end is a no-op (zero overhead).
+        let inst = Instantiator::new(
+            Arc::new(InMemoryBlobStore::new()),
+            super::ResourceLimits::default(),
+        )
+        .expect("engine");
+        assert!(
+            inst.observe_start().is_none(),
+            "no observer → no clock reading"
+        );
+        inst.observe_end(None, InstantiateSubStep::ComponentLoad); // no-op, must not panic
+
+        // Observed: each sub-step is recorded, in order.
+        let rec = Arc::new(Rec::default());
+        let mut inst2 = Instantiator::new(
+            Arc::new(InMemoryBlobStore::new()),
+            super::ResourceLimits::default(),
+        )
+        .expect("engine");
+        inst2.observer = Some(rec.clone() as Arc<dyn InstantiateObserver>);
+        let t = inst2.observe_start();
+        assert!(t.is_some(), "observer installed → clock taken");
+        inst2.observe_end(t, InstantiateSubStep::ComponentLoad);
+        inst2.observe_end(inst2.observe_start(), InstantiateSubStep::BindDependencies);
+        inst2.observe_end(inst2.observe_start(), InstantiateSubStep::WorldInstantiate);
+        assert_eq!(
+            *rec.0.lock().expect("rec lock"),
+            vec![
+                InstantiateSubStep::ComponentLoad,
+                InstantiateSubStep::BindDependencies,
+                InstantiateSubStep::WorldInstantiate
+            ],
+            "the observer receives exactly the recorded sub-steps, in order"
+        );
+
+        // The WasmProgramStore builder installs the observer into the shared core at assembly.
+        let graph: Arc<dyn super::ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+        let store = super::WasmProgramStore::new(
+            Arc::new(InMemoryBlobStore::new()),
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            Arc::new(move |_id| graph.clone()),
+        )
+        .expect("build store")
+        .with_instantiate_observer(Arc::new(Rec::default()));
+        assert!(
+            store.inst.observer.is_some(),
+            "with_instantiate_observer installs the observer on the shared instantiation core"
         );
     }
 
