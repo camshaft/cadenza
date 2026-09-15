@@ -2235,7 +2235,9 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): now census 0 on every heap trial (grader TIGHTEN CANDIDATE) — the
+  ; Set.to-list + trie-enumeration reclaim has landed; dropped the stale known-leak marker.
+  (live-objects 0))
 
 (case
   "Set.of over Set.to-list round-trips a 100-element trie to the identical set"
@@ -2583,7 +2585,9 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): now census 0 on every heap trial (grader TIGHTEN CANDIDATE) — the
+  ; runtime-set to-list + sum reclaim has landed; dropped the stale known-leak marker.
+  (live-objects 0))
 
 ; The Set.to-list order pins above are all over INT elements (and one tuple case). STRING elements take a
 ; DIFFERENT comparator arm — the zero-alloc scalar fast-path (`compare_scalar_leaf`) flattens a ROPE string
@@ -4045,7 +4049,9 @@
   (output (: 301 Int64))
   (call main (: 6 Int64))
   (output (: 213 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): now census 0 on every heap trial (grader TIGHTEN CANDIDATE) — the
+  ; Rational-set dedupe + to-list reclaim has landed; dropped the stale known-leak marker.
+  (live-objects 0))
 
 (case
   "a negative-denominator Rational sign-normalizes on the set-element path and dedupes its positive-denominator twin"
@@ -4097,7 +4103,9 @@
   (output (: 134 Int64))
   (call main (: 1 Int64))
   (output (: 346 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): now census 0 on every heap trial (grader TIGHTEN CANDIDATE) — the
+  ; Rational-set to-list enumeration reclaim has landed; dropped the stale known-leak marker.
+  (live-objects 0))
 
 (case
   "Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin"
@@ -4587,7 +4595,9 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 123 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): now census 0 on every heap trial (grader TIGHTEN CANDIDATE) — the
+  ; canonical-order set-drain-through-effect reclaim has landed; dropped the stale known-leak marker.
+  (live-objects 0))
 
 ; --- Remove-path canonicalization for sets (the map companions live in 05-compound-types):
 ; a set reached VIA a remove must be byte-canonical with the directly-built set. Both sides
