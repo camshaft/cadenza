@@ -654,3 +654,36 @@ fn the_sibling_operand_classifier_family_stays_bounded_on_computed_operands() {
         );
     }
 }
+
+#[test]
+fn a_computed_operand_comparison_stays_bounded_inside_compositional_contexts() {
+    // COMPOSITIONAL companion to the seq-925 fix (#9003) and the classifier-family pin (#9004). The
+    // re-entry blow-up was in the comparison literal-grounding path; this pins that it stays bounded when
+    // the offending shape — a comparison with a COMPUTED operand — appears INSIDE the distinct lowering
+    // contexts that could each re-trigger it: a match GUARD condition (guard lowering), a LIST-pattern arm
+    // body, a TUPLE-pattern arm body, and a NESTED comparison chain inside an `if`. Each routes a
+    // computed-operand comparison through a different front-end path than the bare top-level form the
+    // earlier tests cover, so an edge that re-introduced the cycle in one of these paths (and only there)
+    // would slip past those tests but trips this one. All must infer in bounded depth.
+    let peak = |src: &str| {
+        let mut db = crate::db::Db::load(parse(src));
+        let _ = crate::diagnostics(&mut db);
+        db.max_descent_depth
+    };
+    for src in [
+        // A match GUARD whose condition IS the former blow-up shape `(= (+ x 1) x)`.
+        "(module m (def (f n) (match n ((guard x (= (+ x 1) x)) -1) (_ 1))) (def (main) (f 4)) (export main))",
+        // A LIST-pattern arm body comparing a computed operand against a bound element.
+        "(module m (def (f xs) (match xs (#list(a b) (= (+ a 1) b)) (_ false))) (def (main) (f #list(1 2))) (export main))",
+        // A TUPLE-pattern arm body comparing two computed operands.
+        "(module m (def (f p) (match p (#tuple(a b) (= (+ a b) (* a b))))) (def (main) (f #tuple(2 3))) (export main))",
+        // A NESTED comparison chain inside an `if` (each branch a computed-operand comparison).
+        "(module m (def (f a b) (if (< (+ a 1) b) (> (- a 1) b) (= a b))) (def (main) (f 4 2)) (export main))",
+    ] {
+        let d = peak(src);
+        assert!(
+            d < 64,
+            "a computed-operand comparison must stay bounded in a compositional context (was {d}): {src}"
+        );
+    }
+}
