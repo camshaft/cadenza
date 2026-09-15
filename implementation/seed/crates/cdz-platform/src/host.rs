@@ -1280,6 +1280,14 @@ struct Instantiator {
     /// `None` (the default) pays zero — no `Instant`, no call. Set at assembly via
     /// [`WasmProgramStore::with_instantiate_observer`]. See [`InstantiateObserver`].
     observer: Option<Arc<dyn InstantiateObserver>>,
+    /// TEST/DEBUG-ONLY component-byte overrides keyed by content digest: when [`component`](Self::component)
+    /// resolves a hash present here, it uses these bytes INSTEAD of the content-addressed store — mirroring
+    /// `cdz-run --runtime`, so a harness can compose an ALTERNATE value-heap runtime (e.g. the debug-counters
+    /// build, whose content hash differs from the one a guest records) for a guest that imports the shipped
+    /// runtime's hash, without recompiling the guest. Empty in production (set only at assembly via
+    /// [`WasmProgramStore::with_component_override`]); a non-empty map deliberately breaks content-addressing,
+    /// which is why it is a test/debug affordance, never a production path.
+    component_overrides: HashMap<[u8; Hash::DIGEST_LEN], Bytes>,
 }
 
 impl Instantiator {
@@ -1293,6 +1301,7 @@ impl Instantiator {
             compiled: Mutex::new(HashMap::new()),
             memo: Mutex::new(crate::run::Cache::new(crate::run::Cache::DEFAULT_CAPACITY)),
             observer: None,
+            component_overrides: HashMap::new(),
         })
     }
 
@@ -1325,7 +1334,13 @@ impl Instantiator {
         // is harmless — the last insert wins and both yield an equivalent component.
         // This loader's contract is `Option` (None = can't load); a store error OR a genuine miss both read
         // as None here (`.ok().flatten()` collapses `Err`/`Ok(None)`).
-        let bytes = self.cas.get(hash).await.ok().flatten()?;
+        // A test/debug override (see `component_overrides`) substitutes bytes for this digest, bypassing the
+        // content-addressed lookup entirely — so a harness can compose an alternate runtime the guest did not
+        // record. Empty in production, so the common path is exactly the CAS `get` below.
+        let bytes = match self.component_overrides.get(&key) {
+            Some(overridden) => overridden.clone(),
+            None => self.cas.get(hash).await.ok().flatten()?,
+        };
         let component = Component::new(&self.host.engine, &bytes).ok()?;
         self.compiled
             .lock()
@@ -1683,6 +1698,28 @@ impl WasmProgramStore {
             None => debug_assert!(
                 false,
                 "with_instantiate_observer must be called at assembly, before the instantiation core is shared"
+            ),
+        }
+        self
+    }
+
+    /// TEST/DEBUG-ONLY: substitute `bytes` for the component named by `hash`, so instantiation composes these
+    /// bytes wherever that hash is a (transitive) dependency — INSTEAD of resolving `hash` from the
+    /// content-addressed store. This deliberately breaks content-addressing (the whole point of the CAS), so
+    /// it is only for a harness that needs to compose a runtime a guest did NOT record — e.g. swapping in the
+    /// debug-counters value-heap runtime (whose content hash differs from the shipped runtime's) under a
+    /// guest's `cadenza:runtime/heap@…+<shipped-hash>` import to census live-objects, without recompiling the
+    /// guest against the debug hash. Mirrors `cdz-run --runtime`. Must be called at assembly, before the
+    /// instantiation core is shared (like [`with_instantiate_observer`](Self::with_instantiate_observer)); a
+    /// no-op with a `debug_assert` otherwise. NEVER used on a production path (`component_overrides` is empty).
+    pub fn with_component_override(mut self, hash: Hash, bytes: Bytes) -> Self {
+        match Arc::get_mut(&mut self.inst) {
+            Some(inst) => {
+                inst.component_overrides.insert(*hash.digest(), bytes);
+            }
+            None => debug_assert!(
+                false,
+                "with_component_override must be called at assembly, before the instantiation core is shared"
             ),
         }
         self
@@ -3506,5 +3543,92 @@ mod tests {
             survived > 0 || trap.is_some(),
             "no fold ran — fixture/closure setup error, not a reclaim result"
         );
+    }
+
+    // The runtime-override seam (`WasmProgramStore::with_component_override`): substituting a component for a
+    // dependency HASH lets instantiation compose a runtime the guest did NOT record — the foundation for the
+    // planned host-run-nets-live-objects-0 gate (swap in the debug-counters value-heap runtime, whose content
+    // hash differs from the shipped runtime's, under a guest's shipped-hash import to census live-objects
+    // without recompiling the guest). This proves the mechanism WITHOUT needing the debug runtime: it supplies
+    // the (release) heap runtime that is deliberately absent from the CAS, purely via the override.
+    #[tokio::test]
+    #[ignore = "env-gated seam test; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR"]
+    async fn with_component_override_composes_a_runtime_the_guest_did_not_record() {
+        let Ok(path) = std::env::var("CDZ_REDUCER_ECHO_WASM") else {
+            eprintln!("CDZ_REDUCER_ECHO_WASM unset — skipping the override seam test");
+            return;
+        };
+        let Ok(dir) = std::env::var("CDZ_COMPONENT_STORE_DIR") else {
+            eprintln!("CDZ_COMPONENT_STORE_DIR unset — skipping the override seam test");
+            return;
+        };
+        let guest = std::fs::read(&path).expect("read the reducer-echo component");
+
+        // The guest's value-heap runtime dependency (its `cadenza:runtime/heap@…+<hash>` import).
+        let engine = super::reducer_engine(&super::ResourceLimits::default()).expect("engine");
+        let component =
+            wasmtime::component::Component::from_binary(&engine, &guest).expect("parse component");
+        let deps = super::component_dependencies(&engine, &component);
+        let heap = deps
+            .iter()
+            .find(|d| d.import_name.contains("cadenza:runtime/heap"))
+            .expect("the reducer-echo guest imports the value-heap runtime");
+        let heap_hash = heap.hash;
+
+        // The heap component's bytes (the dir file named by that content hash) — used as the OVERRIDE, and
+        // deliberately NOT seeded into the CAS so a plain spawn cannot resolve it.
+        let heap_file = std::path::Path::new(&dir).join(format!("{heap_hash}.wasm"));
+        let heap_bytes =
+            std::fs::read(&heap_file).expect("the heap component file in the component-store dir");
+
+        // Seed the guest + every OTHER component (nfc, …) but NOT the heap.
+        let cas: Arc<dyn BlobStore> = {
+            let cas = InMemoryBlobStore::new();
+            cas.put(Bytes::from(guest.clone())).await.unwrap();
+            for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+                let p = entry.expect("dir entry").path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wasm") && p != heap_file {
+                    cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                        .await
+                        .unwrap();
+                }
+            }
+            Arc::new(cas)
+        };
+        let program = ProgramHash::of(&guest);
+
+        // Control: with the heap absent from the CAS and NO override, the compose path can't resolve the
+        // runtime dependency, so spawn declines.
+        assert!(
+            wasm_program_store(Arc::clone(&cas))
+                .spawn(program, ord(b"seam"))
+                .await
+                .is_none(),
+            "control: heap absent from CAS + no override ⇒ spawn must decline"
+        );
+
+        // With the override: the same absent hash resolves to the supplied bytes, so the guest composes and
+        // spawns — proving the override bypasses content-addressing to supply a runtime the CAS lacks — and
+        // the composed runtime is functional (a real fold succeeds).
+        let store = wasm_program_store(Arc::clone(&cas))
+            .with_component_override(heap_hash, Bytes::from(heap_bytes));
+        let mut reducer = store
+            .spawn(program, ord(b"seam"))
+            .await
+            .expect("override supplies the heap runtime ⇒ spawn succeeds");
+        let (reqs, outcome) = reducer
+            .on_message(crate::Message {
+                id: crate::ContractId::of(b"echo-contract"),
+                payload: Bytes::from_static(b"ping"),
+                from: crate::Origin {
+                    reducer: crate::ReducerId::of(b"caller"),
+                    host: crate::HostId::of(b"node"),
+                },
+                continuation_token: Bytes::from_static(b"tok"),
+            })
+            .await
+            .expect("a fold on the override-composed runtime succeeds");
+        assert_eq!(reqs.len(), 1, "echo guest emits exactly one request");
+        assert_eq!(outcome, crate::Outcome::Continue);
     }
 }
