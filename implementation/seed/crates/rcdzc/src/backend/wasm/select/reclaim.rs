@@ -3669,24 +3669,8 @@ fn mark_binder_dups_body(
             seq(db, &cs, live_after, sites)
         }
         Core::CallClosure { closure, args } => {
-            // Applying a closure BORROWS the closure operand: the lifted body reads the cell's captures via
-            // `arr-get` and the env-cell reclaim is the SEPARATE post-apply SITE-A drop (emit.rs) that fires
-            // ONLY for an OWNED operand. So a BORROWED (param/captured) closure operand is NOT consumed by the
-            // apply → mark it `is_borrow` (the pair's bool) so a LIVE-AFTER occurrence is not spuriously
-            // dup-retained. Without this, a closure PARAM that is both APPLIED and identity-rethreaded on a
-            // self-loop back-edge (`(drive f (f acc) …)`) was reached CONSUMING+live_after at the closure
-            // operand → a `dup` PER ITERATION, so the invariant closure param leaked one env-cell husk per run
-            // (the tuple/Box-of-closure retention family). Mirrors the `binding_escapes_dup_aware` CallClosure
-            // arm's `!closure_owned` classification; an OWNED operand stays `false` (consume) EXACTLY as before
-            // — SITE-A reclaims it, no double-free — only a borrowed operand relaxes (its owner reclaims it via
-            // the `looped_owned_param_drops` exit-drop / the caller's drop_after). ARGS stay consuming (a heap
-            // arg escapes into the callee). v-memory-safety: the dup-side twin of the CallClosure exit-drop arm.
-            let closure_owned = matches!(
-                heap_operand_ownership(db, closure),
-                Ok(HandleOwnership::Owned)
-            );
             let mut cs: Vec<(StructId, bool)> = Vec::with_capacity(args.len() + 1);
-            cs.push((closure, !closure_owned));
+            cs.push((closure, false));
             cs.extend(args.iter().map(|&a| (a, false)));
             seq(db, &cs, live_after, sites)
         }
