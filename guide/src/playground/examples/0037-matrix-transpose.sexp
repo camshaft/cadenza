@@ -31,4 +31,4 @@
     (let ((m #list(#list(1 2 3) #list(4 5 6)))) (go m 0 3 2 (: #list() (List (List Int64))))))
 
   (export main)))
-  (expected (: #list(#list(1 4) #list(2 5) #list(3 6)) (List (List Int64)))))
+  (expected #list(#list(1 4) #list(2 5) #list(3 6))))

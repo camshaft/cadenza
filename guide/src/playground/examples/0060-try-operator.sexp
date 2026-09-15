@@ -9,4 +9,4 @@
   (def (main) (safe-add 40 2))
 
   (export main)))
-  (expected (: (Some 42) (Option Int64))))
+  (expected (Some 42)))

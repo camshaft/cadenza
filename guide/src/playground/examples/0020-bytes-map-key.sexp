@@ -20,4 +20,4 @@
         #tuple(((. Map lookup) m red) ((. Map lookup) m blue)))))
 
   (export main)))
-  (expected (: #tuple((Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))))
+  (expected #tuple((Some 3) (Some 1))))

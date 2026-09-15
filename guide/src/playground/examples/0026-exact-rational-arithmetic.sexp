@@ -11,4 +11,4 @@
   (def (main) (sum))
 
   (export main)))
-  (expected (: 1/1 Rational)))
+  (expected 1/1))

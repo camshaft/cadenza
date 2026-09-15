@@ -18,4 +18,4 @@
   (def (main) #tuple((shift (letter "A") 3) (shift (letter "Y") 3)))
 
   (export main)))
-  (expected (: #tuple(#\D #\B) (Tuple Char Char))))
+  (expected #tuple(#\D #\B)))

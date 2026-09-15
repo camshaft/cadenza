@@ -9,4 +9,4 @@
   (def (main) #tuple((build 6 5) (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
 
   (export main)))
-  (expected (: #tuple(((. Ast List) #list(((. Ast Name) "+") ((. Ast List) #list(((. Ast Name) "*") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))))
+  (expected #tuple(((. Ast List) #list(((. Ast Name) "+") ((. Ast List) #list(((. Ast Name) "*") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41)))

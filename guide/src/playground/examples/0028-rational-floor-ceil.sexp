@@ -14,4 +14,4 @@
       ((. Rational ceil) (/ -7 2))))
 
   (export main)))
-  (expected (: #tuple(3 4 -4 -3) (Tuple Int64 Int64 Int64 Int64))))
+  (expected #tuple(3 4 -4 -3)))

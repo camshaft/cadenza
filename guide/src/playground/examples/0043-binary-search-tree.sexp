@@ -41,4 +41,4 @@
   (def (main) (let ((xs #list(5 3 8 1 4 7 9 2 6))) (inorder (build xs 0 (Leaf unit)))))
 
   (export main)))
-  (expected (: #list(1 2 3 4 5 6 7 8 9) (List Int64))))
+  (expected #list(1 2 3 4 5 6 7 8 9)))

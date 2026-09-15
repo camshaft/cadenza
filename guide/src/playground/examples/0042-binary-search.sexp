@@ -25,4 +25,4 @@
   (def (main) (let ((xs #list(1 3 5 7 9 11 13 15 17 19))) #tuple((bsearch xs 11) (bsearch xs 8))))
 
   (export main)))
-  (expected (: #tuple((Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))))
+  (expected #tuple((Some 5) (None unit))))

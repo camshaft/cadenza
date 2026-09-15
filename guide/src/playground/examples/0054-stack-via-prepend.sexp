@@ -9,4 +9,4 @@
   (def (main) (push (push (push (: #list() (List Int64)) 10) 20) 30))
 
   (export main)))
-  (expected (: #list(30 20 10) (List Int64))))
+  (expected #list(30 20 10)))

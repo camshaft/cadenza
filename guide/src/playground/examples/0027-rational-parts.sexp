@@ -11,4 +11,4 @@
   (def (main) #tuple(((. Rational numerator) (total)) ((. Rational denominator) (total))))
 
   (export main)))
-  (expected (: #tuple(11 12) (Tuple BigInt BigInt))))
+  (expected #tuple(11 12)))

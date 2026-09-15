@@ -158,7 +158,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple(1 2 3))
 
   (export main))`,
-    expected: "(: #tuple(1 2 3) (Tuple Int64 Int64 Int64))",
+    expected: "#tuple(1 2 3)",
   },
   {
     id: "tuple-split-concat",
@@ -173,7 +173,7 @@ export const EXAMPLES: Example[] = [
       (match parts (#tuple(head tail) #tuple(head tail (Tuple.concat head tail))))))
 
   (export main))`,
-    expected: "(: #tuple(#tuple(1 2) #tuple(3 4 5) #tuple(1 2 3 4 5)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64 Int64 Int64)))",
+    expected: "#tuple(#tuple(1 2) #tuple(3 4 5) #tuple(1 2 3 4 5))",
   },
   {
     id: "lists",
@@ -184,7 +184,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (List.concat #list(1 2) #list(3 4 5)))
 
   (export main))`,
-    expected: "(: #list(1 2 3 4 5) (List Int64))",
+    expected: "#list(1 2 3 4 5)",
   },
   {
     id: "list-update-functional",
@@ -197,7 +197,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((xs #list(10 20 30 40 50))) #tuple((set-at xs 0 99) (set-at xs 4 99) xs)))
 
   (export main))`,
-    expected: "(: #tuple(#list(99 20 30 40 50) #list(10 20 30 40 99) #list(10 20 30 40 50)) (Tuple (List Int64) (List Int64) (List Int64)))",
+    expected: "#tuple(#list(99 20 30 40 50) #list(10 20 30 40 99) #list(10 20 30 40 50))",
   },
   {
     id: "expression-interpreter",
@@ -269,7 +269,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((apply-n-times (adder 3) 4 10) (apply-n-times (fn (x) (* x 2)) 5 1)))
 
   (export main))`,
-    expected: "(: (tuple 22 32) (Tuple Int64 Int64))",
+    expected: "(tuple 22 32)",
   },
   {
     id: "memoized-fibonacci",
@@ -314,7 +314,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((xs #list(3 1 3 3 1 2))) (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
 
   (export main))`,
-    expected: "(: #list(#tuple(1 2) #tuple(2 1) #tuple(3 3)) (List (Tuple Int64 Int64)))",
+    expected: "#list(#tuple(1 2) #tuple(2 1) #tuple(3 3))",
   },
   {
     id: "map-swap-take-inventory",
@@ -334,7 +334,7 @@ export const EXAMPLES: Example[] = [
             (#tuple(gone-pears final) #tuple(old-apples gone-pears (Map.to-list final))))))))
 
   (export main))`,
-    expected: "(: #tuple((Some 5) (Some 2) #list(#tuple(1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
+    expected: "#tuple((Some 5) (Some 2) #list(#tuple(1 9)))",
   },
   {
     id: "bytes-map-key",
@@ -355,7 +355,7 @@ export const EXAMPLES: Example[] = [
         #tuple((Map.lookup m red) (Map.lookup m blue)))))
 
   (export main))`,
-    expected: "(: #tuple((Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
+    expected: "#tuple((Some 3) (Some 1))",
   },
   {
     id: "symbol-keyed-map",
@@ -379,7 +379,7 @@ export const EXAMPLES: Example[] = [
         (= (Symbol.of "red") (Symbol.of "red")))))
 
   (export main))`,
-    expected: "(: #tuple((Some 65280) (None unit) true) (Tuple (Option Int64) (Option Int64) Bool))",
+    expected: "#tuple((Some 65280) (None unit) true)",
   },
   {
     id: "byte-string-literal",
@@ -397,7 +397,7 @@ export const EXAMPLES: Example[] = [
         ((None) (trap "byte-literal: unexpectedly empty")))))
 
   (export main))`,
-    expected: "(: #tuple(6 71) (Tuple Int64 Int64))",
+    expected: "#tuple(6 71)",
   },
   {
     id: "value-encode-canonical-bytes",
@@ -464,7 +464,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (sum))
 
   (export main))`,
-    expected: "(: 1/1 Rational)",
+    expected: "1/1",
   },
   {
     id: "rational-parts",
@@ -479,7 +479,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((Rational.numerator (total)) (Rational.denominator (total))))
 
   (export main))`,
-    expected: "(: #tuple(11 12) (Tuple BigInt BigInt))",
+    expected: "#tuple(11 12)",
   },
   {
     id: "rational-floor-ceil",
@@ -497,7 +497,7 @@ export const EXAMPLES: Example[] = [
       (Rational.ceil (/ -7 2))))
 
   (export main))`,
-    expected: "(: #tuple(3 4 -4 -3) (Tuple Int64 Int64 Int64 Int64))",
+    expected: "#tuple(3 4 -4 -3)",
   },
   {
     id: "float-rounding-drift",
@@ -540,7 +540,7 @@ export const EXAMPLES: Example[] = [
     (let ((a (Set.of #list(1 2 3 4))) (b (Set.of #list(3 4 5 6)))) (Set.to-list (sym-diff a b))))
 
   (export main))`,
-    expected: "(: #list(1 2 5 6) (List Int64))",
+    expected: "#list(1 2 5 6)",
   },
   {
     id: "set-intersection-mutual",
@@ -553,7 +553,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (mutual #list(1 2 3 4 5) #list(3 4 5 6 7)))
 
   (export main))`,
-    expected: "(: #list(3 4 5) (List Int64))",
+    expected: "#list(3 4 5)",
   },
   {
     id: "rpn-calculator",
@@ -644,7 +644,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (gens #list(0 0 0 0 0 0 0 1) 4))
 
   (export main))`,
-    expected: "(: #list(0 0 0 1 1 1 1 1) (List Int64))",
+    expected: "#list(0 0 0 1 1 1 1 1)",
   },
   {
     id: "data-pipeline",
@@ -679,7 +679,7 @@ export const EXAMPLES: Example[] = [
         (/ (sum-age people 0 (List.len people) 0) (List.len people)))))
 
   (export main))`,
-    expected: "(: #tuple(#list(36 41 40) 39) (Tuple (List Int64) Int64))",
+    expected: "#tuple(#list(36 41 40) 39)",
   },
   {
     id: "matrix-transpose",
@@ -709,7 +709,7 @@ export const EXAMPLES: Example[] = [
     (let ((m #list(#list(1 2 3) #list(4 5 6)))) (go m 0 3 2 (: #list() (List (List Int64))))))
 
   (export main))`,
-    expected: "(: #list(#list(1 4) #list(2 5) #list(3 6)) (List (List Int64)))",
+    expected: "#list(#list(1 4) #list(2 5) #list(3 6))",
   },
   {
     id: "tower-of-hanoi",
@@ -766,7 +766,7 @@ export const EXAMPLES: Example[] = [
       (go xs 1 (List.len xs) (at xs 0) 1 (: #list() (List (Tuple Int64 Int64))))))
 
   (export main))`,
-    expected: "(: #list(#tuple(1 3) #tuple(2 1) #tuple(3 2)) (List (Tuple Int64 Int64)))",
+    expected: "#list(#tuple(1 3) #tuple(2 1) #tuple(3 2))",
   },
   {
     id: "quicksort",
@@ -804,7 +804,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (qsort #list(5 3 8 1 9 2 7 4 6)))
 
   (export main))`,
-    expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
+    expected: "#list(1 2 3 4 5 6 7 8 9)",
   },
   {
     id: "binary-search",
@@ -833,7 +833,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((xs #list(1 3 5 7 9 11 13 15 17 19))) #tuple((bsearch xs 11) (bsearch xs 8))))
 
   (export main))`,
-    expected: "(: #tuple((Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
+    expected: "#tuple((Some 5) (None unit))",
   },
   {
     id: "binary-search-tree",
@@ -877,7 +877,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((xs #list(5 3 8 1 4 7 9 2 6))) (inorder (build xs 0 (Leaf unit)))))
 
   (export main))`,
-    expected: "(: #list(1 2 3 4 5 6 7 8 9) (List Int64))",
+    expected: "#list(1 2 3 4 5 6 7 8 9)",
   },
   {
     id: "palindrome-check",
@@ -944,7 +944,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((shift (letter "A") 3) (shift (letter "Y") 3)))
 
   (export main))`,
-    expected: "(: #tuple(#\\D #\\B) (Tuple Char Char))",
+    expected: "#tuple(#\\D #\\B)",
   },
   {
     id: "unicode-nfc-normalization",
@@ -965,7 +965,7 @@ export const EXAMPLES: Example[] = [
       ((None) (trap "nfc: invalid accent bytes"))))
 
   (export main))`,
-    expected: "(: (tuple 1 2) (Tuple Int64 Int64))",
+    expected: "(tuple 1 2)",
   },
   {
     id: "string-slice-date-fields",
@@ -978,7 +978,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((d "2026-08-14")) #tuple((field d 0 4) (field d 5 7) (field d 8 10))))
 
   (export main))`,
-    expected: "(: #tuple(\"2026\" \"08\" \"14\") (Tuple String String String))",
+    expected: "#tuple(\"2026\" \"08\" \"14\")",
   },
   {
     id: "integer-square-root",
@@ -1085,7 +1085,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (let ((xs #list(1 2 3 4 5))) (rev xs (- (List.len xs) 1) (: #list() (List Int64)))))
 
   (export main))`,
-    expected: "(: #list(5 4 3 2 1) (List Int64))",
+    expected: "#list(5 4 3 2 1)",
   },
   {
     id: "stack-via-prepend",
@@ -1098,7 +1098,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (push (push (push (: #list() (List Int64)) 10) 20) 30))
 
   (export main))`,
-    expected: "(: #list(30 20 10) (List Int64))",
+    expected: "#list(30 20 10)",
   },
   {
     id: "metaprogramming-quote-eval",
@@ -1111,7 +1111,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((build 6 5) (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
 
   (export main))`,
-    expected: "(: #tuple(((. Ast List) #list(((. Ast Name) \"+\") ((. Ast List) #list(((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))",
+    expected: "#tuple(((. Ast List) #list(((. Ast Name) \"+\") ((. Ast List) #list(((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41)",
   },
   {
     id: "effects-handlers-stateful",
@@ -1213,7 +1213,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (safe-add 40 2))
 
   (export main))`,
-    expected: "(: (Some 42) (Option Int64))",
+    expected: "(Some 42)",
   },
   {
     id: "design-by-contract",
@@ -1237,7 +1237,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
 
   (export main))`,
-    expected: "(: (Qty.of 5000.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))",
+    expected: "(Qty.of 5000.0 (Unit.base #\"meter\"))",
   },
   {
     id: "unit-arithmetic",

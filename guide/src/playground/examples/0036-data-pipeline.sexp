@@ -34,4 +34,4 @@
         (/ (sum-age people 0 ((. List len) people) 0) ((. List len) people)))))
 
   (export main)))
-  (expected (: #tuple(#list(36 41 40) 39) (Tuple (List Int64) Int64))))
+  (expected #tuple(#list(36 41 40) 39)))

@@ -27,4 +27,4 @@
       (go xs 1 ((. List len) xs) (at xs 0) 1 (: #list() (List (Tuple Int64 Int64))))))
 
   (export main)))
-  (expected (: #list(#tuple(1 3) #tuple(2 1) #tuple(3 2)) (List (Tuple Int64 Int64)))))
+  (expected #list(#tuple(1 3) #tuple(2 1) #tuple(3 2))))

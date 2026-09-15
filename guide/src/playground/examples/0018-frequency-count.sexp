@@ -23,4 +23,4 @@
     (let ((xs #list(3 1 3 3 1 2))) ((. Map to-list) (tally xs 0 ((. List len) xs) ((. Map empty))))))
 
   (export main)))
-  (expected (: #list(#tuple(1 2) #tuple(2 1) #tuple(3 3)) (List (Tuple Int64 Int64)))))
+  (expected #list(#tuple(1 2) #tuple(2 1) #tuple(3 3))))

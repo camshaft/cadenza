@@ -35,4 +35,4 @@
   (def (main) (qsort #list(5 3 8 1 9 2 7 4 6)))
 
   (export main)))
-  (expected (: #list(1 2 3 4 5 6 7 8 9) (List Int64))))
+  (expected #list(1 2 3 4 5 6 7 8 9)))

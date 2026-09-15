@@ -28,4 +28,4 @@
   (def (main) (gens #list(0 0 0 0 0 0 0 1) 4))
 
   (export main)))
-  (expected (: #list(0 0 0 1 1 1 1 1) (List Int64))))
+  (expected #list(0 0 0 1 1 1 1 1)))

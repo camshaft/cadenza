@@ -9,4 +9,4 @@
   (def (main) (mutual #list(1 2 3 4 5) #list(3 4 5 6 7)))
 
   (export main)))
-  (expected (: #list(3 4 5) (List Int64))))
+  (expected #list(3 4 5)))

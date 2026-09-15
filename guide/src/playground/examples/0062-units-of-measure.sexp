@@ -7,4 +7,4 @@
   (def (main) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
 
   (export main)))
-  (expected (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
+  (expected (Qty.of 5000.0 (Unit.base #"meter"))))

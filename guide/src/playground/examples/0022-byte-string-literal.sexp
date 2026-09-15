@@ -14,4 +14,4 @@
         ((None) (trap "byte-literal: unexpectedly empty")))))
 
   (export main)))
-  (expected (: #tuple(6 71) (Tuple Int64 Int64))))
+  (expected #tuple(6 71)))

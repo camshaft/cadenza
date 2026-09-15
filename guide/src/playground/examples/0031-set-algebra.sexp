@@ -13,4 +13,4 @@
       ((. Set to-list) (sym-diff a b))))
 
   (export main)))
-  (expected (: #list(1 2 5 6) (List Int64))))
+  (expected #list(1 2 5 6)))

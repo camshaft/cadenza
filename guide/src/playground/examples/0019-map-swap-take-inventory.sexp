@@ -16,4 +16,4 @@
             (#tuple(gone-pears final) #tuple(old-apples gone-pears ((. Map to-list) final))))))))
 
   (export main)))
-  (expected (: #tuple((Some 5) (Some 2) #list(#tuple(1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))))
+  (expected #tuple((Some 5) (Some 2) #list(#tuple(1 9)))))

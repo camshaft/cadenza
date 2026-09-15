@@ -20,4 +20,4 @@
         (= ((. Symbol of) "red") ((. Symbol of) "red")))))
 
   (export main)))
-  (expected (: #tuple((Some 65280) (None unit) true) (Tuple (Option Int64) (Option Int64) Bool))))
+  (expected #tuple((Some 65280) (None unit) true)))

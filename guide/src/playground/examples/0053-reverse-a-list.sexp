@@ -15,4 +15,4 @@
     (let ((xs #list(1 2 3 4 5))) (rev xs (- ((. List len) xs) 1) (: #list() (List Int64)))))
 
   (export main)))
-  (expected (: #list(5 4 3 2 1) (List Int64))))
+  (expected #list(5 4 3 2 1)))

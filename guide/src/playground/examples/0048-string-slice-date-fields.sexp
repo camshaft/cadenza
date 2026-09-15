@@ -9,4 +9,4 @@
   (def (main) (let ((d "2026-08-14")) #tuple((field d 0 4) (field d 5 7) (field d 8 10))))
 
   (export main)))
-  (expected (: #tuple("2026" "08" "14") (Tuple String String String))))
+  (expected #tuple("2026" "08" "14")))
