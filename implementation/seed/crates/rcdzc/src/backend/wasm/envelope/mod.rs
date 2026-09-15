@@ -1492,7 +1492,16 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
             }
         }
         for i in h..(h + k) {
-            items.extend_from_slice(&canon_lower_item(i as u32));
+            let op = imports[i - h];
+            if op.name == "bytes-new" || op.name == "bytes-read" {
+                // The two bulk-bytes ops carry a `list<u8>` — lower with Memory(0) (bytes-new reads the arg
+                // (ptr,len) out of guest memory 0) + Realloc (bytes-read allocates its returned list in guest
+                // memory 0 via the shared cabi_realloc = core func 0 in this needs_realloc-mode assembler).
+                // A no-list-result op carries the realloc option unused (harmless); both need Memory.
+                items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
+            } else {
+                items.extend_from_slice(&canon_lower_item(i as u32));
+            }
         }
         section(sec::CANON, &wasm_vec(h + k, &items))
     };
@@ -8418,18 +8427,70 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 /// COMPOSE it with prepended defined types (a host-fused list/option type) build their decls directly
 /// rather than calling this.
 fn runtime_op_instance_type(imports: &[&RtOp]) -> Vec<u8> {
+    // bytes-new/bytes-read carry a `list<u8>` (arg / result) the scalar op model cannot express, so when
+    // either is imported PREPEND a shared `(list u8)` defined type at instance-type index 0 (mirrors
+    // `host_effect_instance_type`'s `needs_list` prepend); their comp_functypes reference it by index. The
+    // per-op func types then occupy indices `base..`, so each export decl references `base + i`. A pure
+    // scalar import set prepends nothing (`base = 0`) → BYTE-IDENTICAL to the pre-bulk-bytes emit.
+    let needs_list = imports
+        .iter()
+        .any(|o| o.name == "bytes-new" || o.name == "bytes-read");
     let mut decls = Vec::new();
+    let mut prepended: u64 = 0;
+    if needs_list {
+        decls.push(0x01); // ty decl
+        decls.extend_from_slice(&list_u8_defined_type()); // (list u8) → instance-type index 0
+        prepended = 1;
+    }
     for (i, op) in imports.iter().enumerate() {
         decls.push(0x01); // ty decl
-        decls.extend_from_slice(&op_comp_functype(op));
+        decls.extend_from_slice(&op_comp_functype_maybe_list(op, 0));
         decls.push(0x04); // export decl
         decls.extend_from_slice(&extern_name(op.name));
         decls.push(0x01); // sort: component func
-        uleb128(i as u64, &mut decls);
+        uleb128(prepended + i as u64, &mut decls);
     }
+    let decl_count = prepended as usize + 2 * imports.len();
     let mut it = vec![0x42]; // instance type form
-    it.extend_from_slice(&wasm_vec(2 * imports.len(), &decls));
+    it.extend_from_slice(&wasm_vec(decl_count, &decls));
     it
+}
+
+/// A runtime op's component functype, list-aware for the two bulk-bytes ops. `bytes-new`/`bytes-read` carry
+/// a `list<u8>` the scalar [`op_comp_functype`] cannot express (their `RtOp` shape drops it); here the
+/// `list<u8>` param/result references the shared `(list u8)` defined type at `list_idx`:
+/// `bytes-new: (data: list<u8>) -> u32`, `bytes-read: (buf: u32) -> list<u8>`. Every other op falls through
+/// to the plain scalar `op_comp_functype`. Param names are synthesized (`p0`) — a positional import ignores
+/// them, matching `op_comp_functype`.
+fn op_comp_functype_maybe_list(op: &RtOp, list_idx: u64) -> Vec<u8> {
+    use crate::backend::wasm::runtime_abi::AbiValType;
+    match op.name {
+        "bytes-new" => {
+            // (data: list<u8>) -> u32 (handle)
+            let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+            let mut params = Vec::new();
+            params.extend_from_slice(&uleb_bytes(2));
+            params.extend_from_slice(b"p0");
+            uleb128(list_idx, &mut params); // param valtype = (list u8) defined-type index
+            item.extend_from_slice(&wasm_vec(1, &params));
+            item.push(0x00); // one result
+            item.push(AbiValType::U32.comp_byte());
+            item
+        }
+        "bytes-read" => {
+            // (buf: u32) -> list<u8>
+            let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+            let mut params = Vec::new();
+            params.extend_from_slice(&uleb_bytes(2));
+            params.extend_from_slice(b"p0");
+            params.push(AbiValType::U32.comp_byte()); // param valtype = u32 (buf handle)
+            item.extend_from_slice(&wasm_vec(1, &params));
+            item.push(0x00); // one result
+            uleb128(list_idx, &mut item); // -> (list u8) defined-type index
+            item
+        }
+        _ => op_comp_functype(op),
+    }
 }
 
 /// A sec-7 component functype item for a BOUNDARY export: `<func:0x40> <params-vec> <result-form>`. The

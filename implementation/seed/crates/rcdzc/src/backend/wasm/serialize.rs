@@ -23,8 +23,28 @@ const CORE_MAGIC: &[u8] = wasm_abi::CORE_MAGIC;
 /// signature). Each ABI type projects to its CORE valtype byte (`AbiValType::core_byte` — a `u32`
 /// handle lowers to i32, an `s64` to i64, …); the component-boundary bytes are the envelope's concern.
 /// A runtime op returns at most one core value; `dup`/`drop` return none.
+///
+/// `bytes-new`/`bytes-read` are the exception: they carry a `list<u8>` the scalar `RtOp` model cannot
+/// express (their `params`/`result` drop the list, which is why they are `lowerable: false`). Their
+/// canon-lowered CORE import signatures are hand-written to match the envelope's list-aware canon-lower:
+/// `bytes-new: (ptr:i32, len:i32) -> (handle:i32)` (the `list<u8>` arg lowered to a `(ptr,len)` pair), and
+/// `bytes-read: (buf:i32, retptr:i32) -> ()` (a `list<u8>` result is 2 flats > `MAX_FLAT_RESULTS`, so it
+/// returns through a guest-provided trailing return-area pointer, not a core result).
 fn import_functype(o: &RtOp) -> Vec<u8> {
     let mut out = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+    match o.name {
+        "bytes-new" => {
+            out.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32, wasm_abi::CORE_I32]));
+            out.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+            return out;
+        }
+        "bytes-read" => {
+            out.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32, wasm_abi::CORE_I32]));
+            out.extend_from_slice(&wasm_vec(0, &[]));
+            return out;
+        }
+        _ => {}
+    }
     let params: Vec<u8> = o.params.iter().map(|c| c.core_byte()).collect();
     out.extend_from_slice(&wasm_vec(params.len(), &params));
     match o.result {
