@@ -894,6 +894,38 @@
   (live-objects known-leak))
 
 (case
+  "spc1 an INVARIANT Set param probed via Set.contains in a self-loop is reclaimed at loop exit (live-objects 0)"
+  (doc
+    "The Set twin of the Bytes.at / closure-param invariant-loop-param reclaim (v-memory-safety): `probe`
+        threads an UNCHANGING `(Set Int64) s` (identity-passed on every back-edge) and READS it only via
+        `Set.contains s i` — a BORROW that returns a Bool SCALAR holding no alias into the set. The set is
+        dead at loop exit, so its shell MUST be reclaimed there. Regression witness: `Set.contains` was
+        absent from the invariant-param exit-drop borrow allowlist (`param_only_borrowed_or_backedge_rec`),
+        so the probe fell to the deny fallback and the whole set leaked (constant per run — census 3 at n=5,
+        NOT scaling; a genuine invariant-shell husk, distinct from the two-sum/happy VARYING accumulator
+        above). Adding the `Set.contains`/`Set.len`/`Map.size` scalar-probe borrow arms closes it. The set is
+        RUNTIME-built from `n` (defeats const-fold so the count is real). probe range i∈{1..n} hits the three
+        inserted keys {n, n-1, n-2}: n=0 → 0 hits; n=2 → set {2,1,0}, hits 2,1 → 2; n=5 → set {5,4,3}, hits
+        5,4,3 → 3. `live-objects 0` is an exact drift guard (a re-leak shows as >0; the guarded-all backstop
+        TRAPS a reintroduced over-reclaim).")
+  (input
+    (do
+      (def
+        (probe (: s (Set Int64)) (: i Int64) (: acc Int64))
+        (if (> i 0) (probe s (- i 1) (+ acc (if (Set.contains s i) 1 0))) acc))
+      (def
+        (main (: n Int64))
+        (probe (Set.insert (Set.insert (Set.insert #set() n) (- n 1)) (- n 2)) n 0))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc
     "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`

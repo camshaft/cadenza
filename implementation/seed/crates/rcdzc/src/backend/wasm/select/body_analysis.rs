@@ -446,6 +446,18 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         // fold (`sum-bytes b i acc`) — `Bytes.len` had a borrow arm, `Bytes.at` did not, so the payload
         // inlined as `SumExpect(BytesAt b i)` in the recursive-call arg fell to the deny fallback.
         Core::BytesAt { bytes, .. } => recur(db, bytes, true),
+        // SCALAR-returning collection PROBES borrow their container(s) and yield a SCALAR (a `Bool`/`Int64`)
+        // that holds NO alias into the collection — exactly like `BytesLen`/`ListLen`. `Set.contains`/
+        // `Map.lookup`-size read without consuming (core.rs: the boxed key/elem is dropped after; the
+        // collection is untouched), so a container `binder` read only via these in a loop is BORROW-only →
+        // recurse it borrowed and it gets its invariant loop-exit reclaim. (`Map.lookup` is DELIBERATELY
+        // omitted — it returns an `Option<V>` whose payload ALIASES the map for a heap `V`; that view is gated
+        // by the MatchSum arm's `collect_consuming_payload_sites` fence, not admitted raw here.) v-memory-
+        // safety: the `Set.contains`/`Set.len`/`Map.size` twin of the `Bytes.at` borrow arm — an invariant
+        // Set/Map param probed in a self-loop leaked its whole shell because the probe fell to `_ => false`.
+        Core::SetLen { set } => recur(db, set, true),
+        Core::MapSize { map } => recur(db, map, true),
+        Core::SetContains { set, elem, .. } => recur(db, set, true) && recur(db, elem, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
