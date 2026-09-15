@@ -3698,6 +3698,70 @@ fn cron_health_failures(dir: &Path) -> Vec<(String, u64, String)> {
     out
 }
 
+/// A control-plane cron is treated as STALE (silently stopped scheduling) once its `.last-run` stamp has not
+/// been refreshed for this MANY times its crontab interval. 4× gives comfortable margin for the odd skipped
+/// fire (a flock-singleton contending, a slow rebuild) while still catching a genuinely dead cron promptly:
+/// a `*/5` cron flags after ~20min, an hourly after ~4h, a daily after ~4d.
+const CRON_STALE_MULT: u64 = 4;
+
+/// Approximate fire interval (seconds) of a fleet crontab schedule, from its MINUTE + HOUR fields, for the
+/// patterns the fleet's own crons use. `None` for anything not recognized (→ the staleness check SKIPS it,
+/// never a false positive). Handles: `*/N * * * *` (every N min), `a,b,… * * * *` (every 60/count min),
+/// `M * * * *` (hourly), `M */N * * *` (every N hours), `M H * * *` fixed hour (daily). Pure/unit-tested.
+fn cron_interval_secs(minute: &str, hour: &str) -> Option<u64> {
+    // Every-N-hours: the minute is just a fixed offset within the hour.
+    if let Some(n) = hour.strip_prefix("*/") {
+        return n.parse::<u64>().ok().filter(|&n| n > 0).map(|n| n * 3600);
+    }
+    if hour == "*" {
+        if let Some(n) = minute.strip_prefix("*/") {
+            return n.parse::<u64>().ok().filter(|&n| n > 0).map(|n| n * 60);
+        }
+        if minute.contains(',') {
+            let c = minute.split(',').filter(|s| !s.is_empty()).count() as u64;
+            return (c > 0).then_some(3600 / c.max(1));
+        }
+        if minute.parse::<u64>().is_ok() {
+            return Some(3600); // a fixed minute, every hour
+        }
+        return None;
+    }
+    // A fixed hour (single integer) with `* * *` day fields → once a day.
+    if hour.parse::<u64>().is_ok() {
+        return Some(86400);
+    }
+    None
+}
+
+/// Parse a fleet crontab line into `(interval_secs, script_stem)` — the schedule's approximate interval and
+/// the `.sh` script's basename (sans extension), so the caller can find its `<stem>.last-run` stamp. `None`
+/// unless the line is `# fleet:`-tagged AND its schedule parses AND it invokes a `*.sh` — so a non-fleet line,
+/// an env line, or an unrecognized schedule is skipped (never a false STALE). Pure/unit-tested. NOTE: keys on
+/// the SCRIPT name, not the `# fleet:<tag>` (they differ — e.g. `# fleet:reap-orphans` runs
+/// `reap-wedged-nix-clients.sh` → the stamp is `reap-wedged-nix-clients.last-run`).
+fn parse_cron_line(line: &str) -> Option<(u64, String)> {
+    if !line.contains("# fleet:") {
+        return None;
+    }
+    let mut fields = line.split_whitespace();
+    let minute = fields.next()?;
+    let hour = fields.next()?;
+    let interval = cron_interval_secs(minute, hour)?;
+    let stem = line
+        .split_whitespace()
+        .find_map(|t| t.strip_suffix(".sh"))
+        .and_then(|path| path.rsplit('/').next())?
+        .to_string();
+    Some((interval, stem))
+}
+
+/// Whether a cron whose `.last-run` last fired `age_secs` ago, with crontab `interval_secs`, has gone STALE
+/// (stopped scheduling). Pure so the threshold is unit-tested. `interval == 0` → never stale (avoid div-ish
+/// nonsense / a false positive on an unknown cadence).
+fn cron_stale(age_secs: u64, interval_secs: u64) -> bool {
+    interval_secs > 0 && age_secs > CRON_STALE_MULT * interval_secs
+}
+
 /// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
 /// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
 /// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
@@ -3853,6 +3917,32 @@ fn status(fleet: &Fleet) {
             "  ⚠ CRON {name} last run FAILED (rc={rc}): {line} — a control-plane cron errored; check its \
              wrapper (PATH/toolchain?) or `.last-run`."
         );
+    }
+
+    // CRON STALENESS — the complement to the rc= check above: a cron that silently STOPPED scheduling (its
+    // `.last-run` mtime ages past CRON_STALE_MULT× its crontab interval) errors nothing but goes dark — the
+    // reapers/guardians that keep the fleet self-healing would then be INERT with no signal. Read the LIVE
+    // crontab (the DRY source of the real schedule). FAIL-SAFE at every step: crontab unavailable, an
+    // unrecognized schedule, or a cron with no `.last-run` stamp → skip (never a false STALE).
+    if let Ok(out) = Command::new("crontab").arg("-l").output()
+        && out.status.success()
+    {
+        let now = now_unix();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let Some((interval, stem)) = parse_cron_line(line) else {
+                continue;
+            };
+            let Some(mtime) = file_mtime_unix(&fleet.root.join(format!("{stem}.last-run"))) else {
+                continue; // no stamp yet → can't judge staleness (never a false positive)
+            };
+            let age = now.saturating_sub(mtime);
+            if cron_stale(age, interval) {
+                println!(
+                    "  ⚠ CRON {stem} STALE — last fired {age}s ago (interval ~{interval}s); it may have \
+                     STOPPED scheduling. Check `crontab -l` for its `# fleet:` line + the {stem}.last-run stamp."
+                );
+            }
+        }
     }
 
     // Trunk-ref-regression watch — OBSOLETE under the --publish-origin model, kept only as a genuine-
@@ -20587,6 +20677,73 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             cron_health_failures(&dir).is_empty(),
             "missing dir → no failures"
         );
+    }
+
+    #[test]
+    fn cron_interval_secs_covers_the_fleet_schedule_patterns() {
+        // Every-N-minutes (compact-nudge */5, reap-leases */10, cpu-monitor */2, disk-guard */15).
+        assert_eq!(cron_interval_secs("*/5", "*"), Some(300));
+        assert_eq!(cron_interval_secs("*/2", "*"), Some(120));
+        assert_eq!(cron_interval_secs("*/30", "*"), Some(1800));
+        // Comma list (reap-orphans "7,37" = twice an hour = every 30min).
+        assert_eq!(cron_interval_secs("7,37", "*"), Some(1800));
+        // Fixed minute, every hour (warm-keep "17 * * * *").
+        assert_eq!(cron_interval_secs("17", "*"), Some(3600));
+        // Every-N-hours (prune-stale-targets "0 */6 * * *").
+        assert_eq!(cron_interval_secs("0", "*/6"), Some(6 * 3600));
+        // Fixed hour → daily (baseline-drift "23 4 * * *").
+        assert_eq!(cron_interval_secs("23", "4"), Some(86400));
+        // Unrecognized / zero step → None (skip, never a false STALE).
+        assert_eq!(cron_interval_secs("*/0", "*"), None);
+        assert_eq!(cron_interval_secs("*", "*"), None);
+    }
+
+    #[test]
+    fn parse_cron_line_keys_on_script_name_only_for_fleet_lines() {
+        // Standard */5 fleet line → interval 300, stem = script basename (NOT the # fleet: tag).
+        assert_eq!(
+            parse_cron_line(
+                "*/5 * * * * bash /hub/.claude/fleet/compact-nudge.sh >/dev/null 2>&1 # fleet:compact-nudge"
+            ),
+            Some((300, "compact-nudge".to_string()))
+        );
+        // Tag ≠ script name: `# fleet:reap-orphans` runs reap-wedged-nix-clients.sh → stem is the SCRIPT.
+        assert_eq!(
+            parse_cron_line(
+                "7,37 * * * * bash /hub/.claude/fleet/reap-wedged-nix-clients.sh --orphans-only --apply >/dev/null 2>&1 # fleet:reap-orphans"
+            ),
+            Some((1800, "reap-wedged-nix-clients".to_string()))
+        );
+        // An env assignment before `bash` doesn't confuse the schedule parse or the .sh scan.
+        assert_eq!(
+            parse_cron_line(
+                "*/15 * * * * INODE_THRESHOLD_PCT=0 bash /hub/.claude/fleet/prune-tmp-inodes.sh --apply >/dev/null 2>&1 # fleet:prune-tmp-inodes"
+            ),
+            Some((900, "prune-tmp-inodes".to_string()))
+        );
+        // Not a fleet line → None (we never flag a non-fleet crontab entry).
+        assert_eq!(
+            parse_cron_line("*/5 * * * * bash /somewhere/other.sh"),
+            None
+        );
+        // Fleet-tagged but unparseable schedule → None (fail-safe).
+        assert_eq!(
+            parse_cron_line("bogus sched bash /hub/x.sh # fleet:x"),
+            None
+        );
+    }
+
+    #[test]
+    fn cron_stale_flags_only_past_the_multiple() {
+        // */5 (300s): fresh / one skipped fire → NOT stale; past 4× (1200s) → STALE.
+        assert!(!cron_stale(120, 300));
+        assert!(!cron_stale(1200, 300)); // exactly 4× → not yet (strictly greater)
+        assert!(cron_stale(1201, 300));
+        // Daily (86400s): a day old is fine, ~4 days is stale.
+        assert!(!cron_stale(90000, 86400));
+        assert!(cron_stale(4 * 86400 + 1, 86400));
+        // Unknown interval (0) → never stale (no false positive).
+        assert!(!cron_stale(999999, 0));
     }
 
     #[test]
