@@ -308,6 +308,52 @@ fn bytes_read_round_trips_a_heap_leaf_a_shared_dup_and_a_nested_rope() {
 }
 
 #[test]
+fn bytes_read_of_a_shared_rope_flattens_transparently_for_all_owners() {
+    // loop-ii's LOWER may bytes-read an outgoing Bytes that is still SHARED (rc>1). op_bytes_read
+    // calls bytes_flatten, which rewrites the rope node IN PLACE (rope -> equivalent leaf, dropping the
+    // rope's children) WITHOUT a uniqueness check. That is sound because it is an observationally
+    // transparent canonicalization: every other owner of the same node still reads the identical logical
+    // content, and the shared children are released exactly once (h relinquishes its refs). Pin it.
+    reset();
+    let before = live_nodes();
+
+    // A rope whose flattened length exceeds the inline cap, so flatten takes the HEAP path (installs a
+    // fresh Raw + drops the two rope children). Then DUP: two owners of the one rope node.
+    let a: Vec<u8> = (0..(INLINE_RAW_CAP as u32 + 10))
+        .map(|i| (i & 0xff) as u8)
+        .collect();
+    let b: Vec<u8> = vec![200, 201, 202, 203];
+    let rope = op_bytes_concat(op_bytes_new(a.clone()), op_bytes_new(b.clone()));
+    let mut expect = a.clone();
+    expect.extend_from_slice(&b);
+    op_dup(rope); // rc == 2: owner A and owner B share the SAME rope node
+
+    // Owner A reads -> flattens the shared node in place (rope -> leaf).
+    assert_eq!(op_bytes_read(rope), expect, "owner A reads the shared rope");
+    // Owner B (same node, now a leaf) still reads the identical content -- flatten was transparent.
+    assert_eq!(
+        op_bytes_read(rope),
+        expect,
+        "owner B reads the same content after A's in-place flatten"
+    );
+    // The flattened form is champ_eq to a fresh flat twin (canonical form preserved under sharing).
+    let twin = op_bytes_new(expect.clone());
+    assert!(
+        champ_eq(rope, twin),
+        "flattened shared rope is champ_eq to its flat twin (canonical)"
+    );
+    op_drop(twin);
+
+    op_drop(rope); // owner B releases (rc -> 1)
+    op_drop(rope); // owner A releases (rc -> 0)
+    assert_eq!(
+        live_nodes(),
+        before,
+        "shared-rope flatten releases the rope children exactly once (no leak / no double-free)"
+    );
+}
+
+#[test]
 fn bytes_alloc_small_is_inline_large_is_heap_and_both_round_trip() {
     reset();
     let before = live_nodes();
