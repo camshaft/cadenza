@@ -635,7 +635,7 @@ pub fn emit(
             // writer — collect every runtime op that plan calls (`arr-get`/`vec-len`/`vec-get`/`bytes-*` +
             // each scalar unbox) so they are imported.
             if let serialize::ResultLower::SpillRecord { write, .. } = &w.result {
-                canon_write_ops(write, &mut |op| {
+                canon_write_ops(write, bulk_bytes, &mut |op| {
                     used.insert(op);
                 });
                 // The wrapper reclaims the def's owned result handle after the canonical write (deep-drop).
@@ -6582,6 +6582,7 @@ fn canon_write_of(
 /// `bytes-get` for a `Bytes` leaf.
 fn canon_write_ops(
     cw: &crate::backend::wasm::serialize::CanonWrite,
+    bulk_bytes: bool,
     out: &mut impl FnMut(&'static str),
 ) {
     use crate::backend::wasm::serialize::CanonWrite;
@@ -6589,6 +6590,9 @@ fn canon_write_ops(
         CanonWrite::Scalar { read, .. } => out(read),
         // A bare-i32 enum disc is stored directly (no unbox / heap op) — registers nothing.
         CanonWrite::EnumDisc { .. } => {}
+        // MUST MATCH `emit_canon_write`'s `CanonWrite::Bytes` gate: one bulk `bytes-read` where the shared
+        // allocator + bytes-read canon-lower exist (bulk_bytes), else the per-byte `bytes-len` + `bytes-get`.
+        CanonWrite::Bytes if bulk_bytes => out("bytes-read"),
         CanonWrite::Bytes => {
             out("bytes-len");
             out("bytes-get");
@@ -6596,13 +6600,13 @@ fn canon_write_ops(
         CanonWrite::Record { fields } => {
             out("arr-get");
             for f in fields {
-                canon_write_ops(&f.write, out);
+                canon_write_ops(&f.write, bulk_bytes, out);
             }
         }
         CanonWrite::List { elem, .. } => {
             out("vec-len");
             out("vec-get");
-            canon_write_ops(elem, out);
+            canon_write_ops(elem, bulk_bytes, out);
         }
         CanonWrite::Variant { arms, .. } => {
             out("sum-disc");
@@ -6611,7 +6615,7 @@ fn canon_write_ops(
             }
             for a in arms {
                 if let Some(p) = &a.payload {
-                    canon_write_ops(p, out);
+                    canon_write_ops(p, bulk_bytes, out);
                 }
             }
         }

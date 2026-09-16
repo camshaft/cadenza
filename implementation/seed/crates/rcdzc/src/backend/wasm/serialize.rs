@@ -1604,6 +1604,10 @@ fn core_module_impl(
                     *size,
                     *align,
                     write,
+                    // seq-916 loop-ii: bulk nested-Bytes LOWER via `bytes-read` when the shared allocator +
+                    // bytes-read canon-lower are present (the `import_realloc`/`_mem` mode) — same gate the
+                    // `CopyBytes` bare-result bulk uses below.
+                    import_realloc,
                     &imp,
                     &mut inner,
                 );
@@ -3577,6 +3581,7 @@ fn emit_result_spill(
     size: u32,
     align: u32,
     write: &CanonWrite,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
@@ -3598,7 +3603,17 @@ fn emit_result_spill(
     out.push(op::LOCAL_SET);
     uleb128(retptr as u64, out);
     // Write the value's canonical form at retptr + 0.
-    emit_canon_write(write, rec, retptr, 0, next_local, realloc_abs, imp, out);
+    emit_canon_write(
+        write,
+        rec,
+        retptr,
+        0,
+        next_local,
+        realloc_abs,
+        bulk_bytes,
+        imp,
+        out,
+    );
     // Reclaim the def's RESULT handle: the def returned an OWNED compound (callee-owns-args → the caller, this
     // wrapper, owns the result), and the canonical writer only BORROWED it (arr-get/vec-get/sum-disc/bytes-len
     // are borrowing reads that retain nothing), so after the write `rec` holds the sole reference to the whole
@@ -3761,6 +3776,7 @@ fn emit_canon_write(
     offset: u32,
     next_local: &mut u32,
     realloc_abs: u64,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
@@ -3827,12 +3843,31 @@ fn emit_canon_write(
                     offset + f.offset,
                     next_local,
                     realloc_abs,
+                    bulk_bytes,
                     imp,
                     out,
                 );
             }
         }
+        CanonWrite::Bytes if bulk_bytes => {
+            // BULK (seq-916 loop-ii): `bytes-read(handle, dst_base+offset)` writes the (ptr,len) pair straight
+            // into this field's canonical `list<u8>` slot — retptr[0]=guest ptr, retptr[4]=len — in ONE call,
+            // replacing `bytes-len` + `cabi_realloc` + the per-byte `bytes-get` copy loop the fallback below
+            // does (the nested-Bytes LOWER twin of `emit_result_copy_bytes`'s bare-result bulk). The guest's
+            // canon adapter allocates the buffer in memory 0 via its own realloc, exactly like the fallback's
+            // `cabi_realloc(0,0,1,count)`, so the resulting (ptr,len) slot is identical downstream. `bytes-read`
+            // BORROWS `handle` (rc unchanged) and `handle` is itself a borrowing `arr-get` read the enclosing
+            // `emit_result_spill` deep-drops with the whole tree — so, exactly like the per-byte `bytes-get`
+            // path, NO drop is emitted here. Only valid where the assembler canon-lowers `bytes-read` + provides
+            // the shared allocator (the `import_realloc`/`_mem` mode the caller gates on).
+            get(handle, out); // buf
+            get(dst_base, out);
+            const_i32(offset as i64, out);
+            out.push(op::I32_ADD); // retptr = dst_base + offset (this field's (ptr,len) slot)
+            call("bytes-read", out);
+        }
         CanonWrite::Bytes => {
+            // PER-BYTE FALLBACK (no shared allocator / no bytes-read canon-lower at lower-time):
             // count = bytes-len(handle); ptr = cabi_realloc(0,0,1,count); copy loop; store (ptr, count).
             let count = *next_local;
             let ptr = *next_local + 1;
@@ -3939,7 +3974,17 @@ fn emit_canon_write(
             out.push(op::I32_MUL);
             out.push(op::I32_ADD);
             set(edst, out);
-            emit_canon_write(elem, eh, edst, 0, next_local, realloc_abs, imp, out);
+            emit_canon_write(
+                elem,
+                eh,
+                edst,
+                0,
+                next_local,
+                realloc_abs,
+                bulk_bytes,
+                imp,
+                out,
+            );
             get(i, out);
             const_i32(1, out);
             out.push(op::I32_ADD);
@@ -3986,6 +4031,7 @@ fn emit_canon_write(
                         offset + payload_offset,
                         next_local,
                         realloc_abs,
+                        bulk_bytes,
                         imp,
                         out,
                     );
