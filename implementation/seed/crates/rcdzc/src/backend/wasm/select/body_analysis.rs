@@ -472,20 +472,6 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::SetLen { set } => recur(db, set, true),
         Core::MapSize { map } => recur(db, map, true),
         Core::SetContains { set, elem, .. } => recur(db, set, true) && recur(db, elem, true),
-        // STRUCTURAL COMPARE / EQUALITY ops BORROW both heap operands (read in place for the hash/compare,
-        // dropping only an owned temporary — core.rs; mirrors `binding_escapes`/`collect_consuming_payload_
-        // sites` which recurse both with `consuming=false`) and return a SCALAR (`Bool`/ordering `Int`) that
-        // holds NO alias into either operand. So a heap `binder` compared via `=`/`<`/`String.compare` in a
-        // loop is BORROW-only → recurse both operands borrowed and it gets its invariant loop-exit reclaim.
-        // v-memory-safety: the compare twin of the `Bytes.at`/`Set.contains`/`Map.lookup` borrow arms — a
-        // String/BigInt/Rational/compound param compared each iteration leaked its whole shell because these
-        // heap compares (distinct Core variants from the scalar `Compare`) fell to `_ => false`.
-        Core::ValueEq { lhs, rhs }
-        | Core::ValueEqShaped { lhs, rhs, .. }
-        | Core::ValueCmp { lhs, rhs, .. }
-        | Core::StrCmp { lhs, rhs, .. }
-        | Core::BigIntCmp { lhs, rhs, .. }
-        | Core::RationalCmp { lhs, rhs, .. } => recur(db, lhs, true) && recur(db, rhs, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
