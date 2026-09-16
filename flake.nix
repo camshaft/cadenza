@@ -1515,6 +1515,7 @@
               # the standalone AOT precompile below (seq-271); two-stage doesn't precompile.
               nativeBuildInputs = [ seedCompilerTestRunner ] ++ pkgs.lib.optional (mode == "standalone") cdzRun;
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -2061,6 +2062,7 @@
             # unaffected by the nix store path) → NO flag-day. Consistent with the flake's existing CA
             # derivations (test-shred/corpus/guideShred/cwasm), consumed build-time so no IFD.
             __contentAddressed = true;
+            preferLocalBuild = true;
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
 
@@ -4127,6 +4129,7 @@
             # last compiler-taint on the build/exec decoupling: without it a compiler change with identical
             # emit still rotated the store path and re-ran every exec.
             __contentAddressed = true;
+            preferLocalBuild = true;
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
           } ''
@@ -4208,6 +4211,7 @@
             {
               nativeBuildInputs = [ cdzCorpus ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -4227,6 +4231,7 @@
             {
               nativeBuildInputs = [ cdzCompile ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -4295,6 +4300,7 @@
           {
             nativeBuildInputs = [ cdzRun ];
             __contentAddressed = true;
+            preferLocalBuild = true;
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
           } ''
@@ -4317,6 +4323,7 @@
             {
               nativeBuildInputs = [ cdzRun ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -4377,6 +4384,7 @@
             {
               nativeBuildInputs = [ cdzCompile ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -4545,6 +4553,7 @@
             {
               nativeBuildInputs = [ cdzCorpus ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -4563,6 +4572,7 @@
             {
               nativeBuildInputs = [ cdzCompile ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -5263,6 +5273,7 @@
           pkgs.runCommand "wasm-opt-gap-${name}-${idx}"
             {
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
               nativeBuildInputs = [ pkgs.wasm-tools pkgs.binaryen cdzWasmOptGap ];
@@ -5448,6 +5459,7 @@
               # cadenza_ast, which only the gate exec stages via #5707).
               CDZ_VALUE_DOC = "1";
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -5561,6 +5573,7 @@
             {
               nativeBuildInputs = [ cdzCompile ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -6585,6 +6598,7 @@
           src = pkgs.lib.fileset.toSource { root = ./guide; fileset = ./guide; };
           nativeBuildInputs = [ seedCompiler xtaskCodegenGuideBin ];
           __contentAddressed = true;
+          preferLocalBuild = true;
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
           buildPhase = ''
@@ -6663,6 +6677,7 @@
             {
               nativeBuildInputs = [ seedCompiler cdzCompile ];
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
@@ -7025,6 +7040,7 @@
               # Content-addressed (v-nix flake review): each extraction caches on {emit.wasm bytes + wasm-tools},
               # so a compiler-rev bump that re-emits identical bytes reuses the extraction. Mirrors mkCorpusBuild.
               __contentAddressed = true;
+              preferLocalBuild = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
             } ''
