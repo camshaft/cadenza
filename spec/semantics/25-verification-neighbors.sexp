@@ -138,7 +138,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "breaker holsubst: a free occurrence beside a shadow substitutes selectively"
@@ -173,7 +173,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "breaker holsubst: the naive subst's documented capture hazard"
@@ -203,7 +203,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Capture-avoiding subst: the α-rename's structural edges ----------------------------------------
 ; Inc 5's pins verify the substituted free var SURVIVES (free-in true). These pin the α-rename's
@@ -339,7 +339,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- ∀-elimination with a real substitution (the non-identity SPEC face) ---------------------------
 (case
@@ -588,7 +588,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Increment 12 slice-2 ∨/∃ NEIGHBORS (breaker): the unforgeability + hyp-preservation faces skipped ---
 ; The slice-2 case tests EXISTS-intro's POSITIVE path (matching witness) and DISJ1. These pin the unpinned
