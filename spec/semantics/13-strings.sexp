@@ -65,6 +65,32 @@
   (output (: 4000 Int64)))
 
 (case
+  "a String accumulator self-loop whose state is DISCARDED reclaims to nothing"
+  (doc
+    "The DISCARDED companion of the escaping `rep`/`build` cases above: the same
+           String.concat-accumulator self-loop shape, but the loop returns a SCALAR (0) and the built
+           rope is never used — nothing heap escapes, so the ideal census is 0. LEAK TRACKED (breaker,
+           coordinated with v-memory-safety): observed 3 live objects — the concat spine. Verified
+           mechanism: `String.concat` lowers to `NfcNormalize(BytesConcat …)` (a byte-concat re-boxed
+           through an NFC shell), and the loop-epilogue reclaim-on-edge recognition
+           (`arg_reclaims_binder_as_base`) knows ListPush/ListConcat/BytesConcat/… but NOT the
+           NFC-wrapped shape, so the varying String accumulator is never recognized as
+           reclaim-on-edge. Peeling the NFC shell there was verified to take this exact shape 3→0;
+           this case is the corpus BENEFICIARY that re-landing that peel flips to
+           (live-objects 0). The escaping rep case above legitimately KEEPS its rope (it returns it) —
+           this one must not.")
+  (input
+    (do
+      (def
+        (sl (: n Int64) (: s String))
+        (if (= n 0) 0 (sl (- n 1) (String.concat s "x"))))
+      (def (main (: n Int64)) (sl n (if (> n 0) "seed" "alt")))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
+(case
   "a String param threaded UNCHANGED to a self-call AND consumed by String.concat each step is retained"
   (doc
     "The simultaneously-live retain for a heap STRING (the String analogue of the threaded-List-arg
