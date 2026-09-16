@@ -13452,7 +13452,17 @@ fn gate_output_is_substituter_fetch_transient(output: &str) -> bool {
 /// TOGETHER with a store-path/crane-input context, so a real sub-check failure — which reports "failed with
 /// exit code N" / "due to signal", never "does not exist" — is not misclassified. (And the advisory is only
 /// GUIDANCE anyway: a misread would at most cost one re-run, never let a real regression pass.)
+///
+/// EXCLUSION (2026-09-16): a missing-GROUP config error ALSO says "... does not exist" alongside a
+/// `/nix/store/…drv` path — e.g. a remote builder failing `the group 'nixbld' specified in
+/// 'build-users-group' does not exist` — but that is a PERSISTENT builder-config failure a re-run will NOT
+/// fix (it cost 2 wasted re-runs when distributed-nix offloaded to peers lacking the nixbld group). It is
+/// NOT a GC race, so exclude any `build-users-group` / `the group '…'` output → it falls through to the
+/// "REAL failure, route/fix" advisory instead of a futile "re-run once GC settles".
 fn gate_output_is_gc_race_transient(output: &str) -> bool {
+    if output.contains("build-users-group") || output.contains("the group '") {
+        return false;
+    }
     output.contains("does not exist")
         && (output.contains("findCargoFiles.nix") || output.contains("/nix/store/"))
 }
@@ -21199,6 +21209,20 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(gate_local_hold_advisory(gc_race).contains("GC"));
         assert!(gate_local_hold_advisory(gc_race).contains("RE-RUN"));
         assert!(!gate_local_hold_advisory(gc_race).contains("REAL sub-check"));
+        // A remote builder failing on a MISSING GROUP config error ("the group 'nixbld' ... does not exist")
+        // ALSO carries "does not exist" + a /nix/store drv path, but it is a PERSISTENT builder-config failure
+        // a re-run won't fix (the distributed-nix nixbld gap, 2026-09-16) — must NOT be misread as the GC race,
+        // stays REAL so the operator fixes the peer/disables the builder instead of re-running.
+        let nixbld = "error: build of '/nix/store/9xbmcq2cgngbyc14xclqwpkfk8fw7b7i-cargo-test-cdz-corpus-test-0.0.0.drv' \
+                      on 'ssh://bythewc@peer' failed: error: the group 'nixbld' specified in 'build-users-group' does not exist";
+        assert!(
+            !gate_output_is_gc_race_transient(nixbld),
+            "nixbld group error is not a GC race"
+        );
+        assert!(
+            gate_local_hold_advisory(nixbld).contains("REAL sub-check"),
+            "a persistent build-users-group config error must read as REAL (fix it), not a GC-race re-run"
+        );
         // GUARD: a REAL builder failure that happens to name a /nix/store path but reports an exit code
         // (NOT "does not exist") must NOT be misread as the GC race — stays REAL.
         assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
