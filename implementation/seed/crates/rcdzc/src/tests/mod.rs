@@ -1367,6 +1367,114 @@ fn a_pure_reducer_echo_with_bytes_param_and_result_emits_valid_wasm() {
     );
 }
 
+/// A PURE reducer whose export member has a `list<u8>` param and a RECORD RESULT with `list<u8>` fields — the
+/// `SpillRecord` bulk sub-path (the record is spilled to a return area and each `Bytes` field lowered via
+/// `bytes-read`). This is the shape REAL reducers use (`on_message` returns a record), so it exercises the
+/// pure-reducer bulk path's record-result branch that the bare-`list<u8>` echo does not.
+fn pack_record_bytes_world_pure() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let ty = list_u8(b);
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    // export cadenza:platform/guest { pack: func(m: record { key: list<u8> })
+    //                                       -> record { a: list<u8>, b: list<u8> } }
+    let pack_member = {
+        let param_ty = {
+            let key_field = bytes_field(&mut b, "key");
+            let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+            b.list(vec![rec_h, key_field])
+        };
+        let res_ty = {
+            let a_field = bytes_field(&mut b, "a");
+            let b_field = bytes_field(&mut b, "b");
+            let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+            b.list(vec![rec_h, a_field, b_field])
+        };
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, param_ty]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("pack");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("cadenza:platform/guest");
+    let export = b.list(vec![exp_h, iname, pack_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// PURE-REDUCER BULK, record-result branch (seq-1024/1026): a pure reducer returning a RECORD with `list<u8>`
+/// fields (the shape real reducers use — the `SpillRecord` lower, `bytes-read` into each spilled slot) MUST
+/// emit VALID wasm AND take the bulk path. The bare-`list<u8>` echo covers `CopyBytes`; this covers
+/// `SpillRecord` on the PURE path (only ever validated on the host path before, loop-ii #9052).
+#[test]
+fn a_pure_reducer_record_of_bytes_result_emits_valid_bulk_wasm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (def (pack (: m (Record (key Bytes)))) \
+        (record (= a (. m key)) (= b (. m key)))) \
+      (export pack))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                pack_record_bytes_world_pure(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a pure-reducer record-of-bytes result must emit (not decline): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the pure-reducer record-of-bytes result emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the pure-reducer record-of-bytes-result component validates (SpillRecord bulk bytes-read)",
+    );
+    // WITNESS the bulk record-result path: the SpillRecord lower writes each Bytes field via bytes-read (the
+    // param still lifts via bytes-new). A per-byte regression would use bytes-len/bytes-get for the fields.
+    let contains = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(
+        contains("bytes-new"),
+        "pure-reducer bulk record: the list<u8> param must lift via bytes-new",
+    );
+    assert!(
+        contains("bytes-read"),
+        "pure-reducer bulk record: each Bytes field of the spilled record must lower via bytes-read (bulk)",
+    );
+}
+
 /// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
 /// export interface declares all three members (on-message/on-response/on-notification) — must DECLINE
 /// cleanly, not silently fall through to a raw heap-handle export (`on-message: u32 -> u32`) the platform
