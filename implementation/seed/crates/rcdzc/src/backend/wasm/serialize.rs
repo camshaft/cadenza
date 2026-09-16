@@ -928,6 +928,16 @@ pub struct WrapperDesc {
     /// a non-enum param is also `None`. An enum-disc value is a raw `i32` (no heap handle), so there is no
     /// reclaim/`drop_after` — pure `i32` compare/select, no runtime op, no memory.
     pub enum_disc_params: Vec<Option<Vec<u32>>>,
+    /// Parallel to `params`: for a `record`/tuple-cell param (`params[i] = Some(fields)`), whether the wrapper
+    /// must `drop` the rebuilt cell AFTER the def call — the #9014 envelope-decode shell-drop. The wrapper
+    /// allocates a FRESH cell (`emit_cell_rebuild`) and passes it BORROWED to the def; when safe (the dup-aware
+    /// `select::record_cell_param_droppable` gate: every consuming occurrence of the cell binder is a Perceus
+    /// dup_site, so a forwarded field was dup'd and survives the cell's deep-drop cascade) it is a dead owned
+    /// temporary after the call, so the wrapper (its owner) deep-drops it — reclaiming the cell + its boxed
+    /// fields. `false` for a non-record param (`params[i] = None`, nothing to drop) OR a record param whose
+    /// def MOVES a field out verbatim (a last-consume, not a dup_site) — dropping then would double-free. The
+    /// record-cell twin of `mem_leaf_params`/`sum_params` `drop_after`.
+    pub record_param_drop_after: Vec<bool>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
@@ -1616,7 +1626,25 @@ fn core_module_impl(
                             scratch,
                             slots,
                             &mut inner,
-                        )
+                        ); // → [cell]
+                        // #9014 envelope shell-drop: the wrapper OWNS this freshly-rebuilt cell and passes it
+                        // BORROWED to the def. When `record_param_drop_after` (the dup-aware
+                        // `record_cell_param_droppable` gate) says the cell is a dead owned temporary after the
+                        // call — every forwarded field was dup'd, so it survives the deep-drop cascade — save
+                        // it in a drop-local (it stays on the stack as the def arg) and deep-drop it in the
+                        // post-call reclaim loop below, exactly like the mem-leaf/sum `drop_after` path.
+                        if wrap
+                            .record_param_drop_after
+                            .get(pi)
+                            .copied()
+                            .unwrap_or(false)
+                        {
+                            let dl = next_local;
+                            next_local += 1;
+                            inner.push(op::LOCAL_TEE);
+                            uleb128(dl as u64, &mut inner); // [cell] stays; also saved in `dl`
+                            drop_locals.push(dl);
+                        }
                     }
                 }
             }

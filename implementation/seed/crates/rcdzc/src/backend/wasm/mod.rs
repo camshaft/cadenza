@@ -7012,6 +7012,7 @@ fn try_bare_entry_param_component(
         // all-`None` keeps the wrapper body's disc-remap check inert (byte-neutral passthrough).
         enum_disc_params: vec![None; params.len()],
         mem_leaf_params,
+        record_param_drop_after: vec![false; params.len()], // plain-export route has no record-cell param
         def_abs,
         result: serialize::ResultLower::Passthrough,
     };
@@ -7270,6 +7271,11 @@ fn record_interface_export(
         // to the guest disc; an order-matching enum param (or a non-enum param) is `None`. The PARAM twin of
         // `ResultLower::EnumRemap`.
         let mut enum_disc_params: Vec<Option<Vec<u32>>> = Vec::new();
+        // Parallel to `params`: whether the wrapper drops the rebuilt record/tuple cell after the def call
+        // (the #9014 envelope shell-drop). `true` only for a record/tuple-cell param the dup-aware
+        // `record_cell_param_droppable` gate proves safely reclaimable (every forwarded field dup'd); `false`
+        // for every non-cell param and for a cell the def moves a field out of verbatim (would double-free).
+        let mut record_param_drop_after: Vec<bool> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
@@ -7287,6 +7293,14 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    // #9014 envelope shell-drop: the wrapper owns the rebuilt cell — drop it after the call iff
+                    // the dup-aware gate proves it safely reclaimable (a forwarded compound field is dup'd by
+                    // the def, so it survives the cell's deep-drop; a moved-out field suppresses the drop).
+                    record_param_drop_after.push(
+                        crate::backend::wasm::select::record_cell_param_droppable(
+                            db, e.body, *binder,
+                        ),
+                    );
                     any_record = true;
                 }
                 // A TOP-LEVEL `tuple<…>` param is a POSITIONAL record: the canon lift flattens it depth-first
@@ -7314,6 +7328,12 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    // #9014 envelope shell-drop (a tuple cell shares the array rep — same dup-aware gate).
+                    record_param_drop_after.push(
+                        crate::backend::wasm::select::record_cell_param_droppable(
+                            db, e.body, *binder,
+                        ),
+                    );
                     any_record = true; // a param needs the cell-rebuild wrapper (same gate as a record param)
                 }
                 // A TOP-LEVEL payloadless-ENUM param (`Ty::Sum` `is_enum_disc`) crosses as a WIT `enum{…}`,
@@ -7354,6 +7374,7 @@ fn record_interface_export(
                     param_slots.push(None);
                     mem_leaf_params.push(None);
                     sum_params.push(None);
+                    record_param_drop_after.push(false); // enum disc: no heap cell to drop
                     // Identity → passthrough (the disc IS the guest disc; the `params` `None` arm forwards it);
                     // a genuine reorder → record the remap the wrapper emits before the def call.
                     if inv_perm.iter().enumerate().all(|(i, &g)| g == i as u32) {
@@ -7414,6 +7435,7 @@ fn record_interface_export(
                     // it after the call — the shell never escapes (checked above), so no double-free.
                     sum_params.push(Some((rebuild, true)));
                     enum_disc_params.push(None);
+                    record_param_drop_after.push(false); // sum cell handled by sum_params drop_after
                     any_sum_param = true;
                 }
                 // A TOP-LEVEL memory-bearing leaf param — `Bytes` ↔ `list<u8>`, `String` ↔ `string`, or a
@@ -7454,6 +7476,7 @@ fn record_interface_export(
                     mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    record_param_drop_after.push(false); // mem-leaf handled by mem_leaf_params drop_after
                     any_mem_leaf_param = true;
                 }
                 Ty::Map(_, _) | Ty::Set(_) => {
@@ -7467,6 +7490,7 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    record_param_drop_after.push(false); // scalar: no heap cell
                 }
             }
         }
@@ -7522,6 +7546,7 @@ fn record_interface_export(
             params,
             param_slots,
             mem_leaf_params,
+            record_param_drop_after,
             def_abs,
             result: result_lower,
         });
