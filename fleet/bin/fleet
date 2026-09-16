@@ -24,7 +24,12 @@ set -uo pipefail
 # lesson — validate wrappers under `env -i PATH=/usr/bin:/bin`, not just an interactive shell).
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
-BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     # …/fleet/bin
+# Resolve THIS script's REAL path first: refresh-tools.sh SYMLINKS it into ~/.local/bin/fleet (onto the
+# agent's PATH), so `${BASH_SOURCE[0]}` may be that symlink. `readlink -f` follows it back to the real
+# hub file, so the walk-up below anchors at the actual `.claude` tree — NOT ~/.local/bin (which has no
+# `worktrees/` ancestor). Falls back to the raw path if readlink is unavailable.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+BIN_DIR="$(cd "$(dirname "$SELF")" && pwd)"     # real …/fleet/bin
 
 # Locate the fleet worktrees dir by walking UP from this script to the nearest ancestor that contains a
 # `worktrees/` subdir (the `.claude` root). This is robust to WHERE the shim runs from: the materialized

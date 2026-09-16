@@ -96,4 +96,17 @@ if [ -f "$GIT_SHIM_SRC" ]; then
     fi
   fi
 fi
+
+# first-class `fleet` window-env command (operator seq-987 foolproofing): put fleet/bin/fleet on the agent
+# PATH as ~/.local/bin/fleet, so agents run `fleet inbox` / `fleet heartbeat` / `fleet send …` with NO
+# `cargo xtask` prefix — and `fleet inbox`/`heartbeat` with no name auto-detect the calling agent from its
+# tmux window (impossible to glob the wrong shadow inbox). SYMLINK (not cp): the shim walks UP from its own
+# location to find the fleet worktrees dir, and it `readlink -f`s itself back to the hub, so a symlink
+# resolves correctly whereas a copy in ~/.local/bin (no `worktrees/` ancestor) could not. Unlike the
+# cargo/nix/git shims this shadows NO existing command (nothing else is named `fleet`), so a missing/broken
+# link is harmless — agents keep using `cargo xtask fleet …` until the tick-prompt cutover. Idempotent.
+FLEET_CMD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/fleet"
+if [ -f "$FLEET_CMD_SRC" ]; then
+  ln -sf "$FLEET_CMD_SRC" "$BIN/fleet" 2>/dev/null || true
+fi
 exit 0
