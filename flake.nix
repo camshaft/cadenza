@@ -8622,6 +8622,42 @@
               echo "ok: charter-lint-loops — every fleet subcommand/flag reference across the 16 tracked charter files (AGENTS-fleet.md + 15 loops/*.md) resolves to a real subcommand + flag (#8575)" > "$out"
             '';
 
+            # caPreferLocalBuildLint — pins the CA-OFFLOAD invariant (v-nix 2026-09-16, PR #9048 follow-up).
+            # EVERY content-addressed derivation (`__contentAddressed = true;`) MUST also set
+            # `preferLocalBuild = true;`. A CA derivation nix OFFLOADS to a peer builder can come back with
+            # DIFFERENT bytes (different nix version / build env) → nix verifies CA output on import → `ca hash
+            # mismatch importing path` reddens gate-local FLEET-WIDE (offload is global). That was the
+            # 2026-09-16 CA-offload incident; the fix was preferLocalBuild on all 16 CA sites, which keeps the
+            # CA tier building LOCALLY (never offloaded) while heavy INPUT-addressed builds still offload
+            # (seq-946 OOM relief). A future agent adding a `__contentAddressed` derivation WITHOUT the adjacent
+            # `preferLocalBuild = true;` would silently re-arm that landmine — invisible to review — so this
+            # lint FAILS the gate on any unpaired site. TEXTUAL by design (not an eval/drv-graph walk): the
+            # invariant is a source convention (Nix attribute source order is stable — nothing reorders it), so
+            # the cheapest faithful check is "the line after each `__contentAddressed = true;` is
+            # `preferLocalBuild = true;`". Scoped to flake.nix alone → re-runs only when flake.nix changes.
+            caLintSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = ./flake.nix;
+            };
+            caPreferLocalBuildLint = pkgs.runCommand "flake-ca-prefer-local-build-lint" { } ''
+              set -euo pipefail
+              flake=${caLintSrc}/flake.nix
+              # For every `__contentAddressed = true;` line, the NEXT line must be `preferLocalBuild = true;`.
+              bad=$(${pkgs.gawk}/bin/awk '
+                prev_ca { if ($0 !~ /^[[:space:]]*preferLocalBuild = true;[[:space:]]*$/) print NR-1": unpaired __contentAddressed (no preferLocalBuild on the next line)"; prev_ca=0 }
+                /^[[:space:]]*__contentAddressed = true;[[:space:]]*$/ { prev_ca=1 }
+                END { if (prev_ca) print NR": trailing __contentAddressed at EOF (no following line)" }
+              ' "$flake")
+              if [ -n "$bad" ]; then
+                echo "FAIL: content-addressed derivation(s) in flake.nix missing an adjacent 'preferLocalBuild = true;' (CA-offload landmine — see PR #9048):" >&2
+                echo "$bad" >&2
+                echo "Fix: add 'preferLocalBuild = true;' on the line immediately after each '__contentAddressed = true;' so the CA tier never offloads." >&2
+                exit 1
+              fi
+              n=$(${pkgs.gnugrep}/bin/grep -cE '^[[:space:]]*__contentAddressed = true;[[:space:]]*$' "$flake")
+              echo "ok: all $n content-addressed derivations in flake.nix set preferLocalBuild=true (CA-offload guard, PR #9048)" > "$out"
+            '';
+
             # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
             # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
             # EXACTLY the 9 merge-required contexts (ruleset-10 MINUS test-macos, which is native x86/macos
@@ -8703,6 +8739,11 @@
                   # re-reads its charter each tick. Cheap: shells the warm xtaskBin over a 2-input charter
                   # fileset (no compile here). Green-confirmed on the current 16 charter files before the fold.
                   charterLintCheck
+                  # caPreferLocalBuildLint FOLDED IN (v-nix 2026-09-16, PR #9048 follow-up): a new
+                  # content-addressed derivation added WITHOUT `preferLocalBuild = true;` re-arms the
+                  # CA-offload `ca hash mismatch` landmine that reddened gate-local fleet-wide on 2026-09-16.
+                  # Blocking it here makes the offload-safety invariant structural, not review-dependent.
+                  caPreferLocalBuildLint
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
                   wasmtimeSingleHolderAssert compilerPureLibraryAssert memberRegistrationAssert
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
@@ -8996,6 +9037,9 @@
             # charter-lint: cargo xtask fleet lint-loops (charter-drift guard, #8575). Folded into
             # localGate's FAIL-SET (above) so a stale fleet-subcommand ref in a role body blocks merge.
             charter-lint = charterLintCheck;
+            # flake-ca-prefer-local-build-lint: every __contentAddressed derivation must set
+            # preferLocalBuild=true (CA-offload guard, PR #9048). Folded into localGate's FAIL-SET (above).
+            flake-ca-prefer-local-build-lint = caPreferLocalBuildLint;
             # cdz-fmt-check: cdz fmt --check on the 6 canonical domain src dirs (v-code-cleanliness seq-282).
             # Folded into localGate's FAIL-SET (below) — the AUTHORITATIVE fleet-wide fmt gate.
             cdz-fmt-check = cdzFmtCheck;
