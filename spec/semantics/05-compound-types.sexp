@@ -3456,7 +3456,8 @@
   (output (: 3 Int64))
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a runtime list aliased into two tuples and its original binding all read consistently"
@@ -3897,7 +3898,8 @@
       (export main)))
   (call main (: 200 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order"
@@ -3939,7 +3941,8 @@
       (export main)))
   (call main (: 200 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "an overwrite-churn runtime map holds one entry with the last value winning"
@@ -4183,7 +4186,8 @@
       (export main)))
   (call main (: 1100 Int64))
   (output (: 604450 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "two PREPEND versions over one shared tail read independently and the tail survives both"
@@ -4517,7 +4521,8 @@
       (export main)))
   (call main (: 1100 Int64))
   (output (: 604450 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a small single-level prepend-built runtime list reads every index (no relaxed root spawned)"
@@ -4551,7 +4556,8 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 45 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a multi-level prepend-built list reclaims every intermediate version (build-phase leak-free)"
@@ -4687,7 +4693,8 @@
       (export main)))
   (call main (: 1100 Int64))
   (output (: 604450 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
@@ -5368,7 +5375,8 @@
   (output (: 6 Int64))
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a sum-match payload's heap child consumed while the scrutinee is live is retained"
@@ -5543,7 +5551,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably"
@@ -5571,7 +5580,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
@@ -5689,7 +5699,8 @@
       (def (main) (go (ANode (mb 0 2 #list())) 4 0))
       (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 ; --- Sum ctor-head render qualification: keyed on the per-sum VARIANT collision, not the type name -----
 ; A sum's ctor heads render BARE (Node) unless a variant name COLLIDES with a built-in reflection ctor, in
@@ -6373,7 +6384,8 @@
   (output (: -1 Int64))
   (call main (: 9 Int64) (: 0 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "two lists are concatenated into one flat list"
@@ -12870,7 +12882,8 @@
       (def (main) (lookup #list(#tuple(1 100) #tuple(2 200)) 0 2))
       (export main)))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a linear index-of search returns the POSITION of a runtime key, or -1 past the end"
@@ -12892,7 +12905,8 @@
   (output (: 2 Int64))
   (call main (: 99 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "lists are equal by elements in order"
@@ -13454,7 +13468,8 @@
   (output (: 1 Int64))
   (call main (: 4 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form"
@@ -13677,7 +13692,8 @@
   (output (: 1 Int64))
   (call main (: 4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima"
@@ -13738,7 +13754,8 @@
   (output (: 0 Int64))
   (call main (: 4 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a memoizing fold caches computed results in a Map and counts its hits"
@@ -13769,7 +13786,8 @@
   (output (: 361 Int64))
   (call main (: 4 Int64))
   (output (: 275 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality"
@@ -13883,7 +13901,8 @@
   (output (: -1 Int64))
   (call main (: 5 Int64) (: 1 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "re-inserting a LIST row into a map replaces that row and leaves the original map's row intact"
@@ -13940,7 +13959,8 @@
   (output (: 0 Int64))
   (call main (: 5 Int64) (: 1 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a list of records: a runtime index then reads a field of the found record"
@@ -17736,7 +17756,8 @@
   (output (: -1 Int64))
   (call main (: 99 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length"
@@ -18271,7 +18292,8 @@
   (output (: 999 Int64))
   (call main (: 0 Int64))
   (output (: 355 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "LOCAL PEAKS counts strict interior maxima through a three-element sliding window"
@@ -18596,7 +18618,8 @@
   (output (: 345121 Int64))
   (call main (: 5 Int64))
   (output (: 123451 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
@@ -18638,7 +18661,8 @@
   (output (: 3123 Int64))
   (call main (: 2 Int64))
   (output (: 3213 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values"
@@ -20953,7 +20977,8 @@
   (output (: 50 Int64))
   (call main (: 0 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
@@ -21175,7 +21200,8 @@
       (def (main) (let ((xs (build 0 3 #list()))) (sum-at xs 0 (List.len xs))))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a list value consumed by two operations in one function is not freed early"
@@ -21271,7 +21297,8 @@
       (def (main) (ev (E.Add (E.Bind (E.Var)) (E.Var)) (Map.insert #map() 0 1)))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a runtime set shared across two recursive-call operands is not mutated by an insert in one"
@@ -21297,7 +21324,8 @@
       (def (main) (ev (E.Add (E.Grow (E.Leaf)) (E.Leaf)) (Set.insert #set() 1)))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a recursive sum consumer whose arguments are recursive sum producers compiles"
@@ -23762,7 +23790,8 @@
   (output (: 561 Int64))
   (call main (: 100 Int64))
   (output (: 5050 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index"
@@ -23842,7 +23871,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a projection chain through a tuple inside a record retains the consumed child"
@@ -24455,7 +24485,8 @@
   (output (: 215660 Int64))
   (call main (: 1 Int64))
   (output (: 225290 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a map INVERSION flips keys and values, last-writer-wins on duplicate values"
@@ -26046,7 +26077,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a consumed and a borrowed read of one loop invariant coexist per iteration"
@@ -26693,7 +26725,8 @@
       (export main)))
   (call main (: 1000 Int64))
   (output (: 990 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels"
@@ -27683,7 +27716,8 @@
       (export main)))
   (call main (: 1000 Int64))
   (output (: 8563 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket"
@@ -27975,7 +28009,8 @@
       (export main)))
   (call main (: 4 Int64))
   (output (: 1950 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 ; --- Remove-path canonicalization under runtime whole-map equality: the existing runtime map
 ; equality pins build both sides by INSERT only; these pin that a map reached VIA a remove
@@ -34284,7 +34319,8 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)"
@@ -34303,7 +34339,8 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 101 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "ba3 the exact bounds edge: index len-1 answers the last element, index len answers None"
