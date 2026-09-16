@@ -90,13 +90,27 @@ fn plan_ifjoin_nested(
 /// over-a-projected-fresh-record disjoint-slot leak, corpus-05 #4547). DROP-IFF-DUP'D: this MUST mirror the
 /// `Core::Proj` emit's dup gate EXACTLY — a mismatch is a double-free (drop with no dup) or a leak (dup with
 /// no drop). Scalar elements (`get_op` `Some`) copy out and are NEVER dup'd here (so this returns false).
-fn owned_proj_child_dupd(db: &mut Db, id: StructId, slots: &HashMap<StructId, u32>) -> bool {
+///
+/// The `sumexpect_shell_reclaim` disjunct mirrors the parallel clause #9071 added to the `Core::Proj` emit
+/// gate: an inner Proj whose operand is a SumExpect VIEW in the shell-reclaim set ALSO dup'd its extracted
+/// child (the SumExpect emit dup'd the view; #9071's Proj gate then took the nested-compound-child dup
+/// branch), so an OUTER borrowing read of it must likewise drop that child. Without this clause a DOUBLE
+/// projection off the view (`(. (. (Option.expect (Map.lookup m k)) inner) x)`, V8) leaks the inner child —
+/// the leak side of the mirror. Exact match: the inner Proj dup'd iff `!slots.contains(operand) && (Owned ||
+/// shell-set) && get_op None && !Unit`, which is precisely this predicate, so restoring the disjunct keeps
+/// dup==drop (never a double-free — a false-positive drop would be an unmatched reclaim).
+fn owned_proj_child_dupd(
+    db: &mut Db,
+    id: StructId,
+    slots: &HashMap<StructId, u32>,
+    sumexpect_shell_reclaim: &HashSet<StructId>,
+) -> bool {
     if let Core::Proj { operand, .. } = core_of(db, id) {
         !slots.contains_key(&operand)
-            && matches!(
+            && (matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            )
+            ) || sumexpect_shell_reclaim.contains(&operand))
             && matches!(get_op(db, id), Ok(None))
             && !matches!(type_of(db, id).strip_nominal(), Ty::Unit)
     } else {
@@ -509,11 +523,12 @@ pub(super) fn emit(
             // `List.len (Option.expect (List.at …))` over a heap-element list extracts a fresh element the
             // SumExpect dup'd (rc1) + freed the shell; this borrowing len-read is its sole scalar-read consumer
             // → drop it post-read (VIEW set only — a SHELL-set view is owned by its Call consumer, not here).
-            let reclaim = matches!(
-                heap_operand_ownership(db, operand),
-                Ok(HandleOwnership::Owned)
-            ) || owned_proj_child_dupd(db, operand, slots)
-                || out.sumexpect_view_reclaim.contains(&operand);
+            let reclaim =
+                matches!(
+                    heap_operand_ownership(db, operand),
+                    Ok(HandleOwnership::Owned)
+                ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
+                    || out.sumexpect_view_reclaim.contains(&operand);
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -968,11 +983,12 @@ pub(super) fn emit(
             // (String.from-bytes …)))` extracts a fresh String the SumExpect dup'd (rc1) + freed the shell,
             // and THIS borrowing len-read is its sole scalar-read consumer → drop it post-read (the
             // byte-len-of-decoded-String husk; VIEW set only — a SHELL-set view is owned by its Call consumer).
-            let reclaim = matches!(
-                heap_operand_ownership(db, operand),
-                Ok(HandleOwnership::Owned)
-            ) || owned_proj_child_dupd(db, operand, slots)
-                || out.sumexpect_view_reclaim.contains(&operand);
+            let reclaim =
+                matches!(
+                    heap_operand_ownership(db, operand),
+                    Ok(HandleOwnership::Owned)
+                ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
+                    || out.sumexpect_view_reclaim.contains(&operand);
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);
@@ -1522,7 +1538,7 @@ pub(super) fn emit(
             // this borrowing read must then drop (drop-iff-dup'd — see `owned_proj_child_dupd`). Fixes the
             // Map.len-over-a-projected-fresh-record disjoint-slot leak (corpus-05 #4547).
             let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned))
-                || owned_proj_child_dupd(db, map, slots);
+                || owned_proj_child_dupd(db, map, slots, &out.sumexpect_shell_reclaim);
             if reclaim {
                 let map_slot = base;
                 *high = (*high).max(map_slot + 1);
@@ -1641,7 +1657,7 @@ pub(super) fn emit(
             // OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell. A borrowed
             // param/local is left to its owner.
             let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned))
-                || owned_proj_child_dupd(db, set, slots);
+                || owned_proj_child_dupd(db, set, slots, &out.sumexpect_shell_reclaim);
             if reclaim {
                 let set_slot = base;
                 *high = (*high).max(set_slot + 1);
@@ -3097,7 +3113,7 @@ pub(super) fn emit(
                 && (matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
-                ) || owned_proj_child_dupd(db, operand, slots)
+                ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
                     || out.sumexpect_shell_reclaim.contains(&operand));
             if reclaim {
                 let agg_slot = base;
