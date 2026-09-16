@@ -87,7 +87,7 @@
       (def (main) (depth (quote (f (g 1)))))
       (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a transformation maps a syntax tree to a syntax tree and preserves meaning"
@@ -693,7 +693,7 @@
   (output (: 40 Int64))
   (call main (: 2 Int64) (: 9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them"
@@ -1034,7 +1034,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 202 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)"
@@ -1053,7 +1053,7 @@
       (export main)))
   (call main (: 50 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 573: runtime Ast CONSTRUCTION cells (the constructor face; quotes covered by
 ; aq1/2). ac1 = the identity contract: a runtime-built Ast (constructors, BigInt payload from the
@@ -1092,7 +1092,7 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; sex1: a peephole REWRITE over the built-in Ast that RETURNS an Ast — the rewrite companion of the
 ; built-in-Ast walk above (which only reads a depth). `simp` maps Ast->Ast, stripping `(+ e 0)` to
