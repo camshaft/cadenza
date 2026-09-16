@@ -29111,6 +29111,47 @@
   (call main (: 3 Int64))
   (output (: 32 Int64)))
 
+(case
+  "a map-extracted view compared by value-eq is still readable afterwards"
+  (doc
+    "The eq-then-REUSE face of the value-eq view-drop gate: `v` is extracted once, compared
+           `(= v \"…\")` (the shape whose SumExpect view the gate drops after the compare), and then
+           RE-READ (`String.byte-len v`). A gate that resolved the drop at the eq rather than at the
+           view's last use frees the payload under the later read. eq true (100) + len 18 = 118.
+           (Adversarial pin from a breaker probe on the eq-drop landing; wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (let ((m (Map.insert (Map.empty) k "compare-then-reuse")))
+          (let ((v (Option.expect (Map.lookup m k) "v")))
+            (+ (if (= v "compare-then-reuse") 100 0) (String.byte-len v)))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 118 Int64)))
+
+(case
+  "a double-projected nested record serves the bound middle, its leaf, and a re-projection"
+  (doc
+    "The both-levels-REUSED face of the double-projection view reclaim: the OUTER projection is
+           BOUND (`mid`), its heap leaf is read (`(. mid s)` → byte-len), the middle is read AGAIN for a
+           scalar (`(. mid n)`), and then the SAME leaf is reached by a fresh double projection
+           `(. (. r inner) s)`. A reclaim that dropped the middle view after its first leaf read (or
+           dropped the shared leaf under the second path) corrupts a later read. 20 + k + 20 = 43 at
+           k=3. (Adversarial pin from a breaker probe on the double-projection reclaim landing;
+           wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (let ((r #record((= inner #record((= s "deep-projection-load") (= n k))))))
+          (let ((mid (. r inner)))
+            (let ((len (String.byte-len (. mid s))))
+              (+ (+ len (. mid n)) (String.byte-len (. (. r inner) s)))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 43 Int64)))
+
 ; -- leak-freedom over the adversarial shared-heap faces: divergent aliases, closure capture, handler-arm update, Map/Set operands all balance to zero live objects (breaker batch 381; live-objects cases are wasm-baselined per the migration convention) --
 (case
   "lk1 divergent update aliases leave no live heap objects after the run"
