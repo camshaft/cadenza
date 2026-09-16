@@ -681,6 +681,18 @@ pub enum FleetCmd {
         /// The new interval (e.g. `15m`, `10m`, `1h`). Same grammar as `fleet add --interval`.
         interval: String,
     },
+    /// Re-issue an agent's `/loop` at its CURRENT registry interval WITHOUT changing the cadence — the
+    /// standalone re-arm for a DEAD `/loop` cron (an agent idle past its interval whose cron stopped
+    /// re-scheduling). `fleet wake` fires ONE immediate tick but does NOT re-create the cron, so the
+    /// agent ticks once then goes idle again (the classic dead-cron pattern); re-issuing `/loop` re-runs
+    /// the loop skill in the agent's session, which re-creates the CronCreate schedule. The watchdog
+    /// re-arms automatically, but when it is in DRY-RUN (or a single agent needs a targeted manual kick)
+    /// there was no CLI path: `set-interval` short-circuits on an unchanged interval and never re-issues.
+    /// Same tmux send-keys mechanism as `set-interval`/the watchdog.
+    ReissueLoop {
+        /// The agent whose `/loop` cron to re-arm.
+        name: String,
+    },
     /// List an agent's queued inbox messages (oldest-first) at the canonical HUB path. This is the
     /// SAFE way for an agent to drain its inbox: the inbox lives at the MAIN repo's
     /// `.claude/fleet/inbox/<agent>/` (the hub), NOT the agent's worktree — an `ls`/glob of a RELATIVE
@@ -1402,6 +1414,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::SetInterval { name, interval } => set_interval(&fleet, &name, &interval),
+        FleetCmd::ReissueLoop { name } => reissue_agent_loop(&fleet, &name),
         FleetCmd::Inbox { name, processed } => match processed {
             Some(msg) => inbox_consume(&fleet, &name, &msg),
             None => inbox_list(&fleet, &name),
@@ -6550,6 +6563,48 @@ fn set_interval(fleet: &Fleet, name: &str, interval: &str) {
             "  (re-issue send-keys failed — the {interval} interval is persisted + takes effect on next \
              launch; re-run if the window recovers.)"
         );
+    }
+}
+
+/// Re-arm an agent's `/loop` at its CURRENT registry interval (no cadence change) — the standalone fix
+/// for a dead `/loop` cron. Unlike `set_interval`, this never short-circuits (there is no interval to
+/// compare); unlike `fleet wake`, it re-issues `/loop` (re-creating the agent's CronCreate schedule)
+/// rather than firing a single immediate tick that leaves the dead cron dead.
+fn reissue_agent_loop(fleet: &Fleet, name: &str) {
+    let reg = fleet.load();
+    let Some(a) = reg.agents.iter().find(|a| a.name == name) else {
+        eprintln!("fleet reissue-loop: no agent named '{name}'");
+        std::process::exit(1);
+    };
+    let agent = a.clone();
+    // The re-issue is a tmux send-keys to the agent's window, so we must be inside the fleet tmux with a
+    // live window for that agent — mirror `set_interval`'s guards.
+    if !in_tmux() {
+        eprintln!(
+            "fleet reissue-loop: not in a tmux session — run this from the fleet tmux so the /loop \
+             send-keys can reach '{name}''s window."
+        );
+        std::process::exit(1);
+    }
+    let session = tmux_current_session();
+    if !tmux_windows(&session).iter().any(|w| w == name) {
+        eprintln!(
+            "fleet reissue-loop: no live '{name}' window — nothing to re-issue (its window must be \
+             launched first)."
+        );
+        std::process::exit(1);
+    }
+    let prompt = watchdog_tick_prompt(fleet, &agent);
+    if reissue_loop(&session, name, &agent.interval, &prompt) {
+        println!(
+            "fleet reissue-loop: re-issued '{name}''s /loop at {} (cron re-armed now).",
+            agent.interval
+        );
+    } else {
+        eprintln!(
+            "fleet reissue-loop: send-keys to '{name}' failed — retry when the window is responsive."
+        );
+        std::process::exit(1);
     }
 }
 
