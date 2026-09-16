@@ -1138,6 +1138,132 @@ fn a_host_state_reducer_calling_a_recursion_emits_valid_wasm() {
     );
 }
 
+/// A single-export world `echo : func(x: list<u8>) -> list<u8>` PLUS a `state` IMPORT whose `get` op has a
+/// SPILLED `option<list<u8>>` result — the shape that routes through the TYPED-INTERFACE `_mem` assembler
+/// with `bulk_bytes` on, exercising BOTH bulk-bytes ops: `bytes-new` (the top-level `list<u8>` PARAM lift)
+/// and `bytes-read` (the `list<u8>` RESULT lower, `ResultLower::CopyBytes`). Used by the bulk-bytes
+/// (seq-916) validation test below — the standard reducer returns a `step` RECORD, so it never lowers a
+/// bare `list<u8>` result and thus never exercises `bytes-read`; this echo member does.
+fn echo_bytes_world_with_state_get_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    // export cadenza:platform/guest { echo: func(m: record { key: list<u8> }) -> list<u8> }
+    // The param is a RECORD (so the guest routes through `record_interface_export` → the typed-interface
+    // wrapper, where bulk-bytes fires) with a `list<u8>` field (→ bytes-new); the RESULT is a bare `list<u8>`
+    // (→ ResultLower::CopyBytes → bytes-read).
+    let echo_member = {
+        let param_ty = {
+            let key_ty = list_u8(&mut b);
+            let key_n = b.name("key");
+            let key_field = b.list(vec![key_n, key_ty]);
+            let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+            b.list(vec![rec_h, key_field])
+        };
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, param_ty]);
+        let result_h = b.name("result");
+        let res_ty = list_u8(&mut b);
+        let result_node = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("echo");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("cadenza:platform/guest");
+    let export = b.list(vec![exp_h, iname, echo_member]);
+    // import cadenza:platform/state { get: func(key: list<u8>) -> option<list<u8>> } — the spilled result.
+    let get = {
+        let key_ty = list_u8(&mut b);
+        let opt_bytes = {
+            let inner = list_u8(&mut b);
+            let oh = b.atom_leaf(Leaf::Str("option".into()));
+            b.list(vec![oh, inner])
+        };
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let kn = b.name("key");
+        let param_node = b.list(vec![param_h, kn, key_ty]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, opt_bytes]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("get");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let state_name = b.name("cadenza:platform/state");
+    let state_import = b.list(vec![imp_h, state_name, get]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, state_import]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// VALIDATION (seq-916 bulk bytes-new/bytes-read): a host-state guest whose export member has a `list<u8>`
+/// PARAM and a `list<u8>` RESULT and CALLS `state.get` (a spilled `option<list<u8>>` → the `_mem` typed-
+/// interface assembler with `bulk_bytes` on) MUST emit VALID wasm. This is the ONE shape that exercises
+/// `bytes-read` (`ResultLower::CopyBytes`, the bare-`list<u8>`-result lower) — the standard reducer returns a
+/// record, so `bytes-read` is otherwise unexercised. Also exercises `bytes-new` (the top-level `list<u8>`
+/// param lift). A regression in the list-aware canon-lower (component/core functype, Memory+Realloc options,
+/// the retptr convention) re-invalidates this.
+#[test]
+fn a_host_state_echo_with_bytes_param_and_result_emits_valid_wasm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (effect state (op get (-> Bytes (Option Bytes)))) \
+      (def (echo (: m (Record (key Bytes)))) \
+        (host (state) \
+          (match (state.get (. m key)) \
+            ((Option.Some v) v) \
+            (Option.None (. m key))))) \
+      (export echo))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                echo_bytes_world_with_state_get_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a host-state echo with a bytes param + bytes result must emit (not decline): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the host-state echo emits a component");
+    // THE PIN: the bytes param lifts via `bytes-new` and the bytes result lowers via `bytes-read`
+    // (`CopyBytes`), both canon-lowered with Memory+Realloc against the shared allocator. The component
+    // MUST validate — a bad list-aware canon-lower (wrong functype / missing memory option / retptr shape)
+    // would fail here ("canonical option `memory` is required" / "values remaining on stack" / type error).
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the host-state bytes-param/bytes-result echo's component validates (bulk bytes-new/read)",
+    );
+}
+
 /// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
 /// export interface declares all three members (on-message/on-response/on-notification) — must DECLINE
 /// cleanly, not silently fall through to a raw heap-handle export (`on-message: u32 -> u32`) the platform
