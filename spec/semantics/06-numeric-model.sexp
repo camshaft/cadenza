@@ -12574,6 +12574,35 @@
   (output (: 1180591620717411303424 BigInt))
   (live-objects 1))
 
+(case
+  "a two-accumulator BigInt permutation loop seeded with ONE aliased value stays exact"
+  (doc
+    "The ALIASED-SEED face of the multi-accumulator permutation-loop reclaim: `loop2` rotates
+           two BigInt accumulators fibonacci-style (`(loop2 (- n 1) b (+ a b))`), and BOTH are seeded
+           with the SAME heap BigInt — at entry `a` and `b` alias one payload, so the per-iteration
+           release of the rotated-out accumulator must count against the shared value, not free it
+           under the other alias. Three steps from (s, s): (s,2s) → (2s,3s) → (3s,5s) → 3s+5s = 8s =
+           8e25. An over-drop of the aliased seed corrupts the first addition. (Adversarial pin from
+           a breaker probe against the multi-accumulator loop-reclaim landing, which was seeded with
+           distinct values.) LEAK TRACKED (breaker, filed to the bug queue): the value is exact but
+           the census reads 3 live objects where the escaping-result artifact accounts for only 1 —
+           the aliased seed defeats the multi-accumulator loop reclaim, leaking 2 husks. Ideal is
+           (live-objects 1) (matching the escaping-BigInt sibling above); flip this marker when the
+           aliased-seed reclaim lands.")
+  (input
+    (do
+      (def
+        (loop2 (: n Int64) (: a BigInt) (: b BigInt))
+        (if (= n 0) (+ a b) (loop2 (- n 1) b (+ a b))))
+      (def
+        (main (: n Int64))
+        (let ((seed (: 10000000000000000000000000 BigInt)))
+          (loop2 n seed seed)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 80000000000000000000000000 BigInt))
+  (live-objects known-leak))
+
 ; The CONSUMED-to-scalar companion of the escaping-BigInt case above. The above RETURNS its BigInt, so the
 ; result crosses to the host and is live at the census — a (live-objects known-leak) ESCAPING-VALUE artifact
 ; (host holds the encoded result until store teardown), NOT an intermediate-reclaim gap: breaker-isolated
