@@ -1500,7 +1500,14 @@ fn core_module_impl(
                     match kind {
                         // String/Bytes: a raw UTF-8/byte copy-in (the copied byte-leaf IS the value).
                         MemLeafKind::Str | MemLeafKind::Bytes => {
-                            emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
+                            emit_bytes_leaf_copy_in(
+                                leaf,
+                                buf,
+                                ctr,
+                                import_realloc,
+                                &imp,
+                                &mut inner,
+                            ); // → [buf]
                         }
                         // list<scalar>: build a value-heap vec by reading + boxing each element per its width.
                         MemLeafKind::List(elem) => {
@@ -1527,7 +1534,14 @@ fn core_module_impl(
                 if let Some((rebuild, drop_after)) =
                     wrap.sum_params.get(pi).and_then(|s| s.as_ref())
                 {
-                    emit_sum_field(rebuild, &mut leaf, &imp, scratch, &mut inner); // → [sum-handle]
+                    emit_sum_field(
+                        rebuild,
+                        &mut leaf,
+                        import_realloc,
+                        &imp,
+                        scratch,
+                        &mut inner,
+                    ); // → [sum-handle]
                     if *drop_after {
                         let dl = next_local;
                         next_local += 1;
@@ -1555,7 +1569,15 @@ fn core_module_impl(
                     }
                     Some(fields) => {
                         let slots = wrap.param_slots.get(pi).and_then(|s| s.as_deref());
-                        emit_cell_rebuild(fields, &mut leaf, &imp, scratch, slots, &mut inner)
+                        emit_cell_rebuild(
+                            fields,
+                            &mut leaf,
+                            import_realloc,
+                            &imp,
+                            scratch,
+                            slots,
+                            &mut inner,
+                        )
                     }
                 }
             }
@@ -1592,7 +1614,15 @@ fn core_module_impl(
                 let rec = next_local;
                 let retptr = next_local + 1;
                 next_local += 2;
-                emit_result_copy_bytes(rec, retptr, &mut next_local, realloc_abs, &imp, &mut inner);
+                emit_result_copy_bytes(
+                    rec,
+                    retptr,
+                    &mut next_local,
+                    realloc_abs,
+                    import_realloc,
+                    &imp,
+                    &mut inner,
+                );
             }
             // A reordered payloadless-enum result: the def left its GUEST disc on the stack; remap it to the
             // WIT disc by name (`perm[guest] = wit`) via a nested-if chain, leaving the WIT disc as the return
@@ -2925,21 +2955,32 @@ impl FieldRebuild {
     /// nested field has no op of its own (its handle is stored as-is) but its leaves do; a scalar leaf its
     /// box op; a `list<u8>` leaf the `bytes-alloc`/`bytes-set` its copy-in loop calls.
     pub fn collect_box_ops(&self, out: &mut impl FnMut(&'static str)) {
+        // Default per-byte (closure/tuple/resource paths — no shared allocator at lower-time).
+        self.collect_box_ops_gated(false, out);
+    }
+
+    /// Like [`collect_box_ops`] but gated: `bulk_bytes` selects the bulk `bytes-new` copy-in (a shared
+    /// allocator exists at lower-time — the host-`_mem` typed-interface path) vs the per-byte
+    /// `bytes-alloc` + `bytes-set` loop. MUST match `emit_bytes_leaf_copy_in`'s gate exactly.
+    pub fn collect_box_ops_gated(&self, bulk_bytes: bool, out: &mut impl FnMut(&'static str)) {
         match self {
             FieldRebuild::Scalar { box_op, .. } => out(box_op),
             FieldRebuild::Nested(sub, _) => {
                 for f in sub {
-                    f.collect_box_ops(out);
+                    f.collect_box_ops_gated(bulk_bytes, out);
                 }
             }
             FieldRebuild::BytesLeaf => {
-                // One bulk `bytes-new((ptr,len))` copy-in (see `emit_bytes_leaf_copy_in`), not the old
-                // `bytes-alloc` + per-byte `bytes-set` loop.
-                out("bytes-new");
+                if bulk_bytes {
+                    out("bytes-new");
+                } else {
+                    out("bytes-alloc");
+                    out("bytes-set");
+                }
             }
             FieldRebuild::Sum(r) => {
-                r.arm_true.collect_ops(out);
-                r.arm_false.collect_ops(out);
+                r.arm_true.collect_ops_gated(bulk_bytes, out);
+                r.arm_false.collect_ops_gated(bulk_bytes, out);
                 out("sum-new");
             }
         }
@@ -2985,6 +3026,13 @@ impl SumArgArm {
     /// a scalar arm's box op; a compound arm's `arr-alloc`/`arr-set` + each field's box op (recursively). A
     /// nullary arm emits none. (`sum-new` itself is registered by the caller once per sum.)
     pub fn collect_ops(&self, out: &mut impl FnMut(&'static str)) {
+        // Default per-byte (closure/tuple/resource paths — no shared allocator at lower-time).
+        self.collect_ops_gated(false, out);
+    }
+
+    /// Like [`collect_ops`] but gated: `bulk_bytes` selects `bytes-new` (a shared allocator exists at
+    /// lower-time) vs the per-byte `bytes-alloc` + `bytes-set` loop. MUST match `emit_bytes_leaf_copy_in`.
+    pub fn collect_ops_gated(&self, bulk_bytes: bool, out: &mut impl FnMut(&'static str)) {
         match &self.payload {
             SumArmPayload::Nullary => {}
             SumArmPayload::Scalar { box_op, .. } => out(box_op),
@@ -2992,13 +3040,16 @@ impl SumArgArm {
                 out("arr-alloc");
                 out("arr-set");
                 for f in fields {
-                    f.collect_box_ops(out);
+                    f.collect_box_ops_gated(bulk_bytes, out);
                 }
             }
-            // A `list<u8>` payload copies its bytes into a guest `Bytes` — one bulk `bytes-new((ptr,len))`
-            // (see `emit_bytes_leaf_copy_in`), not the old `bytes-alloc` + per-byte `bytes-set` loop.
             SumArmPayload::Bytes => {
-                out("bytes-new");
+                if bulk_bytes {
+                    out("bytes-new");
+                } else {
+                    out("bytes-alloc");
+                    out("bytes-set");
+                }
             }
             // An enum payload builds the inner all-nullary cell via `sum-new`.
             SumArmPayload::Enum => out("sum-new"),
@@ -3101,6 +3152,7 @@ impl SumArgRebuild {
 fn emit_sum_arm(
     arm: &SumArgArm,
     payload_param: u32,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
     out: &mut Vec<u8>,
@@ -3137,7 +3189,7 @@ fn emit_sum_arm(
             // Rebuild the payload's value-heap cell from its recursively-flattened leaves, starting at the
             // payload base — exactly as a bare tuple arg rebuilds. Leaves the cell handle on the stack.
             let mut cursor = payload_param;
-            emit_cell_rebuild(fields, &mut cursor, imp, None, None, out); // [disc, payload-cell-handle]
+            emit_cell_rebuild(fields, &mut cursor, bulk_bytes, imp, None, None, out); // [disc, payload-cell-handle]
         }
         SumArmPayload::Nullary => {
             out.push(op::I32_CONST);
@@ -3150,7 +3202,7 @@ fn emit_sum_arm(
             // The `list<u8>` payload crossed as `(ptr, len)` at the payload base; copy it into a guest `Bytes`
             // (exactly like a top-level `BytesLeaf`), leaving the handle as this arm's payload.
             let (buf, ctr) = scratch.expect("a Bytes sum arm needs the wrapper's scratch locals");
-            emit_bytes_leaf_copy_in(payload_param, buf, ctr, imp, out); // [disc, bytes-handle]
+            emit_bytes_leaf_copy_in(payload_param, buf, ctr, bulk_bytes, imp, out); // [disc, bytes-handle]
         }
         SumArmPayload::Enum => {
             // The enum payload crossed as ONE i32 disc leaf; build the inner all-nullary cell
@@ -3193,9 +3245,10 @@ fn emit_sum_arg_rebuild(
     out.push(op::IF);
     out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
     // Closure sum args carry scalar/nullary/compound payloads only (no `list<u8>`/enum arm) — no scratch.
-    emit_sum_arm(&rebuild.arm_true, payload_param, imp, None, out);
+    // Closure sum-arg rebuild: no shared allocator at lower-time → per-byte (bulk_bytes=false).
+    emit_sum_arm(&rebuild.arm_true, payload_param, false, imp, None, out);
     out.push(op::ELSE);
-    emit_sum_arm(&rebuild.arm_false, payload_param, imp, None, out);
+    emit_sum_arm(&rebuild.arm_false, payload_param, false, imp, None, out);
     out.push(op::END);
     // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
     out.push(op::LOCAL_TEE);
@@ -3209,6 +3262,7 @@ fn emit_sum_arg_rebuild(
 fn emit_sum_field(
     rebuild: &SumArgRebuild,
     cursor: &mut u32,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
     out: &mut Vec<u8>,
@@ -3223,9 +3277,23 @@ fn emit_sum_field(
     out.push(op::I32_EQ);
     out.push(op::IF);
     out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
-    emit_sum_arm(&rebuild.arm_true, payload_param, imp, scratch, out);
+    emit_sum_arm(
+        &rebuild.arm_true,
+        payload_param,
+        bulk_bytes,
+        imp,
+        scratch,
+        out,
+    );
     out.push(op::ELSE);
-    emit_sum_arm(&rebuild.arm_false, payload_param, imp, scratch, out);
+    emit_sum_arm(
+        &rebuild.arm_false,
+        payload_param,
+        bulk_bytes,
+        imp,
+        scratch,
+        out,
+    );
     out.push(op::END); // → [sum-handle]
     *cursor += rebuild.flattened_param_count();
 }
@@ -3247,7 +3315,8 @@ fn emit_tuple_rebuild(
     // handle into `tuple_local` for the post-dispatch drop (only the OUTER cell is dropped — its nested
     // sub-cells are its elements, reclaimed with it).
     let mut cursor = rebuild.base_param;
-    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, None, None, out);
+    // Closure tuple-arg rebuild: no shared allocator at lower-time → per-byte (bulk_bytes=false).
+    emit_cell_rebuild(&rebuild.fields, &mut cursor, false, imp, None, None, out);
     out.push(crate::backend::wasm::wasm_abi::op::LOCAL_TEE);
     uleb128(tuple_local as u64, out); // stash for the post-dispatch drop; leaves [arr] on the stack
 }
@@ -3263,6 +3332,7 @@ fn emit_tuple_rebuild(
 fn emit_cell_rebuild(
     fields: &[FieldRebuild],
     cursor: &mut u32,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
     slots: Option<&[u32]>,
@@ -3300,15 +3370,15 @@ fn emit_cell_rebuild(
             FieldRebuild::Nested(sub, sub_slots) => {
                 // Rebuild the nested sub-cell (consumes its own leaves in WIT order) → an i32 handle stored
                 // AS-IS. Its own fields permute into their name-lex slots via `sub_slots`.
-                emit_cell_rebuild(sub, cursor, imp, scratch, Some(sub_slots), out); // → [arr, i, sub-handle]
+                emit_cell_rebuild(sub, cursor, bulk_bytes, imp, scratch, Some(sub_slots), out); // → [arr, i, sub-handle]
             }
             FieldRebuild::BytesLeaf => {
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
-                emit_bytes_leaf_copy_in(*cursor, buf, ctr, imp, out); // → [arr, i, buf]
+                emit_bytes_leaf_copy_in(*cursor, buf, ctr, bulk_bytes, imp, out); // → [arr, i, buf]
                 *cursor += 2; // the list flattened to (ptr, len)
             }
             FieldRebuild::Sum(rebuild) => {
-                emit_sum_field(rebuild, cursor, imp, scratch, out); // → [arr, i, sum-handle]
+                emit_sum_field(rebuild, cursor, bulk_bytes, imp, scratch, out); // → [arr, i, sum-handle]
             }
         }
         out.push(op::CALL);
@@ -3328,22 +3398,84 @@ fn emit_cell_rebuild(
 /// call carries no loop), kept in the signature so callers need not renumber their reserved scratch.
 fn emit_bytes_leaf_copy_in(
     ptr_leaf: u32,
-    _buf: u32,
-    _ctr: u32,
+    buf: u32,
+    ctr: u32,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
     let len_leaf = ptr_leaf + 1;
-    // handle = bytes-new(ptr, len) — the `list<u8>` arg is canon-lowered to the `(ptr, len)` pair, read
-    // straight out of linear memory 0; one cross-component call replaces the alloc + per-byte-set loop.
-    out.push(op::LOCAL_GET);
-    uleb128(ptr_leaf as u64, out);
+    if bulk_bytes {
+        // handle = bytes-new(ptr, len) — the `list<u8>` arg is canon-lowered to the `(ptr, len)` pair, read
+        // straight out of linear memory 0; one cross-component call replaces the alloc + per-byte-set loop.
+        // Only valid where the envelope provides a shared allocator at lower-time (the host-`_mem` assembler).
+        out.push(op::LOCAL_GET);
+        uleb128(ptr_leaf as u64, out);
+        out.push(op::LOCAL_GET);
+        uleb128(len_leaf as u64, out);
+        out.push(op::CALL);
+        uleb128(imp("bytes-new"), out);
+        // leaves the Bytes handle on the stack for the caller's arr-set ([] -> [handle]).
+        return;
+    }
+    // PER-BYTE FALLBACK (no shared allocator at lower-time — e.g. a non-host typed interface, whose
+    // runtime-op canon-lower cannot carry the Memory option `bytes-new` needs): `buf = bytes-alloc(len)`,
+    // then loop `j in 0..len` copying `bytes-set(buf, j, i32.load8_u(ptr + j))` out of linear memory 0.
+    // buf = bytes-alloc(len)
     out.push(op::LOCAL_GET);
     uleb128(len_leaf as u64, out);
     out.push(op::CALL);
-    uleb128(imp("bytes-new"), out);
-    // leaves the Bytes handle on the stack for the caller's arr-set ([] -> [handle]).
+    uleb128(imp("bytes-alloc"), out);
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    // ctr = 0
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(0, out);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    // block { loop { if ctr >= len br 1; buf = bytes-set(buf, ctr, load8(ptr + ctr)); ctr += 1; br 0 } }
+    out.push(op::BLOCK);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOOP);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(len_leaf as u64, out);
+    out.push(op::I32_GE_U);
+    out.push(op::BR_IF);
+    uleb128(1, out);
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ptr_leaf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_ADD);
+    out.push(op::I32_LOAD8_U);
+    out.push(0x00); // align 2^0
+    out.push(0x00); // offset 0
+    out.push(op::CALL);
+    uleb128(imp("bytes-set"), out);
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(1, out);
+    out.push(op::I32_ADD);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    out.push(op::BR);
+    uleb128(0, out);
+    out.push(op::END); // end loop
+    out.push(op::END); // end block
+    // leave buf on the stack for the caller's arr-set
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
 }
 
 /// Emit the lift for one top-level `list<scalar>` param: the list crossed the boundary as `(ptr, len)` at
@@ -3495,8 +3627,9 @@ fn emit_result_spill(
 fn emit_result_copy_bytes(
     rec: u32,
     retptr: u32,
-    _next_local: &mut u32,
+    next_local: &mut u32,
     realloc_abs: u64,
+    bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
@@ -3517,9 +3650,80 @@ fn emit_result_copy_bytes(
         out.push(op::CALL);
         uleb128(imp(name), out);
     };
+    if bulk_bytes {
+        // rec = the def's result Bytes handle (currently on the stack).
+        set(rec, out);
+        // retptr = cabi_realloc(0, 0, align=4, size=8) — the (ptr,len) return area bytes-read fills. Only
+        // valid where the envelope provides a shared allocator at lower-time (the host-`_mem` assembler).
+        const_i32(0, out);
+        const_i32(0, out);
+        const_i32(4, out);
+        const_i32(8, out);
+        out.push(op::CALL);
+        uleb128(realloc_abs, out);
+        set(retptr, out);
+        // bytes-read(rec, retptr) -> () : one bulk call writes retptr[0]=guest ptr, retptr[4]=len (the buffer
+        // allocated in guest memory 0 by the canon adapter's realloc). Args: buf first, then trailing retptr.
+        get(rec, out);
+        get(retptr, out);
+        call("bytes-read", out);
+        // Drop the owned def result handle (bytes-read only BORROWED it).
+        get(rec, out);
+        call("drop", out);
+        // Return the area pointer (the member's canonical (ptr,len) list<u8> return).
+        get(retptr, out);
+        return;
+    }
+    // PER-BYTE FALLBACK (no shared allocator at lower-time): `bytes-len` + a `bytes-get` per-byte copy loop
+    // into a `cabi_realloc`'d buffer, then write `(ptr, len)` into a `cabi_realloc`'d 8-byte return area.
+    let (n, buf, i) = (*next_local, *next_local + 1, *next_local + 2);
+    *next_local += 3;
     // rec = the def's result Bytes handle (currently on the stack).
     set(rec, out);
-    // retptr = cabi_realloc(orig=0, orig_size=0, align=4, size=8) — the (ptr,len) return area bytes-read fills.
+    // n = bytes-len(rec)
+    get(rec, out);
+    call("bytes-len", out);
+    set(n, out);
+    // buf = cabi_realloc(orig=0, orig_size=0, align=1, size=n)
+    const_i32(0, out);
+    const_i32(0, out);
+    const_i32(1, out);
+    get(n, out);
+    out.push(op::CALL);
+    uleb128(realloc_abs, out);
+    set(buf, out);
+    // COPY LOOP: i = 0; while i < n { store8(buf + i, bytes-get(rec, i)); i++ }
+    const_i32(0, out);
+    set(i, out);
+    out.push(op::BLOCK);
+    out.push(wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOOP);
+    out.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, out);
+        get(n, out);
+        out.push(op::I32_GE_U);
+        out.push(op::BR_IF);
+        uleb128(1, out);
+        get(buf, out);
+        get(i, out);
+        out.push(op::I32_ADD);
+        get(rec, out);
+        get(i, out);
+        call("bytes-get", out);
+        out.push(op::I32_STORE8);
+        out.push(0x00);
+        out.push(0x00);
+        get(i, out);
+        const_i32(1, out);
+        out.push(op::I32_ADD);
+        set(i, out);
+        out.push(op::BR);
+        uleb128(0, out);
+    }
+    out.push(op::END);
+    out.push(op::END);
+    // retptr = cabi_realloc(0, 0, align=4, size=8) — the (ptr,len) return area.
     const_i32(0, out);
     const_i32(0, out);
     const_i32(4, out);
@@ -3527,15 +3731,21 @@ fn emit_result_copy_bytes(
     out.push(op::CALL);
     uleb128(realloc_abs, out);
     set(retptr, out);
-    // bytes-read(rec, retptr) -> () : one bulk call writes retptr[0]=guest ptr, retptr[4]=len (the buffer
-    // allocated in guest memory 0 by the canon adapter's realloc). Args: buf first, then the trailing retptr.
-    get(rec, out);
+    // retptr[0] = buf (ptr), retptr[4] = n (len) — i32 stores, 4-byte aligned.
     get(retptr, out);
-    call("bytes-read", out);
-    // Drop the owned def result handle (bytes-read only BORROWED it).
+    get(buf, out);
+    out.push(op::I32_STORE);
+    out.push(0x02);
+    out.push(0x00);
+    get(retptr, out);
+    get(n, out);
+    out.push(op::I32_STORE);
+    out.push(0x02);
+    out.push(0x04);
+    // Drop the def result handle (the wrapper consumed it into the buffer).
     get(rec, out);
     call("drop", out);
-    // Return the area pointer (the member's canonical (ptr,len) list<u8> return).
+    // Return the area pointer.
     get(retptr, out);
 }
 

@@ -609,10 +609,24 @@ pub fn emit(
     {
         used.insert("arr-alloc");
         used.insert("arr-set");
+        // BULK-BYTES GATE — MUST equal `core_module_impl`'s `import_realloc` (the emit side), so the used-op
+        // set matches what the wrapper actually emits: true iff an UNBOUND host op has a SPILLED compound
+        // result, which forces the shared `cabi_realloc` at lower-time (the host-`_mem` typed-interface
+        // assembler). Only then can `bytes-new`/`bytes-read` canon-lower with Memory+Realloc; otherwise the
+        // wrapper keeps the per-byte `bytes-alloc`/`bytes-set` (lift) + `bytes-len`/`bytes-get` (result) path.
+        let bulk_bytes = {
+            let mut hs: Vec<host::HostImport> = Vec::new();
+            for &def in &layout.order {
+                let body = def_body(db, def)?;
+                host::collect_host_imports(db, body, &mut hs);
+            }
+            hs.iter()
+                .any(|h| h.spilled_result.is_some() && !db.effect_bindings.contains_key(&h.effect))
+        };
         for w in &wrappers {
             for p in w.params.iter().flatten() {
                 for f in p {
-                    f.collect_box_ops(&mut |op| {
+                    f.collect_box_ops_gated(bulk_bytes, &mut |op| {
                         used.insert(op);
                     });
                 }
@@ -627,11 +641,16 @@ pub fn emit(
                 // The wrapper reclaims the def's owned result handle after the canonical write (deep-drop).
                 used.insert("drop");
             }
-            // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out in ONE bulk
-            // `bytes-read` call (see `emit_result_copy_bytes`), not the old `bytes-len` + `bytes-get` loop,
-            // and drops the handle — register those so the wrapper body resolves them.
+            // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out and drops the handle.
+            // MUST MATCH `emit_result_copy_bytes`'s gate: one bulk `bytes-read` where a shared allocator
+            // exists at lower-time, else the per-byte `bytes-len` + `bytes-get` loop.
             if matches!(w.result, serialize::ResultLower::CopyBytes) {
-                used.insert("bytes-read");
+                if bulk_bytes {
+                    used.insert("bytes-read");
+                } else {
+                    used.insert("bytes-len");
+                    used.insert("bytes-get");
+                }
                 used.insert("drop");
             }
             // A flat single-scalar-field record result (FlatScalarField) reads the one field off the def's
@@ -647,9 +666,14 @@ pub fn emit(
             for m in w.mem_leaf_params.iter().flatten() {
                 match m {
                     (serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, drop_after) => {
-                        // One bulk `bytes-new((ptr,len))` copy-in (see `emit_bytes_leaf_copy_in`), not the
-                        // old `bytes-alloc` + per-byte `bytes-set` loop.
-                        used.insert("bytes-new");
+                        // MUST MATCH `emit_bytes_leaf_copy_in`'s gate: one bulk `bytes-new` where a shared
+                        // allocator exists at lower-time, else the per-byte `bytes-alloc` + `bytes-set` loop.
+                        if bulk_bytes {
+                            used.insert("bytes-new");
+                        } else {
+                            used.insert("bytes-alloc");
+                            used.insert("bytes-set");
+                        }
                         if *drop_after {
                             used.insert("drop");
                         }
@@ -669,10 +693,10 @@ pub fn emit(
             // borrowed shell after the call — register `sum-new` + the arm ops + `drop`.
             for (rebuild, drop_after) in w.sum_params.iter().flatten() {
                 used.insert("sum-new");
-                rebuild.arm_true.collect_ops(&mut |op| {
+                rebuild.arm_true.collect_ops_gated(bulk_bytes, &mut |op| {
                     used.insert(op);
                 });
-                rebuild.arm_false.collect_ops(&mut |op| {
+                rebuild.arm_false.collect_ops_gated(bulk_bytes, &mut |op| {
                     used.insert(op);
                 });
                 if *drop_after {
