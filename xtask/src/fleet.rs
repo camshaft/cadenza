@@ -3831,8 +3831,10 @@ enum OffloadBuildOutcome {
 /// `fallback=true` does NOT rescue — e.g. the 2026-09-16 missing-`build-users-group` incident, where
 /// offload looked "ACTIVE" by cert but reddened gate-local fleet-wide). `run_gate_local` calls this on
 /// the captured build output and persists the result to the offload-outcome stamp. Pure fn over the log
-/// text so it is unit-testable. FAILURE dominates SUCCESS: a log that dispatched several builds and one
-/// failed remotely is a failure signal.
+/// text so it is unit-testable. Two remote-failure signatures classify as Failed: a dispatched build that
+/// errored on a peer (`on 'ssh://…' failed`) and a content-addressed output that imported with a hash
+/// mismatch (`ca hash mismatch` — the 2026-09-16 CA-offload incident). FAILURE dominates SUCCESS: a log
+/// that dispatched several builds and one failed remotely is a failure signal.
 fn classify_gate_log_offload(log: &str) -> OffloadBuildOutcome {
     // nix prints `error: build of '<drv>' on 'ssh://<peer>' failed: error: <reason>` for a remote-build
     // failure (distinct from a LOCAL test/compile failure, which never carries `on 'ssh://`).
@@ -3844,6 +3846,16 @@ fn classify_gate_log_offload(log: &str) -> OffloadBuildOutcome {
                 .filter(|r| !r.is_empty())
                 .unwrap_or("remote build failed");
             // Bound the snippet so the status line stays compact.
+            return OffloadBuildOutcome::Failed(reason.chars().take(140).collect());
+        }
+        // A CA-derivation offload/substitute mismatch: a content-addressed output (e.g. the guide-build-*
+        // drvs) built on a peer imported with a hash that doesn't match — `ca hash mismatch importing
+        // path '…' : specified: sha256-X got: sha256-Y`. This is offload/substitute-specific (a purely
+        // LOCAL build produces the path itself, never an import-mismatch) and is an accept-then-error
+        // failure `fallback=true` does NOT rescue — the 2026-09-16 CA-offload incident (v-nix), the same
+        // fleet-red class as the nixbld case but for CA drvs. Flag it build-unhealthy, not Inconclusive.
+        if line.contains("ca hash mismatch") {
+            let reason = line.trim().trim_start_matches("error:").trim();
             return OffloadBuildOutcome::Failed(reason.chars().take(140).collect());
         }
     }
@@ -21205,6 +21217,18 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             classify_gate_log_offload(ok),
             OffloadBuildOutcome::Succeeded
         );
+        // A CA-derivation offload mismatch (the 2026-09-16 CA-offload incident) → Failed, carrying the
+        // `ca hash mismatch` cause. This signature has NO `on 'ssh://`, so the ssh-failed rule would miss
+        // it; without the CA rule it would misread as Inconclusive (a false "no offload observed").
+        let ca = "error: ca hash mismatch importing path \
+                  '/nix/store/abc-guide-build-0416-examples-sexpr' : specified: sha256-AAA got: sha256-BBB\n";
+        match classify_gate_log_offload(ca) {
+            OffloadBuildOutcome::Failed(reason) => assert!(
+                reason.contains("ca hash mismatch"),
+                "reason should carry the CA-mismatch cause, got: {reason}"
+            ),
+            other => panic!("expected Failed for a ca-hash-mismatch, got {other:?}"),
+        }
         // FAILURE dominates: a log that dispatched builds and had one fail remotely reads as Failed even
         // if other paths copied back.
         assert!(matches!(
