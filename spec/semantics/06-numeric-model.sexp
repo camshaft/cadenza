@@ -12584,11 +12584,15 @@
            under the other alias. Three steps from (s, s): (s,2s) → (2s,3s) → (3s,5s) → 3s+5s = 8s =
            8e25. An over-drop of the aliased seed corrupts the first addition. (Adversarial pin from
            a breaker probe against the multi-accumulator loop-reclaim landing, which was seeded with
-           distinct values.) LEAK TRACKED (breaker, filed to the bug queue): the value is exact but
-           the census reads 3 live objects where the escaping-result artifact accounts for only 1 —
-           the aliased seed defeats the multi-accumulator loop reclaim, leaking 2 husks. Ideal is
-           (live-objects 1) (matching the escaping-BigInt sibling above); flip this marker when the
-           aliased-seed reclaim lands.")
+           distinct values.) UPDATE (v-memory-safety): now reclaims to (live-objects 1) — only the
+           escaping BigInt result stays live, matching the escaping-BigInt sibling above. The residual
+           was NOT aliasing-specific (a distinct-seed escaping variant leaked the same two husks): the
+           base case `(+ a b)` BORROWS both accumulator slots and re-boxes a fresh result, but the
+           varying-param loop-exit epilogue did not recognize BigInt/Rational arithmetic as a borrow
+           of its operands, so the two dead slots were left undropped. The epilogue-droppable analysis
+           now classifies BigIntBinOp/RationalBinOp operands as borrowed (mirroring the BigIntCmp arm
+           and #9025's cross-param-move dup), so both slots drop at the base-case exit. The seed being
+           dup'd per use keeps a caller-reused alias safe (rc counting, no double-free).")
   (input
     (do
       (def
@@ -12601,7 +12605,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 80000000000000000000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 1))
 
 ; The CONSUMED-to-scalar companion of the escaping-BigInt case above. The above RETURNS its BigInt, so the
 ; result crosses to the host and is live at the census — a (live-objects known-leak) ESCAPING-VALUE artifact

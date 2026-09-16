@@ -504,6 +504,20 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         | Core::StrCmp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
         | Core::RationalCmp { lhs, rhs, .. } => recur(db, lhs, true) && recur(db, rhs, true),
+        // BigInt/Rational ARITHMETIC (`+`/`-`/`*`/`/`) BORROWS both heap operands and re-boxes a FRESH
+        // result — it never aliases or consumes them (#9025 gap-1 established this: the cross-param-move
+        // dup was spurious BECAUSE bigint-add borrows; this is the epilogue-analysis twin of that fact,
+        // and of the `BigIntCmp`/`RationalCmp` borrow arm above). So a BigInt/Rational param read only via
+        // arithmetic in a terminal/back-edge is BORROW-only → recurse both operands borrowed. Without this,
+        // the multi-accumulator permutation loop's base case `loop2 n a b = if n=0 then (+ a b) else …`
+        // read `a`/`b` in the `(+ a b)` RESULT position as a CONSUME → `param_only_borrowed` false → the
+        // varying-param epilogue drop was suppressed → the two dead accumulator slots leaked as husks
+        // (breaker aliased-seed fib2, 06-numeric, live-objects 3 vs ideal 1). Leak-over-UAF safe: the
+        // epilogue drop is gated at its emit site by `looped_invariant_param_caller_owned` (AXIS A, the
+        // #9010/CAESAR revert lesson), so a borrowed caller-reused param is never dropped here.
+        Core::BigIntBinOp { lhs, rhs, .. } | Core::RationalBinOp { lhs, rhs, .. } => {
+            recur(db, lhs, true) && recur(db, rhs, true)
+        }
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
