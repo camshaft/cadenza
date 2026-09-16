@@ -669,6 +669,12 @@ impl Guest for Component {
     fn bytes_scalar_at(buf: u32, scalar_index: u32) -> u32 {
         op_bytes_scalar_at(Handle::from_u32(buf), scalar_index)
     }
+    fn bytes_new(data: alloc::vec::Vec<u8>) -> u32 {
+        op_bytes_new(data).to_u32()
+    }
+    fn bytes_read(buf: u32) -> alloc::vec::Vec<u8> {
+        op_bytes_read(Handle::from_u32(buf))
+    }
     fn str_new(s: String) -> u32 {
         op_str_new(s).to_u32()
     }
