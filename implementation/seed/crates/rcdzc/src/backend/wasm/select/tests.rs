@@ -937,6 +937,66 @@ fn b2_disjoint_shared_owned_boxed_sum_scrutinee() {
     assert_dup_sites_pairwise_disjoint(&shell, &row, &dup);
 }
 
+// ── #9014 SITE-A gate: `record_cell_param_droppable` (reclaim.rs) ──────────────────────────────
+// The reducer-export envelope-decode cell is a fresh wrapper-owned record built by `emit_cell_rebuild`
+// and passed BORROWED to the def; the wrapper deep-drops it after the call IFF `record_cell_param_
+// droppable` (the DUP-AWARE gate) says so. That behaviour is otherwise only witnessed by v-mem's
+// env-gated live-object census (`#[ignore]`d, needs an external debug-counters runtime) — un-gated in
+// the suite. These pin BOTH polarities cheaply at the Core level, so a regression flips a `cargo test`.
+
+#[test]
+fn site_a_record_cell_droppable_when_field_forwarded_dup_aware_not_param_escapes_body() {
+    // DROPPABLE (effectiveness): a record param `m` whose COMPOUND field is forwarded into a fresh record
+    // (`(. m key)` — a nested-compound Proj that MOVES the child out, so the ctor dup's it) with a LATER
+    // borrow read (`(. m flag)`, a scalar Proj). Every CONSUMING occurrence of `m` is then a Perceus dup
+    // site (the compound forward has a later use → retained) and the last use is a borrow → `m`'s own cell
+    // slot is a dead owned temporary → SAFE to drop. This is the payload-forwarding shape the census
+    // reducers take (on_notification/on_response went 3->0 / 5->0 only after site-a #9061).
+    //
+    // THE CRUX: the DUP-UNAWARE `param_escapes_body` reports this SAME shape as ESCAPING (its Proj arm
+    // recurses consuming for a compound child in tail position), which would WRONGLY suppress the drop and
+    // keep the census inert — the exact regression I caught before landing. So we pin `record_cell_param_
+    // droppable == true` AND `param_escapes_body == true` together: the gate MUST be the dup-aware query.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (key Bytes) (flag Bool)))) \
+               (record (= a (. m key)) (= b (. m flag)))) \
+             (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f (forward-field)");
+    let binder = params[0].0;
+    assert!(
+        record_cell_param_droppable(&mut db, body, binder),
+        "site-a: a dup'd compound-field forward leaves the cell a dead owned temporary -> droppable"
+    );
+    assert!(
+        param_escapes_body(&mut db, body, binder),
+        "the DUP-UNAWARE query MUST (over-conservatively) report escape here — proves site-a REQUIRES the \
+         dup-aware gate, not param_escapes_body (which would suppress the drop + keep the census inert)"
+    );
+}
+
+#[test]
+fn site_a_record_cell_not_droppable_when_moved_out() {
+    // NOT DROPPABLE (safety): the def returns the record param `m` VERBATIM — the returned value IS the
+    // cell reference (a consuming last use, NOT a dup site), so `m` escapes and dropping it would DOUBLE-
+    // FREE the result. The gate must suppress the drop. Guards the double-free polarity of site-a.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (key Bytes)))) m) (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f (move-out)");
+    let binder = params[0].0;
+    assert!(
+        !record_cell_param_droppable(&mut db, body, binder),
+        "site-a: a moved-out record cell IS the returned value -> dropping it double-frees -> NOT droppable"
+    );
+}
+
 #[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
