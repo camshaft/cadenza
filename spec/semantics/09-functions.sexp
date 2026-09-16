@@ -78,6 +78,49 @@
   (output (: 510 Int64)))
 
 (case
+  "a closure captures a map-extracted view whose map and frame both die, and reads it twice"
+  (doc
+    "The CLOSURE face of the map-value view-escape family (05-compound-types): `mk` builds the
+           map locally, extracts the string view via `Option.expect (Map.lookup …)`, and returns a
+           closure capturing the VIEW — the map's shell and `mk`'s frame are both gone when the
+           closure runs, and the caller calls it TWICE, so the captured payload must survive the
+           frame exit, the map reclaim, and the first call. byte-len 16: (+ 100 16) + (+ 200 16)
+           = 332. (Adversarial pin from a breaker probe; wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (mk (: k Int64))
+        (let ((m (Map.insert (Map.empty) k "captured-payload")))
+          (let ((v (Option.expect (Map.lookup m k) "v")))
+            (fn (u) (+ u (String.byte-len v))))))
+      (def (main (: k Int64)) (let ((f (mk k))) (+ (f 100) (f 200))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 332 Int64)))
+
+(case
+  "a closure capturing a heap-capturing closure reads through two exited frames, twice"
+  (doc
+    "NESTED capture across exited frames: `inner` builds a runtime rope and returns a closure
+           capturing it; `outer` captures THAT closure in a second closure; `main` calls the outer
+           one twice after BOTH frames have exited. The heap payload is reachable only through the
+           two-level capture chain, and each call re-reads it — a per-level environment drop that
+           freed the inner capture with its frame (or after the first call) corrupts the reads.
+           s = 8 bytes: (1+8+1000) + (2+8+1000) = 2019. (Adversarial pin from a breaker probe;
+           wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (inner (: k Int64))
+        (let ((s (String.concat "deep" (if (> k 0) "-cap" "-alt"))))
+          (fn (x) (+ x (String.byte-len s)))))
+      (def (outer (: k Int64)) (let ((f (inner k))) (fn (y) (+ (f y) 1000))))
+      (def (main (: k Int64)) (let ((g (outer k))) (+ (g 1) (g 2))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 2019 Int64)))
+
+(case
   "a captured lambda applied at two shadowing sites resolves each to its DEF-SITE capture (reduce-cache share soundness)"
   (doc
     "Pins the SOUNDNESS of the β-reduce cache sharing (rcdzc `eval` keys a reduction on the RESOLVED
