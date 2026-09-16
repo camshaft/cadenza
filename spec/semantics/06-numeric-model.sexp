@@ -19765,7 +19765,7 @@
   (output (: 100 Int64))
   (call main (: -2 Int64))
   (output (: 111 Int64))
-  (live-objects 1))
+  (live-objects 0))
 
 (case
   "cdzw86 STRING lexicographic ordering (prefix rule + equal boundary) round-trips the cadenza hop"

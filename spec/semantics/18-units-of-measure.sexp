@@ -4619,7 +4619,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a whole MAP holding a quantity VALUE renders it scaled to reference in the value form"
