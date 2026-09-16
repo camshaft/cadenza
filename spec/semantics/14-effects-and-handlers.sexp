@@ -1590,6 +1590,44 @@
   (output (: 2 Int64)))
 
 (case
+  "a handler threading a GROWING String-rope state reads it per perform and discards the final rope"
+  (doc
+    "The heap-state companion of the scalar-state fold above: the handler STATE is a bare heap String
+           grown by `String.concat s m` per perform, and the resume VALUE reads it (`String.byte-len s`)
+           while the next-state threads the grown rope forward. Seed `(String.concat \"seed\" …)` = a 6-byte
+           rope; `chatter 2` performs `log` three times (\"ab\", \"ab\", \"z\"), so the byte-lens read 6, 8, 10
+           → 24, and the final threaded rope is DISCARDED (the handle value is the scalar sum, nothing heap
+           escapes). Pins the VALUE (24) and effect shape of a growing-heap-state fold whose resume value
+           borrows the state.
+           IDEAL live-objects is 0 — the discarded final rope + its spine should be reclaimed at handle
+           exit, exactly as the plain `(String.byte-len (String.concat …))` temporary is. It currently
+           LEAKS 3 rope nodes: the synthesized recursive fold fn owns its heap state param but never drops
+           it (base case borrow-reads `byte-len` and returns; the recursive edge dups then consumes into
+           the next rope but leaves the frame's own ref), so each frame leaks one rope handle. This is the
+           SAME growing-heap-handler-state reclaim gap the Bytes-rope host-arg cases carry (a genuinely-
+           recursive synthesized fold fn, NOT the tail-loop epilogue path) — it is NOT String/NfcNormalize-
+           specific (a `List.push`/`List.len` state of the same shape leaks identically). Pinned
+           `known-leak` (a TIGHTEN CANDIDATE that auto-flips clean via `known_leak_now_clean` when the
+           fold-fn param-reclaim fix lands); breaker adv-handler-string-rope, v-memory-safety diagnosis.")
+  (input
+    (do
+      (effect Log (op log (-> String Int64)))
+      (def
+        (chatter (: n Int64))
+        (if (= n 0) (Log.log "z") (+ (Log.log "ab") (chatter (- n 1)))))
+      (def
+        (main (: n Int64))
+        (handle
+          Log
+          (String.concat "seed" (if (> n 0) "-x" "-y"))
+          ((log (m) s (resume (String.byte-len s) (String.concat s m))))
+          (chatter 2)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 24 Int64))
+  (live-objects known-leak))
+
+(case
   "a cross-function perform is discharged by the caller's handler"
   (doc
     "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent: a perform in a
