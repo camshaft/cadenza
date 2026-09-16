@@ -8396,8 +8396,18 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 RearmAction::NudgeContinue => "nudge `continue`",
                 RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
             };
+            // Dry-run is the hand-driven mode, so surface the exact copy-pasteable command for the
+            // dead-cron (ReissueLoop) case — a reader can then act on the flag without knowing the CLI.
+            // The nudge-continue case is a transient missed tick (the next real sweep re-arms it), so no
+            // manual command is offered there.
+            let cmd_hint = match action {
+                RearmAction::ReissueLoop => {
+                    format!(" — run: cargo xtask fleet reissue-loop {}", a.name)
+                }
+                RearmAction::NudgeContinue => String::new(),
+            };
             println!(
-                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s > {stale_after}s stale window; interval {})",
+                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s > {stale_after}s stale window; interval {}){cmd_hint}",
                 a.name, a.interval
             );
             rearmed += 1;
