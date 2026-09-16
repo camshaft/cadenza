@@ -3404,6 +3404,13 @@ enum BytesOp {
     // Append a fresh `n % 40 + 1`-byte leaf via `bytes-concat` (grows the rope; concat is O(1) so a
     // deep right-leaning spine builds — the shape flatten-on-read must handle without O(n²)/overflow).
     ConcatRange { n: u8 },
+    // Same append, but the tail leaf is built by `bytes-new` (the seq-916 bulk constructor) instead of
+    // alloc+per-byte-set — the leaf it produces must behave IDENTICALLY inside a rope/slice/compact/fork
+    // (spans the inline/heap `Raw` boundary as `count` crosses `INLINE_RAW_CAP`).
+    ConcatNew { n: u8 },
+    // Read the WHOLE buffer via `bytes-read` (the seq-916 bulk reader) and check it against the model;
+    // bytes-read BORROWS, so `v` stays owned + usable for the following ops (flatten-safe).
+    ReadAll,
     // Slice `[start, start+len)` of the current bytes (both taken modulo the live length so always
     // in range; a 0-len or full slice is a valid edge, never a trap). Exercises slice + seam-cross +
     // the slice-of-slice collapse when applied to an already-sliced rope.
@@ -3429,6 +3436,22 @@ fn run_bytes_op_sequence(ops: &[BytesOp]) {
                 let tv = bytes_leaf(&tail);
                 v = op_bytes_concat(v, tv);
                 reference.extend_from_slice(&tail);
+            }
+            BytesOp::ConcatNew { n } => {
+                let count = (n as usize) % 40 + 1;
+                let tail: Vec<u8> = (0..count)
+                    .map(|j| (j as u8).wrapping_mul(11).wrapping_add(3))
+                    .collect();
+                // bytes-new builds the leaf in one op; it must be a drop-in for the alloc+set twin.
+                v = op_bytes_concat(v, op_bytes_new(tail.clone()));
+                reference.extend_from_slice(&tail);
+            }
+            BytesOp::ReadAll => {
+                assert_eq!(
+                    op_bytes_read(v),
+                    reference,
+                    "bytes-read returns the whole buffer matching the reference (borrow, flatten-safe)"
+                );
             }
             BytesOp::Slice { start, len } => {
                 let blen = reference.len();
