@@ -28909,6 +28909,142 @@
   (call main (: 1 Int64))
   (output (: 43 Int64)))
 
+; -- Bytes ROPE faces of the bulk bytes-read family (breaker adversarial pins on the seq-916
+; bulk bytes-new/bytes-read landings): compaction of a shared rope with BOTH aliases re-read
+; per-byte, a slice ACROSS the concat seam with slice-of-slice ≡ direct-slice equivalence,
+; a deep left-heavy rope compacted and read, the zero-length edges, and const-vs-runtime
+; parity through compact. Each sums per-byte via a fallible-indexed loop so the whole payload
+; is re-read through Bytes.at (the per-byte path) against ropes the bulk path built/flattened;
+; all values wasm=rust cross-checked at promotion. --
+(case
+  "compacting a shared rope leaves the rope, its flat copy, and the shared child all readable"
+  (doc
+    "`r = concat(a, fresh)` shares `a` as its left child; `c = Bytes.compact r` flattens via
+           the bulk read. All THREE are then re-read per-byte: the original rope `r` (sum 45), the
+           compacted copy `c` (sum 45), and the shared child `a` (sum 24) — a compact that moved or
+           freed the shared child corrupts one of the later sums. Encodes r + 1000·c + 100000·a.
+           The second call drives the `(UInt8.wrap k)` element through its wrap boundary (k=300 →
+           44) identically on both backends: 79 + 79000 + 2400000.")
+  (input
+    (do
+      (def
+        (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+        (if (>= i (Bytes.len b)) acc
+          (sum-bytes b (+ i 1) (+ acc (Option.expect (Bytes.at b i) "in-bounds")))))
+      (def
+        (main (: k Int64))
+        (let ((a (Bytes.of #list(7 8 9))))
+          (let ((r (Bytes.concat a (Bytes.of #list((UInt8.wrap k) 11)))))
+            (let ((c (Bytes.compact r)))
+              (+ (+ (sum-bytes r 0 0) (* 1000 (sum-bytes c 0 0))) (* 100000 (sum-bytes a 0 0)))))))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 2445045 Int64))
+  (call main (: 300 Int64))
+  (output (: 2479079 Int64)))
+
+(case
+  "a slice across the concat seam equals its slice-of-slice and direct-slice re-cuts"
+  (doc
+    "`r` is a 5+4 rope; `s = slice(r, 3, 4)` STRADDLES the seam (2 bytes from the left child,
+           2 from the right). Equivalence pinned two ways: `t = slice(s, 1, 2)` (a slice OF the
+           seam-spanning slice) and `u = slice(r, 4, 2)` (the same window cut directly from the rope)
+           must be byte-identical — a seam-offset error in either path diverges the sums. s=[4,5,10,20]
+           sum 39; t=u=[5,10] sum 15 each; 39 + 100·30 = 3039.")
+  (input
+    (do
+      (def
+        (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+        (if (>= i (Bytes.len b)) acc
+          (sum-bytes b (+ i 1) (+ acc (Option.expect (Bytes.at b i) "in-bounds")))))
+      (def
+        (main (: k Int64))
+        (let ((r (Bytes.concat (Bytes.of #list(1 2 3 4 5)) (Bytes.of #list(10 20 30 40)))))
+          (let ((s (Option.expect (Bytes.slice r k 4) "s")))
+            (let ((t (Option.expect (Bytes.slice s 1 2) "t")))
+              (let ((u (Option.expect (Bytes.slice r (+ k 1) 2) "u")))
+                (+ (sum-bytes s 0 0) (* 100 (+ (sum-bytes t 0 0) (sum-bytes u 0 0)))))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3039 Int64)))
+
+(case
+  "a deep left-heavy rope compacts and re-reads exactly, last byte addressable"
+  (doc
+    "`grow` concat-appends one byte 300 times onto a 1-byte seed — a 300-node left-heavy rope
+           (well past any u8/leaf-width boundary in the flatten arithmetic). `compact` flattens it via
+           the bulk read; the per-byte sum re-reads every position (5 + 300·1 = 305) and `Bytes.at c n`
+           addresses the final byte (1). 305 + 1000 = 1305.")
+  (input
+    (do
+      (def
+        (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+        (if (>= i (Bytes.len b)) acc
+          (sum-bytes b (+ i 1) (+ acc (Option.expect (Bytes.at b i) "in-bounds")))))
+      (def (grow (: n Int64) (: acc Bytes)) (if (= n 0) acc (grow (- n 1) (Bytes.concat acc b"\x01"))))
+      (def
+        (main (: n Int64))
+        (let ((r (grow n b"\x05")))
+          (let ((c (Bytes.compact r)))
+            (+ (sum-bytes c 0 0) (* 1000 (Option.expect (Bytes.at c n) "last"))))))
+      (export main)))
+  (call main (: 300 Int64))
+  (output (: 1305 Int64)))
+
+(case
+  "a zero-length slice at the exact end is Some(empty), and empty is identity for concat and compact"
+  (doc
+    "`slice(b, len(b), 0)` — start AT the end, zero length — must be `Some` of an EMPTY bytes
+           (not None, not a trap): len 0, `compact` of it stays len 0, and `concat(empty, b)` is
+           byte-identical to `b` (per-byte sum 12). Encodes len(e) + 10·len(compact e) + 100·sum(c)
+           = 0 + 0 + 1200. Pins the three zero-length edges of the rope algebra in one case.")
+  (input
+    (do
+      (def
+        (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+        (if (>= i (Bytes.len b)) acc
+          (sum-bytes b (+ i 1) (+ acc (Option.expect (Bytes.at b i) "in-bounds")))))
+      (def
+        (main (: k Int64))
+        (let ((b (Bytes.of #list(3 4 5))))
+          (let ((e (Bytes.slice b (Bytes.len b) k)))
+            (match e
+              ((Some ev)
+                (let ((c (Bytes.concat ev b)))
+                  (+ (+ (Bytes.len ev) (* 10 (Bytes.len (Bytes.compact ev)))) (* 100 (sum-bytes c 0 0)))))
+              ((None _u) -777)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1200 Int64)))
+
+(case
+  "a compile-time-foldable rope compact agrees with its runtime-built twin"
+  (doc
+    "The const-vs-runtime divergence face for the rope algebra: `cst` compacts a rope of two
+           LITERAL bytes-literals (all-const — the folder's path), `rt` builds the byte-identical rope
+           from `Bytes.of` lists with a PARAM-derived element (n=1 → 3, the runtime path), and both
+           are per-byte summed (10 each). `100·cst − rt` = 990 iff the two paths agree byte-for-byte —
+           a folder/runtime disagreement in concat/compact shifts the difference.")
+  (input
+    (do
+      (def
+        (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+        (if (>= i (Bytes.len b)) acc
+          (sum-bytes b (+ i 1) (+ acc (Option.expect (Bytes.at b i) "in-bounds")))))
+      (def
+        (main (: n Int64))
+        (let ((cst (sum-bytes (Bytes.compact (Bytes.concat b"\x01\x02" b"\x03\x04")) 0 0)))
+          (let
+            ((rt
+                (sum-bytes
+                  (Bytes.compact
+                    (Bytes.concat (Bytes.of #list(1 2)) (Bytes.of #list((UInt8.wrap (+ n 2)) 4))))
+                  0 0)))
+            (- (* cst 100) rt))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 990 Int64)))
+
 ; -- leak-freedom over the adversarial shared-heap faces: divergent aliases, closure capture, handler-arm update, Map/Set operands all balance to zero live objects (breaker batch 381; live-objects cases are wasm-baselined per the migration convention) --
 (case
   "lk1 divergent update aliases leave no live heap objects after the run"
