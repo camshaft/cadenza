@@ -5665,7 +5665,7 @@ c")))
       (export main)))
   (call main (: 50 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "eqmr1 a map-REST pattern inside a QUOTED match reifies OPEN and matches like its direct twin"

@@ -1320,7 +1320,7 @@
       (export main)))
   (call main (: 2000 Int64))
   (output (: 250008 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an unsigned LEB128 encoder emits the known-answer multibyte encoding"
@@ -1832,7 +1832,7 @@
       (def (main) (go (Bytes.of #list(10 20 30)) 0 0))
       (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)"
@@ -2533,7 +2533,7 @@
   (output (: 52720 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes"
@@ -3286,7 +3286,7 @@
       (export f)))
   (call f 1)
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 445 (2026-08-27): static-data drop-safety for deduplicated constant Bytes
 ; (#3837 extended constant-Bytes detection to Core::ConstBytes; both occurrences of a byte-identical
@@ -3609,7 +3609,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)"
