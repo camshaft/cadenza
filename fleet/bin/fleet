@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# fleet — the first-class window-env command for the fleet verbs (operator seq-987 "foolproof tooling").
+# Agents run `fleet inbox` / `fleet heartbeat` / `fleet send …` / `fleet sync` with NO `cargo xtask`
+# prefix. Combined with the name-autodetect (fleet inbox/heartbeat default to the CALLING window's agent
+# via $TMUX_PANE → window name, landed in the xtask), the command "always does the right thing" — it is
+# impossible to glob the wrong (shadow) inbox path or forget the calling identity. This structurally kills
+# the stale-prompt / shadow-glob drain-stall class rather than relying on the tick prompt's conventions.
+#
+# This is a thin, self-contained shim: the fleet HUB is a BARE repo (no Cargo workspace), so it resolves a
+# real worktree and runs `cargo xtask fleet "$@"` there. REBUILD-FROM-SOURCE off the FRESHEST-HEAD worktree
+# so the fleet logic is always the newest landed code (the same deploy-gap discipline as
+# compact-nudge.sh/watchdog.sh — an agent's `fleet` must not run a stale binary), with a prebuilt-binary
+# FALLBACK if cargo is unavailable. `$TMUX_PANE` is inherited by the child, so the calling agent's identity
+# autodetect works regardless of which worktree we run cargo from.
+#
+# NOTE: this file is the COMMAND. Wiring `fleet/bin` onto each agent's PATH is a SEPARATE step
+# (window.sh / refresh-tools.sh); until that lands this shim is inert (agents keep using `cargo xtask`).
+#
+# TRACKED at <repo>/fleet/bin/fleet; `fleet up` materializes it into <hub>/.claude/fleet/bin/fleet, which
+# is what ends up on PATH. Both locations sit at `<…>/fleet/bin/`, so the worktrees dir is `../../worktrees`.
+set -uo pipefail
+
+# cron/non-interactive shells can have a minimal PATH lacking cargo; prepend the toolchain dirs (the #8989
+# lesson — validate wrappers under `env -i PATH=/usr/bin:/bin`, not just an interactive shell).
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     # …/fleet/bin
+
+# Locate the fleet worktrees dir by walking UP from this script to the nearest ancestor that contains a
+# `worktrees/` subdir (the `.claude` root). This is robust to WHERE the shim runs from: the materialized
+# hub copy (`.claude/fleet/bin`) and a tracked worktree copy (`.claude/worktrees/<agent>/fleet/bin`) have
+# DIFFERENT relative paths to `worktrees/`, so a fixed `../worktrees` would only work for one of them.
+WORKTREES=""
+_d="$BIN_DIR"
+while [ "$_d" != "/" ]; do
+  if [ -d "$_d/worktrees" ]; then WORKTREES="$_d/worktrees"; break; fi
+  _d="$(dirname "$_d")"
+done
+
+if [ -z "${WORKTREES:-}" ] || [ ! -d "$WORKTREES" ]; then
+  echo "fleet: could not locate a fleet worktrees/ dir above $BIN_DIR (a 'fleet up' provides one)." >&2
+  exit 127
+fi
+
+# Pick the worktree with the FRESHEST HEAD that is a Cargo project (has xtask/Cargo.toml), so `cargo xtask`
+# rebuilds+runs the newest landed source there. Mirrors compact-nudge.sh/watchdog.sh.
+best="" best_ct=-1
+for wt in "$WORKTREES"/*/; do
+  [ -f "${wt}xtask/Cargo.toml" ] || continue
+  ct="$(git -C "$wt" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
+  if [ "$ct" -gt "$best_ct" ]; then best_ct="$ct"; best="$wt"; fi
+done
+
+if [ -z "$best" ]; then
+  echo "fleet: no worktree with an xtask Cargo project under $WORKTREES (a 'fleet up' provides one)." >&2
+  exit 127
+fi
+
+# Primary: rebuild-from-source (always current). Fallback: the freshest worktree's prebuilt binary (may be
+# slightly stale, but WORKS) if cargo is unresolvable — degrade gracefully, never leave `fleet` dark.
+# `exec` so the exit code propagates cleanly and no wrapper process lingers.
+if command -v cargo >/dev/null 2>&1; then
+  cd "$best" && exec cargo xtask fleet "$@"
+elif [ -x "${best}target/release/xtask" ]; then
+  exec "${best}target/release/xtask" fleet "$@"
+else
+  echo "fleet: cargo not found AND no prebuilt ${best}target/release/xtask — run a fleet build first." >&2
+  exit 127
+fi
