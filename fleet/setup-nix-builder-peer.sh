@@ -126,12 +126,24 @@ register_peer() {
   # Let remote-built paths still pull deps from substituters (faster than shipping every dep over SSH).
   ensure_conf_line "$NIX_CUSTOM_CONF" "builders-use-substitutes = true" "^[[:space:]]*builders-use-substitutes[[:space:]]*=[[:space:]]*true"
 
-  # Seed the peer host key into ROOT's known_hosts (the daemon runs as root; an unseeded key = per-build
-  # SSH-fail latency before fallback). accept-new is idempotent + non-clobbering.
+  # Seed the peer host key into ROOT's known_hosts (the daemon runs as root; an unseeded key makes the
+  # daemon's ssh to the peer FAIL host-key verification -> nix treats the peer as unreachable -> offload
+  # silently falls back to local: exactly the silent re-break this script exists to prevent).
+  #
+  # 🪤 DO NOT wrap this in `sudo -n bash -c "..."`: `bash` is BLOCKLISTED in our sudo policy (the same wall
+  # that forces the binary Determinate install over curl|sh) — `sudo -n bash -c ...` ALWAYS fails with
+  # "user is not allowed to execute /bin/bash as root". Instead run ssh-keyscan as the USER (scanning a
+  # host needs no root) and pipe into NON-shell root commands (tee/sort) which pass the sudo allowlist.
   log "seeding $peer host key into /root/.ssh/known_hosts"
   sudo -n install -d -m 0700 /root/.ssh
-  sudo -n bash -c "ssh-keyscan -H '$peer' 2>/dev/null >> /root/.ssh/known_hosts && sort -u /root/.ssh/known_hosts -o /root/.ssh/known_hosts" || \
-    log "WARN: ssh-keyscan for '$peer' failed (peer unreachable now?); re-run register after it is up"
+  local scanned=""
+  scanned="$(ssh-keyscan -H "$peer" 2>/dev/null || true)"   # scan as the USER; || true so set -e can't kill us on an unreachable host
+  if [ -n "$scanned" ]; then
+    printf '%s\n' "$scanned" | sudo -n tee -a /root/.ssh/known_hosts >/dev/null
+    sudo -n sort -u /root/.ssh/known_hosts -o /root/.ssh/known_hosts   # idempotent: dedupe on re-run
+  else
+    log "WARN: ssh-keyscan for '$peer' produced no keys (peer unreachable / down?); re-run register once it is up"
+  fi
 
   log "register complete for '$peer'. Verify: setup-nix-builder-peer.sh verify $peer"
 }
