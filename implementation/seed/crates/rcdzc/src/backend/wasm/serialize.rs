@@ -786,7 +786,7 @@ pub fn core_module(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], &[], layout, &[])
+    core_module_impl(funcs, imports, &[], &[], layout, &[], false)
 }
 
 /// [`core_module`] plus boundary WRAPPER funcs (typed WIT interface-export emit, W4c): each [`WrapperDesc`]
@@ -801,7 +801,40 @@ pub fn core_module_with_wrappers(
     wrappers: &[WrapperDesc],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, host_fns, &[], layout, wrappers)
+    core_module_impl(funcs, imports, host_fns, &[], layout, wrappers, false)
+}
+
+/// [`core_module_with_wrappers`] for the PURE-REDUCER BULK path (operator seq-1024/1026): a pure reducer (no
+/// host ops) whose typed interface marshals `list<u8>` gets the IMPORT-realloc / shared-`mem` shape — it
+/// imports `"mem"`.`"mem"` + `"mem"`.`"cabi_realloc"` (instead of defining its own) so the bulk
+/// `bytes-new`/`bytes-read` canon-lower with Memory+Realloc against the shared allocator provided by the mem
+/// module BEFORE the program instance (the instantiation-order fix). Pair with
+/// [`crate::backend::wasm::envelope::assemble_typed_interface_with_host_runtime_mem`] (zero host groups,
+/// `needs_realloc = true`). Only call when [`wrappers_use_bytes`] holds.
+pub fn core_module_with_wrappers_bulk(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    wrappers: &[WrapperDesc],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, imports, &[], &[], layout, wrappers, true)
+}
+
+/// Whether a typed interface's boundary wrappers marshal any `list<u8>`/`Bytes` (a bytes-leaf param, a
+/// `CopyBytes`/`SpillRecord` result, or a top-level memory-bearing leaf param) — i.e. whether the pure
+/// reducer needs the bulk `bytes-new`/`bytes-read` shared-`mem` shape. MUST match `core_module_impl`'s
+/// `wrapper_needs_memory` predicate (the two are kept in lockstep: `force_realloc` coincides with it).
+pub fn wrappers_use_bytes(wrappers: &[WrapperDesc]) -> bool {
+    wrappers.iter().any(|w| {
+        w.params
+            .iter()
+            .flatten()
+            .flatten()
+            .any(FieldRebuild::has_bytes_leaf)
+            || matches!(w.result, ResultLower::SpillRecord { .. })
+            || matches!(w.result, ResultLower::CopyBytes)
+            || w.mem_leaf_params.iter().any(Option::is_some)
+    })
 }
 
 /// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
@@ -813,7 +846,7 @@ pub fn core_module_with_extern(
     extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, &[], &[], extern_fns, layout, &[])
+    core_module_impl(funcs, &[], &[], extern_fns, layout, &[], false)
 }
 
 /// [`core_module`] with BOTH a peer extern-import set AND the value-heap runtime (X5): peer ops from
@@ -825,7 +858,7 @@ pub fn core_module_with_extern_runtime(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], extern_fns, layout, &[])
+    core_module_impl(funcs, imports, &[], extern_fns, layout, &[], false)
 }
 
 /// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
@@ -839,7 +872,7 @@ pub fn core_module_with_host(
     host_fns: &[crate::backend::wasm::host::HostImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, host_fns, &[], layout, &[])
+    core_module_impl(funcs, imports, host_fns, &[], layout, &[], false)
 }
 
 /// A boundary WRAPPER core function to APPEND to the emitted module — a `(flattened params) -> result` func
@@ -1081,6 +1114,12 @@ fn core_module_impl(
     extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
     wrappers: &[WrapperDesc],
+    // PURE-REDUCER BULK (operator seq-1024/1026): a pure reducer (no host ops) whose typed interface carries
+    // `list<u8>` marshaling wants the IMPORT-realloc / shared-`mem` shape (like the host `_mem` path) so the
+    // bulk `bytes-new`/`bytes-read` canon-lower with Memory+Realloc pre-instantiation. The caller passes this
+    // true ONLY for such a wrapper (`wrappers_use_bytes`), so it always coincides with `wrapper_needs_memory`.
+    // Host paths pass false → byte-identical (import_realloc still driven by the host spilled-result rule).
+    force_realloc: bool,
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let h = host_fns.len();
@@ -1093,7 +1132,7 @@ fn core_module_impl(
     // right after the runtime ops), instead of DEFINING its own. One allocator over the one shared memory: the
     // host-op lower + the guest's own retptr/leaf allocs all bump the same cursor. Absent → the wrapper DEFINES
     // its own `cabi_realloc` (the memoryless / list-param-only paths).
-    let import_realloc = host_fns.iter().any(|h| h.spilled_result.is_some());
+    let import_realloc = host_fns.iter().any(|h| h.spilled_result.is_some()) || force_realloc;
     // The realloc IMPORT (when a compound host result is present) occupies a func-import slot after the runtime
     // ops, so a defined func's index (and its type index, kept in lockstep) shifts by +1.
     let import_count = h + imports.len() + e + import_realloc as usize;

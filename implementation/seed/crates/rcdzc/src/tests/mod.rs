@@ -1351,6 +1351,20 @@ fn a_pure_reducer_echo_with_bytes_param_and_result_emits_valid_wasm() {
     v.validate_all(bytes).expect(
         "the pure-reducer bytes-param/bytes-result echo's component validates (bulk bytes-new/read)",
     );
+    // WITNESSING the BULK path (seq-1024/1026): the runtime-op aliases carry each used op's name as a UTF-8
+    // string, so the component bytes contain "bytes-new" (the list<u8> PARAM lift) and "bytes-read" (the bare
+    // list<u8> RESULT lower) IFF the bulk shared-`mem` path fired. A regression to the portable per-byte path
+    // would alias `bytes-alloc`/`bytes-set` (lift) + `bytes-len`/`bytes-get` (result) instead — so this pins
+    // that the PURE reducer actually took the bulk route, not merely that it emits valid wasm.
+    let contains = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(
+        contains("bytes-new"),
+        "pure-reducer bulk: the list<u8> param must lift via bytes-new (bulk), not the per-byte bytes-alloc/set",
+    );
+    assert!(
+        contains("bytes-read"),
+        "pure-reducer bulk: the list<u8> result must lower via bytes-read (bulk), not the per-byte bytes-len/get",
+    );
 }
 
 /// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
