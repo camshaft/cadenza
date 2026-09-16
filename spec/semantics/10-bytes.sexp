@@ -678,23 +678,24 @@
 (case
   "a SumExpect-unwrapped slice view BOUND and read TWICE (count>1) is NOT reclaimed (SumExpect single-consumer/escape must-hold)"
   (doc
-    "The MUST-HOLD guard for the SumExpect view-reclaim (#4939, v-memory-safety): the reclaim marks a
-           SumExpect-extracted Bytes slice-view a dup-site ONLY when it is the operand of exactly ONE `Bytes.at`
-           (`count_node_refs == 1` — single-consumer, scalar-extracted, not-escaped), then reclaims it via the
-           per-op `reclaim_bytes` drop. This case fences the count>1 EXCLUSION: `mk-slice` returns an
-           `(Option.expect (Bytes.slice parent a 2) …)` view of a LOCAL parent, and the caller BINDS it (`v`)
-           and reads it TWICE — `(Bytes.len v)` AND `(Bytes.at v 0)` — so `count_node_refs(v) > 1`. The reclaim
-           MUST NOT fire (a per-op `reclaim_bytes` drop on a multi-read view would DOUBLE-DROP; and the view
-           escapes the helper holding its local parent, so freeing it under a live use = UAF). So `v` stays
-           leaking, both reads see the live view: `100·2 + 30` = 230 / `100·2 + 10` = 210. A regression that
-           reclaimed a count>1 view would move the value off 230/210 or trip an `assert_node_live` UAF trap.
-           The single-consumer scalar-extracted twin (`Bytes.at` over a directly-consumed slice) is bar3/bar4,
-           which #4939 correctly drops to 0 — this count>1 case is the complementary must-hold that stays leaking.
-           KNOWN-LEAK 1 (was 2): the Option-A SumExpect SHELL-reclaim (#4956) net-0-reclaims the orphaned Some-shell
-           here too — the SumExpect node is referenced ONCE by the `let` (its parent is the Let, not a scalar-read),
-           so it lands in the SHELL-set and its shell drops soundly (view untouched). The residual 1 IS the
-           un-reclaimed count>1 VIEW — the must-hold witness: a regression that wrongly reclaimed the multi-read
-           view would drop this to 0 (or trip `assert_node_live`), so known-leak-1 still guards the count>1 view.")
+    "UPDATE (v-memory-safety, pin flipped to census 0): the count>1 view IS now SOUNDLY reclaimed, so
+           this case measures 0 and the title clause 'is NOT reclaimed' is HISTORICAL (kept verbatim to avoid a
+           retitle baseline churn — see the corpus-case-titles vanished-orphan note). rc-trace on the emitted
+           wasm shows the SumExpect view DUP'd then DROPPED exactly ONCE after its LAST read (`LEAK SUMMARY: none
+           — every ALLOC reached a freed DROP`, value 230), i.e. a single balanced drop post-last-use — NOT the
+           per-op double-drop / early-free the original must-hold feared. Verified UAF-clean: value-exact (230 /
+           210), census-0 on the debug-counters AND rc-trace runtimes, and `assert_node_live` never trips under
+           cad-test-json. A later reclaim generalization (beyond #4939's single-consumer case) handles the
+           bound-and-read-twice count>1 view soundly. The case is RETAINED as the witness that this count>1
+           reclaim is SOUND (value + UAF hold at census-0); a future regression to an UNSOUND early-free would
+           now drift 230/210 or trip the UAF oracle, and a regression back to leaking would fail the 0 pin.
+     ---- ORIGINAL must-hold rationale (pre-generalization, for context): the SumExpect view-reclaim (#4939)
+           marked a SumExpect-extracted Bytes slice-view a dup-site ONLY when it was the operand of exactly ONE
+           `Bytes.at` (`count_node_refs == 1` — single-consumer, scalar-extracted, not-escaped), reclaiming it via
+           the per-op `reclaim_bytes` drop; this case fenced the count>1 EXCLUSION (`v` bound and read TWICE —
+           `(Bytes.len v)` AND `(Bytes.at v 0)`), where a naive per-op drop on a multi-read escaping view would
+           double-drop / free under a live use. The single-consumer twin is bar3/bar4 (dropped to 0 by #4939).
+           The generalized reclaim now balances the count>1 case too, as the rc-trace above confirms.")
   (input
     (do
       (def
@@ -710,7 +711,7 @@
   (output (: 230 Int64))
   (call main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
 ; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
