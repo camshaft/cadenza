@@ -3078,11 +3078,27 @@ pub(super) fn emit(
             // `Map.len`/`List.len`/`Bytes.len`/`Set.len` owned-proj-child reclaim; drop-iff-dup'd via the
             // shared `owned_proj_child_dupd` gate. The `!slots.contains_key(&operand)` guard still excludes a
             // materialized (shared) inner Proj — its slot owner reclaims it, not this borrowing read.
+            // ALSO reclaim when `operand` is a SumExpect VIEW in the shell-reclaim set (`(. (Option.expect
+            // (Map.lookup m k)) field)` — a borrow-clean scalar/nested read off an owned-single-view Some
+            // extraction): the SumExpect emit's `compound_dupd` dup'd the extracted view into a standalone
+            // owned handle (rc1) + dropped the Some shell, and the shell-set contract is that THIS consumer
+            // owns + drops the view. A scalar-field `Core::Proj` has no view-drop hook of its own (unlike
+            // `Bytes.at`/`List.len`), so without this the owned view leaks (the map-value-record owner-drop
+            // gap, corpus-15 0122 node#4 / V1). Drop-iff-dup'd: the SumExpect only dup'd the view when it is
+            // in the shell/view reclaim set, so gating the drop on the SAME membership keeps dup==drop (no
+            // double-free). `heap_operand_ownership(SumExpect)` is deliberately NOT globally Owned (the
+            // StrAt/local>global discipline), so we consult the set directly, mirroring `owned_proj_child_dupd`.
+            // KNOWN FOLLOW-UP (leak-safe): `owned_proj_child_dupd` (the OUTER-Proj dup-mirror) does NOT yet
+            // recognize this `sumexpect_shell_reclaim` disjunct, so a DOUBLE projection off the view
+            // (`(. (. (Option.expect …) inner) x)`) still leaks the inner child (V8) — the LEAK side of the
+            // mirror, never a double-free (owned_proj_child_dupd stays false → no unmatched drop). v-cdz-wasm-
+            // codegen owns adding the parallel clause there (threads the set into its signature).
             let reclaim = !slots.contains_key(&operand)
                 && (matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
-                ) || owned_proj_child_dupd(db, operand, slots));
+                ) || owned_proj_child_dupd(db, operand, slots)
+                    || out.sumexpect_shell_reclaim.contains(&operand));
             if reclaim {
                 let agg_slot = base;
                 *high = (*high).max(agg_slot + 1);
