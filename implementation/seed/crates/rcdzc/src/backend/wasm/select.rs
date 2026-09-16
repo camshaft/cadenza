@@ -963,6 +963,11 @@ fn rebinds_fresh_accumulator_in_body(
     if let Core::Call { callee, args } = core_of(db, id)
         && members.contains(&callee)
     {
+        let heap_param_binders: Vec<StructId> = slot_binders
+            .iter()
+            .copied()
+            .filter(|&b| is_heap_type(&type_of(db, b)))
+            .collect();
         for i in 0..args.len() {
             if i >= param_slots.len() {
                 continue;
@@ -971,7 +976,9 @@ fn rebinds_fresh_accumulator_in_body(
             if !is_heap_type(&type_of(db, binder)) {
                 continue;
             }
-            if !rebind_produces_fresh(db, args[i]) {
+            if !rebind_produces_fresh(db, args[i])
+                && !reclaim::rebind_is_cross_param_move(db, args[i], binder, &heap_param_binders)
+            {
                 continue;
             }
             if !args.iter().any(|&a| binding_escapes(db, a, binder, false)) {
@@ -3221,6 +3228,19 @@ fn emit_loop_iteration(
     } else {
         Vec::new()
     };
+    // The HEAP loop-param binders (unwrapping each `(: binder ty)` form) — the set a cross-param move
+    // (`rebind_is_cross_param_move`, the multi-accumulator permutation reclaim) can rebind a slot to.
+    let mut heap_param_binders: Vec<StructId> = Vec::new();
+    for &mp in &member_params {
+        let b = db
+            .ast
+            .as_form(mp, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(mp);
+        if is_heap_type(&type_of(db, b)) {
+            heap_param_binders.push(b);
+        }
+    }
     let drop_old_borrowed: Vec<bool> = (0..args.len())
         .map(|i| {
             if !single_member
@@ -3254,7 +3274,13 @@ fn emit_loop_iteration(
             // `rebind_produces_fresh`. Extended from numeric-only to fresh product ctors to close the RECURSIVE
             // tuple/record/list-STATE handler per-perform leak (v-effects wasm-dump-confirmed on rectuple_tail).
             !args.iter().any(|&a| binding_escapes(db, a, binder, false))
-                && rebind_produces_fresh(db, args[i])
+                && (rebind_produces_fresh(db, args[i])
+                    || reclaim::rebind_is_cross_param_move(
+                        db,
+                        args[i],
+                        binder,
+                        &heap_param_binders,
+                    ))
         })
         .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
