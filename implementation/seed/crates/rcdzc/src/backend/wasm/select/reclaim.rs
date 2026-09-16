@@ -1160,6 +1160,38 @@ pub(super) fn rebind_produces_fresh(db: &mut Db, arg: StructId) -> bool {
     }
 }
 
+/// Whether a loop-rebind `arg` for the slot owned by `slot_binder` is a bare CROSS-PARAM MOVE — a
+/// `Core::Param{p}` where `p` is a DIFFERENT heap loop-param binder than `slot_binder` (an accumulator
+/// PERMUTATION, e.g. the fibonacci `loop n a b = loop (n-1) b (a+b)` rebinding slot `a` to param `b`). Like
+/// the fresh-producing shapes in [`rebind_produces_fresh`], a different param names a DISTINCT live cell —
+/// never the old slot value's cell — so once the old accumulator has been read (borrowed) this iteration it
+/// is genuinely dead and the `drop_old_borrowed` reclaim can free it. SOUNDNESS rests on the SAME caller
+/// escape guard (`!binding_escapes(arg, slot_binder)` for EVERY rebind arg): if the old value were carried
+/// forward through any arg it would escape and the guard blocks the drop. A moved param that ALIASES the
+/// old value (`loop n x x`) is rc-balanced — the alias carries its own ref, so dropping the old slot ref
+/// leaves the moved-into slot holding a live ref (rc 2→1, never 0). v-memory-safety: with the Part-B
+/// spurious-dup fix, closes the multi-accumulator BigInt/Rational permutation leak (06 fibonacci, +1/iter).
+pub(super) fn rebind_is_cross_param_move(
+    db: &mut Db,
+    arg: StructId,
+    slot_binder: StructId,
+    heap_param_binders: &[StructId],
+) -> bool {
+    match core_of(db, arg) {
+        Core::Param { binder } => binder != slot_binder && heap_param_binders.contains(&binder),
+        Core::Let { body, .. } => {
+            rebind_is_cross_param_move(db, body, slot_binder, heap_param_binders)
+        }
+        Core::Seq { tail, .. } => {
+            rebind_is_cross_param_move(db, tail, slot_binder, heap_param_binders)
+        }
+        Core::Block { body, .. } => {
+            rebind_is_cross_param_move(db, body, slot_binder, heap_param_binders)
+        }
+        _ => false,
+    }
+}
+
 /// Whether `binder` escapes through a sum-match CONTINUATION — a leaf's body, or a nested switch's arms
 /// (each recursed). The `Payload`/`Elem` path steps are heap reads that carry no binding, so only the arm
 /// continuations matter (mirrors the `MatchSum` arm walk in `binding_escapes`).
@@ -3178,7 +3210,8 @@ fn mark_binder_dups_body(
                     la_in: bool,
                     s: &mut HashSet<StructId>,
                     spare_last: bool,
-                    strict_consume_op: bool|
+                    strict_consume_op: bool,
+                    deferred_consume_group: bool|
      -> bool {
         // Pre-pass: does `binder` occur in each child? Use the CHEAP occurrence scan (`binder_occurs`), NOT
         // `mark_binder_dups` — the latter's full two-pass walk, invoked from every nested `seq`'s pre-pass,
@@ -3225,7 +3258,7 @@ fn mark_binder_dups_body(
         // spared (growB stays fixed). 14b: the growing List is read at MULTIPLE getat/List.len/List.update
         // sites in-path (or live-after) → NOT spared → the dup is kept → 707. Same la-fold hazard fix-2 hit
         // globally; scoped here to the strict-consume seq + the path condition.
-        let holds_no_handle: Vec<bool> = if strict_consume_op {
+        let holds_no_handle: Vec<bool> = if strict_consume_op || deferred_consume_group {
             // A BARE direct `binder` ref is the ONLY other-use permitted alongside a spare (it is the
             // deferred-consume op's own consume operand, already accounted by Perceus's k-1). Precomputed
             // once (own db borrow) so the per-child gate need not re-walk.
@@ -3239,17 +3272,36 @@ fn mark_binder_dups_body(
                 .iter()
                 .enumerate()
                 .map(|(k, &(c, _))| {
-                    // TWO holds-no-handle shapes, BOTH under the SAME path-sensitive gate (#8485 lesson —
+                    // THREE holds-no-handle shapes, ALL under the SAME path-sensitive gate (#8485 lesson —
                     // the la-fold spare is unsound whenever the binder has another in-path live use, because
                     // the sibling deferred-consume FBIP-mutates in place while a later read needs the old
-                    // value; applies to both disjuncts):
+                    // value; applies to every disjunct):
                     //   (a) SCALAR BORROW-ONLY (v2/#8466 growB-class): non-aliasing scalar result, no ref taken.
                     //   (b) THREADED RECLAIMING CALLEE (gP2): `(callee … c …)` threads the binder into a callee
                     //       that reclaims it within the call, so its ref is freed before the call returns.
+                    //   (c) FRESH-NON-ALIASING ARITH BORROW at a DEFERRED-CONSUME group (Call/CallClosure —
+                    //       every arg is consumed AT the call instruction, AFTER all args evaluate): a co-arg
+                    //       `(+ … binder …)` / `(- …)` / … (`BigIntBinOp`/`RationalBinOp`) BORROWS `binder`
+                    //       (`!binding_escapes`) and re-boxes a FRESH result that never aliases an operand
+                    //       (ownership.rs), so it READS the live `binder` before the call consumes the sibling
+                    //       move-arg — no retain-dup needed. Unlike (a), the result may be HEAP (a fresh BigInt),
+                    //       which is why the scalar gate excluded it. v-memory-safety: the multi-accumulator
+                    //       permutation leak (`loop n a b = loop (n-1) b (a+b)`): `b` is moved into slot `a` AND
+                    //       read by `a+b`; the spurious retain-dup (never released) leaked +1/iter. SOUND at a
+                    //       CALL only (deferred consume); a strict-consume op's in-place FBIP would still hazard,
+                    //       so (c) is gated to `deferred_consume_group`, and the `!la_in` + bare-ref-siblings
+                    //       path gate blocks it whenever `binder` has any other non-bare live use.
                     occurs[k]
-                        && ((!is_heap_type_for_retain(&type_of(db, c))
-                            && !binding_escapes(db, c, binder, false))
-                            || callee_reclaims_threaded_binder_arg(db, c, binder))
+                        && ((strict_consume_op
+                            && ((!is_heap_type_for_retain(&type_of(db, c))
+                                && !binding_escapes(db, c, binder, false))
+                                || callee_reclaims_threaded_binder_arg(db, c, binder)))
+                            || (deferred_consume_group
+                                && matches!(
+                                    core_of(db, c),
+                                    Core::BigIntBinOp { .. } | Core::RationalBinOp { .. }
+                                )
+                                && !binding_escapes(db, c, binder, false)))
                         && !la_in
                         && (0..children.len()).all(|j| j == k || !occurs[j] || bare_ref[j])
                 })
@@ -3257,9 +3309,10 @@ fn mark_binder_dups_body(
         } else {
             Vec::new()
         };
-        // `strict_consume_op && holds_no_handle[k]` — the `&&` short-circuits so the empty vec is never indexed
-        // when `strict_consume_op` is false.
-        let no_handle = |k: usize| strict_consume_op && holds_no_handle[k];
+        // `(strict_consume_op || deferred_consume_group) && holds_no_handle[k]` — the `&&` short-circuits so
+        // the empty vec is never indexed when neither flag is set.
+        let no_handle =
+            |k: usize| (strict_consume_op || deferred_consume_group) && holds_no_handle[k];
         let any = occurs.iter().any(|&o| o);
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
         // additionally seed each child's `la` with "binder occurs in some OTHER child" (the left-sibling
@@ -3285,7 +3338,7 @@ fn mark_binder_dups_body(
                children: &[(StructId, bool)],
                la_in: bool,
                s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false, false) };
+     -> bool { seq_impl(db, children, la_in, s, false, false, false) };
     // Wrapper for a STRICT DEFERRED-CONSUME op (ListPush/ListPrepend/ListUpdate/MapInsert/SetInsert): all
     // operands evaluate before the op consumes a bare heap operand, so a borrow-only SCALAR co-operand's read
     // of the binder completes before the deferred consume and must not force a retain-dup (the CATALAN
@@ -3295,7 +3348,17 @@ fn mark_binder_dups_body(
                       children: &[(StructId, bool)],
                       la_in: bool,
                       s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false, true) };
+     -> bool { seq_impl(db, children, la_in, s, false, true, false) };
+    // Wrapper for a CALL / CALL-CLOSURE arg group (`deferred_consume_group = true`): every arg is CONSUMED at
+    // the call instruction, AFTER all args evaluate, so a co-arg that only BORROWS the binder via a fresh-
+    // non-aliasing arith op reads it live before the consume and must not force the moved-arg's retain-dup
+    // (holds-no-handle disjunct (c) — the multi-accumulator permutation over-dup fix). `strict_consume_op =
+    // false` (a call does no in-place FBIP mutation of its args).
+    let seq_defer = |db: &mut Db,
+                     children: &[(StructId, bool)],
+                     la_in: bool,
+                     s: &mut HashSet<StructId>|
+     -> bool { seq_impl(db, children, la_in, s, false, false, true) };
     // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
     // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
     // arm's use (an arm runs after the prefix). Returns whether `binder` occurred anywhere.
@@ -3533,6 +3596,7 @@ fn mark_binder_dups_body(
             sites,
             true,
             false,
+            false,
         ),
         Core::BytesSlice {
             bytes, start, len, ..
@@ -3647,6 +3711,7 @@ fn mark_binder_dups_body(
                 sites,
                 true,
                 false,
+                false,
             )
         }
         // Arithmetic / logical: both operands consumed positions (scalars anyway; a heap binding can only
@@ -3666,13 +3731,13 @@ fn mark_binder_dups_body(
         // A runtime call / host call CONSUMES each argument (callee-owns-args). Args evaluate left-to-right.
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
             let cs: Vec<(StructId, bool)> = args.iter().map(|&a| (a, false)).collect();
-            seq(db, &cs, live_after, sites)
+            seq_defer(db, &cs, live_after, sites)
         }
         Core::CallClosure { closure, args } => {
             let mut cs: Vec<(StructId, bool)> = Vec::with_capacity(args.len() + 1);
             cs.push((closure, false));
             cs.extend(args.iter().map(|&a| (a, false)));
-            seq(db, &cs, live_after, sites)
+            seq_defer(db, &cs, live_after, sites)
         }
         Core::Closure { captures, .. } => {
             let cs: Vec<(StructId, bool)> = captures.iter().map(|&c| (c, false)).collect();

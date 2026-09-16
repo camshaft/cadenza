@@ -384,6 +384,19 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
                     return true;
                 }
                 if allow_reclaimed_rebox {
+                    // (c) CROSS-PARAM MOVE: `binder` passed WHOLE (a bare `Param(binder)`) to a DIFFERENT
+                    //     slot — an accumulator PERMUTATION (`loop n a b = loop (n-1) b (a+b)` moves `b` into
+                    //     slot `a`). `binder`'s shell is TRANSFERRED to that sibling slot and reclaimed by ITS
+                    //     lifecycle (the sibling's `drop_old_borrowed` / its own epilogue), so this back-edge
+                    //     does not leak `binder`; the epilogue drop reclaims only `binder`'s OWN slot's FINAL
+                    //     unconsumed value (dead at loop exit). (`is_identity` above already handled the own-
+                    //     slot pass-through; reaching here with `Param(binder)` means a cross-slot move.) The
+                    //     SCALAR-RETURN + `terminal_arms_no_heapchild_escape` fences in
+                    //     `varying_param_epilogue_droppable` still guard against a heap child of the final value
+                    //     escaping. v-memory-safety: the multi-accumulator permutation residual (fib2 12→1→0).
+                    if matches!(core_of(db, arg), Core::Param { binder: p } if p == binder) {
+                        return true;
+                    }
                     // VARYING-rebound: accept a rebox that only BORROWS / reclaimed-consumes binder.
                     // (a) `!binding_escapes` — RestFrom tail = fresh-tail borrow, reclaimed on the edge.
                     // (b) lgx1: `binder` CONSUMED as the BASE COLLECTION of a persistent-extend rebox

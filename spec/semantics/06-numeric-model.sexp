@@ -12798,7 +12798,7 @@
       (def (main) (Int64.of (loop 10 (BigInt.of 0) (BigInt.of 1))))
       (export main)))
   (output (: 55 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Rational built from a parameter compares by its exact value"
