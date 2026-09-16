@@ -485,6 +485,25 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::SetLen { set } => recur(db, set, true),
         Core::MapSize { map } => recur(db, map, true),
         Core::SetContains { set, elem, .. } => recur(db, set, true) && recur(db, elem, true),
+        // STRUCTURAL COMPARE / EQUALITY ops BORROW both heap operands (read in place for the hash/compare,
+        // dropping only an owned temporary — core.rs; mirrors `binding_escapes`/`collect_consuming_payload_
+        // sites` which recurse both with `consuming=false`) and return a SCALAR (`Bool`/ordering `Int`) that
+        // holds NO alias into either operand. So a heap `binder` compared via `=`/`<`/`String.compare` in a
+        // loop is BORROW-only → recurse both operands borrowed. v-memory-safety: the compare twin of the
+        // `Bytes.at`/`Set.contains`/`Map.lookup` borrow arms — a String/BigInt/Rational/compound param compared
+        // each iteration leaked its whole shell because these heap compares (distinct Core variants from the
+        // scalar `Compare`) fell to `_ => false`. RE-ADDED after #9010 was reverted (the CAESAR PASS->trap P1):
+        // this borrow classification is CORRECT; #9010's fault was that the resulting loop-exit reclaim lacked
+        // the caller-owns guard, so it dropped a caller-REUSED param (`find-at`'s `c`, still read by `rot-go`)
+        // → UAF. The reclaim is now gated by `looped_invariant_param_caller_owned` (AXIS A) at the drop site,
+        // so a borrow-only compared param is reclaimed ONLY when this frame owns it (bcp1's owned `drive` param
+        // — reclaimed; CAESAR's borrowed `find-at` param — left to leak, matching its known-leak baseline).
+        Core::ValueEq { lhs, rhs }
+        | Core::ValueEqShaped { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => recur(db, lhs, true) && recur(db, rhs, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             recur(db, scrutinee, true)
         }
