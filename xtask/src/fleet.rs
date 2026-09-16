@@ -658,8 +658,10 @@ pub enum FleetCmd {
     },
     /// Stamp an agent's `lastTick` — the presence heartbeat the loop calls at the top of every tick.
     Heartbeat {
-        /// The agent stamping presence.
-        name: String,
+        /// The agent stamping presence. OPTIONAL: when omitted, auto-detected from the calling tmux
+        /// window (seq-987 foolproofing) so `fleet heartbeat` from inside an agent's window always
+        /// stamps THAT agent.
+        name: Option<String>,
     },
     /// Print an agent's config as shell-safe `KEY=VALUE` lines (WORKTREE/ROLE/MODEL/INTERVAL/
     /// DISALLOW_ASK) — consumed by `window.sh` via `eval`. Exits non-zero if the agent is unknown.
@@ -702,8 +704,10 @@ pub enum FleetCmd {
     /// way `send`/`heartbeat` do, so it can never mis-resolve, and it prints the resolved PATH + a LOUD
     /// `0 messages` line when empty (so a mis-set path shows as a visible anomaly, not silent idle).
     Inbox {
-        /// The agent whose inbox to list.
-        name: String,
+        /// The agent whose inbox to list. OPTIONAL: omit inside an agent's window and it is auto-detected
+        /// from the calling tmux window (seq-987 foolproofing) → `fleet inbox` always resolves to THIS
+        /// agent's HUB inbox, impossible to glob/target the wrong (shadow) path even if the prompt drifts.
+        name: Option<String>,
         /// Consume a message: MOVE `<msg>` to `processed/` under the SAME canonical HUB inbox the
         /// resolver prints, then re-list. This owns the path on BOTH sides so an agent never hand-`mv`s a
         /// worktree-relative `.claude/fleet/inbox/...` path (which targets an empty shadow copy, leaves
@@ -1411,14 +1415,20 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => send(
             &fleet, &to, &kind, &subject, &r#ref, &body, body_file, from, no_wake, force, &urgency,
         ),
-        FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
+        FleetCmd::Heartbeat { name } => {
+            let name = resolve_self_agent(&fleet, name, "heartbeat");
+            heartbeat(&fleet, &name)
+        }
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::SetInterval { name, interval } => set_interval(&fleet, &name, &interval),
         FleetCmd::ReissueLoop { name } => reissue_agent_loop(&fleet, &name),
-        FleetCmd::Inbox { name, processed } => match processed {
-            Some(msg) => inbox_consume(&fleet, &name, &msg),
-            None => inbox_list(&fleet, &name),
-        },
+        FleetCmd::Inbox { name, processed } => {
+            let name = resolve_self_agent(&fleet, name, "inbox");
+            match processed {
+                Some(msg) => inbox_consume(&fleet, &name, &msg),
+                None => inbox_list(&fleet, &name),
+            }
+        }
         FleetCmd::Wake {
             name,
             operator_message,
@@ -12144,6 +12154,80 @@ fn in_tmux() -> bool {
     std::env::var("TMUX").is_ok()
 }
 
+/// The agent name derived from the CALLING tmux pane's window — the foundation of the "foolproof"
+/// window-env commands (operator seq-987): `fleet inbox`/`heartbeat` with no name default to THIS agent,
+/// so an agent can't drain/target the wrong (shadow) path even if its tick prompt drifts. Windows are
+/// named after their agent (`window.sh <name>`), so the pane's `#W` IS the agent name. Targets the pane
+/// this process runs in via `$TMUX_PANE` — NOT a bare `display-message -p '#W'`, which resolves the
+/// attached client's ACTIVE window (wrong when the human is viewing a different window). `None` outside
+/// tmux / no `$TMUX_PANE` / tmux error → the caller falls back to requiring an explicit name (never guesses).
+fn current_window_agent() -> Option<String> {
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let out = Command::new("tmux")
+        .args(["display-message", "-p", "-t", &pane, "#W"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Why a self-targeting command could not resolve an agent name (for a clear caller-side error).
+enum SelfAgentErr {
+    /// No explicit name and no tmux auto-detection (outside a window / tmux unavailable).
+    NoName,
+    /// Auto-detected a window name that is NOT a registered agent (a stray/renamed window) — refuse to
+    /// guess rather than mis-target.
+    UnknownWindow(String),
+}
+
+/// Pure precedence for a self-targeting command's agent (seq-987): an EXPLICIT name always wins; else the
+/// auto-detected window agent, but ONLY if it is a registered agent; else an error the caller turns into
+/// a clear message. Pure so the precedence + validation is unit-testable without tmux/registry I/O.
+fn choose_self_agent(
+    explicit: Option<String>,
+    detected: Option<String>,
+    detected_is_registered: bool,
+) -> Result<String, SelfAgentErr> {
+    if let Some(n) = explicit {
+        return Ok(n);
+    }
+    match detected {
+        None => Err(SelfAgentErr::NoName),
+        Some(n) if detected_is_registered => Ok(n),
+        Some(n) => Err(SelfAgentErr::UnknownWindow(n)),
+    }
+}
+
+/// Resolve the agent for a self-targeting command (`inbox`/`heartbeat`): the explicit `name` if given,
+/// else the calling window's agent (seq-987 foolproofing). Exits with a clear, actionable error if
+/// neither is available, so a mis-invocation fails LOUD instead of silently acting on the wrong identity.
+fn resolve_self_agent(fleet: &Fleet, explicit: Option<String>, verb: &str) -> String {
+    let detected = current_window_agent();
+    let detected_is_registered = detected
+        .as_deref()
+        .is_some_and(|n| fleet.load().agents.iter().any(|a| a.name == n));
+    match choose_self_agent(explicit, detected, detected_is_registered) {
+        Ok(n) => n,
+        Err(SelfAgentErr::NoName) => {
+            eprintln!(
+                "fleet {verb}: no agent name given and could not auto-detect one from the tmux window \
+                 — pass it explicitly: fleet {verb} <name>"
+            );
+            std::process::exit(1);
+        }
+        Err(SelfAgentErr::UnknownWindow(n)) => {
+            eprintln!(
+                "fleet {verb}: auto-detected window '{n}' is not a registered agent — pass the name \
+                 explicitly: fleet {verb} <name>"
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 fn tmux_current_session() -> String {
     Command::new("tmux")
         .args(["display-message", "-p", "#S"])
@@ -21067,6 +21151,34 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         // No Valid line → None (fail-safe, never a false DEGRADED).
         assert_eq!(ssh_cert_valid_to("Type: something\nPrincipals: x\n"), None);
+    }
+
+    #[test]
+    fn choose_self_agent_precedence_and_validation() {
+        // Explicit name ALWAYS wins — even over a (would-be) detected one, registered or not.
+        assert_eq!(
+            choose_self_agent(Some("v-x".into()), Some("v-y".into()), true).ok(),
+            Some("v-x".to_string())
+        );
+        assert_eq!(
+            choose_self_agent(Some("v-x".into()), None, false).ok(),
+            Some("v-x".to_string())
+        );
+        // No explicit: use the detected window agent IFF it is registered.
+        assert_eq!(
+            choose_self_agent(None, Some("v-hivemind".into()), true).ok(),
+            Some("v-hivemind".to_string())
+        );
+        // Detected but NOT a registered agent → refuse to guess (stray/renamed window).
+        assert!(matches!(
+            choose_self_agent(None, Some("scratch".into()), false),
+            Err(SelfAgentErr::UnknownWindow(w)) if w == "scratch"
+        ));
+        // Neither explicit nor detected → NoName (caller errors with "pass it explicitly").
+        assert!(matches!(
+            choose_self_agent(None, None, false),
+            Err(SelfAgentErr::NoName)
+        ));
     }
 
     #[test]
