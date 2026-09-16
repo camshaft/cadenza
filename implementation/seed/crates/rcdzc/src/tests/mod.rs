@@ -1264,6 +1264,95 @@ fn a_host_state_echo_with_bytes_param_and_result_emits_valid_wasm() {
     );
 }
 
+/// The PURE-reducer analog of `echo_bytes_world_with_state_get_bytes`: same `echo: func(m: record { key:
+/// list<u8> }) -> list<u8>` export, but NO host import (a pure reducer performs no world ops). This is the
+/// shape that routes through `assemble_typed_interface_with_runtime` (host_imports empty, mod.rs:1315) —
+/// the pure-reducer bulk extension target (Option-B: give it a mem-module structure so the bulk bytes ops
+/// lower with Memory+Realloc pre-instantiation, like the `_mem` host path).
+fn echo_bytes_world_pure() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    // export cadenza:platform/guest { echo: func(m: record { key: list<u8> }) -> list<u8> }
+    let echo_member = {
+        let param_ty = {
+            let key_ty = list_u8(&mut b);
+            let key_n = b.name("key");
+            let key_field = b.list(vec![key_n, key_ty]);
+            let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+            b.list(vec![rec_h, key_field])
+        };
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, param_ty]);
+        let result_h = b.name("result");
+        let res_ty = list_u8(&mut b);
+        let result_node = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("echo");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("cadenza:platform/guest");
+    let export = b.list(vec![exp_h, iname, echo_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// ORACLE (pure-reducer bulk extension, Option-B): a PURE reducer whose export member has a `list<u8>` PARAM
+/// and a bare `list<u8>` RESULT (echoes `m.key`) MUST emit VALID wasm. This is the pure analog of
+/// `a_host_state_echo_with_bytes_param_and_result_emits_valid_wasm` — no host op, so it routes through
+/// `assemble_typed_interface_with_runtime`. The bulk-bytes lower needs Memory+Realloc pre-instantiation; the
+/// pure path has no shared mem module today, so this is the target the mem-module variant must satisfy.
+#[test]
+fn a_pure_reducer_echo_with_bytes_param_and_result_emits_valid_wasm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (def (echo (: m (Record (key Bytes)))) (. m key)) \
+      (export echo))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                echo_bytes_world_pure(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a pure-reducer echo with a bytes param + bytes result must emit (not decline): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the pure-reducer echo emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the pure-reducer bytes-param/bytes-result echo's component validates (bulk bytes-new/read)",
+    );
+}
+
 /// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
 /// export interface declares all three members (on-message/on-response/on-notification) — must DECLINE
 /// cleanly, not silently fall through to a raw heap-handle export (`on-message: u32 -> u32`) the platform
