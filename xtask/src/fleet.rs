@@ -3911,9 +3911,13 @@ fn status(fleet: &Fleet) {
     let now = now_unix();
 
     println!("Fleet board ({} agent(s)):", reg.agents.len());
+    // LOOP = the agent's `/loop` cadence (registry `interval`). Surfaced on the board so an operator/
+    // concierge can see every agent's tick cadence at a glance instead of asking or grepping the
+    // registry — the retighten/relax asks (e.g. v-hivemind 3h→30m, v-core-opt 3h→6h) route through
+    // `fleet set-interval`, and the board is where the result should be visible.
     println!(
-        "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<9} INBOX",
-        "AGENT", "ROLE", "MODEL", "STATUS", "WINDOW", "HB-AGE"
+        "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<5} {:<9} INBOX",
+        "AGENT", "ROLE", "MODEL", "STATUS", "WINDOW", "LOOP", "HB-AGE"
     );
     let mut stale = 0usize;
     let mut wedged = 0usize;
@@ -3973,8 +3977,8 @@ fn status(fleet: &Fleet) {
             }
         };
         println!(
-            "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<9} {}{}",
-            a.name, role, a.model, a.status, window, hb_age, inbox, flag
+            "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<5} {:<9} {}{}",
+            a.name, role, a.model, a.status, window, a.interval, hb_age, inbox, flag
         );
         // Fold the agent's OWN self-reported status headline (first substantive line of its
         // `status/<agent>.md`) onto an indented sub-line, so the board shows what each agent SAYS it's
