@@ -2741,7 +2741,7 @@
       (def (main) (find 0))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two constant sums with the same payload but different variants are not equal"
