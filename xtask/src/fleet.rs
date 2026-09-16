@@ -670,6 +670,22 @@ pub enum FleetCmd {
         /// The agent to describe.
         name: String,
     },
+    /// Print the operator<->concierge Slack CONVERSATION HISTORY, so the concierge can look back at what
+    /// the operator has already said (and forward consolidated context to an agent) WITHOUT the operator
+    /// re-describing it (operator seq-1038). Reconstructed READ-ONLY from the two processed inbox archives
+    /// the slack-bridge already keeps — no bridge change: operator→concierge messages are the
+    /// `slack-bridge` notes in concierge's `processed/`, concierge→operator messages are the `concierge`
+    /// messages in slack-bridge's `processed/`. Merged chronologically by the filename's durable
+    /// delivery-seq prefix and printed oldest-first with direction markers.
+    SlackHistory {
+        /// How many most-recent messages to show (default 40). Pass a large value for the full thread.
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
+        /// Show each message's FULL body instead of a bounded preview (the default caps each body so a
+        /// long window stays scannable).
+        #[arg(long)]
+        full: bool,
+    },
     /// Change an agent's `/loop` INTERVAL (e.g. retighten a sluggish vertical `30m`→`15m`). Updates the
     /// registry row (the durable source of truth `window.sh` reads at (re)launch) AND re-issues the
     /// agent's `/loop <new-interval> <tick>` NOW so the change takes effect without a relaunch — the
@@ -1421,6 +1437,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             heartbeat(&fleet, &name)
         }
         FleetCmd::Describe { name } => describe(&fleet, &name),
+        FleetCmd::SlackHistory { limit, full } => slack_history(&fleet, limit, full),
         FleetCmd::SetInterval { name, interval } => set_interval(&fleet, &name, &interval),
         FleetCmd::ReissueLoop { name } => reissue_agent_loop(&fleet, &name),
         FleetCmd::Inbox { name, processed } => {
@@ -12458,6 +12475,87 @@ fn inbox_consume_action(src_exists: bool, dst_exists: bool) -> ConsumeAction {
 /// unit-tested without provoking a real fs race.
 fn clear_stray_remove_is_fatal(kind: std::io::ErrorKind) -> bool {
     kind != std::io::ErrorKind::NotFound
+}
+
+/// Print the operator<->concierge Slack conversation history (operator seq-1038), reconstructed READ-ONLY
+/// from the two processed inbox archives the slack-bridge already keeps: operator→concierge messages are
+/// the `slack-bridge` notes in concierge's `processed/`, concierge→operator messages are the `concierge`
+/// messages in slack-bridge's `processed/`. The newest `limit` shown oldest-first with direction markers.
+/// `full` prints each body in full, else bodies are capped so a long window stays scannable.
+///
+/// Merged by FILE MTIME, not the filename seq prefix: the two sides draw from DIFFERENT counters (the Node
+/// bridge stamps operator→concierge with its own ~1..N Slack ordinal; concierge→operator carries the Rust
+/// global `next_delivery_seq` ~79k), so the prefixes are incomparable across sources and a raw-seq merge
+/// buries every operator message before the concierge ones. The file mtime is the write time (archiving is
+/// a `rename`, which preserves it), so it is a real wall-clock key comparable across both sources.
+fn slack_history(fleet: &Fleet, limit: usize, full: bool) {
+    const BODY_CAP: usize = 800;
+    // (agent whose processed/ we read, the `from` that marks an operator-thread message, direction label)
+    let sources = [
+        ("concierge", "slack-bridge", "OPERATOR "),
+        ("slack-bridge", "concierge", "CONCIERGE"),
+    ];
+    let mut msgs: Vec<(u64, &'static str, Message)> = Vec::new();
+    for (dir_agent, want_from, label) in sources {
+        let processed = fleet.inbox(dir_agent).join("processed");
+        let Ok(rd) = std::fs::read_dir(&processed) else {
+            continue; // archive absent → contributes nothing (still show the other side)
+        };
+        for e in rd.filter_map(Result::ok) {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(mtime) = file_mtime_unix(&path) else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(msg) = serde_json::from_str::<Message>(&text) else {
+                continue;
+            };
+            if msg.from == want_from {
+                msgs.push((mtime, label, msg));
+            }
+        }
+    }
+    msgs.sort_by_key(|(mtime, _, _)| *mtime);
+    let total = msgs.len();
+    let start = total.saturating_sub(limit);
+    println!(
+        "operator<->concierge Slack history ({} of {} message(s), oldest first{}):",
+        total - start,
+        total,
+        if full { ", full bodies" } else { "" }
+    );
+    if total == 0 {
+        println!("  (no operator<->concierge messages found in the processed archives yet)");
+        return;
+    }
+    for (_mtime, label, m) in &msgs[start..] {
+        // The operator's text and the concierge's replies both live in subject (one-line gist) + body
+        // (detail); print the gist then the body.
+        println!("  [{label}] {}", m.subject.trim());
+        let body = m.body.trim();
+        if body.is_empty() {
+            continue;
+        }
+        if full || body.chars().count() <= BODY_CAP {
+            for line in body.lines() {
+                println!("      {line}");
+            }
+        } else {
+            let preview: String = body.chars().take(BODY_CAP).collect();
+            for line in preview.lines() {
+                println!("      {line}");
+            }
+            println!(
+                "      … [+{} chars — pass --full for the rest]",
+                body.chars().count() - BODY_CAP
+            );
+        }
+    }
 }
 
 /// Consume one inbox message: MOVE `<msg>` to `processed/` under the resolver-owned HUB inbox path,
