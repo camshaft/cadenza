@@ -714,6 +714,73 @@
   (output (: false Bool)))
 
 (case
+  "bcp1 an INVARIANT BigInt param compared via = in a self-loop is reclaimed at loop exit (live-objects 0)"
+  (doc
+    "The structural-compare face of the invariant-loop-param reclaim family (v-memory-safety; the compare
+           twin of the Bytes.at / Set.contains / Map.lookup borrow arms): `drive` threads an UNCHANGING
+           `BigInt b` (identity-passed on every back-edge) and READS it only via `(= b (BigInt.of 3))` — a
+           value-eq that BORROWS both operands and returns a Bool SCALAR holding no alias into `b`. So `b` is
+           dead at loop exit and its heap leaf MUST be reclaimed there. Regression witness: the structural
+           compares (`ValueEq`/`ValueCmp`/`StrCmp`/`BigIntCmp`/`RationalCmp` — distinct Core variants from the
+           scalar `Compare`) were absent from the invariant-param exit-drop borrow allowlist, so the compare
+           fell to the deny fallback and the whole BigInt leaf leaked (constant per run — census 1 at any n).
+           `b = (BigInt.of n)` is RUNTIME-built (never const-folds). The compare is true on every iteration iff
+           n = 3: n=0 → loop not entered → 0; n=3 → b=3 matches all 3 iterations → 3; n=8 → b=8 never matches
+           → 0. `live-objects 0` is an exact drift guard (a re-leak shows > 0; the guarded-all backstop TRAPS a
+           reintroduced over-reclaim). Here `b` is OWNED (main passes the fresh `(BigInt.of n)`), so the
+           caller-owns AXIS A guard admits the reclaim — the owned face of bcp2.")
+  (input
+    (do
+      (def
+        (drive (: b BigInt) (: i Int64) (: acc Int64))
+        (if (> i 0) (drive b (- i 1) (+ acc (if (= b (BigInt.of 3)) 1 0))) acc))
+      (def (main (: n Int64)) (drive (BigInt.of n) n 0))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 8 Int64))
+  (output (: 0 Int64))
+  (live-objects 0))
+
+(case
+  "bcp2 a caller that REUSES an invariant BigInt param it passed to a self-loop comparing it is not freed mid-loop (#9010 CAESAR caller-reuse guard)"
+  (doc
+    "The SOUNDNESS face of bcp1 and the dedicated regression guard for the #9010 CAESAR `find-at` UAF (PASS
+           `(: 111 Int64)` -> wasm trap). `drive` reads its invariant `BigInt b` only via `(= b (BigInt.of 3))`
+           — borrow-only, so bcp1 reclaims it at loop exit WHEN OWNED. Here the caller `wrap` passes its OWN
+           param `b` to `drive` (BORROWED forward) and REUSES it after the call in a second `(= b …)`. So
+           `drive` does NOT own `b`: a loop-exit drop of `b` inside `drive` would free the handle `wrap` still
+           reads -> use-after-free (exactly `find-at` dropping `c` while `rot-go` reuses it). The
+           `looped_invariant_param_caller_owned` (AXIS A) guard denies `drive`'s reclaim because `b` is passed
+           BORROWED at its only (external) call site; the fresh `(BigInt.of n)` main hands `wrap` is owned and
+           reclaimed exactly once by `wrap` (a non-looped owner). Regression witness: a reintroduced UN-guarded
+           reclaim double-frees `b` -> TRAP. drive(n=3): 3 matches all 3 iters -> 3, wrap adds 100 -> 103;
+           n=8: 8 never matches -> 0, wrap adds 0 -> 0. The value stays correct only while the reclaim is
+           caller-owns-gated (the guard whose ABSENCE was the P1 CAESAR regression).
+           `live-objects known-leak`: `b` is BORROWED by `drive` (guard denies its loop-exit reclaim) and
+           `wrap` does not reclaim it either (its `drive`-call arg reads as a consume site, so the non-looped
+           borrow-reclaim declines), so `b` leaks its one leaf per run. That LEAK is the guard's leak-safe
+           choice — the point is the ABSENCE of a trap: a reintroduced un-guarded reclaim would double-free
+           `b` and TRAP here (as #9010 did in CAESAR), not leak. bcp1 is the OWNED twin that DOES reclaim.")
+  (input
+    (do
+      (def
+        (drive (: b BigInt) (: i Int64) (: acc Int64))
+        (if (> i 0) (drive b (- i 1) (+ acc (if (= b (BigInt.of 3)) 1 0))) acc))
+      (def
+        (wrap (: b BigInt) (: n Int64))
+        (+ (drive b n 0) (if (= b (BigInt.of 3)) 100 0)))
+      (def (main (: n Int64)) (wrap (BigInt.of n) n))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 103 Int64))
+  (call main (: 8 Int64))
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
+(case
   "equality over a compound mixing a float and a Bytes leaf walks both"
   (doc
     "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a

@@ -3701,6 +3701,29 @@ pub(crate) fn callee_call_site_args(db: &mut Db, callee: usize) -> Vec<Vec<Struc
         .unwrap_or_default()
 }
 
+/// Like [`callee_call_site_args`] but KEEPS the caller body with each site's args, as
+/// `(caller_body, argument-occurrences)`. The looped invariant-param caller-owns guard
+/// (`looped_invariant_param_caller_owned`, wasm select) needs the caller body so it can EXCLUDE the callee's
+/// own self-recursive back-edge (which threads an invariant param as a bare `Param` = Borrowed, owned-by-flow,
+/// NOT a fresh external entry) and scan only the EXTERNAL entries for ownership. Same cached whole-program
+/// index; returns owned clones so the caller can query `heap_operand_ownership` (`&mut Db`) freely.
+pub(crate) fn callee_call_site_args_with_caller(
+    db: &mut Db,
+    callee: usize,
+) -> Vec<(StructId, Vec<StructId>)> {
+    ensure_call_site_index(db);
+    db.call_sites_by_callee
+        .as_ref()
+        .and_then(|idx| idx.get(&callee))
+        .map(|sites| {
+            sites
+                .iter()
+                .map(|(caller, args)| (*caller, args.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
 /// resolves to a user def — keyed by that callee's index, valued by `(caller_body, argument-occurrences)`.
 /// Recurses through all structural children so a call nested anywhere is found.

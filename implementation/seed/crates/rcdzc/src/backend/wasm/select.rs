@@ -991,6 +991,90 @@ fn rebinds_fresh_accumulator_in_body(
         .any(|c| rebinds_fresh_accumulator_in_body(db, c, members, param_slots, slot_binders, seen))
 }
 
+/// AXIS A (caller-drop complementarity) for the LOOPED invariant-param reclaim — the "caller-reuse guard".
+/// Whether the self-recursive def `self_d` (body `self_body`) OWNS its heap param `binder` on EVERY external
+/// entry, so the loop-exit `op_drop` reclaims a genuinely-owned handle rather than one a CALLER still holds.
+/// Mirrors [`def_nonlooped_reclaims_param`]'s AXIS A, adapted for the looped case. It declines (a) an EXPORT
+/// entry (the boundary trampoline owns/drops the param — a loop-exit drop would double-free); (b) a funcref-
+/// taken def or one called from a lifted body (an invisible `call_indirect`/eta edge could forward a borrowed
+/// arg the direct call-site index cannot see); and (c) any def where some EXTERNAL (non-self) call site
+/// passes a non-OWNED arg for this param (`heap_operand_ownership != Owned`). The SELF back-edge is EXCLUDED
+/// from (c): an invariant param is identity-threaded as a bare `Param` (Borrowed) around the loop — owned-by-
+/// flow (the same handle circulates), not a fresh entry. Empty external sites (only self-calls, or an unseen
+/// edge) cannot prove ownership, so decline.
+///
+/// Sound-conservative: a wrong FALSE only forgoes the reclaim (a LEAK, never a UAF). This is the guard whose
+/// ABSENCE let #9010's compare-arm reclaim drop a caller-REUSED param (the CAESAR `find-at` case: `rot-go`
+/// passes its own borrowed `c` to `find-at` and reuses it after — a loop-exit drop of `c` inside `find-at`
+/// freed the buffer `rot-go` still read, a use-after-free wasm trap). bcp1's `drive` param is `(BigInt.of n)`,
+/// a FRESH owned construction at `main`'s call site, so it stays owned and the reclaim remains sound.
+fn looped_invariant_param_caller_owned(
+    db: &mut Db,
+    self_d: usize,
+    self_body: StructId,
+    binder: StructId,
+) -> bool {
+    // An export entry's boundary param is owned/dropped by the trampoline (the nonlooped AXIS A rule).
+    if db.exports.iter().any(|e| e.def == Some(self_d)) {
+        return false;
+    }
+    // Invisible edges (call_indirect / eta-lifted) could forward a borrowed arg the direct index misses.
+    if def_funcref_taken(db, self_body) || callee_called_from_lifted_body(db, self_d) {
+        return false;
+    }
+    // Param position == arg position at every call site (def_params order == Apply arg order — the same
+    // correspondence `def_nonlooped_reclaims_param` relies on).
+    let dparams = crate::layout::def_params(db, self_d);
+    let Some(param_index) = dparams.iter().position(|(b, _)| *b == binder) else {
+        return false;
+    };
+    let sites = crate::infer::callee_call_site_args_with_caller(db, self_d);
+    let mut saw_external = false;
+    for (caller_body, args) in sites {
+        if caller_body == self_body {
+            continue; // self back-edge: the invariant param is owned-by-flow, not a fresh external entry.
+        }
+        saw_external = true;
+        match args.get(param_index) {
+            Some(&arg) if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) => {
+            }
+            _ => return false, // borrowed / unknown / missing at this site → not all-owned → decline.
+        }
+    }
+    saw_external // no external call site proves ownership → decline (leak-safe).
+}
+
+/// Whether `binder` is read via a STRUCTURAL-COMPARE op (`= `/`<`/`String.compare` = `ValueEq`/
+/// `ValueEqShaped`/`ValueCmp`/`StrCmp`/`BigIntCmp`/`RationalCmp`) anywhere in `id`. These are exactly the
+/// borrow arms #9010 ADDED to `param_only_borrowed_or_backedge_rec`, and the ONLY ones whose loop-exit reclaim
+/// the CAESAR UAF exposed. The PRE-EXISTING arms (`List.at`/`Bytes.at`/`Set.contains`/`Set.len`/`Map.size`/
+/// `Map.lookup`) shipped SOUND across the corpus without any caller-owns guard (e.g. the `sum-at` List.at
+/// walk, whose `main` FORWARDS a fresh-owned list at last use — a legitimate ownership transfer that the
+/// conservative `heap_operand_ownership(LocalRef) == Borrowed` default cannot see). So the
+/// `looped_invariant_param_caller_owned` guard is applied ONLY to a COMPARED invariant param — precisely the
+/// #9010 regression shape — leaving the proven pre-existing reclaims untouched (no over-conservative flip).
+/// The mechanism-wide hardening of the OTHER arms (with a transfer-aware liveness test, not this strict Owned
+/// proxy) is a co-design follow-up with v-memory-safety (the borrow-arm family's owner). Conservative: a
+/// wrong TRUE only widens the caller-owns gate (a leak, never a UAF).
+fn param_compared_in_loop_body(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ValueEq { lhs, rhs }
+        | Core::ValueEqShaped { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. }
+            if occurs_in(db, lhs, binder) || occurs_in(db, rhs, binder) =>
+        {
+            return true;
+        }
+        _ => {}
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| param_compared_in_loop_body(db, c, binder))
+}
+
 fn looped_owned_param_drops(
     db: &mut Db,
     body: StructId,
@@ -1070,6 +1154,17 @@ fn looped_owned_param_drops(
                 slot_of,
             ) {
                 continue; // not provably borrow/back-edge only → conservatively leave it (default-deny).
+            }
+            // CALLER-REUSE GUARD (AXIS A) — scoped to the #9010 COMPARE-arm shape. Borrow-only-within-the-body
+            // is necessary but NOT sufficient for a COMPARED invariant param: the loop-exit `op_drop` also
+            // requires this frame to OWN the param on entry. A caller that passes it BORROWED and REUSES it
+            // (the CAESAR `find-at` UAF) must NOT have its handle freed here. Applied ONLY to a compared param
+            // (the arms #9010 added) so the proven pre-existing List.at/Bytes.at/Set/Map reclaims — whose
+            // callers may legitimately FORWARD a fresh-owned binding at last use (`sum-at`) — are untouched.
+            if param_compared_in_loop_body(db, body, *binder)
+                && !looped_invariant_param_caller_owned(db, self_d, body, *binder)
+            {
+                continue; // a caller borrows/reuses this COMPARED invariant param → leave it (leak, not UAF).
             }
         } else {
             // VARYING-rebound path (INC2 (a) (B) slice-1): the slot is re-bound each iteration; the OLD
