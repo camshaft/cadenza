@@ -781,6 +781,34 @@
   (live-objects known-leak))
 
 (case
+  "scp1 an OWNED String invariant param compared via = in a self-loop is reclaimed at loop exit (StrCmp admit twin of CAESAR)"
+  (doc
+    "The STRING (StrCmp) + JOIN-OWNED admit face of the compare-arm caller-owns guard family (#9029). CAESAR
+           (13-strings) pins the DENY side for a String compare (find-at's `c` is caller-REUSED by rot-go ->
+           the guard leaves it leaked, no UAF); bcp1 pins the ADMIT side but for BigInt. This pins the ADMIT
+           side for the exact type CAESAR regressed on — a STRING — AND via a JOIN-owned arg (a distinct
+           ownership path from bcp1's direct producer): `scan` threads an UNCHANGING `String s` and READS it
+           only via `(= s \"hit\")` (StrCmp, borrow-only, no alias into `s`), so `s` is dead at loop exit and
+           MUST be reclaimed. Its caller `main` passes `(if (> n 0) \"hit\" \"xxx\")` — an `If` of two owned
+           ConstStr leaves, so `heap_operand_ownership` joins to Owned and the `looped_invariant_param_caller_
+           owned` guard ADMITS the reclaim (the caller transferred ownership; `main` does not reuse it). n=3 ->
+           s=\"hit\", matches all 3 -> 3; n=0 -> s=\"xxx\", loop not entered -> 0. `live-objects 0` pins that
+           the StrCmp reclaim FIRES when owned; a regression that drops the StrCmp compare arm (or the join-
+           Owned admit) re-leaks -> >0, and a re-broken guard that over-reclaims a borrowed String TRAPS.")
+  (input
+    (do
+      (def
+        (scan (: s String) (: i Int64) (: acc Int64))
+        (if (> i 0) (scan s (- i 1) (+ acc (if (= s "hit") 1 0))) acc))
+      (def (main (: n Int64)) (scan (if (> n 0) "hit" "xxx") n 0))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (live-objects 0))
+
+(case
   "equality over a compound mixing a float and a Bytes leaf walks both"
   (doc
     "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a
