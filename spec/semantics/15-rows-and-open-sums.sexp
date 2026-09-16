@@ -583,7 +583,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once"
@@ -1065,7 +1065,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 32 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "chained Record.with updates on one field compose with the last write winning"
@@ -1109,7 +1109,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 51 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a nested-record parameter projects its inner fields through two dot levels"
