@@ -580,7 +580,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a capturing closure stored in a list and also called directly emits a valid artifact"
@@ -596,7 +597,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a capturing closure stored in a sum payload and also called directly emits a valid artifact"
@@ -612,7 +614,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a capturing closure whose surviving map store and direct call both feed the result"
@@ -650,7 +653,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a non-capturing closure stored and also called directly emits a valid artifact"
@@ -1464,7 +1468,8 @@
         (match (T.Susp (fn (n) (C.A n))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
       (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "an unannotated closure in a Some payload is typed from the Option's element arrow"
@@ -1481,7 +1486,8 @@
         (match (Some (fn (n) (C.A n))) ((Some f) (match (f 7) ((C.A m) m) ((C.B) 0))) ((None) 0)))
       (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "an unannotated closure with an unused parameter in a payload takes the declared parameter type"
@@ -1498,7 +1504,8 @@
       (def (main) (match (T.Susp (fn (n) (C.B))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
       (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a capturing unannotated closure in a payload is typed from the declared arrow"
@@ -1517,7 +1524,8 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 107 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param"
@@ -3228,7 +3236,8 @@
       (export main)))
   (call main)
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a flat multi-param lambda stored in a tuple is applied through curried syntax"
@@ -11531,7 +11540,8 @@
       (export main)))
   (call main (: -2 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 (case
   "a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)"
@@ -11551,7 +11561,8 @@
       (export main)))
   (call main (: -6 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety tighten): grader TIGHTEN CANDIDATE — now census 0 on every heap trial; reclaim landed, stale marker dropped.
+  (live-objects 0))
 
 ; -- breaker batch 473 (2026-08-27): the heap-return × lifted-param COMPOSITION gate (found probing
 ; param→return flow). Lifted list param + scalar return works (el2); scalar param + heap return
