@@ -604,24 +604,36 @@ pub fn emit(
     // not the guest body's, so add them to the used set here (before the import set is derived) — otherwise
     // the wrapper body cannot resolve them. No-op for any program that is not a record-param interface
     // export (the guest's own op set is unchanged).
+    // PURE-REDUCER BULK (operator seq-1024/1026): SINGLE source of truth, set in the used-op block below and
+    // read at the assembler-routing site (~L1315) so the used-op set and the emit CANNOT diverge. True iff a
+    // PURE reducer (no raw host ops) whose typed interface marshals `list<u8>` → route to the shared-`mem`
+    // bulk assembler (`core_module_with_wrappers_bulk` + `_mem`, zero host groups) so `bytes-new`/`bytes-read`
+    // canon-lower with Memory+Realloc pre-instantiation. Default false → the portable per-byte baseline.
+    let mut typed_pure_bulk = false;
     if let (Some(iface), Some(world_bytes)) = (db.component_name.clone(), db.wit_world.clone())
         && let Some((wrappers, _)) = record_interface_export(db, layout, &world_bytes, &iface)
     {
         used.insert("arr-alloc");
         used.insert("arr-set");
         // BULK-BYTES GATE — MUST equal `core_module_impl`'s `import_realloc` (the emit side), so the used-op
-        // set matches what the wrapper actually emits: true iff an UNBOUND host op has a SPILLED compound
-        // result, which forces the shared `cabi_realloc` at lower-time (the host-`_mem` typed-interface
-        // assembler). Only then can `bytes-new`/`bytes-read` canon-lower with Memory+Realloc; otherwise the
-        // wrapper keeps the per-byte `bytes-alloc`/`bytes-set` (lift) + `bytes-len`/`bytes-get` (result) path.
+        // set matches what the wrapper actually emits. Either: (a) an UNBOUND host op has a SPILLED compound
+        // result (the landed host-`_mem` path), OR (b) PURE-reducer bulk — no raw host ops + the interface
+        // marshals `list<u8>` (the seq-1024/1026 pure path). Both force the shared `cabi_realloc` at
+        // lower-time so `bytes-new`/`bytes-read` canon-lower with Memory+Realloc; else the per-byte path.
         let bulk_bytes = {
             let mut hs: Vec<host::HostImport> = Vec::new();
             for &def in &layout.order {
                 let body = def_body(db, def)?;
                 host::collect_host_imports(db, body, &mut hs);
             }
-            hs.iter()
-                .any(|h| h.spilled_result.is_some() && !db.effect_bindings.contains_key(&h.effect))
+            let host_spilled = hs
+                .iter()
+                .any(|h| h.spilled_result.is_some() && !db.effect_bindings.contains_key(&h.effect));
+            // PURE bulk: no raw host ops at all AND the wrappers marshal bytes. `hs.is_empty()` (raw collect)
+            // is the pure-reducer proof that survives the later effect-binding drain of `host_imports` — the
+            // routing gates identically (host_imports + extern_imports empty ⟺ hs empty for an export path).
+            typed_pure_bulk = hs.is_empty() && serialize::wrappers_use_bytes(&wrappers);
+            host_spilled || typed_pure_bulk
         };
         for w in &wrappers {
             for p in w.params.iter().flatten() {
@@ -873,7 +885,11 @@ pub fn emit(
     // needs_realloc`. `0` when no spilled host result (byte-identical). The typed-interface wrapper path
     // below relied on a LATER +1 that only reached the wrappers, not these guest bodies — folded in here so
     // guest funcs, wrappers, and the serialized import section all agree on ONE count.
-    let needs_realloc = host_imports.iter().any(|h| h.spilled_result.is_some());
+    // `|| typed_pure_bulk`: a PURE-reducer bulk core also IMPORTS `"mem"."cabi_realloc"` (its bytes-new/read
+    // lower with Memory+Realloc against the shared allocator), so its guest funcs shift +1 the SAME way a host
+    // spilled-result core's do — fold it into `import_base` here or the guest bodies land one short (the
+    // adv-cdz-invalid-wasm bug). `typed_pure_bulk` is false for every host/non-bulk path → byte-identical.
+    let needs_realloc = host_imports.iter().any(|h| h.spilled_result.is_some()) || typed_pure_bulk;
     let layout = layout
         .with_import_base(
             (imports.len() + host_imports.len() + extern_imports.len() + needs_realloc as usize)
@@ -1313,6 +1329,28 @@ pub fn emit(
         // effect interface alongside the runtime + the typed export (W4c-b-iii, the generic world-import call
         // surface). No host import → the runtime-only shape (byte-identical to before).
         if host_imports.is_empty() {
+            // PURE-REDUCER BULK (seq-1024/1026): a pure reducer marshaling `list<u8>` (`typed_pure_bulk`, the
+            // single source of truth set with the used-op set) uses the shared-`mem` bulk shape — a
+            // realloc-importing core + the `_mem` assembler with ZERO host groups + `needs_realloc = true`, so
+            // `bytes-new`/`bytes-read` canon-lower with Memory+Realloc against the mem module's allocator
+            // (available BEFORE the program instance). Otherwise the portable per-byte `with_runtime` baseline.
+            if typed_pure_bulk {
+                let wrapped_core = serialize::core_module_with_wrappers_bulk(
+                    &funcs,
+                    &imports,
+                    &wrappers,
+                    typed_layout,
+                )
+                .map_err(Reject::decline)?;
+                return Ok(envelope::assemble_typed_interface_with_host_runtime_mem(
+                    &wrapped_core,
+                    &typed,
+                    &[],
+                    &imports,
+                    &import_name,
+                    true,
+                ));
+            }
             let wrapped_core = serialize::core_module_with_wrappers(
                 &funcs,
                 &imports,
