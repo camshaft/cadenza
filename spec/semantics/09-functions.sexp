@@ -13838,3 +13838,36 @@
   ; filter/map rebuild ~3 each) that is not reclaimed, NOT the empty-capture closures; same tracked reclaim
   ; gap class as hofpipe1. The durable guard here is the hard value pin; the spine-reclaim lane owns the flip.
   (live-objects known-leak))
+
+; cseclos1 — OPTIMIZER-EQUIVALENCE across a nested CAPTURING def (v-core-opt): a body that contains a nested
+; capturing def (`mk` returns `(fn (y) (+ y b))` closing over `b`) AND a repeated closure APPLICATION
+; `(g (* a a))`. O2's global-cse SKIPS any body containing a nested capturing def (rcdzc's
+; `global_cse_skips_a_body_that_contains_a_nested_capturing_def` gate) — because sharing a node across the
+; lambda-lift boundary can conflict with how the captured refs are rewritten. This pins that the observable
+; value is identical whether or not that gate holds: a regression that turned CSE on for such a body (sharing
+; the repeated `(g …)` application or the captured-ref subtree) must not change the answer. Swept O0..O3 by
+; checks.opt-sweep on both backends — the closure-side twin of the CSE trap-hoist pin in 02-binding-and-control.
+(case
+  "the optimizer preserves a program's value across a nested capturing def with a repeated closure application (CSE capturing-def skip)"
+  (doc
+    "`mk` builds a closure capturing its param `b`; `g = mk a` captures `a`, and the body applies `g` to the
+           repeated pure subexpression `(* a a)` twice: `(+ (g (* a a)) (g (* a a)))`. g(y) = y + a, so a=3:
+           (9+3)+(9+3) = 24; a=5: (25+5)+(25+5) = 60. Global-CSE skips this body (nested capturing def), and the
+           value must be identical across O0..O3 regardless — a level-equivalence guard for CSE interacting with
+           lambda lifting.")
+  (input
+    (do
+      (def
+        (main (: a Int64))
+        (do
+          (def (mk (: b Int64)) (fn ((: y Int64)) (+ y b)))
+          (def g (mk a))
+          (+ (g (* a a)) (g (* a a)))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 24 Int64))
+  (call main (: 5 Int64))
+  (output (: 60 Int64))
+  ; known-leak: the captured closure `g` (mk's env holding `a`) is retained per the tracked capturing-closure
+  ; reclaim gap (hc2 class); the durable guard here is the value + opt-level equivalence, not the census.
+  (live-objects known-leak))
