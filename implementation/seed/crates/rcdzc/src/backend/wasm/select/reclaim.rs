@@ -1825,7 +1825,7 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     // corpus-wide guarded-all; ListAt is the it4 case.)
     matches!(
         core_of(db, scrutinee),
-        Core::StrAt { .. } | Core::BytesSlice { .. } | Core::ListAt { .. }
+        Core::StrAt { .. } | Core::BytesSlice { .. } | Core::ListAt { .. } | Core::MapLookup { .. }
     )
 }
 
