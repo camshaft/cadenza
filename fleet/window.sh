@@ -122,23 +122,26 @@ VNOTE=""
 # a heartbeat once but then never drains its inbox or does any work (the fresh-fix-agent cold-start
 # stall). So the kickoff runs `/loop <interval> <TICK>` with this explicit tick recipe, guaranteeing
 # the loop both SCHEDULES the recurring cron AND runs the role body each fire.
-TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'cargo xtask fleet heartbeat $AGENT' (stop cleanly \
-if a stop-file exists); (2) drain your inbox by listing it with 'cargo xtask fleet inbox $AGENT' (the \
+TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'fleet heartbeat' (stop cleanly if a stop-file \
+exists); (2) drain your inbox by listing it with 'fleet inbox' (auto-targets THIS agent + is the \
 RESOLVER — it prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' \
 glob, which silently matches an empty shadow dir and stalls you), oldest-first — act on each message, \
-then move it to processed/; (3) sync your base with 'cargo xtask fleet sync' (the safe base-sync: \
-resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never orphans a \
-queued merge-request's --ref like a bare 'git reset --hard trunk' would), then do ONE well-scoped unit \
-of work per $SRC/loops/$ROLE.md and gate it green before sending pr-sync a merge-request. Coordinate \
-with peers only via 'cargo xtask fleet send'; if you need a human decision send the concierge an 'ask' \
-and keep working — never wait for a reply."
+then move it to processed/ ('fleet inbox --processed <msg>'); (3) sync your base with 'fleet sync' (the \
+safe base-sync: resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never \
+orphans a queued merge-request's --ref like a bare 'git reset --hard trunk' would), then do ONE \
+well-scoped unit of work per $SRC/loops/$ROLE.md and gate it green before sending pr-sync a \
+merge-request. Coordinate with peers only via 'fleet send'; if you need a human decision send the \
+concierge an 'ask' and keep working — never wait for a reply."
 
 KICKOFF="You are the fleet agent named '$AGENT' (role: $ROLE), running UNATTENDED.$VNOTE \
 FIRST read $SRC/AGENTS-fleet.md (the fleet contract — inbox protocol, the single-writer/no-CAS land \
 model, and the rule that you never wait on the human). THEN read $SRC/loops/$ROLE.md (your role). \
-Your worktree is $WORKTREE. LIST your inbox with 'cargo xtask fleet inbox $AGENT' (the RESOLVER — it \
-prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' glob, which \
-silently matches an empty shadow dir and stalls you). Then start your recurring loop by running EXACTLY \
+Your worktree is $WORKTREE. Your fleet verbs are first-class commands on your PATH (no 'cargo xtask' \
+prefix): 'fleet inbox' / 'fleet heartbeat' / 'fleet sync' / 'fleet send' — and 'fleet inbox'/'heartbeat' \
+auto-target THIS agent from your window, so you never pass or mistype your own name. LIST your inbox with \
+'fleet inbox' (the RESOLVER — it prints the canonical HUB inbox path; NEVER ls a worktree-relative \
+'.claude/fleet/inbox/...' glob, which silently matches an empty shadow dir and stalls you). Then start \
+your recurring loop by running EXACTLY \
 this — the interval AND a non-empty tick prompt ('/loop $INTERVAL' with no prompt is a no-op that \
 schedules nothing): /loop $INTERVAL $TICK"
 

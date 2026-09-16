@@ -10796,17 +10796,17 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
         )
     };
     format!(
-        "Run one tick of your role ({role}){vnote}: (1) cargo xtask fleet heartbeat {name} (stop \
-         cleanly if a stop-file exists); (2) drain your inbox by listing it with `cargo xtask fleet \
-         inbox {name}` (the RESOLVER — it prints the canonical HUB inbox path; NEVER ls a \
-         worktree-relative `.claude/fleet/inbox/...` glob, which silently matches an empty shadow dir \
-         and stalls you), oldest-first, acting on each message then moving it to processed/; (3) sync \
-         (git fetch && rebase trunk) and do ONE well-scoped unit of work per {role_body}, gating it \
-         green before sending pr-sync a merge-request. Coordinate with peers only via 'cargo xtask \
-         fleet send'; if you need a human decision, send the concierge an 'ask' and keep working — \
-         never wait for a reply.",
+        "Run one tick of your role ({role}){vnote}: (1) `fleet heartbeat` (stop cleanly if a stop-file \
+         exists); (2) drain your inbox by listing it with `fleet inbox` (auto-targets THIS agent + is \
+         the RESOLVER — prints the canonical HUB inbox path; NEVER ls a worktree-relative \
+         `.claude/fleet/inbox/...` glob, which silently matches an empty shadow dir and stalls you), \
+         oldest-first, acting on each message then moving it to processed/ (`fleet inbox --processed \
+         <msg>`); (3) `fleet sync` (the safe base-sync — resets onto trunk + replays only your \
+         not-yet-upstream commits by patch-id, so it never orphans a queued merge-request's --ref), \
+         then do ONE well-scoped unit of work per {role_body}, gating it green before sending pr-sync a \
+         merge-request. Coordinate with peers only via `fleet send`; if you need a human decision, send \
+         the concierge an 'ask' and keep working — never wait for a reply.",
         role = a.role,
-        name = a.name,
     )
 }
 
@@ -20362,14 +20362,18 @@ mod tests {
             disallow_ask: true,
         };
         let p = watchdog_tick_prompt(&fleet, &a);
-        assert!(p.contains("cargo xtask fleet heartbeat fix-float-compare"));
+        // seq-987: the first-class `fleet` command (no `cargo xtask` prefix), and the name is AUTO-detected
+        // from the calling window — so heartbeat/inbox take no name (impossible to target the wrong agent).
+        assert!(p.contains("`fleet heartbeat`"));
+        assert!(!p.contains("cargo xtask fleet"));
         assert!(p.contains("drain your inbox"));
-        // Step-2 must name the RESOLVER (`fleet inbox <name>`), NOT a bare inbox path — handing a path
-        // invites a worktree-relative glob that hits an empty shadow dir and silently stalls the drain
-        // (the v-syntax report). And it must carry the anti-glob warning so the agent can't regress to it.
-        assert!(p.contains("cargo xtask fleet inbox fix-float-compare"));
+        // Step-2 must name the RESOLVER (`fleet inbox`), NOT a bare inbox path — handing a path invites a
+        // worktree-relative glob that hits an empty shadow dir and silently stalls the drain (the v-syntax
+        // report). And it must carry the anti-glob warning so the agent can't regress to it.
+        assert!(p.contains("`fleet inbox`"));
         assert!(p.contains("NEVER ls a worktree-relative"));
         assert!(!p.contains("inbox/fix-float-compare/"));
+        assert!(p.contains("`fleet sync`"));
         assert!(p.contains("/wt/fix-float-compare/fleet/loops/fix.md"));
         assert!(p.contains("never wait for a reply"));
         // A role with no vertical must NOT emit the vertical clause.
