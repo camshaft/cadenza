@@ -3762,6 +3762,35 @@ fn cron_stale(age_secs: u64, interval_secs: u64) -> bool {
     interval_secs > 0 && age_secs > CRON_STALE_MULT * interval_secs
 }
 
+/// Parse `/etc/nix/machines` (the distributed-nix remote-builder list): count builder lines (`ssh://…`) and
+/// return the SSH KEY PATH (whitespace field index 2: `ssh://user@host  system  <KEY>  maxjobs …`) from the
+/// first, so the caller can derive the cert (`<key>-cert.pub`) DRY — following whatever key the builders
+/// actually use rather than hardcoding one (no drift if v-nix rotates the key). `(0, None)` when there are no
+/// builder lines. Pure/unit-tested.
+fn machines_builder_keypath_and_count(machines: &str) -> (usize, Option<String>) {
+    let builders: Vec<&str> = machines
+        .lines()
+        .filter(|l| l.trim_start().starts_with("ssh://"))
+        .collect();
+    let keypath = builders
+        .first()
+        .and_then(|l| l.split_whitespace().nth(2))
+        .map(str::to_string);
+    (builders.len(), keypath)
+}
+
+/// Extract the expiry ("to") timestamp from `ssh-keygen -L` output's `Valid: from <X> to <Y>` line — the
+/// distributed-build offload's credential lifetime. `None` if absent, or "forever" (a non-expiring cert →
+/// no expiry to warn about). Pure/unit-tested; the caller converts the timestamp to epoch (via `date -d`) and
+/// compares to now to decide ACTIVE vs DEGRADED.
+fn ssh_cert_valid_to(ssh_keygen_l: &str) -> Option<String> {
+    ssh_keygen_l.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix("Valid:")?;
+        let to = rest.split(" to ").nth(1)?.trim();
+        (!to.is_empty() && to != "forever").then(|| to.to_string())
+    })
+}
+
 /// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
 /// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
 /// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
@@ -3942,6 +3971,49 @@ fn status(fleet: &Fleet) {
                      STOPPED scheduling. Check `crontab -l` for its `# fleet:` line + the {stem}.last-run stamp."
                 );
             }
+        }
+    }
+
+    // DISTRIBUTED-BUILD OFFLOAD HEALTH (distributed-nix seq-946): if remote builders are configured
+    // (/etc/nix/machines exists), surface whether offload is ACTIVE or has SILENTLY degraded to local. The
+    // offload's root->peer SSH uses the id_rsa Midway cert (the key named in /etc/nix/machines); on cert
+    // EXPIRY, SSH auth fails and nix falls back to LOCAL builds (fallback=true) — no red gate, no alarm, so
+    // the OOM-relief silently turns off until someone runs mwinit. This line makes that visible (the cert is
+    // ~12h, so the degradation recurs ~daily). FAIL-SAFE: no machines file / unreadable cert / unparseable
+    // validity → skip or "unknown" (never a false DEGRADED). Cert path is DERIVED from the builder key field
+    // (`<key>-cert.pub`) so it follows whatever key the builders use — no hardcode to drift.
+    let (n_builders, keypath) = machines_builder_keypath_and_count(
+        &std::fs::read_to_string("/etc/nix/machines").unwrap_or_default(),
+    );
+    if n_builders > 0 {
+        let cert_status = keypath.as_deref().and_then(|k| {
+            let cert = format!("{k}-cert.pub");
+            let l = Command::new("ssh-keygen")
+                .args(["-L", "-f", &cert])
+                .output()
+                .ok()?;
+            let valid_to = ssh_cert_valid_to(&String::from_utf8_lossy(&l.stdout))?;
+            // Convert the ISO timestamp to epoch via `date -d` (robust, avoids hand-parsing ISO 8601).
+            let d = Command::new("date")
+                .args(["-d", &valid_to, "+%s"])
+                .output()
+                .ok()?;
+            let exp: u64 = String::from_utf8_lossy(&d.stdout).trim().parse().ok()?;
+            Some((valid_to, exp))
+        });
+        match cert_status {
+            Some((to, exp)) if now_unix() < exp => println!(
+                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to})"
+            ),
+            Some((to, _)) => println!(
+                "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
+                 id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
+                 local, no red gate — just no OOM relief)"
+            ),
+            None => println!(
+                "  distributed builds: {n_builders} remote builder(s) configured (offload health unknown — \
+                 couldn't read the cert validity)"
+            ),
         }
     }
 
@@ -20766,6 +20838,41 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(cron_stale(4 * 86400 + 1, 86400));
         // Unknown interval (0) → never stale (no false positive).
         assert!(!cron_stale(999999, 0));
+    }
+
+    #[test]
+    fn machines_builder_keypath_and_count_parses_the_builder_lines() {
+        let machines = "ssh://bythewc@peer-a aarch64-linux /home/bythewc/.ssh/id_rsa 8 1 - -\n\
+                        ssh://bythewc@peer-b aarch64-linux /home/bythewc/.ssh/id_rsa 8 1 - -\n";
+        let (n, key) = machines_builder_keypath_and_count(machines);
+        assert_eq!(n, 2, "two builder lines");
+        assert_eq!(
+            key.as_deref(),
+            Some("/home/bythewc/.ssh/id_rsa"),
+            "key path is whitespace field index 2 (derive cert as <key>-cert.pub, DRY)"
+        );
+        // Empty / no builder lines → (0, None); comments/blank lines ignored.
+        let (n0, k0) = machines_builder_keypath_and_count("# a comment\n\n");
+        assert_eq!(n0, 0);
+        assert!(k0.is_none());
+    }
+
+    #[test]
+    fn ssh_cert_valid_to_extracts_the_expiry_timestamp() {
+        let out = "        Type: ssh-rsa-cert-v01@openssh.com user certificate\n\
+                   \x20       Valid: from 2026-09-15T21:36:02 to 2026-09-16T09:36:02\n";
+        assert_eq!(
+            ssh_cert_valid_to(out).as_deref(),
+            Some("2026-09-16T09:36:02"),
+            "the 'to' timestamp is the offload credential expiry"
+        );
+        // A non-expiring cert ("forever") → None (nothing to warn about).
+        assert_eq!(
+            ssh_cert_valid_to("        Valid: from 2020-01-01 to forever\n"),
+            None
+        );
+        // No Valid line → None (fail-safe, never a false DEGRADED).
+        assert_eq!(ssh_cert_valid_to("Type: something\nPrincipals: x\n"), None);
     }
 
     #[test]
