@@ -1080,7 +1080,7 @@ fn ast_print_renders_canonical_sexpr_text() {
 fn ast_encode_matches_builder_codec_bytes() {
     reset();
     // 9-disc descriptor [int,float,bool,str,name,list,bytes,char,symbol] = discs 0..=8.
-    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
+    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // 17 discs: 9 base + 7 M2 ctors (list_ctor..member) + rational
 
     // Heap Ast: (List [Name "f", Int 300, Int -3, Bool true, Str "hi", Bytes b"\x00\xff", Char 'λ',
     // Sym "m", Float 1.5, List [Int 7]]) — covers every variant incl. multi-byte + negative Int + nesting.
@@ -1136,7 +1136,7 @@ fn ast_encode_matches_builder_codec_bytes() {
 #[test]
 fn ast_decode_round_trips_encode() {
     reset();
-    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
+    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // 17 discs: 9 base + 7 M2 ctors (list_ctor..member) + rational
 
     // Same all-variant Ast as the encode test.
     let mut v = op_vec_empty();
@@ -1187,7 +1187,7 @@ fn ast_decode_round_trips_encode() {
 #[test]
 fn ast_encode_decode_round_trips_compound_ctor_forms() {
     reset();
-    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // 17 discs (9 base + 7 M2 ctors + rational=16)
     // disc positions: int=0 bool=2 str=3 name=4; list_ctor=9 tuple_ctor=10 record_ctor=11 map_ctor=12
     // set_ctor=13 field_pair=14 member=15.
     let int = |n: i64| op_sum_new(0, op_bigint_of_i64(n));
@@ -1289,7 +1289,7 @@ fn ast_encode_decode_round_trips_compound_ctor_forms() {
 #[test]
 fn ast_encode_decode_non_finite_floats_round_trip() {
     reset();
-    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
+    let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // 17 discs: 9 base + 7 M2 ctors (list_ctor..member) + rational
     let check = |f: f64, leaf: crate::ast::Leaf| {
         // heap Ast.Float(f) → op93 encode
         let node = op_sum_new(1, op_box_float(f)); // disc 1 = float, per the descriptor above

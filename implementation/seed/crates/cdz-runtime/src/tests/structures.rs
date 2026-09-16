@@ -240,6 +240,74 @@ fn bytes_read_returns_the_whole_buffer_and_flattens_a_rope() {
 }
 
 #[test]
+fn bytes_read_round_trips_a_heap_leaf_a_shared_dup_and_a_nested_rope() {
+    // The reducer LIFT/LOWER boundary reads back exactly what bytes-new stored, across the three
+    // shapes bytes_read_returns_the_whole_buffer_and_flattens_a_rope does NOT cover: a >cap HEAP
+    // leaf (not just inline), a DUP'd SHARED buffer (the decoded payload is shared in->out), and a
+    // NESTED rope whose flattened length exceeds the inline cap. All borrow-reads; net zero nodes.
+    reset();
+    let before = live_nodes();
+
+    // (1) HEAP leaf (> inline cap): bytes-read walks the heap raw, not just the inline fast path.
+    let big: Vec<u8> = (0..(INLINE_RAW_CAP as u32 + 40))
+        .map(|i| (i & 0xff) as u8)
+        .collect();
+    let heap = op_bytes_new(big.clone());
+    assert!(raw_is_heap(heap), ">cap payload is a heap leaf");
+    assert_eq!(
+        op_bytes_read(heap),
+        big,
+        "bytes-read round-trips a >cap heap leaf"
+    );
+
+    // (2) SHARED buffer — the reducer in->out pattern (rc-trace node#3: the payload Leaf DUP'd to
+    // rc 2, read by both owners, each owner drops its ref -> net zero). bytes-read BORROWS, so a
+    // read leaves rc untouched; the two drops (not the reads) reclaim the one buffer.
+    op_dup(heap); // rc == 2: two logical owners of the one buffer
+    let live2 = live_nodes();
+    assert_eq!(op_bytes_read(heap), big, "owner A reads the shared buffer");
+    assert_eq!(
+        op_bytes_read(heap),
+        big,
+        "owner B reads the same buffer (borrow, not consume)"
+    );
+    assert_eq!(
+        live_nodes(),
+        live2,
+        "shared reads allocate/free no heap node"
+    );
+    op_drop(heap); // owner B releases (rc -> 1)
+    op_drop(heap); // owner A releases (rc -> 0, buffer freed)
+
+    // (3) NESTED rope whose flattened length EXCEEDS the inline cap: bytes-read must walk the whole
+    // concat tree (concat-of-concat), not just a single seam.
+    let a: Vec<u8> = (0..(INLINE_RAW_CAP as u32))
+        .map(|i| (i & 0xff) as u8)
+        .collect();
+    let b: Vec<u8> = (100..140u32).map(|i| (i & 0xff) as u8).collect();
+    let c: Vec<u8> = vec![7, 8, 9];
+    let rope = op_bytes_concat(
+        op_bytes_concat(op_bytes_new(a.clone()), op_bytes_new(b.clone())),
+        op_bytes_new(c.clone()),
+    );
+    let mut expect = a.clone();
+    expect.extend_from_slice(&b);
+    expect.extend_from_slice(&c);
+    assert_eq!(
+        op_bytes_read(rope),
+        expect,
+        "bytes-read flattens a nested (deep) rope beyond the inline cap"
+    );
+    op_drop(rope);
+
+    assert_eq!(
+        live_nodes(),
+        before,
+        "no leak across heap-leaf / shared-dup / nested-rope reads"
+    );
+}
+
+#[test]
 fn bytes_alloc_small_is_inline_large_is_heap_and_both_round_trip() {
     reset();
     let before = live_nodes();
