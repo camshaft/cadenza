@@ -5100,6 +5100,70 @@
   (output (: 139920 Int64)))
 
 (case
+  "an extracted lookup view survives a same-key overwrite of its source map"
+  (doc
+    "The extracted-VIEW face of the third-generation overwrite above: `v` is unwrapped
+           (`Option.expect`) out of m1 BEFORE m2 overwrites the same key — the overwrite's path copy
+           must not free or rewrite the payload `v` aliases, and `v` is re-READ (`String.byte-len`)
+           AFTER m2 exists and after m2's own lookup. Pins the widened MapLookup view-shell reclaim
+           against overwrite: the old view still reads its 21-byte payload while the new map's view
+           reads 22, so 21 + 22 = 43. (Adversarial pin from a breaker probe against the
+           view-shell-widening landing; the generation cases above re-read through the OLD MAP —
+           this one re-reads through the OLD VIEW.)")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (let ((m1 (Map.insert (Map.empty) k "versioned-payload-one")))
+          (let ((v (Option.expect (Map.lookup m1 k) "x")))
+            (let ((m2 (Map.insert m1 k "versioned-payload-TWO!")))
+              (+ (String.byte-len v) (String.byte-len (Option.expect (Map.lookup m2 k) "y")))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 43 Int64)))
+
+(case
+  "a Map.lookup view escapes through a record field while its map dies"
+  (doc
+    "`pick` returns a RECORD carrying the lookup view `s` alongside `(Map.len m)`; the map's
+           last use is inside `pick`, so its shell is reclaimable at return — but the escaped view
+           field must keep the string payload alive for the caller's later projection + byte-len. The
+           record-carried escape face of the MapLookup view-shell widening: a widen that treated the
+           record-stored view as borrow-only would free the payload with the map. 22 + len 1 = 23.
+           (Adversarial pin from a breaker probe; the tuple-projection escape case at the reader-loop
+           family pins the aggregate side — this pins the map-view side.)")
+  (input
+    (do
+      (def (pick m) #record((= s (Option.expect (Map.lookup m 1) "x")) (= n (Map.len m))))
+      (def
+        (main (: k Int64))
+        (let ((r (pick (Map.insert (Map.empty) k "record-carried-payload"))))
+          (+ (String.byte-len (. r s)) (. r n))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 23 Int64)))
+
+(case
+  "one heap string passed as both arguments dup/drops correctly through a selecting call"
+  (doc
+    "`pick` takes the SAME string in both params and returns one (runtime-selected branch);
+           the callee's release of the unselected param and the caller's continued use of `s` AFTER
+           the call must all resolve against ONE shared payload — an over-drop (double release of the
+           alias) corrupts the second byte-len. 21 + 21 = 42. (Adversarial pin from a breaker probe
+           against the caller-owns drop-gate family: the aliased-PARAMS face, complementing the
+           caller-reuse cases which alias caller-local against callee-param.)")
+  (input
+    (do
+      (def (pick (: c Bool) (: x String) (: y String)) (if c x y))
+      (def
+        (main (: n Int64))
+        (let ((s "twice-aliased-payload"))
+          (+ (String.byte-len (pick (> n 0) s s)) (String.byte-len s))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 42 Int64)))
+
+(case
   "dropping a list pushed FROM a survivor must not free the shared spine"
   (doc
     "The RRB member of the generation-sharing reclaim family (map members above): l2 =
