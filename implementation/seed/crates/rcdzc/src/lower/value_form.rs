@@ -2253,20 +2253,31 @@ pub(super) fn const_value_ast_at(
 /// records for a derived unit (`(Unit./ meter second)` for a velocity, NOT `(Unit.* meter (Unit.^ second
 /// -1))`). The numerator is the positive-exponent factors (`Unit.one` if none); the denominator the
 /// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
-/// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
-/// `Unit./` stay BARE names (their segment is not alphabetic, so the reader does not desugar them).
+/// so the rendered unit re-reads to the same `Unit`. `Unit.base`/`Unit.one` are MEMBER access (`base`/
+/// `one` are alphabetic Unit-module fields, not top-level names); `Unit.^`/`Unit.*`/`Unit./` stay BARE
+/// names (they ARE registered top-level prelude bindings — their `^`/`*`/`/` segment is not alphabetic,
+/// so the reader never desugars them and the resolver binds the flat name directly).
+///
+/// The alphabetic members MUST be baked as REAL `Member` nodes (`(. Unit base)`), NOT a flat `b.name(
+/// "Unit.base")`: a flat dotted name only resolves via the sexpr TEXT reader's alphabetic-postfix desugar,
+/// but the CADENZA backend re-emits this AST as BINARY and hops it straight into the next compile WITHOUT
+/// a text re-parse — a flat `Name "Unit.base"` there is an unbound name (there is no top-level `Unit.base`
+/// binding; it is a `Unit` module field), so HOP2 fails `CDZ0101 unbound name Unit.base`. A native
+/// `Member` re-reads correctly through BOTH the binary hop and the text round-trip, and the sexpr printer
+/// resugars it back to `Unit.base`, so the host-boundary value/type text is byte-identical either way.
 pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
     use crate::ast::Leaf;
     let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
     if entries.is_empty() {
-        // `Unit.one` — the dimensionless unit (bare dotted-name atom, printed verbatim → sugared).
-        return b.name("Unit.one");
+        // `Unit.one` — the dimensionless unit (a `Unit` module field → native `(. Unit one)` member).
+        return super::member_access(b, "Unit", "one");
     }
-    // One base factor at a (positive) exponent: `(Unit.base #"name")` or `(Unit.^ … k)` — the head is a
-    // bare dotted-name atom (`Unit.base`), printed verbatim → sugared, matching the operator-symbol members
-    // `Unit.^`/`Unit.*`/`Unit./` (seq-283 member-render consistency; re-reads to the same Leaf::Member).
+    // One base factor at a (positive) exponent: `(Unit.base #"name")` or `(Unit.^ … k)`. `Unit.base` is a
+    // native MEMBER (`(. Unit base)`; `base` is an alphabetic `Unit`-module field, resolved through the
+    // binary hop), while `Unit.^` is a bare top-level-name atom (its `^` segment is not alphabetic, so it
+    // stays a flat name the resolver binds directly).
     fn factor(b: &mut crate::ast::Builder, name: &str, exp: i64) -> StructId {
-        let base_head = b.name("Unit.base");
+        let base_head = super::member_access(b, "Unit", "base");
         let sym = b.atom_leaf(Leaf::Sym(name.into()));
         let base = b.list(vec![base_head, sym]);
         if exp == 1 {
@@ -2283,7 +2294,7 @@ pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit
     // Left-nested product of a factor list, or `Unit.one` when empty.
     fn product(b: &mut crate::ast::Builder, factors: &[(String, i64)]) -> StructId {
         if factors.is_empty() {
-            return b.name("Unit.one");
+            return super::member_access(b, "Unit", "one");
         }
         let mut acc = factor(b, &factors[0].0, factors[0].1);
         for (name, exp) in &factors[1..] {
