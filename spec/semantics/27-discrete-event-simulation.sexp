@@ -1208,7 +1208,7 @@
       (export main)))
   (call main (: 50 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Record event payloads through the pqueue insort. ---
 (case

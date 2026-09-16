@@ -1059,7 +1059,7 @@
   (output (: 0 Int64))
   (call main (: 999 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a generated map workload agrees with a linear-scan model at EVERY key of the domain"
@@ -1150,7 +1150,7 @@
   (output (: -999 Int64))
   (call main (: 777 Int64))
   (output (: -999 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a generated insert/remove Set workload agrees with a BITMASK model at every step's end"
@@ -1224,7 +1224,7 @@
   (output (: 3 Int64))
   (call main (: 99 Int64) (: 2 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "generated string keys OVERWRITE by content and the first word's final value is observable"
@@ -1291,7 +1291,7 @@
   (output (: 4 Int64))
   (call main (: 5 Int64) (: 2 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
@@ -2001,7 +2001,7 @@
       (export main)))
   (call main)
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- High-coverage value-codec gaps, slice 2 (operator-directed): the remaining SCALAR leaves (CHAR /
 ; BYTES / SYMBOL) + the other EMPTY-collection edges (map / set). Each a `Value.decode (Value.encode v)
@@ -2071,7 +2071,7 @@
   (output (: 3 Int64))
   (call main (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves the EMPTY map (zero-entry collection edge)"
