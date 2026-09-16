@@ -122,7 +122,14 @@
            slice (an offset into the source), so its content-equality once compared by rope OFFSET and never
            matched a flat twin, making count-a of \"banana\" return 0 (a silent wrong value) and blocking a
            lexer over a runtime string. The fix compacts the fresh slice to an independent flat leaf at the
-           producer, so it compares by content everywhere. \"banana\" has three a's, so 3.")
+           producer, so it compares by content everywhere. \"banana\" has three a's, so 3.
+           UPDATE (v-memory-safety): now reclaims to (live-objects 0). Each `(at s i)` = `Option.expect
+           (String.at s i)` extracts a fresh COMPACTED char leaf (owned via the SumExpect shell-reclaim dup),
+           consumed by the borrowing `(= … \"a\")`. `heap_operand_ownership` of a StrAt-view SumExpect is
+           deliberately not globally Owned (the local>global discipline), so value-eq's owned-operand drop
+           missed it and leaked one char leaf per scanned byte. value-eq now also drops an operand in the
+           SumExpect shell-reclaim set (the borrowing compare is the owning consumer — the #9071 Proj-gate
+           twin for the value-eq consumer), so all 6 per-byte leaves reclaim.")
   (input
     (do
       (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
@@ -132,7 +139,7 @@
       (def (main) (cnt "banana" 0 0))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a String.at result then reuse of the source does not double-free"
@@ -5041,7 +5048,10 @@
            `Option.expect`, and its content-equality compared by rope offset, never matching the flat
            literal \"a\". The char-by-char lexer idiom over a runtime string — a compiler-in-Cadenza
            tokenizing its input. The fix compacts the fresh slice at the producer (and `dup`s the borrowed
-           source so the slice's reference is independent — the same string threads on into the recursion).")
+           source so the slice's reference is independent — the same string threads on into the recursion).
+           UPDATE (v-memory-safety): now (live-objects 0) — value-eq drops the shell-reclaim SumExpect view
+           operand (the borrowing `(= (at s i) \"a\")` is the owning consumer), so the per-byte compacted char
+           leaves reclaim; see the sibling scan case above.")
   (input
     (do
       (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
@@ -5051,7 +5061,7 @@
       (def (main) (cnt "banana" 0 0))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Two matched String KEYS live at once across a recursion: a borrowed lookup key is not freed --------
 ; `Map.lookup`/`Set.contains` BORROW their key — the runtime reads it without consuming it (`champ_hash`/
