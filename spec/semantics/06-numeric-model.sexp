@@ -2603,6 +2603,47 @@
   (call main)
   (output (: #list(1.0 2.0) (List Float32))))
 
+(case
+  "a bare literal selected by control flow grounds to the f32 op's width on both backends"
+  (doc
+    "The CONTROL-FLOW grounding faces: a Float32 arith operand that is an `if` of bare float
+           literals, and one that is a `match` of bare float literals — the selected literal must demote
+           to the op's binary32 width. The `if` face was an OPEN rust-backend witness (the emitted f64
+           literal reached an f32 site, E0308 — wasm grounded correctly, a cross-backend build
+           differential); now RESOLVED and pinned here with its `match` sibling. The two DIRECT
+           bare-literal operand faces are pinned above; these close the branch-selected reach.
+           k=2: f=1+1=2, g=1+2=3 → 5.0; k=0: f=1+2=3, g=1+0.5=1.5 → 4.5.")
+  (input
+    (do
+      (def (f (: c Bool) (: x Float32)) (+ x (if c 1.0 2.0)))
+      (def (g (: k Int64) (: x Float32)) (+ x (match k (1 1.0) (2 2.0) (_ 0.5))))
+      (def (main (: k Int64)) (+ (f (> k 0) 1.0) (g k 1.0)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 5.0 Float32))
+  (call main (: 0 Int64))
+  (output (: 4.5 Float32)))
+
+(case
+  "a bare literal reaching an f32 site through a let binding or a call return grounds correctly"
+  (doc
+    "The DATA-FLOW grounding faces completing the family: a bare literal bound by `let` and
+           consumed at a Float32 `+` (`h`), and a bare-literal `if` returned from a SEPARATE function
+           whose result feeds a Float32 op (`pick` → `f`) — width unification must reach through the
+           binding and the call-return, not just the syntactic operand position. Both backends agree.
+           k=2: h=1+1.5=2.5, f=1+pick(true)=2 → 4.5; k=0: 2.5 + 3 → 5.5.")
+  (input
+    (do
+      (def (pick (: c Bool)) (if c 1.0 2.0))
+      (def (h (: x Float32)) (let ((y 1.5)) (+ x y)))
+      (def (f (: c Bool) (: x Float32)) (+ x (pick c)))
+      (def (main (: k Int64)) (+ (h 1.0) (f (> k 0) 1.0)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 4.5 Float32))
+  (call main (: 0 Int64))
+  (output (: 5.5 Float32)))
+
 ; The sibling-inferred width check also reaches a bare `(list …)` DESCENDED THROUGH a collection builder —
 ; a `Set.of` element list and a `Map.insert` value where the width is fixed by a sibling annotation, not a
 ; `(Set …)`/`(Map …)` collection annotation. Distinct seams from the plain-list arm (Set.of descends its
