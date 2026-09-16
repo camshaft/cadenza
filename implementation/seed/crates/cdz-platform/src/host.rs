@@ -4048,15 +4048,29 @@ mod tests {
         // per node: (last rc_after seen, tag byte, ever-freed, ever-cascade-reached)
         use std::collections::BTreeMap;
         let mut nodes: BTreeMap<u32, (u32, u8, bool, bool, bool)> = BTreeMap::new(); // (rc_after,tag,alloc,freed_or_immortal,cascade_seen)
+        // Per-node full event history (op, rc_before, rc_after, cascade_target) in emission order,
+        // plus a global alloc-order rank so we can read construction order (guest step-tree vs wrapper rebuild).
+        let mut events: BTreeMap<u32, Vec<(u8, u32, u32, u32)>> = BTreeMap::new();
+        let mut alloc_rank: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut next_alloc = 0usize;
         for rec in buf.chunks_exact(REC) {
             let (op, tag, freed) = (rec[0], rec[1], rec[2] != 0);
-            let (node, rc_after) = (le(&rec[4..8]), le(&rec[12..16]));
-            let cascade = le(&rec[16..20]) != 0xFFFF_FFFF;
+            let (node, rc_before, rc_after) = (le(&rec[4..8]), le(&rec[8..12]), le(&rec[12..16]));
+            let cascade_raw = le(&rec[16..20]);
+            let cascade = cascade_raw != 0xFFFF_FFFF;
+            events.entry(node).or_default().push((op, rc_before, rc_after, cascade_raw));
             let e = nodes.entry(node).or_insert((0, tag, false, false, false));
             e.0 = rc_after;
             e.1 = tag;
             match op {
-                0 => e.2 = true,                                  // ALLOC
+                0 => {                                            // ALLOC
+                    e.2 = true;
+                    alloc_rank.entry(node).or_insert_with(|| {
+                        let r = next_alloc;
+                        next_alloc += 1;
+                        r
+                    });
+                }
                 2 if freed => e.3 = true,                         // DROP freed
                 3 => e.3 = true,                                  // MARK_IMMORTAL (left census legitimately)
                 _ => {}
@@ -4081,11 +4095,34 @@ mod tests {
             nodes.len(),
             leaked.len()
         );
+        let opname = |o: u8| match o {
+            0 => "ALLOC",
+            1 => "DUP",
+            2 => "DROP",
+            3 => "IMMORTAL",
+            _ => "op?",
+        };
         for (node, (rc, tag, _, _, cascade)) in &leaked {
+            let rank = alloc_rank.get(node).copied().unwrap_or(usize::MAX);
             eprintln!(
-                "  LEAK node#{node} kind={} residual_rc={rc} cascade_reached={cascade}",
+                "  LEAK node#{node} kind={} residual_rc={rc} cascade_reached={cascade} alloc_order={rank}",
                 tagname(*tag)
             );
+            // Full event history: count DUPs vs DROPs to distinguish "dup'd twice" from
+            // "dup'd once + missing intermediate drop", and expose the cascade target of each drop.
+            if let Some(evs) = events.get(node) {
+                let dups = evs.iter().filter(|(o, ..)| *o == 1).count();
+                let drops = evs.iter().filter(|(o, ..)| *o == 2).count();
+                eprintln!("      history ({dups} DUP, {drops} DROP):");
+                for (o, rcb, rca, casc) in evs {
+                    let ct = if *casc == 0xFFFF_FFFF {
+                        String::new()
+                    } else {
+                        format!(" cascade->#{casc}")
+                    };
+                    eprintln!("        {:<8} rc {rcb}->{rca}{ct}", opname(*o));
+                }
+            }
         }
         eprintln!(
             "rc-trace attribution HINT: a Leaf(=Bytes)/record leaking rc>1 ⇒ forwarded-dup imbalance (site-a interaction); rc==1 & cascade_reached=false ⇒ op_drop didn't cascade (runtime/emit gap); a Compound with no drop at all + others reached ⇒ emit_result_spill top-drop gap"
