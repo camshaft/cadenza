@@ -3769,6 +3769,12 @@ mod tests {
     // the intended forcing function + co-verify — it auto-flips GREEN when v-cdz-wasm-codegen lands the shell-
     // drops; drop `#[ignore]` then to GATE the reclaim regression. `#[ignore]` keeps it out of the routine gate
     // meanwhile.
+    //
+    // Censuses ALL THREE fold entry points (on_message on a reused instance for the accumulation signal;
+    // on_notification + on_response each on a fresh instance). The two inert paths (requests=[]) isolate the
+    // ENVELOPE-DECODE shell leak from on_message's envelope+step leak, so the gate catches a shell-drop fix
+    // scoped to on_message alone — one that would leave on_notification / on_response silently leaking their
+    // envelope shells — not just the on_message regression.
     #[tokio::test]
     #[ignore = "env-gated census gate; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM"]
     async fn a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline() {
@@ -3852,14 +3858,66 @@ mod tests {
         }
         let per_fold = (last as i64 - baseline as i64) / FOLDS as i64;
         eprintln!(
-            "census gate: per-fold leak ≈ {per_fold} value-heap cell(s) (target 0 once the reducer-export shell-drops land)"
+            "census gate: on_message per-fold leak ≈ {per_fold} value-heap cell(s) (envelope+step; target 0 once the reducer-export shell-drops land)"
+        );
+
+        // Per-ENTRY-POINT breakdown (seq-916 shell-drop fix SCOPE). The echo's on_response / on_notification are
+        // INERT (return requests=[]): a fold of either DECODES the incoming envelope but emits NO outgoing
+        // step/request shells. Censusing each on a FRESH instance isolates the ENVELOPE-DECODE shell leak from
+        // on_message's envelope+step leak. If these inert paths also net nonzero, the shell-drop reclaim must
+        // live on the SHARED envelope-decode emit — a fix scoped to on_message alone would leave on_response /
+        // on_notification leaking, and this gate (which now folds all three into `leaked`) catches that.
+        let census_fresh_fold = |label: &'static str| async {
+            let mut r = store
+                .spawn(program, ord(label.as_bytes()))
+                .await
+                .expect("spawn a fresh instance for the entry-point census");
+            let base = r.live_object_census().await.expect("census reads");
+            (r, base)
+        };
+
+        let (mut note_reducer, note_base) = census_fresh_fold("census-note").await;
+        let _ = note_reducer
+            .on_notification(crate::Notification {
+                id: crate::ContractId::of(b"echo-contract"),
+                payload: Bytes::from_static(b"ping"),
+            })
+            .await
+            .expect("notification fold succeeds");
+        let note_delta = note_reducer
+            .live_object_census()
+            .await
+            .expect("census reads") as i64
+            - note_base as i64;
+
+        let (mut resp_reducer, resp_base) = census_fresh_fold("census-resp").await;
+        let _ = resp_reducer
+            .on_response(crate::Response {
+                id: crate::ContractId::of(b"echo-contract"),
+                continuation_token: Bytes::from_static(b"tok"),
+                payload: Ok(Bytes::from_static(b"pong")),
+            })
+            .await
+            .expect("response fold succeeds");
+        let resp_delta = resp_reducer
+            .live_object_census()
+            .await
+            .expect("census reads") as i64
+            - resp_base as i64;
+
+        if note_delta != 0 || resp_delta != 0 {
+            leaked = true;
+        }
+        eprintln!(
+            "census gate: per-entry-point shell attribution — on_message≈{per_fold}/fold (envelope+step), on_notification={note_delta}, on_response={resp_delta} (both inert ⇒ envelope-only) ⇒ step/request-shell portion ≈ {} cell(s)",
+            per_fold - note_delta
         );
 
         // The trusted-signal invariant. FAILS BY DESIGN until the shell-drop reclaim lands (auto-flips GREEN
         // then); `#[ignore]` keeps it out of the routine gate meanwhile.
         assert!(
             !leaked,
-            "reducer fold leaked value-heap cells (≈{per_fold}/fold) — reducer-export shell-drop reclaim not yet landed; census not net-0"
+            "a reducer fold leaked value-heap cells (on_message≈{per_fold}/fold, on_notification={note_delta}, on_response={resp_delta}) — reducer-export shell-drop reclaim not yet landed on one or more entry points; census not net-0"
         );
     }
 }
