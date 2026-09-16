@@ -3765,10 +3765,18 @@ mod tests {
     // that a host forgot to free.
     //
     // It currently FAILS BY DESIGN: the reducer-export emit does not yet drop the incoming-envelope + outgoing-
-    // step shells (≈13 value-heap cells/fold; v-runtime rc-trace), so a fold does NOT net to baseline. That is
-    // the intended forcing function + co-verify — it auto-flips GREEN when v-cdz-wasm-codegen lands the shell-
-    // drops; drop `#[ignore]` then to GATE the reclaim regression. `#[ignore]` keeps it out of the routine gate
-    // meanwhile.
+    // step shells, so a fold does NOT net to baseline. That is the intended forcing function + co-verify — it
+    // auto-flips GREEN when v-cdz-wasm-codegen lands the shell-drops; drop `#[ignore]` then to GATE the reclaim
+    // regression. `#[ignore]` keeps it out of the routine gate meanwhile.
+    //
+    // PINNED per-fold leak on the LANDED runtime (main 3b2ee6ef88): on_message ≈7 (envelope + step),
+    // on_notification 3, on_response 5 (both inert ⇒ envelope-only), payload-length-independent. Down from
+    // 13/6/8 measured 2026-09-15 — the drop is CUMULATIVE RECLAIM (the guards #9010..#9038 + the landed runtime),
+    // NOT the bulk-bytes flag-day: reducer-echo is a PURE non-host reducer, so it keeps the per-byte
+    // bytes-alloc/set path (verified: its wasm imports bytes-alloc/set/get/len, NOT bytes-new/bytes-read — the
+    // bulk gate excludes non-host typed interfaces). Envelope-decode shells ≈3 (matches v-runtime's standalone
+    // witness); the extra ~4 on on_message are the outgoing step/request shells the inert paths lack. Target 0
+    // on all three once the shared-envelope-decode + on_message-step shell-drops land.
     //
     // Censuses ALL THREE fold entry points (on_message on a reused instance for the accumulation signal;
     // on_notification + on_response each on a fresh instance). The two inert paths (requests=[]) isolate the
