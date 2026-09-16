@@ -3631,3 +3631,26 @@
   (call main (: 1 Int64))
   (output (: 5207 Int64))
   (live-objects 0))
+
+(case
+  "brc1 Bytes.at invariant-param self-loop, caller REUSES the bytes (collection-arm caller-reuse guard)"
+  (doc
+    "The CALLER-REUSE companion of the invariant Bytes.at reclaim family (v-memory-safety family gate):
+           the caller `go` passes its `Bytes b` to the self-dropping self-loop `scan` (borrow-only via
+           `Bytes.at`, which reads a scalar byte, so it gets the invariant loop-exit reclaim) AND REUSES `b`
+           after via `(Bytes.len b)`. The CAESAR-class shape for the Bytes collection arm — but the caller-dup
+           analysis DUPs `b` for the scan call, so `scan`'s reclaim frees its OWN ref and `go`'s `Bytes.len`
+           reads a live buffer: no UAF, census 0. Pins that the `looped_invariant_param_caller_owned` guard
+           (compare-arm-only, #9010's CAESAR) need NOT fire for the collection arms; a future regression that
+           drops the caller-dup (→ trap) or leaks reds here. scan(3, [10 20 30 40]) reads indices 3,2,1 =
+           40+30+20 → r=90; go adds Bytes.len 4 → 94.")
+  (input
+    (do
+      (def (scan (: n Int64) (: b Bytes))
+        (if (= n 0) 0 (match (Bytes.at b n) ((Some x) (+ x (scan (- n 1) b))) ((None _u) (scan (- n 1) b)))))
+      (def (go (: k Int64) (: b Bytes)) (let ((r (scan k b))) (+ r (Bytes.len b))))
+      (def (main (: k Int64)) (go k (Bytes.of #list(10 20 30 40))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 94 Int64))
+  (live-objects 0))

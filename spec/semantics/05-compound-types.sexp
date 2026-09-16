@@ -3802,6 +3802,29 @@
   (live-objects 0))
 
 (case
+  "mrc1 Map.lookup invariant-param self-loop, caller REUSES the map (collection-arm caller-reuse guard)"
+  (doc
+    "The CALLER-REUSE companion of the getsum Map reclaim above (v-memory-safety family gate): the caller
+           `go` passes its `(Map Int64 Int64) m` to the self-dropping self-loop `probe` (borrow-only via
+           `Map.lookup`, scalar value, so it gets the invariant loop-exit reclaim) AND REUSES `m` after via
+           `(Map.len m)`. The CAESAR-class shape for the Map collection arm — but the caller-dup analysis DUPs
+           `m` for the probe call, so `probe`'s reclaim frees its OWN ref and `go`'s `Map.len` reads a live
+           map: no UAF, census 0. Pins that the `looped_invariant_param_caller_owned` guard (compare-arm-only,
+           #9010's CAESAR) need NOT fire for the collection arms; a future regression that drops the caller-dup
+           (→ trap) or leaks reds here. probe(3,{1:100,2:200,3:300}) sums 300+200+100 → r=600; go adds Map.len
+           3 → 603.")
+  (input
+    (do
+      (def (probe (: n Int64) (: m (Map Int64 Int64)))
+        (if (= n 0) 0 (match (Map.lookup m n) ((Some v) (+ v (probe (- n 1) m))) ((None _u) (probe (- n 1) m)))))
+      (def (go (: k Int64) (: m (Map Int64 Int64))) (let ((r (probe k m))) (+ r (Map.len m))))
+      (def (main (: k Int64)) (go k (Map.insert (Map.insert (Map.insert #map() 1 100) 2 200) 3 300)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 603 Int64))
+  (live-objects 0))
+
+(case
   "a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)"
   (doc
     "The 100-key checksum above reads every key back in a dedicated pass over a finished map; this

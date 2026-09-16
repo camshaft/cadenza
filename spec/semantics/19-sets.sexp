@@ -927,6 +927,29 @@
   (live-objects 0))
 
 (case
+  "src1 Set.contains invariant-param self-loop, caller REUSES the set (collection-arm caller-reuse guard)"
+  (doc
+    "The CALLER-REUSE companion of spc1 (v-memory-safety family gate): the caller `go` passes its `(Set
+           Int64) s` to the self-dropping self-loop `probe` (which reads it borrow-only via `Set.contains` and
+           gets the invariant loop-exit reclaim) AND REUSES `s` after the call via `(Set.len s)`. This is the
+           CAESAR-class shape for a COLLECTION arm — but unlike the compare arm, the caller-dup analysis
+           correctly DUPs `s` for the probe call, so `probe`'s reclaim frees its OWN ref and `go`'s `Set.len`
+           reads a live set: no UAF, census 0. This case pins that soundness: the `looped_invariant_param_
+           caller_owned` guard (which gates ONLY the compare arms — #9010's CAESAR) must NOT need to fire for
+           the collection arms, and a future regression that either DROPS the caller-dup (→ trap) or leaks
+           reds here. probe(3,{1,2}): hits 2,1 → r=2; go adds Set.len 2 → 4.")
+  (input
+    (do
+      (def (probe (: n Int64) (: s (Set Int64)))
+        (if (= n 0) 0 (if (Set.contains s n) (+ 1 (probe (- n 1) s)) (probe (- n 1) s))))
+      (def (go (: k Int64) (: s (Set Int64))) (let ((r (probe k s))) (+ r (Set.len s))))
+      (def (main (: k Int64)) (go k (Set.insert (Set.insert #set() 1) 2)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case
   "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc
     "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`
