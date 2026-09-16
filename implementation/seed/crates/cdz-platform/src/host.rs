@@ -3438,6 +3438,44 @@ mod tests {
             size_rows.push((sz, med(&mut v), n));
         }
 
+        // LIFT-vs-LOWER attribution sweep. The echo fold has TWO size-scaling per-byte value-heap loops in one
+        // `on_message`: (i) the incoming payload LIFT (host list<u8> → heap Bytes) and (ii) the outgoing request
+        // payload LOWER (heap Bytes → host list<u8>, nested in the returned Step record). The seq-916 bulk-copy
+        // lever lands in two slices — the LIFT first (`bytes-new` on the record-param), the nested-Bytes LOWER
+        // second (`bytes-read` in the SpillRecord canon-writer) — so the acceptance number should HALVE, then
+        // halve again. To verify WHICH loop collapsed (not just the net), sweep the echo's `on_notification`:
+        // it is INERT (returns `requests = []`), so it drives the SAME incoming-payload lift with NO outgoing
+        // payload. If its slope tracks the `on_message` slope's incoming half, notification-slope ≈ the LIFT
+        // per-byte cost and (message − notification) ≈ the outgoing LOWER cost — clean per-loop attribution.
+        // (If the guest instead dead-code-eliminates the unused notification payload, the notification slope
+        // reads ≈ 0 — itself a useful datum: the lift is not exercised when the value is unused.)
+        let mut note_size_rows: Vec<(usize, Duration, usize)> = Vec::new();
+        for &sz in &[4usize, 256, 4096, 65536] {
+            let payload = Bytes::from(vec![0x5au8; sz]);
+            let note = crate::Notification {
+                id: crate::ContractId::of(b"echo-contract"),
+                payload,
+            };
+            let mut v: Vec<Duration> = Vec::with_capacity(400);
+            for _ in 0..400 {
+                let mut r = store
+                    .spawn(program, ord(b"bench-reducer"))
+                    .await
+                    .expect("spawn a fresh instance");
+                let n = note.clone();
+                let t = Instant::now();
+                match r.on_notification(n).await {
+                    Ok(out) => {
+                        v.push(t.elapsed());
+                        std::hint::black_box(&out);
+                    }
+                    Err(_) => break,
+                }
+            }
+            let n = v.len();
+            note_size_rows.push((sz, med(&mut v), n));
+        }
+
         samples.sort_unstable();
         let pct = |p: f64| samples[((p * (N as f64 - 1.0)).round() as usize).min(N - 1)];
         let sum: Duration = samples.iter().sum();
@@ -3488,6 +3526,40 @@ mod tests {
                     }
                 );
             }
+        }
+        for (sz, m, n) in &note_size_rows {
+            if *n == 0 {
+                eprintln!(
+                    "  LIFT-only sweep (on_notification, inert): {sz:>6} B payload ⇒ TRAPPED"
+                );
+            } else {
+                eprintln!(
+                    "  LIFT-only sweep (on_notification, inert): {:>6} B payload ⇒ fold median={:.2}µs (≈{:.2}µs/byte over the 4 B base)",
+                    sz,
+                    us(*m),
+                    if *sz > 4 {
+                        (us(*m) - us(note_size_rows[0].1)) / (*sz as f64 - 4.0)
+                    } else {
+                        0.0
+                    }
+                );
+            }
+        }
+        // Per-loop attribution: the top-vs-base per-byte slope of each sweep. on_message = LIFT+LOWER,
+        // on_notification = LIFT only ⇒ (message − notification) ≈ the outgoing-LOWER per-byte cost.
+        let slope = |rows: &[(usize, Duration, usize)]| -> Option<f64> {
+            let base = rows.iter().find(|(_, _, n)| *n > 0)?;
+            let top = rows.iter().rev().find(|(_, _, n)| *n > 0)?;
+            (top.0 > base.0).then(|| (us(top.1) - us(base.1)) / (top.0 as f64 - base.0 as f64))
+        };
+        match (slope(&size_rows), slope(&note_size_rows)) {
+            (Some(msg), Some(note)) => eprintln!(
+                "  LIFT-vs-LOWER attribution: on_message={msg:.4}µs/B (LIFT+LOWER)  on_notification={note:.4}µs/B (LIFT)  ⇒ incoming-LIFT≈{note:.4}µs/B  outgoing-LOWER≈{:.4}µs/B",
+                (msg - note).max(0.0)
+            ),
+            _ => eprintln!(
+                "  LIFT-vs-LOWER attribution: unavailable (a sweep trapped before spanning 4 B..64 KiB)"
+            ),
         }
         eprintln!(
             "  operator bar: {} the ~200µs bar (p50={:.2}µs)",
