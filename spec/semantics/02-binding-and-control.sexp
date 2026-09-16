@@ -6176,7 +6176,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 633 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
@@ -10874,7 +10874,7 @@
       (export find)))
   (call find (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- An int-literal-vs-float branch clash in `if`/`match` offers a float-literal retype fix ----
 ; A branch clash between an INTEGER LITERAL and a FLOAT branch carries the same one-shot repair the list-
