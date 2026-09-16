@@ -634,10 +634,11 @@ pub enum FleetCmd {
         /// env-dump/secret material.
         #[arg(long)]
         body_file: Option<PathBuf>,
-        /// Sender name. If omitted: falls back to `$FLEET_AGENT`, then to the current worktree's
-        /// `fleet/<agent>` branch (so a forgotten `--from` still routes), then `unknown`. A
-        /// reply-expecting kind (merge-request/ask/issue) is REFUSED if the sender resolves to
-        /// `unknown` (its reply would dead-letter).
+        /// Sender name. If omitted, resolved in order: `$FLEET_AGENT`, then the CALLING tmux window's
+        /// agent (seq-987 — reliable regardless of CWD, unlike the next two), then the current worktree's
+        /// `fleet/<agent>` branch, then the worktree→agent registry lookup, then `unknown`. A
+        /// reply-expecting kind (merge-request/ask/issue) is REFUSED if the sender resolves to `unknown`
+        /// (its reply would dead-letter).
         #[arg(long)]
         from: Option<String>,
         /// Deliver without nudging the recipient's window awake (it will pick the message up on its
@@ -4564,12 +4565,21 @@ fn send(
     // agent that coordinates while on a PR branch (v-effects issue 2026-08-26). The registry's
     // `worktree` field is the durable source of truth for which agent owns this checkout, so it
     // resolves correctly regardless of the branch. Only if NONE of those resolve do we fall to `unknown`.
+    // seq-987 foolproofing: the CALLING tmux window's agent is a MORE reliable identity than the CWD-based
+    // branch/worktree derivation below — the window name is fixed to the agent, whereas CWD can be WRONG
+    // after a `cd` into another worktree (the confirmed trap: the concierge's watchdog `cd`s into pr-sync,
+    // so its subsequent `--from`-less sends derived `pr-sync` from the branch/worktree and its replies
+    // dead-lettered). So try the window identity RIGHT AFTER the explicit sources, and BEFORE the CWD
+    // derivation. Gated on registry membership so a stray/scratch window can't mis-attribute the sender.
     let from = from
         .filter(|s| !s.trim().is_empty())
         .or_else(|| {
             std::env::var("FLEET_AGENT")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            current_window_agent().filter(|n| fleet.load().agents.iter().any(|a| &a.name == n))
         })
         .or_else(|| sender_from_branch(fleet))
         .or_else(|| sender_from_worktree(fleet))
