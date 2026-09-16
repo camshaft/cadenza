@@ -80,6 +80,32 @@ pub(crate) fn param_escapes_body(db: &mut Db, body: StructId, binder: StructId) 
     binding_escapes(db, body, binder, false)
 }
 
+/// Whether a wrapper-owned RECORD/tuple-cell param `binder` (built fresh by `emit_cell_rebuild` and passed
+/// BORROWED to the def) is SAFE for the wrapper to `drop` after the call — the #9014 envelope shell-drop gate
+/// (v-memory-safety-verified). This is the DUP-AWARE analysis, NOT [`param_escapes_body`]: a compound field
+/// the def PROJECTS + forwards (escapes) would make the dup-unaware query report the whole param as escaping
+/// (its `Proj` arm recurses consuming for a compound child in tail position), suppressing the drop for exactly
+/// the payload-forwarding reducers the census counts. The dup-aware query instead asks whether EVERY consuming
+/// occurrence of the cell binder is a Perceus RETAIN site: `true` here (safe to drop) ⟺
+/// `binding_escapes_dup_aware(.., Some(dup_sites))` is `false` ⟺ every consume `dup`'d a fresh reference (so the
+/// forwarded field survives the cell's deep-drop cascade) and the binder's OWN slot reference is a dead owned
+/// temporary the wrapper must reclaim. A LAST consume that MOVES a field verbatim (not a dup_site) → escapes →
+/// `false` here → the wrapper SUPPRESSES the drop (never a double-free). Same (`collect_dup_sites` +
+/// `binding_escapes_dup_aware`) pair, same polarity, as the `let`-epilogue drop sites (reclaim.rs:83-95).
+pub(crate) fn record_cell_param_droppable(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    let mut dup_sites: HashSet<StructId> = HashSet::new();
+    collect_dup_sites(db, body, &[binder], &mut dup_sites);
+    // tail_borrowed = false: the cell is a fresh wrapper-owned temporary at the call boundary, not a
+    // tail-borrow position. Safe to drop ⟺ the dup-aware escape query is false (every consume retained).
+    !binding_escapes_dup_aware(
+        db,
+        body,
+        EscapeTarget::Binder(binder),
+        false,
+        Some(&dup_sites),
+    )
+}
+
 /// The worker of [`binding_escapes`], with an optional `dup_sites` set. When `dup_sites` is `Some`, a
 /// CONSUMING occurrence of `binder` that is a Perceus RETAIN site (in `dup_sites`) does NOT count as an
 /// escape: the retain `dup`'d a fresh reference for the consuming op to take, leaving the binding's OWN
