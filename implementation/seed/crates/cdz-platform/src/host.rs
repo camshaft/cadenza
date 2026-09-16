@@ -4039,11 +4039,18 @@ mod tests {
             .await
             .expect("rc-trace-enable (is the composed heap the rctrace build?)");
         let _ = reducer.on_message(base).await.expect("fold succeeds");
-        let buf = reducer.rc_trace_drain().await.expect("rc-trace-drain reads");
+        let buf = reducer
+            .rc_trace_drain()
+            .await
+            .expect("rc-trace-drain reads");
 
         // Decode the flat 20-byte records inline (op, tag, freed, node, rc_before, rc_after, cascade).
         const REC: usize = 20;
-        assert!(buf.len().is_multiple_of(REC), "ragged rc-trace drain: {} bytes", buf.len());
+        assert!(
+            buf.len().is_multiple_of(REC),
+            "ragged rc-trace drain: {} bytes",
+            buf.len()
+        );
         let le = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         // per node: (last rc_after seen, tag byte, ever-freed, ever-cascade-reached)
         use std::collections::BTreeMap;
@@ -4058,12 +4065,16 @@ mod tests {
             let (node, rc_before, rc_after) = (le(&rec[4..8]), le(&rec[8..12]), le(&rec[12..16]));
             let cascade_raw = le(&rec[16..20]);
             let cascade = cascade_raw != 0xFFFF_FFFF;
-            events.entry(node).or_default().push((op, rc_before, rc_after, cascade_raw));
+            events
+                .entry(node)
+                .or_default()
+                .push((op, rc_before, rc_after, cascade_raw));
             let e = nodes.entry(node).or_insert((0, tag, false, false, false));
             e.0 = rc_after;
             e.1 = tag;
             match op {
-                0 => {                                            // ALLOC
+                0 => {
+                    // ALLOC
                     e.2 = true;
                     alloc_rank.entry(node).or_insert_with(|| {
                         let r = next_alloc;
@@ -4071,8 +4082,8 @@ mod tests {
                         r
                     });
                 }
-                2 if freed => e.3 = true,                         // DROP freed
-                3 => e.3 = true,                                  // MARK_IMMORTAL (left census legitimately)
+                2 if freed => e.3 = true, // DROP freed
+                3 => e.3 = true,          // MARK_IMMORTAL (left census legitimately)
                 _ => {}
             }
             if op == 2 && cascade {
