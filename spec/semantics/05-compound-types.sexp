@@ -29045,6 +29045,72 @@
   (call main (: 1 Int64))
   (output (: 990 Int64)))
 
+; -- map-value RECORD view faces of the owner-drop gate (breaker adversarial pins on the
+; SumExpect+Proj scalar-read drop landing): the gate frees the extracted view after a scalar
+; Proj — these pin the shapes where the view (or its payload) must SURVIVE that read: more
+; fields read afterwards (incl. a heap field), the record escaping the function its map dies
+; in, and two aliased extractions split scalar/heap. All values wasm=rust cross-checked. --
+(case
+  "a map-value record read for one scalar still yields its other fields, heap field included"
+  (doc
+    "`r` is extracted (`Option.expect (Map.lookup m k)`) once; the FIRST projection is a scalar
+           read — the shape whose extracted-view drop the owner-drop gate performs — and the case then
+           reads a SECOND scalar and a HEAP field (`String.byte-len (. r s)`) off the same view. An
+           over-widened gate that dropped the view (or cascaded into the string payload) after the
+           first scalar read corrupts the later reads. 5 + 70 + 20 = 95.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (let ((m (Map.insert (Map.empty) k #record((= a 5) (= b 70) (= s "second-field-payload")))))
+          (let ((r (Option.expect (Map.lookup m k) "r")))
+            (+ (+ (. r a) (. r b)) (String.byte-len (. r s))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 95 Int64)))
+
+(case
+  "a map-value record escapes the function its map dies in after a scalar-read probe"
+  (doc
+    "`grab` builds the map LOCALLY, extracts the record view, scalar-reads `(. r a)` (the
+           drop-gated shape) to pick a branch, and RETURNS the view — the map's last use is inside
+           `grab`, so its shell is reclaimable at return while the escaped record (and its string
+           payload) must survive for the caller's projections. The function-boundary escape face of
+           the owner-drop gate. 5 + 23 = 28.")
+  (input
+    (do
+      (def
+        (grab (: k Int64))
+        (let ((m (Map.insert (Map.empty) k #record((= a 5) (= s "escaping-record-payload")))))
+          (let ((r (Option.expect (Map.lookup m k) "r")))
+            (let ((probe (. r a)))
+              (if (> probe 0) r r)))))
+      (def (main (: k Int64)) (let ((r2 (grab k))) (+ (. r2 a) (String.byte-len (. r2 s)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 28 Int64)))
+
+(case
+  "two aliased extractions of one map-value record split a scalar read and a heap read"
+  (doc
+    "The SAME map value is extracted TWICE (`r1`, `r2` — two `Option.expect (Map.lookup …)`
+           views of one payload); the scalar read happens through `r1` (the drop-gated shape) and the
+           heap field is then read through `r2`. A gate that resolved the drop against the SHARED
+           payload rather than the extraction it widened frees the record under the sibling alias —
+           the aliased-extraction face. 9 + 23 = 32.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (let ((m (Map.insert (Map.empty) k #record((= a 9) (= s "twice-extracted-payload")))))
+          (let ((r1 (Option.expect (Map.lookup m k) "r1")))
+            (let ((r2 (Option.expect (Map.lookup m k) "r2")))
+              (let ((scalar (. r1 a)))
+                (+ scalar (String.byte-len (. r2 s))))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 32 Int64)))
+
 ; -- leak-freedom over the adversarial shared-heap faces: divergent aliases, closure capture, handler-arm update, Map/Set operands all balance to zero live objects (breaker batch 381; live-objects cases are wasm-baselined per the migration convention) --
 (case
   "lk1 divergent update aliases leave no live heap objects after the run"
