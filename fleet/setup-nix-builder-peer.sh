@@ -13,6 +13,15 @@
 # is an accept-then-error remote-build failure, which `fallback=true` does NOT rescue (fallback only covers
 # substitute failures + UNREACHABLE builders, not a reachable builder that accepts then errors).
 #
+# A SECOND accept-then-error class — CA-DERIVATION hash mismatch (2026-09-16) — is now STRUCTURALLY PREVENTED,
+# so this runbook does NOT need to guard against it: offloading a content-addressed derivation (the
+# guide-build-*/corpus-build-* tier) to a peer with any nix-version skew produced non-reproducible CA output
+# and failed on import with `ca hash mismatch importing path … : specified sha256:X got sha256:Y`. The fix
+# (v-nix, PR #9048/#9054) sets `preferLocalBuild=true` on all `__contentAddressed` derivation factories — nix
+# never offloads a preferLocalBuild drv, so the CA tier always builds locally regardless of peer skew — and a
+# gate lint (`caPreferLocalBuildLint`) fails the merge if a new CA drv omits it. So a freshly-provisioned peer
+# only ever receives INPUT-addressed builds (cargo-test-*/cdz-runtime-component); no CA-repro burden on peers.
+#
 # THE FIX THIS CAPTURES: the exact, idempotent, re-runnable steps v-nix validated end-to-end, split by where
 # they run. Model = Determinate Nix SINGLE-USER (`build-users-group=` empty) to MATCH the working primary,
 # rather than trying to create an nixbld group the installer refuses to create.
