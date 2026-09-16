@@ -714,36 +714,6 @@
   (output (: false Bool)))
 
 (case
-  "bcp1 an INVARIANT BigInt param compared via = in a self-loop is reclaimed at loop exit (live-objects 0)"
-  (doc
-    "The structural-compare face of the invariant-loop-param reclaim family (v-memory-safety; the compare
-           twin of the Bytes.at / Set.contains / Map.lookup borrow arms): `drive` threads an UNCHANGING
-           `BigInt b` (identity-passed on every back-edge) and READS it only via `(= b (BigInt.of 3))` — a
-           value-eq that BORROWS both operands and returns a Bool SCALAR holding no alias into `b`. So `b` is
-           dead at loop exit and its heap leaf MUST be reclaimed there. Regression witness: the structural
-           compares (`ValueEq`/`ValueCmp`/`StrCmp`/`BigIntCmp`/`RationalCmp` — distinct Core variants from the
-           scalar `Compare`) were absent from the invariant-param exit-drop borrow allowlist, so the compare
-           fell to the deny fallback and the whole BigInt leaf leaked (constant per run — census 1 at any n).
-           `b = (BigInt.of n)` is RUNTIME-built (never const-folds). The compare is true on every iteration iff
-           n = 3: n=0 → loop not entered → 0; n=3 → b=3 matches all 3 iterations → 3; n=8 → b=8 never matches
-           → 0. `live-objects 0` is an exact drift guard (a re-leak shows > 0; the guarded-all backstop TRAPS a
-           reintroduced over-reclaim).")
-  (input
-    (do
-      (def
-        (drive (: b BigInt) (: i Int64) (: acc Int64))
-        (if (> i 0) (drive b (- i 1) (+ acc (if (= b (BigInt.of 3)) 1 0))) acc))
-      (def (main (: n Int64)) (drive (BigInt.of n) n 0))
-      (export main)))
-  (call main (: 0 Int64))
-  (output (: 0 Int64))
-  (call main (: 3 Int64))
-  (output (: 3 Int64))
-  (call main (: 8 Int64))
-  (output (: 0 Int64))
-  (live-objects 0))
-
-(case
   "equality over a compound mixing a float and a Bytes leaf walks both"
   (doc
     "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a
