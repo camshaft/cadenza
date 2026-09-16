@@ -3070,11 +3070,19 @@ pub(super) fn emit(
             // and can't see it was materialized into a shared slot, so gate on slot-membership: a slotted
             // operand is Borrowed (its owner drops it), never reclaimed by a borrowing Proj. A NON-slotted
             // fresh producer (`(. (mk) 0)` inline, no enclosing materialization) still reclaims (a dead temp).
+            // ALSO reclaim when the operand is itself an OWNED nested-compound `Core::Proj` child
+            // (`(. (. (bump p0 d) pos) y)` — a scalar/nested read off an INNER projection): the inner Proj's
+            // emit DUP'd its extracted child into a standalone owned handle (`heap_operand_ownership(Proj)` is
+            // deliberately Borrowed), which this outer borrowing read must then drop — else the projected
+            // sub-record leaks (the nested-record-projection leak, corpus-15 rows-and-open-sums). Mirrors the
+            // `Map.len`/`List.len`/`Bytes.len`/`Set.len` owned-proj-child reclaim; drop-iff-dup'd via the
+            // shared `owned_proj_child_dupd` gate. The `!slots.contains_key(&operand)` guard still excludes a
+            // materialized (shared) inner Proj — its slot owner reclaims it, not this borrowing read.
             let reclaim = !slots.contains_key(&operand)
-                && matches!(
+                && (matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
-                );
+                ) || owned_proj_child_dupd(db, operand, slots));
             if reclaim {
                 let agg_slot = base;
                 *high = (*high).max(agg_slot + 1);
