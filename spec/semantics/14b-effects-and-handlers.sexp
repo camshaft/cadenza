@@ -80,6 +80,43 @@
   (output (: 2 Int64)))
 
 (case
+  "a handler whose STATE is a string ROPE grows per perform through a recursive walker"
+  (doc
+    "The handler state is a bare HEAP STRING grown by `String.concat` on EVERY perform — a rope
+           accumulating through the fold — and the performs are issued by a RECURSIVE function, so the
+           state threads across call frames, not one flat body. Each arm resumes the CURRENT state's
+           `String.byte-len` (a heap read of the threaded value at each step) then concats the message
+           on. Seeded `\"seed-x\"` (n=1 picks the 2-byte suffix, blocking a const fold of the seed):
+           `chatter 2` logs \"ab\", \"ab\", \"z\" — resumes 6, 8, 10 (the rope's length BEFORE each
+           append) — so 6+8+10 = 24, final rope \"seed-xababz\" discarded. Pins the bare-heap-string
+           state face (the rope companion of the tuple / record-with-list state cases): the threaded
+           heap value is read (byte-len), rebuilt (concat), and re-threaded per perform across a
+           recursion, on both backends. (Adversarial pin from a breaker probe; wasm=rust
+           cross-checked.) LEAK TRACKED (breaker, filed to v-memory-safety): the value is exact and
+           NOTHING heap escapes (the result is a scalar; the final state rope is discarded at handle
+           completion), yet the census reads 3 live objects — the discarded final handler-state rope
+           is not fully reclaimed. The record-with-heap-LIST state sibling above reclaims clean, so
+           this is specific to the bare string-rope state. Ideal is (live-objects 0); flip this
+           marker when the handle-exit state reclaim lands.")
+  (input
+    (do
+      (effect Log (op log (-> String Int64)))
+      (def
+        (chatter (: n Int64))
+        (if (= n 0) (Log.log "z") (+ (Log.log "ab") (chatter (- n 1)))))
+      (def
+        (main (: n Int64))
+        (handle
+          Log
+          (String.concat "seed" (if (> n 0) "-x" "-y"))
+          ((log (m) s (resume (String.byte-len s) (String.concat s m))))
+          (chatter 2)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 24 Int64))
+  (live-objects known-leak))
+
+(case
   "an arm chooses its resume value by an if on the handler state"
   (doc
     "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
