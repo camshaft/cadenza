@@ -5047,7 +5047,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Qty through program structure (module exports, CHAMP values, closure envs, extract/compute/
 ; reinsert) with the dimension checks holding at each boundary; the #44 workaround perimeter

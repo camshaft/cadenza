@@ -2936,7 +2936,7 @@
   (output (: 70 Int64))
   (call main (: 3 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser"
@@ -2967,7 +2967,7 @@
   (output (: 318 Int64))
   (call main (: 2 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a MIXED-endian frame packs big and little fields side by side and round-trips both"
@@ -3329,7 +3329,7 @@
   (output (: 3183 Int64))
   (call main (: 50 UInt8))
   (output (: 3191 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a u16 bin field reads correctly at every runtime slice offset, odd or even"
@@ -3403,7 +3403,7 @@
   (output (: 2 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime bin match decodes a FINAL utf8 segment at a NON-ZERO static offset"
@@ -3428,7 +3428,7 @@
   (output (: 12 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime bin match decodes a FINAL DEPENDENT-size utf8 segment"
@@ -3454,7 +3454,7 @@
   (output (: 2 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime bin match decodes a NON-FINAL dependent-size utf8 segment before a trailing field"
@@ -3479,7 +3479,7 @@
   (output (: 2 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a dependent-size utf8 whose length prefix OVERRUNS the frame is a non-match, not a trap"
@@ -3507,7 +3507,7 @@
   (output (: -1 Int64))
   (call main (: 0 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
@@ -3951,7 +3951,7 @@
   (output (: 50 Int64))
   (call main (: 0 UInt8))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bits run spanning TWO bytes decodes MSB-first over a runtime scrutinee"
@@ -4073,7 +4073,7 @@
   (output (: 2 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cu02 runtime FINAL dependent-size utf8 segment decodes"
@@ -4089,7 +4089,7 @@
   (output (: 2 Int64))
   (call main (: 255 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cu03 CONTROL runtime non-final dependent-size BYTES segment"
