@@ -4768,8 +4768,26 @@ pub(super) fn emit(
             // begin with — an OWNED temporary (a constructor / call / concat result) leaks otherwise; a
             // BORROWED operand (param / kept-local / payload read) is left to its owner (dropping it would
             // be a double-free), whether or not it was compacted in place.
-            lo.drop_slot_if_owned(slot_l, out);
-            ro.drop_slot_if_owned(slot_r, out);
+            // ALSO drop a SumExpect VIEW in the shell-reclaim set: the SumExpect emit dup'd the extracted view
+            // + freed the Some shell, and the shell-set contract is that THIS consumer owns + drops the view.
+            // `heap_operand_ownership(SumExpect over StrAt/…)` is deliberately NOT globally Owned (the StrAt
+            // local>global discipline), so `drop_slot_if_owned` misses it — but the borrowing value-eq IS the
+            // owning consumer, so it must drop, mirroring the #9071 Proj-gate clause. Without this,
+            // `(= (Option.expect (String.at s i)) "a")` in a scalar-scan leaks the compacted char leaf per
+            // iteration (13-strings `cnt` — 6-leak). Drop-iff-dup'd: shell-set membership is EXACTLY when the
+            // SumExpect emit dup'd the view, so drop == dup (no double-free).
+            let drop_l =
+                matches!(lo, HandleOwnership::Owned) || out.sumexpect_shell_reclaim.contains(&lhs);
+            let drop_r =
+                matches!(ro, HandleOwnership::Owned) || out.sumexpect_shell_reclaim.contains(&rhs);
+            if drop_l {
+                out.push(Lir::LocalGet(slot_l));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if drop_r {
+                out.push(Lir::LocalGet(slot_r));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(())
         }
         // RUNTIME COMPOUND ORDERING — a `value-cmp(a, b, desc)` call: the blessed three-way lexicographic
