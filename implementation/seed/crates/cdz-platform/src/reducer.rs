@@ -227,6 +227,20 @@ pub trait Reducer: Send {
     async fn live_object_census(&mut self) -> Option<u32> {
         None
     }
+
+    /// DEBUG rc-trace attribution hook (complement to [`live_object_census`](Self::live_object_census)):
+    /// arm/disarm the composed runtime's per-node ALLOC/DUP/DROP recorder. `None` by default; overridden
+    /// only by the wasm reducer when composed against the rc-trace runtime build. Diagnostic, not a
+    /// production path — used by the site-b leak-attribution harness to read leaked node kinds after a fold.
+    async fn rc_trace_enable(&mut self, _on: bool) -> Option<()> {
+        None
+    }
+
+    /// DEBUG rc-trace drain hook: return the recorder's flat 20-byte-record buffer since the last enable.
+    /// `None` by default; overridden only by the wasm reducer on the rc-trace runtime build.
+    async fn rc_trace_drain(&mut self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 #[cfg(test)]

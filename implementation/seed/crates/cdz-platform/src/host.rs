@@ -1162,6 +1162,53 @@ impl Reducer for WasmReducer {
             _ => None,
         }
     }
+
+    /// Arm/disarm the composed runtime's rc-trace recorder (`rc-trace-enable(on)`, runtime.wit:618) —
+    /// the ATTRIBUTION complement to [`live_object_census`](Self::live_object_census). Requires the
+    /// composed heap to be the rc-trace runtime build (`.#rctrace-runtime`, features debug-counters +
+    /// rc-trace-export); a plain build lacks the export and this returns `None`. Enabling CLEARS the
+    /// buffer + starts appending (mirrors cdz-run's `rc_trace_enable`). Diagnostic-only (env-gated test).
+    async fn rc_trace_enable(&mut self, on: bool) -> Option<()> {
+        let WasmReducer::Reducer { store, heap, .. } = self else {
+            return None;
+        };
+        let heap = heap.as_ref()?;
+        let iface = heap.get_export_index(&mut *store, None, "cadenza:runtime/debug-trace")?;
+        let idx = heap.get_export_index(&mut *store, Some(&iface), "rc-trace-enable")?;
+        let func = heap.get_func(&mut *store, idx)?;
+        func.call_async(&mut *store, &[wasmtime::component::Val::Bool(on)], &mut [])
+            .await
+            .ok()?;
+        func.post_return_async(&mut *store).await.ok()?;
+        Some(())
+    }
+
+    /// Drain the composed runtime's rc-trace ring buffer (`rc-trace-drain() -> list<u8>`, runtime.wit:622)
+    /// as the raw 20-byte-record byte array (decoded by the caller). Diagnostic-only (env-gated test).
+    async fn rc_trace_drain(&mut self) -> Option<Vec<u8>> {
+        let WasmReducer::Reducer { store, heap, .. } = self else {
+            return None;
+        };
+        let heap = heap.as_ref()?;
+        let iface = heap.get_export_index(&mut *store, None, "cadenza:runtime/debug-trace")?;
+        let idx = heap.get_export_index(&mut *store, Some(&iface), "rc-trace-drain")?;
+        let func = heap.get_func(&mut *store, idx)?;
+        let mut out = [wasmtime::component::Val::Bool(false)];
+        func.call_async(&mut *store, &[], &mut out).await.ok()?;
+        func.post_return_async(&mut *store).await.ok()?;
+        match out.into_iter().next()? {
+            wasmtime::component::Val::List(items) => Some(
+                items
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        wasmtime::component::Val::U8(b) => Some(b),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
 }
 
 /// Turn a guest reducer-export call result into the platform fold result, classifying a trap. A backend
@@ -3926,6 +3973,122 @@ mod tests {
         assert!(
             !leaked,
             "a reducer fold leaked value-heap cells (on_message≈{per_fold}/fold, on_notification={note_delta}, on_response={resp_delta}) — reducer-export shell-drop reclaim not yet landed on one or more entry points; census not net-0"
+        );
+    }
+
+    // ATTRIBUTION harness (v-memory-safety, site-b node-kind rc-trace for v-cdz-wasm-codegen): drive ONE
+    // on_message fold on reducer-echo composed against the RC-TRACE runtime (.#rctrace-runtime), drain the
+    // per-node ALLOC/DUP/DROP trace, and print the LEAKED node KINDS + residual RCs. Disambiguates the
+    // on_message residual (~7): a payload/leaf leaking RC>1 = a forwarded-dup imbalance (site-a interaction);
+    // RC==1 unreached = an op_drop-doesn't-cascade-lists gap; the step-record TOP leaking = an
+    // emit_result_spill gap. `#[ignore]` + env-gated (needs CDZ_RCTRACE_RUNTIME_WASM, the debug-trace twin of
+    // the runtime the guest imports, + the reducer-echo guest + component store).
+    #[tokio::test]
+    #[ignore = "env-gated rc-trace attribution; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_RCTRACE_RUNTIME_WASM"]
+    async fn on_message_rc_trace_node_kinds() {
+        let (Ok(path), Ok(dir), Ok(rct)) = (
+            std::env::var("CDZ_REDUCER_ECHO_WASM"),
+            std::env::var("CDZ_COMPONENT_STORE_DIR"),
+            std::env::var("CDZ_RCTRACE_RUNTIME_WASM"),
+        ) else {
+            eprintln!("rc-trace attribution env unset — skipping");
+            return;
+        };
+        let guest = std::fs::read(&path).expect("read the reducer-echo component");
+        let rctrace_heap = std::fs::read(&rct).expect("read the rc-trace runtime component");
+
+        let engine = super::reducer_engine(&super::ResourceLimits::default()).expect("engine");
+        let component =
+            wasmtime::component::Component::from_binary(&engine, &guest).expect("parse component");
+        let heap_hash = super::component_dependencies(&engine, &component)
+            .into_iter()
+            .find(|d| d.import_name.contains("cadenza:runtime/heap"))
+            .expect("the reducer-echo guest imports the value-heap runtime")
+            .hash;
+
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(guest.clone())).await.unwrap();
+        for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+            let p = entry.expect("dir entry").path();
+            if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                    .await
+                    .unwrap();
+            }
+        }
+        let program = ProgramHash::of(&guest);
+        let store = wasm_program_store(Arc::new(cas))
+            .with_component_override(heap_hash, Bytes::from(rctrace_heap));
+        let mut reducer = store
+            .spawn(program, ord(b"rctrace"))
+            .await
+            .expect("spawn the guest composed against the rc-trace runtime (is CDZ_RCTRACE_RUNTIME_WASM the rctrace build?)");
+
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        reducer
+            .rc_trace_enable(true)
+            .await
+            .expect("rc-trace-enable (is the composed heap the rctrace build?)");
+        let _ = reducer.on_message(base).await.expect("fold succeeds");
+        let buf = reducer.rc_trace_drain().await.expect("rc-trace-drain reads");
+
+        // Decode the flat 20-byte records inline (op, tag, freed, node, rc_before, rc_after, cascade).
+        const REC: usize = 20;
+        assert!(buf.len().is_multiple_of(REC), "ragged rc-trace drain: {} bytes", buf.len());
+        let le = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        // per node: (last rc_after seen, tag byte, ever-freed, ever-cascade-reached)
+        use std::collections::BTreeMap;
+        let mut nodes: BTreeMap<u32, (u32, u8, bool, bool, bool)> = BTreeMap::new(); // (rc_after,tag,alloc,freed_or_immortal,cascade_seen)
+        for rec in buf.chunks_exact(REC) {
+            let (op, tag, freed) = (rec[0], rec[1], rec[2] != 0);
+            let (node, rc_after) = (le(&rec[4..8]), le(&rec[12..16]));
+            let cascade = le(&rec[16..20]) != 0xFFFF_FFFF;
+            let e = nodes.entry(node).or_insert((0, tag, false, false, false));
+            e.0 = rc_after;
+            e.1 = tag;
+            match op {
+                0 => e.2 = true,                                  // ALLOC
+                2 if freed => e.3 = true,                         // DROP freed
+                3 => e.3 = true,                                  // MARK_IMMORTAL (left census legitimately)
+                _ => {}
+            }
+            if op == 2 && cascade {
+                e.4 = true;
+            }
+        }
+        let tagname = |t: u8| match t {
+            0 => "Leaf",
+            1 => "Sum",
+            2 => "Compound",
+            _ => "Other",
+        };
+        let mut leaked: Vec<_> = nodes
+            .iter()
+            .filter(|(_, (_, _, alloc, done, _))| *alloc && !*done)
+            .collect();
+        leaked.sort_by_key(|(n, _)| **n);
+        eprintln!(
+            "rc-trace attribution: on_message fold — {} total nodes, {} LEAKED:",
+            nodes.len(),
+            leaked.len()
+        );
+        for (node, (rc, tag, _, _, cascade)) in &leaked {
+            eprintln!(
+                "  LEAK node#{node} kind={} residual_rc={rc} cascade_reached={cascade}",
+                tagname(*tag)
+            );
+        }
+        eprintln!(
+            "rc-trace attribution HINT: a Leaf(=Bytes)/record leaking rc>1 ⇒ forwarded-dup imbalance (site-a interaction); rc==1 & cascade_reached=false ⇒ op_drop didn't cascade (runtime/emit gap); a Compound with no drop at all + others reached ⇒ emit_result_spill top-drop gap"
         );
     }
 }
