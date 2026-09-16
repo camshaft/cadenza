@@ -204,6 +204,49 @@ fn bytes_new_builds_a_leaf_in_one_call_matching_alloc_plus_set() {
 }
 
 #[test]
+fn bytes_new_allocates_exactly_one_node_regardless_of_length() {
+    // The load-bearing property behind seq-916's payload-LENGTH-INDEPENDENT reducer census (on_message
+    // 7/fold, not O(payload)): bytes-new builds the buffer as ONE Leaf no matter the payload length
+    // (inline for <=cap, a single Heap raw for >cap) -- NOT a per-byte cons list or a chunked rope.
+    // If a future change chunked large buffers into a multi-node rope, the reducer per-fold leak would
+    // balloon back to O(len) and the #9014 census gate (13->7/3/5) would regress. Pin it.
+    reset();
+    // Empty -> the IMMORTAL singleton (census-excluded): zero heap nodes.
+    let before_empty = live_nodes();
+    let e = op_bytes_new(Vec::new());
+    assert_eq!(
+        live_nodes(),
+        before_empty,
+        "empty bytes-new allocates no census node (immortal singleton)"
+    );
+    assert_eq!(op_bytes_len(e), 0);
+    // Non-empty, across inline / boundary / heap / large: EXACTLY one node each, reclaimed on drop.
+    for len in [
+        1u32,
+        INLINE_RAW_CAP as u32,
+        INLINE_RAW_CAP as u32 + 1,
+        1000,
+        65536,
+    ] {
+        let before = live_nodes();
+        let data: Vec<u8> = (0..len).map(|i| (i & 0xff) as u8).collect();
+        let h = op_bytes_new(data);
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "bytes-new of a {len}-byte payload is exactly ONE heap node (not O(len))"
+        );
+        assert_eq!(op_bytes_len(h), len);
+        op_drop(h);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "…and dropping that one node reclaims it (len {len})"
+        );
+    }
+}
+
+#[test]
 fn bytes_read_returns_the_whole_buffer_and_flattens_a_rope() {
     reset();
     // Flat leaf: bytes-read is the inverse of bytes-new.
