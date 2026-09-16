@@ -3791,6 +3791,100 @@ fn ssh_cert_valid_to(ssh_keygen_l: &str) -> Option<String> {
     })
 }
 
+/// What the last gate-local run reveals about the offloaded builds' OUTCOME (not just SSH-cert validity).
+#[derive(Debug, PartialEq, Eq)]
+enum OffloadBuildOutcome {
+    /// A build was dispatched to a remote builder and it hard-FAILED (accept-then-error; the reason).
+    Failed(String),
+    /// A path was built on a remote builder and copied back — offload demonstrably WORKED.
+    Succeeded,
+    /// No offload evidence either way (everything cached/local this run) — can't judge build health.
+    Inconclusive,
+}
+
+/// Classify what a gate-local build log reveals about the offloaded builds' outcome, so `fleet status`
+/// can reflect actual build SUCCESS — not just SSH-cert validity. A cert can be VALID while a peer is
+/// misconfigured and every offloaded build hard-fails (an accept-then-error failure, which
+/// `fallback=true` does NOT rescue — e.g. the 2026-09-16 missing-`build-users-group` incident, where
+/// offload looked "ACTIVE" by cert but reddened gate-local fleet-wide). `run_gate_local` calls this on
+/// the captured build output and persists the result to the offload-outcome stamp. Pure fn over the log
+/// text so it is unit-testable. FAILURE dominates SUCCESS: a log that dispatched several builds and one
+/// failed remotely is a failure signal.
+fn classify_gate_log_offload(log: &str) -> OffloadBuildOutcome {
+    // nix prints `error: build of '<drv>' on 'ssh://<peer>' failed: error: <reason>` for a remote-build
+    // failure (distinct from a LOCAL test/compile failure, which never carries `on 'ssh://`).
+    for line in log.lines() {
+        if line.contains("on 'ssh://") && line.contains("' failed") {
+            let reason = line
+                .rsplit_once("failed:")
+                .map(|(_, r)| r.trim().trim_start_matches("error:").trim())
+                .filter(|r| !r.is_empty())
+                .unwrap_or("remote build failed");
+            // Bound the snippet so the status line stays compact.
+            return OffloadBuildOutcome::Failed(reason.chars().take(140).collect());
+        }
+    }
+    // Success evidence: a built path was copied back FROM a remote builder.
+    if log.contains("from 'ssh://") {
+        return OffloadBuildOutcome::Succeeded;
+    }
+    OffloadBuildOutcome::Inconclusive
+}
+
+/// Path of the durable stamp recording the LAST gate-local's offload outcome. We can NOT just scan the
+/// `cdz-gate-local-*.log` files: gate-local DELETES its log on a clean GREEN pass (keeps it only on RED
+/// for debugging — see `run_gate_local`), so a successful offload leaves no log and an OLD kept failure
+/// log would linger as "freshest" → a false stale failure warning. Instead gate-local writes this tiny
+/// stamp on EVERY completion (before the green-delete), so the stamp always reflects the most recent run.
+fn offload_outcome_stamp_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("cdz-gate-local-offload.stamp")
+}
+
+/// Serialize an offload outcome for the stamp (pure, round-trips with `parse_offload_stamp`).
+fn offload_outcome_stamp_body(outcome: &OffloadBuildOutcome) -> String {
+    match outcome {
+        OffloadBuildOutcome::Failed(reason) => format!("FAILED\t{reason}"),
+        OffloadBuildOutcome::Succeeded => "SUCCEEDED".to_string(),
+        OffloadBuildOutcome::Inconclusive => "INCONCLUSIVE".to_string(),
+    }
+}
+
+/// Parse a stamp body back into an outcome (pure). Unknown/empty → Inconclusive (fail-safe: a garbled
+/// stamp never becomes a false failure/success claim).
+fn parse_offload_stamp(body: &str) -> OffloadBuildOutcome {
+    let body = body.trim();
+    if let Some(reason) = body.strip_prefix("FAILED\t") {
+        OffloadBuildOutcome::Failed(reason.to_string())
+    } else if body == "SUCCEEDED" {
+        OffloadBuildOutcome::Succeeded
+    } else {
+        OffloadBuildOutcome::Inconclusive
+    }
+}
+
+/// Record the outcome of a gate-local's offloaded builds to the durable stamp. Best-effort (a failed
+/// write just means `fleet status` falls back to the cert-only signal). Called by `run_gate_local`.
+fn write_offload_outcome_stamp(outcome: &OffloadBuildOutcome) {
+    let _ = std::fs::write(
+        offload_outcome_stamp_path(),
+        offload_outcome_stamp_body(outcome),
+    );
+}
+
+/// The LAST gate-local's offload outcome, from the stamp, if RECENT (< 24h). `None` when the stamp is
+/// absent or stale → `fleet status` falls back to the cert-only signal and never asserts a stale
+/// outcome. 24h window: a stamp older than that predates any config change (e.g. a peer fix) and would
+/// mislead.
+fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
+    const RECENT_SECS: u64 = 24 * 3600;
+    let stamp = offload_outcome_stamp_path();
+    let mtime = file_mtime_unix(&stamp)?;
+    if now.saturating_sub(mtime) > RECENT_SECS {
+        return None; // stale → don't assert an outcome
+    }
+    Some(parse_offload_stamp(&std::fs::read_to_string(&stamp).ok()?))
+}
+
 /// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
 /// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
 /// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
@@ -4002,9 +4096,25 @@ fn status(fleet: &Fleet) {
             Some((valid_to, exp))
         });
         match cert_status {
-            Some((to, exp)) if now_unix() < exp => println!(
-                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to})"
-            ),
+            // Cert is valid — but a valid cert only proves we CAN reach the peer, not that offloaded
+            // builds SUCCEED (a misconfigured peer accepts then errors; fallback=true doesn't cover it).
+            // Augment with the last gate-local's actual offload outcome so a silently-broken-but-reachable
+            // peer surfaces here instead of masquerading as healthy.
+            Some((to, exp)) if now_unix() < exp => match last_gate_local_offload_outcome(now) {
+                Some(OffloadBuildOutcome::Failed(reason)) => println!(
+                    "  ⚠ distributed builds: {n_builders} remote builder(s) — id_rsa cert valid to {to} BUT the last \
+                     gate-local hit a remote-BUILD failure (accept-then-error; fallback=true does NOT cover this): \
+                     {reason}. A peer may be misconfigured — verify with `.claude/fleet/setup-nix-builder-peer.sh verify <peer-fqdn>`"
+                ),
+                Some(OffloadBuildOutcome::Succeeded) => println!(
+                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE + VERIFIED (id_rsa cert valid \
+                     to {to}; last gate-local built on a remote builder + copied back)"
+                ),
+                _ => println!(
+                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to}; \
+                     no recent offloaded build observed to verify)"
+                ),
+            },
             Some((to, _)) => println!(
                 "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
                  id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
@@ -13620,6 +13730,11 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // alone doesn't) — the same information the old piped-stderr `captured` held.
     let captured = std::fs::read_to_string(&log).unwrap_or_default();
     let verdict = local_gate_verdict(spawned_ok, build_ok);
+    // Record this run's OFFLOAD outcome to a durable stamp BEFORE the green-delete below, so `fleet status`
+    // can reflect actual offloaded-build SUCCESS/failure (not just SSH-cert validity) without depending on
+    // the deleted-on-green log. Classified from the build output: a remote-build failure (`on 'ssh://' …
+    // failed`) → Failed; a path copied back from a builder → Succeeded; otherwise Inconclusive.
+    write_offload_outcome_stamp(&classify_gate_log_offload(&captured));
     // Log-file hygiene: DELETE it on a clean pass (GREEN — nothing to inspect), but KEEP it on any non-green
     // verdict so the FULL build output is available for inspection. Detaching the build traded away the old
     // live in-pane stderr stream, so on a RED (esp. when the sub-check name isn't parseable) the preserved
@@ -20883,6 +20998,75 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         // No Valid line → None (fail-safe, never a false DEGRADED).
         assert_eq!(ssh_cert_valid_to("Type: something\nPrincipals: x\n"), None);
+    }
+
+    #[test]
+    fn classify_gate_log_offload_reads_remote_build_outcome() {
+        // A remote-build FAILURE (the 2026-09-16 missing-build-users-group incident shape) → Failed,
+        // and the reason snippet carries the actionable cause — this is the accept-then-error case a
+        // valid cert would otherwise mask as "ACTIVE".
+        let nixbld = "error: build of '/nix/store/abc-cdz-codegen-check-0.0.0.drv' on \
+                      'ssh://bythewc@dev-dsk-bythewc-2a-165ab34f.us-west-2.amazon.com' failed: error: \
+                      the group 'nixbld' specified in 'build-users-group' does not exist\n";
+        match classify_gate_log_offload(nixbld) {
+            OffloadBuildOutcome::Failed(reason) => {
+                assert!(
+                    reason.contains("build-users-group") && reason.contains("nixbld"),
+                    "reason should carry the actionable cause, got: {reason}"
+                );
+            }
+            other => panic!("expected Failed for a remote-build failure, got {other:?}"),
+        }
+        // A path copied back FROM a remote builder proves offload WORKED → Succeeded.
+        let ok = "copying path '/nix/store/xyz-cdz-bench-check-0.0.0' from \
+                  'ssh://bythewc@dev-dsk-bythewc-2a-7c30cf07.us-west-2.amazon.com'...\n";
+        assert_eq!(
+            classify_gate_log_offload(ok),
+            OffloadBuildOutcome::Succeeded
+        );
+        // FAILURE dominates: a log that dispatched builds and had one fail remotely reads as Failed even
+        // if other paths copied back.
+        assert!(matches!(
+            classify_gate_log_offload(&format!("{ok}{nixbld}")),
+            OffloadBuildOutcome::Failed(_)
+        ));
+        // A purely LOCAL failure (no `on 'ssh://`) is NOT an offload failure → Inconclusive, not a false
+        // DEGRADED (the cert-only signal stands).
+        assert_eq!(
+            classify_gate_log_offload("error: build of '/nix/store/q.drv' failed: 1 test failed\n"),
+            OffloadBuildOutcome::Inconclusive
+        );
+        // No offload evidence at all (fully cached run) → Inconclusive.
+        assert_eq!(
+            classify_gate_log_offload("Finished release; decision: LANDABLE\n"),
+            OffloadBuildOutcome::Inconclusive
+        );
+    }
+
+    #[test]
+    fn offload_stamp_round_trips_and_is_fail_safe() {
+        for oc in [
+            OffloadBuildOutcome::Succeeded,
+            OffloadBuildOutcome::Inconclusive,
+            OffloadBuildOutcome::Failed("the group 'nixbld' ... does not exist".to_string()),
+        ] {
+            assert_eq!(
+                parse_offload_stamp(&offload_outcome_stamp_body(&oc)),
+                oc,
+                "stamp body must round-trip"
+            );
+        }
+        // A garbled/empty stamp is fail-safe → Inconclusive (never a false Failed/Succeeded claim).
+        assert_eq!(parse_offload_stamp(""), OffloadBuildOutcome::Inconclusive);
+        assert_eq!(
+            parse_offload_stamp("garbage\tvalue"),
+            OffloadBuildOutcome::Inconclusive
+        );
+        // A FAILED reason with a tab survives (reason is the remainder after the first tab).
+        assert_eq!(
+            parse_offload_stamp("FAILED\tremote build failed"),
+            OffloadBuildOutcome::Failed("remote build failed".to_string())
+        );
     }
 
     #[test]
