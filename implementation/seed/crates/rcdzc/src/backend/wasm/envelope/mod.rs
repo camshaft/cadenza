@@ -1507,20 +1507,31 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     };
     // sec 1 (second): the embedded program (core module 1) — imports `"host"`+`"heap"`+`"mem"`.
     let prog_module_sec = core_module_section(core);
-    // sec 2 (second): host ops (core instance 1), runtime ops (core instance 2), program (core instance 3,
-    // bound `"host"`=1, `"heap"`=2, `"mem"`=0).
+    // sec 2 (second): host ops (core instance 1, ONLY when h>0 — a PURE reducer has no host ops so its
+    // program core module does NOT import `"host"`, and binding a nonexistent import is invalid), runtime ops
+    // (core instance 1 or 2), program (core instance 2 or 3, bound `"host"`=1 iff present, `"heap"`, `"mem"`=0).
+    // Core-instance numbering: mem=0; then [host=1 iff h>0]; then heap; then program. So with a host instance
+    // heap=2/prog=3 (the landed host-state path, byte-identical); without it heap=1/prog=2 (the pure-reducer
+    // bulk path). `has_host_instance` gates BOTH the instance emission and the `"host"` instantiate arg.
+    let has_host_instance = h > 0;
+    let heap_inst: u32 = if has_host_instance { 2 } else { 1 };
+    let prog_inst: u32 = heap_inst + 1;
+    let n_core_instances = if has_host_instance { 3 } else { 2 };
+    let n_prog_args = if has_host_instance { 3 } else { 2 };
     let prog_instance_sec = {
         let mut items = Vec::new();
-        let mut host = vec![0x01];
-        let mut host_exports = Vec::new();
-        for (i, f) in all_host_fns.iter().enumerate() {
-            host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
-            host_exports.extend_from_slice(f.op.as_bytes());
-            host_exports.push(0x00);
-            uleb128((rs + i as u32) as u64, &mut host_exports); // lowered host op i = core func rs+i
+        if has_host_instance {
+            let mut host = vec![0x01];
+            let mut host_exports = Vec::new();
+            for (i, f) in all_host_fns.iter().enumerate() {
+                host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
+                host_exports.extend_from_slice(f.op.as_bytes());
+                host_exports.push(0x00);
+                uleb128((rs + i as u32) as u64, &mut host_exports); // lowered host op i = core func rs+i
+            }
+            host.extend_from_slice(&wasm_vec(h, &host_exports));
+            items.extend_from_slice(&host);
         }
-        host.extend_from_slice(&wasm_vec(h, &host_exports));
-        items.extend_from_slice(&host);
         let mut heap = vec![0x01];
         let mut heap_exports = Vec::new();
         for (j, op) in imports.iter().enumerate() {
@@ -1534,21 +1545,23 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         let mut prog = vec![0x00];
         uleb128(1, &mut prog); // module 1 (module 0 is the mem module)
         let mut args = Vec::new();
-        args.extend_from_slice(&uleb_bytes(HOST_MODULE.len() as u64));
-        args.extend_from_slice(HOST_MODULE.as_bytes());
-        args.push(0x12);
-        uleb128(1, &mut args); // "host" = core instance 1
+        if has_host_instance {
+            args.extend_from_slice(&uleb_bytes(HOST_MODULE.len() as u64));
+            args.extend_from_slice(HOST_MODULE.as_bytes());
+            args.push(0x12);
+            uleb128(1, &mut args); // "host" = core instance 1
+        }
         args.extend_from_slice(&uleb_bytes(HEAP_MODULE.len() as u64));
         args.extend_from_slice(HEAP_MODULE.as_bytes());
         args.push(0x12);
-        uleb128(2, &mut args); // "heap" = core instance 2
+        uleb128(heap_inst as u64, &mut args); // "heap" = core instance 2 (with host) / 1 (pure)
         args.extend_from_slice(&uleb_bytes("mem".len() as u64));
         args.extend_from_slice(b"mem");
         args.push(0x12);
         uleb128(0, &mut args); // "mem" = core instance 0
-        prog.extend_from_slice(&wasm_vec(3, &args));
+        prog.extend_from_slice(&wasm_vec(n_prog_args, &args));
         items.extend_from_slice(&prog);
-        section(sec::CORE_INSTANCE, &wasm_vec(3, &items))
+        section(sec::CORE_INSTANCE, &wasm_vec(n_core_instances, &items))
     };
     let touches = |f: &TypedFunc| {
         let ptys: Vec<WitType> = f.params.iter().map(|(_, t)| t.clone()).collect();
@@ -1566,11 +1579,11 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     let boundary_alias_sec = {
         let mut items = Vec::new();
         for f in &iface.funcs {
-            items.extend_from_slice(&core_alias_item(3, &f.name));
+            items.extend_from_slice(&core_alias_item(prog_inst, &f.name));
         }
         let mut count = m;
         if needs_memory && !needs_realloc {
-            items.extend_from_slice(&core_alias_item(3, "cabi_realloc"));
+            items.extend_from_slice(&core_alias_item(prog_inst, "cabi_realloc"));
             count += 1;
         }
         section(sec::ALIAS, &wasm_vec(count, &items))
