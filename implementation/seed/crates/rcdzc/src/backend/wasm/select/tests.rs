@@ -998,6 +998,57 @@ fn site_a_record_cell_not_droppable_when_moved_out() {
 }
 
 #[test]
+fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() {
+    // #9062 map-owner leak co-fix (v-memory-safety pointer): the map's owner-drop is suppressed on
+    // `Map.lookup m k` + a COMPOUND-value project. v-mem's prime suspect was the emit.rs:4405 scope-drop
+    // ESCAPE gate flipping TRUE under `Some(dup_sites)` seeded by #9062's shell-reclaim value-dup_site.
+    // This pins the SHAPE-INDEPENDENT fact that RULES THAT OUT: in `binding_escapes_dup_aware` every
+    // `dup_sites` use is `&& !dup_sites.contains(id)` at a terminal arm (or a pass-through to recursion),
+    // so the query is MONOTONE — `Some(dup_sites)` can only convert an escape into a NON-escape, never the
+    // reverse. Hence `dup_aware <= plain`; and a map is BORROWED through Map.lookup (reclaim.rs:507), so
+    // plain=false. Together: dup-aware is ALSO false → :4405 never flips false→true → it is NOT the
+    // suppressor (the real one is the :4469 self-keyed borrowed-operand skip; see emit.rs:4459's own
+    // owned-map-lookup comment). A param map exercises the identical escape property (the owned-let case
+    // copy-prop-inlines a single-use map away). If the second assert ever fires, the monotonicity audit is
+    // wrong and #9062's dup_site really does drive the :4405 gate — re-open the co-fix there.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: m (Map Int64 (Record (payload Bytes)))) (: k Int64)) \
+               (. (Option.expect (Map.lookup m k) \"v\") payload)) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ =
+        select_function(&mut db, body, &params, &layout).expect("select f (map-lookup-project)");
+    let m_binder = params[0].0;
+    // Reproduce emit's `out.dup_sites`: shell_reclaim (#9062) U row_op U mark_binder_dups.
+    let mut dup_sites: HashSet<StructId> = HashSet::new();
+    collect_shell_reclaim_child_dups(&mut db, body, &mut dup_sites);
+    collect_row_op_field_dups(&mut db, body, &mut dup_sites);
+    let mut binders = Vec::new();
+    collect_retain_candidate_binders(&mut db, body, &mut binders);
+    collect_dup_sites(&mut db, body, &binders, &mut dup_sites);
+    let plain =
+        binding_escapes_dup_aware(&mut db, body, EscapeTarget::Binder(m_binder), false, None);
+    let dup_aware = binding_escapes_dup_aware(
+        &mut db,
+        body,
+        EscapeTarget::Binder(m_binder),
+        false,
+        Some(&dup_sites),
+    );
+    assert!(
+        !plain,
+        "map `m` is borrowed through Map.lookup (reclaim.rs:507) → plain escape must be false"
+    );
+    assert!(
+        !dup_aware,
+        "dup_sites is monotone (every use is `&& !contains` or pass-through) → Some(dup_sites) <= None \
+         → dup-aware must ALSO be false; a firing here means #9062's value-dup_site drives the :4405 gate"
+    );
+}
+
+#[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
     // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
