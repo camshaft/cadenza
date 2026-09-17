@@ -13448,7 +13448,7 @@
   (output (: -1 Int64))
   (call main (: 9 Int64) (: 0 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the length of a list looked up from a map by a runtime key"
@@ -13961,7 +13961,7 @@
       (export main)))
   (call main (: 5 Int64) (: 3 Int64) (: 7 Int64))
   (output (: 2111 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a list of maps: a runtime index then looks a runtime key up in the found map"
@@ -14128,7 +14128,7 @@
   (output (: 0 Int64))
   (call main (: 9 Int64) (: 10 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a map as a map value: a nested lookup queries the inner map through the outer lookup"
@@ -14163,7 +14163,7 @@
   (output (: -1 Int64))
   (call main (: 9 Int64) (: 0 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact"
@@ -14220,7 +14220,7 @@
   (output (: 103752099 Int64))
   (call main (: -100 Int64))
   (output (: 752099 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
@@ -14369,7 +14369,7 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "overwriting ONE deep list value leaves the neighbors AND the original map live"
@@ -14433,7 +14433,7 @@
   (output (: -1 Int64))
   (call main (: 9 Int64) (: 0 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
@@ -14465,7 +14465,7 @@
   (output (: 300 Int64))
   (call main (: 9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a set nested in a tuple compares equal with a runtime element, order-independent"
@@ -22501,7 +22501,7 @@
           ((None _) 0)))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A map's KEY type is likewise unrestricted — a KEY may itself be a MAP. Keys are compared BY VALUE under
 ; structural equality (collections-and-text.md #Keys Are Compared By Value), and a map value is CANONICAL
@@ -27609,7 +27609,7 @@
   (output (: 1 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
@@ -28003,7 +28003,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 86 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
@@ -28386,7 +28386,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 212 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; pr1 (breaker): prepend onto a CONCAT-merged RRB vector — the new front element and the
 ; original seam-adjacent elements all read back correctly through the merged trie.

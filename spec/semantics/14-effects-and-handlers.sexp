@@ -3976,7 +3976,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two sequential lookups on the same Map with perform-threaded keys stay independent"
@@ -5320,7 +5320,7 @@
 (case
   "a LIST OF SETS op result — the body indexes, measures, and probes the nested elements"
   ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
-  (live-objects known-leak)
+  (live-objects 0)
   (doc
     "NESTED collection crossings: every flat collection has both-direction witnesses; a
            collection INSIDE a collection riding the boundary (two heap layers, RRB list over CHAMP
@@ -5348,7 +5348,7 @@
 (case
   "a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload it is handed"
   ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
-  (live-objects known-leak)
+  (live-objects 0)
   (doc
     "The argument-direction twin of the nested-result pin: a body-built list of sets rides the
            op argument INTO the arm, which indexes both elements — 10·2 + 100 (contains 5) + 1 →
@@ -5409,7 +5409,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 48 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record with a LIST field crosses resume — the body projects and folds the collection field"
@@ -5511,7 +5511,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 820 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a 40-element SET op result — a multi-node CHAMP payload crosses resume"
@@ -7537,7 +7537,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow"
@@ -7963,7 +7963,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 38 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a map-via-effects walk — each element transformed by a dispatch, output order preserved"
@@ -7997,7 +7997,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 3120 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "filter-via-effects — a STATEFUL predicate dispatch decides each element's survival"
@@ -8027,7 +8027,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 304 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position"
@@ -8054,7 +8054,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 135 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back"
@@ -11945,7 +11945,7 @@
   (output (: 3 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a handler STATE that is a recursive sum GROWS one constructor per operation"

@@ -4923,7 +4923,7 @@
   (output (: 1 Int64))
   (call main (: 2 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "mixed-sign Rational add and multiply normalize signs through one runtime chain"
@@ -5657,7 +5657,7 @@
   (output (: 21 Int64))
   (call main (: 1 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime BigInt in an Option payload crosses the host boundary"
@@ -13033,7 +13033,7 @@
       (def (main) (if (< (loop 3 (Rational.of 0 1)) (Rational.of 2 1)) 1 0))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-computed Rational crosses the host boundary as its exact value"
@@ -14281,7 +14281,7 @@
   (output (: 1 Int64))
   (call main (: 3 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps"
@@ -14563,7 +14563,7 @@
       (export main)))
   (call main (: 12 Int64) (: 18 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact"
@@ -14734,7 +14734,7 @@
   (output (: 1 Int64))
   (call main (: 7 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- guard-elision trap-preservation boundaries: masks and remainders never license dropping overflow guards (breaker batch 372, from the 2026-07-17 banked candidate) --
 (case
@@ -17812,7 +17812,7 @@
         sum `(type E (Lit Int64) (Neg E))` is built at runtime AND matched back down by the recursive
         `evl` — the hop must re-emit the type decl, the SumNew values, AND the sum match (payload binders
         on both arms, recursion through the Neg payload). n=7 → evl(Neg(Lit 7)) = -7; n=-9 → evl(Lit 9)
-        = 9. Dual-path verified. `(live-objects known-leak)`: main returns a SCALAR (-7 / 9), so the
+        = 9. Dual-path verified. `(live-objects 0)`: main returns a SCALAR (-7 / 9), so the
         recursion-crossing sum cells that stay live (2 at n=7, 1 at n=-9, measured on the DEBUG-COUNTERS
         runtime) are a genuine KNOWN LEAK — NOT fixed by M2 (an earlier shipped-runtime measurement read 0
         and wrongly claimed it fixed; the shipped runtime always reports 0). The cadenza hop leaks
@@ -19317,7 +19317,7 @@
   (output (: 12 Int64))
   (call main (: -4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cdzw70 a MULTI-EXPORT program round-trips the cadenza hop with every export callable"
@@ -19697,7 +19697,7 @@
   (output (: 57 Int64))
   (call main (: -3 Int64))
   (output (: 47 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cdzw85 SUM values as set elements — Option dedup by payload + membership probe — through the cadenza hop"
@@ -19884,7 +19884,7 @@
   (output (: 1 Int64))
   (call main (: -4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ntk1 NESTED-tuple keys — structural equality one level down, map lookup + set dedup"
@@ -19943,7 +19943,7 @@
   (output (: 1 Int64))
   (call main (: -4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cdzw89 NESTED single-variant sums — payload-slot nominal descent through the cadenza hop"
@@ -19971,7 +19971,7 @@
   (output (: 127 Int64))
   (call main (: -4 Int64))
   (output (: -273 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sn1 SIGNED Int8 shifts — arithmetic >> sign-extends; << range-checks the negative boundary"
@@ -20073,7 +20073,7 @@
   (output (: -1 Int64))
   (call main (: -2 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dn1 BRANCH-BUILT deep scrutinee — construction under an if inside the pattern spine, through the hop"
@@ -20097,7 +20097,7 @@
   (output (: 1 Int64))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "lp1 multi-length LIST arms with a head-pair rest binder — decision-tree dispatch through the hop"

@@ -5917,7 +5917,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the let-bound-after-helper observation is state-type-general (scalar counter)"
@@ -7897,7 +7897,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive sum as op ARGUMENT — the arm dispatches on its shape"
@@ -9054,7 +9054,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 301 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
 ; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member
@@ -9742,7 +9742,7 @@
       (export main)))
   (call main (: 50 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance"
@@ -13422,7 +13422,7 @@
   (output (: 0 Int64))
   (call main (: 100 Int64))
   (output (: 10100 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)"

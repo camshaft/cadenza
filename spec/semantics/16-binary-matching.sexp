@@ -4374,7 +4374,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 2198 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ubr2 fifty dependent-size utf8 decodes over a deep rope leak linearly (~2 per decode)"
