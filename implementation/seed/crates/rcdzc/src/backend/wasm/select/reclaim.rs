@@ -1711,6 +1711,40 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
                     dup_sites.insert(s);
                 }
             }
+        } else if compound_boxed && matches!(core_of(db, scrutinee), Core::StrAt { .. }) {
+            // UAF FIX (v-memory-safety, multi-use `String.at` view double-free): `String.at` (`Core::StrAt`)
+            // is the ONE single-view producer deliberately NOT globally `Owned` (the Stage-B `String.concat`
+            // note at select.rs's StrAt comment) — its `Bytes.at`/`List.at`/`Map.lookup`/`String.slice`/
+            // `Bytes.slice` siblings ARE `Owned`, so they take the `owned_compound_boxed` arm ABOVE (child-dup +
+            // shell deep-drop, balanced) and never reach here (breaker's pre-land sweep confirmed the underflow
+            // is StrAt-SPECIFIC). Because StrAt is not `Owned`, `owned_compound_boxed` misses it and
+            // `matchsum_view_shell_reclaim_ok` reclaims its `Some` shell ONLY when the view is purely BORROWED.
+            // A view CONSUMED MORE THAN ONCE in the Some arm (`(match (String.at s i) ((Some c) (String.concat
+            // c c)) …)`) then got NEITHER shell-reclaim NOR a child-`dup`: each re-extraction is a
+            // `Core::SumPayload` (NOT a LocalRef binder `mark_binder_dups` would multi-use-retain), so the
+            // shared payload's rc1 was RELEASED ONCE PER CONSUME → an rc-underflow DOUBLE-FREE (a real
+            // miscompile, worse than a leak: it traps on the debug/rc-checking runtime — func-121 drop-assert —
+            // while a lenient runtime silently tolerates it; StrAt trapped where its Owned twins reclaim to 0).
+            // Dup EACH consuming payload occurrence so every consume owns its own reference. This is the SAFE
+            // leak direction (`dup ⊇ drop`, per the non-tail-spine note above): with NO compensating shell-drop
+            // the orphaned shell + one payload ref stay leaked (the residual husk — the StrAt shell-reclaim +
+            // owned-source-drop increment, tracked for a follow-up 0; StrAt can't reach 0 via a view-dup alone
+            // because it also leaks its borrowed source, unlike String.slice which reclaims its owned source).
+            // StrAt returns `Option` (exactly one payload-bearing Some arm), so `> 1` consuming EMISSIONS across
+            // the collected sites means THAT arm multi-consumes; a SINGLE consume (rc1 covers it) is left
+            // untouched — adding a dup there would LEAK a payload that today frees cleanly (matchsum_view
+            // declines the shell but the lone consume nets to 0). count_node_refs OVER-counts (a borrowing
+            // co-ref inflates the sum), so the gate is conservative in the SAFE direction (over-dup = leak,
+            // never under-dup = double-free).
+            let mut sites = HashSet::new();
+            collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
+            let total_consumes: usize = sites
+                .iter()
+                .map(|&s| count_node_refs(db, top_body, s))
+                .sum();
+            if total_consumes > 1 {
+                dup_sites.extend(sites);
+            }
         }
     }
     for child in core_child_ids(db, id) {
