@@ -2211,6 +2211,52 @@
   (live-objects 0))
 
 (case
+  "the extraction-shell heap-payload leak is GENERAL: Map.insert consuming the payload leaks the same 2"
+  (doc
+    "Proves the runtime-heap extraction-shell reclaim residue above is NOT `String.to-bytes`-specific but
+           general to the whole allowlisted-builder set (`sum_shell_reclaim_payload_ok`): a runtime-heap
+           String extracted from a runtime `Some` and consumed by `Map.insert` (an allowlisted builder,
+           inserted as the VALUE, the temp map immediately `Map.len`'d and dropped) leaves the SAME CONSTANT
+           2 live objects (shell + payload), opt-invariant (O0..O3) and independent of the payload's rope
+           size. So the fault is the shell-deep-drop-vs-dup-on-escape balance itself when the payload is a
+           heap cell, NOT one allowlist entry — the fix locus is the reclaim balance, not allowlist
+           membership. The naked-`Map.insert` sibling below (no extraction) reclaims to 0, isolating the
+           residue to the extraction shell. IDEAL 0; flip when the heap-payload reclaim balances.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def (mk (: n Int64)) (if (< n 0) (None unit) (Some (rep "a" n))))
+      (def
+        (main (: n Int64))
+        (match (mk n)
+          ((Some s) (Map.len (Map.insert (Map.empty) 0 s)))
+          ((None _u) 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64))
+  (live-objects 2))
+
+(case
+  "the naked control: Map.insert consuming a heap String OUTSIDE an extraction reclaims to zero"
+  (doc
+    "The isolation control for the general extraction-shell leak above: the IDENTICAL `Map.insert` of a
+           runtime-heap String (built, `Map.len`'d, dropped), but WITHOUT the enclosing `Some` extraction —
+           reclaims fully to 0. Confirms the builder + its temp collection drop cleanly on their own; the
+           2-object residue appears only when the consumed payload came out of an extraction shell.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def
+        (main (: n Int64))
+        (do
+          (def s (rep "a" n))
+          (Map.len (Map.insert (Map.empty) 0 s))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
   "two fallible reads of one collection parameter share its resident handle slot"
   (doc
     "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its
