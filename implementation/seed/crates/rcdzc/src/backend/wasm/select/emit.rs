@@ -99,6 +99,15 @@ pub(super) fn plan_ifjoin_nested(
 /// the leak side of the mirror. Exact match: the inner Proj dup'd iff `!slots.contains(operand) && (Owned ||
 /// shell-set) && get_op None && !Unit`, which is precisely this predicate, so restoring the disjunct keeps
 /// dup==drop (never a double-free — a false-positive drop would be an unmatched reclaim).
+///
+/// The recursive `owned_proj_child_dupd(operand)` disjunct mirrors the SAME term already in the emit gate: a
+/// NESTED projection `(. (. producer a) b)` has its INNER Proj `(. producer a)` dup its child (it was
+/// Owned/shell), so the OUTER Proj `(. <inner> b)` ALSO takes the nested-child dup branch — a further read of
+/// the outer must then drop ITS child. Without recursing here, a TRIPLE projection off a view/owned producer
+/// (`(. (. (. (Option.expect (Map.lookup m k)) a) b) c)`) leaks the middle child: the outer Proj dup'd it
+/// (its emit gate recursed through `owned_proj_child_dupd(inner)`) but this predicate — read by the final
+/// read's reclaim gate — reported "not dup'd". Recursing makes the predicate EXACTLY the emit gate
+/// (terminating on the finite operand chain); drop-iff-dup'd holds.
 pub(super) fn owned_proj_child_dupd(
     db: &mut Db,
     id: StructId,
@@ -110,7 +119,8 @@ pub(super) fn owned_proj_child_dupd(
             && (matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            ) || sumexpect_shell_reclaim.contains(&operand))
+            ) || sumexpect_shell_reclaim.contains(&operand)
+                || owned_proj_child_dupd(db, operand, slots, sumexpect_shell_reclaim))
             && matches!(get_op(db, id), Ok(None))
             && !matches!(type_of(db, id).strip_nominal(), Ty::Unit)
     } else {
@@ -3104,11 +3114,13 @@ pub(super) fn emit(
             // in the shell/view reclaim set, so gating the drop on the SAME membership keeps dup==drop (no
             // double-free). `heap_operand_ownership(SumExpect)` is deliberately NOT globally Owned (the
             // StrAt/local>global discipline), so we consult the set directly, mirroring `owned_proj_child_dupd`.
-            // KNOWN FOLLOW-UP (leak-safe): `owned_proj_child_dupd` (the OUTER-Proj dup-mirror) does NOT yet
-            // recognize this `sumexpect_shell_reclaim` disjunct, so a DOUBLE projection off the view
-            // (`(. (. (Option.expect …) inner) x)`) still leaks the inner child (V8) — the LEAK side of the
-            // mirror, never a double-free (owned_proj_child_dupd stays false → no unmatched drop). v-cdz-wasm-
-            // codegen owns adding the parallel clause there (threads the set into its signature).
+            // CLOSED (#9082 + the operand-chain recursion fix): `owned_proj_child_dupd` (the OUTER-Proj
+            // dup-mirror) now recognizes this `sumexpect_shell_reclaim` disjunct AND recurses the operand
+            // chain, so a DOUBLE projection off the view (`(. (. (Option.expect …) inner) x)`, V8) and any
+            // deeper nesting drop their extracted child instead of leaking it — the predicate is once again
+            // EXACTLY this gate (drop-iff-dup'd; the set is threaded into its signature). Witnessed by
+            // `v8_double_proj_owned_proj_child_dupd_recognizes_shell_set_view` and
+            // `nested_proj_owned_proj_child_dupd_recurses_the_operand_chain`.
             let reclaim = !slots.contains_key(&operand)
                 && (matches!(
                     heap_operand_ownership(db, operand),

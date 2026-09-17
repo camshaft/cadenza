@@ -1130,6 +1130,92 @@ fn single_proj_scalar_read_of_owned_sumexpect_view_is_shell_reclaimed() {
 }
 
 #[test]
+fn nested_proj_owned_proj_child_dupd_recurses_the_operand_chain() {
+    // The recursion sibling of the V8 #9082 witness: a TRIPLE projection off a shell-reclaimed
+    // Option.expect map-value view, `(. (. (. (Option.expect (Map.lookup m k)) a) b) c)`, where the map value
+    // is a 3-deep nested record. The INNER Proj `(. VIEW a)` dup's its child (VIEW in shell-set), so the
+    // MIDDLE Proj `(. <inner> b)` ALSO dup's its child (its emit gate recurses via owned_proj_child_dupd(inner)
+    // = true), and the final scalar read `.c` must drop the middle child. This pins that owned_proj_child_dupd
+    // RECURSES the operand chain: it must report BOTH the inner (P1) AND the middle (P2) Proj as child-dup'd
+    // (P2 via the recursive `|| owned_proj_child_dupd(operand)` disjunct that mirrors the emit gate). Before
+    // that disjunct, P2 was false (operand P1 is neither Owned nor shell) → the final read never dropped P2's
+    // child → the middle nested record leaked. A regression dropping the recursion flips P2 → the leak returns.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: m (Map Int64 (Record (a (Record (b (Record (c Int64)))))))) (: k Int64)) \
+               (. (. (. (Option.expect (Map.lookup m k) \"p\") a) b) c)) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f (view triple-proj)");
+    // body = P3 = (. P2 c); P2 = (. P1 b); P1 = (. VIEW a).
+    let p2 = match crate::lower::core_of(&mut db, body) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected the body to be the outer Proj (P3), got {other:?}"),
+    };
+    let p1 = match crate::lower::core_of(&mut db, p2) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected P2 to be a Proj, got {other:?}"),
+    };
+    let mut view_set: HashSet<StructId> = HashSet::new();
+    let mut shell_set: HashSet<StructId> = HashSet::new();
+    collect_sumexpect_view_reclaim(&mut db, body, &mut view_set, &mut shell_set);
+    let no_slots: HashMap<StructId, u32> = HashMap::new();
+    assert!(
+        owned_proj_child_dupd(&mut db, p1, &no_slots, &shell_set),
+        "P1 (operand = the shell-set SumExpect view) must be child-dup'd (#9071/#9082 base case)"
+    );
+    assert!(
+        owned_proj_child_dupd(&mut db, p2, &no_slots, &shell_set),
+        "P2 (operand = P1, an inner dup'd Proj) must ALSO be child-dup'd via the recursive operand-chain \
+         disjunct — else the final read never drops P2's dup'd middle record (the triple-proj leak)"
+    );
+}
+
+#[test]
+fn borrowed_triple_proj_owned_proj_child_dupd_never_over_fires_the_recursion() {
+    // Negative-space companion to `nested_proj_owned_proj_child_dupd_recurses_the_operand_chain`: it guards
+    // the DOUBLE-FREE direction of drop-iff-dup'd. The recursive `|| owned_proj_child_dupd(operand)` disjunct
+    // must fire ONLY when the projection chain bottoms out at an Owned/shell producer — NEVER off a pure
+    // borrow chain, where the emit gate emits no dups and so a borrowing read must emit no drops. Here the
+    // TRIPLE projection `(. (. (. r a) b) c)` runs off a plain BORROWED record param `r` (projected, never
+    // consumed/escaped): the recursion terminates at the Param base (owned_proj_child_dupd of a non-Proj is
+    // false), and neither Owned nor the shell-set applies at any level. So all three Projs must report
+    // NOT-child-dup'd — if the recursion spuriously credited a dup here, the read would drop a child the emit
+    // gate never dup'd → rc underflow / double-free of the borrowed param's nested records. Confirmed
+    // empirically: opcd(P1)=opcd(P2)=opcd(P3)=false.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: r (Record (a (Record (b (Record (c Int64)))))))) \
+               (. (. (. r a) b) c)) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ =
+        select_function(&mut db, body, &params, &layout).expect("select f (borrowed triple-proj)");
+    // body = P3 = (. P2 c); P2 = (. P1 b); P1 = (. r a).
+    let p2 = match crate::lower::core_of(&mut db, body) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected the body to be the outer Proj (P3), got {other:?}"),
+    };
+    let p1 = match crate::lower::core_of(&mut db, p2) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected P2 to be a Proj, got {other:?}"),
+    };
+    let mut view_set: HashSet<StructId> = HashSet::new();
+    let mut shell_set: HashSet<StructId> = HashSet::new();
+    collect_sumexpect_view_reclaim(&mut db, body, &mut view_set, &mut shell_set);
+    let no_slots: HashMap<StructId, u32> = HashMap::new();
+    for (label, id) in [("P1", p1), ("P2", p2), ("P3", body)] {
+        assert!(
+            !owned_proj_child_dupd(&mut db, id, &no_slots, &shell_set),
+            "{label}: a projection off a pure BORROW chain must NOT be child-dup'd — the recursive disjunct \
+             may only fire off an Owned/shell base, else a borrowing read drops a never-dup'd child (double-free)"
+        );
+    }
+}
+
+#[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
     // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
