@@ -750,7 +750,7 @@
     "`(: 128 Int8)` overflows Int8 by one; the CDZ0302 message names the concrete signed range
            `-128..=127`, not just the type — so the author sees exactly which bound was missed.")
   (input (do (def (main) (: 128 Int8)) (export main)))
-  (error CDZ0302 (message "-128..=127")))
+  (error CDZ0302 (message "-128..=127") (fix (kind replace))))
 
 (case
   "an out-of-range unsigned literal names a range starting at zero"
@@ -758,7 +758,7 @@
     "`(: 256 UInt8)` overflows UInt8 by one; the CDZ0302 message names the unsigned range `0..=255`,
            which starts at 0 (an unsigned type has no negative reading) — the unsigned face of the range pin.")
   (input (do (def (main) (: 256 UInt8)) (export main)))
-  (error CDZ0302 (message "0..=255")))
+  (error CDZ0302 (message "0..=255") (fix (kind replace))))
 
 (case
   "the widest unsigned range bound renders exactly (u128 arithmetic, not i64)"
@@ -2177,7 +2177,7 @@
 (case
   "a direct bare literal overflowing a narrow parameter width is rejected at check"
   (input (do (def (f (: x UInt8)) x) (def (main) (f 300)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a bare literal overflowing a narrow parameter TRANSITIVELY through a call chain is rejected at check"
@@ -3798,7 +3798,7 @@
            check that only descended runtime conditionals would let a direct out-of-range argument silently
            truncate (300 → 44 as u8).")
   (input (do (def (f (: x UInt8)) x) (def (main) (f 300)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "an out-of-range literal argument caught transitively through a two-call chain of narrow params"
@@ -3811,7 +3811,7 @@
            case above.")
   (input
     (do (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 300)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected"
@@ -6204,7 +6204,7 @@
 
         (def (x) 128))
       (Int64.of (m.x unit))))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a bare literal at the narrow default's max fits and runs (no over-reject at the boundary)"
@@ -6226,7 +6226,7 @@
 
         (def (x) -1))
       (Int64.of (m.x unit))))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a default-integer pragma naming an unbound type is rejected as unbound, like an annotation"
@@ -7317,7 +7317,7 @@
            trap: the type itself is ill-formed. `(Float 16)` (binary16) is reserved to a later increment,
            exactly as `(UInt 128)` is reserved above the 64-bit ceiling.")
   (input (: 1.5 (Float 16)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a non-power-of-two float width is rejected"
@@ -7327,7 +7327,7 @@
            float widths are drawn from the fixed IEEE set {32, 64}; an arbitrary width is not a float
            type. Pins that the float width constraint is set-membership, not a range.")
   (input (: 1.5 (Float 48)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a non-admitted float width NESTED in a compound annotation is rejected"
@@ -7340,7 +7340,7 @@
            descends the compound annotation and rejects CDZ0302 at the nested float width, exactly as if it
            were written bare. Set-membership {32,64} is checked wherever a float width appears.")
   (input (: #list(1.0) (List (Float 8))))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a non-admitted float width in a parameter annotation is rejected"
@@ -7353,7 +7353,7 @@
            CDZ0101), so the float admitted-set constraint is checked at the annotation itself, the float
            companion of the integer parameter-width case.")
   (input (do (def (f (: x (Float 8))) x) (def (main) 0) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a non-admitted float width in a type-declaration payload is rejected"
@@ -7365,7 +7365,7 @@
            as an ill-formed INTEGER width in a payload field is). Pins that the float admitted-set
            constraint is TOTAL over every type-expression position, declaration payloads included.")
   (input (do (type T (Mk (Float 8))) (def (main) 0) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case "subtraction" (input (- 10 3)) (output (: 7 Int64)))
 
@@ -12282,7 +12282,7 @@
            the width constraint. The message names the ORIGINAL written width (`UInt65`), not the clamped
            sentinel `UInt0` the literal-fit path once reported — a name that hid what the author wrote.")
   (input (: 5 (UInt 65)))
-  (error CDZ0302 (message "UInt65") (message "not a valid integer type")))
+  (error CDZ0302 (message "UInt65") (message "not a valid integer type") (fix (kind replace))))
 
 (case
   "a further over-ceiling UNSIGNED width well past 64 is rejected naming the written width"
@@ -12290,7 +12290,7 @@
     "The width check is not hard-coded to one value: `(UInt 128)` (63 past the ceiling) rejects
            CDZ0302 naming `UInt128`, exactly as `(UInt 65)` does.")
   (input (: 5 (UInt 128)))
-  (error CDZ0302 (message "UInt128") (message "not a valid integer type")))
+  (error CDZ0302 (message "UInt128") (message "not a valid integer type") (fix (kind replace))))
 
 (case
   "an over-ceiling SIGNED width one past the ceiling is rejected naming the written width"
@@ -12298,7 +12298,7 @@
     "The signed one-past-ceiling face: `(Int 65)` rejects CDZ0302 naming `Int65` — the same boundary
            the unsigned `(UInt 65)` hits, for the signed constructor.")
   (input (: 5 (Int 65)))
-  (error CDZ0302 (message "Int65") (message "not a valid integer type")))
+  (error CDZ0302 (message "Int65") (message "not a valid integer type") (fix (kind replace))))
 
 (case
   "an over-ceiling SIGNED width far past the ceiling is rejected naming the written width"
@@ -12306,7 +12306,7 @@
     "A signed width FAR past 64: `(Int 200)` rejects CDZ0302 naming `Int200`, pinning the check is a
            range test (width outside 1..=64), not a per-value table.")
   (input (: 5 (Int 200)))
-  (error CDZ0302 (message "Int200") (message "not a valid integer type")))
+  (error CDZ0302 (message "Int200") (message "not a valid integer type") (fix (kind replace))))
 
 (case
   "an over-ceiling integer width in an unused parameter is rejected, like a used one"
@@ -12320,7 +12320,7 @@
            itself, closing the escape where a private unconstrained-parameter type carried a width with no
            valid representation into a compiled artifact.")
   (input (do (def (f (: x (UInt 65))) x) (def (main) 0) (export main)))
-  (error CDZ0302 (message "`UInt65` is not a valid integer type")))
+  (error CDZ0302 (message "`UInt65` is not a valid integer type") (fix (kind replace))))
 
 (case
   "a zero-width integer in an unused parameter is rejected"
@@ -12337,7 +12337,7 @@
     "`(Int 128)` — past the 1..=64 ceiling — in an unused parameter's type is CDZ0302, the signed
            companion of the `(UInt 65)` case. From rcdzc an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302.")
   (input (do (def (f (: x (Int 128))) x) (def (main) 0) (export main)))
-  (error CDZ0302 (message "`Int128` is not a valid integer type")))
+  (error CDZ0302 (message "`Int128` is not a valid integer type") (fix (kind replace))))
 
 (case
   "a VALID narrow width in an unused parameter is not over-rejected"
@@ -12374,7 +12374,7 @@
            then, more than 64 bits uses the big-integer type. Pins that the ceiling is a constraint, not a
            parse error.")
   (input (: 5 (UInt 128)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "an ill-formed integer width NESTED in a compound annotation is rejected"
@@ -20258,17 +20258,17 @@
 (case
   "an out-of-range constant argument to a narrow parameter is range-checked at the call"
   (input (do (def (f (: a Int8)) a) (def (main) (f 200)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a negative constant argument to an unsigned parameter is rejected"
   (input (do (def (f (: a UInt8)) a) (def (main) (f -1)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "an out-of-range constant argument to an inline lambda's narrow parameter is range-checked"
   (input (do (def (main) ((fn ((: a Int8)) a) 200)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a constant arithmetic operation overflowing a narrow parameter width is a const trap"
@@ -20278,12 +20278,12 @@
 (case
   "an out-of-range literal bound under a narrow let-binder annotation is range-checked"
   (input (do (def (main) (let (((: a Int8) 200)) a)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "a computed out-of-range value under a narrow let-binder annotation is range-checked"
   (input (do (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main)))
-  (error CDZ0302))
+  (error CDZ0302 (fix (kind replace))))
 
 (case
   "an in-range boundary constant argument to a narrow parameter runs (no over-rejection)"
