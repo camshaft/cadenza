@@ -167,6 +167,53 @@
   (live-objects known-leak))
 
 (case
+  "a String.at extracted view consumed TWICE dup/drops against one payload (no double-free)"
+  (doc
+    "The multi-consume face of the String.at sum-payload view: `(Some c)` binds the extracted
+           char view and `(String.concat c c)` CONSUMES it twice — the second consume needs a dup
+           against the shared payload or the drop underflows (a double-free). The debug-counters
+           runtime rc-underflow-asserts on the missing dup; the production runtime silently reads the
+           freed cell and happens to return the right value. Fixed by the multi-consumed-view dup on
+           the StrAt-view path (rcdzc reclaim). byte-len of e+e where e is the 1-byte char at index 1
+           of \"hey\" is 2, and the census must balance. String.at is deliberately NOT globally Owned
+           (Stage-B String.concat perturbation), so unlike the String.slice twin it gets neither the
+           shell deep-drop nor the owned-temporary source drop — 3 husks remain (source string, Some
+           payload, Some shell); those are separate danger-path follow-ups, so this pins the VALUE (the
+           double-free elimination) with (live-objects known-leak) tracking the residue. Flip toward 0
+           as the follow-ups land.")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (String.byte-len (String.concat c c)))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak))
+
+(case
+  "a let-aliased String.at view consumed alongside its alias dup/drops against one payload"
+  (doc
+    "The alias face of the same fix: `(let ((d c)) (String.concat c d))` — the alias and the
+           original are ONE payload; both consumes must resolve against it without underflow. Same
+           3-husk residue as the twice-consumed sibling, same value 2.")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (let ((d c)) (String.byte-len (String.concat c d))))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak))
+
+(case
   "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
   (doc
     "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
