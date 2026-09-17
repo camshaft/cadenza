@@ -29,7 +29,9 @@
 #   setup-nix-builder-peer.sh peer
 #       Run ON EACH PEER as `bythewc` (needs NOPASSWD sudo, which these boxes have for non-interactive use).
 #       Installs Determinate Nix (idempotent), forces build-users-group empty, trusts the coordinator SSH
-#       user, restarts the daemon, and fixes the non-interactive PATH so `nix-store --serve` resolves.
+#       user, replicates the coordinator's experimental-features (ca-derivations + dynamic-derivations —
+#       GOTCHA E), asserts the pinned nix version (GOTCHA D), restarts the daemon, and fixes the
+#       non-interactive PATH so `nix-store --serve` resolves.
 #
 #   setup-nix-builder-peer.sh register <peer-fqdn>
 #       Run ON THE PRIMARY (coordinator) as `bythewc` (NOPASSWD sudo). Adds the peer to /etc/nix/machines
@@ -38,7 +40,8 @@
 #
 #   setup-nix-builder-peer.sh verify [peer-fqdn]
 #       Run ON THE PRIMARY. Forced-remote (`--max-jobs 0`) REAL sandbox compile (runCommandCC, NOT a trivial
-#       runCommand — that misses the build-user path the incident hit). With a <peer-fqdn> it TEMPORARILY
+#       runCommand — that misses the build-user path the incident hit). First a version pre-flight (GOTCHA D:
+#       coordinator + the named peer must both match the pinned nix version). With a <peer-fqdn> it TEMPORARILY
 #       pins /etc/nix/machines to that one peer (the daemon uses the machines FILE and ignores a client
 #       `--builders` override, so pinning the file is the only way to target a specific peer), verifies, then
 #       restores the file. With no arg it verifies against the active machines file as-is (non-destructive).
@@ -62,8 +65,42 @@ readonly PEER_SYSTEM="aarch64-linux"
 readonly PEER_MAXJOBS="8"                          # conservative start; bump after measuring headroom.
 readonly INSTALLER_URL="https://install.determinate.systems/nix/nix-installer-aarch64-linux"
 
+# GOTCHA D (v-nix, 2026-09-17 0371 fleet-block): the nix VERSION must be IDENTICAL on the coordinator AND
+# both peers. determinate-nixd auto-advises "latest", so the boxes drift independently (that day: coordinator
+# 3.21.9, peers 3.22.3) — and the input-addressed compiler builds DIVERGENTLY across nix versions, so its
+# content-addressed emit differs box-to-box → a fleet-wide `ca hash mismatch importing path` that no evict/
+# re-run fixes (it reproduces from source; a STALE-PIN class, not a corrupt transfer). This pin is the single
+# lockstep control: every box must run exactly REQUIRED_NIX_VERSION. To move the fleet to a new nix, BUMP this
+# constant and re-run `provision` on ALL 3 boxes together (never upgrade one box's nix in isolation).
+readonly REQUIRED_NIX_VERSION="3.22.4"             # v-nix synced all 3 boxes here to clear the 0371 block.
+
+# GOTCHA E (v-nix, same incident): the peer daemon must carry the SAME experimental-features as the
+# coordinator, else CA-derivation copy/offload to the peer fails with "experimental Nix feature
+# 'ca-derivations' is disabled" + EOF. The coordinator's nix.custom.conf sets these; replicate them on peers.
+readonly EXPERIMENTAL_FEATURES="ca-derivations dynamic-derivations"
+
 log()  { printf '[setup-nix-builder-peer] %s\n' "$*" >&2; }
 die()  { printf '[setup-nix-builder-peer] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Assert the nix on the LOCAL box (or, given $2, the version STRING captured from a remote box) is exactly
+# REQUIRED_NIX_VERSION — the lockstep pin (GOTCHA D). $1 = a human label for the box being checked; $2
+# (optional) = a pre-captured `nix --version` string to check instead of the local nix (used for a peer over
+# ssh from the coordinator). DIEs loudly on a mismatch, since certifying a version-skewed box is exactly what
+# caused the 0371 fleet-wide CA-hash-mismatch. Substring match on the version token (Determinate prints it as
+# `... Determinate Nix <ver> ...`); a re-image landing on a newer "latest" trips this on purpose.
+assert_nix_version() {
+  local where="$1" ver_str="${2:-}"
+  [ -n "$ver_str" ] || ver_str="$(nix --version 2>/dev/null || echo '?')"
+  if printf '%s' "$ver_str" | grep -qF "$REQUIRED_NIX_VERSION"; then
+    log "nix version OK on $where: matches pinned $REQUIRED_NIX_VERSION ($ver_str)"
+  else
+    die "nix VERSION DRIFT on $where: got '$ver_str', need pinned $REQUIRED_NIX_VERSION. All 3 boxes MUST \
+match (coordinator + both peers) — version skew → divergent CA emit → fleet-wide ca-hash-mismatch (the \
+2026-09-17 0371 block). FIX: bring this box to $REQUIRED_NIX_VERSION (e.g. 'sudo determinate-nixd upgrade' \
+then re-check), OR — if intentionally moving the fleet — BUMP REQUIRED_NIX_VERSION in this script and re-run \
+'provision' on ALL 3 boxes together so they stay in lockstep."
+  fi
+}
 
 # Append a config line to a root-owned file only if an equivalent key is not already present (idempotent).
 # $1 = file, $2 = exact line to ensure, $3 = grep pattern that means "already configured".
@@ -98,6 +135,16 @@ provision_peer() {
   # 3. GOTCHA A — force build-users-group EMPTY (single-user, matches primary); the default 'nixbld' group
   #    does not persist here, so an offloaded build would hard-fail 'group nixbld does not exist'.
   ensure_conf_line "$NIX_CUSTOM_CONF" "build-users-group =" "^[[:space:]]*build-users-group[[:space:]]*=[[:space:]]*$"
+
+  # 3b. GOTCHA E — replicate the coordinator's experimental-features so CA-derivation copy/offload to this
+  #     peer doesn't fail 'ca-derivations disabled' + EOF (the 0371 block's second cause). `extra-` is
+  #     additive to the base nix.conf features, so this only ADDS ca-derivations + dynamic-derivations.
+  ensure_conf_line "$NIX_CUSTOM_CONF" "extra-experimental-features = $EXPERIMENTAL_FEATURES" "^[[:space:]]*extra-experimental-features[[:space:]]*=.*ca-derivations"
+
+  # 3c. GOTCHA D — the peer's nix VERSION must match the pinned fleet version (version skew → divergent CA
+  #     emit → fleet-wide ca-hash-mismatch). Assert AFTER install; DIE with the fix if a fresh "latest"
+  #     install (or a drifted box) doesn't match the pin. (Checked here, on the peer, where `nix` is local.)
+  assert_nix_version "peer $(hostname -f 2>/dev/null || hostname)"
 
   # 4. Restart the daemon (Determinate runs determinate-nixd under nix-daemon.service).
   log "restarting nix-daemon.service"
@@ -159,8 +206,22 @@ register_peer() {
 
 verify_peer() {
   local peer="${1:-}"
-  local stamp restore_file="" rc=0
+  local stamp restore_file="" rc=0 peer_ver=""
   stamp="$(date +%s)"
+
+  # Pre-flight GOTCHA D — the coordinator AND the target peer must run the pinned nix version; skew → the
+  # divergent-CA-emit fleet-block (2026-09-17). Checked BEFORE any machines-file mutation so a version DIE
+  # exits without leaving the file pinned. Coordinator is local; a named peer is read over the same ssh
+  # channel offload uses (forcing the profile bin dir on PATH, since a non-login ssh misses it — GOTCHA B).
+  assert_nix_version "coordinator $(hostname -f 2>/dev/null || hostname)"
+  if [ -n "$peer" ]; then
+    peer_ver="$(ssh -o BatchMode=yes "$SSH_USER@$peer" 'PATH=/nix/var/nix/profiles/default/bin:$PATH nix --version' 2>/dev/null || true)"
+    if [ -n "$peer_ver" ]; then
+      assert_nix_version "peer $peer" "$peer_ver"
+    else
+      log "WARN: could not read 'nix --version' from peer '$peer' over ssh (unreachable / PATH) — the forced-remote build probe below still gates reachability; re-run the 'peer' step if this persists."
+    fi
+  fi
 
   # The daemon uses the machines FILE (ignores a client --builders override), so to target ONE specific peer
   # we temporarily pin the file to just that peer, then restore it.
