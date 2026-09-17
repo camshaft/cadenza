@@ -161,6 +161,19 @@ use std::collections::HashMap;
 ///   binders never shadow an outer match's.
 #[derive(Default)]
 struct BinderEnv {
+    /// (Qty ERASURE) Set for a def whose RESULT type is Qty-FREE (no `Ty::Qty` anywhere in it): then NO
+    /// quantity escapes the def to the host, so every `Ty::Qty` value in the body is INTERNAL and erases to
+    /// its bare inner magnitude (a quantity IS its magnitude at run time — units are checked-then-erased,
+    /// byte-identical to the bare scalar). When set, the `Ty::Qty` value arm emits the bare inner (never
+    /// reconstructs `(Qty.of …)`) and the `Core::Param`/`LocalRef`/`SumPayload` binder-peels emit the bare
+    /// NAME (never re-insert `(. Qty value)`), so the re-emitted def is pure bare arithmetic with NO Qty —
+    /// value-identical AND internally type-consistent (a collection element re-emits bare, matching its
+    /// lookup reads whose Core type is already the erased inner). This is the uniform-erasure fix for the
+    /// map/collection-of-quantities-consumed-erasingly shapes (18-units 0261/0312), where a per-site
+    /// wrap/peel could not agree: the ELEMENT (positively Qty-typed) and a bare-Core lookup CONSUMER
+    /// disagree, and only a whole-def erasure reconciles them. A Qty-RESULT def (or any Qty in the result)
+    /// leaves this UNSET → today's wrap/peel behavior (a genuine escaping quantity still reconstructs).
+    erase_qty: bool,
     lets: HashMap<StructId, std::rc::Rc<str>>,
     /// A Core-node → surface-binder-name OVERRIDE: while emitting a scalar-match's if-chain over an EFFECTFUL
     /// scrutinee (a `Core::HostCall`), the scrutinee is let-bound ONCE and every re-emission of that Core node
@@ -1102,6 +1115,18 @@ fn emit_def(
         spec_merge: spec_merge.clone(),
         ..BinderEnv::default()
     };
+    // (Qty ERASURE) Whole-def Qty erasure is SOUND only when NO quantity crosses a TYPE BOUNDARY that fixes
+    // it as `Ty::Qty` in the re-emitted program — see [`BinderEnv::erase_qty`]. Three provable conditions:
+    //   (a) the RESULT type is Qty-free (nothing escapes to the host as a quantity),
+    //   (b) NO parameter type contains a Qty (this def's own signature has no quantity boundary — 18-units
+    //       0220 `(: a (Qty …))` is excluded), and
+    //   (c) the body makes NO function call (`body_has_call`) — so no quantity flows into a callee whose
+    //       signature is a concrete Qty (0095 calls `max-q`, 0270/0271 call `fill`/`grow` — Qty-param
+    //       functions — and are excluded; 0261/0312 use only DEDICATED prelude ops, never `Core::Call`, so
+    //       they erase). Any of these unknown/violated → NO erasure (today's wrap/peel path).
+    env.erase_qty = def_result_ty(db, def, params.len()).is_some_and(|t| !ty_has_qty(&t))
+        && !params.iter().any(|(_, ty)| ty_has_qty(ty))
+        && !body_has_call(db, body, &mut std::collections::HashSet::new());
     // A def whose RESULT type is a concrete `Ty::Qty` AND whose body reduces to a BARE-INNER runtime
     // magnitude re-emits the quantity wrapper around the WHOLE body at the tail: `(def (main …) (Qty.of
     // (* n 2) u))` erases (`Qty.of` drops its compile-time unit) to a bare arithmetic node typed `Ty::Qty`,
@@ -1631,6 +1656,17 @@ fn emit_expr_viewed(
         Ty::Qty { inner, unit } => {
             let inner = (**inner).clone();
             let unit = unit.clone();
+            // (Qty ERASURE) In a Qty-FREE-result def no quantity escapes, so every Qty value erases to its
+            // bare inner magnitude — emit the inner and NEVER reconstruct `(Qty.of …)`. Re-emitting viewed at
+            // the inner routes a const to its bare scalar, an arith to its peeled operands, and a binder to
+            // its bare NAME (the binder-peels below skip their `(. Qty value)` re-insertion under `erase_qty`,
+            // since the whole subgraph is bare) — so a collection ELEMENT re-emits bare, matching its lookup
+            // reads (whose Core type is already the erased inner). This is the whole-def reconciliation for
+            // the map/collection-of-quantities-consumed-erasingly shapes (18-units 0261/0312) that a per-site
+            // wrap/peel cannot reach (a bare-Core Call consumer carries no peel signal). See `erase_qty`.
+            if env.erase_qty {
+                return emit_expr_viewed(db, b, id, Some(inner.clone()), None, env, emitted);
+            }
             // A CONST-magnitude quantity at a position that POSITIVELY EXPECTS a quantity — a COLLECTION
             // ELEMENT (list/map/set/tuple/record, whose element type threads down as `expected`), or any
             // Qty-typed slot. `expected == Some(Ty::Qty …)` is the authoritative "genuine Qty escape" signal
@@ -1902,7 +1938,10 @@ fn emit_expr_viewed(
             // differ (v-inference-pinpointed). RE-INSERT `((. Qty value) <binder>)` so the ref types as the inner
             // (the binder-analogue of the #8237 if-join peel + the mod.rs value-projected-peel arm).
             let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
-                && !matches!(&eff_ty, Ty::Qty { .. });
+                && !matches!(&eff_ty, Ty::Qty { .. })
+                // (Qty ERASURE) under whole-def erasure the binder's SOURCE is bare, so emit the bare NAME —
+                // NOT `(. Qty value)` on a now-bare value. See `erase_qty`.
+                && !env.erase_qty;
             let nm = db.ast.as_name(binder).ok_or_else(|| {
                 Reject::decline(
                     "the Cadenza backend cannot recover the name of a parameter reference"
@@ -1942,7 +1981,10 @@ fn emit_expr_viewed(
             // binder consumed as its bare inner (the `((Some q) (Qty.value q))` collection-read shape) must
             // RE-INSERT `((. Qty value) <binder>)`, else the bare binder keeps `Ty::Qty` → CDZ0203 arms-differ.
             let peel = matches!(crate::infer::type_of(db, binder), Ty::Qty { .. })
-                && !matches!(&eff_ty, Ty::Qty { .. });
+                && !matches!(&eff_ty, Ty::Qty { .. })
+                // (Qty ERASURE) under whole-def erasure the binder's SOURCE is bare, so emit the bare NAME —
+                // NOT `(. Qty value)` on a now-bare value. See `erase_qty`.
+                && !env.erase_qty;
             let nm = env.lets.get(&binder).ok_or_else(|| {
                 Reject::decline(
                     "the Cadenza backend reached a `let`-binding reference with no binding in scope"
@@ -2788,6 +2830,9 @@ fn emit_expr_viewed(
                 if let Some(binder_ty) = env.payload_tys.get(&(scrutinee, path.to_vec())).cloned()
                     && matches!(&binder_ty, Ty::Qty { .. })
                     && !matches!(&eff_ty, Ty::Qty { .. })
+                    // (Qty ERASURE) under whole-def erasure the binder's SOURCE (collection element) is bare,
+                    // so emit the bare NAME — NOT `(. Qty value)` on a now-bare value. See `erase_qty`.
+                    && !env.erase_qty
                 {
                     let name = b.name(nm.clone());
                     let head = member_access(b, "Qty", "value");
@@ -6812,6 +6857,63 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
 /// EVERYTHING ELSE declines — an erased-op / constant / call magnitude cannot be soundly re-wrapped here
 /// (decline-don't-miscompile); those are a later slice (needing the escape type threaded, not the erased
 /// node's own `Ty::Qty`).
+/// Whether `ty` CONTAINS a `Ty::Qty` anywhere — recursing the value-carrying structural types. Used to set
+/// [`BinderEnv::erase_qty`]: a def whose RESULT type is Qty-free lets NO quantity escape, so the body's
+/// quantities all erase to bare. CONSERVATIVE for the shapes this walk does not descend (a `Sum`/`Nominal`
+/// payload, a `Fn`/`Cont`): returns `true` (may contain a Qty) so such a result KEEPS today's wrap/peel
+/// behavior rather than risk erasing a genuinely-escaping quantity — erasure only kicks in when the result
+/// is PROVABLY Qty-free.
+fn ty_has_qty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Qty { .. } => true,
+        Ty::List(e) | Ty::Set(e) => ty_has_qty(e),
+        Ty::Map(k, v) => ty_has_qty(k) || ty_has_qty(v),
+        Ty::Tuple(ts) => ts.iter().any(ty_has_qty),
+        Ty::Record(fs) => fs.values().any(ty_has_qty),
+        // Descend the scalars/text/etc. as "no Qty"; be CONSERVATIVE (may-contain) for a Sum/Nominal payload
+        // (not enumerated here), a function/continuation, or a raw type var — so a def RESULT of those keeps
+        // the wrap/peel path (erasure requires a PROVABLY Qty-free result).
+        Ty::Sum { .. }
+        | Ty::Nominal { .. }
+        | Ty::Fn(..)
+        | Ty::Cont { .. }
+        | Ty::Var(_)
+        | Ty::Type => true,
+        _ => false,
+    }
+}
+
+/// Whether the Core subtree at `id` contains a `Core::Call` / `Core::CallClosure` / `Core::HostCall` — a call
+/// across a FUNCTION or HOST boundary. Used to gate [`BinderEnv::erase_qty`]: whole-def Qty erasure is sound
+/// only when no quantity can cross a boundary into a callee/host whose signature FIXES it as `Ty::Qty` (a
+/// monomorphic Qty-param function like `max-q`/`fill`, or a host import); the prelude collection ops
+/// (`Map.lookup`/`insert`/…, `Option.*`) are DEDICATED Core nodes (`MapLookup`/…), NOT `Core::Call`, so an
+/// internal-quantity def that only uses them (18-units 0261/0312) still erases. A visited set bounds the walk
+/// (a cycle / inlined-callee follow).
+fn body_has_call(
+    db: &mut Db,
+    id: StructId,
+    seen: &mut std::collections::HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if matches!(
+        core_of(db, id),
+        crate::core::Core::Call { .. }
+            | crate::core::Core::CallClosure { .. }
+            | crate::core::Core::HostCall { .. }
+    ) {
+        return true;
+    }
+    for c in crate::backend::wasm::select::core_child_ids(db, id) {
+        if body_has_call(db, c, seen) {
+            return true;
+        }
+    }
+    false
+}
+
 fn qty_disposition(db: &mut Db, id: StructId) -> NominalDisp {
     match core_of(db, id) {
         // A binder already typed `Ty::Qty` is a wrapped quantity (pass-through, emit the bare name); a
