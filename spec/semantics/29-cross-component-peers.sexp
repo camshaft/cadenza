@@ -106,7 +106,7 @@
       (export main)))
   (call main (: 4 Int64))
   (output (: 43 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "pcl3 an element of a peer-returned list is read and used"
@@ -605,7 +605,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── map/set/record ARG crossings (INBOUND): the consumer builds a compound and passes it TO a peer op ──
 ; (the arg-direction twin of the result cases above). The consumer builds a Map/Set/Record locally and hands
@@ -1428,4 +1428,4 @@
   (output (: 10 Int64))
   ; the nested-compound projection off a crossed peer handle leaves one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak))
+  (live-objects 0))

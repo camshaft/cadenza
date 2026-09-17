@@ -6296,7 +6296,7 @@
   (output (: 7012 Int64))
   (call main (: -2 Int64))
   (output (: 1012 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback"
@@ -8544,7 +8544,7 @@
   (output (: 62 Int64))
   (call main (: 0 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling"
@@ -8606,7 +8606,7 @@
   (output (: 4 Int64))
   (call main (: -3 Int64))
   (output (: -8 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ra1 a RACE between two effect threads — a recursive walk draws BOTH per round until the fast thread catches the slow one's head start"
@@ -9557,7 +9557,7 @@
   (output (: 77 Int64))
   (call main (: -8 Int64))
   (output (: 55 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sw4 windowed AVERAGE with the truncating divide — window sum over live length, a negative window exercises toward-zero"
@@ -10347,7 +10347,7 @@
   (output (: 99 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── User GENERIC sums resolving BY NAME (breaker gs — the resolve-path fix promotion) ─────────
 ; A user-declared generic sum referenced by NAME in type positions once declined CDZ0101
@@ -10421,7 +10421,7 @@
   (output (: 13 Int64))
   (call main (: -9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "gs5 the generic applied to ITSELF — (Container (Container Int64)) double-wraps and double-unwraps"
@@ -10689,7 +10689,7 @@
   (output (: 307 Int64))
   (call main (: -3 Int64))
   (output (: 304 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch"
@@ -11493,7 +11493,7 @@
   (output (: 400800 Int64))
   (call main (: 0 Int64))
   (output (: 100200 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sga1 the arm answers with SET ALGEBRA over its state and an argument-built set — union, intersection, and difference sizes cross dispatch"

@@ -2957,7 +2957,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Float element inserted into an empty (runtime) set boxes with box-float, not box-int"
@@ -4273,7 +4273,7 @@
   (output (: 231 Int64))
   (call main (: 1 Int64))
   (output (: 312 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a String slice VIEW keys a map by content in both directions, rope-backed included"
@@ -4350,7 +4350,7 @@
   (output (: 11 Int64))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "tuple set elements order by string content across reps then the scalar tiebreak"

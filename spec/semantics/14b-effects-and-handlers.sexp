@@ -1202,7 +1202,7 @@
       (export main)))
   (call main (: 199 Int64))
   (output (: 2240 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
@@ -1936,7 +1936,7 @@
       (export main)))
   (call main (: 30 Int64))
   (output (: 360 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a closure capturing a handler-computed VALUE escapes the handle and applies outside"
@@ -3601,7 +3601,7 @@
           (walk 3)))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)"

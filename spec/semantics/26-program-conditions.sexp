@@ -235,7 +235,7 @@
               (not (term-eq (concl unrelated) obligation))))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── b2: the MATCH PREDICATE (the compiler's trusted surface, written IN CADENZA) ────────────────────
 ; The oracle's core (design §3): a discharged `Thm` LICENSES the elision of `overflow-check@Id` iff
@@ -574,7 +574,7 @@
               (match nonground ((Option.None) true) ((Option.Some _) false))))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── SOUNDNESS PIN: a ground add that OVERFLOWS during discharge TRAPS, it does not wrap-and-forge ────
 ; (breaker overflow-axis vectors, 2026-07-17 — folded here rather than promoted separately.)
@@ -765,7 +765,7 @@
           (let ((expected (le (Term.Var 0) (Term.Num 100)))) (term-eq (denote pred) expected))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[ret:=body] ─────────
 ; b4b denotes ONE predicate Ast → Term. b4c(proven) composes the elaboration (§2.1): for
@@ -990,7 +990,7 @@
             (match attempt ((Option.Some _) false) ((Option.None) true)))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── b4c(conjunctive): a TWO-hypothesis precondition — both @requires flow to the discharge + hyps-subset ─
 ; b4a records STACKED @requires as a Vec (a conjunction). This pins the multi-hypothesis path the earlier
@@ -1829,7 +1829,7 @@
                 ((Option.None) false))))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS"
@@ -1967,7 +1967,7 @@
                 ((Option.None) false))))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS"
@@ -2024,7 +2024,7 @@
               (not (term-eq (concl lower) goal))))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── t1(match): the PARTIAL-MATCH / exhaustiveness trap source — a match with total arm coverage cannot trap ─
 ; The @trap_free capstone (§8): a `match` traps at an `Unreachable` node iff a scrutinee value hits no arm.
