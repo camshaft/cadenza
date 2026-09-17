@@ -124,6 +124,47 @@
   (live-objects 0))
 
 (case
+  "a handler consumes its string-rope state TWICE per resume — once for the resume value, once for the new state"
+  (doc
+    "The resume-boundary companion of the bare-string-rope state case above, and the effects analog
+           of the `(String.concat c c)` multi-consumed-view face: the arm consumes the threaded heap
+           state `s` in TWO distinct heap-producing operations — `(String.concat s \"R\")` builds the
+           RESUME VALUE and `(String.concat s \"S\")` builds the NEW STATE — so `s` needs a dup across
+           the resume boundary or the second consume underflows (a double-free the debug-counters runtime
+           rc-underflow-asserts; the production runtime silently reads the freed cell). Unlike the case
+           above (which BORROW-reads `s` with `byte-len` then consumes it once with `concat`), here BOTH
+           uses are full consumes. Seeded `\"seed-x\"` (n>0 picks the 2-byte suffix, blocking a seed const
+           fold); the recursive `walk 2` issues 3 tail-resumptive performs whose resume values are the
+           byte-lens of `s+\"R\"` — 7, 8, 9 as the state grows `seed-x` → `seed-xS` → `seed-xSS` — so
+           7+8+9 = 24, final state discarded at handle exit. Value is exact and no heap ESCAPES (the
+           result is a scalar), and there is NO double-free (the debug-counters runtime does not
+           underflow — the second consume's dup is present), yet the census reads 2 LIVE OBJECTS: the
+           double-heap-consume-per-resume path leaves two ropes unreclaimed at handle exit where the
+           bare-string-rope sibling above (borrow-read + single consume) now reclaims to 0. A distinct
+           reclaim gap for the two-full-consume resume shape (breaker, filed to v-memory-safety). Ideal
+           is (live-objects 0); flip this marker when the double-consume state reclaim lands. Value holds
+           on both backends across O0..O2. (Adversarial pin from a breaker probe.)")
+  (input
+    (do
+      (effect E (op get (-> Int64 String)))
+      (def
+        (walk (: n Int64))
+        (if (= n 0)
+          (String.byte-len (E.get 0))
+          (+ (String.byte-len (E.get 0)) (walk (- n 1)))))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (String.concat "seed" (if (> n 0) "-x" "-y"))
+          ((get (k) s (resume (String.concat s "R") (String.concat s "S"))))
+          (walk 2)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 24 Int64))
+  (live-objects known-leak))
+
+(case
   "two NESTED handles each threading a growing string-rope state both reclaim at their exits"
   (doc
     "The nested face of the rope-state reclaim above (the per-path conditional owned-param drop
