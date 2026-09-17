@@ -551,6 +551,58 @@
   (call main (: 5 UInt64))
   (output (: 6 UInt64)))
 
+; The runtime-wrap cases above are at i64/u64 width, where the operand width equals the machine word.
+; These pin the runtime wrap at NARROW widths (8/16), where the backend must MASK to the operand width
+; after the machine op — the const-fold narrow cases (Int8/UInt8 + and *) already wrap mod 2^width, and
+; these are their RUNTIME complements plus the previously-unpinned SUBTRACTION-underflow op. A backend
+; that wrapped at i64 instead of the operand width would give the right const fold but a wrong runtime
+; value; each case pairs an overflowing call with a non-overflowing one to pin both. Level-uniform O0..O3.
+(case
+  "under (pragma overflow (unsigned wrap)) a RUNTIME UInt8 SUBTRACTION underflow wraps mod 2^8"
+  (doc
+    "The runtime narrow-width subtraction-underflow face: `(- x 1)` over UInt8 at x=0 wraps to 255
+           (WrappingSub masked to 8 bits, not an i64 -1); a non-underflowing x is unchanged. Complements
+           the const-fold narrow + / * wrap witnesses and the i64/u64 runtime wrap above.")
+  (input (do (pragma overflow (unsigned wrap)) (def (main (: x UInt8)) (- x (: 1 UInt8))) (export main)))
+  (call main (: 0 UInt8))
+  (output (: 255 UInt8))
+  (call main (: 5 UInt8))
+  (output (: 4 UInt8)))
+
+(case
+  "under (pragma overflow (unsigned wrap)) a RUNTIME UInt16 addition overflow wraps mod 2^16"
+  (doc
+    "The intermediate-width runtime face: `(+ x 1)` over UInt16 at x=65535 wraps to 0 (masked to 16
+           bits); x=5 is unchanged. Pins that the runtime wrap tracks the operand width at 16 bits, not
+           just the 8-bit and 64-bit endpoints.")
+  (input (do (pragma overflow (unsigned wrap)) (def (main (: x UInt16)) (+ x (: 1 UInt16))) (export main)))
+  (call main (: 65535 UInt16))
+  (output (: 0 UInt16))
+  (call main (: 5 UInt16))
+  (output (: 6 UInt16)))
+
+(case
+  "under (pragma overflow (signed wrap)) a RUNTIME Int16 addition overflow wraps two's-complement mod 2^16"
+  (doc
+    "The signed intermediate-width runtime face: `(+ x 1)` over Int16 at x=32767 (Int16.max) wraps to
+           -32768 (Int16.min); x=5 is unchanged. The signed narrow runtime complement of the Int8 const wrap.")
+  (input (do (pragma overflow (signed wrap)) (def (main (: x Int16)) (+ x (: 1 Int16))) (export main)))
+  (call main (: 32767 Int16))
+  (output (: -32768 Int16))
+  (call main (: 5 Int16))
+  (output (: 6 Int16)))
+
+(case
+  "under (pragma overflow (signed wrap)) a RUNTIME Int8 multiplication overflow wraps mod 2^8"
+  (doc
+    "The runtime narrow-width MULTIPLY face: `(* x 2)` over Int8 at x=127 wraps to -2 (254 masked to a
+           signed 8-bit value); x=5 gives 10 unchanged. The runtime complement of the Int8 const * wrap.")
+  (input (do (pragma overflow (signed wrap)) (def (main (: x Int8)) (* x (: 2 Int8))) (export main)))
+  (call main (: 127 Int8))
+  (output (: -2 Int8))
+  (call main (: 5 Int8))
+  (output (: 10 Int8)))
+
 (case
   "an ordinary-+ fold whose EXACT result overflows traps under any reassociation"
   (doc
