@@ -268,28 +268,28 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
         Core::Proj { operand, .. } => {
-            // A projection BORROWS its operand — ALWAYS. `arr-get` reads a field/element without transferring
-            // the aggregate's ownership (`value-heap-runtime.md`: the operand is borrowed, not consumed), and
-            // the extracted value is made independent by the EMIT: a SCALAR element is COPIED out, and a
-            // NESTED-COMPOUND child is DUP'd (`owned_proj_child_dupd` / the Proj emit's compound-child dup)
-            // before it flows anywhere owned. So the OPERAND itself never escapes through a projection — only
-            // the extracted child can, and the child carries its OWN fresh reference. Recurse BORROWING
-            // (`true`) regardless of `scalar_element`/`tail_borrowed`.
-            //
-            // site-b JOINT FIX (with v-core-opt's `mark_binder_dups` one-liner, must land ATOMICALLY): the old
-            // gate `scalar_element || tail_borrowed` recursed CONSUMING (escape) for a compound child in a
-            // consuming position (`(. msg field)` forwarded into a record ctor), so a payload-forwarding
-            // reducer's cell param `msg` read as ESCAPING — droppability then held ONLY because
-            // `mark_binder_dups` marked each field-projection operand a per-field PARENT dup_site (the surplus
-            // dups the census counted: node#4 rc = owned + N, wrapper deep-drops once → +N leak). Since the
-            // child is DUP'd (not the operand moved), the operand is genuinely BORROWED; recognizing that here
-            // makes `record_cell_param_droppable` hold with ZERO parent dups (v-core-opt's half then drops the
-            // parent dup_site marking) → node#4 → rc 0. A MOVED-verbatim binder (`(def (f m) m)`, returned
-            // whole) is NOT a projection and is unaffected (it still escapes via the `Param`/`LocalRef` arm →
-            // preserves `site_a_..._not_droppable_when_moved_out`). Because a wrong `true` here UNDER-retains
-            // (a drop with no matching keep → UAF), this half is gated on cad-test-json + v-memory-safety
-            // census/rc-trace co-verify BEFORE landing (the reverse-risk direction from the leak-side fixes).
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+            // A compound projection is TRANSPARENT to borrowing: if THIS projection's own result is itself
+            // borrowed by its parent (`tail_borrowed` — a deeper scalar `.field`/`.len` reads a scalar OUT
+            // of this compound child), the extracted child handle is TRANSIENT and the operand is NOT
+            // retained past it. So recurse borrowing when EITHER this is a scalar element OR the incoming
+            // context already borrows (`scalar_element || tail_borrowed`). Without `|| tail_borrowed` a
+            // SCALAR-BOTTOMED chain THROUGH compound intermediates (`(. (. (. a 1) 1) 1)`: a.1/a.1.1
+            // compound, a.1.1.1 scalar) reset the borrow flag at each compound step → the operand `a` read
+            // as ESCAPING. That mattered TWO ways for the dqe4-8 leak: (1) the let-epilogue drop was emitted
+            // ONLY because the spurious `mark_binder_dups` dup put `a` in `dup_sites` (a fragile rescue that
+            // the dup-suppression fix removes), and (2) the `never_escapes` gate on the dup-suppression
+            // (`collect_dup_sites` below) uses THIS query with `dup_sites=None`, so without the fix a
+            // borrow-only projected binder wrongly reads as escaping and the gate never fires. A GENUINE
+            // child-handle escape (compound proj in a CONSUMING position, incoming `tail_borrowed` false) is
+            // UNCHANGED (`false || false`), so it still escapes — no under-retain / UAF.
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                scalar_element || tail_borrowed,
+                dup_sites,
+            )
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
@@ -742,14 +742,8 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
         | Core::AstEncode { operand, .. }
         | Core::AstDecode { operand, .. } => binder_must_escape(db, operand, binder, true),
         Core::Proj { operand, .. } => {
-            // MIRRORS `binding_escapes_dup_aware`'s Proj arm (must ≤ may must hold): a projection BORROWS its
-            // operand — `arr-get` borrows, the extracted child is copied (scalar) or dup'd (compound), so the
-            // operand never escapes through a projection. Recurse BORROWING (`true`). Keeping the old
-            // `scalar_element || tail_borrowed` here while the may-query flips to `true` would leave must-escape
-            // > may-escape for a compound-forward binder (may says borrowed/no-escape, must says escapes) —
-            // violating the invariant the dup-suppression gate relies on. Borrowing here can only SHRINK
-            // must-escape, the sound direction (a wrong-small must-escape ⇒ keep the dup ⇒ leak-not-UAF).
-            binder_must_escape(db, operand, binder, true)
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            binder_must_escape(db, operand, binder, scalar_element || tail_borrowed)
         }
         Core::ListAt { list, index, .. } => {
             binder_must_escape(db, list, binder, true)
@@ -3548,13 +3542,7 @@ fn mark_binder_dups_body(
                 db,
                 operand,
                 binder,
-                // site-b JOINT FIX (v-core-opt's half): drop the `consuming ||` term so a borrowed
-                // compound-Proj-OPERAND is not marked a per-field PARENT dup_site. Post the escape-query
-                // Proj-arm borrow-reclassification above, `never_escapes(m)` flips TRUE for a
-                // payload-forwarding cell param, so this gate suppresses the surplus parent dups (node#4
-                // rc = owned + N → owned) while the CHILD dup (~3448) stays. Either half alone regresses
-                // (dup_site-only = the old node#4 leak; escape-only = the site-a droppability test).
-                !scalar_element && !never_escapes && !must_escapes,
+                !scalar_element && (consuming || (!never_escapes && !must_escapes)),
                 live_after,
                 true,
                 sites,
