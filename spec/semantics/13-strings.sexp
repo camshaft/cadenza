@@ -690,7 +690,7 @@
   (output (: 0 Int64))
   (call main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "EDIT DISTANCE rolls a two-row Levenshtein table over string scalars"
@@ -1375,7 +1375,7 @@
   ; a SEPARATE tracked follow-up under v-memory-safety. The cross-arm retain fix (mark_binder_dups
   ; If-arm predicate (a)) ELIMINATED the mode-2 double-free UAF (was a wasm `unreachable` trap on the
   ; debug-counters runtime); value-correct + no trap, with this residual pinned per-call.
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime string rope matches a string-literal arm"
@@ -5042,7 +5042,7 @@
   (output (: 1 Int64))
   (call main (: 1 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive scan counts a runtime string's matching characters"

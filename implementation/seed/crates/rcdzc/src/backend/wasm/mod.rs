@@ -643,6 +643,14 @@ pub fn emit(
                     });
                 }
             }
+            // A record/tuple PARAM whose freshly-rebuilt positional cell the wrapper OWNS and reclaims after
+            // the def call — the #9014 dup-aware `record_param_drop_after` gate, whose post-call reclaim loop
+            // emits `imp("drop")` in `serialize::code_entry`. Register `drop` so it is imported; without this
+            // the wrapper's `drop` resolves against an absent op and `code_entry` panics ("wrapper needs
+            // runtime op `drop` in the import set"). Mirrors the mem-leaf/sum `drop_after` registrations below.
+            if w.record_param_drop_after.iter().any(|&d| d) {
+                used.insert("drop");
+            }
             // A spilled compound RESULT reads its value off the returned handle via the recursive canonical
             // writer — collect every runtime op that plan calls (`arr-get`/`vec-len`/`vec-get`/`bytes-*` +
             // each scalar unbox) so they are imported.
