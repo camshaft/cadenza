@@ -348,7 +348,7 @@
            mix above hits, applied to two integer widths. The author must convert one side (`.of`/`.wrap`)
            explicitly. (migrated from rcdzc mixing_two_widths_without_conversion.)")
   (input (do (def (main) (+ (: 1 UInt8) (: 2 Int32))) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "a mutual-recursion group's bare-literal return adopts a sibling's concrete width (seq-40 piece 4, #6049)"
@@ -398,7 +398,7 @@
            signedness); this isolates the signedness axis. (migrated from rcdzc
            signed_and_unsigned_of_the_same_width_do_not_promote.)")
   (input (do (def (main) (+ (: 1 Int8) (: 2 UInt8))) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "wrapping a non-integer source is rejected"
@@ -5943,7 +5943,7 @@
            (CDZ0301) exactly as the constant mix is, at run-time-typed operands too. The no-promotion rule
            holds regardless of whether the operands are constant; to add, both must be BigInt.")
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) b))) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "a runtime BigInt ordering compares by the arbitrary-precision value"
@@ -6112,7 +6112,7 @@
 
         (def (mix) (+ 2 (Int64.of 1))))
       (m.mix unit)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "an explicit annotation overrides the default-integer pragma"
@@ -6321,7 +6321,7 @@
 
         (def (mix) (+ 1 (Int64.of 1))))
       (m.mix unit)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "an explicit annotation overrides the default-fraction pragma"
@@ -6840,22 +6840,22 @@
 (case
   "a cross-width nan comparison (Float32.nan vs Float64.nan) is a type error"
   (input (do (def (main) (= Float32.nan Float64.nan)) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "a Float32.nan compared to a Float64 literal is a type error"
   (input (do (def (main) (= Float32.nan (: 1.5 Float64))) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "a Float32 literal compared to Float64.nan is a type error"
   (input (do (def (main) (= (: 1.5 Float32) Float64.nan)) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "the finite cross-width comparison rejects the same way (the behavior the nan path matches)"
   (input (do (def (main) (= (: 1.5 Float32) (: 1.5 Float64))) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "a nan compared to a non-float is the cross-kind type error"
@@ -11968,7 +11968,7 @@
            of the `(+ 2 2.0)` Int/Float no-promotion case (numeric-model.md #Numeric Types Do Not
            Silently Promote).")
   (input (+ (: 1 UInt8) (: 2 Int32)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind wrap))))
 
 (case
   "mixing signed and unsigned of the same width does not silently promote"
