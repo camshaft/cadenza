@@ -1605,7 +1605,7 @@
            the count given), distinct from the wrong-argument-TYPE message. The program's outcome is the
            rejection.")
   (input (do (def (main) (List.len #list(1) 2)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (fix (kind delete))))
 
 (case
   "a two-argument built-in applied to three arguments names its arity"
