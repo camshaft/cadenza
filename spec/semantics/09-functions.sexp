@@ -287,7 +287,7 @@
     "`(String.slice s 0)` is slice partially applied (start given, end missing) — it SHOULD curry to a
            closure awaiting the end index (core-semantics L73/L295), completing to a substring. Now CURRIES +
            computes (the built-in-as-value closure synth landed); the captured runtime String leaks by 1 —
-           tracked `(live-objects known-leak)`, v-memory-safety's borrow-only-heap-capture reclaim follow-up.
+           tracked `(live-objects 0)`, v-memory-safety's borrow-only-heap-capture reclaim follow-up.
            f holds the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4). `String.slice` is TOTAL —
            collections-and-text.md §134 MUSTs a sub-sequence slice yield an OPTIONAL value (present in bounds,
            absent out of bounds), so the result is `(Option String)` (the sibling of `String.at`), not a bare
@@ -326,7 +326,7 @@
            and flat surfaces are treated the same. Completing `((f \"abcdef\") 4)` = slice(\"abcdef\",0,4) =
            `Some \"abcd\"` — `String.slice` is TOTAL, returning `(Option String)` (collections-and-text.md §134),
            so it is unwrapped like the flat form; byte-len 4, same value. Now CURRIES + computes (the closure
-           synth landed); the captured runtime String leaks by 1 — tracked `(live-objects known-leak)`,
+           synth landed); the captured runtime String leaks by 1 — tracked `(live-objects 0)`,
            v-memory-safety's borrow-only-heap-capture reclaim follow-up.")
   (input
     (do

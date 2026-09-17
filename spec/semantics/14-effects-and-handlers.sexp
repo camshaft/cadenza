@@ -7131,7 +7131,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a mid-scalar byte window crosses to the arm and String.from-bytes declines it"
@@ -8762,7 +8762,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"

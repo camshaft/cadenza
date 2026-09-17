@@ -4317,7 +4317,7 @@ cases
       (export getPairs)))
   (call get-pairs (: 5 Int64))
   (output (: #list(#tuple(5 6) #tuple(15 16)) (List (Tuple Int64 Int64))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed list<record> EXPORT result crosses as a WIT list of records (declared world)"

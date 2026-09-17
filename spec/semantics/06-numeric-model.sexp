@@ -17827,7 +17827,7 @@
   (output (: -7 Int64))
   (call main (: -9 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cdzw16 the cadenza backend round-trips a MULTI-PAYLOAD variant match — slot-i payload binders"
