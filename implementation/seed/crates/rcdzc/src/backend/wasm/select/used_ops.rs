@@ -707,14 +707,21 @@ pub(super) fn collect_used_ops_into_seen(
             out.insert(OP_BYTES_SLICE);
             // The Some-branch DUPs the string (`dup`), the slice CONSUMES that dup'd copy, then COMPACTS
             // the fresh slice to an independent flat leaf (see the emit) so a `String.at` result's
-            // content-equality / key-hashing compares by content, not rope offset. The original string is
-            // NOT dropped here — its owner (an enclosing let/param) reclaims it (see the emit comment), so
-            // no `drop` is imported (unlike Map.lookup/Set.contains, whose boxed KEY is an owned temporary
-            // they must drop). None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no
-            // `arr-alloc` either.
+            // content-equality / key-hashing compares by content, not rope offset. None is the inline-unit
+            // constant (`IMM_UNIT`), NOT an allocation — no `arr-alloc`.
             out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
+            // IMPORT/EMIT COMPANION for the owned-source reclaim (mirrors String.slice's slc1 gate EXACTLY):
+            // when the `string` source is an OWNED temporary the emit drops it after the If (the payload is a
+            // COMPACTED-independent leaf, so the drop is UAF-safe; both branches leave it dead). A BORROWED
+            // source (param/local) is left to its owner → no drop, no import.
+            if matches!(
+                heap_operand_ownership(db, string),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into_seen(db, string, out, visited);
             collect_used_ops_into_seen(db, index, out, visited);
         }

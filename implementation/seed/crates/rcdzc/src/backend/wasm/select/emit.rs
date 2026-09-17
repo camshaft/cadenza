@@ -2324,6 +2324,24 @@ pub(super) fn emit(
             // BORROW of its string, like `List.at`/`Bytes.at`.
             emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
+            // Reclaim an OWNED-TEMPORARY source — the "this arm's own end reclaims uniformly" the retain
+            // comment above promises but was MISSING (unlike `String.slice`'s slc1 drop). `(String.at
+            // (String.concat …) i)` feeds an owned temporary with NO enclosing owner, so without this it
+            // LEAKS one node per call (the source string husk; measured `oat` = 1 leaked node). Drop it IFF
+            // owned; a BORROWED source (param/local) is left to its owner (`heap_operand_ownership` ==
+            // Borrowed), exactly as `String.slice` does. UAF-SAFE: the extracted view was `bytes-compact`'d to
+            // an INDEPENDENT flat leaf above, so freeing the source never frees the still-live view (the same
+            // fence slc1 relies on). This drops the SOURCE gated on the SOURCE's ownership — it does NOT touch
+            // `StrAt`'s own (deliberately-non-Owned) result classification, so the MatchSum Stage-B path is
+            // unperturbed. The Some/None handle sits BENEATH on the stack; `LocalGet(str_slot); OP_DROP` pops
+            // only `str`. (The fence's remaining PARAM-source husk is a separate borrow-analysis gap.)
+            if matches!(
+                heap_operand_ownership(db, string),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(())
         }
         // `String.slice string start end` — the fallible half-open SCALAR sub-range `[start, end)`. Walk the
