@@ -278,7 +278,7 @@
   (input (do (def (f (: m (Record (: x Int64)))) #record((= d Option.None))) (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (output #record((= d (None unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a list of records with a bytes leaf crosses the export boundary via an imposed WIT world"
@@ -324,7 +324,7 @@
   (input (do (def (encodeQuoted) (Bytes.of #list(104 105))) (export encodeQuoted)))
   (call encode-quoted)
   (output #list(104 105))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)"
@@ -344,7 +344,7 @@
   (input (do (def (decodeCheck (: x Bytes)) (> (Bytes.len x) 0)) (export decodeCheck)))
   (call decode-check (: #list(104 105) Bytes))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)"
@@ -361,7 +361,7 @@
   (input (do (def (checkStr (: x String)) (> (String.byte-len x) 0)) (export checkStr)))
   (call check-str (: "hi" String))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)"
@@ -394,7 +394,7 @@
   (output #list(104 105))
   (call decode-check (: #list(104 105) Bytes))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)"
@@ -418,7 +418,7 @@
       (export readElem)))
   (call read-elem (: #list(7 42 9) (List Int64)))
   (output (: 342 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare option<scalar>/Option PARAM member of a typed export interface crosses (sum_params option arm, both variants)"
@@ -442,7 +442,7 @@
   (output (: 42 Int64))
   (call check-opt (: (None unit) (Option Int64)))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a member with TWO top-level mem-leaf params (list<u8> + list<s64>) threads the flattened cursor across both"
@@ -466,7 +466,7 @@
       (export combine)))
   (call combine (: #list(1 2 3) Bytes) (: #list(10 20) (List Int64)))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a member with a mem-leaf param interleaved with a scalar param threads the cursor across mixed widths"
@@ -483,7 +483,7 @@
   (input (do (def (tag (: x Bytes) (: n Int64)) (+ (Bytes.len x) n)) (export tag)))
   (call tag (: #list(7 8 9) Bytes) (: 100 Int64))
   (output (: 103 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a member with an option<s64> param beside a mem-leaf param composes the sum rebuild with the byte copy-in"
@@ -509,7 +509,7 @@
       (export both)))
   (call both (: (Some 40) (Option Int64)) (: #list(1 2) Bytes))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare tuple<scalar,scalar>/Tuple PARAM member of a typed export interface crosses (positional cell rebuild)"
@@ -531,7 +531,7 @@
     (do (def (sumPair (: p (Tuple Int64 Int64))) (+ (* 100 (. p 0)) (. p 1))) (export sumPair)))
   (call sum-pair (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 510 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell"
@@ -547,7 +547,7 @@
   (input (do (def (f (: p (Tuple Bytes Int64))) (+ (Bytes.len (. p 0)) (. p 1))) (export f)))
   (call f (: #tuple(#list(1 2 3) 100) (Tuple Bytes Int64)))
   (output (: 103 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell"
@@ -566,7 +566,7 @@
     (do (def (f (: p (Tuple (Record (: a Int64)) Int64))) (+ (. (. p 0) a) (. p 1))) (export f)))
   (call f (: #tuple(#record((= a 7)) 100) (Tuple (Record (: a Int64)) Int64)))
   (output (: 107 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare result<ok,err>/Result PARAM member of a typed export interface crosses (sum_params Result shape, both arms)"
@@ -592,7 +592,7 @@
   (output (: 7 Int64))
   (call chk (: (Err 5) (Result Int64 Int64)))
   (output (: -5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)"
@@ -611,7 +611,7 @@
   (input (do (type Color (Red) (Green) (Blue)) (def (choose) Color.Green) (export choose)))
   (call choose)
   (output (green unit))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
@@ -818,7 +818,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing an all-scalar record host arg emits, loads, and runs (via an imposed WIT world)"
@@ -881,7 +881,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/deliver.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a bytes host arg with a scalar result threads the u64 into the step (via an imposed WIT world)"
@@ -1063,7 +1063,7 @@
   (output (: 42 Int64))
   (call f (: #record((= d None)) (Record (: d (Option Int64)))))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok and Err arms (via an imposed WIT world)"
@@ -1104,7 +1104,7 @@
   (output (: 10 Int64))
   (call f (: #record((= a (Err (faulted unit)))) (Record (: a (Result Bytes Error)))))
   (output (: 13 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)"
@@ -1139,7 +1139,7 @@
   (output #record((= o (continue unit))))
   (call f (: #record((= x 5)) (Record (: x Int64))))
   (output #record((= o (close 5))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
@@ -1170,7 +1170,7 @@
       #record((= payload #list(9 9)) (= contract #list(1 2 3)))
       (Record (: contract Bytes) (: payload Bytes))))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
@@ -1197,7 +1197,7 @@
       (export f)))
   (call f (: #record((= x 10)) (Record (: x Int64))))
   (output #record((= second 20) (= first 10)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)"
@@ -1231,7 +1231,7 @@
       #record((= a #list(1 2)) (= sub #record((= b #list(1 2 3)))))
       (Record (: a Bytes) (: sub (Record (: b Bytes))))))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record param carrying a bytes leaf beside a scalar compiles and runs (via an imposed WIT world)"
@@ -1252,7 +1252,7 @@
   (input (do (def (f (: m (Record (: data Bytes) (: tag Int64)))) (Bytes.len m.data)) (export f)))
   (call f (: #record((= data #list(1 2 3 4 5)) (= tag 99)) (Record (: data Bytes) (: tag Int64))))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record param interface export builds the record via the boundary wrapper and runs (via an imposed WIT world)"
@@ -1268,7 +1268,7 @@
   (input (do (def (f (: m (Record (: a Int64)))) m.a) (export f)))
   (call f (: #record((= a 7)) (Record (: a Int64))))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)"
@@ -1298,7 +1298,7 @@
   (output (: 7 Int64))
   (call g (: #record((= b 9)) (Record (: b Int64))))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a reducer emitting no effects builds an empty-requests step and runs (via an imposed WIT world)"
@@ -1346,7 +1346,7 @@
       #record((= contract #list(1)) (= payload #list(2)))
       (Record (: contract Bytes) (: payload Bytes))))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a full reducer-step-shaped guest writes every field of the step and runs (via an imposed WIT world)"
@@ -1471,7 +1471,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bytes-param leaf and a spilled record result in one member run through both memory paths (via an imposed WIT world)"
@@ -1501,7 +1501,7 @@
       (export f)))
   (call f (: #record((= data #list(1 2 3 4 5 6 7))) (Record (: data Bytes))))
   (output #record((= n 7) (= twice 14)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)"
@@ -1695,7 +1695,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer branching on a bool host-op result emits a request when true (via an imposed WIT world)"
@@ -1948,7 +1948,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2189,7 +2189,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<record-with-option-field> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2247,7 +2247,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-a-tuple-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2425,7 +2425,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2481,7 +2481,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<record-with-a-variant-field> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2541,7 +2541,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<tuple-with-a-variant-element> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2601,7 +2601,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a nested-record host arg with a variant<scalar> leaf emits, loads, and runs (via an imposed WIT world)"
@@ -2665,7 +2665,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2723,7 +2723,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-a-variant-f64-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2802,7 +2802,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)"
@@ -2827,7 +2827,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- host-u64 checked-conversion end-to-end: intact-compare control, T.of over a host response, handler x host x conversion, record-arg x value-result x conversion (breaker batch 382; the #3537->#3572 wrong-trap arc witnesses) --
 (case
@@ -2849,7 +2849,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "u64h2 T.of over the u64 host response (isolated, in-range 1000)"
@@ -2868,7 +2868,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cr03 an export combining an IN-GUEST handler AND a host import"
@@ -2894,7 +2894,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq04 host IMPORT: RECORD param + scalar result (reverse direction)"
@@ -2977,7 +2977,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -3033,7 +3033,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
@@ -3067,7 +3067,7 @@ cases
     (call cadenza:demo/hosti.put)
     (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- bare + record-wrapped MIXED-WIDTH variant host args: u8/s64/nullary arms each dispatched (breaker batch 385; the #3579->#3588 HostParam::Variant arc) --
 (case
@@ -3100,7 +3100,7 @@ cases
     (call cadenza:demo/hosti.put)
     (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "mwv2 the SAME mixed-width variant wrapped in a RECORD host arg"
@@ -3127,7 +3127,7 @@ cases
   (call f (: #record((= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)"
@@ -3151,7 +3151,7 @@ cases
   (host-responses (respond hosti.get (: (b 900000000000) V)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 900000000000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- variant-with-payload host RESULTS: payload arm, mixed-width per-arm across three dispatches, negative-s64 join (breaker batch 387; the pre-delivered #3592 acceptance ladder) --
 (case
@@ -3174,7 +3174,7 @@ cases
   (host-responses (respond hosti.pick (: (small 5) pick)))
   (host-calls (call cadenza:demo/hosti.pick))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches"
@@ -3205,7 +3205,7 @@ cases
     (call cadenza:demo/hosti.next)
     (call cadenza:demo/hosti.next))
   (output (: 900000000006 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "vres3 a NEGATIVE s64 payload through the variant host-result join"
@@ -3227,7 +3227,7 @@ cases
   (host-responses (respond hosti.get (: (val -5000000000) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: -5000000000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)"
@@ -3251,7 +3251,7 @@ cases
   (host-responses (respond hosti.get (: (raw #list(1 2 3 4 5)) V)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- variant host RESULTS with COMPOUND payloads: list payload measured, record payload projected (breaker batch 397a; the #3655 flip) --
 (case
@@ -3274,7 +3274,7 @@ cases
   (host-responses (respond hosti.get (: (items #list(5 6 7)) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cvp2 a variant host RESULT with a RECORD payload lifts and projects"
@@ -3298,7 +3298,7 @@ cases
   (host-responses (respond hosti.get (: (tag #record((= a 40) (= b 2))) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 404 (2026-08-26): in-guest-handler x host-import COMBINATION faces (cr01-cr03d:
 ; two exports in one interface, exported body running a handled effect, handler+host-call in
@@ -3322,7 +3322,7 @@ cases
       (export g)))
   (call g (: #record((= x 5)) (Record (: x Int64))))
   (output (: 105 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cr02 an export whose body runs an IN-GUEST handled effect"
@@ -3338,7 +3338,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (output (: 70 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)"
@@ -3364,7 +3364,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cr03c host call INSIDE the handled body"
@@ -3392,7 +3392,7 @@ cases
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1030 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cr03d combination with s64 host result (no Int64.of) — nested"
@@ -3418,7 +3418,7 @@ cases
   (host-responses (respond hosti.base (: 1000 Int64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq04c record host-ARG with s64 result (no Int64.of)"
@@ -3470,7 +3470,7 @@ cases
       (: #record((= alpha 7) (= beta 42)) (Record (: alpha Int64) (: beta Int64)))))
   (host-calls (call cadenza:demo/hosti.info))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq03 host IMPORT: scalar param + LIST result — guest measures it"
@@ -3489,7 +3489,7 @@ cases
   (host-responses (respond hosti.fetch (: #list(5 6 7) (List Int64))))
   (host-calls (call cadenza:demo/hosti.fetch))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq02b host IMPORT: NULLARY + RECORD result, called ONCE"
@@ -3509,7 +3509,7 @@ cases
     (respond hosti.peek (: #record((= a 10) (= b 32)) (Record (: a Int64) (: b Int64)))))
   (host-calls (call cadenza:demo/hosti.peek))
   (output (: 32 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq02c host IMPORT: NULLARY + LIST result, called once"
@@ -3528,7 +3528,7 @@ cases
   (host-responses (respond hosti.all (: #list(4 5) (List Int64))))
   (host-calls (call cadenza:demo/hosti.all))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq04b host IMPORT: RECORD arg + UNIT result (SHAPE-13 control in my namespace)"
@@ -3573,7 +3573,7 @@ cases
     (respond hosti.peek (: #record((= a 0) (= b 32)) (Record (: a Int64) (: b Int64)))))
   (host-calls (call cadenza:demo/hosti.peek) (call cadenza:demo/hosti.peek))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cord4 IMPOSED world: RECORD param + 2-field scalar record result"
@@ -3587,7 +3587,7 @@ cases
   (input (do (def (f (: m (Record (: x Int64)))) #record((= b1 m.x) (= b2 2))) (export f)))
   (call f (: #record((= x 1)) (Record (: x Int64))))
   (output #record((= b1 1) (= b2 2)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)"
@@ -3670,7 +3670,7 @@ cases
       (= b18 18)
       (= b19 19)
       (= b20 20)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "wen1 an enum host-import RESULT lifts and selects the guest arm"
@@ -3692,7 +3692,7 @@ cases
   (host-responses (respond hosti.mode (: (fast unit) mode)))
   (host-calls (call cadenza:demo/hosti.mode))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)"
@@ -3708,7 +3708,7 @@ cases
   (input (do (def (f (: x Int64)) #record((= b1 x) (= b2 (* x 2)) (= b3 (+ x 100)))) (export f)))
   (call f (: 7 Int64))
   (output #record((= b1 7) (= b2 14) (= b3 107)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer threading a string host-op result branches on its byte-len (via an imposed WIT world)"
@@ -3845,7 +3845,7 @@ cases
   (output (: (close 7) Outcome))
   (call f (: 0 Int64))
   (output (: (continue unit) Outcome))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare TUPLE export result crosses as a typed WIT tuple (declared world)"
@@ -3859,7 +3859,7 @@ cases
   (input (do (def (f (: x Int64)) #tuple(x (* x 2))) (export f)))
   (call f (: 5 Int64))
   (output #tuple(5 10))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a variant with a TUPLE payload crosses as a typed WIT variant (declared world)"
@@ -3881,7 +3881,7 @@ cases
   (output (: (one 0) Pair))
   (call f (: 4 Int64))
   (output (two #tuple(4 4)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a declared-world enum EXPORT whose guest case order MISMATCHES the WIT remaps by case NAME to the declared order"
@@ -3926,7 +3926,7 @@ cases
   (output #record((= o (continue unit)) (= n 0)))
   (call f (: 7 Int64))
   (output #record((= o (close 7)) (= n 7)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed record result with an option<COMPOUND> field crosses the export boundary (declared world)"
@@ -3951,7 +3951,7 @@ cases
   (output #record((= d (None unit)) (= n 0)))
   (call f (: 5 Int64))
   (output #record((= d (Some #record((= a 5)))) (= n 5)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
@@ -3969,7 +3969,7 @@ cases
   (input (do (def (f (: x Int64)) #record((= b1 x) (= b2 2))) (export f)))
   (call f (: 1 Int64))
   (output #record((= b1 1) (= b2 2)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)"
@@ -4052,7 +4052,7 @@ cases
       (= b18 18)
       (= b19 19)
       (= b20 18)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp3 SCALAR param + record result with an Option field (Some side)"
@@ -4066,7 +4066,7 @@ cases
   (input (do (def (f (: x Int64)) #record((= a 9) (= d (Option.Some x)))) (export f)))
   (call f (: 5 Int64))
   (output #record((= a 9) (= d (Some 5))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp3n SCALAR param + record result with an Option field (None side, branch-selected)"
@@ -4083,7 +4083,7 @@ cases
       (export f)))
   (call f (: 0 Int64))
   (output #record((= a 0) (= d (None unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp4 SCALAR param + bare option result"
@@ -4092,7 +4092,7 @@ cases
   (input (do (def (f (: x Int64)) (Option.Some (* x 3))) (export f)))
   (call f (: 4 Int64))
   (output (: (Some 12) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp5 SCALAR param + list result"
@@ -4101,7 +4101,7 @@ cases
   (input (do (def (f (: x Int64)) #list(x (* x 2) (* x 3))) (export f)))
   (call f (: 2 Int64))
   (output #list(2 4 6))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp6 TWO scalar params + 2-field record result (multi-scalar face)"
@@ -4117,7 +4117,7 @@ cases
   (input (do (def (f (: x Int64) (: y Int64)) #record((= b1 (+ x y)) (= b2 (* x y)))) (export f)))
   (call f (: 3 Int64) (: 4 Int64))
   (output #record((= b1 7) (= b2 12)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sp7 SCALAR param + variant-with-payload result (sum face of the same gate)"
@@ -4133,7 +4133,7 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: (small 5) pick))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak"
@@ -4303,7 +4303,7 @@ cases
 (case
   "a typed list<tuple<s64,s64>> EXPORT result crosses as a WIT list of tuples (declared world)"
   (doc
-    "SHAPE 69 - a TYPED `list<tuple<s64,s64>>` EXPORT result under an imposed world. The result-lower's SpillRecord path (`canon_write_of` Ty::List → CanonWrite::List whose element is the Tuple arm's 2-field Record write) composes with NO new emit: `vec-len`/`vec-get` over the def's list, each element written at the canonical `tuple<s64,s64>` offsets. The TYPED-EXPORT twin of SHAPE 7 (which round-trips a list-of-records only via the untyped run/encode envelope, NOT a self-declared WIT type). getPairs(x) = [(x, x+1), (x+10, x+11)]; x=5 -> [(5,6),(15,16)]. KNOWN-LEAK: the spilled list result + its boxed tuple elements are not reclaimed after the copy-out (the SpillRecord-result reclaim class, same as SHAPE 60/62/63; value-correct, routed to v-memory-safety) -> pinned `(live-objects known-leak)`.")
+    "SHAPE 69 - a TYPED `list<tuple<s64,s64>>` EXPORT result under an imposed world. The result-lower's SpillRecord path (`canon_write_of` Ty::List → CanonWrite::List whose element is the Tuple arm's 2-field Record write) composes with NO new emit: `vec-len`/`vec-get` over the def's list, each element written at the canonical `tuple<s64,s64>` offsets. The TYPED-EXPORT twin of SHAPE 7 (which round-trips a list-of-records only via the untyped run/encode envelope, NOT a self-declared WIT type). getPairs(x) = [(x, x+1), (x+10, x+11)]; x=5 -> [(5,6),(15,16)]. KNOWN-LEAK: the spilled list result + its boxed tuple elements are not reclaimed after the copy-out (the SpillRecord-result reclaim class, same as SHAPE 60/62/63; value-correct, routed to v-memory-safety) -> pinned `(live-objects 0)`.")
   (wit-world
     (world
       w
@@ -4341,7 +4341,7 @@ cases
     (:
       #list(#record((= lo 5) (= hi 6)))
       (List (Record (: lo Int64) (: hi Int64)))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed list<tuple<s64, list<s64>>> EXPORT result — a NESTED-list element field crosses (declared world)"
@@ -4365,7 +4365,7 @@ cases
     (:
       #list(#tuple(5 #list(5 6)))
       (List (Tuple Int64 (List Int64)))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed list<variant> EXPORT result crosses as a WIT list of variants (declared world)"
@@ -4386,7 +4386,7 @@ cases
       (export getVs)))
   (call get-vs (: 9 Int64))
   (output (: #list((lo unit) (hi 9)) (List V)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed list<tuple<s64, variant>> EXPORT result — a VARIANT field inside a tuple element (declared world)"
@@ -4411,7 +4411,7 @@ cases
     (:
       #list(#tuple(3 (hi 4)) #tuple(8 (lo unit)))
       (List (Tuple Int64 V))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a result<s64,s64> EXPORT result crosses as a typed WIT result (declared world)"
@@ -4432,7 +4432,7 @@ cases
   (output (: (Ok 5) (Result Int64 Int64)))
   (call classify (: -3 Int64))
   (output (: (Err 3) (Result Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a result<record,s64> EXPORT result crosses — a COMPOUND ok payload (declared world)"
@@ -4457,7 +4457,7 @@ cases
   (output (: (Ok #record((= lo 5) (= hi 6))) (Result (Record (: lo Int64) (: hi Int64)) Int64)))
   (call cl (: -3 Int64))
   (output (: (Err 3) (Result (Record (: lo Int64) (: hi Int64)) Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a flat single-scalar-field record EXPORT result crosses (returned directly, not by pointer)"
@@ -4517,7 +4517,7 @@ cases
       (export f)))
   (call f (: (Some #record((= lo 3) (= hi 4))) (Option (Record (: lo Int64) (: hi Int64)))))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed list<option<s64>> EXPORT result crosses as a WIT list of options"
@@ -4536,7 +4536,7 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: #list((Some 5) (None unit)) (List (Option Int64))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed option<Bytes> EXPORT result crosses (top-level option<list<u8>>)"
@@ -4555,7 +4555,7 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: (Some b"hi") (Option Bytes)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a result<record,record> EXPORT result crosses — BOTH arms carry a compound payload"
@@ -4578,7 +4578,7 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: (Ok #record((= a 5))) (Result (Record (: a Int64)) (Record (: b Int64)))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a nested option<option<s64>> EXPORT result crosses — a SUM inside an option payload"
@@ -4597,4 +4597,4 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: (Some (Some 5)) (Option (Option Int64))))
-  (live-objects known-leak))
+  (live-objects 0))
