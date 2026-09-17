@@ -1091,6 +1091,45 @@ fn v8_double_proj_owned_proj_child_dupd_recognizes_shell_set_view() {
 }
 
 #[test]
+fn single_proj_scalar_read_of_owned_sumexpect_view_is_shell_reclaimed() {
+    // #9071 (the single-proj sibling of the V8 #9082 double-proj witness): `(. (Option.expect
+    // (Map.lookup m k)) x)` — a borrow-clean scalar-field Proj off an owned single-view Some extraction
+    // (MapLookup is one since #9062). The SumExpect emit dup's the view + shell-drops; a scalar `Core::Proj`
+    // has no view-drop hook of its own, so #9071 made the Proj reclaim gate (emit.rs) drop the view via
+    // `sumexpect_shell_reclaim` membership. This pins the CLASSIFICATION that gate depends on: the SumExpect
+    // view node lands in the SHELL set (a Proj is NOT a scalar-read-hook op like Bytes.at/List.len, so it is
+    // not the view set). A regression in collect_sumexpect_view_reclaim's Proj->shell arm drops the view
+    // from the set → the Proj stops dropping it → the map-value-record leak (#9071) returns. Cargo-level, so
+    // it holds even while this box's chapter-15 nix corpus gate is infra-blocked (CA-hash-mismatch).
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: m (Map Int64 (Record (x Int64)))) (: k Int64)) \
+               (. (Option.expect (Map.lookup m k) \"p\") x)) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f (single-proj view)");
+    // The body is the Proj `(. <sumexpect-view> x)`; its operand is the SumExpect (Option.expect) view node.
+    let view = match crate::lower::core_of(&mut db, body) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected the body to be a Proj over the SumExpect view, got {other:?}"),
+    };
+    let mut view_set: HashSet<StructId> = HashSet::new();
+    let mut shell_set: HashSet<StructId> = HashSet::new();
+    collect_sumexpect_view_reclaim(&mut db, body, &mut view_set, &mut shell_set);
+    assert!(
+        shell_set.contains(&view),
+        "#9071: a single scalar-Proj consumer of an owned-single-view SumExpect must classify the view into \
+         the SHELL set (so the Proj drops it) — else the extracted map-value-record view leaks"
+    );
+    assert!(
+        !view_set.contains(&view),
+        "a Proj is not a scalar-read-hook op (Bytes.at/List.len) → the view is shell-set, not view-set \
+         (the disjoint two-set partition)"
+    );
+}
+
+#[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
     // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
