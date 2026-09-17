@@ -167,6 +167,33 @@
   (live-objects known-leak))
 
 (case
+  "a String.at source reused in only ONE match arm is not freed by the owned-source-drop on the live path"
+  (doc
+    "The conditional-reuse face of the owned-source-drop (rcdzc 78f76de5c9, the slc1 analog that drops
+           String.at's owned-temporary source): the source `s` is a runtime rope, and after `String.at s 0`
+           it is reused in only ONE branch of the Some arm — `(if (> n 3) (String.byte-len s) (String.byte-len
+           c))`. The source-drop must respect the live-`s` path (n>3), not unconditionally free `s` after the
+           extraction as if it were a dead temporary. n=1 reads the char `c` (byte-len 1); n=5 reads `s`
+           (\"srcX\", byte-len 4). A per-path miscount would free `s` before the n>3 read (a use-after-free the
+           debug-counters runtime asserts). Value holds both paths, both backends, O0..O2, no underflow.
+           (Adversarial pin from a breaker probe over the owned-source-drop landing.)")
+  (input
+    (do
+      (def
+        (g (: n Int64))
+        (let ((s (String.concat "src" (if (> n 0) "X" "Y"))))
+          (match (String.at s 0)
+            ((Some c) (if (> n 3) (String.byte-len s) (String.byte-len c)))
+            ((None _u) -1))))
+      (def (main (: n Int64)) (g n))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (call main (: 5 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case
   "a String.at extracted view consumed TWICE dup/drops against one payload (no double-free)"
   (doc
     "The multi-consume face of the String.at sum-payload view: `(Some c)` binds the extracted
