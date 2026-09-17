@@ -759,6 +759,20 @@ type ShareEligibility = fn(&mut Db, StructId, StructId, u32) -> Option<Ty>;
 
 /// B2's HEAP-HANDLE eligibility: gate (2) shared heap handle + (2b/P1) fully-solved type + (2c/P3) not a
 /// rust-slot-UNSAFE sum-variant scrutinee. Returns the node's type (for the slot valtype) when admitted.
+/// Whether `ty` is a PRODUCT (tuple/record) with at least one HEAP-typed component — the hazard shape for
+/// the gate-2d single-site-destructure bind (breaker's bug-4 triangle: a `#tuple(hv rest)` returned across a
+/// fn boundary where a field is a heap value — the String payload OR the recursive Q spine). A product of
+/// scalars only (the `bind_plan_admits_a_tuple_elem_payload_share` test's `(Tuple Int64 Int64)`) has NO heap
+/// child to alias/free, so binding it is rc-safe and stays admitted. Non-product heap types (bare list/map/
+/// set/sum) are not the wrapped-spine vehicle, so they are not gated here.
+fn ty_has_heap_component(ty: &Ty) -> bool {
+    match ty {
+        Ty::Tuple(elems) => elems.iter().any(is_heap_type),
+        Ty::Record(fields) => fields.values().any(is_heap_type),
+        _ => false,
+    }
+}
+
 fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Option<Ty> {
     // (2) HEAP-SHARE: shared (count≥2), not a LocalRef, a heap handle (not Unit) — see is_shared_heap_node.
     if !is_shared_heap_node(db, id, count) {
@@ -788,7 +802,32 @@ fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Op
         trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible REJECT: gate-2c P3 dispatched-on but not rust-slot-safe (sum-variant read)");
         return None;
     }
-    trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible ADMIT (gate-2/2b/2c passed)");
+    // (2d) GENUINELY-RE-MATERIALIZED for a DISPATCHED-ON heap share (the 27-des queue O2/O3 wild-deref fix):
+    // a share that is a match/destructure SCRUTINEE gets `count ≥ 2` purely from ONE destructure's multiple
+    // FIELD-READS (`(. p 0)`, `(. p 1)`) — NOT real re-materialization. Binding such a single-destructure
+    // HEAP result into a `Core::Let` perturbs the reclaim of a destructured heap tuple whose extracted child
+    // ALIASES a shared spine: q-pop's `#tuple(hv rest)` bound once, where `rest` is the tail q2 shares with
+    // q1 after the pop → the Let-bind drops a load-bearing dup (func-20 4→3) → the shared spine frees while
+    // the recursive drain still walks it → rc-underflow (debug) / wild-deref (prod), O2/O3-only (v-mem-
+    // bisected; O0/O1 have the dup). Bind a dispatched-on heap share ONLY when it is genuinely re-materialized
+    // — used at 2+ DISTINCT dispatch sites (`count_distinct_dispatch_sites` counts distinct Match/MatchSum/
+    // MatchList/SumExpect NODES, not intra-destructure field-reads; cmb1's state-tuple = 3 → kept), OR its
+    // init is EFFECTFUL (round-trip re-fires the effect per inlined read unless bound). A SINGLE-site pure
+    // destructure needs NO bind: re-descending a pure scrutinee is value-neutral and there is no cmb1-class
+    // re-descent explosion for one destructure, so forfeiting the bind loses no perf and removes the rc
+    // hazard. This mirrors the `b2_bind_plan_scrutinee_only` `genuinely_rematerialized` gate (which already
+    // makes this cut for the cadenza-O1 path); the full wasm plan now shares it. NON-dispatched heap shares
+    // (loop-carried values, doubly-captured lists read via `List.len`/`List.at`) are UNAFFECTED — the gate is
+    // scoped to `b2_is_dispatched_on`, so those keep their bind.
+    if b2_is_dispatched_on(db, body, id) && ty_has_heap_component(&ty) {
+        let sites = count_distinct_dispatch_sites(db, body, id);
+        let effectful = crate::lower::subtree_reaches_host_call(db, id);
+        if sites < 2 && !effectful {
+            trace!(target: "rcdzc::b2", node = ?id, count, sites, "b2_heap_eligible REJECT: gate-2d dispatched-on single-site product wrapping a heap component (not genuinely re-materialized)");
+            return None;
+        }
+    }
+    trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible ADMIT (gate-2/2b/2c/2d passed)");
     Some(ty)
 }
 

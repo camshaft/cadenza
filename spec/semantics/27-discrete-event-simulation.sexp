@@ -402,6 +402,50 @@
   (live-objects known-leak))
 
 (case
+  "a queue pop returning #tuple(value rest) then reinsert-into-rest + drain is level-uniform (B2 heap-component product share)"
+  (doc
+    "The shrunk des-queue miscompile (bug-4): q-pop returns the borrowed tail `rest` WRAPPED IN a
+           #tuple alongside the popped String value; the caller destructures the tuple and reinserts
+           into `rest` via a mid-spine recursive insert-rebuild, then drains. B2 sharing-aware-emit saw
+           the returned product's two field-reads as 2 parent edges and BOUND it into a Core::Let,
+           perturbing the retain on `rest` as it was packed — a use-after-free at O2/O3 (CDZ0704 OOB
+           trap) because q2 aliases q1's tail; O0/O1 kept the retain and computed correctly. The three
+           legs that isolate it: the #tuple RETURN is the vehicle (returning `rest` bare, or inlining
+           the pop, is clean); the payload must be a HEAP component (a scalar-only product stays safely
+           bound); and the reinsert-into-shared-rest is what makes the dropped retain a UAF not a leak.
+           Fixed by gate-2d: a single-dispatch product-with-heap-component share re-descends instead of
+           binding. Level-uniform \"A,B,DD\" O0..O3 on both backends. (breaker discriminator sweep +
+           v-core-opt 6b4fef6a9d.)")
+  (input
+    (do
+      (type Q QNil (QCons UInt64 String Q))
+      (def
+        (q-insert (: q Q) (: t UInt64) (: v String))
+        (match q
+          ((Q.QNil _) (Q.QCons t v (Q.QNil ())))
+          ((Q.QCons ht hv rest)
+            (if (< t ht) (Q.QCons t v (Q.QCons ht hv rest)) (Q.QCons ht hv (q-insert rest t v))))))
+      (def
+        (q-pop (: q Q))
+        (match q ((Q.QNil _) #tuple("empty" (Q.QNil ()))) ((Q.QCons _t hv rest) #tuple(hv rest))))
+      (def
+        (q-drain (: q Q))
+        (match q
+          ((Q.QNil _) "")
+          ((Q.QCons _ hv rest)
+            (match rest ((Q.QNil _) hv) ((Q.QCons _t2 _v2 _r) (String.concat hv (String.concat "," (q-drain rest))))))))
+      (def
+        (main (: n Int64))
+        (do
+          (def q1 (q-insert (q-insert (Q.QNil ()) 3 (String.concat "A" (if (> n 0) "" "z"))) 4 "DD"))
+          (def p1 (q-pop q1))
+          (match p1 (#tuple(v1 q2) (do (def q3 (q-insert q2 1 "B")) (String.concat v1 (String.concat "," (q-drain q3))))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "A,B,DD" String))
+  (live-objects known-leak))
+
+(case
   "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc
     "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
