@@ -1736,7 +1736,7 @@
            one (the tuple analog of the record extra-field case), so a tuple's length must match exactly in
            both directions — not merely be at-least or at-most the annotation's.")
   (input (: #tuple(1 2 3) (Tuple Int64 Int64)))
-  (error CDZ0203))
+  (error CDZ0203 (fix (kind delete))))
 
 (case
   "an unannotated program with a valid typing type-checks and runs"
@@ -2523,7 +2523,7 @@
            then, else). The compiler rejects it (CDZ0201), never silently ignoring the extra operand nor
            crashing — the over-application companion of the missing-branch `(if true 1)` case above.")
   (input (if true 1 2 3))
-  (error CDZ0201))
+  (error CDZ0201 (fix (kind delete))))
 
 (case
   "a member access with no field operand is rejected, not a crash"
