@@ -352,6 +352,59 @@
   (live-objects known-leak))
 
 (case
+  "a self-recursive fn passing its heap param to TWO sibling self-calls over-retains a constant 2 (dup/drop residue, present even on the base path)"
+  (doc
+    "A Perceus dup/drop residue on a SELF-recursive tree over a heap parameter. `go` takes a heap
+           `(List Int64)` and, in its recursive arm, passes `xs` to TWO sibling SELF-calls
+           `(+ (go xs (- depth 1)) (go xs (- depth 1)))` — the two owned uses force a dup of `xs`. The
+           census is a CONSTANT 2 (the list shell + one un-dropped copy) INDEPENDENT of depth (0→3, 1→6,
+           2→12, all census 2) and INDEPENDENT of the list contents. It leaks even at depth=0, where the
+           recursive arm is NEVER taken and the base only BORROWS `xs` (`List.len`) — so the extra retain is
+           inserted at/around function entry for the sibling-self-call path and is not dropped on the base
+           path. Values are correct and there is NO trap (a pure over-retain, the surviving-owned-ref-drop
+           LEAK-side class, cf. the partial-application leaks above). The control below proves the trigger is
+           the SELF-recursion specifically: the identical shape whose two sibling calls target a DIFFERENT
+           function reclaims to 0. IDEAL is 0; `(live-objects 2)` is a drift guard until the self-recursive
+           sibling-call dup balances (flip to 0 then).")
+  (input
+    (do
+      (def
+        (go (: xs (List Int64)) (: depth Int64))
+        (if (< depth 1) (List.len xs) (+ (go xs (- depth 1)) (go xs (- depth 1)))))
+      (def (main (: depth Int64)) (go #list(1 2 (+ depth 1)) depth))
+      (export main)))
+  ; base path (depth<1): only borrows xs, recursive arm never taken — yet still leaks 2.
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  ; recursive tree (2^depth leaves): census stays a constant 2, does NOT scale with the tree.
+  (call main (: 2 Int64))
+  (output (: 12 Int64))
+  (live-objects 2))
+
+(case
+  "the control: the SAME two-sibling-call shape targeting a DIFFERENT function reclaims to 0"
+  (doc
+    "Isolates the self-recursion trigger of the leak above. `go` has the identical structure — a base arm
+           borrowing `xs` and a recursive arm with TWO sibling calls passing `xs` by value — but the two
+           calls target `leaf` (a DIFFERENT, non-recursive function) instead of `go` itself. This reclaims to
+           0 at every depth (depth 0→3, depth 1→ two `leaf` calls = 6). So the 2-object residue is specific
+           to the heap param flowing into SIBLING SELF-recursive calls, not to by-value sibling calls in
+           general (which balance) nor to the two-arm/borrow structure.")
+  (input
+    (do
+      (def (leaf (: xs (List Int64)) (: d Int64)) (List.len xs))
+      (def
+        (go (: xs (List Int64)) (: depth Int64))
+        (if (< depth 1) (List.len xs) (+ (leaf xs (- depth 1)) (leaf xs (- depth 1)))))
+      (def (main (: depth Int64)) (go #list(1 2 (+ depth 1)) depth))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
