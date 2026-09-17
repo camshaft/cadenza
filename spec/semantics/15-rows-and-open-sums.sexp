@@ -148,6 +148,29 @@
   (live-objects 0))
 
 (case
+  "a triple projection off an Option.expect map-value view reclaims the intermediate records (no leak)"
+  (doc
+    "The nested-projection reclaim family (#9071 / #9082 / #9093): a THREE-deep record projection off an
+           owned single-view `Option.expect (Map.lookup m k)` — `v.a.b.c` over a nested-record map value. The
+           `Map.lookup` yields an owned single view (since #9062), `Option.expect` dup's it + drops the Some
+           shell, and each intervening projection dup's its extracted child so the final scalar read `.c` must
+           drop the WHOLE chain (the outer view, the `a` record, the `b` record). `owned_proj_child_dupd`
+           recurses the operand chain (#9093) so the MIDDLE record is dropped rather than leaked. A regression
+           that stops the predicate recursing the operand chain flips this to a leak — `live-objects` > 0.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def m #map((= 1 #record((= a #record((= b #record((= c (+ k 41))))))))))
+          (def v (Option.expect (Map.lookup m k) "present"))
+          v.a.b.c))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (live-objects 0))
+
+(case
   "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc
     "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
