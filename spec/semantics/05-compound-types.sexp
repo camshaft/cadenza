@@ -5623,6 +5623,35 @@
   (output (: 12 Int64))
   (live-objects known-leak))
 
+(case
+  "all five List ops on an unwrapped newtype-list payload re-emit correctly through the cadenza backend (push/prepend/concat/update/at)"
+  (doc
+    "Guards the cadenza-backend newtype-list-operand peel (rcdzc 31caeef33b, code-only, no prior corpus
+           guard): a `(type Box (B (List Int64)))` payload is unwrapped by `(match bx ((Box.B xs) …))` and fed
+           to ALL FIVE List operations the peel covers — `List.push`, `List.prepend`, `List.concat`,
+           `List.update`, and `List.at` — so the surface re-emit must peel the newtype for each. `bx = (B
+           [1,2,n+2])` (runtime list, off the constant path); at n=1 xs=[1,2,3]: push→len 4, concat [7,8]→len 5,
+           update 0 99 then at 0→99, prepend 0→len 4, so 4+5+99+4 = 112. The existing Box-newtype cases exercise
+           only `List.push`; this pins the four other ops the peel added. Direct wasm and the cadenza round-trip
+           agree (112), level-uniform O0..O3. (Adversarial pin from a breaker round-trip probe over the re-emit
+           landing.)")
+  (input
+    (do
+      (type Box (B (List Int64)))
+      (def
+        (main (: n Int64))
+        (let ((bx (B #list(1 2 (+ n 2)))))
+          (match bx
+            ((Box.B xs)
+              (+ (List.len (List.push xs 9))
+                 (+ (List.len (List.concat xs #list(7 8)))
+                    (+ (Option.expect (List.at (List.update xs 0 99) 0) "u")
+                       (List.len (List.prepend xs 0)))))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 112 Int64))
+  (live-objects known-leak))
+
 ; The SCALAR-RESULT SHELL-RECLAIM face: when a match over an OWNED compound-payload sum has a SCALAR (non-heap)
 ; result, the emit reclaims the owned sum SHELL after the arm (the scalar answer cannot carry a shell-child
 ; handle out of the block, so the deep drop is safe — the reclaim broadening in the wasm backend's match
