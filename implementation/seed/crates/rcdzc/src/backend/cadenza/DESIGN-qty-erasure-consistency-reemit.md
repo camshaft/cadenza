@@ -1,9 +1,35 @@
 # DESIGN — consistent whole-subgraph Qty erasure in the cadenza re-emit
 
-Owner: v-cadenza-backend. Status: DESIGN (slice 1) — operator DECISION seq-1044 ("don't decline or defer,
+Owner: v-cadenza-backend. Status: PARTIALLY LANDED — operator DECISION seq-1044 ("don't decline or defer,
 fix the compiler issue"). Scope: the `--target cadenza` re-emit of programs that STORE a quantity in a
 collection (Map/List/Set/record) and then READ it back and consume it in an ERASING context (`Qty.value`
 or a bare-numeric arith peel). Target cases: `spec/semantics/18-units-of-measure.sexp` 0261 + 0312.
+
+## 0. RESOLUTION (supersedes the §4 pre-pass hypothesis)
+
+The root cause turned out NOT to need a whole-subgraph pre-pass. Ground-truth tracing (see §2) showed the
+map ELEMENT genuinely IS a `Qty` (the map's Core type stays `Map _ (Qty …)` — correctly), and the fix is to
+consistently PEEL the Qty at the erasing CONSUMER — which the backend already does for `Core::Param`/
+`Core::LocalRef` binders and for a `Core::SumPayload` binder, via `(. Qty value)` re-insertion. The bug was a
+LOCAL inconsistency in the peel CONDITION:
+
+- **0261 (LANDED):** the `Core::SumPayload` Qty.value-peel keyed on `type_of(id)` (the binder's OWN solved
+  type, still `Qty`) instead of `eff_ty` (the VIEW-aware consumed type). When the arith operand-peel
+  (`emit_operand`) re-emits a Qty binder operand with `view = Some(inner)`, `eff_ty` is the bare inner but
+  `type_of(id)` is still `Qty`, so the peel was skipped → `q` emitted bare while the map element re-emits
+  `(Qty.of …)` → `(+ Qty Int)` CDZ0501 / arms-differ CDZ0203. Fix: key the `SumPayload` peel on `eff_ty`,
+  matching the `Param`/`LocalRef` binder-peels. One-line change; 0261 → PASS, ch18 cadenza 0 regressions.
+- **0312 (REMAINING):** the SAME peel gap but for an OPAQUE Qty producer — `d = (Option.expect (Map.lookup …))`,
+  a `Core::Call` result typed `Qty`, used as an operand of a bare-numeric arith. Unlike a binder, a Call
+  result has NO `(. Qty value)` re-insertion: `emit_operand`'s `emit_expr_viewed(n, view=Some(inner))` sets
+  `eff_ty = inner`, which SKIPS the `Ty::Qty` emit arm, so the Call arm emits the call typed `Qty` (ignoring
+  the view) → `(+ Qty Int)`. Fix (next slice): in `emit_operand`, for a Qty operand that is an opaque
+  producer (a `Core::Call`/member result — NOT a self-peeling const/arith/binder), emit it at its natural
+  `Qty` type and wrap `(. Qty value)` so it peels to the inner. (A const/arith/binder keeps the existing
+  `view = Some(inner)` peel — a const emitted at natural `Qty` DECLINES via `qty_disposition`, so the
+  Qty.value-wrap must be scoped to opaque producers only.)
+
+The §1–§6 material below is the original (now-superseded) analysis; read §0 for the actual resolution.
 
 ## 1. The symptom
 

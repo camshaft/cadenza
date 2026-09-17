@@ -2771,14 +2771,23 @@ fn emit_expr_viewed(
                     }
                 }
                 // TYPE-AWARE `Qty.value` PEEL (the Qty analogue of the newtype peel above): the payload binder
-                // holds a `Ty::Qty` but THIS read's solved type is the Qty's INNER magnitude — an erased
+                // holds a `Ty::Qty` but this read is CONSUMED as the Qty's INNER magnitude — an erased
                 // `Qty.value` peel of a match-arm binder (`((Some q) (Qty.value q))` from a collection read).
                 // Qty.value is representationally a no-op but TYPE-significant; the bare binder recompiles as
                 // `(Qty …)`, mis-typing the arm vs a sibling inner-typed arm → CDZ0203 arms-differ (v-inference-
                 // pinpointed). Re-insert `((. Qty value) <binder>)` so the read types as the inner.
+                //
+                // Key on `eff_ty` (the VIEW-aware consumed type), NOT `type_of(id)` (the binder's OWN solved
+                // type): a Qty binder used as an OPERAND of a bare-numeric arith under an erased-`Qty.value`
+                // peel keeps its OWN type `Ty::Qty`, but the arith operand-peel (`emit_operand`) re-emits it
+                // with `view = Some(inner)`, so `eff_ty` is the bare inner. The `Core::Param`/`Core::LocalRef`
+                // binder-peels already key on `eff_ty` for exactly this reason; keying on `type_of(id)` here
+                // MISSED the arith-operand case (`(+ q (Qty.of 5 m))` on a map-lookup binder), emitting `q`
+                // bare while the map element re-emits `(Qty.of …)` → `(+ Qty Int)` CDZ0501 / arms-differ
+                // CDZ0203 (18-units 0261/0312). Where there is no view, `eff_ty == type_of(id)` — unchanged.
                 if let Some(binder_ty) = env.payload_tys.get(&(scrutinee, path.to_vec())).cloned()
                     && matches!(&binder_ty, Ty::Qty { .. })
-                    && !matches!(crate::infer::type_of(db, id), Ty::Qty { .. })
+                    && !matches!(&eff_ty, Ty::Qty { .. })
                 {
                     let name = b.name(nm.clone());
                     let head = member_access(b, "Qty", "value");
