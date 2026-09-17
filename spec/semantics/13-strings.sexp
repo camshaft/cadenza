@@ -4717,7 +4717,7 @@
            does not implicitly promote to those). Pins the one-step fix for the Int64 mix, the base the
            two-step-fix cases are measured against. The program's outcome is the rejection.")
   (input (do (def (main) (+ #\a 1)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (fix (kind wrap))))
 
 (case
   "comparing a char to a FLOAT is rejected with a working two-step conversion fix"
@@ -4731,7 +4731,7 @@
            REPAIR that resolves the error in one shot for the float case (the integer sibling keeps the plain
            `Char.to-int` wrap). The program's outcome is the rejection; there is no value.")
   (input (do (def (main) (< #\a 1.0)) (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (fix (kind wrap))))
 
 (case
   "arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix"

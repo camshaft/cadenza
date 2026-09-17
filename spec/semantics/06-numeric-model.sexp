@@ -439,7 +439,7 @@
            grounding the operator's `(Int a)` scheme to a default and leaking a phantom 'Int64 and Bool'
            clash. Pins the non-numeric bitwise operand as a type mismatch, not a numeric-kind mismatch.")
   (input (& true false))
-  (error CDZ0203))
+  (error CDZ0203 (fix (kind replace))))
 
 (case
   "a shift of a non-numeric operand names the integer requirement"
