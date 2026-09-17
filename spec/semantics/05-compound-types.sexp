@@ -3407,6 +3407,55 @@
   (output (: 20 Int64))
   (live-objects 0))
 
+; The rest-recursion case above consumes the SPINE twice. These push the same discipline onto the
+; EXTRACTED HEAP PAYLOAD: `List.at`/`Map.lookup` pull one heap String out of the collection, and the
+; `(String.concat v v)` consumes that single extracted view TWICE — the second consume needs a dup
+; against the shared payload or the drop underflows (the exact multi-consumed-view double-free class
+; that the `String.at` extracted-char view carried and that its dup fix balanced; these siblings go
+; through the normal Owned collection path and must already be dup-clean). A missed dup rc-underflows
+; on the debug-counters runtime; the production runtime silently reads the freed cell. Cross-primitive
+; regression guards for the reclaim dup on extracted collection payloads.
+(case
+  "a heap element extracted by List.at is consumed twice against one payload"
+  (doc
+    "`(match (List.at xs i) ((Some v) (String.concat v v)) …)` — element 1 of the runtime list is
+           the rope \"bb\" (built by `(String.concat \"b\" …)` so it is off the constant path); the
+           extracted view `v` is consumed twice by the self-concat, whose byte-len is 4. A missing dup
+           on the extracted element frees it under the second consume (a double-free). The `List.at`
+           companion of the `String.at` multi-consumed-view fence. Expected: 4.")
+  (input
+    (do
+      (def
+        (g (: xs (List String)) (: i Int64))
+        (match (List.at xs i)
+          ((Some v) (String.byte-len (String.concat v v)))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g #list("aa" (String.concat "b" (if (> n 0) "b" "B")) "cc") 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case
+  "a heap value extracted by Map.lookup is consumed twice against one payload"
+  (doc
+    "The `Map.lookup` companion of the case above: the value at key \"k\" is the runtime rope
+           \"vv\", extracted by the `(Some v)` arm and consumed twice by `(String.concat v v)`
+           (byte-len 4). The extracted map value needs the same dup as the list element; a miss
+           double-frees under the second consume. Expected: 4.")
+  (input
+    (do
+      (def
+        (g (: m (Map String String)) (: k String))
+        (match (Map.lookup m k)
+          ((Some v) (String.byte-len (String.concat v v)))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (Map.insert (Map.empty) "k" (String.concat "v" (if (> n 0) "v" "V"))) "k"))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
 (case
   "a runtime list aliased into two record fields is read intact through both"
   (doc
