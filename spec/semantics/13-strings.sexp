@@ -2875,7 +2875,7 @@
       (export main)))
   (call main (: 3 Int64) (: 4 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-index string slice of the ASCII prefix before a multi-byte scalar"
@@ -2890,7 +2890,7 @@
       (export main)))
   (call main (: 0 Int64) (: 3 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-index string slice spanning ASCII and a multi-byte scalar"
@@ -2906,7 +2906,7 @@
       (export main)))
   (call main (: 1 Int64) (: 4 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-index string slice compares equal to the expected multi-byte scalar by content"
@@ -2922,7 +2922,7 @@
       (export main)))
   (call main (: 3 Int64) (: 4 Int64))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-index string slice isolates a supplementary-plane scalar (four UTF-8 bytes)"
@@ -2939,7 +2939,7 @@
       (export main)))
   (call main (: 1 Int64) (: 2 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- String.slice across the SEAM of a genuinely-runtime string ROPE ------------------------------
 ; The runtime-index cases above slice a FLAT literal ("hello", "café") — the string is a single leaf and
@@ -3035,7 +3035,7 @@
       (export main)))
   (call main (: true Bool) (: 1 Int64) (: 3 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- `String.at i` and `String.slice i (i+1)` are the SAME single-scalar addressing — they must agree ---
 ; `String.at` and `String.slice` are the two runtime scalar-addressing String ops (both byte-walk the UTF-8
@@ -6327,8 +6327,10 @@
            an owned base rope 5× (base a param, so the slice is a genuine runtime owned temporary, not a const
            fold) leaks 2·5 + 1 (the once-built base) = 11 cells, value-correct throughout: scalar-len of
            slice[1,3) of \"hixxx\" = \"ix\" = 2, summed 5× = 10 (a UAF would trap/corrupt; a wrong reclaim
-           would garble the count). Flips to 0 when the node-keyed payload-escape fix lands (drop the shell
-           after the last borrow when the payload does not flow out).")
+           would garble the count). RECLAIMS 0 (v-memory-safety): the SumExpect view/shell reclaim now
+           recognizes a `String.slice` producer (StrSlice admitted to `is_owned_single_view_producer`)
+           consumed by a view-scalar read (`String.scalar-len`) — it dups the view, drops the Some shell,
+           and view-drops after the borrow, so the shell + slice are reclaimed each iteration.")
   (input
     (do
       (def (sl (: s String)) (String.scalar-len (Option.expect (String.slice s 1 3) "e")))
@@ -6339,7 +6341,7 @@
       (export f)))
   (call f (: 0 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Reclaim (known-leak): String.from-bytes over a dead-after-borrowed compound Some shell (migrated from rcdzc) ──
 (case
