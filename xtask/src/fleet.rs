@@ -14137,10 +14137,25 @@ const BATCH_PREFILTER_TIMEOUT_SECS: u64 = 15 * 60;
 /// PIPED stdio and waits at most [`BATCH_PREFILTER_TIMEOUT_SECS`] via [`crate::wait_with_timeout`] (which
 /// kills + reaps the child on timeout, so no orphaned nix builder survives). Maps: exited-0 → Green,
 /// exited-nonzero → Red, TIMED-OUT or spawn-fail → NoChecks (the caller routes NoChecks to the per-MR
-/// FALLBACK — a bounded-out pre-filter degrades to single-MR dispatch, never a freeze, never a false
-/// green). Unlike [`run_gate_local`] (inherited stdio, streams live, UNBOUNDED — fine for the manual
-/// `gate-local` CLI + the `--local-gate` drain, wrong for an inline batch pre-filter), this captures the
-/// build output (discarded on the verdict; a hang has no verdict to log anyway).
+/// FALLBACK — a bounded-out pre-filter degrades to single-MR dispatch, never a freeze, never a false green).
+///
+/// Unlike [`run_gate_local`] — which DETACHES its build under `setsid --fork` and reads the verdict back
+/// from an RC-sentinel so it survives session churn AND the harness low-mem task-tree kill (#9081) — this
+/// pre-filter runs nix as a DIRECT CHILD with piped stdio and a bounded wait. That is DELIBERATE: a
+/// pre-filter's whole job is to enforce a hard deadline-KILL (`wait_with_timeout`), which a
+/// detached-then-reparented build can't be subjected to unless the launcher also tracks + killpg's its new
+/// session.
+///
+/// 🪤 KNOWN GAP (latent, accepted — not a bug to fix now): because it is NOT detached, this build is a
+/// descendant of the tracked `cargo xtask fleet …` task, so it dies to (a) session churn (SIGHUP/SIGPIPE)
+/// and (b) the harness low-mem task-tree kill (breaker #79845) that `run_gate_local` was hardened against.
+/// ACCEPTABLE FOR NOW because this path is DORMANT (pr-sync is stood down under the direct-to-main model),
+/// and even when active a killed pre-filter degrades GRACEFULLY (kill → `wait_with_timeout` None / spawn-err
+/// → NoChecks → per-MR dispatch) rather than wasting an authoritative verdict + forcing a manual `--admin`
+/// the way a killed `gate-local` would. IF pr-sync reactivates and pre-filter kills become painful: full-
+/// detach like `run_gate_local` (setsid --fork + RC-sentinel poll) BUT also preserve the deadline — the
+/// launcher must record the detached build's new-session pgid (the wrapper can stamp it into the log) and
+/// `kill(-pgid)` it on timeout, since a reparented build is no longer a waitable child. Deferred as dormant.
 fn run_gate_local_bounded(arch: &str, dir: &Path) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
