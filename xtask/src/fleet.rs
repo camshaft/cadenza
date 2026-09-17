@@ -24972,6 +24972,78 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
+    fn poll_gate_local_rc_returns_on_a_ready_log_and_fails_safe_on_timeout() {
+        // A log that ALREADY carries the sentinel → the verdict returns immediately (no waiting).
+        let ready = std::env::temp_dir().join(format!("ft-poll-ready-{}.log", std::process::id()));
+        std::fs::write(&ready, "built\n\nGATE-EXIT-RC=0\n").unwrap();
+        assert_eq!(poll_gate_local_rc(&ready, 5), Some(true));
+        std::fs::write(&ready, "error: check failed\n\nGATE-EXIT-RC=1\n").unwrap();
+        assert_eq!(poll_gate_local_rc(&ready, 5), Some(false));
+        let _ = std::fs::remove_file(&ready);
+        // THE fail-safe pin: a log with NO sentinel (build still running, hung, or killed before it could
+        // stamp) + a zero budget → the deadline is already reached on the first miss → None WITHOUT sleeping,
+        // so the caller maps to NoChecks and NEVER infers a land-advancing GREEN from silence. max_secs=0
+        // keeps it deterministic + instant (the > deadline check fires on the first loop iteration).
+        let pending =
+            std::env::temp_dir().join(format!("ft-poll-pending-{}.log", std::process::id()));
+        std::fs::write(&pending, "building '/nix/store/...'\nstill going\n").unwrap();
+        assert_eq!(poll_gate_local_rc(&pending, 0), None);
+        // An ABSENT log (the detached build never even created it — e.g. an sh-exec failure) with a zero
+        // budget → also None (fail-safe), and no panic on the missing-file read.
+        let _ = std::fs::remove_file(&pending);
+        assert_eq!(poll_gate_local_rc(&pending, 0), None);
+    }
+
+    #[test]
+    fn gate_local_wrapper_sentinel_round_trips_through_read_gate_local_rc() {
+        // END-TO-END COUPLING PIN: the wrapper's emitted RC-sentinel MUST be exactly what read_gate_local_rc
+        // parses — they are joined only by convention (a printf format ↔ a line parser). A future edit to
+        // EITHER that breaks their agreement would silently make the AUTHORITATIVE gate unreadable → every
+        // gate-local polls the full timeout → NoChecks-on-every-gate (a fleet-wide land freeze). This runs the
+        // REAL wrapper under sh and reads it back with the REAL reader, so a divergence fails the build.
+        let run = |idx: usize, inner: &str| -> Option<i32> {
+            let log = std::env::temp_dir().join(format!(
+                "ft-gatewrap-e2e-{}-{}.log",
+                std::process::id(),
+                idx
+            ));
+            let _ = std::fs::remove_file(&log);
+            // Positional args mirror run_gate_local: $0=sh, $1=lease (empty → re-key/trap no-op), $2=log,
+            // $3..=the "build" command. Here the "build" is `sh -c <inner>` so we control its exit code.
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(GATE_LOCAL_DETACHED_WRAPPER)
+                .arg("sh")
+                .arg("")
+                .arg(&log)
+                .arg("sh")
+                .arg("-c")
+                .arg(inner)
+                .status();
+            if status.is_err() {
+                return None; // sh unavailable → skip (guarded below)
+            }
+            let out = read_gate_local_rc(&std::fs::read_to_string(&log).unwrap_or_default());
+            let _ = std::fs::remove_file(&log);
+            out
+        };
+        // Skip cleanly if sh is unavailable in the test env.
+        if Command::new("sh").arg("-c").arg("exit 0").status().is_err() {
+            return;
+        }
+        assert_eq!(run(0, "exit 0"), Some(0), "green exit round-trips");
+        assert_eq!(run(1, "exit 3"), Some(3), "red exit round-trips");
+        // THE fusion-hazard pin: output with NO trailing newline before the sentinel — the wrapper's leading
+        // `\n` in the printf must still land `GATE-EXIT-RC=` on its OWN line so the reader's line-start match
+        // sees it (without the `\n` it would fuse onto `no-newline-here` and be unreadable → false timeout).
+        assert_eq!(
+            run(2, "printf no-newline-here; exit 5"),
+            Some(5),
+            "sentinel survives no-trailing-newline build output (leading-newline in the printf)"
+        );
+    }
+
+    #[test]
     fn trunk_fmt_verdict_only_alarms_on_a_confirmed_red_never_on_a_tooling_failure() {
         use TrunkFmtVerdict::*;
         // `cargo fmt --all --check` exited 0 → base is formatted → Clean (proceed with the drain).
