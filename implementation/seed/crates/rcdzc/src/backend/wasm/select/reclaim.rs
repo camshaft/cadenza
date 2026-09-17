@@ -3237,7 +3237,8 @@ fn mark_binder_dups_body(
                     s: &mut HashSet<StructId>,
                     spare_last: bool,
                     strict_consume_op: bool,
-                    deferred_consume_group: bool|
+                    deferred_consume_group: bool,
+                    scalar_group: bool|
      -> bool {
         // Pre-pass: does `binder` occur in each child? Use the CHEAP occurrence scan (`binder_occurs`), NOT
         // `mark_binder_dups` — the latter's full two-pass walk, invoked from every nested `seq`'s pre-pass,
@@ -3284,7 +3285,10 @@ fn mark_binder_dups_body(
         // spared (growB stays fixed). 14b: the growing List is read at MULTIPLE getat/List.len/List.update
         // sites in-path (or live-after) → NOT spared → the dup is kept → 707. Same la-fold hazard fix-2 hit
         // globally; scoped here to the strict-consume seq + the path condition.
-        let holds_no_handle: Vec<bool> = if strict_consume_op || deferred_consume_group {
+        let holds_no_handle: Vec<bool> = if strict_consume_op
+            || deferred_consume_group
+            || scalar_group
+        {
             // A BARE direct `binder` ref is the ONLY other-use permitted alongside a spare (it is the
             // deferred-consume op's own consume operand, already accounted by Perceus's k-1). Precomputed
             // once (own db borrow) so the per-child gate need not re-walk.
@@ -3317,19 +3321,44 @@ fn mark_binder_dups_body(
                     //       CALL only (deferred consume); a strict-consume op's in-place FBIP would still hazard,
                     //       so (c) is gated to `deferred_consume_group`, and the `!la_in` + bare-ref-siblings
                     //       path gate blocks it whenever `binder` has any other non-bare live use.
-                    occurs[k]
-                        && ((strict_consume_op
-                            && ((!is_heap_type_for_retain(&type_of(db, c))
-                                && !binding_escapes(db, c, binder, false))
-                                || callee_reclaims_threaded_binder_arg(db, c, binder)))
-                            || (deferred_consume_group
-                                && matches!(
-                                    core_of(db, c),
-                                    Core::BigIntBinOp { .. } | Core::RationalBinOp { .. }
-                                )
-                                && !binding_escapes(db, c, binder, false)))
-                        && !la_in
-                        && (0..children.len()).all(|j| j == k || !occurs[j] || bare_ref[j])
+                    // (d) SCALAR-COMBINING GROUP (`scalar_group` — Arith/Compare/FloatCompare/And,
+                    //     v-memory-safety): these evaluate each operand to a NON-HEAP SCALAR result left-to-
+                    //     right, combine, and do NO in-place FBIP mutation of any operand. A co-operand that
+                    //     BORROWS `binder` via a holds-no-handle scalar read (`(String.byte-len s)` /
+                    //     `List.len` / `String.scalar-len` — `!is_heap_type_for_retain(result) &&
+                    //     !binding_escapes`) reads the LIVE binder and RELEASES it before a sibling operand's
+                    //     consume runs (the sibling result, e.g. a recursive call whose body threads `s` into
+                    //     `String.concat`, evaluates AFTER the borrow's scalar is already on the stack). So it
+                    //     must NOT force the consuming sibling's retain-dup. UNLIKE (a)/(c) it needs NO bare-
+                    //     ref-sibling gate: that gate guards a STRICT-CONSUME op's in-place FBIP mutation
+                    //     corrupting a co-operand read (#8466/14b) — a scalar arith performs no such mutation,
+                    //     so `!la_in` alone is sound (the group's result subsumes the binder's last use; if
+                    //     `binder` were live AFTER the arith, sparing would drop a needed retain → double-free
+                    //     on the post-arith use, which `!la_in` forbids). The leak this fixes: a genuinely-
+                    //     recursive fold `f n s = if n=0 then byte-len s else (byte-len s) + f (n-1) (concat s
+                    //     "x")` — `s` used as a scalar-borrow (byte-len) AND consumed (concat into the child
+                    //     call) across the `+` operands: the spurious retain-dup (never released) leaked one
+                    //     rope handle per frame (the growing-heap-recursive-fold-state class; also the
+                    //     effect-handler string-rope state-exit leak, whose synthesized fold fn is this shape).
+                    let scalar_borrow_spared = scalar_group
+                        && occurs[k]
+                        && !is_heap_type_for_retain(&type_of(db, c))
+                        && !binding_escapes(db, c, binder, false)
+                        && !la_in;
+                    scalar_borrow_spared
+                        || (occurs[k]
+                            && ((strict_consume_op
+                                && ((!is_heap_type_for_retain(&type_of(db, c))
+                                    && !binding_escapes(db, c, binder, false))
+                                    || callee_reclaims_threaded_binder_arg(db, c, binder)))
+                                || (deferred_consume_group
+                                    && matches!(
+                                        core_of(db, c),
+                                        Core::BigIntBinOp { .. } | Core::RationalBinOp { .. }
+                                    )
+                                    && !binding_escapes(db, c, binder, false)))
+                            && !la_in
+                            && (0..children.len()).all(|j| j == k || !occurs[j] || bare_ref[j]))
                 })
                 .collect()
         } else {
@@ -3337,8 +3366,9 @@ fn mark_binder_dups_body(
         };
         // `(strict_consume_op || deferred_consume_group) && holds_no_handle[k]` — the `&&` short-circuits so
         // the empty vec is never indexed when neither flag is set.
-        let no_handle =
-            |k: usize| (strict_consume_op || deferred_consume_group) && holds_no_handle[k];
+        let no_handle = |k: usize| {
+            (strict_consume_op || deferred_consume_group || scalar_group) && holds_no_handle[k]
+        };
         let any = occurs.iter().any(|&o| o);
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
         // additionally seed each child's `la` with "binder occurs in some OTHER child" (the left-sibling
@@ -3348,10 +3378,18 @@ fn mark_binder_dups_body(
         for i in (0..children.len()).rev() {
             let (c, is_borrow) = children[i];
             let other = any
-                && occurs
-                    .iter()
-                    .enumerate()
-                    .any(|(k, &o)| (if spare_last { k > i } else { k != i }) && o && !no_handle(k));
+                && occurs.iter().enumerate().any(|(k, &o)| {
+                    (if spare_last { k > i } else { k != i })
+                        && o
+                        // A holds-no-handle co-operand is excluded from forcing child `i`'s retain. For
+                        // `scalar_group` (sequential scalar-result eval) the spare is DIRECTIONAL: a scalar
+                        // BORROW at `k` only spares a consume at `i > k` (the borrow reads BEFORE the consume
+                        // frees `s`). A LATER borrow (`k > i`) reads `s` AFTER this consume — so the consume
+                        // MUST retain (else `(+ (concat s) (byte-len s))` reads freed memory → UAF, uaf2).
+                        // strict/deferred groups eval all operands before a single deferred consume, so their
+                        // spare stays non-directional (bare-ref-gated instead).
+                        && !(no_handle(k) && (!scalar_group || k < i))
+                });
             let here = mark_binder_dups(db, c, binder, !is_borrow, la || other, s);
             la = la || (here && !no_handle(i));
         }
@@ -3364,7 +3402,7 @@ fn mark_binder_dups_body(
                children: &[(StructId, bool)],
                la_in: bool,
                s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false, false, false) };
+     -> bool { seq_impl(db, children, la_in, s, false, false, false, false) };
     // Wrapper for a STRICT DEFERRED-CONSUME op (ListPush/ListPrepend/ListUpdate/MapInsert/SetInsert): all
     // operands evaluate before the op consumes a bare heap operand, so a borrow-only SCALAR co-operand's read
     // of the binder completes before the deferred consume and must not force a retain-dup (the CATALAN
@@ -3374,7 +3412,7 @@ fn mark_binder_dups_body(
                       children: &[(StructId, bool)],
                       la_in: bool,
                       s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false, true, false) };
+     -> bool { seq_impl(db, children, la_in, s, false, true, false, false) };
     // Wrapper for a CALL / CALL-CLOSURE arg group (`deferred_consume_group = true`): every arg is CONSUMED at
     // the call instruction, AFTER all args evaluate, so a co-arg that only BORROWS the binder via a fresh-
     // non-aliasing arith op reads it live before the consume and must not force the moved-arg's retain-dup
@@ -3384,7 +3422,18 @@ fn mark_binder_dups_body(
                      children: &[(StructId, bool)],
                      la_in: bool,
                      s: &mut HashSet<StructId>|
-     -> bool { seq_impl(db, children, la_in, s, false, false, true) };
+     -> bool { seq_impl(db, children, la_in, s, false, false, true, false) };
+    // Wrapper for a SCALAR-COMBINING group (Arith/Compare/FloatCompare/And — `scalar_group = true`): each
+    // operand evaluates to a NON-HEAP SCALAR result left-to-right, the op combines them, and NO operand is
+    // FBIP-mutated in place. A holds-no-handle scalar-borrow co-operand (`(String.byte-len s)` / `List.len`)
+    // reads the LIVE binder and releases it before a sibling's consume runs, so it must not force the
+    // sibling's retain-dup — the growing-heap-recursive-fold-state over-dup fix (holds-no-handle disjunct
+    // (d)). `!la_in`-gated only; no in-place mutation ⟹ no bare-ref-sibling hazard gate needed.
+    let seq_scalar = |db: &mut Db,
+                      children: &[(StructId, bool)],
+                      la_in: bool,
+                      s: &mut HashSet<StructId>|
+     -> bool { seq_impl(db, children, la_in, s, false, false, false, true) };
     // A BRANCH group: a leading sequential prefix (cond/scrutinee, evaluated before the arms) then N arms,
     // each an independent path with the SAME incoming `live_after`. The prefix's `live_after` includes any
     // arm's use (an arm runs after the prefix). Returns whether `binder` occurred anywhere.
@@ -3623,6 +3672,7 @@ fn mark_binder_dups_body(
             true,
             false,
             false,
+            false,
         ),
         Core::BytesSlice {
             bytes, start, len, ..
@@ -3738,6 +3788,7 @@ fn mark_binder_dups_body(
                 true,
                 false,
                 false,
+                false,
             )
         }
         // Arithmetic / logical: both operands consumed positions (scalars anyway; a heap binding can only
@@ -3745,7 +3796,9 @@ fn mark_binder_dups_body(
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
-        | Core::And { lhs, rhs, .. } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
+        | Core::And { lhs, rhs, .. } => {
+            seq_scalar(db, &[(lhs, false), (rhs, false)], live_after, sites)
+        }
         // `StrCmp` BORROWS both operands (heap String/Symbol handles; drops only an OWNED temporary — the
         // `ValueEq` contract, NOT the scalar-compare group whose operands are always scalars). A let-bound
         // String reaching a StrCmp operand as a direct `LocalRef` is BORROWED, so mark it `true` like
