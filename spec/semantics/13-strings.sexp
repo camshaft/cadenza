@@ -78,7 +78,12 @@
            reclaim-on-edge. Peeling the NFC shell there was verified to take this exact shape 3→0;
            this case is the corpus BENEFICIARY that re-landing that peel flips to
            (live-objects 0). The escaping rep case above legitimately KEEPS its rope (it returns it) —
-           this one must not.")
+           this one must not.
+           UPDATE (v-memory-safety): now reclaims to (live-objects 0). `arg_reclaims_binder_as_base` now
+           peels the `NfcNormalize` shell over the `BytesConcat` that `String.concat` lowers to, so the
+           varying String accumulator IS recognized as reclaim-on-edge (like the bare BytesConcat/ListConcat
+           arm). rc-trace: the three concat-spine ropes each ALLOC then DROP [freed] — balanced, no
+           double-free.")
   (input
     (do
       (def
@@ -88,7 +93,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a String param threaded UNCHANGED to a self-call AND consumed by String.concat each step is retained"

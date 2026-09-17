@@ -331,6 +331,17 @@ pub(super) fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: St
             (is_ref_to(db, lhs, binder) && !occurs_in(db, rhs, binder))
                 || (is_ref_to(db, rhs, binder) && !occurs_in(db, lhs, binder))
         }
+        // `String.concat s x` lowers to `NfcNormalize { string: BytesConcat { lhs, rhs } }` (a runtime
+        // String join = byte-concat of the two UTF-8 leaves, then an NFC re-normalize; compute.rs). The NFC
+        // wrapper is a per-step OWNED re-box that CONSUMES its byte-concat input, so if the inner concat
+        // reclaims `binder` as its base collection, the whole `String.concat` step reclaims it on the edge
+        // too — same reclaim-on-edge shape as the bare BytesConcat/ListConcat arm above, just under the NFC
+        // shell that this analysis otherwise fails to see through. Peel it. Beneficiary: the discarded
+        // String-accumulator self-loop (13-strings "a String accumulator self-loop whose state is
+        // DISCARDED"), whose varying String param was never recognized as reclaim-on-edge → its concat
+        // spine leaked. (Verified INERT for the effect-handler string-rope state leak — that is a distinct
+        // synthesized recursive-fold-fn owned-param-drop gap, not this loop-epilogue path.)
+        Core::NfcNormalize { string } => arg_reclaims_binder_as_base(db, string, binder),
         _ => false,
     }
 }
