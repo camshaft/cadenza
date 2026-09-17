@@ -25984,14 +25984,14 @@
   (input (do (def (main) (match (Some 5) ((Some x) 0) ((None) 1))) (export main)))
   (output (: 0 Int64))
   (count 1)
-  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x"))))
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x") (verified))))
 
 (case
   "an unused tuple-pattern match binder warns exactly once (only the dead binder, `b`)"
   (input (do (def (main) (match #tuple(3 4) (#tuple(a b) a))) (export main)))
   (output (: 3 Int64))
   (count 1)
-  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_b"))))
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_b") (verified))))
 
 (case
   "a well-formed tuple pattern with BOTH binders unused warns each — exactly two CDZ0306"
@@ -26018,7 +26018,7 @@
       (export main)))
   (output (: 5 Int64))
   (count 1)
-  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x"))))
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x") (verified))))
 
 (case
   "a USED variant-payload match binder is clean — no unused-match-binding warning"
