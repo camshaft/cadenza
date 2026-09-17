@@ -245,21 +245,20 @@
   (live-objects known-leak))
 
 (case
-  "a `?` short-circuit reclaims an UNRELATED heap binding live in the enclosing scope on the abortive path"
+  "a `?`-boundary Option RETURNED to the host carries the value-escape-encode husk (the try-abort reclaim itself is clean)"
   (doc
-    "The reclaim face of the abortive path: a heap rope `s` is bound in the boundary function BEFORE a
-           runtime-disc `?`; when the `?` sees `None` it short-circuits the boundary, so `s` — live in scope
-           but only USED on the success path (`byte-len s`) — must be reclaimed on the way out. v>0 overflows
-           the checked-add → `None` short-circuit with `s` (\"liveX\") live and discarded; v=-100 is in range
-           → `Some (max-100 + byte-len(\"liveY\"))` = `(Some (max-95))`. Value holds both paths, both backends,
-           O0..O2, and there is NO double-free (the debug-counters runtime does not underflow on the
-           short-circuit). But the census reads 1 LIVE OBJECT on the short-circuit path (call 0): the live
-           heap binding `s` is NOT reclaimed when the `?` breaks out — the abortive lowering (Core::Block +
-           Core::Break) skips the enclosing-scope drops on the way out. A no-heap-binding control (a pure
-           runtime-disc `?` short-circuit) reclaims to 0, so this is a heap-binding-on-abort reclaim gap,
-           DISTINCT from the fresh-scrutinee gap the runtime-disc cases above track. Filed to v-memory-safety.
-           `(live-objects known-leak)` tracks the husk; ideal is 0, flip when the abort-path drop lands.
-           (Adversarial pin from a breaker probe.)")
+    "A fallible boundary whose Option result ESCAPES to the host: `main` binds a rope `s`, runs a
+           runtime-disc `?`, and RETURNS the `Some`/`None` to the host. v>0 overflows the checked-add →
+           `None` short-circuit; v=-100 is in range → `(Some (max-100 + byte-len s))`. Value holds both
+           paths, both backends, O0..O2, no double-free. The census reads 1 LIVE OBJECT — but that husk is
+           the value-ESCAPE-ENCODE residual of returning an Option to the host (the make / t-encode /
+           resource-new escape-emit path), NOT the enclosing binding `s` and NOT a `?`-abort gap: (1) the
+           IN-BODY companion below (boundary in a helper, result CONSUMED by main's match, scalar returned,
+           no host escape) reclaims to live-objects 0 — the try-abort `MatchSum` reclaim is clean; and (2)
+           `s` here const-folds to an immortal constant (both `if` arms are literals), so it never allocates.
+           The husk routes to the escape-emit lane (v-cdz escv co-design), the same residual any host-returned
+           heap-carrying Option shows. `(live-objects known-leak)` tracks it; flip when the escape-emit
+           reclaim lands. (Breaker probe, re-attributed after v-memory-safety triage.)")
   (input
     (do
       (def
@@ -273,6 +272,34 @@
   (call main (: -100 Int64))
   (output (: (Some 9223372036854775712) (Option Int64)))
   (live-objects known-leak))
+
+(case
+  "a `?` short-circuit with a live runtime-rope binding, boundary CONSUMED in-body (no host escape), reclaims to 0"
+  (doc
+    "The isolating companion that pins the `?`-abort reclaim is CLEAN: `s` is a GENUINE non-immortal
+           runtime rope (`rep \"live\" v` builds a v-deep concat rope, off the constant path), and the fallible
+           boundary lives in an inner `helper` whose Option result is CONSUMED by `main`'s `match` — `main`
+           returns a scalar, so nothing heap escapes to the host and the escape-encode husk of the case above
+           is absent. At v=3 the checked-add overflows → the `?` short-circuits `helper` with `s` live in scope,
+           and `s` IS reclaimed on the abortive path: live-objects 0. At v=-100 the add is in range → `helper`
+           returns `(Some (max-100 + byte-len (rep \"live\" -100)))` = `Some (max-96)`, `main` unwraps to the
+           scalar. Together with the host-escape case above this localizes the sole residual to the escape-emit
+           lane, not the try-abort lowering. (Adversarial pin from a breaker probe.)")
+  (input
+    (do
+      (def (rep (: s String) (: k Int64)) (if (< k 1) s (rep (String.concat s "x") (- k 1))))
+      (def
+        (helper (: v Int64))
+        (let ((s (rep "live" v)))
+          (let ((x (try (Int64.checked-add Int64.max v))))
+            (Some (+ x (String.byte-len s))))))
+      (def (main (: v Int64)) (match (helper v) ((Some r) r) ((None _u) -1)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: -1 Int64))
+  (call main (: -100 Int64))
+  (output (: 9223372036854775711 Int64))
+  (live-objects 0))
 
 ; ── T1a gate pins: invariants the constant-fold desugar must hold (all PASS today) ───────────────────
 ; These pin now-passing behaviors so a future change to the `?` desugar (or the BRICK sequence) cannot
