@@ -124,6 +124,38 @@
   (live-objects 0))
 
 (case
+  "two NESTED handles each threading a growing string-rope state both reclaim at their exits"
+  (doc
+    "The nested face of the rope-state reclaim above (the per-path conditional owned-param drop
+           on the synthesized fold fn): an OUTER handle threads one growing rope while an INNER same-effect
+           handle threads a SECOND, and performs interleave outer→inner→inner→outer — so two discarded
+           final states from two fold fns must each drop at their own handle exit, with the outer rope
+           surviving ACROSS the inner handle's lifetime and growing afterwards. outer reads 7 (\"outer-a\"),
+           inner reads 4 then 5 (\"in-c\", \"in-cq\"), outer reads 8 (\"outer-ap\") → 7+(4+5)+8 = 24;
+           both discarded ropes reclaim. (Adversarial pin from a breaker probe on the per-path-drop
+           landing; wasm=rust cross-checked.)")
+  (input
+    (do
+      (effect Log (op log (-> String Int64)))
+      (def
+        (main (: k Int64))
+        (handle
+          Log
+          (String.concat "outer" (if (> k 0) "-a" "-b"))
+          ((log (m) s (resume (String.byte-len s) (String.concat s m))))
+          (+ (Log.log "p")
+            (+ (handle
+                 Log
+                 (String.concat "in" (if (> k 0) "-c" "-d"))
+                 ((log (m) s (resume (String.byte-len s) (String.concat s m))))
+                 (+ (Log.log "q") (Log.log "r")))
+              (Log.log "t")))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 24 Int64))
+  (live-objects 0))
+
+(case
   "an arm chooses its resume value by an if on the handler state"
   (doc
     "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
