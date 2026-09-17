@@ -1,9 +1,11 @@
 # DESIGN — consistent whole-subgraph Qty erasure in the cadenza re-emit
 
-Owner: v-cadenza-backend. Status: PARTIALLY LANDED — operator DECISION seq-1044 ("don't decline or defer,
-fix the compiler issue"). Scope: the `--target cadenza` re-emit of programs that STORE a quantity in a
-collection (Map/List/Set/record) and then READ it back and consume it in an ERASING context (`Qty.value`
-or a bare-numeric arith peel). Target cases: `spec/semantics/18-units-of-measure.sexp` 0261 + 0312.
+Owner: v-cadenza-backend. Status: LANDED (0261 + 0312 both PASS) — operator DECISION seq-1044 ("don't
+decline or defer, fix the compiler issue"). Scope: the `--target cadenza` re-emit of programs that STORE a
+quantity in a collection (Map/List/Set/record) and then READ it back and consume it in an ERASING context
+(`Qty.value` or a bare-numeric arith peel). Target cases: `spec/semantics/18-units-of-measure.sexp`
+0261 + 0312 — both fixed; the whole ch18 cadenza gate is now 0-fail (322 pass, and ~14 previously-DECLINING
+cases flipped to PASS as a bonus of the erasure).
 
 ## 0. RESOLUTION (supersedes the §4 pre-pass hypothesis)
 
@@ -26,13 +28,31 @@ LOCAL inconsistency in the peel CONDITION:
   ELEMENT re-emits `(Qty.of …)` (Qty), so the recompiled `(Option.expect (Map.lookup <Qty-map> …))` returns
   `Qty` → `(+ Qty Int)` CDZ0501, and the `Map.insert` re-enter double-wraps `(Qty (Qty …) …)` CDZ0201.
   Because the CONSUMER (the Call) carries no binder AND is Core-typed bare, a consumer-side `(. Qty value)`
-  re-insertion (option a, which fixed 0261) cannot reach it. The fix is **OPTION (b): erase the map ELEMENT
-  (emit bare) when the collection does not ESCAPE the def as a Qty-typed value** — then the map re-emits
-  `Map _ Int64`, the lookup/`Option.expect` return bare, and everything is consistent. This needs a forward
-  escape check (does this collection value, or a Qty-projection of it, reach the def RESULT as a Qty-typed
-  value?); in 0312 the def returns `Int64`, so the map is internal → erase. A map that genuinely escapes as
-  `Map K (Qty V u)` stays Qty (elements wrapped). Bounded (a per-collection forward reachability to the def
-  result), but touches the collection-element `expected` threading, so it needs the broad ch18 + Qty sweep.
+  re-insertion (option a, which fixed 0261) cannot reach it. The fix landed as a WHOLE-DEF erasure (below),
+  which SUBSUMES 0261 too.
+
+### 0.1 LANDED — whole-def Qty erasure (`BinderEnv::erase_qty`)
+
+A quantity IS its bare magnitude at run time (units are checked-then-erased, byte-identical to the scalar),
+so when NO quantity crosses a TYPE BOUNDARY that fixes it as `Ty::Qty` in the re-emitted program, the entire
+def can re-emit as pure bare arithmetic — value-identical AND internally type-consistent (a collection
+element re-emits bare, matching every read whose Core type is already the erased inner). Implementation:
+
+- **`erase_qty` flag** on `BinderEnv`, set in `emit_def` when THREE conditions all hold (else today's
+  wrap/peel path — no erasure): (a) the def RESULT type is Qty-free (`!ty_has_qty`), (b) NO parameter type
+  contains a Qty, (c) the body makes NO `Core::Call`/`CallClosure` (`body_has_call`) — so no quantity flows
+  into a callee whose signature is a concrete Qty. The prelude collection ops (`Map.lookup`/`insert`/…,
+  `Option.*`) are DEDICATED Core nodes, NOT `Core::Call`, so an internal-quantity def that only uses them
+  (0261/0312) satisfies (c) and erases; a def with a Qty param (0220) fails (b); a def calling a Qty-param
+  USER function (0095 `max-q`, 0270/0271 `fill`/`grow`) fails (c).
+- **Emit under `erase_qty`:** the `Ty::Qty` value arm returns the bare inner (re-emit viewed at `inner`),
+  never `(Qty.of …)`; the `Core::Param`/`LocalRef`/`SumPayload` binder-peels emit the bare NAME (their
+  `(. Qty value)` re-insertion is gated off, since the binder's source is bare).
+
+Result: ch18 cadenza 322 pass / 0 fail (0261 + 0312 flip to pass, ~14 previously-declining cases flip to
+pass, 0 regressions). Cadenza-backend-only; full rcdzc suite green. The 0261-only `SumPayload eff_ty` fix
+(§0 above, PR#9083) stays — it independently guards the escaping-Qty-map-with-bare-binder-read case that
+`erase_qty` (which only fires on a Qty-FREE result) does not cover.
 
 The §1–§6 material below is the original (now-superseded) analysis; read §0 for the actual resolution.
 
