@@ -241,6 +241,31 @@
   (live-objects known-leak))
 
 (case
+  "a String.at extracted view consumed THREE times mints two dups against one payload (N-consume, no double-free)"
+  (doc
+    "The N>2 face of the twice-consumed / let-aliased fence above, guarding the SHARED StrAt
+           multi-consume predicate (rcdzc `strat_view_multi_consume`, exposed for v-mem/v-core-opt lockstep,
+           8269a837ea): `(String.concat c (String.concat c c))` consumes the extracted char view `c` THREE
+           times against ONE payload, so the predicate must mint TWO dups (N-1), not one — an off-by-one in
+           the shared predicate's dup count would leave the third consume underflowing (a double-free the
+           debug-counters runtime asserts). Char at index 1 of \"hey\" is \"y\"; \"y\"+\"y\"+\"y\" is 3 bytes.
+           Same view-family residue as the twice-consumed sibling → `(live-objects known-leak)`. Value +
+           balance hold both backends, O0..O2, no underflow. (Adversarial pin from a breaker probe over the
+           shared-predicate refactor.)")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (String.byte-len (String.concat c (String.concat c c))))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak))
+
+(case
   "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
   (doc
     "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
