@@ -4181,6 +4181,16 @@ fn build_arm_pat_inner(
             }
             return Ok(b.list(list_pat));
         }
+        // A `Probe::Str` at a `Ty::Symbol` slot. A Symbol shares the constant-STRING rep, so its LitTest
+        // carries the bare text as a `Probe::Str` and the pre-built `lit` atom (built probe-only, with no
+        // slot type in scope — see the `SumCont::LitTest` arm) is a bare `Leaf::Str`. Emitting that STRING
+        // literal pattern mismatches the Symbol sub-value it is matched against → HOP2 CDZ0201 ("a String
+        // literal pattern does not match the Symbol sub-value"). The slot type IS known HERE, so re-emit the
+        // symbol literal `#"…"` (`Leaf::Sym`), which re-lowers to the same Symbol `LitTest` (idempotent) and
+        // mirrors the value-side `(Symbol.of "…")` construction reconstruction.
+        if let (crate::core::Probe::Str(s), Ty::Symbol) = (probe, ty) {
+            return Ok(b.atom_leaf(Leaf::Sym(s.as_str().into())));
+        }
         return Ok(*lit);
     }
     if let Some(choice) = choices.get(path) {
