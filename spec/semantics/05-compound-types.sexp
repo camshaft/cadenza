@@ -2160,6 +2160,57 @@
   (live-objects 0))
 
 (case
+  "a runtime-heap Some payload CONSUMED by String.to-bytes leaves the extraction shell + payload live"
+  (doc
+    "The runtime-heap face of the StrToBytes extraction-shell reclaim (rcdzc 289e75fbba allowlisted
+           `Core::StrToBytes` as a single-owned-ref-move consumer so the extraction-`Some` shell is
+           deep-dropped when its payload is consumed there). That fix reclaims the IMMORTAL-payload case
+           (17-symbols:583, an interned `#\"a\"` symbol value → 0), but the balance argument (\"one
+           dup-on-escape balances the shell deep-drop 1:1\") does NOT hold for a RUNTIME-HEAP payload: a
+           genuinely-heap String rope (`rep \"a\" n`) extracted from a runtime `Some` and fed to
+           `String.to-bytes` (→ `Core::StrToBytes`, op_bytes_compact) leaves a CONSTANT 2 live objects (the
+           `Some` shell + the payload String), independent of rope size (n) and opt level (O0..O3), while
+           BORROWING the same payload (the sibling below) reclaims to 0. Value is correct (\"a\"+n·\"x\" =
+           n+1 bytes; n=3 → 4) and there is NO double-free (debug-counters runtime does not trap) — a pure
+           over-retain, not a UAF. IDEAL is 0 (the borrow sibling proves the scaffold is fully reclaimable);
+           the `(live-objects 2)` pin locks the current runtime-heap residue as a drift guard until the
+           StrToBytes extraction-shell reclaim balances a heap payload (flip to 0 then).")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def (mk (: n Int64)) (if (< n 0) (None unit) (Some (rep "a" n))))
+      (def
+        (main (: n Int64))
+        (match (mk n)
+          ((Some s) (Bytes.len (String.to-bytes s)))
+          ((None _u) 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64))
+  (live-objects 2))
+
+(case
+  "the borrow sibling: a runtime-heap Some payload only BORROWED reclaims to zero"
+  (doc
+    "The clean control for the StrToBytes-consume leak above: the identical runtime-`Some` scaffold, but
+           the extracted heap String is only BORROWED (`String.byte-len`, no consume) — the shell and
+           payload both reclaim to 0. This isolates the 2-object residue to the `String.to-bytes` consume of
+           the extraction payload (289e75fbba's allowlist path), NOT the `mk`/`rep`/`Some` scaffold.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def (mk (: n Int64)) (if (< n 0) (None unit) (Some (rep "a" n))))
+      (def
+        (main (: n Int64))
+        (match (mk n)
+          ((Some s) (String.byte-len s))
+          ((None _u) 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case
   "two fallible reads of one collection parameter share its resident handle slot"
   (doc
     "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its
