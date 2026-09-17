@@ -3164,6 +3164,34 @@ pub(super) fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: Stru
     }
 }
 
+/// Whether the `Core::Proj` chain `id` (validated by [`proj_chain_roots_at_binder`] to root at `binder`)
+/// bottoms out at a `Core::Param` occurrence (a function PARAMETER) rather than a `Core::LocalRef` (a
+/// `let`-binding). The STRUCTURAL, dup_sites-free discriminator for the site-b parent-dup subtract in
+/// [`mark_binder_dups_body`]'s `Core::Proj` arm (the `parent_consuming` gate).
+///
+/// WHY it is the exact discriminator (v-cdz-wasm-codegen ⨯ v-core-opt co-design, site-b re-land): that gate
+/// sees ONLY record/tuple FIELD-projection binders (the `SumPayload`/`SumExpect` arms recurse
+/// `consuming=false` and never emit a gated parent dup). A record/tuple PARAM projected field-wise is
+/// reclaimed OUTSIDE this body — a borrowed param by its caller, or a wrapper-owned cell by the wrapper's
+/// deep-drop ([`record_cell_param_droppable`]) — so its per-field PARENT dups have NO in-body matching drop
+/// ⇒ SURPLUS ⇒ safe to SUBTRACT (the node#4 census leak). A `let`-binding (`LocalRef`) is reclaimed by its
+/// OWN in-body epilogue, whose SHALLOW shell drop the parent dup is LOAD-BEARING for (the #9101 partition-
+/// fold UAF direction) ⇒ must KEEP. `must_escapes` CANNOT separate the two (proven by the re-land: the
+/// wrapper-cell param `m` and the let `parts` share `{never_escapes, must_escapes}` under the always-borrow
+/// may-query); binder-kind is the only axis. The one in-body OWNED-param shell reclaim (INC1
+/// [`selfloop_scrut_shell_reclaim_ok`]) is a SUM scrutinee reclaimed by a single deep `op_drop` in G6b's
+/// dup-cascade lockstep (parent dup surplus there too) AND flows through the `SumPayload` arm, so it never
+/// reaches this gate. Follows ONLY `Proj` links (the same chain `proj_chain_roots_at_binder` validates); a
+/// chain that does not cleanly root at a `Param` occurrence of `binder` returns `false` — the conservative
+/// KEEP (leak-not-UAF) direction. Runs only when `is_child_dup_site && never_escapes` already hold.
+pub(super) fn binder_is_param(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Param { binder: b } => b == binder,
+        Core::Proj { operand, .. } => binder_is_param(db, operand, binder),
+        _ => false,
+    }
+}
+
 /// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get`, `Core::SumPayload`
 /// `sum-payload`/`arr-get`, OR `Core::SumExpect` `sum-payload`, in any mix) ultimately rooted at `binder`.
 /// Each intermediate step is a BORROW that returns a handle to a cell living INSIDE `binder` (no rc++), so
@@ -3534,12 +3562,12 @@ fn mark_binder_dups_body(
             // scalar reads stay untouched). Only the OUTERMOST consuming projection marks (a chain's
             // intermediate projection is reached below as an `arr-get`-borrowed operand — `in_proj_operand`
             // suppresses a redundant child-dup there).
-            if consuming
+            let is_child_dup_site = consuming
                 && !scalar_element
                 && !in_proj_operand
                 && live_after
-                && proj_chain_roots_at_binder(db, operand, binder)
-            {
+                && proj_chain_roots_at_binder(db, operand, binder);
+            if is_child_dup_site {
                 sites.insert(id);
             }
             // Recurse for BINDER-marking (the aggregate's own dup), flagging that `operand` is a projection
@@ -3570,13 +3598,46 @@ fn mark_binder_dups_body(
             // arm), so `must_escapes == false` there → its arm-conditional dup is PRESERVED (no regression).
             // Net gate: `!scalar_element && (consuming || (!never_escapes && !must_escapes))`. A wrong
             // `must_escapes` under-approximates to `false` ⇒ keep the dup ⇒ leak-not-UAF (the safe direction).
+            //
+            // site-b REFINEMENT (v-cdz-wasm-codegen co-design; child-dup-site aware): a CHILD-DUP'd projection
+            // (`is_child_dup_site` — the child is retained by its OWN dup at 3509) of a binder that PROVABLY
+            // never escapes (`never_escapes` — a pure-borrow shell: a wrapper-owned cell param DEEP-dropped
+            // after the call, or a let-binding reclaimed by its epilogue) has its per-field PARENT dup
+            // SURPLUS: the child dup covers the child, and the shell is reclaimed exactly once elsewhere, so
+            // the extra parent rc++ never gets a matching drop (the node#4 rc=N leak — N forwarded fields ⇒
+            // N surplus parent dups vs 1 wrapper deep-drop). Suppress the parent dup here. Gated on
+            // `is_child_dup_site && never_escapes && !must_escapes` so it fires ONLY for that pure-borrow
+            // child-forward shape and leaves the three prior cases intact: partition's `parts` is child-dup'd
+            // but `must_escapes` (its children are moved into a consuming callee on the sole path; the shell
+            // dup is LOAD-BEARING for the let-epilogue balance) ⇒ KEPT via the must-escapes arm — NOT
+            // suppressed (this is the #9101 partition UAF, which a bare `consuming ||` drop caused); dqe7/8
+            // (whole-value escape, NOT child-dup'd) stays SUPPRESSED via the existing `!must_escapes` term;
+            // dqe17 (conditional escape, `never_escapes == false`) stays KEPT. NO-OP at main: a compound
+            // child forwarded into a ctor ESCAPES under the dup-UNAWARE base query, so `never_escapes` is
+            // false there and this subtracts nothing — it activates only once the escape-query half flips
+            // `never_escapes` for the borrowed child-forward operand (landed AFTER this gate, which is a
+            // no-op at main; the escape-half then activates it).
+            //
+            // `binder_is_param` is the DISCRIMINATOR (v-cdz co-design; must_escapes CANNOT separate the
+            // wrapper-cell param `m` from the let `parts` — both share {never_escapes, must_escapes} under
+            // the always-borrow may-query). A PARAM projected field-wise is reclaimed OUTSIDE this body
+            // (caller / wrapper deep-drop) ⇒ the per-field parent dup is SURPLUS ⇒ SUBTRACT (site-b node#4
+            // leak). A LET (`LocalRef`) is reclaimed by its own in-body shallow epilogue, whose shell drop
+            // the parent dup is LOAD-BEARING for ⇒ binder_is_param=false ⇒ KEEP (the #9101 partition-fold
+            // UAF direction). This narrows the subtract strictly — MORE KEEP, the safe leak-not-UAF way.
             let never_escapes = binder_never_escapes();
             let must_escapes = binder_must_escapes();
+            let parent_consuming = !scalar_element
+                && (consuming || (!never_escapes && !must_escapes))
+                && !(is_child_dup_site
+                    && never_escapes
+                    && !must_escapes
+                    && binder_is_param(db, operand, binder));
             mark_binder_dups_inner(
                 db,
                 operand,
                 binder,
-                !scalar_element && (consuming || (!never_escapes && !must_escapes)),
+                parent_consuming,
                 live_after,
                 true,
                 sites,
