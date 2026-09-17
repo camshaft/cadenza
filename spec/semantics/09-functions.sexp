@@ -4309,7 +4309,7 @@
            (+ x 1)) 5) 9)`: the inner application yields the Int64 6, and applying 6 to 9 applies a
            non-function → CDZ0203. The compiler MUST reject it, not drop the 9 and yield 6.")
   (input (do (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main)))
-  (error CDZ0203 (exact-code)))
+  (error CDZ0203 (exact-code) (fix (kind delete))))
 
 (case
   "over-applying a named function by an extra argument is a type error"

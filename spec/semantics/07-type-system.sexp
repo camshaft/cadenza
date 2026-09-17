@@ -2762,7 +2762,7 @@
 (case
   "a wrong-arity trap keeps the over-application message, not the message-type reject"
   (input (do (def (f) (trap "a" "b")) (export f)))
-  (error CDZ0203 (message "function of arity 1") (not "message must be a String")))
+  (error CDZ0203 (message "function of arity 1") (not "message must be a String") (fix (kind delete))))
 
 (case
   "a well-formed String-message trap in a polymorphic position compiles and runs clean"
@@ -5027,7 +5027,7 @@
 (case
   "the member-access spelling of an over-applied constructor names it dotted"
   (input (do (type P (Mk Int64 Int64) (Z)) (def (g) (P.Mk 1 2 3)) (export g)))
-  (error CDZ0203 (message "`P.Mk` takes 2 arguments, but 3 were given")))
+  (error CDZ0203 (message "`P.Mk` takes 2 arguments, but 3 were given") (fix (kind delete))))
 
 (case
   "an ordinary over-applied user function keeps the anonymous arity message, not a constructor phrasing"
