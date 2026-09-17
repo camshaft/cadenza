@@ -197,6 +197,40 @@
   (live-objects 0))
 
 (case
+  "a handler resume VALUE is a #tuple carrying the borrowed heap state, while the new state consumes it too"
+  (doc
+    "The effects × heap-product-return face: the arm resumes with `#tuple(s (String.byte-len s))` — a
+           product whose first element is the threaded heap-string state `s` itself — AND threads
+           `(String.concat s \"z\")` as the new state, so `s` flows into BOTH the returned resume-value tuple
+           and the new-state consume. The op result type `(Tuple String Int64)` makes the resume value a
+           genuine heap product crossing back into the body (the B2 heap-component-product path), and the body
+           destructures it and reads the carried `s`. `s` must be dup'd for the two fates or one underflows;
+           it does not (guarded-clean). Seeded \"stX\" (n>0, 2-byte suffix blocks a seed fold); the recursive
+           `walk 1` issues 2 performs: (byte-len \"stX\" + 3) + (byte-len \"stXz\" + 4) = 6 + 8 = 14. Value +
+           balance hold both backends, O0..O2. Same effects-heap-state residue family as the consumed-twice
+           sibling → `(live-objects known-leak)`. (Adversarial pin from a breaker probe: effects × B2 resume
+           product.)")
+  (input
+    (do
+      (effect E (op grab (-> Int64 (Tuple String Int64))))
+      (def
+        (walk (: n Int64))
+        (if (= n 0)
+          (match (E.grab 0) (#tuple(s k) (+ (String.byte-len s) k)))
+          (+ (match (E.grab 0) (#tuple(s k) (+ (String.byte-len s) k))) (walk (- n 1)))))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          (String.concat "st" (if (> n 0) "X" "Y"))
+          ((grab (a) s (resume #tuple(s (String.byte-len s)) (String.concat s "z"))))
+          (walk 1)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 14 Int64))
+  (live-objects known-leak))
+
+(case
   "an arm chooses its resume value by an if on the handler state"
   (doc
     "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
