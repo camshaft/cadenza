@@ -3636,13 +3636,12 @@ fn mark_binder_dups_body(
             // SURPLUS: the child dup covers the child, and the shell is reclaimed exactly once elsewhere, so
             // the extra parent rc++ never gets a matching drop (the node#4 rc=N leak — N forwarded fields ⇒
             // N surplus parent dups vs 1 wrapper deep-drop). Suppress the parent dup here. Gated on
-            // `is_child_dup_site && never_escapes && !must_escapes` so it fires ONLY for that pure-borrow
-            // child-forward shape and leaves the three prior cases intact: partition's `parts` is child-dup'd
-            // but `must_escapes` (its children are moved into a consuming callee on the sole path; the shell
-            // dup is LOAD-BEARING for the let-epilogue balance) ⇒ KEPT via the must-escapes arm — NOT
-            // suppressed (this is the #9101 partition UAF, which a bare `consuming ||` drop caused); dqe7/8
-            // (whole-value escape, NOT child-dup'd) stays SUPPRESSED via the existing `!must_escapes` term;
-            // dqe17 (conditional escape, `never_escapes == false`) stays KEPT. NO-OP at main: a compound
+            // `is_child_dup_site && never_escapes && binder_is_param` so it fires ONLY for that pure-borrow
+            // PARAM child-forward shape and leaves the prior cases intact: partition's `parts` is child-dup'd
+            // but is a LET-binding (`binder_is_param == false`; its shell dup is LOAD-BEARING for the shallow
+            // let-epilogue) ⇒ KEPT — NOT suppressed (this is the #9101 partition UAF, which a bare `consuming
+            // ||` drop caused); dqe7/8 (whole-value escape, NOT child-dup'd) stays SUPPRESSED via the BASE
+            // `!must_escapes` term; dqe17 (conditional escape, `never_escapes == false`) stays KEPT. NO-OP at main: a compound
             // child forwarded into a ctor ESCAPES under the dup-UNAWARE base query, so `never_escapes` is
             // false there and this subtracts nothing — it activates only once the escape-query half flips
             // `never_escapes` for the borrowed child-forward operand (landed AFTER this gate, which is a
@@ -3657,12 +3656,16 @@ fn mark_binder_dups_body(
             // UAF direction). This narrows the subtract strictly — MORE KEEP, the safe leak-not-UAF way.
             let never_escapes = binder_never_escapes();
             let must_escapes = binder_must_escapes();
+            // SUBTRACT corner: binder_is_param is the SOLE discriminator (NOT `!must_escapes`). Under the
+            // SHIPPED base must-query, must_escapes(m)=TRUE for the site-b wrapper-cell param (== must_escapes
+            // of the let `parts`), so a `!must_escapes` conjunct here would nullify the subtract and never fix
+            // site-b (6 dups, not 3 — v-cdz-wasm-codegen pre-land catch). must_escapes CANNOT separate m from
+            // parts; binder_is_param can (Param=reclaimed-outside-body=surplus=SUBTRACT; Let=in-body-shallow-
+            // epilogue=load-bearing=KEEP). `!must_escapes` stays in the BASE term (dqe7/8 whole-escape
+            // suppression) — only the subtract drops it.
             let parent_consuming = !scalar_element
                 && (consuming || (!never_escapes && !must_escapes))
-                && !(is_child_dup_site
-                    && never_escapes
-                    && !must_escapes
-                    && binder_is_param(db, operand, binder));
+                && !(is_child_dup_site && never_escapes && binder_is_param(db, operand, binder));
             mark_binder_dups_inner(
                 db,
                 operand,
