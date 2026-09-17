@@ -908,7 +908,7 @@
       (def (main) (free-in 0 (naive-subst 1 (Term.Var 0) (Term.Abs 0 (Term.Var 1)))))
       (export main)))
   (output (: false Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "BETA over the capture-avoiding substitution still proves the identity theorem (no regression)"

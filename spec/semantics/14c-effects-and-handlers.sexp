@@ -12958,7 +12958,7 @@
   (output (: 601919 Int64))
   (call main (: 5 Int64))
   (output (: 1103434 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption"
@@ -14292,7 +14292,7 @@
   (output (: 22122 Int64))
   (call main (: 22 Int64))
   (output (: 22221 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW"
@@ -14335,7 +14335,7 @@
   (output (: 123 Int64))
   (call main (: 9 Int64))
   (output (: 112 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump"
@@ -14795,7 +14795,7 @@
   (output (: 230733050 Int64))
   (call main (: 48 Int64))
   (output (: 233393050 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot"
@@ -15463,7 +15463,7 @@
   (output (: 70601 Int64))
   (call main (: 4 Int64))
   (output (: 70600 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero"
@@ -15542,7 +15542,7 @@
   (output (: 12309205 Int64))
   (call main (: 3 Int64))
   (output (: 12305203 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list"
@@ -15579,7 +15579,7 @@
   (output (: 1424344454 Int64))
   (call main (: 7 Int64))
   (output (: 1424242437 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element"
@@ -15799,7 +15799,7 @@
   (output (: 1112030413 Int64))
   (call main (: 2 Int64))
   (output (: 1102130313 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong"
@@ -15970,7 +15970,7 @@
   (output (: 111211 Int64))
   (call main (: 0 Int64))
   (output (: 10201 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count"
@@ -16348,7 +16348,7 @@
   (output (: 121212090916 Int64))
   (call main (: 0 Int64))
   (output (: 20505080808 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non-negative, -2v-1 for negative) and folds the code into the state sum, dec UN-zigzags the accumulated sum whose parity decides the sign, and the seeds put the decode answers on opposite signs"
@@ -16732,7 +16732,7 @@
   (output (: 2040108160599 Int64))
   (call main (: 0 Int64))
   (output (: 2040208160399 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Horner base-swap evaluator, round-robin skip mask, stopwatch lap splits (breaker batch 279) ──
 (case
@@ -26738,7 +26738,7 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 18 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 510 (2026-08-27): the closure-capture-in-arm cell of #4147's threading. The arm
 ; APPLIES a main-local closure per discharged op and it threads correctly (12) — contrast chr1,
