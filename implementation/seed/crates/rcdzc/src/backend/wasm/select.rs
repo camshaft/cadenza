@@ -4287,6 +4287,126 @@ fn sum_cont_result_all_scalar(db: &mut Db, cont: &crate::core::SumCont) -> bool 
     }
 }
 
+/// Whether the multi-consume `String.at` view (the Some-payload of `scrutinee`) can ESCAPE the match as a
+/// live heap handle THROUGH some arm's TERMINAL RESULT — returned directly, RETAINED as a heap component of a
+/// returned constructor, or carried out by a handle-aliasing reinterpret/normalize
+/// (`StrToBytes`/`StrFromBytes`/`NfcNormalize`). This is the general escape-as-result axis (v-core-opt's
+/// consuming-analysis lane) that GENERALIZES v-memory-safety's decidable [`sum_cont_result_all_scalar`]
+/// subset: a HEAP arm result is still shell-reclaimable when the view provably does NOT flow out as (part of)
+/// that result — `(String.concat c c)` CONSUMES the view into a FRESH-allocating builder
+/// (`NfcNormalize(BytesConcat …)`) whose output aliases nothing of `c`, so the shell deep-drop frees only the
+/// dead final payload ref (the per-consume child-`dup`s the dup pass emitted balance the consumes 1:1) →
+/// reclaim to 0. By contrast `#tuple(c …)` RETAINS the view in the returned tuple → escapes → NOT reclaimable
+/// (freeing the shell would UAF the escaped `c`). CONSERVATIVE in the SAFE direction (leak-over-UAF): a node
+/// whose output could alias/retain the view but which is not PROVEN fresh returns escape; only nodes proven
+/// fresh/scalar/borrow (the fresh builders, scalar ops, refs, literals — the `_ => false` floor) are
+/// non-escaping. So `!view_escapes_as_arm_result` is TRUE only when the view provably cannot survive as (part
+/// of) the result. v-memory-safety co-verifies the heap-result faces to 0 + no double-free (the `#tuple(c …)`
+/// escape control must STAY leaking, no trap).
+fn view_escapes_as_arm_result(
+    db: &mut Db,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let mut seen = HashSet::new();
+    sum_cont_result_escapes_view(db, root, scrutinee, &mut seen)
+}
+
+/// Per-arm terminal-result walk for [`view_escapes_as_arm_result`]: the view escapes iff it escapes through
+/// ANY arm's result continuation (Leaf body / Guarded body + fall-through / LitTest + Switch recursions),
+/// mirroring [`sum_cont_result_all_scalar`]'s shape.
+fn sum_cont_result_escapes_view(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => expr_escapes_view(db, *body, scrut, seen),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            expr_escapes_view(db, *body, scrut, seen)
+                || sum_cont_result_escapes_view(db, els, scrut, seen)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_result_escapes_view(db, then_, scrut, seen)
+                || sum_cont_result_escapes_view(db, els, scrut, seen)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_result_escapes_view(db, &a.cont, scrut, seen)),
+    }
+}
+
+/// Whether the view (a payload-projection chain rooted at `scrut`) escapes THROUGH the result expression `id`
+/// (a tail/result position). See [`view_escapes_as_arm_result`] for the soundness argument. Node-id `seen`
+/// dedups the shared-`StructId` DAG re-walk (Core is acyclic; the pure escape value propagates on first visit,
+/// so the OR-aggregation is unaffected — same pattern as [`expr_constructs_compound_seen`]).
+fn expr_escapes_view(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    // The view itself (or a projection/sub-alias of it) RETURNED as the result = escape. A SCALAR leaf
+    // (`get_op` Some — an unboxed byte/char COPIED out, no heap handle survives) does not escape.
+    if payload_proj_chain_roots_at_node(db, id, scrut) {
+        return !matches!(get_op(db, id), Ok(Some(_)));
+    }
+    match core_of(db, id) {
+        // RETAINING constructors: each stores its operand refs INTO the returned value → escape iff any
+        // operand (recursively) carries the view out.
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::SetOf { elems, .. } => {
+            elems.iter().any(|&e| expr_escapes_view(db, e, scrut, seen))
+        }
+        Core::SumNew { payloads, .. } => payloads
+            .iter()
+            .any(|&e| expr_escapes_view(db, e, scrut, seen)),
+        Core::Record { fields } => fields
+            .values()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .any(|e| expr_escapes_view(db, e, scrut, seen)),
+        Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
+            expr_escapes_view(db, k, scrut, seen) || expr_escapes_view(db, v, scrut, seen)
+        }),
+        // HANDLE-ALIASING reinterpret/normalize: MAY return the SAME heap handle as their operand
+        // (`NfcNormalize` is a no-op for already-NFC text; `StrToBytes`/`StrFromBytes` reinterpret the same
+        // byte leaf) → transparent (recurse the operand). For the fresh-builder WIN `NfcNormalize(BytesConcat
+        // c c)` the operand is a FRESH BytesConcat → recursion yields false (reclaim); `NfcNormalize(c)` /
+        // `StrToBytes(c)` of the RAW view escapes.
+        Core::NfcNormalize { string } | Core::StrToBytes { string } => {
+            expr_escapes_view(db, string, scrut, seen)
+        }
+        Core::StrFromBytes { bytes, .. } => expr_escapes_view(db, bytes, scrut, seen),
+        // TRANSPARENT control flow: the arm result is whichever tail is taken → recurse each tail.
+        Core::Let { body, .. } => expr_escapes_view(db, body, scrut, seen),
+        Core::If { then_, else_, .. } => {
+            expr_escapes_view(db, then_, scrut, seen) || expr_escapes_view(db, else_, scrut, seen)
+        }
+        Core::MatchSum { root, .. } => sum_cont_result_escapes_view(db, &root, scrut, seen),
+        // OPAQUE calls: the callee may RETURN or capture an argument, so a view flowing IN as an arg (or the
+        // closure env) may flow OUT as the result → conservative escape if any operand carries the view out. A
+        // fresh builder (BytesConcat/StrSlice/…) is a DEDICATED Core node (below), NOT a Call, so this does not
+        // over-decline the WIN.
+        Core::Call { args, .. } => args.iter().any(|&a| expr_escapes_view(db, a, scrut, seen)),
+        Core::CallClosure { closure, args } => {
+            expr_escapes_view(db, closure, scrut, seen)
+                || args.iter().any(|&a| expr_escapes_view(db, a, scrut, seen))
+        }
+        // FRESH-allocating builders (BytesConcat/ListConcat/StrSlice/BytesSlice/BytesOf/BytesCompact/…), SCALAR
+        // ops (BytesLen/StrScalarLen/arithmetic/cmp/ValueEq), refs and literals: the output aliases nothing of
+        // the view (an operand view is byte-copied/absorbed/borrowed, never retained), so the view does not
+        // escape via them. This `_ => false` floor is the leak-over-UAF boundary — a genuinely-unknown RETAINER
+        // must be added to the constructor/aliasing arms above (else it would wrongly reclaim → the escape
+        // control catches that as a debug-counters trap in v-mem's co-verify).
+        _ => false,
+    }
+}
+
 /// Whether the expression subtree `id` contains a compound CONSTRUCTOR node (see
 /// [`sum_cont_arm_constructs_compound`]). Node-id `seen` set guards the shared-`StructId` DAG re-walk.
 fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
@@ -4586,7 +4706,8 @@ fn matchsum_view_shell_reclaim_ok(
         && !ty_is_enum_disc(db, scrut_ty)
         && !sum_has_only_scalar_payloads(db, scrut_ty);
     top_body.is_some_and(|tb| strat_view_multi_consume(db, tb, root, scrutinee, compound_boxed))
-        && sum_cont_result_all_scalar(db, root)
+        && (sum_cont_result_all_scalar(db, root)
+            || !view_escapes_as_arm_result(db, scrutinee, root))
 }
 
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
