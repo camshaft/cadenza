@@ -13873,13 +13873,58 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
     }
 }
 
-/// The `sh -c` body the detached gate-local build runs under `setsid`. `$1`=lease path, `$2`=log path,
-/// `$3..`=nix + its args. It RE-KEYS the lease to its own pid (`$$` — the `sh` that lives for the build's
-/// full lifetime) via an atomic `mv` (preserving the class suffix `${lease##*-}`), so the dead-PID reaper
-/// tracks the LIVE build rather than the short-lived launcher xtask (the v-core-opt lease-vs-pid gap); then
-/// a `trap … EXIT` removes the RE-KEYED lease when the build exits. No `exec` (a trap does not survive
-/// exec). Extracted to a const so the shell contract is unit-testable (bash-validity + the re-key + the trap).
-const GATE_LOCAL_DETACHED_WRAPPER: &str = r#"lease="$1"; log="$2"; shift 2; if [ -n "$lease" ]; then _nl="$(dirname "$lease")/$$-${lease##*-}"; mv -f "$lease" "$_nl" 2>/dev/null && lease="$_nl"; fi; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1"#;
+/// The `sh -c` body the detached gate-local build runs under `setsid --fork`. `$1`=lease path, `$2`=log
+/// path, `$3..`=nix + its args. It RE-KEYS the lease to its own pid (`$$` — the `sh` that lives for the
+/// build's full lifetime) via an atomic `mv` (preserving the class suffix `${lease##*-}`), so the dead-PID
+/// reaper tracks the LIVE build rather than the short-lived launcher xtask (the v-core-opt lease-vs-pid
+/// gap); then a `trap … EXIT` removes the RE-KEYED lease when the build exits. No `exec` (a trap does not
+/// survive exec). After nix exits it appends an RC-SENTINEL line (`GATE-EXIT-RC=<code>`, on its OWN line via
+/// a leading `\n` so a no-trailing-newline nix run can't fuse it onto the last output line) carrying nix's
+/// EXACT exit code — because the launcher no longer `setsid -w`-waits for the build (it reparents to init,
+/// out of the harness task subtree, so a task-tree kill can't reap it), it reads the verdict back from this
+/// sentinel via `read_gate_local_rc` instead of from a process wait. The sentinel is written BEFORE the sh
+/// exits, so it lands before the EXIT trap releases the lease. Extracted to a const so the shell contract is
+/// unit-testable (bash-validity + the re-key + the trap + the sentinel).
+const GATE_LOCAL_DETACHED_WRAPPER: &str = r#"lease="$1"; log="$2"; shift 2; if [ -n "$lease" ]; then _nl="$(dirname "$lease")/$$-${lease##*-}"; mv -f "$lease" "$_nl" 2>/dev/null && lease="$_nl"; fi; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1; _rc=$?; printf "\nGATE-EXIT-RC=%s\n" "$_rc" >>"$log""#;
+
+/// Max wall-clock the launcher POLLS the detached gate-local log for its RC-sentinel before FAILING SAFE to
+/// NoChecks. Generous (60 min): a cold/contended LOCAL gate (offload down) has been seen at ~45 min, and a
+/// too-short cap is not a wasted build — the detached build KEEPS RUNNING + caches, so the next tick's re-run
+/// hits the nix cache. Overridable via `CDZ_GATE_LOCAL_POLL_MAX_SECS` for host tuning / an incident.
+const GATE_LOCAL_POLL_MAX_SECS: u64 = 3600;
+/// How often the launcher re-reads the detached log while waiting for the RC-sentinel. 2s is responsive
+/// (the build runs minutes) and the read is trivial (a `read_to_string` of one log).
+const GATE_LOCAL_POLL_INTERVAL_SECS: u64 = 2;
+
+/// Extract the detached gate-local build's exit code from its log's RC-sentinel (`GATE-EXIT-RC=<n>` on its
+/// own line, written by `GATE_LOCAL_DETACHED_WRAPPER` after nix exits). Returns the code from the LAST such
+/// line (defensive against any earlier coincidental match), or `None` if no sentinel is present yet — the
+/// build is still running, was itself killed before it could stamp, or never started. Pure + unit-tested;
+/// the fail-safe (None → the caller does NOT infer success) lives in the caller.
+fn read_gate_local_rc(log: &str) -> Option<i32> {
+    log.lines().rev().find_map(|l| {
+        l.strip_prefix("GATE-EXIT-RC=")
+            .and_then(|n| n.trim().parse::<i32>().ok())
+    })
+}
+
+/// Poll the detached gate-local `log` for its RC-sentinel, up to `max_secs`. `Some(true)`=nix exited 0
+/// (GREEN), `Some(false)`=any non-zero/killed exit (RED), `None`=the sentinel never appeared in time (the
+/// build hung or was killed → the caller FAILS SAFE to NoChecks, NEVER inferring a land-advancing GREEN).
+fn poll_gate_local_rc(log: &Path, max_secs: u64) -> Option<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_secs);
+    loop {
+        if let Some(rc) = read_gate_local_rc(&std::fs::read_to_string(log).unwrap_or_default()) {
+            return Some(rc == 0);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(
+            GATE_LOCAL_POLL_INTERVAL_SECS,
+        ));
+    }
+}
 
 fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // Acquire a NON-priority check-lease slot BEFORE building. Under the current land model gate-local is
@@ -13928,15 +13973,27 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     }
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
-    // DETACHED build (v-fleet-tooling 2026-09-01, operator-GO'd wake-path/bg-task hardening): a long
-    // gate-local (~6min) was getting KILLED mid-build when the launching agent's SESSION churned/compacted/
-    // restarted (v-effects #7333 + breaker-103), because the `nix build` was a CHILD in the agent pane's
-    // process tree with a PIPED stderr — so it died on (1) SIGHUP (a watchdog kill-window closes the pane's
-    // controlling tty) or (2) SIGPIPE (the launching xtask dying closes the stderr pipe). A killed build is
-    // WASTED → the manual `--admin` land-exceptions the concierge was authorizing. Fix: run the build under
-    // `setsid` (a NEW session → no controlling tty → no SIGHUP) with output to a LOG FILE (no parent pipe →
-    // no SIGPIPE). The build now SURVIVES session churn → completes + CACHES in the store, so the restarted/
-    // compacted agent's re-run of gate-local hits the nix cache → fast verdict, no manual --admin.
+    // DETACHED build (v-fleet-tooling 2026-09-01, operator-GO'd wake-path/bg-task hardening; FULL-DETACH
+    // 2026-09-17 for the harness memory-killer, breaker issue #79845): a long gate-local (~6min) was getting
+    // KILLED mid-build. Two distinct kill sources, each needing a different defense:
+    //   (1) SESSION CHURN — the launching agent's session compacted/restarted (v-effects #7333 + breaker-103):
+    //       the `nix build` was a CHILD in the agent pane's process tree with a PIPED stderr → it died on
+    //       SIGHUP (a watchdog kill-window closes the pane's controlling tty) or SIGPIPE (the launching xtask
+    //       dying closes the stderr pipe). Defended by `setsid` (NEW session → no controlling tty → no SIGHUP)
+    //       + output to a LOG FILE (no parent pipe → no SIGPIPE).
+    //   (2) HARNESS LOW-MEM TASK-KILLER (breaker issue #79845) — the Claude Code harness reaps a tracked Bash
+    //       task's process tree on a FALSE low-mem signal (it keys on `free` ~19G, not `available` ~359G;
+    //       nix's reclaimable page-cache legitimately fills ~402G). This is an EXPLICIT process-tree/pgroup
+    //       kill of THIS `cargo xtask fleet gate-local` task — which the old `setsid -w` did NOT survive: with
+    //       `-w` the launcher WAITS on the build, so the build stays a DESCENDANT of the tracked task and the
+    //       tree-kill reaches it. Defended by `setsid --fork` WITHOUT `-w`: setsid forks, the parent returns
+    //       immediately, and the build (sh→nix) REPARENTS TO INIT in a new session/pgroup — out of the task
+    //       subtree, so neither a recursive tree-walk kill nor a killpg on the task's group can reach it. The
+    //       launcher then reads the verdict back from the log's RC-sentinel (see below) instead of a process
+    //       wait. Verified: the detached sh's PPID is 1 immediately after launch.
+    // Either way a killed build would be WASTED → the manual `--admin` land-exceptions the concierge was
+    // authorizing. The build now SURVIVES both → completes + CACHES in the store, so a re-run hits the nix
+    // cache → fast verdict, no manual --admin (and even a poll-timeout here leaves the build running to cache).
     //
     // LEASE OWNERSHIP — RE-KEY TO THE DETACHED PID (v-core-opt issue 2026-09-02, the lease-vs-pid liveness
     // gap). The lease file is named `<pid>-gate.lease` by `acquire_check_lease_weighted` at THIS xtask's pid,
@@ -13956,9 +14013,10 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     //
     // Positional-argv wrapper (NO string interpolation of paths/args → no quoting hazards): `$1`=lease,
     // `$2`=log, `$3..`=nix + its args. No `exec` (a trap does not survive exec), so `sh` runs nix as a child,
-    // waits, and its EXIT trap releases the lease; `setsid -w` waits for `sh` and returns nix's exit code.
-    // Live in-pane streaming is traded for the log file (a detached build cannot also pipe to the dying pane);
-    // the log path is printed so an agent can `tail -f` it for progress.
+    // waits, its EXIT trap releases the lease, and it stamps the RC-sentinel with nix's exit code. `setsid
+    // --fork` (NOT `-w`) forks + returns immediately → the build reparents to init (out of the harness task
+    // subtree). Live in-pane streaming is traded for the log file (a detached build cannot also pipe to the
+    // dying pane); the log path is printed so an agent can `tail -f` it for progress.
     let log = std::env::temp_dir().join(format!("cdz-gate-local-{}.log", std::process::id()));
     let lease_path = _lease.lease_path().map(Path::to_path_buf);
     eprintln!(
@@ -13969,7 +14027,8 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // the trap removes the re-keyed file on build exit. `${lease##*-}` keeps the class suffix (e.g. `gate.lease`).
     let script = GATE_LOCAL_DETACHED_WRAPPER;
     let mut cmd = Command::new("setsid");
-    cmd.arg("-w")
+    cmd.arg("--fork") // fork + return immediately (NOT `-w`) → the build reparents to init, escaping a
+        // harness task-tree kill; the verdict is read back from the log's RC-sentinel, not a process wait.
         .arg("sh")
         .arg("-c")
         .arg(script)
@@ -13990,14 +14049,42 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
         // The detached build's own stdout/stderr go to the LOG; setsid's own stdio is irrelevant.
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let (spawned_ok, build_ok) = match cmd.status() {
-        Ok(s) => (true, s.success()),
+    // `setsid --fork` returns as soon as it has forked the detached build (it does NOT wait for nix), so this
+    // status reflects only whether the LAUNCH succeeded — the real build verdict is read from the RC-sentinel.
+    let launched = match cmd.status() {
+        Ok(s) => s.success(),
         Err(e) => {
             eprintln!(
                 "gate-local: could not invoke `setsid`/`nix` ({e}) — NO-CHECKS (can't verify locally)."
             );
-            (false, false)
+            false
         }
+    };
+    // Poll the detached build's log for its RC-sentinel (bounded by CDZ_GATE_LOCAL_POLL_MAX_SECS). This blocks
+    // the tick until the verdict is known — same UX as the old `setsid -w` wait — but the build is no longer a
+    // child of this xtask, so a harness task-tree kill during the poll leaves the build running (it caches;
+    // re-tick picks it up) instead of wasting it. A None result (poll timed out, or the launch itself failed)
+    // FAILS SAFE: spawned_ok=false → local_gate_verdict → NoChecks, so we NEVER infer a land-advancing GREEN.
+    let poll_max = std::env::var("CDZ_GATE_LOCAL_POLL_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(GATE_LOCAL_POLL_MAX_SECS);
+    let build_result = if launched {
+        poll_gate_local_rc(&log, poll_max)
+    } else {
+        None
+    };
+    if launched && build_result.is_none() {
+        eprintln!(
+            "gate-local: the detached build did not report an exit code within {poll_max}s — NO-CHECKS. The \
+             build is DETACHED (reparented to init) and keeps running + caching, so re-tick to pick up its \
+             cached result; the live log is at {}.",
+            log.display()
+        );
+    }
+    let (spawned_ok, build_ok) = match build_result {
+        Some(ok) => (true, ok),
+        None => (false, false),
     };
     // Read the build log (written by the detached build) to NAME the failing sub-check on RED (nix's summary
     // alone doesn't) — the same information the old piped-stderr `captured` held.
@@ -24824,6 +24911,17 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             w.contains(r#""$@" >"$log" 2>&1"#),
             "runs nix as a CHILD (no exec, so the EXIT trap survives) with output to the log file"
         );
+        // The RC-sentinel (breaker #79845 full-detach): since the launcher no longer `setsid -w`-waits, it
+        // reads the verdict from this stamp. Must be nix's EXACT `$?`, on its OWN line (leading `\n`) so a
+        // no-trailing-newline nix run can't fuse it onto the last output line, and written AFTER nix.
+        assert!(
+            w.contains(r#"_rc=$?; printf "\nGATE-EXIT-RC=%s\n" "$_rc" >>"$log""#),
+            "stamps nix's exact exit code as a lone-line RC-sentinel appended after the build"
+        );
+        assert!(
+            w.find(r#""$@" >"$log" 2>&1"#) < w.find("GATE-EXIT-RC="),
+            "the sentinel is stamped AFTER the nix build runs, not before"
+        );
         // Valid bash — `bash -n` parses without executing (the positional $1/$2/$@ are fine to parse).
         let dir = std::env::temp_dir().join(format!("ft-gatewrap-syntax-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -24839,6 +24937,38 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_gate_local_rc_parses_the_sentinel_and_fails_safe_on_absence() {
+        // GREEN: exit 0 → Some(0) (the caller maps 0 → build_ok=true).
+        assert_eq!(
+            read_gate_local_rc("building '/nix/store/...'\nbuilt\n\nGATE-EXIT-RC=0\n"),
+            Some(0)
+        );
+        // RED: a non-zero nix exit → Some(1) (build_ok=false → Red).
+        assert_eq!(
+            read_gate_local_rc("error: build failed\n\nGATE-EXIT-RC=1\n"),
+            Some(1)
+        );
+        // Killed nix (128+signal, e.g. SIGKILL=137) still stamps → Some(137) → Red, not a false Green.
+        assert_eq!(read_gate_local_rc("\nGATE-EXIT-RC=137\n"), Some(137));
+        // NO sentinel yet (build still running, or the whole session was killed before stamping) → None →
+        // the caller FAILS SAFE to NoChecks. This is THE load-bearing case: never infer success from silence.
+        assert_eq!(read_gate_local_rc("building...\nstill going\n"), None);
+        assert_eq!(read_gate_local_rc(""), None);
+        // A coincidental token that is NOT a lone sentinel line must not be misread as an exit code.
+        assert_eq!(
+            read_gate_local_rc("note: GATE-EXIT-RC=0 mentioned mid-line\n"),
+            None
+        );
+        // Multiple sentinels (defensive) → the LAST one wins (the build's true final stamp).
+        assert_eq!(
+            read_gate_local_rc("GATE-EXIT-RC=1\nsome retry noise\nGATE-EXIT-RC=0\n"),
+            Some(0)
+        );
+        // Trailing whitespace on the sentinel line is tolerated.
+        assert_eq!(read_gate_local_rc("GATE-EXIT-RC=0 \n"), Some(0));
     }
 
     #[test]
