@@ -3787,6 +3787,33 @@
   (live-objects 0))
 
 (case
+  "a match-bound child (PARAM compound) that both ESCAPES and is consumed is dup-correct under the sole binder_is_param gate"
+  (doc
+    "The ESCAPE face guarding rcdzc's site-b gate after it dropped the `!must_escapes` condition and
+           made `binder_is_param` its SOLE discriminator (411d4b6757): the match-bound heap child `a` of a
+           PARAMETER tuple is BOTH consumed (`String.byte-len (String.concat a \"?\")`) AND escapes the match
+           (returned in `#tuple(bl a)`), then consumed again by the caller. With the escape condition gone
+           from the dup/drop subtract, an escaping child must still get its dup from the sole binder_is_param
+           path — an under-dup would free `a` before the caller's consume (a use-after-free). `a` = \"pX\":
+           the in-`go` consume byte-lens \"pX?\" = 3, the caller consumes the escaped `a` as \"pX!\" = 3, so
+           3 + 3 = 6. Value + balance hold both backends, O0..O2, no underflow, fully reclaimed. Complements
+           the consumed-twice binder-fate guards above with the escape dimension the dropped condition governed.
+           (Adversarial pin from a breaker probe over the site-b gate change.)")
+  (input
+    (do
+      (def
+        (go (: t (Tuple String Int64)))
+        (match t (#tuple(a _k) #tuple((String.byte-len (String.concat a "?")) a))))
+      (def
+        (main (: n Int64))
+        (match (go #tuple((String.concat "p" (if (> n 0) "X" "Y")) 7))
+          (#tuple(bl esc) (+ bl (String.byte-len (String.concat esc "!"))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
   "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
   (doc
     "The projection-DEPTH companion of the case above: the shared list lives TWO projections deep,
