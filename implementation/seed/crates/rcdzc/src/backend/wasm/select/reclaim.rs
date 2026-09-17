@@ -3621,13 +3621,23 @@ fn mark_binder_dups_body(
         Core::StrScalarAt { operand, index, .. } => {
             seq(db, &[(operand, false), (index, false)], live_after, sites)
         }
-        // `String.slice` likewise CONSUMES its string (the Some branch `dup`s + slices out of it); the
-        // start/end bounds are scalars.
+        // `String.slice` BORROWS its string: the Some branch `dup`s the source before the consuming
+        // `bytes-slice` (so the slice takes an INDEPENDENT compacted-leaf reference), and the None branch
+        // takes no reference — the source is left to its owner, exactly as `binding_escapes` (reclaim.rs:326)
+        // and the emit's borrow discipline model it. Marking it a CONSUME here (the old `(string, false)`)
+        // was INCONSISTENT with that escape classification: it forced a spurious ENTRY RETAIN of a
+        // borrowed source param (dup at fn-entry) that nothing dropped — the boundary wrapper (its owner)
+        // ALSO drops the param (`param_escapes_body`=false ⟹ `drop_after`), so the retained copy leaked one
+        // husk (ssx3: `String.slice` of a boundary String param). Borrow ⟹ no retain ⟹ balanced (the
+        // internal slice-dup + compact-drop reclaim the slice's own ref; the owner reclaims the source).
+        // start/end bounds are scalars. (Kept SURGICAL to StrSlice; StrAt's classification is left as-is —
+        // a StrAt retain reclassification perturbs the MatchSum Stage-B extraction-consume reclaim, see the
+        // ownership.rs StrAt note.)
         Core::StrSlice {
             string, start, end, ..
         } => seq(
             db,
-            &[(string, false), (start, false), (end, false)],
+            &[(string, true), (start, false), (end, false)],
             live_after,
             sites,
         ),

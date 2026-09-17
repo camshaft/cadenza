@@ -2019,17 +2019,20 @@
   (call sl (: 0 Int64) (: -1 Int64))
   (output (: -1 Int64)))
 
-; ssx3 (breaker): slicing a boundary PARAMETER String leaks ONE husk — the slice pins/DUPs its borrowed
-; source string (+1) without a matching drop, so a live-cell remains after the result is consumed. It is
-; exactly 1 regardless of window (interior [1,3) or full [0,5)) or slice COUNT (two slices → still 1), and
-; the SOURCE, not the view, is the husk. Controls prove the trigger is (param-string AND slice) together:
-; a param string consumed by byte-len/at with NO slice reclaims 0 (SCRATCH param bytelen); slicing a
-; LITERAL source (the value cases above) reclaims 0; slicing a runtime CONCAT-built source reclaims 0.
-; Filed to v-memory-safety. Fenced known-leak so a reclaim fix auto-flips it. (An escaping param slice is a
-; separate CDZ0900 decline — not covered here.) NIX-CONFIRMED REAL: flipping this pin to (live-objects 0)
-; reds nix corpus-13-strings (got 1) — so unlike the md2/md3 Map-husk case (in-process over-count, nix=0),
-; the slice-retention husk is counted faithfully by BOTH the in-process gate and nix. The known-leak pin
-; stands; the reclaim is genuinely needed.
+; ssx3 (breaker): slicing a boundary PARAMETER String USED to leak ONE husk — the source, not the view.
+; ROOT CAUSE (v-memory-safety): the RETAIN analysis (`mark_binder_dups`) classified `String.slice`'s source
+; operand as a CONSUME, inconsistent with the ESCAPE analysis (`binding_escapes`) and the emit, which BORROW
+; it (the Some branch `dup`s the source before the consuming `bytes-slice` + compacts to an INDEPENDENT leaf;
+; the None branch takes no ref). That mismatch forced a spurious ENTRY RETAIN (dup) of the borrowed source
+; param that nothing dropped — the boundary wrapper (its owner) ALSO drops the param (`param_escapes_body`
+; false ⟹ `drop_after`), so the retained copy leaked one husk. FIXED by marking the StrSlice source a BORROW
+; in `mark_binder_dups` (surgical to StrSlice; StrAt left as-is — a StrAt retain reclassification perturbs
+; the MatchSum Stage-B extraction-consume reclaim). Now the internal slice-dup + compact-drop reclaim the
+; slice's own ref and the owner reclaims the source ⟹ balanced. Controls hold: a param consumed by byte-len
+; with NO slice, a LITERAL-source slice, and a runtime CONCAT-source slice all still reclaim 0; a
+; slice-then-CONSUME-the-source (`concat v s`) stays value-correct + leak-0 with no double-free (the
+; consume takes the source's last ref, no spurious retain). (An escaping param slice is a separate CDZ0900
+; decline — not covered here.)
 (case
   "slicing a boundary parameter String retains one husk (param-source slice-retention leak)"
   (doc
@@ -2044,7 +2047,7 @@
       (export sl)))
   (call sl (: "hello" String) (: 1 Int64) (: 3 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a trie of 40 rope-built String keys resolves content descent at depth"
