@@ -83,13 +83,13 @@
     "`(- 5 2.0)` mixes Int64 and Float64, rejected (CDZ0301) exactly as `(+ 2 2.0)` is. Pins the
            no-promotion rule for `-`.")
   (input (- 5 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "multiplication of an integer and a float does not silently promote"
   (doc "`(* 5 2.0)` mixes two numeric types, rejected (CDZ0301). Pins no-promotion for `*`.")
   (input (* 5 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "division of an integer and a float does not silently promote"
@@ -98,7 +98,7 @@
            division of a promoted 5.0 — the author did not write the conversion. Pins no-promotion for
            `/`.")
   (input (/ 5 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "modulo of an integer and a float does not silently promote"
@@ -106,7 +106,7 @@
     "`(% 5 2.0)` mixes two numeric types, rejected (CDZ0301). Pins no-promotion for `%`, which
            has no defined meaning across a mixed Int64/Float64 pair.")
   (input (% 5 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "bitwise AND of an integer and a float does not silently promote"
@@ -115,7 +115,7 @@
            pattern to mask, so the mix is rejected (CDZ0301), not coerced. Pins no-promotion for `&`,
            where a silent conversion is especially wrong (a float has no meaningful low bits to AND).")
   (input (& 1 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "bitwise OR of an integer and a float does not silently promote"
@@ -123,7 +123,7 @@
     "`(| 1 2.0)` mixes Int64 and Float64 in a bitwise OR, rejected (CDZ0301). Pins no-promotion
            for `|`, the companion of the bitwise AND case.")
   (input (| 1 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "bitwise XOR of an integer and a float does not silently promote"
@@ -131,7 +131,7 @@
     "`(^ 1 2.0)` applies bitwise XOR to an Int64 and a Float64, rejected (CDZ0301). Pins
            no-promotion for `^`, the third bitwise operator alongside `&` and `|`.")
   (input (^ 1 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "a left shift by a floating-point count does not silently promote"
@@ -140,7 +140,7 @@
            a numeric-type mismatch rejected (CDZ0301), not a coerced `<< 2`. Pins no-promotion for the
            shift count of `<<`.")
   (input (<< 1 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "a right shift by a floating-point count does not silently promote"
@@ -6631,12 +6631,12 @@
 (case
   "float-first subtraction of a mixed int/float pair does not silently promote"
   (input (- 2.0 2))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "float-first multiplication of a mixed int/float pair does not silently promote"
   (input (* 2.0 2))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "float-first division of a mixed int/float pair does not silently promote"
@@ -6860,7 +6860,7 @@
 (case
   "a nan compared to a non-float is the cross-kind type error"
   (input (do (def (main) (= Float64.nan 5)) (export main)))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "a SAME-width Float32 nan comparison compiles and folds true (structural =, not IEEE)"
@@ -14528,14 +14528,14 @@
   (doc
     "The ALL-float face of the integer-only operators (every no-promotion pin above uses a MIXED Int64/Float64 pair, so a change blessing fmod-style float modulo would slip past them — no mix exists to trigger the no-promotion reject). (% 5.0 2.0) rejects CDZ0301 on the integer-operand requirement itself.")
   (input (% 5.0 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "bitwise AND of two floats rejects — a float is not a bit pattern even without a mix"
   (doc
     "The bitwise sibling: (& 1.0 2.0) has no type MIX, so only the integer-only rule rejects it — a float has no meaningful bits to AND whatever the other operand is.")
   (input (& 1.0 2.0))
-  (error CDZ0301))
+  (error CDZ0301 (fix (kind replace))))
 
 (case
   "a left shift of a float by a float count rejects on the value operand"
