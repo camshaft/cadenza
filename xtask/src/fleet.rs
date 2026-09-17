@@ -13850,14 +13850,30 @@ fn gate_output_is_gc_race_transient(output: &str) -> bool {
         && (output.contains("findCargoFiles.nix") || output.contains("/nix/store/"))
 }
 
-/// A gate-local RED where nix IMPORTED a corrupt content-addressed path from a substituter / remote builder:
-/// the fetched path's content doesn't match its CA hash (`ca hash mismatch importing path …`), or its NAR
-/// stream was truncated (`unexpected end-of-file` mid-transfer). Both are INFRA transients — a purely LOCAL
-/// build PRODUCES the path itself and never IMPORTS it, so this class only ever arises from a corrupt
-/// substituter/offload transfer — fixed by EVICTING + rebuilding the bad path, NOT by a code change
-/// (concierge fleet-wide incident 2026-09-17; v-nix owns the eviction). Distinct from the 5xx/`unable to
-/// download` FETCH transient (a failed download, not a corrupt-but-completed one), so it gets its own
-/// advisory that names the evict/rebuild remedy.
+/// A content-addressed hash mismatch splits into TWO subcases with OPPOSITE remedies (concierge live
+/// 2026-09-17); this detects case (B), the STALE PIN. A COMPLETE import produced a well-formed but DIFFERENT
+/// hash — the derivation's output legitimately MOVED (`got` a new hash) while a pin still expects the old one
+/// (`specified`) — so nix prints an EXPLICIT `specified:` hash and there is NO truncation
+/// (`unexpected end-of-file`). This REPRODUCES from source (`--option substitute false`), so an evict +
+/// re-run is FUTILE: it needs a PIN/narinfo bump (or the output-changing change reverted) by the owner. Keyed
+/// on the explicit-`specified:`-hash-pair shape WITHOUT an EOF (which would mark case (A), a truncated fetch
+/// that DOES clear on evict + re-run). Checked BEFORE [`gate_output_is_corrupt_substituter_transient`] so the
+/// stale-pin shape wins over the broad ca-mismatch match. (Guidance-only, so an imperfect split at worst
+/// mis-suggests a remedy — never a wrong land — but the goal is to stop sending agents on FUTILE re-runs.)
+fn gate_output_is_stale_pin_ca_mismatch(output: &str) -> bool {
+    (output.contains("ca hash mismatch importing path")
+        || output.contains("hash mismatch importing path"))
+        && output.contains("specified:")
+        && !output.contains("unexpected end-of-file")
+}
+
+/// A gate-local RED where nix IMPORTED a corrupt content-addressed path from a substituter / remote builder —
+/// case (A): a truncated/garbled fetch. The fetched path's content doesn't match its CA hash (`ca hash
+/// mismatch importing path …`), or its NAR stream was truncated (`unexpected end-of-file` mid-transfer). This
+/// is an INFRA transient — a purely LOCAL build PRODUCES the path itself and never IMPORTS it, so it only
+/// arises from a corrupt substituter/offload transfer — and it DOES clear on EVICTING + rebuilding the bad
+/// path (v-nix owns eviction), UNLIKE the case-(B) stale pin above (evict is futile there). Distinct too from
+/// the 5xx/`unable to download` FETCH transient (a failed download, not a corrupt-but-completed one).
 ///
 /// PRECISION: `ca hash mismatch importing path` is collision-free (nix only ever prints it for a corrupt
 /// IMPORT), so it classifies alone. `unexpected end-of-file`, by contrast, can appear in a corpus sub-check's
@@ -13881,6 +13897,13 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
         "gate-local: NOTE — the failure output carries a nix SUBSTITUTER FETCH transient (a 5xx / \
          `unable to download` from the binary cache/CDN, NOT a test/compile failure); RE-RUN gate-local \
          (a retry usually hits the cache or a recovered substituter) before treating this as a regression."
+    } else if gate_output_is_stale_pin_ca_mismatch(captured) {
+        "gate-local: NOTE — the failure output shows a content-addressed hash mismatch with an EXPLICIT \
+         `specified:` hash and NO truncation — a STALE PIN, not a corrupt transfer: the derivation's output \
+         legitimately MOVED (a new `got` hash) while a pin still expects the old `specified` one, so it \
+         REPRODUCES even from source (`--option substitute false`) and an evict + re-run is FUTILE. It needs a \
+         PIN/narinfo bump (or the output-changing change reverted) by the owner — route to v-nix; do NOT just \
+         re-run. Still NOT a failure of your code."
     } else if gate_output_is_corrupt_substituter_transient(captured) {
         "gate-local: NOTE — the failure output shows a CORRUPT content-addressed IMPORT from a substituter/ \
          remote builder (`ca hash mismatch importing path` / `unexpected end-of-file` mid-transfer), NOT a \
@@ -21895,6 +21918,26 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             eof_diagnostic
         ));
         assert!(gate_local_hold_advisory(eof_diagnostic).contains("REAL sub-check"));
+        // Case (B) STALE PIN (concierge refinement 2026-09-17, the live 0371 block): a COMPLETE import with
+        // an EXPLICIT specified≠got and NO truncation → the output legitimately moved but the pin is stale;
+        // it REPRODUCES from source, so an evict + re-run is FUTILE → advise a pin bump / owner fix, NOT a
+        // re-run (distinct advice from case (A) corrupt transfer). Checked before the corrupt branch → wins.
+        let stale_pin = "error: ca hash mismatch importing path \
+                         '/nix/store/dddddddddddddddddddddddddddddddd-guide-build-0371.drv';\n  \
+                         specified: sha256:1vy59z\n  got:       sha256:1yqkw";
+        assert!(gate_output_is_stale_pin_ca_mismatch(stale_pin));
+        assert!(gate_local_hold_advisory(stale_pin).contains("STALE PIN"));
+        assert!(gate_local_hold_advisory(stale_pin).contains("FUTILE"));
+        assert!(gate_local_hold_advisory(stale_pin).contains("do NOT just"));
+        assert!(!gate_local_hold_advisory(stale_pin).contains("REAL sub-check"));
+        // Its advice must NOT be the case-(A) evict+re-run text (that would still send agents on a futile run).
+        assert!(!gate_local_hold_advisory(stale_pin).contains("EVICTED + rebuilt"));
+        // The truncated (EOF) variant is NOT a stale pin even though it carries a `specified:` line — EOF means
+        // the transfer died, so it IS case (A) (evict + re-run clears it), not the reproduces-from-source pin.
+        assert!(
+            !gate_output_is_stale_pin_ca_mismatch(corrupt),
+            "EOF present → corrupt transfer (case A), not a stale pin (case B)"
+        );
     }
 
     #[test]
