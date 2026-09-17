@@ -4325,7 +4325,7 @@
   ; reclaim class, sumexpect_view_reclaim sub-gap; routed to v-core-opt, queued as a view/backing co-design
   ; arc behind glb1). Modes 1/2/4 reclaim clean: 2's flat-literal backing is immortal; 1/4 borrow-probe.
   ; Flips back to 0 when the view-owns-runtime-backing reclaim lands. (v-memory-safety, coord v-corpus-harness)
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Set.to-list over STRING elements orders by content with a rope participating"

@@ -457,7 +457,7 @@
   (output (: 30 Int64))
   (call main (: 2 Int64) (: 4 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime multibyte rope matches a MULTIBYTE string-literal arm by content"
@@ -2128,7 +2128,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 201 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the composed multibyte slice view equals its literal twin and keys a Map"
@@ -5819,7 +5819,7 @@
   (output (: 11 Int64))
   (call main (: 3 Int64))
   (output (: 95 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a slice of a slice composes scalar offsets against the VIEW, not the base string"
@@ -6619,7 +6619,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 10301 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 545: DEEP-ROPE structural cells (50-concat trees — unprobed depth). rp1 = the
 ; rope itself reclaims clean after a byte-len tree walk; rp2 = the char-scan idiom across every
@@ -6694,7 +6694,7 @@
   (output (: 703 Int64))
   (call main (: 3 Int64))
   (output (: 707 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sms1 scalar-indexed String.slice isolates a multi-byte codepoint and round-trips on a RUNTIME string"
@@ -6729,7 +6729,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 3401 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "D1 an if-joined dual-used rope sharing a pre-if concat child in BOTH arms reclaims cleanly (was a 980-residual double-free, FIXED #5424)"

@@ -1078,7 +1078,7 @@
   (output (: 11 Int64))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The re-intern identity loop over a runtime rope. ---
 (case
@@ -1126,7 +1126,7 @@
   (output (: 11 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- runtime Symbol content-dispatch match (Symbol.of over a runtime rope defeats the fold; migration from
 ; rcdzc a_symbol_literal_pattern_dispatches_by_content, 2026-08-27): a symbol-literal pattern dispatches by

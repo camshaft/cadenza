@@ -13687,7 +13687,7 @@
   (output (: 13051 Int64))
   (call main (: 1 Int64))
   (output (: 35071 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- breaker batch 255: mixed-width four-param op, three result types on one thread, UTF-8 validity flip mid-run ---
 (case
