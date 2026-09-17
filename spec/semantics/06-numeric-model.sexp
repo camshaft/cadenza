@@ -300,6 +300,49 @@
   (call m (: 5 Int64) (: 0 Int64))
   (trap "divide by zero"))
 
+; The FLOAT complement of the integer zero-divisor trap above: a floating-point division by zero does NOT
+; trap — it produces a signed ±infinity, and the indeterminate forms produce NaN, per IEEE. Because a
+; non-finite constant has no written value form (a `(/ 1.0 0.0)` CONST is CDZ0201, like `1e400`), these
+; values are RUNTIME-ONLY, so the divisor zero is threaded through `(Float64.of-int n)` at n=0 and the
+; result is read back through a classifier — `(< 1e300 x)` ⇒ +inf, `(< x -1e300)` ⇒ -inf, `(< x 1e300)`
+; ⇒ finite, else NaN (unordered under the IEEE partial order). Level-uniform O0..O3.
+(case
+  "a runtime floating-point division by zero produces a signed infinity (does NOT trap)"
+  (doc
+    "Unlike the integer zero-divisor trap above, `(/ 1.0 z)` at z=0.0 is +infinity and `(/ -1.0 z)` is
+           -infinity (IEEE, no trap). The classifier returns 1 for +inf (greater than 1e300), 2 for -inf
+           (less than -1e300); result 10·1 + 2 = 12. z is `(Float64.of-int n)` at n=0 so the division is a
+           real runtime op, not a const fold (a non-finite constant has no written form and is CDZ0201).")
+  (input
+    (do
+      (def (classify (: x Float64)) (if (< 1.0e300 x) 1 (if (< x -1.0e300) 2 (if (< x 1.0e300) 3 0))))
+      (def (main (: n Int64)) (let ((z (Float64.of-int n))) (+ (* 10 (classify (/ 1.0 z))) (classify (/ -1.0 z)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 12 Int64)))
+
+(case
+  "runtime infinity arithmetic: inf+inf is +inf, and inf-inf / inf*0 / 0-div-0 are indeterminate NaN"
+  (doc
+    "The IEEE indeterminate forms at runtime, built from a runtime `inf = (/ 1.0 z)` at z=0.0:
+           `inf + inf` stays +infinity (classify 1); `inf - inf`, `inf * 0.0`, and `0.0 / 0.0` are each NaN
+           (classify 0 — unordered, so neither `< 1e300` nor `< -1e300` nor `< 1e300` holds). Packed as
+           1000·1 + 100·0 + 10·0 + 0 = 1000. A backend that saturated inf to Float64.max, or computed a
+           total-order compare, would misclassify the NaN forms (nonzero low digits) or the +inf (≠1000).")
+  (input
+    (do
+      (def (classify (: x Float64)) (if (< 1.0e300 x) 1 (if (< x -1.0e300) 2 (if (< x 1.0e300) 3 0))))
+      (def (main (: n Int64))
+        (let ((z (Float64.of-int n)))
+          (let ((inf (/ 1.0 z)))
+            (+ (* 1000 (classify (+ inf inf)))
+               (+ (* 100 (classify (- inf inf)))
+                  (+ (* 10 (classify (* inf 0.0)))
+                     (classify (/ z z))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1000 Int64)))
+
 ; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
 ; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
 ; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
