@@ -97,7 +97,14 @@
            completion), yet the census reads 3 live objects — the discarded final handler-state rope
            is not fully reclaimed. The record-with-heap-LIST state sibling above reclaims clean, so
            this is specific to the bare string-rope state. Ideal is (live-objects 0); flip this
-           marker when the handle-exit state reclaim lands.")
+           marker when the handle-exit state reclaim lands.
+           UPDATE (v-memory-safety): now (live-objects 0). The handler reduces to a synthesized
+           genuinely-recursive fold fn `f#ctx(n, state)` that owns its heap state param; the leak was
+           TWO reclaim gaps, both now closed: (1) #9088 — a scalar-borrow co-operand (`byte-len s`) no
+           longer forces the sibling `concat s` consume to retain-dup in the `+` (scalar-combining) group;
+           (2) this fix — the fold fn's discarded FINAL state (base case borrow-reads `byte-len(s)` then
+           returns a scalar, `s` dead) is now reclaimed by a per-path conditional owned-param drop on the
+           dead `If` arm. rc-trace: every ALLOC reaches a freed DROP.")
   (input
     (do
       (effect Log (op log (-> String Int64)))
@@ -114,7 +121,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 24 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an arm chooses its resume value by an if on the handler state"

@@ -8308,6 +8308,12 @@ fn collect_module_used_ops(
         if select::def_drops_owned_param(db, body, &params, Some(def)) {
             used.insert("drop");
         }
+        // The NON-looped CONDITIONAL param drop (select_function_of half-2: a divergent callee-owned heap
+        // param reclaimed on its dead `If` arm) also emits `drop` — import it iff the planning actually emits
+        // one, matching the emit (the def index gives `self_def`/params/layout the ifjoin planning needs).
+        if select::def_emits_ifjoin_param_drop(db, body, &params, Some(def), layout) {
+            used.insert("drop");
+        }
         // The CALLER-side owned-temporary-arg drop (`Core::Call` emit, boundary-owned non-looped callee) also
         // emits `drop` — import it iff the body actually has such a call, so the import matches the emit.
         if select::body_has_caller_drop(db, body, layout) {
