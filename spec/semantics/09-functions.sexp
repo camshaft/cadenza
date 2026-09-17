@@ -7396,7 +7396,7 @@
            an_unused_anonymous_lambda_parameter_warns.)")
   (input (do (def (main) (let ((f (fn ((: x Int64)) 5))) (f 3))) (export main)))
   (output (: 5 Int64))
-  (warning CDZ0306 (message "unused parameter") (fix (kind replace) (replacement "_x"))))
+  (warning CDZ0306 (message "unused parameter") (fix (kind replace) (replacement "_x") (verified))))
 
 (case
   "a USED anonymous-lambda parameter is clean — no unused-parameter warning"
@@ -7435,7 +7435,7 @@
   (input (do (def (helper) (: 9 Int64)) (def (main) 42) (export main)))
   (output (: 42 Int64))
   (count 1)
-  (warning CDZ0306 (message "unused definition") (fix (kind replace) (replacement "_helper"))))
+  (warning CDZ0306 (message "unused definition") (fix (kind replace) (replacement "_helper") (verified))))
 
 (case
   "a REFERENCED non-exported definition is used and does not warn"
