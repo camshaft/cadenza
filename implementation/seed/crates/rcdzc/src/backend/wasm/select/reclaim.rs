@@ -3164,6 +3164,37 @@ pub(super) fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: Stru
     }
 }
 
+/// Whether the `Core::Proj` chain `id` (validated by [`proj_chain_roots_at_binder`] to root at `binder`)
+/// bottoms out at a `Core::Param` occurrence (a function PARAMETER) rather than a `Core::LocalRef` (a
+/// `let`-binding). The STRUCTURAL, dup_sites-free discriminator for the site-b parent-dup subtract in
+/// [`mark_binder_dups_body`]'s `Core::Proj` arm (the `parent_consuming` gate).
+///
+/// WHY it is the exact discriminator (v-cdz-wasm-codegen ⨯ v-core-opt co-design, site-b re-land): that gate
+/// sees ONLY record/tuple FIELD-projection binders (the `SumPayload`/`SumExpect` arms recurse
+/// `consuming=false` and never emit a gated parent dup). A record/tuple PARAM projected field-wise is
+/// reclaimed OUTSIDE this body — a borrowed param by its caller, or a wrapper-owned cell by the wrapper's
+/// deep-drop ([`record_cell_param_droppable`]) — so its per-field PARENT dups have NO in-body matching drop
+/// ⇒ SURPLUS ⇒ safe to SUBTRACT (the node#4 census leak). A `let`-binding (`LocalRef`) is reclaimed by its
+/// OWN in-body epilogue, whose SHALLOW shell drop the parent dup is LOAD-BEARING for (the #9101 partition-
+/// fold UAF direction) ⇒ must KEEP. `must_escapes` CANNOT separate the two (proven by the re-land: the
+/// wrapper-cell param `m` and the let `parts` share `{never_escapes, must_escapes}` under the always-borrow
+/// may-query); binder-kind is the only axis. The one in-body OWNED-param shell reclaim (INC1
+/// [`selfloop_scrut_shell_reclaim_ok`]) is a SUM scrutinee reclaimed by a single deep `op_drop` in G6b's
+/// dup-cascade lockstep (parent dup surplus there too) AND flows through the `SumPayload` arm, so it never
+/// reaches this gate. Follows ONLY `Proj` links (the same chain `proj_chain_roots_at_binder` validates); a
+/// chain that does not cleanly root at a `Param` occurrence of `binder` returns `false` — the conservative
+/// KEEP (leak-not-UAF) direction. Runs only when `is_child_dup_site && never_escapes` already hold.
+// TEMP `allow`: consumed by v-core-opt's `mark_binder_dups_body` parent-dup subtract (`&& binder_is_param`);
+// the wiring land (site-b `binder_is_param` revision + atomic co-land) removes the allow.
+#[allow(dead_code)]
+pub(super) fn binder_is_param(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Param { binder: b } => b == binder,
+        Core::Proj { operand, .. } => binder_is_param(db, operand, binder),
+        _ => false,
+    }
+}
+
 /// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get`, `Core::SumPayload`
 /// `sum-payload`/`arr-get`, OR `Core::SumExpect` `sum-payload`, in any mix) ultimately rooted at `binder`.
 /// Each intermediate step is a BORROW that returns a handle to a cell living INSIDE `binder` (no rc++), so
