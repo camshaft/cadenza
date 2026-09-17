@@ -3743,6 +3743,49 @@
   (output (: 11 Int64))
   (live-objects known-leak))
 
+; The projection-persistence cases above bind a child by DOT-projection (`. t 0`) and consume-then-read.
+; These two pin the MATCH-BINDER child fate that rcdzc's site-b child-dup / binder_is_param parent-dup
+; gate governs: a heap child bound by a `(match t (#tuple(a _) …))` pattern and CONSUMED TWICE (moved into
+; two consuming calls) — so the projected child needs a dup between the consumes or the second underflows.
+; The two cases differ only in the compound's binder: a LET-local vs a PARAM (binder_is_param) — the exact
+; two fates the gate distinguishes. Both value-correct, level-uniform O0..O3, guarded-clean.
+(case
+  "a match-bound tuple child (LET-local compound) consumed twice needs a child-dup"
+  (doc
+    "`t = #tuple(rope 7)` is a let-local; `(match t (#tuple(a _k) (+ (consume a) (consume a))))` binds the
+           heap child `a` and moves it into TWO consuming calls (`consume` concats then byte-lens). The
+           match-binder child must be dup'd between the consumes or the second frees an already-freed rope.
+           `a` = \"pX\" (n>0), `consume a` = byte-len(\"pX!\") = 3, twice → 6. Guarded-clean, no underflow.")
+  (input
+    (do
+      (def (consume (: a String)) (String.byte-len (String.concat a "!")))
+      (def
+        (main (: n Int64))
+        (let ((t #tuple((String.concat "p" (if (> n 0) "X" "Y")) 7)))
+          (match t (#tuple(a _k) (+ (consume a) (consume a))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
+  "a match-bound tuple child (PARAM compound, binder_is_param) consumed twice needs a child-dup"
+  (doc
+    "The binder_is_param twin of the case above: the compound is a function PARAMETER `t`, not a
+           let-local, and `(match t (#tuple(a _k) (+ (consume a) (consume a))))` consumes the match-bound
+           heap child twice. This is the exact `binder_is_param` fate rcdzc's site-b gate distinguishes from
+           the let-local one — the parent-dup vs child-dup decision keys on whether the matched binder is a
+           parameter. `a` = \"pX\", 3 + 3 = 6. Guarded-clean, no underflow.")
+  (input
+    (do
+      (def (consume (: a String)) (String.byte-len (String.concat a "!")))
+      (def (go (: t (Tuple String Int64))) (match t (#tuple(a _k) (+ (consume a) (consume a)))))
+      (def (main (: n Int64)) (go #tuple((String.concat "p" (if (> n 0) "X" "Y")) 7)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
 (case
   "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
   (doc
