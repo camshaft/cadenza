@@ -244,6 +244,36 @@
   (output (: (Err "neg") (Result Int64 String)))
   (live-objects known-leak))
 
+(case
+  "a `?` short-circuit reclaims an UNRELATED heap binding live in the enclosing scope on the abortive path"
+  (doc
+    "The reclaim face of the abortive path: a heap rope `s` is bound in the boundary function BEFORE a
+           runtime-disc `?`; when the `?` sees `None` it short-circuits the boundary, so `s` — live in scope
+           but only USED on the success path (`byte-len s`) — must be reclaimed on the way out. v>0 overflows
+           the checked-add → `None` short-circuit with `s` (\"liveX\") live and discarded; v=-100 is in range
+           → `Some (max-100 + byte-len(\"liveY\"))` = `(Some (max-95))`. Value holds both paths, both backends,
+           O0..O2, and there is NO double-free (the debug-counters runtime does not underflow on the
+           short-circuit). But the census reads 1 LIVE OBJECT on the short-circuit path (call 0): the live
+           heap binding `s` is NOT reclaimed when the `?` breaks out — the abortive lowering (Core::Block +
+           Core::Break) skips the enclosing-scope drops on the way out. A no-heap-binding control (a pure
+           runtime-disc `?` short-circuit) reclaims to 0, so this is a heap-binding-on-abort reclaim gap,
+           DISTINCT from the fresh-scrutinee gap the runtime-disc cases above track. Filed to v-memory-safety.
+           `(live-objects known-leak)` tracks the husk; ideal is 0, flip when the abort-path drop lands.
+           (Adversarial pin from a breaker probe.)")
+  (input
+    (do
+      (def
+        (main (: v Int64))
+        (let ((s (String.concat "live" (if (> v 0) "X" "Y"))))
+          (let ((x (try (Int64.checked-add Int64.max v))))
+            (Some (+ x (String.byte-len s))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: (None unit) (Option Int64)))
+  (call main (: -100 Int64))
+  (output (: (Some 9223372036854775712) (Option Int64)))
+  (live-objects known-leak))
+
 ; ── T1a gate pins: invariants the constant-fold desugar must hold (all PASS today) ───────────────────
 ; These pin now-passing behaviors so a future change to the `?` desugar (or the BRICK sequence) cannot
 ; silently flip them. Added by v-try-operator after adversarially probing the landed BRICK 2a/3a folds.
