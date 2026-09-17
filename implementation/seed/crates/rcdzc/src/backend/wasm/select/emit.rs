@@ -2488,10 +2488,27 @@ pub(super) fn emit(
             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // slice rope → independent flat leaf (owned→owned)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
-            // ELSE — None. `str` was BORROWED (this branch took no reference), so it is NOT dropped here; its
-            // owner reclaims it (exactly like `String.at`'s None branch).
+            // ELSE — None. This branch took no reference to `str`.
             emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
+            // OWNED-SOURCE RECLAIM (v-memory-safety, 13-strings slc1 node#3): the Some branch DUP'd `str`,
+            // bytes-sliced the dup, and COMPACTed to an INDEPENDENT flat leaf — the payload never aliases
+            // `str` — and the None branch took no ref, so after this op `str` is DEAD on BOTH paths. When
+            // `string` is an OWNED TEMPORARY (a fresh `String.concat`/producer result, not a borrowed
+            // param/local), nothing else reclaims it → it leaks (the base rope husk under an
+            // `Option.expect (String.slice (String.concat …) …)`). Drop it IFF owned; a BORROWED source
+            // (param/kept-local) is left to its owner (dropping would double-free). SOUND on both branches
+            // AND the ESCAPE disposition: because the payload is COMPACTED-INDEPENDENT (unlike a true
+            // aliasing view), freeing the source never frees a still-referenced view — the drop is the
+            // #9078/ValueEq drop-owned-operand pattern applied to a compacting view producer's source. The
+            // Some/None handle sits BENEATH on the stack; `LocalGet(str_slot); OP_DROP` pops only `str`.
+            if matches!(
+                heap_operand_ownership(db, string),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(())
         }
         // `Bytes.concat(a, b)` — emit both handles, `bytes-concat` (consumes both, returns the new one).

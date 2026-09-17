@@ -6546,7 +6546,16 @@
 ; OUTSIDE the 12 markers #4425 reconciled: the MINIMAL single-consume cell, the slice-of-slice
 ; composition, and the dqe-INTERSECTION (a slice inside a dual-used tuple — drops only when BOTH
 ; the slice-dup residue AND dqe leg-1 are balanced; a partial §4 fix shows an intermediate
-; reading here). All flip DOWN under v-core-opt's unified consuming analysis.
+; reading here).
+; UPDATE (v-memory-safety): slc1 (the MINIMAL single-consume cell) now reclaims to exactly 0.
+; String.slice is a COMPACTING view producer (the Some payload is an independent flat leaf that
+; never aliases the source), so (a) it joins is_owned_single_view_producer — an Option.expect over
+; it consumed by a view-scalar read (byte-len) reclaims the Some/None shells via the SumExpect view
+; reclaim — and (b) its OWNED-temporary source (dead on both branches) is dropped after the If
+; (gated heap_operand_ownership==Owned; a borrowed source is left to its owner → no double-free;
+; sound on the escape disposition since the payload is compacted-independent). slc2/slc3 remain
+; known-leak: their slice result is MULTI-consumed (byte-len + equality / projection + walker), a
+; residual that still flips DOWN only under v-core-opt's unified consuming analysis.
 (case
   "slc1 a SINGLE-consumed String.slice result leaks its dup (the minimal post-#4425 residue cell)"
   (input
@@ -6560,7 +6569,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "slc2 a slice-of-slice (two view layers) multi-consumed leaks both layers' dups"

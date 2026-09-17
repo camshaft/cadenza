@@ -1847,11 +1847,23 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     // `collect_consuming_payload_sites_cont(root, scrutinee).is_empty()` (the element is purely borrowed —
     // it4 get-int-copies the scalar, never consumes/escapes it) AND `sum_shell_reclaim_payload_ok` (whose
     // inc2b clause already names the List.at/Map.lookup/Bytes.slice extraction family). A consumed/escaped
-    // element → non-empty sites → declined (leak-safe). (BytesAt/StrSlice/MapLookup widen here later under a
-    // corpus-wide guarded-all; ListAt is the it4 case.)
+    // element → non-empty sites → declined (leak-safe). (BytesAt widens here later under a corpus-wide
+    // guarded-all; ListAt is the it4 case.)
+    // `String.slice` (Core::StrSlice) is the STRING twin of `Bytes.slice` (Core::BytesSlice, already admitted):
+    // it ALWAYS returns a fresh `Some(one view)` into its source string — owned + single-heap-payload by
+    // construction, the SAME owned-single-view proof. Admitting it lets the view_reclaim fire for
+    // `(String.byte-len (Option.expect (String.slice s a b)))` (13-strings slc1: the SumExpect view consumed by
+    // the `byte-len` scalar-read → VIEW-set, dup view + drop shell + view-drop after the borrow, net -1). SOUND
+    // by the SAME fences as Bytes.slice: `matchsum_view_shell_reclaim_ok` admits only when the view is purely
+    // borrowed (`collect_consuming_payload_sites_cont(...).is_empty()`), and an ESCAPING slice view stays
+    // leaking (the #4917 escape-stays-leaking control — dropping the shell could free a still-referenced view).
     matches!(
         core_of(db, scrutinee),
-        Core::StrAt { .. } | Core::BytesSlice { .. } | Core::ListAt { .. } | Core::MapLookup { .. }
+        Core::StrAt { .. }
+            | Core::StrSlice { .. }
+            | Core::BytesSlice { .. }
+            | Core::ListAt { .. }
+            | Core::MapLookup { .. }
     )
 }
 

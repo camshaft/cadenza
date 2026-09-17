@@ -722,7 +722,11 @@ pub(super) fn collect_used_ops_into_seen(
         // get`), slices that span (`bytes-slice`, which CONSUMES the string handle → the Some branch `dup`s
         // first), COMPACTS the fresh slice to an independent flat leaf (content-equality/key-hashing), and
         // builds `Some`/`None` (`sum-new`; `None` is the inline `IMM_UNIT`, no `arr-alloc`). Same op set as
-        // `String.at`. The source string is NOT dropped here (its owner reclaims it), so no `drop` import.
+        // `String.at`. IMPORT/EMIT COMPANION for the owned-source reclaim: when the `string` source is an
+        // OWNED temporary the emit drops it after the If (it is DEAD on both branches — the payload is a
+        // COMPACTED-independent leaf, the None branch takes no ref), so `drop` must be imported iff the emit
+        // drops. Mirror the emit's `heap_operand_ownership(string) == Owned` gate EXACTLY (a BORROWED source
+        // is left to its owner → no drop, no import).
         Core::StrSlice {
             string, start, end, ..
         } => {
@@ -732,6 +736,12 @@ pub(super) fn collect_used_ops_into_seen(
             out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
+            if matches!(
+                heap_operand_ownership(db, string),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into_seen(db, string, out, visited);
             collect_used_ops_into_seen(db, start, out, visited);
             collect_used_ops_into_seen(db, end, out, visited);
