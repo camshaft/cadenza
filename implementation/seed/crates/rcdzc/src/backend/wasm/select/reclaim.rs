@@ -1634,6 +1634,40 @@ pub(super) fn collect_shell_reclaim_child_dups(
     collect_shell_reclaim_child_dups_seen(db, id, id, dup_sites, &mut seen);
 }
 
+/// SINGLE SOURCE OF TRUTH (v-memory-safety ⟷ v-core-opt lockstep co-design) for the `String.at`
+/// multi-consume extracted-view double-free recognition. Returns true iff `scrutinee` is a `Core::StrAt`
+/// whose extracted Some-arm view is CONSUMED MORE THAN ONCE across the match arms — the EXACT condition under
+/// which the `else if` dup branch of [`collect_shell_reclaim_child_dups_seen`] dups every consuming payload
+/// occurrence (so each consume owns its own reference; see the long UAF-FIX note at that branch).
+///
+/// The shell-reclaim GATE `matchsum_view_shell_reclaim_ok` (select.rs) MUST consult THIS predicate rather
+/// than re-derive the test: the dup-side (here) and the reclaim-side (the gate) key on ONE condition, so they
+/// can never diverge — a divergence between "we dup'd the payload" and "we deep-drop the shell" is precisely a
+/// double-free (dup missing, drop fires) or a leak (dup fires, drop missing). StrAt is the ONE single-view
+/// producer deliberately NOT globally-`Owned` (its `Bytes.at`/`List.at`/`Map.lookup`/`String.slice`/
+/// `Bytes.slice` twins take the `owned_compound_boxed` arm), so the caller passes the `compound_boxed` it has
+/// already computed and this adds the node-kind + `total_consumes > 1` test. `count_node_refs` OVER-counts (a
+/// borrowing co-ref inflates the sum), so the predicate is conservative in the SAFE direction: a false-true
+/// over-dups (leak), never a false-false under-dups (double-free).
+pub(super) fn strat_view_multi_consume(
+    db: &mut Db,
+    top_body: StructId,
+    root: &crate::core::SumCont,
+    scrutinee: StructId,
+    compound_boxed: bool,
+) -> bool {
+    if !(compound_boxed && matches!(core_of(db, scrutinee), Core::StrAt { .. })) {
+        return false;
+    }
+    let mut sites = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut sites);
+    let total_consumes: usize = sites
+        .iter()
+        .map(|&s| count_node_refs(db, top_body, s))
+        .sum();
+    total_consumes > 1
+}
+
 pub(super) fn collect_shell_reclaim_child_dups_seen(
     db: &mut Db,
     id: StructId,
@@ -1711,7 +1745,7 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
                     dup_sites.insert(s);
                 }
             }
-        } else if compound_boxed && matches!(core_of(db, scrutinee), Core::StrAt { .. }) {
+        } else if strat_view_multi_consume(db, top_body, &root, scrutinee, compound_boxed) {
             // UAF FIX (v-memory-safety, multi-use `String.at` view double-free): `String.at` (`Core::StrAt`)
             // is the ONE single-view producer deliberately NOT globally `Owned` (the Stage-B `String.concat`
             // note at select.rs's StrAt comment) — its `Bytes.at`/`List.at`/`Map.lookup`/`String.slice`/
@@ -1735,16 +1769,12 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
             // untouched — adding a dup there would LEAK a payload that today frees cleanly (matchsum_view
             // declines the shell but the lone consume nets to 0). count_node_refs OVER-counts (a borrowing
             // co-ref inflates the sum), so the gate is conservative in the SAFE direction (over-dup = leak,
-            // never under-dup = double-free).
+            // never under-dup = double-free). The `> 1` / node-kind test lives in `strat_view_multi_consume`
+            // (the shared predicate the shell-reclaim gate consults for lockstep) — the guard being true here
+            // already means multi-consume, so we dup EVERY consuming payload occurrence unconditionally.
             let mut sites = HashSet::new();
             collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
-            let total_consumes: usize = sites
-                .iter()
-                .map(|&s| count_node_refs(db, top_body, s))
-                .sum();
-            if total_consumes > 1 {
-                dup_sites.extend(sites);
-            }
+            dup_sites.extend(sites);
         }
     }
     for child in core_child_ids(db, id) {
