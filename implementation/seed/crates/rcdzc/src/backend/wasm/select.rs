@@ -4378,6 +4378,16 @@ fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
             | Core::MapInsert { .. }
             | Core::SetInsert { .. }
             | Core::SetAlgebra { .. }
+            // Single-owned-ref-move CONVERTERS (not builders, but the SAME 1:1-balance property the
+            // allowlist requires): `Core::StrToBytes` (op_bytes_compact — `Symbol.to-string` / `Bytes.compact`
+            // over a String) CONSUMES exactly one owned ref to its operand and returns one flat leaf,
+            // retaining NO alias to the input (it does not resume-thread — it is a prim, not a Call/Closure).
+            // So when an extraction-`Some` payload is consumed here, the single dup-on-escape balances the
+            // shell deep-drop 1:1, exactly like a builder child. Fixes the `(match (Map.lookup m k) ((Some sy)
+            // (String.byte-len (Symbol.to-string sy))) …)` symbol-value round-trip leak (17-symbols:583): the
+            // Owned Map.lookup Some shell was left unreclaimed because `Symbol.to-string`→`StrToBytes` was
+            // neither borrow-clean (it consumes) nor an allowlisted builder.
+            | Core::StrToBytes { .. }
     )
 }
 

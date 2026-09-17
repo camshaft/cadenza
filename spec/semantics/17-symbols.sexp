@@ -601,7 +601,7 @@
   (output (: 2 Int64))
   (call main (: 9 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tuple with a Symbol leaf as a SET element dedups and membership-checks by content"
