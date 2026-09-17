@@ -120,6 +120,56 @@
   (call main (: 3 Int64))
   (output (: 2019 Int64)))
 
+; The two cases above read the captured payload THROUGH the closure across exited frames. These pin the
+; complementary discipline: the OUTER binding is captured by a closure AND then reused DIRECTLY in the
+; enclosing scope after the closure runs — capturing a heap value must DUP it (a by-value capture) so the
+; outer binding survives, exactly as `List.push` in one operand leaves a shared binding intact for a later
+; read. A capture that MOVED the binding would free it under the later enclosing-scope use.
+(case
+  "a heap binding captured by a closure survives a later DIRECT read in the enclosing scope"
+  (doc
+    "`s` is a runtime rope; the closure `f` captures it (a by-value dup at the capture site), and
+           after calling `f` the SAME `s` is read again directly in `main`'s scope — both the captured
+           copy and the outer binding must be live. `f \"zz\"` is byte-len(\"capX\"+\"zz\") = 6 and the
+           later byte-len(s) = 4, so 6 + 4 = 10. A move-capture (no dup) would free `s` when `f` was
+           built and the trailing `byte-len s` would read a freed rope. n>0 picks the 1-byte suffix to
+           block a const fold of `s`. (Adversarial pin from a breaker probe; wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (do
+          (def s (String.concat "cap" (if (> n 0) "X" "Y")))
+          (def f (fn (x) (String.byte-len (String.concat s x))))
+          (+ (f "zz") (String.byte-len s))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 10 Int64))
+  (live-objects 0))
+
+(case
+  "a heap binding captured by a closure is HEAP-consumed both inside the closure and after, results combined"
+  (doc
+    "The full-consume face of the persistence-after-capture case above: the closure `f` HEAP-consumes
+           the captured `s` (`String.concat s x` → a rope), and after the call the outer `s` is HEAP-consumed
+           AGAIN (`String.concat s \"QQ\"`), and the closure's heap RESULT is combined with that — so the
+           captured copy and the outer binding are both live heap values feeding one final concat. `f \"zz\"`
+           = \"capXzz\" and `(String.concat s \"QQ\")` = \"capXQQ\"; their concat is 12 bytes. A missing dup
+           at the capture site frees `s` before the trailing consume. (Adversarial pin from a breaker probe;
+           wasm=rust cross-checked.)")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (do
+          (def s (String.concat "cap" (if (> n 0) "X" "Y")))
+          (def f (fn (x) (String.concat s x)))
+          (String.byte-len (String.concat (f "zz") (String.concat s "QQ")))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
+
 (case
   "a captured lambda applied at two shadowing sites resolves each to its DEF-SITE capture (reduce-cache share soundness)"
   (doc
