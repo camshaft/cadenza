@@ -3195,20 +3195,37 @@ fn emit_expr_viewed(
         }
         Core::ListPush { list, elem } => {
             let head = member_access(b, "List", "push");
-            let l = emit_expr(db, b, list, None, env, emitted)?;
+            // PEEL a newtype list operand to its inner list (same as `Core::ListLen`): a folded
+            // `(match w ((Mk xs) (List.push xs e)))` leaves `List.push` over the bare newtype binder
+            // `w : Box` (`type Box (B (List Int64))`) → recompiles as `List.push` on `Box` (CDZ0203
+            // "expects (List _), but a value of type Box was given", 05-compound 0290). The peel is a
+            // no-op (`None`) for a non-newtype operand.
+            let l = match emit_binder_newtype_inner_peel(db, b, list, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, list, None, env, emitted)?,
+            };
             let e = emit_expr(db, b, elem, None, env, emitted)?;
             Ok(b.list(vec![head, l, e]))
         }
         Core::ListPrepend { list, elem } => {
             let head = member_access(b, "List", "prepend");
-            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let l = match emit_binder_newtype_inner_peel(db, b, list, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, list, None, env, emitted)?,
+            };
             let e = emit_expr(db, b, elem, None, env, emitted)?;
             Ok(b.list(vec![head, l, e]))
         }
         Core::ListConcat { lhs, rhs } => {
             let head = member_access(b, "List", "concat");
-            let l = emit_expr(db, b, lhs, None, env, emitted)?;
-            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            let l = match emit_binder_newtype_inner_peel(db, b, lhs, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, lhs, None, env, emitted)?,
+            };
+            let r = match emit_binder_newtype_inner_peel(db, b, rhs, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, rhs, None, env, emitted)?,
+            };
             Ok(b.list(vec![head, l, r]))
         }
         Core::MapMerge { lhs, rhs } => {
@@ -3219,14 +3236,20 @@ fn emit_expr_viewed(
         }
         Core::ListUpdate { list, index, elem } => {
             let head = member_access(b, "List", "update");
-            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let l = match emit_binder_newtype_inner_peel(db, b, list, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, list, None, env, emitted)?,
+            };
             let i = emit_expr(db, b, index, None, env, emitted)?;
             let e = emit_expr(db, b, elem, None, env, emitted)?;
             Ok(b.list(vec![head, l, i, e]))
         }
         Core::ListAt { list, index, .. } => {
             let head = member_access(b, "List", "at");
-            let l = emit_expr(db, b, list, None, env, emitted)?;
+            let l = match emit_binder_newtype_inner_peel(db, b, list, env, emitted)? {
+                Some(peel) => peel,
+                None => emit_expr(db, b, list, None, env, emitted)?,
+            };
             let i = emit_expr(db, b, index, None, env, emitted)?;
             Ok(b.list(vec![head, l, i]))
         }
