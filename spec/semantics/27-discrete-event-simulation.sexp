@@ -445,6 +445,97 @@
   (output (: "A,B,DD" String))
   (live-objects known-leak))
 
+; The single-shape pin above is the minimal bug-4 repro. These two guard the B2 fix (gate-2d) at its
+; boundaries: (a) the SAME returned heap-component product dispatched at TWO match sites — the arm the fix
+; keeps BOUND (≥2 dispatch sites = genuinely re-materialized), which must stay correct under an aliasing
+; reinsert; and (b) a DEEPER interleaving — pop → reinsert → pop-again → reinsert → drain, chaining the
+; #tuple-returning pop so the fixed re-descend applies repeatedly across compound operations. Both were
+; O2/O3 wild-deref candidates in the bug-4 family; both now level-uniform + guarded-clean.
+(case
+  "a returned #tuple(value rest) dispatched at TWO match sites stays correct with an aliasing reinsert (B2 ≥2-site bound arm)"
+  (doc
+    "The `≥2 distinct dispatch sites` arm of gate-2d: the popped product `p1` is match-destructured
+           TWICE (site 1 reads the value `v1`, site 2 reads the rest `q2` and reinserts into it) — so the
+           fix KEEPS it bound (a genuinely re-materialized share, like cmb1's state-tuple), and that bind
+           must remain rc-safe even though `q2` aliases `q1`'s tail. Both matches run; `a` = \"A\", `b` =
+           drain(insert([(4,DD)], 1, \"B\")) = \"B,DD\", so `\"A|B,DD\"`. Level-uniform O0..O3, guarded-clean.")
+  (input
+    (do
+      (type Q QNil (QCons UInt64 String Q))
+      (def
+        (q-insert (: q Q) (: t UInt64) (: v String))
+        (match q
+          ((Q.QNil _) (Q.QCons t v (Q.QNil ())))
+          ((Q.QCons ht hv rest)
+            (if (< t ht) (Q.QCons t v (Q.QCons ht hv rest)) (Q.QCons ht hv (q-insert rest t v))))))
+      (def
+        (q-pop (: q Q))
+        (match q ((Q.QNil _) #tuple("empty" (Q.QNil ()))) ((Q.QCons _t hv rest) #tuple(hv rest))))
+      (def
+        (q-drain (: q Q))
+        (match q
+          ((Q.QNil _) "")
+          ((Q.QCons _ hv rest)
+            (match rest ((Q.QNil _) hv) ((Q.QCons _t2 _v2 _r) (String.concat hv (String.concat "," (q-drain rest))))))))
+      (def
+        (main (: n Int64))
+        (do
+          (def q1 (q-insert (q-insert (Q.QNil ()) 3 (String.concat "A" (if (> n 0) "" "z"))) 4 "DD"))
+          (def p1 (q-pop q1))
+          (def a (match p1 (#tuple(v1 _q) v1)))
+          (def b (match p1 (#tuple(_v q2) (q-drain (q-insert q2 1 "B")))))
+          (String.concat a (String.concat "|" b))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "A|B,DD" String))
+  (live-objects known-leak))
+
+(case
+  "a chained pop -> reinsert -> pop -> reinsert -> drain is level-uniform (B2 fix holds under compound interleaving)"
+  (doc
+    "The DEEPER interleaving: two #tuple-returning pops, each reinserting into the rest it extracted,
+           before the final drain — so the fixed single-dispatch re-descend applies REPEATEDLY on chained
+           borrowed spines. q1=[(3,A),(4,DD),(6,F)]; pop→v1=A,r1=[(4,DD),(6,F)]; insert 2 B →q2; pop→v2=B,
+           r2=[(4,DD),(6,F)]; insert 5 E →[(4,DD),(5,E),(6,F)]; drain=\"DD,E,F\"; result \"A/B/DD,E,F\".
+           Level-uniform O0..O3, guarded-clean — the fix does not regress under compound application.")
+  (input
+    (do
+      (type Q QNil (QCons UInt64 String Q))
+      (def
+        (q-insert (: q Q) (: t UInt64) (: v String))
+        (match q
+          ((Q.QNil _) (Q.QCons t v (Q.QNil ())))
+          ((Q.QCons ht hv rest)
+            (if (< t ht) (Q.QCons t v (Q.QCons ht hv rest)) (Q.QCons ht hv (q-insert rest t v))))))
+      (def
+        (q-pop (: q Q))
+        (match q ((Q.QNil _) #tuple("_" (Q.QNil ()))) ((Q.QCons _t hv rest) #tuple(hv rest))))
+      (def
+        (q-drain (: q Q))
+        (match q
+          ((Q.QNil _) "")
+          ((Q.QCons _ hv rest)
+            (match rest ((Q.QNil _) hv) ((Q.QCons _t2 _v2 _r) (String.concat hv (String.concat "," (q-drain rest))))))))
+      (def
+        (main (: n Int64))
+        (do
+          (def q1 (q-insert (q-insert (q-insert (Q.QNil ()) 3 (String.concat "A" (if (> n 0) "" "z"))) 4 "DD") 6 "F"))
+          (def p1 (q-pop q1))
+          (match p1
+            (#tuple(v1 r1)
+              (do
+                (def q2 (q-insert r1 2 "B"))
+                (def p2 (q-pop q2))
+                (match p2
+                  (#tuple(v2 r2)
+                    (do
+                      (def q3 (q-insert r2 5 "E"))
+                      (String.concat v1 (String.concat "/" (String.concat v2 (String.concat "/" (q-drain q3)))))))))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "A/B/DD,E,F" String))
+  (live-objects known-leak))
+
 (case
   "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc
