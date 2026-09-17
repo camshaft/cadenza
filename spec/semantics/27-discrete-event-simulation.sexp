@@ -537,6 +537,48 @@
   (live-objects known-leak))
 
 (case
+  "a pop returning a CUSTOM SUM (Popped value rest) carrying the borrowed spine is level-uniform (B2 protection generalizes past #tuple)"
+  (doc
+    "The bug-4 return vehicle is not limited to `#tuple`: here `q-pop` returns a custom discriminated
+           result `(PR.Popped hv rest)` — a sum VARIANT whose payload carries the popped String and the
+           borrowed spine `rest` — and the caller matches `(Popped v1 q2)` and reinserts into `q2` (which
+           aliases `q1`'s tail). The sum-variant-payload extraction is a different emit path from tuple
+           field-reads, and the same dup discipline must hold or the reinsert wild-derefs at O2/O3 as the
+           bare-#tuple form did pre-fix. Value \"A,B,DD\", level-uniform O0..O3, guarded-clean — confirming
+           the B2 heap-component protection covers sum-carried borrowed spines, not just Tuple/Record.
+           (Adversarial pin from a breaker probe.)")
+  (input
+    (do
+      (type Q QNil (QCons UInt64 String Q))
+      (type PR Empty (Popped String Q))
+      (def
+        (q-insert (: q Q) (: t UInt64) (: v String))
+        (match q
+          ((Q.QNil _) (Q.QCons t v (Q.QNil ())))
+          ((Q.QCons ht hv rest)
+            (if (< t ht) (Q.QCons t v (Q.QCons ht hv rest)) (Q.QCons ht hv (q-insert rest t v))))))
+      (def
+        (q-drain (: q Q))
+        (match q
+          ((Q.QNil _) "")
+          ((Q.QCons _ hv rest)
+            (match rest ((Q.QNil _) hv) ((Q.QCons _t2 _v2 _r) (String.concat hv (String.concat "," (q-drain rest))))))))
+      (def
+        (q-pop (: q Q))
+        (match q ((Q.QNil _) (PR.Empty ())) ((Q.QCons _t hv rest) (PR.Popped hv rest))))
+      (def
+        (main (: n Int64))
+        (do
+          (def q1 (q-insert (q-insert (Q.QNil ()) 3 (String.concat "A" (if (> n 0) "" "z"))) 4 "DD"))
+          (match (q-pop q1)
+            ((PR.Empty _) "empty")
+            ((PR.Popped v1 q2) (String.concat v1 (String.concat "," (q-drain (q-insert q2 1 "B"))))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "A,B,DD" String))
+  (live-objects known-leak))
+
+(case
   "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc
     "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
