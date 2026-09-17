@@ -19107,8 +19107,8 @@
         Core::BytesLen and the emit head-selection was type-blind — a runtime String.byte-len re-emitted
         ((. Bytes len) <string>) and the hop output REJECTED on recompile. #5416 disambiguates by the
         operand's type. Slice hit (bytes 2..6 of hello-X → 4) weighted + out-of-range slice → None (-1):
-        10·4 + (-1) = 39 on both args. Dual-path verified, hop byte-idempotent, re-compiles. live 2 = the known
-        arg-position over-retain residual class (may tighten with SITE-B-lineage work; re-pin then).")
+        10·4 + (-1) = 39 on both args. Dual-path verified, hop byte-idempotent, re-compiles. live 0 = the arg-position over-retain residual (was 2) is now reclaimed by
+        the String.slice Option-shell + owned-source reclaim (slc1, SITE-B-lineage); re-pinned per this doc's note.")
   (input
     (do
       (def
@@ -19124,7 +19124,7 @@
   (output (: 39 Int64))
   (call main (: -1 Int64))
   (output (: 39 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "cdzw65 a @requires contract ERASES through the cadenza hop to its inlined guard — enforcement identical"
