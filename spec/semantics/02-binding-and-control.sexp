@@ -6492,7 +6492,7 @@
 (case
   "a non-linear list binding pattern is rejected CDZ0102 before the refutability guard"
   (input (do (def (main) (let ((#list(a a (.. rest)) #list(1 2 3))) a)) (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "a non-linear tuple match pattern is rejected CDZ0102 with a rename fix"
@@ -7943,22 +7943,22 @@
 (case
   "a misspelled match keyword in head position suggests match"
   (input (do (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f)))
-  (error CDZ0101 (message "did you mean `match`?")))
+  (error CDZ0101 (message "did you mean `match`?") (fix (kind replace))))
 
 (case
   "a misspelled if keyword in head position suggests if"
   (input (do (def (f (: b Bool)) (iff b 1 2)) (export f)))
-  (error CDZ0101 (message "did you mean `if`?")))
+  (error CDZ0101 (message "did you mean `if`?") (fix (kind replace))))
 
 (case
   "a misspelled let keyword in head position suggests let"
   (input (do (def (f) (le ((x 5)) x)) (export f)))
-  (error CDZ0101 (message "did you mean `let`?")))
+  (error CDZ0101 (message "did you mean `let`?") (fix (kind replace))))
 
 (case
   "a misspelled and keyword in head position suggests and"
   (input (do (def (f (: b Bool)) (annd b b)) (export f)))
-  (error CDZ0101 (message "did you mean `and`?")))
+  (error CDZ0101 (message "did you mean `and`?") (fix (kind replace))))
 
 (case
   "a head typo nearer to a real def suggests the def over a grammar keyword"
@@ -9600,7 +9600,7 @@
   (doc
     "The param-list face of the CDZ0102 non-linearity rule (let and match faces pinned elsewhere; 05-compound pins the UNTYPED (def (f x x)) shape) — here both params carry Int64 annotations, so the reject must fire on the repeated NAME, not the annotation path. The self-hosted front-end accepted this and silently last-wins-shadowed ((f 1 2) returned 2) — adv-47, fixed b80c1d374.")
   (input (do (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "an unbound name in an uncalled def's match-ARM BODY is rejected"

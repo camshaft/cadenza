@@ -970,7 +970,7 @@
            over the defined names (`helper`). Pins that the multi-name export scanner resolves EVERY name (a
            bug once read only `tail.first()`, silently dropping the rest).")
   (input (do (def (main) 1) (def (helper) 2) (export main helpr)))
-  (error CDZ0101 (message "helpr") (message "did you mean `helper`?")))
+  (error CDZ0101 (message "helpr") (message "did you mean `helper`?") (fix (kind replace))))
 
 (case
   "a duplicate type declaration is rejected with a delete fix"

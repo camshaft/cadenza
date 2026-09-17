@@ -2879,7 +2879,7 @@
            the `ret` subject when checking predicate names; `@requires` passes no subject, so `ret` resolves to
            Poison(CDZ0101) exactly as any stray name would.)")
   (input (do (@ (requires (>= ret 0)) (def (f (: x Int64)) x)) (def (main) (f 5)) (export main)))
-  (error CDZ0101))
+  (error CDZ0101 (fix (kind replace))))
 
 (case
   "a @requires predicate that is NOT Bool-typed is REJECTED CDZ0203 — a predicate must denote a truth value"

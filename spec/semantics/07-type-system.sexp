@@ -4176,7 +4176,7 @@
            marker did not open a hole for typo'd ctor names on the called path (the uncalled-def face is the
            case below). (migrated from rcdzc an_undeclared_capitalized_ctor_still_rejects_cdz0101.)")
   (input (do (def (main) (Nope 5)) (export main)))
-  (error CDZ0101))
+  (error CDZ0101 (fix (kind replace))))
 
 (case
   "an unbound CONSTRUCTOR applied in an uncalled def is rejected"
@@ -4693,7 +4693,7 @@
 (case
   "a near typo of a real type in a variant payload keeps its did-you-mean"
   (input (do (type C (A Strng)) (def (main) 0) (export main)))
-  (error CDZ0101 (message "did you mean `String`?")))
+  (error CDZ0101 (message "did you mean `String`?") (fix (kind replace))))
 
 (case
   "a parametric variant payload does not false-positive as an unknown type"

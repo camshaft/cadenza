@@ -20571,7 +20571,7 @@
            the same name across DIFFERENT defs are unaffected (only one signature's own repeat is the
            error).")
   (input (do (def (f x x) x) (def (main (: d Int64)) (f (/ 1 d) 7)) (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "a recursive sum type works with pattern matching"
@@ -36460,7 +36460,7 @@
       (def (f xs) (match xs (#list(a a) (+ a a)) (_ 0)))
       (def (main) (f #list(1 2)))
       (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "a list binder repeated across a leading position and the rest is non-linear"
@@ -36469,7 +36469,7 @@
       (def (f xs) (match xs (#list(a b (.. a)) a) (_ 0)))
       (def (main) (f #list(1 2 3)))
       (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "a list binder repeated inside a NESTED tuple element is non-linear"
@@ -36478,7 +36478,7 @@
       (def (f xs) (match xs (#list(#tuple(a a) (.. r)) a) (_ 0)))
       (def (main) (f #list(#tuple(1 2))))
       (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace))))
 
 (case
   "a tuple element pattern against a scalar list element is a shape error, not a decline"
