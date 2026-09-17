@@ -579,6 +579,46 @@
   (live-objects known-leak))
 
 (case
+  "a queue pop that String.at-extracts a char from an owned temp, returns #tuple(char rest), multi-consumes it, and reinserts — stacked reclaim paths compose"
+  (doc
+    "A COMPOSITION stress that stacks four independently-fixed reclaim paths in one flow, a canary for
+           a future reclaim change that breaks an INTERACTION each fix passes in isolation: (1) `String.at`
+           on `(String.concat hv \"!\")` — an OWNED TEMPORARY source (the owned-source-drop path); (2) the
+           extracted char packed with the borrowed spine into a returned `#tuple(char rest)` (the B2
+           heap-component product-return path); (3) the char MULTI-CONSUMED via `(String.concat c c)`; and
+           (4) the returned `rest` reinserted (`q-push rest \"X\"`) and drained. q1 = [\"aA\",\"bB\"] (n>0);
+           pop-char reads index 0 of \"aA!\" → \"a\", doubled → \"aa\", rest = [\"bB\"]; push \"X\" then drain
+           → \"X,bB,\"; result \"aa|X,bB,\". Value holds both n-paths, both backends, level-uniform O0..O3, and
+           guarded-runtime clean (no underflow) — the stacked paths compose without a double-free.
+           (Adversarial pin from a breaker compound-reclaim probe.)")
+  (input
+    (do
+      (type Q QNil (QCons String Q))
+      (def (q-push (: q Q) (: v String)) (Q.QCons v q))
+      (def
+        (q-pop-char (: q Q) (: i Int64))
+        (match q
+          ((Q.QNil _) #tuple("_" (Q.QNil ())))
+          ((Q.QCons hv rest)
+            (match (String.at (String.concat hv "!") i)
+              ((Some c) #tuple((String.concat c c) rest))
+              ((None _u) #tuple("?" rest))))))
+      (def
+        (q-drain (: q Q))
+        (match q ((Q.QNil _) "") ((Q.QCons hv rest) (String.concat hv (String.concat "," (q-drain rest))))))
+      (def
+        (main (: n Int64))
+        (do
+          (def q1 (q-push (q-push (Q.QNil ()) (String.concat "b" (if (> n 0) "B" "z"))) (String.concat "a" (if (> n 0) "A" "z"))))
+          (match (q-pop-char q1 0)
+            (#tuple(cc rest)
+              (String.concat cc (String.concat "|" (q-drain (q-push rest "X"))))))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: "aa|X,bB," String))
+  (live-objects known-leak))
+
+(case
   "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc
     "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
