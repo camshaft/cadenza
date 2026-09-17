@@ -1608,7 +1608,13 @@
            recursive synthesized fold fn, NOT the tail-loop epilogue path) — it is NOT String/NfcNormalize-
            specific (a `List.push`/`List.len` state of the same shape leaks identically). Pinned
            `known-leak` (a TIGHTEN CANDIDATE that auto-flips clean via `known_leak_now_clean` when the
-           fold-fn param-reclaim fix lands); breaker adv-handler-string-rope, v-memory-safety diagnosis.")
+           fold-fn param-reclaim fix lands); breaker adv-handler-string-rope, v-memory-safety diagnosis.
+           UPDATE (v-memory-safety): now (live-objects 0), via TWO landed reclaim fixes on the synthesized
+           recursive fold fn `f#ctx(n, state)`: (1) #9088 — a scalar-borrow co-operand (`byte-len s`) no
+           longer forces the sibling `concat s` consume to retain-dup in the `+` scalar-combining group
+           (killed the per-frame spurious dup); (2) a per-path CONDITIONAL owned-param drop reclaims the
+           discarded FINAL state on the fold fn's dead base-case `If` arm (`byte-len s` borrow-reads then
+           returns a scalar, `s` dead). rc-trace: every ALLOC reaches a freed DROP.")
   (input
     (do
       (effect Log (op log (-> String Int64)))
@@ -1625,7 +1631,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 24 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a cross-function perform is discharged by the caller's handler"

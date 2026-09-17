@@ -816,6 +816,46 @@ pub fn def_drops_owned_param(
     !looped_owned_param_drops(db, body, params, self_def).is_empty()
 }
 
+/// Import-side companion of the NON-LOOPED CONDITIONAL PARAM DROP (`select_function_of` half-2): whether the
+/// def's body would get at least one `plan_ifjoin_nested` D-arm drop for a DIVERGENT callee-owned heap param.
+/// Mirrors the planning EXACTLY (same `code.dup_sites` reconstruction + the `!loops` + `nonlooped_param_callee_owned`
+/// gates) so `collect_module_used_ops` imports `drop` iff the emit actually emits one — precise, no over-
+/// declaration (the `str_at_does_not_over_declare_drop` discipline). `pub` for the module's op-collection.
+pub fn def_emits_ifjoin_param_drop(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> bool {
+    let Some(self_d) = self_def else {
+        return false;
+    };
+    // Non-looped only (mirror the planning's `!loops`).
+    if !mutual_loop_group(db, self_d).is_empty() {
+        return false;
+    }
+    // Reconstruct `code.dup_sites` EXACTLY as `select_function_of` does (the four collectors that feed
+    // `dup_sites`) so the ifjoin escape verdict (`binding_escapes_dup_aware(Some(dup))`) matches the emit.
+    let mut dup: HashSet<StructId> = HashSet::new();
+    let mut heap_binders: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(db, body, &mut heap_binders);
+    collect_dup_sites(db, body, &heap_binders, &mut dup);
+    collect_shell_reclaim_child_dups(db, body, &mut dup);
+    collect_sumpayload_escape_dup_sites(db, body, &mut dup);
+    collect_row_op_field_dups(db, body, &mut dup);
+    let mut plan: HashMap<StructId, Vec<(u32, bool)>> = HashMap::new();
+    for (param_index, (binder, ty)) in params.iter().enumerate() {
+        // A heap param always has a machine slot (an i32 handle); the slot VALUE is an opaque tag here (the
+        // plan's non-emptiness — not the slot — is what we test), so pass a dummy 0.
+        if is_heap_type(ty) && nonlooped_param_callee_owned(db, self_d, param_index, layout) {
+            let aliases = HashSet::from([*binder]);
+            plan_ifjoin_nested(db, body, &aliases, 0, &dup, &mut plan);
+        }
+    }
+    !plan.is_empty()
+}
+
 /// Import-side companion of [`emit_loop_iteration`]'s §5 SUM-SPINE reclaim: whether this def's body has a
 /// member tail-call whose arg is a self-consuming `Payload` extraction of a loop-param it is stored back
 /// into (the `depth-tail` spine-walk). When it does, the emit adds a `dup` (retain the carried payload) +
@@ -1544,6 +1584,30 @@ pub fn select_function_of(
         _ => Vec::new(),
     };
     let loops = !loop_members.is_empty();
+    // NON-LOOPED CONDITIONAL PARAM DROP (v-memory-safety, half-2 of the growing-heap-recursive-fold-state
+    // leak): a callee-owned heap param CONSUMED on some control paths but DEAD (neither escaped nor consumed)
+    // on others is never reclaimed on the dead paths — the unconditional fn-exit drop
+    // (`nonlooped_owned_param_drops`) requires borrow-only-ALL-paths, and the epilogue has no per-path form.
+    // Plan a D-arm drop on each DEAD arm of a DIVERGENT `If` via the SAME primitive the let-binding reclaim
+    // uses (`plan_ifjoin_nested` / `ifjoin_arm_dead`), keyed on the `If` node so `emit_tail`'s `Core::If` arm
+    // reclaims it after the dead arm's reads. SOUND: `nonlooped_param_callee_owned` proves the frame owns a
+    // ref; `plan_ifjoin_nested` plans the drop ONLY on the arm that neither escapes nor consumes the binder
+    // (the other arm consumes/returns it) → balanced, no double-free (it is self-gating on divergence — a
+    // param consumed/escaped on EVERY path plans nothing). The non-looped fold's discarded FINAL state (base
+    // case `(byte-len s)` — borrow-read, dead, undropped) is reclaimed on its dead arm. LOOPED folds already
+    // reclaim via the loop epilogue, so this runs `!loops` only. Beneficiary: the effect-handler string-rope
+    // state-exit leak (#9074 14b / #9077 14-effects) + plain recursive folds.
+    if !loops && let Some(self_d) = self_def {
+        let dup = code.dup_sites.clone();
+        for (param_index, (binder, _ty)) in params.iter().enumerate() {
+            if let Some(&slot) = slot_of.get(binder)
+                && nonlooped_param_callee_owned(db, self_d, param_index, layout)
+            {
+                let aliases = std::collections::HashSet::from([*binder]);
+                plan_ifjoin_nested(db, body, &aliases, slot, &dup, &mut code.ifjoin_arm_drops);
+            }
+        }
+    }
     // A MUTUAL group (more than one member) dispatches on a `which` state local: the first scratch slot
     // (i32, holding a member discriminant). A plain self-loop needs no dispatch (`which = None`). The
     // `which` slot is claimed above `base`, so scratch for the bodies starts one higher.
@@ -2074,6 +2138,23 @@ enum TailPos<'a> {
 /// executes on return, so the call can't be the last instruction), and a `match`'s arm bodies. Every
 /// other node (an operand, an operation, a plain value) is not a tail call, so it delegates to `emit`.
 /// This mirrors `emit`'s structure for exactly the propagating cases; everything else is one delegation.
+/// Whether the last-emitted instruction is a control-flow TERMINATOR — the branch already left no value on
+/// the stack and control has exited (a tail `ReturnCall`/`Return`, an unconditional `Br` back-edge, an
+/// `Unreachable`/diverging-if end). Used by the `emit_tail` `Core::If` arm's IF-JOIN per-arm param drop to
+/// SKIP a trailing reclaim that would be dead/unreachable after such an arm (leak-not-UAF on that shape).
+fn ends_in_terminator(last: Option<&Lir>) -> bool {
+    matches!(
+        last,
+        Some(
+            Lir::ReturnCall(_)
+                | Lir::Return
+                | Lir::Br(_)
+                | Lir::Unreachable
+                | Lir::IfUnreachableEnd
+        )
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_tail(
     db: &mut Db,
@@ -2339,6 +2420,17 @@ fn emit_tail(
                 },
             };
             out.push(Lir::If(block_ty));
+            // IF-JOIN PER-ARM DROP (v-memory-safety half-2): reclaim a DIVERGENT callee-owned heap PARAM
+            // (consumed on one arm, dead on the other) on its DEAD arm — the TAIL twin of the value-`emit`
+            // `Core::If` arm's `ifjoin_arm_drops` consumer. Planned upfront in `select_function_of`
+            // (`nonlooped_param_callee_owned` + `plan_ifjoin_nested`), keyed on THIS `If` node. Emitted AFTER
+            // each arm's body (not at the arm top): the D arm may READ the binder (`(byte-len s)`) before it
+            // is reclaimed. The drop `LocalGet(slot); OP_DROP` pops only the binder, leaving the arm's result
+            // beneath — UNLESS the arm ended in a TERMINATOR (a tail `ReturnCall`/`Return`/diverge left no
+            // value + control already exited): then a trailing drop is dead/unreachable, so SKIP it (a leak
+            // on that rare shape, never a UAF — leak-over-UAF). The common fold DEAD arm is a scalar VALUE
+            // (`byte-len`), which leaves its result and no terminator → the drop fires.
+            let ifjoin_plan = out.ifjoin_arm_drops.remove(&id).unwrap_or_default();
             // Inside the `if` block a self-loop `br` must jump one MORE level out to reach the loop top.
             let inner_tl = tl.map(|t| TailLoop {
                 depth: t.depth + 1,
@@ -2395,6 +2487,19 @@ fn emit_tail(
             let then_res = emit_tail_branch(db, then_, branch_base, high, scratch_ty, out);
             db.pop_range_refinements();
             then_res?;
+            // IF-JOIN D-THEN drop: reclaim a divergent owned param whose DEAD arm is the THEN arm, AFTER its
+            // reads, before the arm exits — unless the arm ended in a terminator (control already left; a
+            // trailing drop is unreachable → skip, a leak-not-UAF on that rare tail-call-dead-arm shape).
+            if ifjoin_plan.iter().any(|&(_, d_is_then)| d_is_then)
+                && !ends_in_terminator(out.code.last())
+            {
+                for &(slot, d_is_then) in &ifjoin_plan {
+                    if d_is_then {
+                        out.push(Lir::LocalGet(slot));
+                        out.push(Lir::CallImport(OP_DROP));
+                    }
+                }
+            }
             out.push(Lir::Else);
             // The else branch starts its scratch ABOVE the then branch's high-water, NOT back at
             // `branch_base`. The two branches are mutually exclusive, so REUSING slot indices would be sound
@@ -2412,6 +2517,18 @@ fn emit_tail(
             let else_res = emit_tail_branch(db, else_, else_base, high, scratch_ty, out);
             db.pop_range_refinements();
             else_res?;
+            // IF-JOIN D-ELSE drop (twin of the D-THEN drop above): reclaim a divergent owned param whose DEAD
+            // arm is the ELSE arm, after its reads, before the block closes; skip on a terminator-ended arm.
+            if ifjoin_plan.iter().any(|&(_, d_is_then)| !d_is_then)
+                && !ends_in_terminator(out.code.last())
+            {
+                for &(slot, d_is_then) in &ifjoin_plan {
+                    if !d_is_then {
+                        out.push(Lir::LocalGet(slot));
+                        out.push(Lir::CallImport(OP_DROP));
+                    }
+                }
+            }
             out.push(Lir::End);
             if never_diverges {
                 out.push(Lir::Unreachable);
@@ -7760,6 +7877,63 @@ fn def_nonlooped_reclaims_param(
     }
     // AXIS A: every DIRECT call site passes an OWNED arg for this param (unknown/borrowed/missing at ANY
     // site → not all-owned → decline). A callee with NO known call site cannot prove ownership → decline.
+    let sites = crate::infer::callee_call_site_args(db, callee);
+    if sites.is_empty() {
+        return false;
+    }
+    for args in &sites {
+        match args.get(param_index) {
+            Some(&arg) if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) => {
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// AXIS A of [`def_nonlooped_reclaims_param`] WITHOUT its borrow-only-all-paths (AXIS B) gate: whether a
+/// non-looped def's heap param at `param_index` is CALLEE-OWNED (every DIRECT call site passes an owned arg;
+/// not an export/funcref/lifted boundary whose trampoline owns it). Used to gate the PER-PATH CONDITIONAL
+/// param drop (a `plan_ifjoin_nested` D-arm drop for a param that DIVERGES — consumed on some arms, dead on
+/// others), the COMPLEMENT of the unconditional never-consumed fn-exit epilogue: callee-owned ⟹ the frame
+/// owns a ref to reclaim on the dead arm; a borrowed / boundary-owned param must NOT be dropped (double-free).
+/// (v-memory-safety half-2 of the growing-heap-recursive-fold-state leak — the non-looped fold's discarded
+/// FINAL state, e.g. the effect-handler string-rope fold-fn base case that borrow-reads then discards.)
+fn nonlooped_param_callee_owned(
+    db: &mut Db,
+    callee: usize,
+    param_index: usize,
+    layout: &Layout,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    // AXIS A (mirrors def_nonlooped_reclaims_param): not an export entry (the trampoline owns the boundary
+    // param); non-looped only (the looped epilogue owns that case); not funcref-taken / called-from-lifted
+    // (a call_indirect / eta-wrapper edge is invisible to the direct-index owned-arg check → unseen UAF).
+    if layout.exports.iter().any(|e| e.body == body) {
+        return false;
+    }
+    if !mutual_loop_group(db, callee).is_empty() {
+        return false;
+    }
+    if def_funcref_taken(db, body) {
+        return false;
+    }
+    if callee_called_from_lifted_body(db, callee) {
+        return false;
+    }
+    let params = crate::layout::def_params(db, callee);
+    let Some((_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&param_ty) {
+        return false;
+    }
+    // Every DIRECT call site passes an OWNED arg for this param (unknown/borrowed/missing at ANY site → not
+    // all-owned → decline; a callee with NO known site cannot prove ownership → decline). Same check as
+    // def_nonlooped_reclaims_param's tail — the per-path drop reclaims the frame's owned ref, sound ONLY when
+    // every caller transferred ownership in.
     let sites = crate::infer::callee_call_site_args(db, callee);
     if sites.is_empty() {
         return false;

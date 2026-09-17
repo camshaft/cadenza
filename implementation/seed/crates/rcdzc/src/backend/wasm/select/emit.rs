@@ -47,7 +47,7 @@ fn ifjoin_arm_dead(
 ///
 /// SOUNDNESS (no path double-drops): at a divergent If, plan the drop on the DEAD arm and recurse ONLY the
 /// LIVE arm (dead ⇒ no deeper divergence). Both-live → recurse both. Both-dead → stop (leak-safe).
-fn plan_ifjoin_nested(
+pub(super) fn plan_ifjoin_nested(
     db: &mut Db,
     node: StructId,
     aliases: &HashSet<StructId>,
