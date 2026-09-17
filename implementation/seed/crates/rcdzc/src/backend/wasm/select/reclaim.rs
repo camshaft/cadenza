@@ -268,28 +268,41 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
         Core::Proj { operand, .. } => {
-            // A compound projection is TRANSPARENT to borrowing: if THIS projection's own result is itself
-            // borrowed by its parent (`tail_borrowed` — a deeper scalar `.field`/`.len` reads a scalar OUT
-            // of this compound child), the extracted child handle is TRANSIENT and the operand is NOT
-            // retained past it. So recurse borrowing when EITHER this is a scalar element OR the incoming
-            // context already borrows (`scalar_element || tail_borrowed`). Without `|| tail_borrowed` a
-            // SCALAR-BOTTOMED chain THROUGH compound intermediates (`(. (. (. a 1) 1) 1)`: a.1/a.1.1
-            // compound, a.1.1.1 scalar) reset the borrow flag at each compound step → the operand `a` read
-            // as ESCAPING. That mattered TWO ways for the dqe4-8 leak: (1) the let-epilogue drop was emitted
-            // ONLY because the spurious `mark_binder_dups` dup put `a` in `dup_sites` (a fragile rescue that
-            // the dup-suppression fix removes), and (2) the `never_escapes` gate on the dup-suppression
-            // (`collect_dup_sites` below) uses THIS query with `dup_sites=None`, so without the fix a
-            // borrow-only projected binder wrongly reads as escaping and the gate never fires. A GENUINE
-            // child-handle escape (compound proj in a CONSUMING position, incoming `tail_borrowed` false) is
-            // UNCHANGED (`false || false`), so it still escapes — no under-retain / UAF.
-            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
-            binding_escapes_dup_aware(
-                db,
-                operand,
-                binder,
-                scalar_element || tail_borrowed,
-                dup_sites,
-            )
+            // A projection reads a field/element (`arr-get`) without transferring the aggregate's ownership,
+            // but whether the OPERAND escapes THROUGH the projection depends on what happens to the extracted
+            // CHILD — and that answer DIFFERS between the two escape questions this shared query serves, so
+            // the borrow classification is `dup_sites`-CONDITIONAL:
+            //
+            //  • WHOLE-escape query (`dup_sites == None` — the `never_escapes`/`param_escapes_body` question
+            //    "does the binder's OWN shell flow out?"): a projection NEVER moves the whole aggregate out —
+            //    only the extracted child leaves, carrying its own reference. So the operand is always merely
+            //    BORROWED for the load. Recurse BORROWING (`true`). This is what flips `never_escapes` TRUE
+            //    for a payload-forwarding cell param whose compound field is projected into a ctor (site-b
+            //    node#4) — activating v-core-opt's mark_binder_dups parent-dup subtract.
+            //
+            //  • RETAIN/droppable query (`dup_sites == Some` — the `record_cell_param_droppable`/`let`-epilogue
+            //    "is the shell a dead owned temporary safe to drop?" question): here a projection borrows ONLY
+            //    when the extracted child is RETAINED independently — a `scalar_element` (COPIED out, no
+            //    alias) or a Perceus DUP site (`dup_sites.contains(id)`, a fresh ref for the consuming use).
+            //    If the child is a COMPOUND that is MOVED out un-dup'd (e.g. dqe11's `(. a 1)` returned as the
+            //    branch-arm result while `a` is NOT live_after, so it is not a dup site), the extracted child
+            //    ALIASES the operand's storage and carries it out — the operand ESCAPES, so recurse
+            //    CONSUMING. Dropping the shell there would free the still-referenced escaped component → the
+            //    dqe11 O1 `CDZ0704` UAF that a blanket always-borrow caused (bisected to this arm; a level-
+            //    divergence miscompile). So: borrow iff `scalar_element || tail_borrowed || dup_site`.
+            //
+            // Splitting the two questions is exact: the whole-shell genuinely never leaves through a
+            // projection (None ⇒ borrow), while droppability must honor a moved-child alias (Some ⇒ the child
+            // must be independently retained). A MOVED-VERBATIM whole binder (`(def (f m) m)`) is the
+            // `Param`/`LocalRef` arm, not this one (site_a moved-out double-free guard preserved).
+            let borrow = match dup_sites {
+                None => true,
+                Some(sites) => {
+                    let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+                    scalar_element || tail_borrowed || sites.contains(&id)
+                }
+            };
+            binding_escapes_dup_aware(db, operand, binder, borrow, dup_sites)
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
@@ -742,6 +755,17 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
         | Core::AstEncode { operand, .. }
         | Core::AstDecode { operand, .. } => binder_must_escape(db, operand, binder, true),
         Core::Proj { operand, .. } => {
+            // UNCHANGED from the base (`scalar_element || tail_borrowed`) — do NOT mirror the may-query's
+            // always-borrow here. must_escapes must stay TRUE for a compound-child-forward binder that is
+            // consumed on every path (partition's `parts`): v-core-opt's mark_binder_dups gate KEEPS the
+            // load-bearing parent/shell dup via the `child-dup'd && must_escapes → KEEP` arm, and only
+            // SUBTRACTS in the `child-dup'd && never_escapes && !must_escapes` corner (site-b `m`, whose
+            // must_escapes is FALSE). Flipping this arm to always-borrow would drop must_escapes(parts) to
+            // FALSE → move partition into the subtract corner → suppress the load-bearing dup → the exact
+            // #9101-class UAF (corpus-05 partition-fold `wasm unreachable`). So the escape half flips ONLY the
+            // may-query (never_escapes); the must-query (this) stays base. must > may for such a binder is
+            // fine here: must_escapes is consumed by the gate in the SAFE (KEEP) direction for child-dup'd
+            // binders, and dqe7/8's !child-dup'd whole-value consumes keep must==may==true unchanged.
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             binder_must_escape(db, operand, binder, scalar_element || tail_borrowed)
         }

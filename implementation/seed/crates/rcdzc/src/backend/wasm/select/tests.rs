@@ -945,18 +945,18 @@ fn b2_disjoint_shared_owned_boxed_sum_scrutinee() {
 // the suite. These pin BOTH polarities cheaply at the Core level, so a regression flips a `cargo test`.
 
 #[test]
-fn site_a_record_cell_droppable_when_field_forwarded_dup_aware_not_param_escapes_body() {
+fn site_a_record_cell_droppable_when_field_forwarded_borrows_the_param() {
     // DROPPABLE (effectiveness): a record param `m` whose COMPOUND field is forwarded into a fresh record
-    // (`(. m key)` — a nested-compound Proj that MOVES the child out, so the ctor dup's it) with a LATER
-    // borrow read (`(. m flag)`, a scalar Proj). Every CONSUMING occurrence of `m` is then a Perceus dup
-    // site (the compound forward has a later use → retained) and the last use is a borrow → `m`'s own cell
-    // slot is a dead owned temporary → SAFE to drop. This is the payload-forwarding shape the census
-    // reducers take (on_notification/on_response went 3->0 / 5->0 only after site-a #9061).
+    // (`(. m key)` — a nested-compound Proj whose extracted child the ctor DUP's) with a LATER borrow read
+    // (`(. m flag)`, a scalar Proj). A projection BORROWS its operand (`arr-get` borrows; the child is
+    // copied/dup'd), so `m`'s own cell slot is never moved out — it is a dead owned temporary → SAFE to
+    // drop. This is the payload-forwarding shape the census reducers take (#9061).
     //
-    // THE CRUX: the DUP-UNAWARE `param_escapes_body` reports this SAME shape as ESCAPING (its Proj arm
-    // recurses consuming for a compound child in tail position), which would WRONGLY suppress the drop and
-    // keep the census inert — the exact regression I caught before landing. So we pin `record_cell_param_
-    // droppable == true` AND `param_escapes_body == true` together: the gate MUST be the dup-aware query.
+    // POST SITE-B RE-LAND: the escape query's Proj arm now correctly recognizes a compound-field forward as
+    // BORROWING the operand, so the DUP-UNAWARE `param_escapes_body` AGREES with the dup-aware gate here —
+    // both say `m` does not escape → droppable. The dup-aware gate still matters for genuinely dup-RESCUED
+    // consumes elsewhere; this shape simply no longer needs it. The SAFETY polarity (a MOVED-verbatim cell
+    // must NOT be dropped) is pinned separately by `site_a_record_cell_not_droppable_when_moved_out`.
     let ast = crate::testkit::parse(
         "(module m (def (f (: m (Record (key Bytes) (flag Bool)))) \
                (record (= a (. m key)) (= b (. m flag)))) \
@@ -969,12 +969,13 @@ fn site_a_record_cell_droppable_when_field_forwarded_dup_aware_not_param_escapes
     let binder = params[0].0;
     assert!(
         record_cell_param_droppable(&mut db, body, binder),
-        "site-a: a dup'd compound-field forward leaves the cell a dead owned temporary -> droppable"
+        "site-a: a compound-field forward borrows the param + dup's the child -> the cell is a dead owned \
+         temporary -> droppable"
     );
     assert!(
-        param_escapes_body(&mut db, body, binder),
-        "the DUP-UNAWARE query MUST (over-conservatively) report escape here — proves site-a REQUIRES the \
-         dup-aware gate, not param_escapes_body (which would suppress the drop + keep the census inert)"
+        !param_escapes_body(&mut db, body, binder),
+        "post site-b: the (dup-unaware) base escape query now correctly BORROWS the compound-field forward \
+         (a projection borrows its operand; the child is dup'd) -> `m` does not escape"
     );
 }
 
@@ -994,6 +995,43 @@ fn site_a_record_cell_not_droppable_when_moved_out() {
     assert!(
         !record_cell_param_droppable(&mut db, body, binder),
         "site-a: a moved-out record cell IS the returned value -> dropping it double-frees -> NOT droppable"
+    );
+}
+
+#[test]
+fn site_b_reducer_forward_emits_no_surplus_parent_dups() {
+    // SITE-B (node#4 census leak) positive witness for the RE-LANDED joint fix (escape-query Proj-arm
+    // borrow-reclassification + v-core-opt's CHILD-DUP-aware mark_binder_dups gate). The payload-forwarding
+    // reducer shape: a param `msg` whose THREE compound (Bytes) fields are each projected + forwarded into a
+    // fresh record. Each field emits ONE child dup (the extracted Bytes dup'd into the new record); the
+    // param itself is BORROWED (arr-get borrows), so NO per-field PARENT dup of `msg` should be emitted.
+    // Before the fix the emit had 6 dups (3 child + 3 SURPLUS parent), wrapper deep-dropped once → +N
+    // over-retain = on_message=7. After: exactly 3 dups (child only), `msg`'s cell stays droppable. A
+    // regression that reintroduces the parent dup_site flips the count back up. (Distinct from partition:
+    // there the child-dup'd binder `must_escapes`, so v-core-opt's gate KEEPS its parent dup — no UAF.)
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: msg (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+               (record (= contract (. msg contract)) (= payload (. msg payload)) (= token (. msg token)))) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let f = select_function(&mut db, body, &params, &layout).expect("select reducer-3-forward");
+    let binder = params[0].0;
+    let dups = f
+        .code
+        .iter()
+        .filter(|l| matches!(l, Lir::CallImport(s) if *s == "dup"))
+        .count();
+    assert_eq!(
+        dups, 3,
+        "site-b: the 3-field forward must emit exactly 3 dups (one CHILD dup per forwarded field, ZERO \
+         surplus PARENT dups) — got {dups} (pre-fix this was 6: 3 child + 3 surplus parent)"
+    );
+    assert!(
+        record_cell_param_droppable(&mut db, body, binder),
+        "site-b: the forwarded param stays a droppable dead owned temporary with 0 parent dups (the wrapper \
+         deep-drops its cell once, balancing the 0 in-body parent dups) -> node#4 reclaims -> rc 0"
     );
 }
 
