@@ -3367,7 +3367,7 @@ c")))
            take the first operand and drop the rest to yield `(Ast.Int 1)`. The same arity check
            applies during quasiquote expansion as outside a quasiquote.")
   (input (quasiquote (unquote 1 2)))
-  (error CDZ0201))
+  (error CDZ0201 (fix (kind delete))))
 
 (case
   "quasiquote makes AST construction readable"
