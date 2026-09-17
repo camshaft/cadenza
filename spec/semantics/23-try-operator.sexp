@@ -74,7 +74,7 @@
 (case
   "the `?` sigil in head position names the `try` spelling, not a bare unbound name"
   (input (do (def (main) (? (Ok 1))) (export main)))
-  (error CDZ0101 (message "(try <expression>)") (message "write `try`")))
+  (error CDZ0101 (message "(try <expression>)") (message "write `try`") (fix (kind replace))))
 
 (case
   "a bare `?` NOT in head position stays an ordinary unbound name with no try hint"

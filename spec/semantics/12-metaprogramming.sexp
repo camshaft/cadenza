@@ -213,7 +213,7 @@
            near def `evil`, NOT the eval-form COMPILE-TIME-VISIBLE AST message. Pins that the eval teaching
            text fires only for a genuine `(eval …)` head, and does not hijack an ordinary near-name typo.")
   (input (do (def (evil) 5) (def (main) (evel)) (export main)))
-  (error CDZ0101 (message "did you mean `evil`?") (not "COMPILE-TIME-VISIBLE AST")))
+  (error CDZ0101 (message "did you mean `evil`?") (not "COMPILE-TIME-VISIBLE AST") (fix (kind replace))))
 
 (case
   "eval of a quoted RECURSIVE-sum construction builds the heap spine"

@@ -297,7 +297,7 @@
       (mktype W)
       (def (main) (match (Mk 5) ((W.Mk x) x)))
       (export main)))
-  (error CDZ0101 (message "unbound name")))
+  (error CDZ0101 (message "unbound name") (fix (kind replace))))
 
 (case
   "a macro-introduced type with a caller-spliced bare ctor name binds the bare constructor visibly"
