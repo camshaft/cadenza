@@ -99,7 +99,7 @@ fn plan_ifjoin_nested(
 /// the leak side of the mirror. Exact match: the inner Proj dup'd iff `!slots.contains(operand) && (Owned ||
 /// shell-set) && get_op None && !Unit`, which is precisely this predicate, so restoring the disjunct keeps
 /// dup==drop (never a double-free — a false-positive drop would be an unmatched reclaim).
-fn owned_proj_child_dupd(
+pub(super) fn owned_proj_child_dupd(
     db: &mut Db,
     id: StructId,
     slots: &HashMap<StructId, u32>,

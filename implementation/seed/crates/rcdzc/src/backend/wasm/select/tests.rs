@@ -1049,6 +1049,48 @@ fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() 
 }
 
 #[test]
+fn v8_double_proj_owned_proj_child_dupd_recognizes_shell_set_view() {
+    // V8 (#9075): a DOUBLE projection off a shell-reclaimed `Option.expect` map-value VIEW —
+    // `(. (. (Option.expect (Map.lookup m k)) inner) x)`. #9071 makes the INNER Proj dup its extracted
+    // child (its operand — the SumExpect view — is in the shell-reclaim set). `owned_proj_child_dupd` (the
+    // dup-mirror the OUTER read uses) must then report the inner Proj as child-dup'd so the outer read
+    // drops it — else the inner sub-record leaks (the corpus-15 chapter pin for this is deferred behind a
+    // local nix-store CA-corruption on the chapter gate, so this Core-level witness is the cheap durable
+    // guard). Pins the mirror BOTH ways: `owned_proj_child_dupd` is true WITH the shell set (fixed) and
+    // false with an EMPTY set (the pre-#9075 leak state) — so the `sumexpect_shell_reclaim` disjunct is
+    // proven load-bearing; a regression that drops it flips the first assert and V8 leaks again.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: m (Map Int64 (Record (inner (Record (x Int64)))))) (: k Int64)) \
+               (. (. (Option.expect (Map.lookup m k) \"p\") inner) x)) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f (V8 double-proj)");
+    // The body is the OUTER Proj `(. <inner-proj> x)`; its operand is the inner Proj.
+    let inner_proj = match crate::lower::core_of(&mut db, body) {
+        Core::Proj { operand, .. } => operand,
+        other => panic!("expected the body to be the outer Proj, got {other:?}"),
+    };
+    // Build the shell-reclaim set exactly as emit does.
+    let mut view_set: HashSet<StructId> = HashSet::new();
+    let mut shell_set: HashSet<StructId> = HashSet::new();
+    collect_sumexpect_view_reclaim(&mut db, body, &mut view_set, &mut shell_set);
+    let no_slots: HashMap<StructId, u32> = HashMap::new();
+    assert!(
+        owned_proj_child_dupd(&mut db, inner_proj, &no_slots, &shell_set),
+        "V8: the inner Proj's operand is a shell-set SumExpect view → owned_proj_child_dupd must report it \
+         child-dup'd so the outer read drops the inner sub-record (else the double-proj view leaks)"
+    );
+    let empty: HashSet<StructId> = HashSet::new();
+    assert!(
+        !owned_proj_child_dupd(&mut db, inner_proj, &no_slots, &empty),
+        "without the shell-set membership the inner Proj is NOT child-dup'd (the pre-#9075 leak state) — \
+         proves the sumexpect_shell_reclaim disjunct is load-bearing for V8"
+    );
+}
+
+#[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
     // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
