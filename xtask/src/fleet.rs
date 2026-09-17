@@ -13850,6 +13850,29 @@ fn gate_output_is_gc_race_transient(output: &str) -> bool {
         && (output.contains("findCargoFiles.nix") || output.contains("/nix/store/"))
 }
 
+/// A gate-local RED where nix IMPORTED a corrupt content-addressed path from a substituter / remote builder:
+/// the fetched path's content doesn't match its CA hash (`ca hash mismatch importing path …`), or its NAR
+/// stream was truncated (`unexpected end-of-file` mid-transfer). Both are INFRA transients — a purely LOCAL
+/// build PRODUCES the path itself and never IMPORTS it, so this class only ever arises from a corrupt
+/// substituter/offload transfer — fixed by EVICTING + rebuilding the bad path, NOT by a code change
+/// (concierge fleet-wide incident 2026-09-17; v-nix owns the eviction). Distinct from the 5xx/`unable to
+/// download` FETCH transient (a failed download, not a corrupt-but-completed one), so it gets its own
+/// advisory that names the evict/rebuild remedy.
+///
+/// PRECISION: `ca hash mismatch importing path` is collision-free (nix only ever prints it for a corrupt
+/// IMPORT), so it classifies alone. `unexpected end-of-file`, by contrast, can appear in a corpus sub-check's
+/// OWN output (e.g. a parser EOF diagnostic in a reject test) — misreading a real EOF-diagnostic regression as
+/// infra would mislead — so it is honored ONLY alongside a nix TRANSFER context (`importing path` / `copying
+/// path` / `downloading`), never bare. (The advisory is guidance-only anyway: a misread costs at most a
+/// re-run, never a wrong land — but scoping it keeps the guidance itself trustworthy.)
+fn gate_output_is_corrupt_substituter_transient(output: &str) -> bool {
+    output.contains("ca hash mismatch importing path")
+        || (output.contains("unexpected end-of-file")
+            && (output.contains("importing path")
+                || output.contains("copying path")
+                || output.contains("downloading")))
+}
+
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
@@ -13858,6 +13881,12 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
         "gate-local: NOTE — the failure output carries a nix SUBSTITUTER FETCH transient (a 5xx / \
          `unable to download` from the binary cache/CDN, NOT a test/compile failure); RE-RUN gate-local \
          (a retry usually hits the cache or a recovered substituter) before treating this as a regression."
+    } else if gate_output_is_corrupt_substituter_transient(captured) {
+        "gate-local: NOTE — the failure output shows a CORRUPT content-addressed IMPORT from a substituter/ \
+         remote builder (`ca hash mismatch importing path` / `unexpected end-of-file` mid-transfer), NOT a \
+         test/compile failure — a local build produces the path itself, so this only arises from a corrupt \
+         fetch/offload. It is a FLEET-WIDE infra block, not your code: the bad path must be EVICTED + rebuilt \
+         (v-nix owns this). RE-RUN gate-local after the path is evicted before treating this as a regression."
     } else if gate_output_is_gc_race_transient(captured) {
         "gate-local: NOTE — the failure output shows a store path / crane eval input `does not exist`, the \
          signature of a nix auto-GC freeing a path MID-BUILD (a GC/crane race, e.g. `findCargoFiles.nix` \
@@ -21837,6 +21866,35 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!gate_output_is_substituter_fetch_transient(
             "error: cached failure of ... HTTP error 404"
         ));
+        // A CORRUPT content-addressed IMPORT from a substituter/remote builder (concierge fleet-wide incident
+        // 2026-09-17): `ca hash mismatch importing path` + `unexpected end-of-file` used to fall to REAL and
+        // mislead agents into blaming their own code for a fleet-wide corrupt-path block → advise EVICT+RE-RUN.
+        let corrupt = "error: ca hash mismatch importing path \
+                       '/nix/store/abcabcabcabcabcabcabcabcabcabcab-guide-build-0017.drv'; \
+                       specified: sha256:aaaa, got: sha256:bbbb\nerror: unexpected end-of-file";
+        assert!(gate_output_is_corrupt_substituter_transient(corrupt));
+        assert!(gate_local_hold_advisory(corrupt).contains("CORRUPT"));
+        assert!(gate_local_hold_advisory(corrupt).contains("EVICTED"));
+        assert!(gate_local_hold_advisory(corrupt).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(corrupt).contains("REAL sub-check"));
+        // The CA-mismatch phrase is collision-free → classifies ALONE (no EOF needed).
+        assert!(gate_output_is_corrupt_substituter_transient(
+            "error: ca hash mismatch importing path '/nix/store/x-foo'"
+        ));
+        // `unexpected end-of-file` in a nix TRANSFER context (copying/importing/downloading a path) → corrupt.
+        assert!(gate_output_is_corrupt_substituter_transient(
+            "copying path '/nix/store/y-bar' from 'https://cache.example'...\nerror: unexpected end-of-file"
+        ));
+        // PRECISION GUARD: a BARE `unexpected end-of-file` with NO transfer context — e.g. a corpus sub-check's
+        // OWN parser EOF diagnostic in a reject test — must NOT be misread as infra (that would mask a real
+        // EOF-diagnostic regression) → stays a REAL failure.
+        let eof_diagnostic = "error: builder for \
+                              '/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-corpus-03-parse.drv' failed with \
+                              exit code 1\n  parse error: unexpected end-of-file while reading a list";
+        assert!(!gate_output_is_corrupt_substituter_transient(
+            eof_diagnostic
+        ));
+        assert!(gate_local_hold_advisory(eof_diagnostic).contains("REAL sub-check"));
     }
 
     #[test]
