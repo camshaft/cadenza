@@ -2257,6 +2257,35 @@
   (live-objects 0))
 
 (case
+  "a computed-Call Some (non-inlined producer) whose heap payload is consumed by a builder reclaims to zero"
+  (doc
+    "The DECIDABLE-SAFE subset of the general heap-payload extraction-shell balance (the leak the
+           two pairs above pin at 2 for an INLINED producer). Here the `Some (rep …)` producer `mk` is a
+           NON-INLINED `Core::Call` (recursive, so it stays a call not an inlined `if`), and its runtime-heap
+           String payload is CONSUMED by `String.to-bytes` (an allowlisted single-owned-ref-move consumer).
+           `owned_compound_boxed` dups the payload at the consuming site (the scrutinee is Owned), so the
+           payload is at rc>=2 through the arm and the shell deep-drop balances 1:1 — reclaims to 0
+           (rcdzc `sum_cont_owned_call_consume_allowlisted`). CONTRAST the inlined-producer witnesses above:
+           an `if`-inlined `mk` scrutinee is NOT admitted (an `if` can be an invisible resume-threaded
+           handler state that `dead-after` cannot see; only a `Core::Call` is provably not resume-threaded),
+           so those stay `(live-objects 2)` until the resume-safe `if`-admission generalization lands. rep
+           builds a genuine runtime rope (\"a\"+n·\"x\" = n+1 bytes; n=3 → 4). No double-free (debug-counters
+           runtime does not trap); opt-invariant O0..O3.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def
+        (mk (: n Int64))
+        (if (< n 0) (None unit) (if (> n 1000) (mk (- n 1)) (Some (rep "a" n)))))
+      (def
+        (main (: n Int64))
+        (match (mk n) ((Some s) (Bytes.len (String.to-bytes s))) ((None _u) 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case
   "two fallible reads of one collection parameter share its resident handle slot"
   (doc
     "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its

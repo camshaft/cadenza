@@ -4591,6 +4591,41 @@ fn sum_cont_extraction_consume_allowlisted(
     consuming.iter().all(|s| builder_children.contains(s))
 }
 
+/// The COMPUTED-`Some` companion of [`sum_cont_extraction_consume_allowlisted`] (05:#9134 — the
+/// runtime-heap non-extraction sibling of the 289e75fbba StrToBytes fix). An extraction-`Some`
+/// (`Map.lookup`/`List.at`/…) dup-RETAINS its payload (rc>=2 by construction); a COMPUTED owned `Some` (a
+/// fresh `Core::Call` result — `(match (mk n) ((Some s) (Bytes.len (String.to-bytes s))) …)`) instead moves
+/// its payload in at rc1, but `owned_compound_boxed` DUP's each consuming payload site in the dup pass
+/// (`collect_shell_reclaim_child_dups` — the scrutinee is `Owned`), so the payload is likewise at rc>=2
+/// through the arm. So the SAME 1:1 balance holds: each consuming site that is a DIRECT child of an
+/// allowlisted single-owned-ref-move builder is balanced by that `dup` + the shell deep-drop, with FBIP
+/// reuse suppressed (rc>1 path-copies). GATED `Core::Call` + DEAD-AFTER-DESTRUCTURE (mirrors the
+/// all-scalar-product Call disjunct): a `Call` result is inlined once as the scrutinee and CANNOT be a
+/// resume-threaded handler state (the invisible-resume escape the opaque-consumer decline guards), and
+/// dead-after means the whole scrutinee does not re-escape. Any imprecision only OVER-DECLINES (leak beats
+/// UAF), never over-reclaims.
+fn sum_cont_owned_call_consume_allowlisted(
+    db: &mut Db,
+    root: &crate::core::SumCont,
+    scrutinee: StructId,
+) -> bool {
+    if !matches!(core_of(db, scrutinee), Core::Call { .. }) {
+        return false;
+    }
+    if !scrutinee_dead_after_destructure(db, scrutinee, root) {
+        return false;
+    }
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    if consuming.is_empty() {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    let mut builder_children = HashSet::new();
+    collect_allowlisted_builder_children_cont(db, root, &mut seen, &mut builder_children);
+    consuming.iter().all(|s| builder_children.contains(s))
+}
+
 fn sum_shell_reclaim_ok(
     db: &mut Db,
     scrutinee: StructId,
@@ -4763,6 +4798,12 @@ fn sum_shell_reclaim_payload_ok(
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
                 && !sum_cont_arm_constructs_compound(db, root))
             || sum_cont_extraction_consume_allowlisted(db, root, scrutinee)
+            // COMPUTED-Some sibling of the extraction-consume allowlist (05:#9134): an OWNED `Core::Call`
+            // `Some` result, dead-after-destructure, whose payload is consumed by an allowlisted
+            // single-owned-ref-move builder. `owned_compound_boxed` dups the payload (rc>=2 through the arm),
+            // so the shell deep-drop balances 1:1 exactly as the extraction case. Fixes the runtime-heap
+            // computed-Some StrToBytes over-retain (Some shell + payload) the 289e75fbba extraction fix missed.
+            || sum_cont_owned_call_consume_allowlisted(db, root, scrutinee)
             // (5) EXTRACTION-BORROWED-PROBE (CHAMP-key, v-mem-safety-approved as a new disjoint disjunct — do
             // NOT broaden branch (3)'s !arm_constructs_compound, which is the general FBIP fence for non-
             // extraction scrutinees where rc>=2 is not guaranteed). Reclaim a compound Some from a fallible
