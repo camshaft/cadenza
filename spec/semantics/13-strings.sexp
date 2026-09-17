@@ -203,11 +203,14 @@
            freed cell and happens to return the right value. Fixed by the multi-consumed-view dup on
            the StrAt-view path (rcdzc reclaim). byte-len of e+e where e is the 1-byte char at index 1
            of \"hey\" is 2, and the census must balance. String.at is deliberately NOT globally Owned
-           (Stage-B String.concat perturbation), so unlike the String.slice twin it gets neither the
-           shell deep-drop nor the owned-temporary source drop — 3 husks remain (source string, Some
-           payload, Some shell); those are separate danger-path follow-ups, so this pins the VALUE (the
-           double-free elimination) with (live-objects known-leak) tracking the residue. Flip toward 0
-           as the follow-ups land.")
+           (Stage-B String.concat perturbation), so it does not take the String.slice twin's owned
+           shell-deep-drop path. The residual Some shell + payload husk is now reclaimed by the
+           multi-consume StrAt view shell-drop (rcdzc select): a view CONSUMED more than once gets
+           per-consume child-dups, and when the match RESULT is a non-heap SCALAR (byte-len → Int64)
+           the view provably does not escape as the arm result, so freeing the Some shell cascades one
+           decrement into the payload and reclaims BOTH cells with no double-free — census 0. (The
+           owned-source drop already reclaimed the source string; the escape-as-RESULT case, a heap arm
+           result, stays a defined leak until the general classifier lands.)")
   (input
     (do
       (def
@@ -219,14 +222,15 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a let-aliased String.at view consumed alongside its alias dup/drops against one payload"
   (doc
     "The alias face of the same fix: `(let ((d c)) (String.concat c d))` — the alias and the
-           original are ONE payload; both consumes must resolve against it without underflow. Same
-           3-husk residue as the twice-consumed sibling, same value 2.")
+           original are ONE payload; both consumes must resolve against it without underflow. Reclaimed
+           to census 0 by the same multi-consume StrAt view shell-drop (scalar byte-len result → no
+           escape-as-result), same value 2.")
   (input
     (do
       (def
@@ -238,7 +242,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a String.at extracted view consumed THREE times mints two dups against one payload (N-consume, no double-free)"
@@ -249,9 +253,10 @@
            times against ONE payload, so the predicate must mint TWO dups (N-1), not one — an off-by-one in
            the shared predicate's dup count would leave the third consume underflowing (a double-free the
            debug-counters runtime asserts). Char at index 1 of \"hey\" is \"y\"; \"y\"+\"y\"+\"y\" is 3 bytes.
-           Same view-family residue as the twice-consumed sibling → `(live-objects known-leak)`. Value +
-           balance hold both backends, O0..O2, no underflow. (Adversarial pin from a breaker probe over the
-           shared-predicate refactor.)")
+           Reclaimed to census 0 by the same multi-consume StrAt view shell-drop as the twice-consumed
+           sibling (scalar byte-len result → no escape-as-result), confirming the N-consume dup count
+           balances the shell cascade for N>2 too. Value + balance hold both backends, O0..O2, no underflow.
+           (Adversarial pin from a breaker probe over the shared-predicate refactor.)")
   (input
     (do
       (def
@@ -263,7 +268,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"

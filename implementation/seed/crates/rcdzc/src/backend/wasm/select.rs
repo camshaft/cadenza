@@ -771,7 +771,7 @@ pub fn collect_used_ops(
 /// computed producer, always stashed into an I32 slot at emit — never a reusable handle), so the stashed-I32
 /// gate holds by construction and needs no slot context. `never_diverges` mirrors the emit's `body_diverges`.
 fn body_reclaims_view_shell(db: &mut Db, id: StructId) -> bool {
-    fn go(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
+    fn go(db: &mut Db, top: StructId, id: StructId, seen: &mut HashSet<StructId>) -> bool {
         if !seen.insert(id) {
             return false;
         }
@@ -780,7 +780,9 @@ fn body_reclaims_view_shell(db: &mut Db, id: StructId) -> bool {
             let never_diverges = body_diverges(db, id);
             // Call the SAME gate the emit uses (single source of truth → exact import/emit agreement). A
             // StrAt/BytesSlice scrutinee is always a computed producer → stashed I32, so the stand-in
-            // `Some((0, I32))` matches the emit's real stashed slot for the gate's purposes.
+            // `Some((0, I32))` matches the emit's real stashed slot for the gate's purposes. `top` is the
+            // TOP fn body (== the emit's `out.fn_body`), so the multi-consume disjunct's consume-count is
+            // computed over the SAME body at import and emit → the added `drop` is imported iff emitted.
             if matchsum_view_shell_reclaim_ok(
                 db,
                 scrutinee,
@@ -788,14 +790,17 @@ fn body_reclaims_view_shell(db: &mut Db, id: StructId) -> bool {
                 Some((0, ValType::I32)),
                 never_diverges,
                 &root,
+                Some(top),
             ) {
                 return true;
             }
         }
-        core_child_ids(db, id).into_iter().any(|c| go(db, c, seen))
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, top, c, seen))
     }
     let mut seen = HashSet::new();
-    go(db, id, &mut seen)
+    go(db, id, id, &mut seen)
 }
 
 /// The parameter SLOTS the owned-heap-param drop epilogue (`select_body`) will reclaim at the loop exit for
@@ -2926,6 +2931,7 @@ fn emit_tail(
                 stashed_slot,
                 never_diverges,
                 &root,
+                out.fn_body,
             );
             let scalar_shell_ok = sum_shell_reclaim_ok(
                 db,
@@ -4256,6 +4262,31 @@ fn sum_cont_arm_constructs_compound_seen(
     }
 }
 
+/// Whether EVERY arm RESULT of `cont` is a NON-HEAP (scalar) value — a decidable, conservative sufficient
+/// condition that the match cannot carry ANY heap handle (in particular a `String.at` extracted view) OUT
+/// as its terminal result. Used to admit the multi-consume `StrAt` view shell-drop WITHOUT the general
+/// escape-reachability classifier (`view_escapes_as_arm_result`, v-core-opt's consuming-analysis lane): a
+/// scalar match result STRUCTURALLY proves there is no escape-as-result, so the shell deep-drop's cascade
+/// frees only the dead final payload ref (the per-consume child-`dup`s the dup pass already emitted balance
+/// the consumes 1:1). A HEAP arm result — even a fresh, non-aliasing one — returns false → no reclaim →
+/// leak, never a UAF (leak-over-UAF). Checks the arm-body result TYPE per leaf (not a subtree scan): a
+/// `Leaf` is its body's type; a `Guarded` needs both its body and the fall-through `els`; `LitTest`/`Switch`
+/// recurse into every continuation.
+fn sum_cont_result_all_scalar(db: &mut Db, cont: &crate::core::SumCont) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => !is_heap_type(&type_of(db, *body)),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            !is_heap_type(&type_of(db, *body)) && sum_cont_result_all_scalar(db, els)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_result_all_scalar(db, then_) && sum_cont_result_all_scalar(db, els)
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            arms.iter().all(|a| sum_cont_result_all_scalar(db, &a.cont))
+        }
+    }
+}
+
 /// Whether the expression subtree `id` contains a compound CONSTRUCTOR node (see
 /// [`sum_cont_arm_constructs_compound`]). Node-id `seen` set guards the shared-`StructId` DAG re-walk.
 fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
@@ -4498,6 +4529,12 @@ fn matchsum_view_shell_reclaim_ok(
     stashed_slot: Option<(u32, ValType)>,
     never_diverges: bool,
     root: &crate::core::SumCont,
+    // The TOP function body — threaded (as `Some`) so the multi-consume disjunct below can key on the SAME
+    // `strat_view_multi_consume` predicate the dup pass uses (which counts consume refs over the whole body),
+    // keeping the shell-drop in EXACT lockstep with the child-`dup`s. Both callers pass the fn body (the
+    // import companion `body_reclaims_view_shell` and the emit via `out.fn_body`), so import ⟺ emit for the
+    // added `drop`. `None` (no fn-body context) skips the disjunct — the borrow-only path is unaffected.
+    top_body: Option<StructId>,
 ) -> bool {
     if !is_owned_single_view_producer(db, scrutinee)
         || !matches!(stashed_slot, Some((_, ValType::I32)))
@@ -4519,7 +4556,27 @@ fn matchsum_view_shell_reclaim_ok(
     // reclaimed. Uses the SAME consume/borrow classifier as the owned-scrutinee dup-site collection.
     let mut consuming = HashSet::new();
     collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
-    consuming.is_empty()
+    if consuming.is_empty() {
+        return true;
+    }
+    // MULTI-CONSUME StrAt view + SCALAR match result (v-memory-safety solo subset of the muv shell-reclaim
+    // co-design; the general escape-as-result gate `view_escapes_as_arm_result` is v-core-opt's
+    // consuming-analysis lane, needed only for HEAP arm results). `String.at` is the ONE view producer not
+    // globally `Owned`, so a view CONSUMED more than once got child-`dup`s from the dup pass
+    // (`strat_view_multi_consume` — the SAME predicate, single source of truth) but NO shell-drop, leaving
+    // the shell + one payload ref leaked (the 2-husk residue). When the match RESULT is a non-heap scalar,
+    // the view provably does not escape as the arm terminal, so freeing the shell (its deep-drop cascades
+    // ONE decrement into the payload, which the child-`dup`s left at the shell's own rc1) reclaims BOTH
+    // cells with no double-free. SINGLE-consume is excluded by `strat_view_multi_consume`'s `> 1` gate (its
+    // lone consume already frees the payload — a shell cascade there would double-free), matching the dup
+    // pass exactly. Requires the fn-body context (`top_body`) to compute the consume count identically to
+    // the dup side; without it we conservatively decline (leak). HEAP-result arms → `sum_cont_result_all_
+    // scalar` false → decline (leak beats UAF; v-core-opt's classifier handles those).
+    let compound_boxed = is_heap_type(scrut_ty)
+        && !ty_is_enum_disc(db, scrut_ty)
+        && !sum_has_only_scalar_payloads(db, scrut_ty);
+    top_body.is_some_and(|tb| strat_view_multi_consume(db, tb, root, scrutinee, compound_boxed))
+        && sum_cont_result_all_scalar(db, root)
 }
 
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed

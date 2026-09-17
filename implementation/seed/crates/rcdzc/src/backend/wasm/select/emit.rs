@@ -4078,6 +4078,7 @@ pub(super) fn emit(
                 stashed_slot,
                 never_diverges,
                 &root,
+                out.fn_body,
             );
             emit_sum_cont(
                 db,
