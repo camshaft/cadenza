@@ -487,6 +487,16 @@ pub enum Code {
     /// `is_decline`), CDZ09xx band.
     ExportHeapResultNoEncode,
 
+    /// An ENTRYPOINT DELEGATES MORE THAN ONE HOST EFFECT — the host-delegation emit binds one component
+    /// interface per envelope, so two distinct host effect names cannot both be delegated from one
+    /// entrypoint. A DEDICATED code split off the `UnsupportedConstruct` umbrella (CDZ0900) per the
+    /// CDZ0900-elimination directive. ONE user-facing cause + remediation ("delegate at most one host
+    /// effect per entrypoint"), covering the `WasmMultiHostEffectDelegation` DeclineId's several emit sites
+    /// (the bare host-delegating path, the resource-escaping-entrypoint variants, the closure-export
+    /// variant — the DeclineId carries the site). The build-out (multi-interface host delegation) is
+    /// v-rust-backend's. Still a DECLINE (see `is_decline`), CDZ09xx band.
+    MultiHostEffectDelegation,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -564,6 +574,7 @@ impl Code {
             Code::HostOpNoBoundaryForm => "CDZ0903",
             Code::ExportParamNoBoundaryForm => "CDZ0904",
             Code::ExportHeapResultNoEncode => "CDZ0905",
+            Code::MultiHostEffectDelegation => "CDZ0906",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -583,6 +594,7 @@ impl Code {
                 | Code::HostOpNoBoundaryForm
                 | Code::ExportParamNoBoundaryForm
                 | Code::ExportHeapResultNoEncode
+                | Code::MultiHostEffectDelegation
         )
     }
 }

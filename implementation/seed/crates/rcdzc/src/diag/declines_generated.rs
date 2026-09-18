@@ -120,7 +120,7 @@ impl DeclineId {
                 Some(Code::ExportHeapResultNoEncode)
             }
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::HostOpNoBoundaryForm),
-            DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmMultiHostEffectDelegation => Some(Code::MultiHostEffectDelegation),
             DeclineId::WasmNonScalarExportParamNoBoundaryRep => {
                 Some(Code::ExportParamNoBoundaryForm)
             }
