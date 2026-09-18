@@ -3998,6 +3998,49 @@ fn parse_df_capacity(df_out: &str) -> Option<(u32, u64)> {
     Some((pct, avail))
 }
 
+/// MemFree (KiB) below which we risk tripping Claude Code's background low-mem GUARDIAN — which kills bg
+/// workers (incl. an auto-backgrounded gate-local, instantly + with zero output) when Node `os.freemem()`
+/// (Linux MemFree) < `tengu_bg_low_mem_mb`, DEFAULT 1024 MB (v-fleet-tooling binary root-cause 2026-09-18,
+/// the #79845 misfire). We warn with headroom above the 1 GB trigger so it's a heads-up, not a post-mortem.
+const MEMFREE_GUARDIAN_WARN_KIB: u64 = 2 * 1024 * 1024;
+/// MemAvailable (KiB) above which a low MemFree is DEFINITELY the page-cache misfire (the RAM is reclaimable),
+/// not a genuine low-memory situation — only then do we frame a low MemFree as a harness misfire.
+const MEMAVAIL_HEALTHY_KIB: u64 = 32 * 1024 * 1024;
+
+/// A `fleet status` warning when MemFree is low enough to risk the harness bg-low-mem guardian reaping an
+/// auto-backgrounded gate-local at spawn, WHILE MemAvailable proves the RAM is reclaimable (a misfire, not a
+/// real OOM). This operationalizes the 2026-09-18 root-cause so an agent/operator seeing gate-local die with
+/// zero nix output can attribute it instantly (v-reducer-pooling burned 4 retries + a concierge round-trip
+/// on this confusion). PURE over /proc/meminfo text → unit-testable. `None` when MemFree is healthy, when
+/// MemAvailable is NOT high (a genuine low-mem situation — NOT the misfire this flags; the disk-guard / OOM
+/// forensics own real pressure), or when meminfo is unparseable (fail-safe: never a false warning).
+fn mem_free_guardian_warning(meminfo: &str) -> Option<String> {
+    let kb = |key: &str| -> Option<u64> {
+        meminfo
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+    let free = kb("MemFree:")?;
+    let avail = kb("MemAvailable:")?;
+    if free < MEMFREE_GUARDIAN_WARN_KIB && avail >= MEMAVAIL_HEALTHY_KIB {
+        let g = |k: u64| k as f64 / 1024.0 / 1024.0;
+        Some(format!(
+            "  ⚠ MemFree {:.1}G is low (< {}G) while MemAvailable {:.0}G is high — Claude Code's background \
+             low-mem guardian reaps bg workers (incl. an auto-backgrounded gate-local, INSTANTLY + zero nix \
+             output) when MemFree < 1G. It keys on FREE not available, so this is a MISFIRE on a page-cache-\
+             heavy box, NOT a real OOM: if gate-local dies with no output it's the HARNESS, not your code — \
+             retry, or land --admin-on-verified once the narrow inputs (dev-gate + scoped gate) are green.",
+            g(free),
+            MEMFREE_GUARDIAN_WARN_KIB / 1024 / 1024,
+            g(avail),
+        ))
+    } else {
+        None
+    }
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -4131,6 +4174,16 @@ fn status(fleet: &Fleet) {
         println!(
             "  disk: {pct}% used, {free_g:.0}G free on / (disk-guard warn=85% high=92%){flag}"
         );
+    }
+
+    // HARNESS bg-low-mem GUARDIAN risk — surface when MemFree is low enough to trip Claude Code's guardian
+    // (kills an auto-backgrounded gate-local at spawn, zero output) while MemAvailable proves it's a misfire,
+    // not a real OOM. Turns "why is gate-local dying with no output?!" into an at-a-glance attribution
+    // (v-fleet-tooling root-cause 2026-09-18). Silent when MemFree is healthy / meminfo unreadable.
+    if let Some(w) =
+        mem_free_guardian_warning(&std::fs::read_to_string("/proc/meminfo").unwrap_or_default())
+    {
+        println!("{w}");
     }
 
     // CRON HEALTH — surface any control-plane cron whose LAST run ERRORED (nonzero `rc=` in its `.last-run`
@@ -21261,6 +21314,38 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(parse_df_capacity("garbage").is_none());
         assert!(parse_df_capacity("only a header line, no data row\n").is_none());
         assert!(parse_df_capacity("").is_none());
+    }
+
+    #[test]
+    fn mem_free_guardian_warning_fires_only_on_the_low_free_high_available_misfire() {
+        // THE misfire: MemFree < 2G but MemAvailable huge (page cache is reclaimable) → warn, framed as a
+        // harness misfire (not real OOM), naming the gate-local zero-output symptom + the --admin-on-verified out.
+        let misfire = "MemTotal:       518000000 kB\nMemFree:          500000 kB\nMemAvailable:   358000000 kB\n";
+        let w = mem_free_guardian_warning(misfire).expect("low free + high available → warn");
+        assert!(
+            w.contains("MISFIRE") && w.contains("MemFree") && w.contains("gate-local"),
+            "got: {w}"
+        );
+        assert!(w.contains("--admin-on-verified"), "names the unblock: {w}");
+        // Healthy MemFree (25G) → no warning even if the box is busy (free above the 2G headroom threshold).
+        let healthy = "MemFree:        26214400 kB\nMemAvailable:   358000000 kB\n";
+        assert!(
+            mem_free_guardian_warning(healthy).is_none(),
+            "healthy free → silent"
+        );
+        // GENUINE low memory — MemFree low AND MemAvailable ALSO low (not reclaimable) → NOT this misfire
+        // warning (real pressure is the disk-guard/OOM-forensics' domain), so None here to avoid mis-framing.
+        let real = "MemFree:          500000 kB\nMemAvailable:     4000000 kB\n";
+        assert!(
+            mem_free_guardian_warning(real).is_none(),
+            "low free + low available is real pressure, not the misfire"
+        );
+        // Unparseable / missing fields → None (fail-safe, never a false warning).
+        assert!(mem_free_guardian_warning("garbage").is_none());
+        assert!(
+            mem_free_guardian_warning("MemFree:  500000 kB\n").is_none(),
+            "no MemAvailable → None"
+        );
     }
 
     #[test]
