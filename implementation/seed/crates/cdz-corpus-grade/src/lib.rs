@@ -567,6 +567,13 @@ where
                 if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
                     worst = worst.worse(grade_diag_quality(faults, Severity::Error, code, diag));
                 }
+                // Non-blocking FIX-FACET CANDIDATE nudge: a VERIFIED fix the case leaves unpinned.
+                if let Some(faults) = &faults
+                    && let Some(detail) =
+                        fix_facet_candidate(faults, Severity::Error, code, trial.diag.as_ref())
+                {
+                    eprintln!("FIX-FACET CANDIDATE: {} — {detail}", test_run.description);
+                }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -583,6 +590,13 @@ where
                 // Same diagnostic-QUALITY facets, graded for THIS warning's `(Warning, code)`.
                 if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
                     worst = worst.worse(grade_diag_quality(faults, Severity::Warning, code, diag));
+                }
+                // Non-blocking FIX-FACET CANDIDATE nudge: a VERIFIED fix the case leaves unpinned.
+                if let Some(faults) = &faults
+                    && let Some(detail) =
+                        fix_facet_candidate(faults, Severity::Warning, code, trial.diag.as_ref())
+                {
+                    eprintln!("FIX-FACET CANDIDATE: {} — {detail}", test_run.description);
                 }
                 if matches!(worst, Grade::Fail(_)) {
                     break;
@@ -1266,6 +1280,43 @@ pub fn grade_diag_quality(
         }
     }
     Grade::Pass
+}
+
+/// A FIX-FACET CANDIDATE advisory (non-blocking; the fix-quality analogue of the census TIGHTEN CANDIDATE):
+/// the compiler emitted a VERIFIED, machine-applicable fix on the `(severity, code)` fault, but the case does
+/// NOT pin the fix facet — so the corpus could tighten by asserting `(fix (kind …) (verified))`, locking the
+/// repair against a silent downgrade to heuristic/no-fix (the fix-quality analogue of a clean census a
+/// reclaim can regress). Returns the advisory DETAIL (the caller prepends the case description), else `None`
+/// when there is nothing to suggest:
+///   - the case already CONSTRAINS the fix (`(fix …)`) or asserts `(no-fix)` — it is already pinned;
+///   - no `(severity, code)` fault was emitted, or the emitted fault carries NO fix;
+///   - the fix is a HEURISTIC (unverified) — an unpinned heuristic is common and low-value, so it draws no
+///     advisory (verified-only keeps the signal low-noise: it fires only on the auto-applicable repairs
+///     worth locking, matching the mined `Fix::replace_verified` emitters).
+///
+/// PURE (like [`check_regression`] / [`known_leak_now_clean`]) so it is unit-testable; the `eprintln!` lives
+/// at the [`grade_run`] call site that owns the case description.
+pub fn fix_facet_candidate(
+    faults: &[DiagFault],
+    severity: Severity,
+    code: &str,
+    diag: Option<&DiagExpect>,
+) -> Option<String> {
+    // A case that already pins the fix (or asserts no-fix) needs no nudge.
+    if let Some(d) = diag
+        && (d.fix.is_some() || d.no_fix)
+    {
+        return None;
+    }
+    let fix = faults.iter().find(|f| f.is(severity, code))?.fix.as_ref()?;
+    if !fix.verified {
+        return None;
+    }
+    Some(format!(
+        "{code} carries a VERIFIED fix (kind {}, replacement {:?}) the case does not pin — assert \
+         (fix (kind {}) (verified)) to lock the machine-applicable repair against a silent downgrade",
+        fix.kind, fix.replacement, fix.kind
+    ))
 }
 
 /// §1 of `DESIGN-diagnostic-quality-rubric.md` — the GLOBALLY-forbidden message phrases (future-promise /
@@ -3787,6 +3838,74 @@ mod tests {
             "CDZ9999",
             &count0
         )));
+    }
+
+    /// `fix_facet_candidate`: fires ONLY when a VERIFIED fix on the matched `(severity, code)` fault is left
+    /// unpinned by the case — the fix-quality analogue of the census TIGHTEN CANDIDATE. Silent when the case
+    /// already pins the fix / asserts no-fix, when the fix is heuristic (unverified), or when no fault matches.
+    #[test]
+    fn fix_facet_candidate_flags_only_unpinned_verified_fixes() {
+        let verified = vec![DiagFault {
+            severity: Severity::Error,
+            code: Some("CDZ0306".into()),
+            node: None,
+            fix: Some(DiagFaultFix {
+                kind: "replace".into(),
+                node: None,
+                replacement: "_x".into(),
+                verified: true,
+            }),
+            message: "unused".into(),
+        }];
+        // Unpinned verified fix (no diag clause at all) → advisory fires.
+        assert!(fix_facet_candidate(&verified, Severity::Error, "CDZ0306", None).is_some());
+        // A diag clause that pins only a message/count but NOT the fix is still unpinned → fires.
+        let count_only = DiagExpect {
+            count: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            fix_facet_candidate(&verified, Severity::Error, "CDZ0306", Some(&count_only)).is_some()
+        );
+        // Already pins a `(fix …)` → no advisory.
+        let pinned = DiagExpect {
+            fix: Some(FixExpect::default()),
+            ..Default::default()
+        };
+        assert!(
+            fix_facet_candidate(&verified, Severity::Error, "CDZ0306", Some(&pinned)).is_none()
+        );
+        // Asserts `(no-fix)` → no advisory.
+        let nofix = DiagExpect {
+            no_fix: true,
+            ..Default::default()
+        };
+        assert!(fix_facet_candidate(&verified, Severity::Error, "CDZ0306", Some(&nofix)).is_none());
+        // A HEURISTIC (unverified) fix, unpinned → no advisory (low-value, kept quiet).
+        let heuristic = vec![DiagFault {
+            severity: Severity::Error,
+            code: Some("CDZ0201".into()),
+            node: None,
+            fix: Some(DiagFaultFix {
+                kind: "replace".into(),
+                node: None,
+                replacement: "(: 5 Int64)".into(),
+                verified: false,
+            }),
+            message: "colon".into(),
+        }];
+        assert!(fix_facet_candidate(&heuristic, Severity::Error, "CDZ0201", None).is_none());
+        // No matching fault → None (nothing to suggest).
+        assert!(fix_facet_candidate(&verified, Severity::Error, "CDZ9999", None).is_none());
+        // A fault with no fix at all → None.
+        let no_fix_fault = vec![DiagFault {
+            severity: Severity::Error,
+            code: Some("CDZ0212".into()),
+            node: None,
+            fix: None,
+            message: "absent".into(),
+        }];
+        assert!(fix_facet_candidate(&no_fix_fault, Severity::Error, "CDZ0212", None).is_none());
     }
 
     /// seq-15 `known_leak_now_clean`: a known-leak case is a TIGHTEN CANDIDATE iff a heap trial ran and EVERY
