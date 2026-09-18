@@ -3697,6 +3697,8 @@ mod tests {
         let mut cold_fold_samples: Vec<Duration> = Vec::with_capacity(N);
         for _ in 0..N {
             // Time ONLY the instantiation (resolve + compose the dependency graph + instantiate the component).
+            // NOTE: the CAS here is in-memory (seeded above), so this is compose+instantiate WITHOUT production
+            // CAS-resolution I/O — a conservative floor on the real per-event spawn cost (see the report caveat).
             let t = Instant::now();
             let mut r = store
                 .spawn(program, ord(b"bench-inst"))
@@ -3734,6 +3736,9 @@ mod tests {
         eprintln!(
             "  POOLING OPPORTUNITY: reusing a warm (leak-free, net-0-gated) instance amortizes spawn → saves ≈{opportunity:.0}% of per-request wall-clock (~{:.2}µs/req)",
             us(spawn_med)
+        );
+        eprintln!(
+            "  (spawn here is compose+instantiate with the closure ALREADY in an InMemoryBlobStore — it excludes production CAS-resolution I/O, so this is a conservative FLOOR: real per-request spawn ≥ this ⇒ the pooling win is ≥{opportunity:.0}%)"
         );
 
         // Sanity only (the numbers are the deliverable, reported above): instantiation is finite + non-zero, so
