@@ -349,7 +349,8 @@
       (export main)))
   (call main)
   (output (: 4 Int64))
-  (live-objects known-leak))
+  ; census sweep (#9179 base): built-in-as-value closure synth reclaims the captured heap capture; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a self-recursive fn passing its heap param to TWO sibling self-calls reclaims to 0 (last-sibling consume-spare coupled with the base-arm owned-param drop)"
@@ -763,7 +764,8 @@
       (export main)))
   (call main)
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; census sweep (#9179 base): built-in-as-value closure synth reclaims the captured heap capture; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)"
@@ -782,7 +784,8 @@
       (export main)))
   (call main)
   (output (: 4 Int64))
-  (live-objects known-leak))
+  ; census sweep (#9179 base): built-in-as-value closure synth reclaims the captured heap capture; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)"
@@ -9675,7 +9678,8 @@
   (output (: 666 Int64))
   (call main (: 0 Int64))
   (output (: 666 Int64))
-  (live-objects known-leak))
+  ; census sweep (#9179 base): built-in-as-value closure synth reclaims the captured heap capture; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
