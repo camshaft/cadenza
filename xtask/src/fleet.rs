@@ -313,6 +313,40 @@ struct Fleet {
     src: PathBuf,
 }
 
+/// The tracked `fleet/` files [`Fleet::materialize_source`] copies into the hub runtime dir (each `.sh`
+/// with the executable bit). INVARIANT: any fleet file referenced by its HUB path — a cron target, the
+/// tmux `window.sh` launch, or a user-facing `fleet status`/role hint that says "run
+/// `.claude/fleet/<x>`" — MUST be in this list, else that hub path resolves to a missing file (the
+/// 2026-09-18 bug: `fleet status`'s peer-fault hint pointed at `.claude/fleet/setup-nix-builder-peer.sh`,
+/// which was never materialized, so the concierge + I both hit file-not-found following the board's own
+/// advice). `AGENTS-fleet.md` is the lone non-`.sh` (a human-reference snapshot, no exec bit). Role bodies
+/// (`loops/*.md`) are materialized separately (a whole dir). Pinned by
+/// `materialize_source_deploys_tracked_fleet_files_executable_into_the_hub`.
+const MATERIALIZED_FLEET_FILES: &[&str] = &[
+    "AGENTS-fleet.md",
+    "window.sh",
+    "prune-stale-targets.sh",
+    "prune-tmp-inodes.sh",
+    "reap-wedged-nix-clients.sh",
+    "refresh-tools.sh",
+    "cargo-nix-shim.sh",
+    "nix-shim.sh",
+    "git-stash-safety-shim.sh",
+    "cpu-monitor.sh",
+    "warm-keep.sh",
+    "baseline-drift-monitor.sh",
+    "drain-nudge.sh",
+    "compact-nudge.sh",
+    "reap-leases.sh",
+    "aea-refresh.sh",
+    "disk-guard.sh",
+    "slack-bridge-guard.sh",
+    "watchdog.sh",
+    // Manually-run ops runbook, but `fleet status`'s peer-fault line tells the responder to run
+    // `.claude/fleet/setup-nix-builder-peer.sh verify <peer>` — the HUB path — so it must live there.
+    "setup-nix-builder-peer.sh",
+];
+
 impl Fleet {
     /// Anchor RUNTIME state to the HUB (`.claude/` is gitignored, exists only at the hub — shared by
     /// every worktree via `--git-common-dir`, and it stays put after the bare conversion). Anchor the
@@ -408,27 +442,7 @@ impl Fleet {
         // materialized here too so they are RUN from the hub copy — each derives its scan roots from its
         // own location in `<hub>/.claude/fleet/`, so the tracked source must be deployed here (like
         // window.sh) rather than run in place. Any `.sh` we materialize gets the executable bit.
-        for f in [
-            "AGENTS-fleet.md",
-            "window.sh",
-            "prune-stale-targets.sh",
-            "prune-tmp-inodes.sh",
-            "reap-wedged-nix-clients.sh",
-            "refresh-tools.sh",
-            "cargo-nix-shim.sh",
-            "nix-shim.sh",
-            "git-stash-safety-shim.sh",
-            "cpu-monitor.sh",
-            "warm-keep.sh",
-            "baseline-drift-monitor.sh",
-            "drain-nudge.sh",
-            "compact-nudge.sh",
-            "reap-leases.sh",
-            "aea-refresh.sh",
-            "disk-guard.sh",
-            "slack-bridge-guard.sh",
-            "watchdog.sh",
-        ] {
+        for f in MATERIALIZED_FLEET_FILES {
             let src = self.src.join(f);
             if src.exists() {
                 let dst = self.root.join(f);
@@ -20015,31 +20029,20 @@ mod tests {
     }
 
     #[test]
-    fn materialize_source_deploys_disk_hygiene_scripts_executable_into_the_hub() {
-        // Pins the deploy invariant (#3793 target-dir tool + the /tmp-inode tool): `fleet up` must
-        // materialize each tracked disk-hygiene script from `fleet/` into the hub runtime dir WITH the
-        // executable bit — the concierge's maintenance cron calls the HUB copies, so a refactor that
-        // drops one from the materialize set (or its chmod) would silently point the cron at a
-        // stale/absent/non-exec file.
-        let scripts = [
-            "prune-stale-targets.sh",
-            "prune-tmp-inodes.sh",
-            "reap-wedged-nix-clients.sh",
-            "refresh-tools.sh",
-            "cargo-nix-shim.sh",
-            "nix-shim.sh",
-            "cpu-monitor.sh",
-            "drain-nudge.sh",
-            "compact-nudge.sh",
-            "watchdog.sh",
-        ];
+    fn materialize_source_deploys_tracked_fleet_files_executable_into_the_hub() {
+        // Pins the deploy invariant: `fleet up` must materialize EVERY tracked file in
+        // MATERIALIZED_FLEET_FILES from `fleet/` into the hub runtime dir — each `.sh` WITH the executable
+        // bit — because crons, the tmux window launch, and user-facing `fleet status`/role hints reference
+        // the HUB copies. A refactor that drops one (or its chmod) would silently point a hub path at a
+        // stale/absent/non-exec file. Iterating the SAME const the impl uses means the test can't drift
+        // from the real list — a new hub-referenced script is covered the moment it's added to the const.
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let src = base.join("fleet");
         let root = base.join("hub");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::create_dir_all(&root).unwrap();
-        for s in scripts {
+        for s in MATERIALIZED_FLEET_FILES {
             std::fs::write(src.join(s), format!("#!/usr/bin/env bash\necho {s}\n")).unwrap();
         }
 
@@ -20051,7 +20054,7 @@ mod tests {
         };
         fleet.materialize_source();
 
-        for s in scripts {
+        for s in MATERIALIZED_FLEET_FILES {
             let dst = root.join(s);
             assert!(dst.exists(), "{s} is materialized into the hub");
             assert_eq!(
@@ -20059,13 +20062,22 @@ mod tests {
                 format!("#!/usr/bin/env bash\necho {s}\n"),
                 "{s} content is copied verbatim"
             );
+            // Only `.sh` files get the executable bit (AGENTS-fleet.md is a doc snapshot); matches the
+            // impl's own `if f.ends_with(".sh")` chmod guard.
             #[cfg(unix)]
-            {
+            if s.ends_with(".sh") {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
                 assert_eq!(mode, 0o755, "the materialized {s} gets the executable bit");
             }
         }
+        // Regression guard (2026-09-18): the peer-setup runbook MUST be materialized — `fleet status`'s
+        // remote-build-failure line tells the responder to run `.claude/fleet/setup-nix-builder-peer.sh
+        // verify <peer>` (the hub path), which is file-not-found unless it is in the deploy set.
+        assert!(
+            MATERIALIZED_FLEET_FILES.contains(&"setup-nix-builder-peer.sh"),
+            "the peer-setup runbook referenced by the fleet-status hint must be materialized to the hub"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
