@@ -1329,6 +1329,20 @@ fn escv_escape_admit_excludes_retaining_view_keeps_4917_margin() {
         "an escaping Bytes.slice view (RETAINING) must NOT be admitted to EITHER set — freeing its shell \
          would UAF the still-escaping rc-shared view (#4917); got shell={bytes_shell} view={bytes_view}"
     );
+    // FRESH-PAYLOAD (String.from-bytes) escaping raw → admitted to the SHELL set (the third escape-branch
+    // disposition, `fresh_payload`): the decode yields an INDEPENDENT payload leaf that does NOT alias its
+    // source Bytes, so dropping the shell never frees a still-referenced view (bfx9) — reclaimable exactly
+    // like a compacting view. Completes the escape-branch's 3-way boundary: compacting IN, fresh IN,
+    // retaining OUT.
+    let (fromb_shell, fromb_view) = sets_of(
+        "(module m (def (f (: b Bytes)) (Option.expect (String.from-bytes b) \"e\")) \
+             (def (main) 0) (export main))",
+    );
+    assert!(
+        fromb_shell && !fromb_view,
+        "an escaping String.from-bytes result (FRESH independent payload) must be in the SHELL set \
+         (reclaimable escape shell, bfx9) — got shell={fromb_shell} view={fromb_view}"
+    );
 }
 
 #[test]
