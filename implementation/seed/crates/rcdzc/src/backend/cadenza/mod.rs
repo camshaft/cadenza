@@ -594,18 +594,23 @@ fn emit_newtype_unwrap_peel(
 }
 
 /// The single-payload-newtype an operand STRUCTURALLY emits when its OWN solved type has been erased to the
-/// inner but the emitted surface value is still the nominal — a `Core::Proj` reading a TUPLE slot whose
-/// declared element type is a newtype (the tuple stores the nominal; the projection emits `(. tup i)` typed
-/// the element's nominal, but the optimizer folded the read's solved type to the erased inner). Returns
-/// `(decl, inner)`. `None` for a non-Proj, a non-tuple/out-of-range operand, or a non-newtype element.
-/// (A binder's declared-vs-solved gap is already handled by [`emit_binder_newtype_inner_peel`]; this is the
-/// projection twin — the missing signal for an arith/compare over a tuple-projected newtype field.)
+/// inner but the emitted surface value is still the nominal — a `Core::Proj` reading a TUPLE slot or RECORD
+/// field whose declared element type is a newtype (the tuple/record stores the nominal; the projection emits
+/// `(. tup i)` / `(. rec f)` typed the element's nominal, but the optimizer folded the read's solved type to
+/// the erased inner). Returns `(decl, inner)`. `None` for a non-Proj, a non-tuple/record/out-of-range
+/// operand, or a non-newtype element. (A binder's declared-vs-solved gap is already handled by
+/// [`emit_binder_newtype_inner_peel`]; this is the projection twin — the missing signal for an arith/compare
+/// over a tuple/record-projected newtype field.)
 fn proj_structural_newtype(db: &mut Db, n: StructId) -> Option<(StructId, Ty)> {
     let Core::Proj { operand, index } = core_of(db, n) else {
         return None;
     };
     let elem_ty = match crate::infer::type_of(db, operand) {
         Ty::Tuple(ts) => ts.get(index).cloned()?,
+        // A RECORD field read (`m.at`) — `Core::Proj` indexes the record's fields POSITIONALLY (the field
+        // order the record type fixes), the record twin of the tuple slot above. Its declared field type
+        // is the source of an erased-newtype field's nominal (22-property `(Record (: at Env) …)`).
+        Ty::Record(fields) => fields.values().nth(index).cloned()?,
         _ => return None,
     };
     match elem_ty {
