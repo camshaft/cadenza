@@ -1586,6 +1586,88 @@ pub(super) fn expr_tail_is_call_consuming_payload(
     }
 }
 
+/// Borrow-aware companion of [`expr_tail_is_call_consuming_payload`] (borrowing-Call view reclaim,
+/// #9218-followup): for a tail expression, returns `(has_payload_consume, all_such_borrow_read)` — whether any
+/// tail `Core::Call` arg is a payload-projection of `scrut`, AND whether EVERY such consuming arg goes to a
+/// param the callee only BORROW-reads (`!def_consumes_param`, back-edge-aware, invariance-gated). A borrow-only
+/// recursive reader (`fletcher`/`go` reading the view via `Bytes.at` + identity-threading it) does not escape
+/// the payload; a genuine consumer (stores/returns it) is NOT all-borrow.
+fn expr_tail_call_payload_all_borrow_reader(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+) -> (bool, bool) {
+    match core_of(db, id) {
+        Core::Call { callee, args } => {
+            let args: Vec<StructId> = args.to_vec();
+            let mut has = false;
+            let mut all = true;
+            for (i, &a) in args.iter().enumerate() {
+                if payload_proj_chain_roots_at_node(db, a, scrut) {
+                    has = true;
+                    if super::def_consumes_param(db, callee, i) {
+                        all = false;
+                    }
+                }
+            }
+            (has, all)
+        }
+        Core::If { then_, else_, .. } => {
+            let (h1, a1) = expr_tail_call_payload_all_borrow_reader(db, then_, scrut);
+            let (h2, a2) = expr_tail_call_payload_all_borrow_reader(db, else_, scrut);
+            (h1 || h2, a1 && a2)
+        }
+        Core::Let { body, .. } => expr_tail_call_payload_all_borrow_reader(db, body, scrut),
+        Core::Seq { tail, .. } => expr_tail_call_payload_all_borrow_reader(db, tail, scrut),
+        Core::Block { body, .. } => expr_tail_call_payload_all_borrow_reader(db, body, scrut),
+        Core::Break { value } => expr_tail_call_payload_all_borrow_reader(db, value, scrut),
+        _ => (false, true),
+    }
+}
+
+/// Cont-level fold of [`expr_tail_call_payload_all_borrow_reader`] over the arms (mirrors
+/// [`sum_cont_payload_consumed_in_tail_call`]'s shape). Returns true iff at least one arm's tail `Call`
+/// consumes a payload-of-`scrut` AND EVERY payload-consuming tail `Call` across the arms is a BORROW-READER.
+/// When true, the tail-consumed view is reclaimed by the CONSUME path — the owned-shell child-dup
+/// (`collect_shell_reclaim_child_dups`) + the shell deep-drop-before-`return_call` + the callee's own exit
+/// reclaim of its dup'd ref balance rc2→1→0 — so the `returncall_shell_drop` fence may safely ALLOW the drop.
+/// A genuine consumer among the tail calls (an escape) makes it false → keep the fence (leak-over-UAF).
+pub(super) fn sum_cont_payload_tail_all_borrow_reader(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    fn go(db: &mut Db, cont: &crate::core::SumCont, scrut: StructId) -> (bool, bool) {
+        match cont {
+            crate::core::SumCont::Leaf(body) => {
+                expr_tail_call_payload_all_borrow_reader(db, *body, scrut)
+            }
+            crate::core::SumCont::Guarded { body, els, .. } => {
+                let (h1, a1) = expr_tail_call_payload_all_borrow_reader(db, *body, scrut);
+                let (h2, a2) = go(db, els, scrut);
+                (h1 || h2, a1 && a2)
+            }
+            crate::core::SumCont::LitTest { then_, els, .. } => {
+                let (h1, a1) = go(db, then_, scrut);
+                let (h2, a2) = go(db, els, scrut);
+                (h1 || h2, a1 && a2)
+            }
+            crate::core::SumCont::Switch { arms, .. } => {
+                let mut has = false;
+                let mut all = true;
+                for a in arms.iter() {
+                    let (h, al) = go(db, &a.cont, scrut);
+                    has |= h;
+                    all &= al;
+                }
+                (has, all)
+            }
+        }
+    }
+    let (has, all) = go(db, cont, scrut);
+    has && all
+}
+
 /// The number of DISTINCT `Core::MatchSum` nodes in `top_body` whose scrutinee is a direct reference to
 /// `binder`. Used to detect a SHARED (borrowed) sum param: the non-tail-spine reclaim owns a param's shell
 /// ONLY when that param is matched EXACTLY ONCE (the single match holds its last owned ref, so the emit's

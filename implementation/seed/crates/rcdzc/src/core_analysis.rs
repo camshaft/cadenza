@@ -788,6 +788,32 @@ fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Op
         trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible REJECT: gate-2b P1 type-not-fully-solved");
         return None;
     }
+    // (2c-VIEW) SUM-VARIANT-PAYLOAD-VIEW EXCLUSION (v-core-opt borrowing-Call consume-path, #9218-followup).
+    // A `SumPayload` with a `Payload` step (a sum-variant payload extraction) or a `SumExpect` (an
+    // `Option/Result.expect` payload unwrap) is a BORROWED VIEW into a heap sum SHELL whose refcount the
+    // SHELL owns — not an independently-owned heap value. When such a view is shared (e.g. after `fletcher`
+    // inlines, `(match … ((Some s) (go s 0 (Bytes.len s) 0 0)))` reads the view `s` twice), binding it once
+    // into a `Core::Let` slot makes the slot dup+drop that borrowed handle INDEPENDENTLY of the shell's own
+    // reclaim. Two harms: (a) it drifts the Perceus refcount of a borrowed sum-view — the same heap-handle
+    // drift guard (A) blocks for scalar CSE, here in the sum-view direction; (b) the `Core::Let` reshapes the
+    // tail arm `((Some s) (go s … s))` into a NON-TAIL `((Some s) (let ((s2 s)) (go s2 … s2)))`, so the shell
+    // must stay live until the view's last use (inside the now non-tail `go`) — defeating the consume-path
+    // `returncall_shell_drop` that deep-drops the shell BEFORE the tail `return_call` (verified census-0 at
+    // O1, where this O2 pass does not run). The shell then LEAKS at O2 while O1 reclaims it to 0 — a level-
+    // equivalence leak. The forfeited win is a re-descended payload PROJECTION (a cheap `sum-payload` field
+    // read), negligible against the leak. Tuple-`Elem`/list-`Elem`/`RestFrom` extraction views are NOT gated
+    // here (a different, non-sum-shell reclaim family — cmb1's state-tuple field reads stay admitted).
+    let is_sum_variant_view = match core_of(db, id) {
+        Core::SumPayload { path, .. } => path
+            .iter()
+            .any(|s| matches!(s, crate::core::PathStep::Payload)),
+        Core::SumExpect { .. } => true,
+        _ => false,
+    };
+    if is_sum_variant_view {
+        trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible REJECT: gate-2c-VIEW sum-variant-payload borrowed view (shell-owned refcount; bind would drift reclaim / defeat consume-path shell drop)");
+        return None;
+    }
     // (2c) P3-NARROW (v-rb rust-grounded): a dispatched-on share is excluded ONLY when a read of it is a
     // SUM-VARIANT read (MatchSum/SumExpect, or a SumPayload with a `Payload` path step) — the rust
     // backend resolves such a payload via a bind minted by a MatchSum arm on the DIRECT scrutinee, so a
