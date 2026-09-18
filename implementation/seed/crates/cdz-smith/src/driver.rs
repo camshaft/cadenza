@@ -449,6 +449,84 @@ pub fn differential_sweep(
     Ok(stats)
 }
 
+/// The OPT-INVARIANCE sweep: for each generated program, run it at the DEFAULT level (`O1`) AND at `O3`
+/// ([`crate::differential::opt_invariance`]) and file any value/liveness disagreement — a pure optimizer
+/// MISCOMPILE (the O2/O3 global-CSE / lifted-analysis reclaim class the wasm-vs-rust oracle, both sides at
+/// O1, cannot reach). WASM-only + in-process: no `cdz` subprocess, so `unavailable` stays 0. Mismatches are
+/// shrunk with [`crate::differential::shrink_opt_invariance`] and filed as `Differential` findings tagged
+/// `opt-invariance`. Uses the COERCING astgen grammar (type-correct, terminating, value-comparable) so the
+/// comparison is dense rather than mostly one-side declines.
+#[cfg(feature = "differential")]
+pub fn opt_invariance_sweep(
+    cfg: &Config,
+    store: &std::path::Path,
+    count: u64,
+) -> std::io::Result<DiffStats> {
+    use crate::differential::{Diff, opt_invariance, shrink_opt_invariance};
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = DiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    for i in 0..count {
+        let seed = rng.next();
+        let source = program_for_seed_with(seed, cfg.gen_mode);
+        match opt_invariance(&source, store) {
+            Diff::Agree => stats.agreed += 1,
+            // opt-invariance never yields Unavailable (no rust subprocess) — fold defensively into agreed.
+            Diff::Unavailable(_) => stats.agreed += 1,
+            Diff::Mismatch { kind, wasm, rust } => {
+                stats.mismatched += 1;
+                let shrunk = shrink_opt_invariance(&source, kind, store);
+                let detail = format!("[opt-invariance {}] {wasm} {rust}", kind.tag());
+                let finding = Finding {
+                    category: Category::Differential,
+                    program: shrunk,
+                    crash: None,
+                    detail: Some(detail),
+                    commit: cfg.commit.clone(),
+                };
+                let label = format!("opt-invariance ({} mismatch)", kind.tag());
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    &label,
+                );
+            }
+            Diff::CompileCrash(info) => {
+                stats.crashed += 1;
+                let finding = Finding {
+                    category: Category::Crash,
+                    program: source.clone(),
+                    crash: Some(info),
+                    detail: None,
+                    commit: cfg.commit.clone(),
+                };
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    "opt-invariance compile-crash",
+                );
+            }
+        }
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] opt-invariance {}/{count} | {} agreed, {} mismatched ({} buckets), {} crashed",
+                i + 1,
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+                stats.crashed
+            );
+        }
+    }
+    Ok(stats)
+}
+
 /// The CADENZA-BACKEND equivalence sweep (operator seq-184): for each generated program, compare the
 /// DIRECT wasm value against the `--target cadenza` round-trip value ([`crate::cadenza_diff::cadenza_diff`]).
 /// A divergence is a cadenza-backend miscompile — filed like a wasm-vs-rust differential finding. Uses a

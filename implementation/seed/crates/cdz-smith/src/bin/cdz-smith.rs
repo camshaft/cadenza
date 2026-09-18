@@ -43,6 +43,17 @@ fn main() -> ExitCode {
         #[cfg(feature = "differential")]
         "cadenza-equiv" => cmd_cadenza_equiv(&args[1..]),
         #[cfg(feature = "differential")]
+        "opt-differential" => cmd_opt_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "opt-differential" => {
+            eprintln!(
+                "cdz-smith: the `opt-differential` subcommand needs the `differential` feature \
+                 (it runs the wasm backend via cdz-run) — rebuild: \
+                 `cargo run --features differential -- opt-differential …`."
+            );
+            ExitCode::from(2)
+        }
+        #[cfg(feature = "differential")]
         "type-differential" => cmd_type_differential(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "type-differential" => {
@@ -154,6 +165,7 @@ fn usage() {
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large]\n\
+         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large]   (O1-vs-O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -1173,6 +1185,111 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith: differential sweep failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The OPT-INVARIANCE dimension: for each generated program compare its VALUE at the default level (`O1`)
+/// against its value at `O3`; a divergence is a pure-optimizer miscompile (the O2/O3 global-CSE /
+/// lifted-analysis reclaim class the wasm-vs-rust oracle — both sides at O1 — cannot reach). WASM-only +
+/// in-process, so it needs the runtime store but NO `cdz` binary.
+#[cfg(feature = "differential")]
+fn cmd_opt_differential(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    // Default to the COERCING astgen grammar: type-correct, terminating, VALUE-comparable programs make the
+    // O1-vs-O3 comparison dense (the broad text grammar mostly declines → one-side-skip → Agree).
+    let mut gen_mode = driver::GenMode::Astgen;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--store" => store = it.next().map(PathBuf::from),
+            "--astgen" => gen_mode = driver::GenMode::Astgen,
+            "--large" => gen_mode = driver::GenMode::LargeValue,
+            other => {
+                eprintln!("cdz-smith opt-differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    // Resolve the runtime store (flag > beside a discovered workspace target > cwd default). No `cdz`
+    // binary is needed — both levels run in-process — but the value-heap runtime blobs still resolve here.
+    let store = store.unwrap_or_else(|| {
+        cdz_smith::differential::discover_cdz()
+            .as_deref()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent()) // target/<profile>/cdz → target/
+            .map(|t| t.join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+    if !store.is_dir() {
+        eprintln!(
+            "cdz-smith opt-differential: runtime store {} not found (build it — `cargo xtask build` — \
+             or pass --store PATH). Without it every value-heap program declines (runtime-not-in-store).",
+            store.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+        gen_mode,
+    };
+    let grammar = match gen_mode {
+        driver::GenMode::LargeValue => "large-value",
+        _ => "astgen",
+    };
+    eprintln!(
+        "[cdz-smith] opt-differential @{} | seed {} | count {} | grammar {} | store {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        grammar,
+        store.display(),
+        findings_dir.display()
+    );
+    // Arm the in-process compile-hang watchdog (BOTH levels compile in-process; the RUN is epoch-bounded
+    // by cdz_run, but the COMPILE is an unguarded native call).
+    cdz_smith::compile_guard::install(
+        cfg.findings_dir.clone(),
+        cfg.commit.clone(),
+        cdz_smith::compile_guard::compile_timeout(),
+    );
+    match driver::opt_invariance_sweep(&cfg, &store, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] opt-differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits), {} crashed",
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+                stats.duplicate_hits,
+                stats.crashed
+            );
+            if stats.new_buckets > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith: opt-differential sweep failed: {e}");
             ExitCode::FAILURE
         }
     }
