@@ -4102,7 +4102,8 @@
   (output (: -1 Int64))
   (call main (: 3 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; StrFromBytes reclaim landed (v-memory-safety): the Bytes.slice/to-bytes-output payload consumed by String.from-bytes reclaims (allowlisted converter) + the String.from-bytes Some shell reclaims (dead-after-destructure prim); census -> 0, no underflow. Was known-leak.
+  (live-objects 0))
 
 (case
   "decoding ill-formed UTF-8 bytes yields none, not a trap"
@@ -4319,7 +4320,8 @@
   (output (: 2 Int64))
   (call main (: 2 Int64))
   (output (: -9 Int64))
-  (live-objects known-leak))
+  ; StrFromBytes reclaim landed (v-memory-safety): the Bytes.slice/to-bytes-output payload consumed by String.from-bytes reclaims (allowlisted converter) + the String.from-bytes Some shell reclaims (dead-after-destructure prim); census -> 0, no underflow. Was known-leak.
+  (live-objects 0))
 
 (case
   "String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender"

@@ -4710,6 +4710,16 @@ fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
             // subset check fails and the shell stays leaking (the escape control).
             | Core::BytesSlice { .. }
             | Core::StrSlice { .. }
+            // Single-owned-ref-move CONVERTER (v-memory-safety): `Core::StrFromBytes` (`str-from-bytes`) is the
+            // fallible twin of `StrToBytes` — it CONSUMES exactly one owned ref to its bytes operand
+            // (transferring the storage out as the `String` on success, `op_drop`ping it on the ill-formed-UTF-8
+            // failure path) and is a PRIM (never a Call/Closure → cannot resume-thread). So a scrutinee-payload
+            // view CONSUMED by `String.from-bytes` is a clean single-owned-ref move: the one dup-on-escape
+            // balances the extraction shell's deep-drop 1:1, exactly like `StrToBytes`/`Bytes.concat`. Fixes the
+            // `(match (Bytes.slice …) ((Some s) (String.byte-len (String.from-bytes s)))) …)` decode-window leak
+            // (10-bytes:919): the outer Bytes.slice Some shell was left unreclaimed because `String.from-bytes`
+            // consuming `s` was neither borrow-clean nor an allowlisted builder.
+            | Core::StrFromBytes { .. }
     )
 }
 
@@ -4874,9 +4884,20 @@ fn sum_shell_reclaim_ok(
             // returned / no interior-view / no whole-scrutinee return) hold identically for a decode scrutinee,
             // and the `owned_compound_boxed` dup pass already dups any CONSUMED decode payload child (empty for
             // a borrow-only `=` arm → the deep-drop cascade frees the once-borrowed payload exactly once).
+            // `Core::StrFromBytes` (op 96, `str-from-bytes`) joins `Core::Call`/`Core::AstDecode` for the SAME
+            // reason (v-memory-safety, 10-bytes:919): it is a PURE PRIM that mints a FRESH owned `(Option String)`
+            // shell (the fallible decode either wraps the moved String in `Some` or returns `None`), inlined once
+            // as the scrutinee, and — being a primitive, never a handler — CANNOT resume-thread a payload out, so
+            // it is STRICTLY at least as dead-after-destructure-safe as a `Call`. Its `Some` payload is a FRESH
+            // owned String leaf (the storage moved out of the consumed bytes), so a borrow-only arm
+            // (`String.byte-len str`) is escape-clean + reuse-clean → the deep husk-drop reclaims the `Some`
+            // shell + the String exactly once. Without it, the inner `(match (String.from-bytes s) ((Some str)
+            // (String.byte-len str)) …)` shell + its String leaked (the outer Bytes.slice shell is separately
+            // reclaimed once `StrFromBytes` is an allowlisted extraction-consume builder above). The
+            // `nontail_param_compound_extra_ok` fences hold identically for a decode-String scrutinee.
             || (matches!(
                 core_of(db, scrutinee),
-                Core::Call { .. } | Core::AstDecode { .. }
+                Core::Call { .. } | Core::AstDecode { .. } | Core::StrFromBytes { .. }
             )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
                 && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))

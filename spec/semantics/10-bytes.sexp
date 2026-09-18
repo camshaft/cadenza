@@ -933,7 +933,8 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  ; StrFromBytes reclaim landed (v-memory-safety, #StrFromBytes-allowlist+shell-disjunct): the outer Bytes.slice Some shell (payload consumed by String.from-bytes, now an allowlisted single-owned-ref-move converter) AND the inner String.from-bytes Some shell + String leaf (a fresh owned Option String, dead-after-destructure like a Call/AstDecode) both reclaim; census 3->0, no rc-underflow (DBG+RCT), value-faithful. Was known-leak.
+  (live-objects 0))
 
 (case
   "a slice spanning a concatenation sees the logical bytes"
@@ -2755,7 +2756,8 @@
   (output (: 103 Int64))
   (call main (: 1 Int64) (: 2 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak))
+  ; StrFromBytes reclaim landed (v-memory-safety, #StrFromBytes-allowlist+shell-disjunct): the outer Bytes.slice Some shell (payload consumed by String.from-bytes, now an allowlisted single-owned-ref-move converter) AND the inner String.from-bytes Some shell + String leaf (a fresh owned Option String, dead-after-destructure like a Call/AstDecode) both reclaim; census 3->0, no rc-underflow (DBG+RCT), value-faithful. Was known-leak.
+  (live-objects 0))
 
 (case
   "a slice window spanning MANY seams of a built rope reads the logical bytes"
@@ -2863,7 +2865,8 @@
   (output (: -1 Int64))
   (call main (: 3 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; StrFromBytes reclaim landed (v-memory-safety, #StrFromBytes-allowlist+shell-disjunct): the outer Bytes.slice Some shell (payload consumed by String.from-bytes, now an allowlisted single-owned-ref-move converter) AND the inner String.from-bytes Some shell + String leaf (a fresh owned Option String, dead-after-destructure like a Call/AstDecode) both reclaim; census 3->0, no rc-underflow (DBG+RCT), value-faithful. Was known-leak.
+  (live-objects 0))
 
 (case
   "Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry"
