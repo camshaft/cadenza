@@ -2463,6 +2463,46 @@
   (live-objects 0))
 
 (case
+  "TWO Symbol.of interns over two slices of ONE dying rope BOTH reclaim their slice shells"
+  (doc
+    "The adversarial DOUBLE of the Symbol.of-over-slice reclaim above (which interns ONE slice → 0 via
+           the NfcNormalize allowlist). Here ONE local rope `parent = \"abcd\"` is sliced TWICE (multi-borrowed)
+           and EACH window is interned by its own `Symbol.of`, so there are TWO `String.slice` Some shells each
+           feeding an intern that lowers to `StrToBytes(NfcNormalize(_))`: a=1 windows s1=[1,3)=\"bc\" and
+           s2=[2,4)=\"cd\", so `(Symbol.of s1) = #\"bc\"` (10) AND `(Symbol.of s2) = #\"cd\"` (1) → 11; a=0
+           windows \"ab\"/\"bc\" → neither constant matches → 0. The reclaim question the single-intern pin
+           leaves open: does the NfcNormalize-allowlist shell reclaim COMPOSE across two interns sharing one
+           multi-borrowed dying parent — both slice shells AND the parent reclaim (census 0) — or does a second
+           intern in the same scope leak a shell? Value-faithful on both calls proves the two interns read
+           independent windows (no aliasing of the shared parent's storage); census 0 pins the double reclaim.")
+  (input
+    (do
+      (def
+        (main (: a Int64))
+        (let
+          ((parent (String.concat "ab" "cd")))
+          (match
+            (String.slice parent a (+ a 2))
+            ((Some s1)
+              (match
+                (String.slice parent (+ a 1) (+ a 3))
+                ((Some s2)
+                  (+
+                    (* 10 (if (= (Symbol.of s1) #"bc") 1 0))
+                    (if (= (Symbol.of s2) #"cd") 1 0)))
+                ((None _u) -2)))
+            ((None _u) -1))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 11 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  ; double-probe: hypothesis is the NfcNormalize-allowlist Symbol.of-over-slice shell reclaim COMPOSES across
+  ; two interns over one multi-borrowed dying parent, so both slice shells + the parent reclaim (census 0).
+  ; Pinned 0 to let the gate rule — a red "got N" would expose a second-intern shell leak the single pin misses.
+  (live-objects 0))
+
+(case
   "a runtime string rope inserted into a set is a member"
   (doc
     "The SET element-insert companion of the map-key cases: inserting a runtime String ROPE
