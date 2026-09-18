@@ -813,6 +813,29 @@
   (input (UInt8.of (: 200 Int32)))
   (output (: 200 UInt8)))
 
+; The RUNTIME companion of the out-of-range `.of` reject: the const cases above reject an out-of-range
+; CONSTANT at compile time (CDZ0302), but a `.of` over a RUNTIME source value the compiler cannot see must
+; still enforce the SAME range check — it TRAPS when the value does not fit, on BOTH the magnitude and the
+; sign boundary. It does NOT silently truncate (that is `.wrap`) nor mask. `UInt8.of x` over an Int32
+; param: x=200 fits (200); x=300 overflows the magnitude ceiling → trap; x=-1 crosses the sign floor → trap.
+; Pins the checked conversion's range guard is enforced at run time and is two-sided, the runtime twin of the
+; const CDZ0302 reject (numeric-model.md #A Conversion Between Integer Types Is Explicit).
+(case
+  "a runtime out-of-range checked integer conversion traps on both the magnitude and the sign boundary"
+  (doc
+    "`(UInt8.of x)` over an Int32 PARAMETER cannot fold, so the range check runs at run time: x=200 is
+           in range and yields 200; x=300 exceeds the UInt8 magnitude ceiling (255) and TRAPS; x=-1 is below
+           the UInt8 sign floor (0) and TRAPS. Neither wraps mod 256 (which would give 44 and 255) nor
+           saturates — a checked `.of` is an error out of range, the runtime twin of the const CDZ0302 reject.
+           Pins the runtime range guard is enforced and two-sided.")
+  (input (do (def (nb (: x Int32)) (UInt8.of x)) (export nb)))
+  (call nb (: 200 Int32))
+  (output (: 200 UInt8))
+  (call nb (: 300 Int32))
+  (trap "unreachable")
+  (call nb (: -1 Int32))
+  (trap "unreachable"))
+
 (case
   "a bare constant width UInt8 literal crosses to the host as its value"
   (doc
