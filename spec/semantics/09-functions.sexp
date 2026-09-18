@@ -657,6 +657,38 @@
   (live-objects 0))
 
 (case
+  "a tail loop with TWO in-loop co-borrows of the threaded accumulator reclaims per-iteration without double-free (drop lands after BOTH borrows)"
+  (doc
+    "The multi-borrow adversarial face of #9172's `drop_old_borrowed`. The fixed shape above borrows the
+           threaded owned `acc` ONCE per iteration; here the back-edge borrows it TWICE — `(let ((l (List.len
+           acc)) (m (List.len acc)))` — beside the consuming rebind `(List.push acc i)`. The whole-binder dup
+           still fires at the consume (List.push would else FBIP-reuse acc's rc1 cell and the borrows would
+           read the post-push list), leaving an old survivor cell; `drop_old_borrowed` must reclaim it ONCE,
+           and — the sharp part — the reclaiming op_drop must land AFTER the LAST borrow (`m`'s read), not
+           after the first. A drop emitted between the two borrows would free the cell `m` still reads →
+           rc-underflow trap / UAF. Value sums 2·len(acc) per iteration: sum = 2·(0+1+…+(n-1)) = n·(n-1),
+           n=5 → 20, n=10 → 90. The gate's census + trap grading proves the multi-borrow reclaim is UAF-safe;
+           census pinned known-leak pending that verdict (native over-counts collection shapes).")
+  (input
+    (do
+      (def
+        (loop (: acc (List Int64)) (: i Int64) (: sum Int64))
+        (if (< i 1)
+            sum
+            (let
+              ((l (List.len acc)) (m (List.len acc)))
+              (loop (List.push acc i) (- i 1) (+ sum (+ l m))))))
+      (def (main (: n Int64)) (loop #list() n 0))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (call main (: 10 Int64))
+  (output (: 90 Int64))
+  ; gate-confirmed (every heap trial): drop_old_borrowed reclaims the one survivor cell per iteration and
+  ; the op_drop lands AFTER both borrows (l and m) — no double-free, O(n) residue gone. #9172 multi-borrow-safe.
+  (live-objects 0))
+
+(case
   "the STRING-accumulator face: a tail loop borrowing its owned String while concat-threading it also leaks per-iteration (O(n))"
   (doc
     "The most-common-heap-type witness of the back-edge borrow-dup miss (the tail-loop face of the
@@ -679,10 +711,12 @@
             (let ((l (String.byte-len acc))) (loop (String.concat acc "x") (- i 1) (+ sum l)))))
       (def (main (: n Int64)) (loop "" n 0))
       (export main)))
-  ; n=5: byte-len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the borrow-dup residue grows ~per-iteration.
+  ; n=5: byte-len(acc) at each of 5 iterations = 0+1+2+3+4 = 10.
+  ; #9172 tighten (gate TIGHTEN CANDIDATE, every heap trial 0): drop_old_borrowed reclaims the String-accumulator
+  ; back-edge borrow-dup too — the O(n) residue is gone; was known-leak.
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the back-edge borrow-dup leak is TAIL-specific: a BODY-recursive (non-tail) borrow-thread RECLAIMS to 0"
