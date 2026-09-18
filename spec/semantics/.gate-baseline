@@ -3406,6 +3406,7 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern in a recursive drain matches then exhausts
 pass	a map pattern matches a present key and binds its value
 pass	a map pattern naming a key the scrutinee lacks does NOT match (falls to the next arm)
+todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 pass	a map pattern nested in a tuple binds its value binder
 pass	a map pattern over a non-map scrutinee is a type error
 pass	a map pattern over an Int64 scrutinee (definite) is a type error

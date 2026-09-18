@@ -23074,6 +23074,39 @@
       (export main)))
   (output (: -1 Int64)))
 
+; --- The SUM-VARIANT-payload RUNTIME-map twin -----------------------------------------------------------
+; The tuple-nested twins above fold a CONSTANT `#map` literal, and a DIRECT match over a runtime map already
+; binds (the value-sub-pattern cases below). This pins the ONE residual coverage face: a map pattern nested
+; inside a SUM-VARIANT payload over a genuinely RUNTIME map (a `Map.insert` value, not a `#map` literal). The
+; variant payload routes the nested map pattern through the SELECT-DISPATCH lowering, whose `MapHasKeys`
+; key-presence gate would need a per-binder runtime keyed-read (a `map-lookup` per named key) — not yet wired,
+; so it DECLINES cleanly (CDZ0900 `wasm-map-pattern-runtime-map`), never a wrong value. Locks in the idealistic
+; binding; auto-flips Todo→PASS when the select-dispatch runtime keyed-read lands. Reverting the select fold
+; guard so it silently misfires would flip this Todo→Fail (a miscompile), so it guards the boundary either way.
+(case
+  "a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read"
+  (doc
+    "`(match (W.Mk (Map.insert Map.empty n 10)) ((W.Mk #map((= 5 v))) v) (_ -1))` — a map key-value pattern
+           nested inside a SUM-VARIANT payload `W.Mk`, over a genuinely RUNTIME map built by `Map.insert` (not a
+           `#map` literal, which would fold). The variant payload routes the nested map pattern through the
+           select-dispatch lowering, whose `MapHasKeys` key-presence gate needs a per-binder runtime keyed-read
+           (a `map-lookup` per named key) that is not yet emitted on this path, so it declines cleanly rather
+           than miscompiling. The DIRECT map match over a runtime map already binds (the value-sub-pattern cases
+           below) and the tuple-nested twins fold a CONSTANT literal — this is the residual variant-nested face.
+           `main 5` inserts key 5 → the arm's `#map((= 5 v))` binds v=10 → 10; `main 7` leaves key 5 absent → the
+           catch-all → -1. Reproduces the exact runtime keyed-read the select-dispatch path must emit.")
+  (input
+    (do
+      (type W (Mk (Map Int64 Int64)))
+      (def
+        (main (: n Int64))
+        (match (W.Mk (Map.insert Map.empty n 10)) ((W.Mk #map((= 5 v))) v) (_ -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (call main (: 7 Int64))
+  (output (: -1 Int64)))
+
 (case
   "a map pattern value sub-pattern may be a literal that refines the match"
   (doc
