@@ -2042,6 +2042,47 @@ pub(super) fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) ->
     )
 }
 
+/// Whether `scrutinee` is a view producer WHOSE EMIT ALREADY COMPACTS the extracted `Some` payload into an
+/// INDEPENDENT flat leaf — `String.at` (emit.rs `StrScalarAt` arm) and `String.slice` (emit.rs `StrSlice`
+/// arm) both DUP the source, slice the dup, then `OP_BYTES_COMPACT` (slice rope → independent flat leaf,
+/// owned→owned) before `sum-new`. So their `Some` payload does NOT alias the source (the compact broke the
+/// parent alias), and the shell is reclaimable EVEN on the ESCAPE disposition — `dup` the escaping payload
+/// + `drop` the shell (the fresh-payload path), no further compact needed (it is already flat).
+///
+/// This is the load-bearing SUBSET of [`is_owned_single_view_producer`] for the escv escape-shell reclaim
+/// (v-memory-safety co-verified): the other members — `Bytes.slice`/`List.at`/`Map.lookup` — do NOT compact
+/// (their payload RETAINS/rc-shares its container's storage), so an escaping shell-drop whose cascade is
+/// DEEP would free the still-referenced parent → the #4917 UAF. Admit ONLY the compacting members to the
+/// escape shell_set; the retaining ones stay leaking (the #4917 leak-over-UAF margin) until their shell-drop
+/// cascade is proven shallow.
+pub(super) fn is_compacting_view_producer(db: &mut Db, scrutinee: StructId) -> bool {
+    matches!(
+        core_of(db, scrutinee),
+        Core::StrAt { .. } | Core::StrSlice { .. }
+    )
+}
+
+/// Whether `id` is a `Core::SumExpect` (an `Option.expect`) over a COMPACTING view producer
+/// (`String.at`/`String.slice`) — i.e. the extracted payload is an INDEPENDENT compacted flat leaf (both
+/// producers' emit `OP_BYTES_COMPACT` the Some payload to an owned flat leaf; StrAt at emit.rs:2318,
+/// StrSlice at emit.rs:2506). As a DIRECT (single-use, inlined) operand of a borrowing/consuming producer —
+/// e.g. the `string` source of a NESTED `(String.slice (Option.expect (String.slice …) …) …)` — such an
+/// extracted view is a fresh OWNED TEMPORARY the consumer must reclaim after it is done, exactly like a
+/// `String.concat`/`SumNew` source. But `heap_operand_ownership(Core::SumExpect)` is BORROWED (ownership.rs,
+/// the value-eq/MatchSum-Stage-B note keeps it un-Owned globally), so the consumer's owned-source-reclaim
+/// gate (which keys on `== Owned`) MISSES it and the inner view leaf LEAKS one cell per call. This LOCAL
+/// predicate lets a compacting-view producer's own emit admit the reclaim without the global
+/// reclassification (the local>global discipline `is_owned_single_view_producer`/`reclaim_shell` already
+/// use). SOUND: the compacted leaf never aliases its own source, and a DIRECT `SumExpect` operand is
+/// single-use (a multi-use view is a kept `LocalRef`=Borrowed, NOT a direct `SumExpect`, so it never matches
+/// here → no double-free — the owner reclaims it).
+pub(super) fn is_compacting_view_expect(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::SumExpect { scrutinee, .. } => is_compacting_view_producer(db, scrutinee),
+        _ => false,
+    }
+}
+
 /// Whether `scrutinee` is an owned producer whose `Some` payload is a FRESHLY-ALLOCATED, INDEPENDENT heap
 /// handle — NOT a VIEW that aliases the shell's own storage. `String.from-bytes` (`Core::StrFromBytes`)
 /// decodes the byte range into a BRAND-NEW `String` leaf (`str-from-bytes` transfers the decoded buffer
@@ -2131,6 +2172,13 @@ pub(super) fn collect_sumexpect_view_reclaim_seen(
         // VIEW producer whose escaping extraction must stay leaking (the #4917 control) — its shell is
         // safely reclaimable on the ESCAPE disposition too (see `is_owned_fresh_payload_producer`).
         let fresh_payload = is_owned_fresh_payload_producer(db, scrutinee);
+        // A COMPACTING view producer (String.at/String.slice) whose emit already `OP_BYTES_COMPACT`s the
+        // `Some` payload into an INDEPENDENT flat leaf — so, like a fresh-payload producer, its escaping
+        // shell is reclaimable by `dup` payload + `drop` shell (the compact already broke the parent alias,
+        // so freeing the shell never frees a still-referenced view). NOT the retaining/rc-shared members
+        // (Bytes.slice/List.at/Map.lookup) — those keep the #4917 leak-over-UAF margin (see
+        // `is_compacting_view_producer`). This is the escv value-escape-to-host shell reclaim.
+        let compacting_view = is_compacting_view_producer(db, scrutinee);
         let refs = count_node_refs(db, top_body, id);
         match single_parent_of(db, top_body, id) {
             // Consumer is a scalar-read with a view-drop hook (Bytes.at / String.scalar-len) → VIEW-set:
@@ -2146,12 +2194,15 @@ pub(super) fn collect_sumexpect_view_reclaim_seen(
                 shell_set.insert(id);
             }
             // ESCAPE / body-result: `single_parent_of` is `None` AND `refs == 0` (the node is the body root
-            // / an arm result — referenced by no parent Core node). For a VIEW producer this stays leaking
-            // (the escaping view may alias the shell → the #4917 control). For a FRESH-payload producer the
-            // escaping payload is INDEPENDENT, so it takes the SHELL-set path: `dup` the escaping payload
-            // (+1) + drop the shell (cascade -1) = NET-0 (payload escapes owned), the one orphaned shell
-            // freed. (`refs == 0` — a `None` with `refs >= 2` is a MULTI-USE share, not reclaimed here.)
-            None if fresh_payload && refs == 0 => {
+            // / an arm result — referenced by no parent Core node). A FRESH-payload producer OR a COMPACTING
+            // view producer (String.at/String.slice, whose emit already flattens the payload to an
+            // INDEPENDENT leaf) takes the SHELL-set path: `dup` the escaping payload (+1) + drop the shell
+            // (cascade -1) = NET-0 (payload escapes owned), the one orphaned shell freed — this is the escv
+            // value-escape-to-host leak fix (escv 2→0). A genuinely-ALIASING view producer
+            // (Bytes.slice/List.at/Map.lookup, whose payload retains/rc-shares its container) STAYS leaking
+            // (the #4917 leak-over-UAF control — its shell-drop cascade could free a still-referenced parent
+            // = UAF). (`refs == 0` — a `None` with `refs >= 2` is a MULTI-USE share, not reclaimed here.)
+            None if (fresh_payload || compacting_view) && refs == 0 => {
                 shell_set.insert(id);
             }
             _ => {}
