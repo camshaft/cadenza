@@ -494,6 +494,62 @@
   (live-objects 0))
 
 (case
+  "a CLOSURE param carrying a captured heap env leaks in a self-recursive fn with a SINGLE call (closures trip the SCC miss more readily than list params)"
+  (doc
+    "The closure-typed-param face of the count_param_consumes SCC-membership owned-param-drop cluster
+           (self #9138 / mutual #9140). `go` is self-recursive over an owned CLOSURE param `f`: base arm calls
+           `f` (dead-after), recursive arm passes `f` to the SINGLE self-call `(go f (- d 1))`. The closure
+           captured a heap list `xs` (env of 3 cells). Because `count_param_consumes(f) > 0` (the recursive
+           self-call consumes `f`) and `go` is in its own recursion SCC, the owned-param drop DECLINES even on
+           the base path — so the closure's captured heap env leaks a constant 3 (independent of depth, value
+           correct, no trap). CRUCIAL contrast with the list-param leaker above: a plain heap-LIST param needs
+           ≥2 SIBLING self-calls (a forced dup) to leak (single self-recursion reclaims to 0, the #9140
+           control), but a CLOSURE param leaks with a SINGLE self-call — the captured-env owned reference is
+           consumed by the lone recursive call, so no dup is required to expose the path-unaware decline.
+           The non-recursive control below (a closure param invoked in a non-SCC callee) reclaims to 0,
+           confirming the trigger is `go`'s own SCC membership, exactly as for list params. IDEAL 0; flips
+           with #9138/#9140 when the owned-param drop becomes call-graph-aware. (Adversarial pin from a breaker
+           probe; census gate-confirmed.)")
+  (input
+    (do
+      (def
+        (go (: f (-> Int64 Int64)) (: d Int64))
+        (if (< d 1) (f 0) (go f (- d 1))))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1))))
+          (go (fn (_d) (List.len xs)) n)))
+      (export main)))
+  ; d=0 base: f called once, recursive arm never taken — the captured 3-cell env still leaks (constant 3).
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  ; d=2: two self-recursive hops then the base call — value + leak both unchanged (3), no scaling.
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (live-objects 3))
+
+(case
+  "the closure-param control: a heap-capturing closure invoked in a NON-recursive callee reclaims its env to 0"
+  (doc
+    "The non-SCC control for the closure-param leak above: `apply1` is NON-recursive and simply invokes
+           its closure param `f` once. The closure captures the same heap list `xs`. Because `apply1` is not
+           in a recursion SCC, the owned closure param (and its captured env) reclaims fully to 0 — proving the
+           leak above is `go`'s SCC membership, not the act of passing/invoking a heap-capturing closure as a
+           parameter. Mirrors the list-param SCC boundary case: closure params obey the same rule, they merely
+           trip it with a single self-call rather than needing a sibling dup.")
+  (input
+    (do
+      (def (apply1 (: f (-> Int64 Int64))) (f 0))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1))))
+          (apply1 (fn (_d) (List.len xs)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
