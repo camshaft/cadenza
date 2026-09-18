@@ -562,9 +562,11 @@
            control), but a CLOSURE param leaks with a SINGLE self-call — the captured-env owned reference is
            consumed by the lone recursive call, so no dup is required to expose the path-unaware decline.
            The non-recursive control below (a closure param invoked in a non-SCC callee) reclaims to 0,
-           confirming the trigger is `go`'s own SCC membership, exactly as for list params. IDEAL 0; flips
-           with #9138/#9140 when the owned-param drop becomes call-graph-aware. (Adversarial pin from a breaker
-           probe; census gate-confirmed.)")
+           confirming the trigger is `go`'s own SCC membership, exactly as for list params. NOW RECLAIMS to 0:
+           `go` is tail-recursive (a LOOP), and applying the closure param `f` in the base arm `(f 0)` is a
+           BORROW of `f` (CallClosure borrows its callee), so `f` is borrow+back-edge-only → the looped epilogue
+           reclaims the owned closure and its captured 3-cell env. Value 3, no trap, no scaling.
+           (Adversarial pin from a breaker probe; census gate-confirmed.)")
   (input
     (do
       (def
@@ -578,10 +580,10 @@
   ; d=0 base: f called once, recursive arm never taken — the captured 3-cell env still leaks (constant 3).
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  ; d=2: two self-recursive hops then the base call — value + leak both unchanged (3), no scaling.
+  ; d=2: two self-recursive hops then the base call — value 3, no scaling; the closure env now reclaims.
   (call main (: 2 Int64))
   (output (: 3 Int64))
-  (live-objects 3))
+  (live-objects 0))
 
 (case
   "the closure-param control: a heap-capturing closure invoked in a NON-recursive callee reclaims its env to 0"
