@@ -254,6 +254,39 @@
        (Symbol.of (Option.expect (String.from-bytes (Bytes.of #list(((. (UInt 8) wrap) 195) ((. (UInt 8) wrap) 169)))) #"nfc"))))
   (output (: true Bool)))
 
+(case
+  "a symbol from a RUNTIME (non-foldable) NFD byte-rope canonicalizes to NFC — exercises the runtime str-nfc-normalize op"
+  (doc
+    "The RUNTIME complement of the const-fold NFD witness above. That case (and the FINDING #23 fix)
+           const-folds ENTIRELY: `String.from-bytes` of a constant byte list folds to a `ConstStr`, and the
+           fix routes Symbol.of's non-ASCII-const arm through NfcNormalize — so it verifies the COMPILE-TIME
+           path but never runs the runtime `str-nfc-normalize` op (v-runtime noted the runtime op is correct
+           but is NOT exercised by a const repro). Here the NFD bytes are assembled by a `Bytes.concat` of
+           RUNTIME-SELECTED chunks (the pick idiom: the selection depends on `s`, so the concat is a genuine
+           runtime rope that cannot fold to a flat leaf), so `String.from-bytes` runs at RUNTIME → a runtime
+           String → Symbol.of takes the RUNTIME-String arm (NfcNormalize + StrToBytes), genuinely exercising
+           op_str_nfc end-to-end. s=0 assembles NFD `e`+U+0301 = 'é' → normalizes → equals `Symbol.of \"é\"`
+           (the reader-NFC literal) → 1; s=1 assembles NFD `a`+U+0301 = 'á' → normalizes → ≠ 'é' → 0 (the
+           distinct-content control). A runtime nfc PASSTHROUGH would leave the decomposed bytes and answer 0
+           even at s=0; the compile-fix witness above cannot catch a runtime-op regression, this one does.")
+  (input
+    (do
+      (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+      (def
+        (main (: s Int64))
+        (match
+          (String.from-bytes
+            (Bytes.concat
+              (pick s (Bytes.of #list(101)) (Bytes.of #list(97)))
+              (pick s (Bytes.of #list(204 129)) (Bytes.of #list(204 129)))))
+          ((Some nfd) (if (= (Symbol.of nfd) (Symbol.of "é")) 1 0))
+          ((None _u) -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (call main (: 1 Int64))
+  (output (: 0 Int64)))
+
 ; ============================================================================================
 ; The empty symbol is an ordinary Symbol value (the degenerate boundary)
 ; ============================================================================================
