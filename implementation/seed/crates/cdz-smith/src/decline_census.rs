@@ -51,7 +51,15 @@ pub enum DeclineClass {
 /// decline codes rather than pattern-matching the `CDZ09` prefix. Add any future split-off decline code
 /// here when rcdzc adds it to `is_decline`.
 fn is_decline_band_code(code: &str) -> bool {
-    matches!(code, "CDZ0900" | "CDZ0901")
+    // Mirrors rcdzc `diag::Code::is_decline_code` exactly (CDZ0900 umbrella + the dedicated split-offs
+    // CDZ0901 closure-across-ABI, 0902 recursive-fn-runtime-spec, 0903 host-op-no-boundary-form,
+    // 0904 export-param-no-boundary, 0905 export-heap-result-no-encode, 0906 multi-host-effect-delegation).
+    // When rcdzc adds a CDZ0907+ decline split-off (v-deferral-declines reachable-first migration), ADD IT
+    // HERE too — else the gap denominator silently under-counts / a tracked gap shows as a Coded rejection.
+    matches!(
+        code,
+        "CDZ0900" | "CDZ0901" | "CDZ0902" | "CDZ0903" | "CDZ0904" | "CDZ0905" | "CDZ0906"
+    )
 }
 
 impl DeclineClass {
@@ -197,7 +205,7 @@ impl DeclineHistogram {
             self.hits_in(&DeclineClass::Codeless)
         ));
         s.push_str(&format!(
-            "reachable UNSUPPORTED-gap (CDZ09xx band: CDZ0900/CDZ0901): {} site(s) [{unsupported_u} untracked / {unsupported_t} tracked], {} hit(s)\n",
+            "reachable UNSUPPORTED-gap (CDZ09xx band: CDZ0900-0906): {} site(s) [{unsupported_u} untracked / {unsupported_t} tracked], {} hit(s)\n",
             unsupported_u + unsupported_t,
             self.hits_in(&DeclineClass::Unsupported)
         ));
@@ -312,12 +320,18 @@ mod tests {
             DeclineClass::from_code(Some("CDZ0900")),
             DeclineClass::Unsupported
         );
-        // CDZ0901 (closure-across-ABI, family E) is a DECLINE-band code (rcdzc #9252) — it counts as
-        // Unsupported (part of the gap denominator), NOT a generic coded rejection.
-        assert_eq!(
-            DeclineClass::from_code(Some("CDZ0901")),
-            DeclineClass::Unsupported
-        );
+        // CDZ0901-0906 (closure-across-ABI, recursive-fn-spec, host-op-no-boundary, export-param,
+        // export-heap-result, multi-host-effect) are DECLINE-band codes — each counts as Unsupported
+        // (part of the gap denominator), NOT a generic coded rejection. Mirrors rcdzc is_decline_code.
+        for c in [
+            "CDZ0901", "CDZ0902", "CDZ0903", "CDZ0904", "CDZ0905", "CDZ0906",
+        ] {
+            assert_eq!(
+                DeclineClass::from_code(Some(c)),
+                DeclineClass::Unsupported,
+                "{c}"
+            );
+        }
         // CDZ0999 (recursion/resource bound) is NOT a decline → a genuine coded rejection, excluded.
         assert_eq!(
             DeclineClass::from_code(Some("CDZ0999")),

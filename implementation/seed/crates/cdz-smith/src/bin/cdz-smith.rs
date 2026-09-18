@@ -162,7 +162,7 @@ fn usage() {
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
          \x20 cdz-smith world-declines    [--count N] [--seed S] [--declines-dir DIR]   (WIT-world ABI per-cell gap hunt → breaker)\n\
-         \x20 cdz-smith decline-histogram [--count N] [--seed S] [--out FILE]   (reachable-decline emit-site census → v-deferral-declines)\n\
+         \x20 cdz-smith decline-histogram [--count N] [--seed S] [--out FILE] [--capture SUBSTR]... [--capture-dir DIR]   (reachable-decline emit-site census; --capture saves reproducers → v-deferral-declines)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -362,6 +362,24 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     }
 }
 
+/// A filename-safe slug of a `--capture` substring (lowercase alnum, other runs → single `-`, trimmed,
+/// bounded) so captured reproducers get a readable, collision-light name.
+fn slugify_capture(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = out.trim_matches('-');
+    slug.chars().take(48).collect()
+}
+
 /// The REACHABLE-DECLINE CENSUS (v-deferral-declines request, 2026-09-18): sweep `count` programs
 /// across ALL the generators (text-grammar / coercing-AST / type-fuzz single programs + host/effect +
 /// multi-module import/export), compile each, and bucket EVERY reached `Reject::decline` /
@@ -381,6 +399,11 @@ fn cmd_decline_histogram(args: &[String]) -> ExitCode {
     let mut count: u64 = 4000;
     let mut seed: Option<u64> = None;
     let mut out: Option<PathBuf> = None;
+    // `--capture <substr>` (repeatable): when a decline message CONTAINS <substr>, save the generating
+    // program source to `<capture-dir>/capture-<slug>-<n>.sexp` (up to CAPTURE_CAP per substring). Lets a
+    // caller (v-deferral-declines) recover the exact minimal reproducer that hits a specific decline site.
+    let mut captures: Vec<String> = Vec::new();
+    let mut capture_dir: PathBuf = PathBuf::from(".");
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -388,11 +411,29 @@ fn cmd_decline_histogram(args: &[String]) -> ExitCode {
             "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
             "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
             "--out" => out = it.next().map(PathBuf::from),
+            "--capture" => {
+                if let Some(sub) = it.next() {
+                    captures.push(sub.clone());
+                }
+            }
+            "--capture-dir" => capture_dir = it.next().map(PathBuf::from).unwrap_or(capture_dir),
             other => {
                 eprintln!("cdz-smith decline-histogram: unexpected arg `{other}`");
                 return ExitCode::from(2);
             }
         }
+    }
+    const CAPTURE_CAP: usize = 3;
+    let mut capture_hits: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    if !captures.is_empty()
+        && let Err(e) = std::fs::create_dir_all(&capture_dir)
+    {
+        eprintln!(
+            "cdz-smith decline-histogram: cannot create capture dir {}: {e}",
+            capture_dir.display()
+        );
+        return ExitCode::from(1);
     }
 
     let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
@@ -428,15 +469,29 @@ fn cmd_decline_histogram(args: &[String]) -> ExitCode {
     let mut hist = DeclineHistogram::new();
     for i in 0..count {
         let s = next_seed();
-        // Rotate the generator so the census spans the whole reachable surface, not one grammar.
-        let verdict = match i % 5 {
-            0 => compile_catching(&driver::program_for_seed_with(s, GenMode::Text)),
-            1 => compile_catching(&driver::program_for_seed_with(s, GenMode::Astgen)),
-            2 => compile_catching(&driver::program_for_seed_with(s, GenMode::TypeFuzz)),
-            3 => compile_catching(&hostgen::generate_host(&entropy(s, 32)).source),
+        // Rotate the generator so the census spans the whole reachable surface, not one grammar. Keep the
+        // generating SOURCE for capture (`None` for the multi-module mode — those are not single-program,
+        // and the capture targets are single-program decline sites).
+        let (verdict, src): (Verdict, Option<String>) = match i % 5 {
+            0 => {
+                let src = driver::program_for_seed_with(s, GenMode::Text);
+                (compile_catching(&src), Some(src))
+            }
+            1 => {
+                let src = driver::program_for_seed_with(s, GenMode::Astgen);
+                (compile_catching(&src), Some(src))
+            }
+            2 => {
+                let src = driver::program_for_seed_with(s, GenMode::TypeFuzz);
+                (compile_catching(&src), Some(src))
+            }
+            3 => {
+                let src = hostgen::generate_host(&entropy(s, 32)).source;
+                (compile_catching(&src), Some(src))
+            }
             _ => {
                 let (mods, entry) = hostgen::generate_module_fuzz(&entropy(s, 48));
-                compile_modules_catching(&mods, &entry)
+                (compile_modules_catching(&mods, &entry), None)
             }
         };
         match verdict {
@@ -445,7 +500,42 @@ fn cmd_decline_histogram(args: &[String]) -> ExitCode {
                 code,
                 message,
                 decline_id,
-            } => hist.record_decline(code.as_deref(), &message, decline_id.as_deref()),
+            } => {
+                // Capture the source of the FIRST few programs whose decline message matches a
+                // `--capture` substring — the reproducer a caller asked for.
+                for (ci, sub) in captures.iter().enumerate() {
+                    if message.contains(sub.as_str()) {
+                        let n = capture_hits.entry(ci).or_insert(0);
+                        if *n < CAPTURE_CAP {
+                            match &src {
+                                Some(src) => {
+                                    let path = capture_dir.join(format!(
+                                        "capture-{}-{}.sexp",
+                                        slugify_capture(sub),
+                                        n
+                                    ));
+                                    if let Err(e) = std::fs::write(&path, src) {
+                                        eprintln!(
+                                            "[cdz-smith] capture write failed {}: {e}",
+                                            path.display()
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "[cdz-smith] captured `{sub}` → {}",
+                                            path.display()
+                                        );
+                                        *n += 1;
+                                    }
+                                }
+                                None => eprintln!(
+                                    "[cdz-smith] `{sub}` matched a MULTI-MODULE program (source not captured)"
+                                ),
+                            }
+                        }
+                    }
+                }
+                hist.record_decline(code.as_deref(), &message, decline_id.as_deref())
+            }
             // Crash / invalid-wasm / parse-error are NOT declines — the fuzz/differential targets own
             // filing those. Here we only count them so the census totals reconcile.
             _ => hist.record_other(),
