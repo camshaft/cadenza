@@ -4691,6 +4691,25 @@ fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
             // Owned Map.lookup Some shell was left unreclaimed because `Symbol.to-string`→`StrToBytes` was
             // neither borrow-clean (it consumes) nor an allowlisted builder.
             | Core::StrToBytes { .. }
+            // RETAINING interior-VIEW producers (v-memory-safety, the 10-bytes view-of-view family): a
+            // slice-of-a-slice `(Bytes.slice outer …)` / `(String.slice outer …)` over a scrutinee-payload
+            // view CONSUMES exactly one owned ref to its operand (`op_bytes_slice`/`op_str_slice` `op_drop`
+            // the operand) and returns one fresh view that references the parent/grandparent's storage EXACTLY
+            // ONCE (a runtime `op_dup` of the retained parent — the retained-storage discipline; String.slice
+            // compacts to an independent leaf, referencing the input zero times, which is strictly safer).
+            // These are PRIMS (never a Call/Closure → cannot resume-thread), so the SAME single-owned-ref-move
+            // 1:1-balance property the allowlist requires holds: the one dup-on-escape
+            // (`collect_shell_reclaim_child_dups`'s `owned_compound_boxed` arm, which fires because a fresh
+            // `Bytes.slice`/`String.slice` scrutinee IS `Owned`) balances the shell deep-drop 1:1. Fixes the
+            // 10-bytes view-of-view leak (0022 etc.): the outer `Bytes.slice` `Some` shell was left unreclaimed
+            // because the inner `Bytes.slice` that consumes `outer` was neither borrow-clean nor an allowlisted
+            // builder → the child-dup fired (owned_compound_boxed) with NO matching shell-drop = a leak. A
+            // NON-retaining raw-alias extraction (`Map.lookup`/`List.at`) is deliberately EXCLUDED (its result
+            // aliases the source WITHOUT a retaining `op_dup`, so it is not a clean single-owned-ref move —
+            // leak beats UAF); an ESCAPING view (returned as the arm result) is not a builder child, so the
+            // subset check fails and the shell stays leaking (the escape control).
+            | Core::BytesSlice { .. }
+            | Core::StrSlice { .. }
     )
 }
 

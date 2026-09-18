@@ -331,7 +331,11 @@
   (output (: 3 Int64))
   (call main (: 0 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  ; view-of-view reclaim landed (v-memory-safety): the inner Bytes.slice CONSUMES the outer Some-payload
+  ; view (a single-owned-ref move — op_bytes_slice op_dup's the parent, op_drop's the operand), now an
+  ; allowlisted extraction-consume builder, so the outer Some shell deep-drop balances the owned_compound_boxed
+  ; child-dup 1:1 (census 2->0, no rc-underflow on DBG+RCT). Was known-leak.
+  (live-objects 0))
 
 (case
   "a slice OF a slice over a CONCAT rope composes offsets across the seam"
@@ -372,7 +376,10 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 380 Int64))
-  (live-objects known-leak))
+  ; rope view-of-view reclaim landed (v-memory-safety): same as the runtime-start slice-of-slice above —
+  ; the inner Bytes.slice consuming the outer view over a CONCAT rope is now an allowlisted extraction-consume
+  ; builder, so the outer shell deep-drop balances the child-dup 1:1 (census 2->0, no underflow). Was known-leak.
+  (live-objects 0))
 
 (case
   "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
@@ -3160,7 +3167,10 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  ; view-of-view reclaim landed (v-memory-safety): the Bytes.slice consuming a map-looked-up Bytes view is
+  ; now an allowlisted extraction-consume builder (a single-owned-ref move), so the extraction Some shell
+  ; deep-drop balances the child-dup 1:1 (census -> 0, no underflow on DBG+RCT). Was known-leak.
+  (live-objects 0))
 
 ; ============================================================================================
 ; Byte-string-literal DISPATCH — a runtime Bytes value matched against `b"…"` whole-value literals
