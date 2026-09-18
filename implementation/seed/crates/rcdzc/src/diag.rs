@@ -440,6 +440,17 @@ pub enum Code {
     /// stays open.
     ClosureAcrossAbiUnsupported,
 
+    /// A RECURSIVE FUNCTION applied where compiling it would need RUNTIME SPECIALIZATION — the eval
+    /// beta-reduction recursion guard (`eval.rs`): a recursive callee that does not reduce to a
+    /// non-recursive base arm at compile time would require specializing the function at run time, which
+    /// this generation does not build. A DEDICATED code split off the `UnsupportedConstruct` umbrella
+    /// (CDZ0900) per the operator's CDZ0900-elimination directive (every reachable decline gets a code
+    /// naming its cause). Still a DECLINE (a safe "not-yet-built" reject, not a "the program is wrong"
+    /// rejection — see `is_decline`), in the CDZ09xx "declined, not crashed" band; the
+    /// `RecursiveFunctionRuntimeSpecialization` DeclineId carries it. Owner of the build-out is v-core-opt
+    /// (runtime specialization of a recursive function).
+    RecursiveFunctionRuntimeSpecialization,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -513,8 +524,24 @@ impl Code {
             Code::RecursionBound => "CDZ0999",
             Code::UnsupportedConstruct => "CDZ0900",
             Code::ClosureAcrossAbiUnsupported => "CDZ0901",
+            Code::RecursiveFunctionRuntimeSpecialization => "CDZ0902",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
+    }
+
+    /// Whether this code is a DECLINE code — a "not-yet-built" safe outcome (the CDZ0900 umbrella plus
+    /// the dedicated codes split off it per the operator's CDZ0900-elimination directive), as opposed to a
+    /// "the program is wrong" rejection, an internal-codegen defect (CDZ0910), or a resource bound
+    /// (CDZ0999). THE single registry of decline codes — grow this list (and only this list) as each
+    /// reachable family migrates off the CDZ0900 umbrella to its own dedicated code. `Reject::is_decline`
+    /// and the seed-catalog invariant both defer here so a new family adds ONE line in ONE place.
+    pub fn is_decline_code(self) -> bool {
+        matches!(
+            self,
+            Code::UnsupportedConstruct
+                | Code::ClosureAcrossAbiUnsupported
+                | Code::RecursiveFunctionRuntimeSpecialization
+        )
     }
 }
 
@@ -869,14 +896,15 @@ impl Reject {
 
     /// Whether this "no" is a DECLINE (a safe "the compiler does not yet build this construct" outcome)
     /// rather than a coded rejection that says the PROGRAM is wrong. A decline is either a codeless
-    /// [`decline`] or the umbrella-coded [`unsupported`] (`CDZ0900`) — both are the same "not-yet-built"
-    /// class (operator seq-286 gave the class a code without changing what it MEANS), so the safety-
-    /// ordering / dedup logic that branches on `is_decline` treats them identically. A `CDZ0999`
-    /// recursion/resource bound and any permanent design rejection are NOT declines here.
+    /// [`decline`] or one of the DECLINE codes — the umbrella-coded [`unsupported`] (`CDZ0900`) plus the
+    /// dedicated codes split off it (operator seq-286 gave the class a code without changing what it
+    /// MEANS, and the CDZ0900-elimination directive gives each reachable family its own). The single
+    /// registry lives on [`Code::is_decline_code`] so a new family is added in ONE place; the safety-
+    /// ordering / dedup logic that branches on `is_decline` treats every decline code identically. A
+    /// `CDZ0999` recursion/resource bound, a `CDZ0910` internal codegen defect, and any permanent design
+    /// rejection are NOT declines here.
     pub fn is_decline(&self) -> bool {
-        self.code.is_none()
-            || self.code == Some(Code::UnsupportedConstruct)
-            || self.code == Some(Code::ClosureAcrossAbiUnsupported)
+        self.code.is_none_or(|c| c.is_decline_code())
     }
 }
 
@@ -1672,7 +1700,7 @@ mod cdz0308_tests {
 
 #[cfg(test)]
 mod decline_catalog_tests {
-    use super::{Code, DeclineId, Reject};
+    use super::{DeclineId, Reject};
 
     #[test]
     fn catalog_is_enumerable_with_stable_kebab_keys() {
@@ -1727,12 +1755,8 @@ mod decline_catalog_tests {
                 "declined() code must derive from id.code() for {id:?}"
             );
             assert!(
-                matches!(
-                    id.code(),
-                    None | Some(Code::UnsupportedConstruct)
-                        | Some(Code::ClosureAcrossAbiUnsupported)
-                ),
-                "a seeded decline reason must be codeless or a CDZ09xx decline code, got {:?} for {id:?}",
+                id.code().is_none_or(|c| c.is_decline_code()),
+                "a seeded decline reason must be codeless or a decline code (Code::is_decline_code), got {:?} for {id:?}",
                 id.code()
             );
             assert!(r.is_decline(), "declined({id:?}) must be a decline");
