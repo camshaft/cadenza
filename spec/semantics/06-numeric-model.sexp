@@ -343,6 +343,76 @@
   (call main (: 0 Int64))
   (output (: 1000 Int64)))
 
+; The COMPARISON-FAMILY split that the inf/NaN classifier above only exercises for `<`: Cadenza's float
+; `=` is CANONICAL-BYTE equality (NaN = NaN is TRUE, -0.0 ≠ +0.0), but the ORDERING operators `<`/`<=`/`>`/`>=`
+; follow the IEEE partial order (NaN is UNORDERED — every ordering comparison with a NaN is FALSE, even
+; `nan <= nan`; and -0.0 == +0.0 for ordering, so `-0.0 <= +0.0` AND `-0.0 >= +0.0` but NOT `<`/`>`). The two
+; families must NOT be conflated: a backend that built `<=` as `(< ) OR (= canonical)` would wrongly report
+; `nan <= nan` TRUE (canonical `=` says the identical NaN bits are equal) and `-0.0 <= +0.0` would still work
+; but `-0.0 >= +0.0` might not — the signed-zero and NaN matrices below pin the whole 5-operator table for both
+; edge values. Level-uniform O0..O3 (the const fold and the runtime compare agree). Floats are runtime-derived
+; from `n` (`Float64.of-int`) so the case is not const-fold-vacuous.
+(case
+  "the signed-zero comparison matrix: = is canonical (-0.0 ≠ +0.0) but ordering is IEEE (-0.0 == +0.0)"
+  (doc
+    "`nz = -0.0` (built runtime as `(Float64.of-int n) * -1.0`, so at n=0 it is negative zero) vs
+           `pz = +0.0`. The five comparisons `=,<,<=,>,>=` pack as digits 10000..1. Canonical `=` sees the
+           differing SIGN BIT → `-0.0 = +0.0` is FALSE (digit 0). IEEE ordering treats the two zeroes as EQUAL
+           in magnitude → `<` FALSE, `<=` TRUE, `>` FALSE, `>=` TRUE. So n=0 → 00101 = 101. The n=5 face
+           (`nz=-5.0`, `pz=5.0`) is an ordinary distinct-magnitude compare: `=`0, `<`1, `<=`1, `>`0, `>=`0 →
+           1100 — proving the same operators behave classically off the signed-zero edge. A backend that
+           routed `<=`/`>=` through canonical-byte equality would break the n=0 row.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((pz (Float64.of-int n)))
+          (let
+            ((nz (* pz -1.0)))
+            (+ (* 10000 (if (= nz pz) 1 0))
+               (+ (* 1000 (if (< nz pz) 1 0))
+                  (+ (* 100 (if (<= nz pz) 1 0))
+                     (+ (* 10 (if (> nz pz) 1 0))
+                        (if (>= nz pz) 1 0))))))))
+      (export main)))
+  ; n=0: nz=-0.0, pz=+0.0 — = FALSE (canonical sign bit), < FALSE, <= TRUE, > FALSE, >= TRUE (IEEE equal).
+  (call main (: 0 Int64))
+  (output (: 101 Int64))
+  ; n=5: nz=-5.0, pz=+5.0 — a plain distinct-magnitude compare: = 0, < 1, <= 1, > 0, >= 0.
+  (call main (: 5 Int64))
+  (output (: 1100 Int64)))
+
+(case
+  "the NaN comparison matrix: = nan nan is canonical-TRUE but every ORDERING comparison with NaN is IEEE-FALSE"
+  (doc
+    "`nan = (/ z z)` at `z = (Float64.of-int 0) = 0.0` is the indeterminate 0.0/0.0 = NaN (runtime, no
+           trap), compared against itself and against a finite `f = 1.0`. Digits `=nan-nan, <=nan-nan,
+           <nan-f, <=nan-f, >=nan-f`. The SHARP row is the first two: canonical `=` compares the IDENTICAL
+           NaN bits → `nan = nan` is TRUE (digit 1); but IEEE ordering makes NaN UNORDERED → `nan <= nan` is
+           FALSE (digit 0), even though the two operands are the same value. Every ordering comparison with a
+           NaN is FALSE (`< , <= , >=` against `f` all 0). So the pack is 10000. A backend that implemented
+           `<=` as `(< ) OR (=)` with the canonical `=` would wrongly yield `nan <= nan` TRUE (→ 11000),
+           conflating the equality and ordering families. Complements the inf/NaN classifier above (which
+           only uses `<`) with the full operator table on the NaN edge.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((z (Float64.of-int n)))
+          (let
+            ((nan (/ z z)) (f 1.0))
+            (+ (* 10000 (if (= nan nan) 1 0))
+               (+ (* 1000 (if (<= nan nan) 1 0))
+                  (+ (* 100 (if (< nan f) 1 0))
+                     (+ (* 10 (if (<= nan f) 1 0))
+                        (if (>= nan f) 1 0))))))))
+      (export main)))
+  ; n=0: nan=0.0/0.0. = nan nan TRUE (canonical, identical bits); <= nan nan FALSE (IEEE unordered); rest FALSE.
+  (call main (: 0 Int64))
+  (output (: 10000 Int64)))
+
 ; A COMPARISON (`<`/`>`/`=`/…) over an int/float mix hits the SAME no-silent-promotion rule (CDZ0301) as
 ; arithmetic, and carries the SAME two-way literal retype fix in EITHER operand order: an int literal
 ; against a float var retypes UP to a float literal (`3` → `3.0`), a float literal against an int var drops
