@@ -829,6 +829,38 @@
   (live-objects 0))
 
 (case
+  "a map-extracted record consumed by a row op AND read by a bare projection does not double-free (0989482afd shell+base reclaim, refs>1 via a non-materialize use)"
+  (doc
+    "The reuse UAF face of 0989482afd. The map-borne record `r = (Option.expect (Map.lookup m k))` is
+           used TWICE: consumed by a row op `(. (Record.without r (c)) a)` (whose self-keyed materialize
+           references the `Core::SumExpect` view, and whose shell+base reclaim the fix routes into the
+           shell-set despite refs>1) AND read by a BARE projection `(. r b)` — a NON-materialize use that adds
+           an independent ref to the extraction view. The fix keys the shell reclaim on the row-op materialize
+           signature; this probes that the extra bare-proj ref is accounted for, so dropping the base does not
+           free memory the bare projection still reads (a mis-routed base-drop would UAF/rc-underflow). Value:
+           r.a (via without-c) + r.b = 10+20 = 30 at k=1, 40+50 = 90 at k=2. Distinct from the single-op case
+           above (which uses r in two ROW-OPS, not a bare proj). Gate census + trap grading is authoritative.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def m
+            #map(
+              (= 1 #record((= a 10) (= b 20) (= c 30)))
+              (= 2 #record((= a 40) (= b 50) (= c 60)))))
+          (def r (Option.expect (Map.lookup m k) "missing"))
+          (+ (. (Record.without r (c)) a) (. r b))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 30 Int64))
+  (call main (: 2 Int64))
+  (output (: 90 Int64))
+  ; gate-confirmed (every heap trial): the shell+base reclaim accounts for the bare-proj ref — the base is
+  ; dropped only after (. r b) reads it, so no double-free; everything reclaims. 0989482afd reuse-safe.
+  (live-objects 0))
+
+(case
   "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
   (doc
     "The ALIAS face of Record.with persistence: the existing persistence pins read the original
