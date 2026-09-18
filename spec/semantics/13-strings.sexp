@@ -501,6 +501,46 @@
   (live-objects known-leak))
 
 (case
+  "the MINIMAL String.at scalar-walk over a tail-consumed rope param leaves the borrow-only-arm residual (isolated)"
+  (doc
+    "The ISOLATED minimal form of the balanced-paren scan's residual above (501): a `(match (String.at s i)
+           ((Some _c) (go s (+ i 1) n (+ acc 1))))` self-tail loop over an OWNED runtime rope param `s`, the
+           arm only BORROWS the scalar view (`_c` unused — a pure count) and threads `s` as the consumed
+           tail-call arg. Unlike 501 this uses a LITERAL loop bound, NOT `String.scalar-len s` — so it isolates
+           the StrAt Some-shell reclaim residual from any length-prim borrow (the List.len/Map.size/Set.len/
+           String.scalar-len sibling gate broadening is a SEPARATE reclaim path). v-memory-safety isolated
+           exactly this shape and measured a persistent 1-cell residual at O0-O3 (all levels — not the O2/O3
+           CSE/B2 borrow-site-dup class; a genuinely always-on StrAt-view/Option-shell reclaim gap in a
+           self-tail loop over a tail-consumed rope param). SOUNDNESS: values hold (r=2→2, r=4→4, r=0→0), so the
+           residual is a leak-over-UAF conservative miss, NOT an over-reclaim — a TIGHTEN CANDIDATE for the
+           StrAt self-tail-loop shell reclaim, tracked by v-memory-safety. The clean coarse-gate witness they
+           asked for (leaks at O1, so the default gate pins it); 501 is the same residual mixed with scalar-len.")
+  (input
+    (do
+      (def
+        (go (: s String) (: i Int64) (: n Int64) (: acc Int64))
+        (if
+          (>= i n)
+          acc
+          (match (String.at s i) ((Some _c) (go s (+ i 1) n (+ acc 1))) ((None _u) acc))))
+      (def
+        (main (: r Int64))
+        (let
+          ((s (String.concat "ab" "cd")))
+          (go s 0 (if (< r 4) r 4) 0)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 4 Int64))
+  (output (: 4 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  ; MEASURED (v-memory-safety DBG+RCT, this shape isolated): 1-cell residual at O0-O3 — the StrAt Some-shell
+  ; over a tail-consumed rope param with a borrow-only arm is not reclaimed (a separate class from the length-
+  ; prim borrow-site dup). UAF-safe (values hold), leak-over-UAF sound, TIGHTEN CANDIDATE.
+  (live-objects known-leak))
+
+(case
   "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
   (doc
     "The depth counter above suffices for ONE bracket type; with three, the counter is provably
