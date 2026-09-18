@@ -974,6 +974,55 @@
   (live-objects 0))
 
 (case
+  "an abortive handler discards a suspended body holding TWO live ropes — both reclaim exactly once, the caller's map survives"
+  (doc
+    "The multi-handle adversarial extension of the abort-discard reclaim above (933, single rope): the
+           suspended body builds TWO independent ropes (`rope1` = \"ababab\", `rope2` = \"cdcdcdcd\") as
+           do-defs and references BOTH after the perform (`+ byte-len rope1 (+ byte-len rope2 (get m 1))`), so
+           both are LIVE at the suspension point. The `bail` arm NEVER resumes (returns the performed 7), so
+           the abandoned frame — holding BOTH ropes — is discarded: each rope's heap must reclaim EXACTLY
+           ONCE (no leak, no double-free across the two handles), and the caller's map `m` must survive the
+           abandonment (c reads m AFTER the aborted handle). r = 7; mode 1 c = m[2]=20 (+1 → 21) → 721; mode 2
+           c = m[9] miss → 0 → 700. A discard cascade that freed only one rope (leak), double-freed either
+           (rc-underflow trap), or clobbered the caller's map would show nonzero census, a trap, or a wrong c.
+           Adversarial companion to the single-rope abort-discard (933).")
+  (input
+    (do
+      (effect Bail (op bail (-> Int64 Int64)))
+      (def
+        (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+        (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+      (def
+        (get (: m (Map Int64 Int64)) (: k Int64))
+        (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+      (def
+        (rep (: s String) (: n Int64) (: acc String))
+        (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+      (def
+        (run (: m (Map Int64 Int64)))
+        (handle
+          Bail
+          0
+          ((bail (n) s n))
+          (do
+            (def rope1 (rep "ab" 3 ""))
+            (def rope2 (rep "cd" 4 ""))
+            (+ (Bail.bail 7) (+ (String.byte-len rope1) (+ (String.byte-len rope2) (get m 1)))))))
+      (def
+        (main (: mode Int64))
+        (do
+          (def m (build 1 3 Map.empty))
+          (def r (run m))
+          (def c (get m (if (= mode 1) 2 9)))
+          (+ (* r 100) (if (>= c 0) (+ c 1) 0))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 721 Int64))
+  (call main (: 2 Int64))
+  (output (: 700 Int64))
+  (live-objects 0))
+
+(case
   "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc
     "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
