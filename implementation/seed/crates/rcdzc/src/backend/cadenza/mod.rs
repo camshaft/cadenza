@@ -2285,17 +2285,41 @@ fn emit_expr_viewed(
                 // (`(< (inst-ns a) (inst-ns b))`) and the optimizer folded the no-op unwrap away, leaving
                 // `Core::Compare` over the nominal (27-DES event-queue ordering). Re-insert the unwrap so `<`
                 // sees the orderable scalar. `ord_peel_decl` is the newtype decl detected from EITHER operand
-                // (below) — BOTH operands are peeled to it, because the optimizer can fold the unwrap on ONE
-                // operand's read (its solved type is the erased inner) but not the other (a param keeps the
-                // nominal): both still EMIT the nominal (a same-type comparison), so both need the peel or
-                // they mismatch (`< UInt64 Instant`, CDZ0202). A FOLDED binder (solved type already the
-                // inner, so it emits the inner directly) short-circuits via `emit_binder_newtype_inner_peel`.
+                // (below); each operand that EMITS the nominal is peeled to it, because the optimizer can fold
+                // the unwrap on ONE operand's read (its solved type is the erased inner) but not the other (a
+                // param keeps the nominal): both then EMIT the nominal (a same-type comparison) and both need
+                // the peel or they mismatch (`< UInt64 Instant`, CDZ0202). A FOLDED binder short-circuits via
+                // `emit_binder_newtype_inner_peel`; a CONSTANT-literal operand emits the bare inner and is left
+                // alone (see below — peeling it would match a variant pattern over the inner, CDZ0203).
                 if let Some(decl) = ord_peel_decl {
                     if let Some(peel) = emit_binder_newtype_inner_peel(db, b, n, env, emitted)? {
                         return Ok(peel);
                     }
+                    // Do NOT peel a CONSTANT-literal operand. A scalar constant intrinsically yields the BARE
+                    // inner value (its emit is a literal, NEVER a `(Ctor v)` nominal — see the `Construct`
+                    // producers in `nominal_disposition`), so wrapping it as `(match 0 ((Ctor m) m))` recompiles
+                    // a variant pattern over the inner scalar → CDZ0203 (26-program-conditions, where a
+                    // synthesized @invariant checker inlines `(and (>= self 0) (<= self 100))`, comparing the
+                    // newtype payload against plain Int64 BOUND literals — only the payload read emits the
+                    // nominal and needs the peel, not the `0`/`100`). Every non-constant operand that reaches
+                    // here (a folded binder is peeled above; a `SumPayload`/`Proj`/`Call` reading a newtype slot)
+                    // still EMITS the nominal and keeps the peel, so the 27-DES event-queue ordering over a
+                    // folded `#tuple(_, Instant)` state read is unaffected.
+                    let is_const_literal = matches!(
+                        core_of(db, n),
+                        Core::ConstInt(_)
+                            | Core::ConstFloat(_)
+                            | Core::ConstFloatInf
+                            | Core::ConstFloatNan
+                            | Core::ConstRational(..)
+                            | Core::ConstStr(_)
+                            | Core::ConstChar(_)
+                            | Core::ConstBool(_)
+                    );
                     let scrut = emit_expr(db, b, n, None, env, emitted)?;
-                    if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env) {
+                    if !is_const_literal
+                        && let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env)
+                    {
                         return Ok(peel);
                     }
                     return Ok(scrut);
