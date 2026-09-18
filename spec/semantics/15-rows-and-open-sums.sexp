@@ -307,7 +307,7 @@
            so a projection cannot silently produce a field the operand never held. `z` is not a field of
            `(record (a 1) (b 2))`.")
   (input (Record.project #record((= a 1) (= b 2)) (a z)))
-  (error CDZ0212))
+  (error CDZ0212 (no-fix)))
 
 ; The `.`-ACCESS twin: a `.`-access of an ABSENT field on a genuine record is the SAME user error as a
 ; Record.project onto an absent field, so it gets the SAME code CDZ0212 (AbsentField), not the generic
@@ -317,12 +317,12 @@
 (case
   "a dot-access of an absent record field is CDZ0212, the Record.project twin"
   (input (do (def (main) (. #record((= x 1)) z)) (export main)))
-  (error CDZ0212))
+  (error CDZ0212 (no-fix)))
 
 (case
   "a dot-access of an absent field on a let-bound record is also CDZ0212"
   (input (do (def (main) (let ((p #record((= x 1)))) p.z)) (export main)))
-  (error CDZ0212))
+  (error CDZ0212 (no-fix)))
 
 (case
   "a user-module member miss stays CDZ0201 (not a record field)"
@@ -389,7 +389,7 @@
            sentence): dropping a field the operand does not contain is a compile-time rejection (CDZ0212),
            not a silent no-op. `z` is not a field of `(record (a 1))`.")
   (input (Record.without #record((= a 1)) (z)))
-  (error CDZ0212))
+  (error CDZ0212 (no-fix)))
 
 ; A CDZ0212 absent-field label carries the same two-tier did-you-mean a member access `(. r k)` gets — the
 ; closed set is the operand record's OWN fields. A NEAR-MISS of a real field (`alpa` vs `alpha`) gets a
@@ -400,7 +400,7 @@
 (case
   "a near-miss absent field in Record.without suggests the near field with a replace fix"
   (input (do (def (main) (Record.without #record((= alpha 1) (= beta 2)) (alpa))) (export main)))
-  (error CDZ0212 (message "did you mean `alpha`?") (fix (kind replace) (replacement "alpha"))))
+  (error CDZ0212 (message "did you mean `alpha`?") (fix (kind replace) (replacement "alpha") (unverified))))
 
 (case
   "a far absent-field label in Record.without lists the available fields with no confident fix"
@@ -939,7 +939,7 @@
            row-operation companion of the duplicate-field literal `(record (a 1) (a 2))` (CDZ0201). `a` is
            shared, so `Record.merge` REJECTS rather than picking a winner (no silent clobber).")
   (input (Record.merge #record((= a 1)) #record((= a 2))))
-  (error CDZ0211))
+  (error CDZ0211 (no-fix)))
 
 (case
   "merging with the empty record on the left is the identity"
@@ -990,7 +990,7 @@
            forbids — the author means `Record.with` to replace. Rides the strict `Record.merge` disjointness
            its rewrite uses.")
   (input (Record.extend #record((= a 1)) #"a" 2))
-  (error CDZ0211))
+  (error CDZ0211 (fix (kind replace) (replacement "with") (verified))))
 
 (case
   "updating a record field replaces its value"
@@ -1041,7 +1041,7 @@
            so `Record.with` REJECTS — the author means `Record.extend` to add. Rides the `Record.without`
            presence check its rewrite uses.")
   (input (Record.with #record((= a 1)) #"z" 5))
-  (error CDZ0212))
+  (error CDZ0212 (fix (kind replace) (replacement "extend") (verified))))
 
 (case
   "Record.with replaces a nested-record field wholesale and the original keeps its inner"
