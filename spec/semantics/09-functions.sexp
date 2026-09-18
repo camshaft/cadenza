@@ -550,6 +550,56 @@
   (live-objects 0))
 
 (case
+  "a tail loop that BORROWS its owned heap accumulator while THREADING it leaks PER-ITERATION (O(n) residue)"
+  (doc
+    "The per-iteration (scaling) face of the owned-param dup/drop miss — distinct from the constant
+           base-path SCC leaks (#9138/#9140/#9144). `loop` is tail-recursive over an owned heap `(List Int64)`
+           accumulator `acc`. Each iteration BORROWS `acc` (`(List.len acc)`, bound to `l`) AND consumes it by
+           threading the grown list to the recursive self-call (`(List.push acc i)`). The borrow forces a dup
+           of `acc` that is not dropped, so a residue accumulates ONE PER ITERATION: census is ~2·(n-1) —
+           n=2→2, n=3→4, n=5→8, n=8→14 — a genuine O(n) memory leak in a very common pattern (inspect the
+           accumulator's running state while growing it). Value is correct (n=5: sum of len(acc) over the
+           iterations = 0+1+2+3+4 = 10) and there is NO trap, opt-invariant O0..O3. The control below threads
+           the SAME accumulator but does NOT borrow it inside the loop (sums `i`, one final `List.len`) and
+           reclaims to 0 even while building a large list — isolating the leak to the in-loop BORROW-while-
+           THREADING of the owned param, not the accumulation itself. IDEAL 0; the exact `(live-objects 8)` at
+           n=5 is a drift guard until the per-iteration borrow-dup of a threaded owned param is dropped.
+           (Adversarial pin from a breaker probe; census gate-confirmed.)")
+  (input
+    (do
+      (def
+        (loop (: acc (List Int64)) (: i Int64) (: sum Int64))
+        (if (< i 1)
+            sum
+            (let ((l (List.len acc))) (loop (List.push acc i) (- i 1) (+ sum l)))))
+      (def (main (: n Int64)) (loop #list() n 0))
+      (export main)))
+  ; n=5: sum of len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the borrow-dup residue leaks ~2 per iteration.
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (live-objects 8))
+
+(case
+  "the control: the SAME tail loop threading the accumulator but NOT borrowing it in-loop reclaims to 0"
+  (doc
+    "Isolates the in-loop borrow as the trigger of the O(n) leak above. `loop` threads and grows the SAME
+           owned `acc` (`List.push acc i`) but does NOT borrow it inside the loop — it sums the scalar `i` and
+           takes a SINGLE `List.len acc` at the base. Despite building an equally large list, it reclaims to 0
+           at every n. So the leak above is the per-iteration BORROW co-occurring with the THREADING consume of
+           the owned param (the borrow-dup is not dropped), not the accumulator growth or a final borrow.")
+  (input
+    (do
+      (def
+        (loop (: acc (List Int64)) (: i Int64) (: sum Int64))
+        (if (< i 1) (+ sum (List.len acc)) (loop (List.push acc i) (- i 1) (+ sum i))))
+      (def (main (: n Int64)) (loop #list() n 0))
+      (export main)))
+  ; n=5: sum i (5+4+3+2+1=15) + final len(acc)=5 = 20; reclaims to 0 (no in-loop borrow-dup).
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
