@@ -676,9 +676,11 @@
            iterations = 0+1+2+3+4 = 10) and there is NO trap, opt-invariant O0..O3. The control below threads
            the SAME accumulator but does NOT borrow it inside the loop (sums `i`, one final `List.len`) and
            reclaims to 0 even while building a large list — isolating the leak to the in-loop BORROW-while-
-           THREADING of the owned param, not the accumulation itself. IDEAL 0; the exact `(live-objects 8)` at
-           n=5 is a drift guard until the per-iteration borrow-dup of a threaded owned param is dropped.
-           (Adversarial pin from a breaker probe; census gate-confirmed.)")
+           THREADING of the owned param, not the accumulation itself. NOW RECLAIMS to 0: the in-loop borrow
+           forces a WHOLE-binder dup of `acc` at the consuming rebind (`List.push` takes the copy path at rc>1,
+           so the old cell survives the co-borrow read), and the loop-iteration emit now reclaims that surviving
+           old cell once per iteration (the `drop_old_borrowed` dup-forced-old-survives drop). Value 10, no trap,
+           opt-invariant O0..O3. (Adversarial pin from a breaker probe; census gate-confirmed.)")
   (input
     (do
       (def
@@ -688,10 +690,10 @@
             (let ((l (List.len acc))) (loop (List.push acc i) (- i 1) (+ sum l)))))
       (def (main (: n Int64)) (loop #list() n 0))
       (export main)))
-  ; n=5: sum of len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the borrow-dup residue leaks ~2 per iteration.
+  ; n=5: sum of len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the per-iteration borrow-dup is now dropped.
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects 8))
+  (live-objects 0))
 
 (case
   "the control: the SAME tail loop threading the accumulator but NOT borrowing it in-loop reclaims to 0"
@@ -741,10 +743,11 @@
   (output (: 20 Int64))
   (call main (: 10 Int64))
   (output (: 90 Int64))
-  ; #9172 (drop_old_borrowed) was REVERTED in #9181, so the per-iteration borrow-dup of acc is no longer
-  ; dropped and the O(n) residue returns — back to known-leak (value stays correct, no double-free). The
-  ; multi-borrow drop-after-BOTH-borrows property re-verifies when the accumulator reclaim re-lands (→ 0).
-  (live-objects known-leak))
+  ; #9172 (drop_old_borrowed) RE-LANDED (sibling-narrowed): the whole-binder dup fires at the consume and
+  ; drop_old_borrowed reclaims the one survivor cell per iteration, with the op_drop landing AFTER the LAST
+  ; borrow (m's read) — no double-free, O(n) residue gone. Multi-borrow reclaim gate + v-mem-rc-gate-confirmed
+  ; UAF-safe (census 0, no underflow on debug-counters + rctrace). → 0.
+  (live-objects 0))
 
 (case
   "the STRING-accumulator face: a tail loop borrowing its owned String while concat-threading it also leaks per-iteration (O(n))"
@@ -770,11 +773,12 @@
       (def (main (: n Int64)) (loop "" n 0))
       (export main)))
   ; n=5: byte-len(acc) at each of 5 iterations = 0+1+2+3+4 = 10.
-  ; #9172 (drop_old_borrowed) was REVERTED in #9181 → the String-accumulator back-edge borrow-dup leaks again;
-  ; back to known-leak (re-tighten when the accumulator reclaim re-lands).
+  ; #9172 (drop_old_borrowed) RE-LANDED (sibling-narrowed) → the String-accumulator back-edge borrow-dup is
+  ; reclaimed per-iteration (the sibling byte-len borrow fires the dup-forced-old-survives drop); O(n) residue
+  ; gone, gate + v-mem-rc-gate-confirmed 0.
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the back-edge borrow-dup leak is TAIL-specific: a BODY-recursive (non-tail) borrow-thread RECLAIMS to 0"
