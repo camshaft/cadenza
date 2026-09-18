@@ -11,8 +11,9 @@
 //!
 //! "Emit site" is keyed by [`emit_site_key`]: the finding-dedup mask
 //! ([`crate::finding::mask_message`]: first line, digit/hex runs → `#`) with backtick-quoted spans
-//! ALSO collapsed to `` `_` `` — so a single compiler emit site that quotes a varying type/name
-//! (e.g. the one host-boundary-form check) stays ONE bucket instead of splitting per type. Each
+//! AND bare parenthesized type-spans ALSO collapsed to placeholders — so a single compiler emit site
+//! that names a varying type (e.g. the host-boundary-form check, or the parameterized-heap-return
+//! export) stays ONE bucket instead of splitting per type. Each
 //! bucket carries its [`DeclineClass`] (codeless / CDZ0900-unsupported / other-coded), which is the
 //! axis v-deferral-declines splits on (codeless + CDZ0900, minus the already-`declined(id)`-tracked
 //! set, is the reachable-untracked number).
@@ -173,8 +174,46 @@ impl DeclineHistogram {
 /// so e.g. the one host-boundary-form check does not split into ~50 buckets by result type. (This is
 /// deliberately MORE aggressive than the finding dedup key, whose goal is per-shape distinctness, not
 /// per-site collapse — the census wants the tighter reachable-SITE count.)
+///
+/// Then ALSO collapses each balanced parenthesized span (a Cadenza type expression like
+/// `(List Any)`, `(Result Int# _)`) to `(_)`. Some declines quote the offending type in BARE PARENS,
+/// not backticks (e.g. "returning a (List Any) from `_`: a parameterized export cannot return this
+/// heap type …"); without this, that ONE emit site splits into a bucket per return type. Nested
+/// parens collapse under the OUTERMOST span.
 fn emit_site_key(message: &str) -> String {
-    collapse_backticks(&mask_message(message))
+    collapse_parens(&collapse_backticks(&mask_message(message)))
+}
+
+/// Replace each balanced parenthesized span with `(_)`. Scans for a top-level `(` and skips to its
+/// matching `)` (depth-counted, so nested parens collapse under the outermost). An unbalanced `(`
+/// with no matching close leaves the rest of the string under one placeholder.
+fn collapse_parens(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '(' {
+            out.push_str("(_");
+            let mut depth = 1usize;
+            for d in chars.by_ref() {
+                match d {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                out.push(')');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Replace the contents of each backtick-quoted span with a single `_`. An unterminated backtick
@@ -271,6 +310,38 @@ mod tests {
         assert_eq!(collapse_backticks("no ticks here"), "no ticks here");
         // Unterminated: consume the rest under one placeholder, no closing tick emitted.
         assert_eq!(collapse_backticks("open `tail with no close"), "open `_");
+    }
+
+    #[test]
+    fn collapse_parens_handles_nesting_and_unbalanced() {
+        assert_eq!(collapse_parens("a (List Any) b"), "a (_) b");
+        assert_eq!(collapse_parens("(Result (Map Int (List Int)) _)"), "(_)");
+        assert_eq!(collapse_parens("two (A) then (B)"), "two (_) then (_)");
+        assert_eq!(collapse_parens("no parens"), "no parens");
+        // Unbalanced open paren: rest of string under one placeholder, no closing paren emitted.
+        assert_eq!(collapse_parens("open (tail no close"), "open (_");
+    }
+
+    #[test]
+    fn parameterized_heap_return_type_variants_collapse_to_one_site() {
+        // The real "parameterized export cannot return this heap type" message quotes the return type
+        // in BARE PARENS (not backticks), so only the paren-collapse merges these into ONE site.
+        let mut h = DeclineHistogram::new();
+        for ty in [
+            "(List Any)",
+            "(Option Int)",
+            "(Result Int _)",
+            "(Record (: a Int))",
+        ] {
+            h.record_decline(
+                Some("CDZ0900"),
+                &format!(
+                    "returning a {ty} from `_`: a parameterized export cannot return this heap type"
+                ),
+            );
+        }
+        assert_eq!(h.distinct_sites(&DeclineClass::Unsupported), 1);
+        assert_eq!(h.hits_in(&DeclineClass::Unsupported), 4);
     }
 
     #[test]
