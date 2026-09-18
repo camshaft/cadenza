@@ -1275,6 +1275,60 @@
   ; both synthesized __bytes_of_rt$ folds reclaim their owned list param at the loop-exit epilogue now.
   (live-objects 0))
 
+; The reclaim above frees the __bytes_of_rt$ fold's OWNED list param. These two adversarial cases (breaker)
+; guard the UAF face of #9160's BytesConcat borrow arm — the Bytes.of twin of the Set.of reuse probes: when
+; the SAME runtime list is also used outside the consuming `Bytes.of`, the caller must dup it so the fold
+; reclaims its own ref while the other use reads a still-live one. A reclaim of a borrowed list would
+; double-free (rc-underflow trap on the debug runtime); a missed dup would leak.
+(case
+  "a runtime list REUSED after a consuming Bytes.of does not double-free — the fold reclaims its own ref, the later List.len borrows the caller's"
+  (doc
+    "The Bytes.of twin of the Set.of borrowed-reused-list UAF probe. `xs` (a UInt8 list, built at run
+           time) is bound once and used TWICE: consumed by `(Bytes.of xs)` (whose synthesized __bytes_of_rt$
+           fold now reclaims its owned param via the BytesConcat borrow arm) AND borrowed by `(List.len xs)`
+           AFTER. `Bytes.of`'s consuming semantics mean the caller must dup `xs` so the fold owns its own copy
+           — if it instead reclaimed the caller's still-live list, `List.len` would read freed memory (or the
+           drop would rc-underflow → trap). n bytes → `Bytes.len (Bytes.of xs)` = n and `List.len xs` = n →
+           2n (n=1→2, 3→6, 5→10). Value proves both reads see the full list; the gate's census + trap grading
+           proves the reclaim is UAF-safe.")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) (UInt8.wrap n))))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Bytes.len (Bytes.of xs)) (List.len xs))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): caller dups xs, the __bytes_of_rt$ fold reclaims its own ref,
+  ; List.len reads the live caller ref — no double-free, everything reclaims. #9160 UAF-safe on reuse.
+  (live-objects 0))
+
+(case
+  "a runtime list consumed by TWO Bytes.of calls does not double-free — one dup, each fold reclaims its own ref"
+  (doc
+    "The double-consume face: one `xs` feeds TWO `(Bytes.of xs)` sites in one expression, so `xs` is a
+           CONSUMED operand at two call sites and must be dup'd once (rc 1→2), each synthesized fold then
+           reclaiming its OWN ref. A single missed dup lets the first fold's reclaim free the list the second
+           fold still iterates → UAF/rc-underflow trap. n bytes: each `Bytes.len (Bytes.of xs)` = n → 2n
+           (n=1→2, 3→6, 5→10). The Bytes.of companion to the Set.of double-consume guard.")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) (UInt8.wrap n))))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Bytes.len (Bytes.of xs)) (Bytes.len (Bytes.of xs)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): one dup, each __bytes_of_rt$ fold reclaims its own ref — no
+  ; double-free, all reclaim.
+  (live-objects 0))
+
 (case
   "a recursively-built byte sequence assembles its bytes at run time"
   (doc
@@ -3477,7 +3531,9 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 295 Int64))
-  (live-objects known-leak))
+  ; tighten (gate TIGHTEN CANDIDATE, every heap trial 0): the let-bound slice-view to-bytes now fully
+  ; reclaims — was known-leak.
+  (live-objects 0))
 
 (case
   "adv54b a let-bound Bytes.concat of slice-view to-bytes read twice sees the concatenated bytes"
@@ -3499,7 +3555,9 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  ; tighten (gate TIGHTEN CANDIDATE, every heap trial 0): the let-bound Bytes.concat of slice-view to-bytes
+  ; now fully reclaims — was known-leak.
+  (live-objects 0))
 
 ; -- runtime Bytes.at / concat / slice / compact behavior (migration from rcdzc bytes cdz-run tests, 2026-08-27):
 ; each threads a byte sequence through a fn param so the op runs (not a fold) and reads a scalar out.
