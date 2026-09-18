@@ -3632,7 +3632,29 @@ fn emit_expr_viewed(
             for k in &inserted_keys {
                 env.lets.remove(k);
             }
-            let body_node = body_res?;
+            let mut body_node = body_res?;
+            // ASCRIBE a DEFAULT-Int64 closure RETURN. A closure whose return type is the default signed
+            // `Int64` emits its body BARE (the `Core::ConstInt` value arm prints a default `Int64` without an
+            // ascription — only a non-default width/sign self-ascribes). At a HOST-BOUNDARY closure (an
+            // exported / round-tripped `fn`), the minted closure SIGNATURE is then under-determined until the
+            // body's int literals ground late, so the wasm backend's distinct-signature round-trip analysis
+            // cannot match a consumer's `(-> _ Int64)` to any producer's minted sig → "a consumer whose
+            // closure signature no producer mints" (21-host-closures; the same failure a user hits if they
+            // drop the `(: … Int64)` the corpus source carries). Re-insert the return ascription `(: <body>
+            // Int64)` to ground the signature concretely. Scoped to EXACTLY default signed `Int64`: a
+            // non-default int already self-ascribes in the body (so we never double-ascribe), and a
+            // non-int return has no under-determination here. Value-identical and idempotent (re-emit
+            // re-ascribes the same).
+            if let Ty::Int(it) = crate::infer::type_of(db, lifted.body)
+                && it.ground_signed()
+                && it.ground_width() == 64
+            {
+                let ncx = db.name_ctx();
+                if let Some(ty_node) = crate::lower::type_ast(b, &Ty::Int(it), &ncx) {
+                    let colon = b.name(":");
+                    body_node = b.list(vec![colon, body_node, ty_node]);
+                }
+            }
             let fn_node = b.list(vec![fn_head, sig, body_node]);
             if hoisted.is_empty() {
                 Ok(fn_node)
