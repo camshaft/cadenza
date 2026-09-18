@@ -4073,6 +4073,62 @@ mod tests {
             "REGRESSION: a reducer fold leaked value-heap cells for a non-trivial payload (max delta {sweep_max_delta} across 0/256/4096-byte payloads while the 4-byte folds netted 0) — the bulk-bytes marshaling reclaim (bytes-new/bytes-read, #9058) is payload-size-DEPENDENT; a large-payload bulk-copy handle is not being dropped"
         );
 
+        // Pooled-reuse across HETEROGENEOUS interleaved events (pool-readiness invariant). A warm-instance pool
+        // — the optimization this vertical quantified (~59%/req) — reuses ONE instance across a MIX of entry
+        // points AND contracts over its lifetime, not the homogeneous repeated-on_message the folds above
+        // exercise. Drive the SAME reused instance through an interleaved sequence (on_message contract-A /
+        // on_notification / on_response / on_message contract-B) for several rounds and require net-0 after EACH
+        // step: this pins that residue from one entry point / contract does NOT accumulate when a DIFFERENT one
+        // follows on the same instance. Each fold is independently net-0, so interleaving catches only a
+        // cross-fold-state coupling a homogeneous loop would miss — exactly the class a pool is exposed to.
+        let mut interleave_max_delta: i64 = 0;
+        let delta = |n: u32| n as i64 - baseline as i64;
+        for round in 1..=4 {
+            let _ = reducer
+                .on_message(base.clone())
+                .await
+                .expect("interleave on_message A");
+            let d1 = delta(reducer.live_object_census().await.expect("census reads"));
+            let _ = reducer
+                .on_notification(crate::Notification {
+                    id: crate::ContractId::of(b"echo-contract"),
+                    payload: Bytes::from_static(b"note"),
+                })
+                .await
+                .expect("interleave on_notification");
+            let d2 = delta(reducer.live_object_census().await.expect("census reads"));
+            let _ = reducer
+                .on_response(crate::Response {
+                    id: crate::ContractId::of(b"echo-contract"),
+                    continuation_token: Bytes::from_static(b"tok"),
+                    payload: Ok(Bytes::from_static(b"pong")),
+                })
+                .await
+                .expect("interleave on_response");
+            let d3 = delta(reducer.live_object_census().await.expect("census reads"));
+            let _ = reducer
+                .on_message(crate::Message {
+                    id: crate::ContractId::of(b"echo-contract-b"),
+                    payload: Bytes::from_static(b"pong-payload"),
+                    from: crate::Origin {
+                        reducer: crate::ReducerId::of(b"caller-b"),
+                        host: crate::HostId::of(b"node-b"),
+                    },
+                    continuation_token: Bytes::from_static(b"tok-b"),
+                })
+                .await
+                .expect("interleave on_message B");
+            let d4 = delta(reducer.live_object_census().await.expect("census reads"));
+            interleave_max_delta = interleave_max_delta.max(d1).max(d2).max(d3).max(d4);
+            eprintln!(
+                "census gate: interleave round {round}: deltas msgA={d1} note={d2} resp={d3} msgB={d4}"
+            );
+        }
+        assert!(
+            interleave_max_delta == 0,
+            "REGRESSION: a reused reducer instance leaked value-heap cells across a HETEROGENEOUS interleaved event sequence (max delta {interleave_max_delta} over 4 rounds of on_message-A / on_notification / on_response / on_message-B) — cross-fold state from one entry point/contract accumulates when a different one follows on the same instance; a warm-instance POOL would leak on mixed traffic"
+        );
+
         // Per-ENTRY-POINT breakdown (seq-916 shell-drop fix SCOPE). The echo's on_response / on_notification are
         // INERT (return requests=[]): a fold of either DECODES the incoming envelope but emits NO outgoing
         // step/request shells. Censusing each on a FRESH instance isolates the ENVELOPE-DECODE shell leak from
