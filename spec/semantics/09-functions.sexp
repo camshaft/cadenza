@@ -628,6 +628,34 @@
   (live-objects known-leak))
 
 (case
+  "the back-edge borrow-dup leak is TAIL-specific: a BODY-recursive (non-tail) borrow-thread RECLAIMS to 0"
+  (doc
+    "Scopes the back-edge borrow-dup miss (the tail-loop leaks #9146/#9149 above) to the TAIL/TCO path —
+           a body-recursive (non-tail) borrow-thread reclaims cleanly. `go` is BODY-recursive: the self-call
+           `(go (List.push acc i) …)` is an operand of `+`, NOT in tail position. Each frame BORROWS the owned
+           `acc` (`List.len acc`) AND threads the grown list to the recursive call — the SAME borrow+thread
+           that leaks O(n) in the TAIL loops above. But here it reclaims to 0 at every n (gate-authoritative):
+           each non-tail frame RETURNS, and the ordinary stack unwind drops the frame's borrow-dup, so nothing
+           accumulates. Only the TCO'd tail loop — which reuses one frame across iterations — has no per-frame
+           return to drop the borrow-dup, so it alone accumulates the O(n) residue. Value-correct (n=5: sum of
+           List.len over the 6 frames = 0+1+2+3+4+5 = 15), no trap, opt-invariant O0..O3. So a v-core-opt fix
+           for the back-edge borrow-dup is scoped to the TAIL/TCO lowering, NOT general self-recursion — this
+           boundary guards against an over-broad fix touching the (already-correct) body-recursive path.
+           (Adversarial boundary pin from a breaker probe; census gate-confirmed 0 — native over-reported it,
+           even scaling, so the gate is the sole authority here.)")
+  (input
+    (do
+      (def
+        (go (: acc (List Int64)) (: i Int64))
+        (if (< i 1) (List.len acc) (+ (List.len acc) (go (List.push acc i) (- i 1)))))
+      (def (main (: n Int64)) (go #list() n))
+      (export main)))
+  ; n=5: List.len(acc) summed over the 6 frames (acc lens 0..5) = 15; body-recursion reclaims (per-frame return drops the borrow-dup).
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
