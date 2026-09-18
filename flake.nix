@@ -9074,6 +9074,32 @@
             reducer-guest-compile = reducerGuestCompile;
             reducer-guest-parse = reducerGuestParse;
           }
+          # reducer-fold-census (v-nix, wiring v-reducer-pooling #9147): a STANDALONE gate — deliberately NOT in
+          # localGate (heavy fixtures) — that actually RUNS the seq-916 reducer-fold net-0 census + reclaim-witness
+          # regression tests. They live in cdz-platform/src/host.rs behind `--features host` and env-gate on
+          # CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM, so they SKIP in the routine
+          # per-crate test-cdz-platform check (no host feature + vars unset) → the just-landed reclaim lock never
+          # ran automatically. This wires the three EXISTING flake packages in as those vars + runs exactly the two
+          # gate tests (a reclaim regression → fold net != 0, or a per-fold shell leak → cap-fold trap → RED).
+          # Mirrors mkCrateTestCrane (same craneCrateCommon: cdz-platform contracts overlay + shared deps layer)
+          # plus --features host + the fixture env + a test-name filter; extraSrc = the crate's wit/ dir since the
+          # host `bindgen!` reads wit/world.wit + wit/test/arg-probe.wit (the non-host test-cdz-platform omits it →
+          # bindgen E0433 without it). CDZ_DEBUG_RUNTIME_WASM/reducer-echo store paths ARE wasm files; componentStore
+          # is the closure dir. Merged HERE (NOT into perCrateTestCrane) so it stays OFF testCrateCoverageAssert —
+          # it is a fixture-driven host-feature test, not a per-crate workspace-member test.
+          // {
+            reducer-fold-census = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
+              pname = "cargo-test-reducer-fold-census";
+              # substring filters (NOT --exact) so the match is robust to the test module path; both names are
+              # unique so exactly these two run. (They are #[tokio::test], not #[ignore], so no --ignored needed.)
+              cargoTestExtraArgs = "-p cdz-platform --features host -- "
+                + "a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline "
+                + "a_reused_reducer_instance_folds_the_cap_without_accumulating_shells";
+              CDZ_REDUCER_ECHO_WASM = "${reducerEchoComponent}/reducer-echo.wasm";
+              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
+              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
+            });
+          }
           # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
           # `cad-tests` aggregate. A candidate touching ONE project builds just that project's check; the
