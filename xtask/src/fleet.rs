@@ -3832,6 +3832,13 @@ fn ssh_cert_valid_to(ssh_keygen_l: &str) -> Option<String> {
     })
 }
 
+/// Lead time before the id_rsa offload cert's expiry at which `fleet status` starts warning the operator to
+/// re-mwinit (see [`offload_health_line`]). 1h: comfortably longer than a single gate-local's local grind
+/// (the `GATE_LOCAL_POLL_MAX_SECS` 3600s ceiling), so a warned operator can refresh the cert before the NEXT
+/// gate-local would otherwise start on a degraded local path — but short enough not to warn for most of the
+/// ~12h cert lifetime (only the final hour). Not env-overridable: it's a display threshold, not a control.
+const OFFLOAD_CERT_EXPIRY_WARN_SECS: u64 = 3600;
+
 /// What the last gate-local run reveals about the offloaded builds' OUTCOME (not just SSH-cert validity).
 #[derive(Debug, PartialEq, Eq)]
 enum OffloadBuildOutcome {
@@ -3949,6 +3956,13 @@ fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
 /// outcome: a reachable-but-broken peer (accept-then-error, which `fallback=true` does NOT rescue) surfaces
 /// as a ⚠ instead of masquerading healthy; a copied-back success reads ACTIVE + VERIFIED; no fresh stamp
 /// reads ACTIVE (unverified). An expired cert → DEGRADED (graceful local fallback); unreadable → unknown.
+///
+/// NEAR-EXPIRY (2026-09-18): the id_rsa cert is only ~12h, so the DEGRADED→local flip recurs ~daily — and
+/// while degraded, gate-local grinds locally (slow + the exact page-cache/OOM-prone path the #79845 harness
+/// bg-guardian kills). The cert-valid branch therefore appends a ⚠ LEAD-TIME warning once the cert is within
+/// [`OFFLOAD_CERT_EXPIRY_WARN_SECS`] of expiry, so the operator can re-mwinit BEFORE offload silently
+/// degrades rather than discovering it after gate-locals start grinding. Orthogonal to the outcome sub-branch
+/// (it's a suffix), so a near-expiry cert that is ALSO mid-failure surfaces both concerns.
 fn offload_health_line(
     n_builders: usize,
     cert: Option<(&str, u64)>,
@@ -3956,21 +3970,34 @@ fn offload_health_line(
     outcome: Option<&OffloadBuildOutcome>,
 ) -> String {
     match cert {
-        Some((to, exp)) if now < exp => match outcome {
-            Some(OffloadBuildOutcome::Failed(reason)) => format!(
-                "  ⚠ distributed builds: {n_builders} remote builder(s) — id_rsa cert valid to {to} BUT the last \
-                 gate-local hit a remote-BUILD failure (accept-then-error; fallback=true does NOT cover this): \
-                 {reason}. A peer may be misconfigured — verify with `.claude/fleet/setup-nix-builder-peer.sh verify <peer-fqdn>`"
-            ),
-            Some(OffloadBuildOutcome::Succeeded) => format!(
-                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE + VERIFIED (id_rsa cert valid \
-                 to {to}; last gate-local built on a remote builder + copied back)"
-            ),
-            _ => format!(
-                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to}; \
-                 no recent offloaded build observed to verify)"
-            ),
-        },
+        Some((to, exp)) if now < exp => {
+            let base = match outcome {
+                Some(OffloadBuildOutcome::Failed(reason)) => format!(
+                    "  ⚠ distributed builds: {n_builders} remote builder(s) — id_rsa cert valid to {to} BUT the last \
+                     gate-local hit a remote-BUILD failure (accept-then-error; fallback=true does NOT cover this): \
+                     {reason}. A peer may be misconfigured — verify with `.claude/fleet/setup-nix-builder-peer.sh verify <peer-fqdn>`"
+                ),
+                Some(OffloadBuildOutcome::Succeeded) => format!(
+                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE + VERIFIED (id_rsa cert valid \
+                     to {to}; last gate-local built on a remote builder + copied back)"
+                ),
+                _ => format!(
+                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to}; \
+                     no recent offloaded build observed to verify)"
+                ),
+            };
+            // Append the near-expiry lead-time warning so the operator can re-mwinit BEFORE the ~12h cert
+            // lapses and offload silently degrades to slow, OOM-prone local gate-local (#79845 trigger).
+            if exp.saturating_sub(now) <= OFFLOAD_CERT_EXPIRY_WARN_SECS {
+                format!(
+                    "{base} — ⚠ cert EXPIRES in ~{}m: run mwinit SOON or offload degrades to local \
+                     (slower + OOM-prone gate-local)",
+                    exp.saturating_sub(now) / 60
+                )
+            } else {
+                base
+            }
+        }
         Some((to, _)) => format!(
             "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
              id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
@@ -21694,7 +21721,9 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     fn offload_health_line_composes_cert_validity_with_build_outcome() {
         use OffloadBuildOutcome::*;
         let now = 1_000_000u64;
-        let valid = Some(("2026-09-18T04:20:53", now + 3600)); // cert valid (expires in the future)
+        // Comfortably far from expiry (> OFFLOAD_CERT_EXPIRY_WARN_SECS) so these branches read clean, with
+        // no near-expiry ⚠ muddying the outcome assertions; the near-expiry annotation has its own test.
+        let valid = Some(("2026-09-18T04:20:53", now + 6 * 3600)); // cert valid, not near expiry
         let expired = Some(("2026-09-17T04:20:53", now - 3600)); // cert already expired
 
         // Cert valid + a copied-back success → ACTIVE + VERIFIED (the strongest healthy signal).
@@ -21742,6 +21771,44 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Unreadable cert → health unknown (fail-safe: never a false DEGRADED or a false ACTIVE).
         let s = offload_health_line(2, None, now, None);
         assert!(s.contains("health unknown") && !s.contains('⚠'), "got: {s}");
+    }
+
+    #[test]
+    fn offload_health_line_warns_when_valid_cert_is_near_expiry() {
+        use OffloadBuildOutcome::*;
+        let now = 1_000_000u64;
+        // Cert still VALID but within the warn window (30m ≤ 1h threshold): a healthy Succeeded outcome must
+        // still surface a near-expiry ⚠ lead-time warning naming mwinit + the local-degrade consequence, so
+        // the operator can refresh BEFORE offload silently degrades — without downgrading the ACTIVE state.
+        let near = Some(("2026-09-18T17:07:37", now + 1800));
+        let s = offload_health_line(2, near, now, Some(&Succeeded));
+        assert!(
+            s.contains("ACTIVE + VERIFIED")
+                && s.contains('⚠')
+                && s.contains("EXPIRES in ~30m")
+                && s.contains("mwinit"),
+            "near-expiry valid cert warns with lead time yet stays ACTIVE: {s}"
+        );
+
+        // Just OUTSIDE the window (exactly the threshold + 1s) → no near-expiry warning: a healthy cert with
+        // ample life left must not nag (the boundary is inclusive at the threshold, clean just past it).
+        let ample = Some((
+            "2026-09-19T00:00:00",
+            now + OFFLOAD_CERT_EXPIRY_WARN_SECS + 1,
+        ));
+        let s = offload_health_line(2, ample, now, Some(&Succeeded));
+        assert!(
+            s.contains("ACTIVE + VERIFIED") && !s.contains('⚠'),
+            "a cert past the warn window stays clean: {s}"
+        );
+
+        // Near-expiry is ORTHOGONAL to the outcome: a mid-FAILURE near-expiry cert surfaces BOTH the
+        // remote-build failure AND the expiry lead-time (the suffix composes onto any cert-valid arm).
+        let s = offload_health_line(2, near, now, Some(&Failed("ca hash mismatch".into())));
+        assert!(
+            s.contains("remote-BUILD failure") && s.contains("EXPIRES in ~30m"),
+            "both concerns surface together: {s}"
+        );
     }
 
     #[test]
