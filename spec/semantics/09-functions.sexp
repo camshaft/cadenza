@@ -617,9 +617,11 @@
            iterations = 0+1+2+3+4 = 10) and there is NO trap, opt-invariant O0..O3. The control below threads
            the SAME accumulator but does NOT borrow it inside the loop (sums `i`, one final `List.len`) and
            reclaims to 0 even while building a large list — isolating the leak to the in-loop BORROW-while-
-           THREADING of the owned param, not the accumulation itself. IDEAL 0; the exact `(live-objects 8)` at
-           n=5 is a drift guard until the per-iteration borrow-dup of a threaded owned param is dropped.
-           (Adversarial pin from a breaker probe; census gate-confirmed.)")
+           THREADING of the owned param, not the accumulation itself. NOW RECLAIMS to 0: the in-loop borrow
+           forces a WHOLE-binder dup of `acc` at the consuming rebind (`List.push` takes the copy path at rc>1,
+           so the old cell survives the co-borrow read), and the loop-iteration emit now reclaims that surviving
+           old cell once per iteration (the `drop_old_borrowed` dup-forced-old-survives drop). Value 10, no trap,
+           opt-invariant O0..O3. (Adversarial pin from a breaker probe; census gate-confirmed.)")
   (input
     (do
       (def
@@ -629,10 +631,10 @@
             (let ((l (List.len acc))) (loop (List.push acc i) (- i 1) (+ sum l)))))
       (def (main (: n Int64)) (loop #list() n 0))
       (export main)))
-  ; n=5: sum of len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the borrow-dup residue leaks ~2 per iteration.
+  ; n=5: sum of len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the per-iteration borrow-dup is now dropped.
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects 8))
+  (live-objects 0))
 
 (case
   "the control: the SAME tail loop threading the accumulator but NOT borrowing it in-loop reclaims to 0"
