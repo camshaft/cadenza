@@ -404,6 +404,62 @@
   (live-objects 0))
 
 (case
+  "a self-recursive fn passing its heap param to THREE sibling self-calls reclaims to 0 — the directional consume-spare generalizes past k=2 (last-of-three spared, two dups, all balanced)"
+  (doc
+    "Extends the two-sibling reclaim above (#9155's last-sibling consume-spare) to k=3 to stress the
+           DIRECTIONALITY of the spare. `go` passes owned `xs` to THREE sibling SELF-calls in the recursive arm
+           `(+ (go xs (- depth 1)) (+ (go xs (- depth 1)) (go xs (- depth 1))))`. Three consuming uses need
+           exactly TWO dups (rc 1→3): the `scalar_group` consume-spare is directional so ONLY the last of the
+           three reuses the incoming ref, the first two each dup. If the spare were off-by-one for k>2 it would
+           either OVER-dup (leak a residue that scales with k) or UNDER-dup (double-free → rc-underflow trap on
+           the debug runtime). Instead it balances: census 0 at every depth, values 3·3^depth (depth 0→3,
+           depth 2→27), no trap. Guards that the fix is general over the sibling count, not pattern-matched to
+           two. The control below (three siblings to a DIFFERENT non-recursive fn) also reclaims to 0.")
+  (input
+    (do
+      (def
+        (go (: xs (List Int64)) (: depth Int64))
+        (if
+          (< depth 1)
+          (List.len xs)
+          (+ (go xs (- depth 1)) (+ (go xs (- depth 1)) (go xs (- depth 1))))))
+      (def (main (: depth Int64)) (go #list(1 2 (+ depth 1)) depth))
+      (export main)))
+  ; base path (depth<1): borrows xs, recursive arm never taken — base-arm drop reclaims the owned param.
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  ; recursive tree (3^depth leaves): two dups per frame, last-of-three spared — balanced, census 0, no scale.
+  (call main (: 2 Int64))
+  (output (: 27 Int64))
+  (live-objects 0))
+
+(case
+  "the control: the SAME three-sibling-call shape targeting a DIFFERENT function reclaims to 0"
+  (doc
+    "Isolates the self-recursion trigger for the three-sibling case above, mirroring the two-sibling
+           control. `go` has the identical structure — a base arm borrowing `xs` and a recursive arm with THREE
+           sibling calls passing `xs` by value — but the three calls target `leaf` (a DIFFERENT, non-recursive
+           function) instead of `go` itself. Reclaims to 0 at every depth (depth 0→3, depth 1→ three `leaf`
+           calls = 9), confirming the by-value multi-call balance is not what the k=3 self-recursive reclaim
+           depends on.")
+  (input
+    (do
+      (def (leaf (: xs (List Int64)) (: d Int64)) (List.len xs))
+      (def
+        (go (: xs (List Int64)) (: depth Int64))
+        (if
+          (< depth 1)
+          (List.len xs)
+          (+ (leaf xs (- depth 1)) (+ (leaf xs (- depth 1)) (leaf xs (- depth 1))))))
+      (def (main (: depth Int64)) (go #list(1 2 (+ depth 1)) depth))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
+
+(case
   "MUTUAL recursion over an owned heap param leaks 2 even with a SINGLE call per step (no sibling dup) — the cross-function count_param_consumes miss"
   (doc
     "A sharper, more minimal witness of the same count_param_consumes path/call-graph-unaware owned-param
