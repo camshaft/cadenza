@@ -108,7 +108,7 @@
       (needs "the host-closure-resource boundary emit for a closure whose param/result/capture type has no scalar machine representation")
       (ref pr 6878)))
   (decline WasmHeapReturnParamNoBoundaryRep
-    (code UnsupportedConstruct)
+    (code ExportParamNoBoundaryForm)
     (reason "a parameterized heap-return export forwards scalar params only; this param type has no boundary representation")
     (doc "A parameterized heap-return export (the make(a…)->own<t> resource-escape path) forwards scalar and fixed-shape scalar tuple/record params only; a String/Bytes/list param has no boundary representation on this path. The mem-leaf param lift that would forward it exists for the typed-interface member route (#6624/#6639) but is not wired on the bare resource-escape path. Fuzzer-surfaced (#6878 face #3); classified feature-gap (buildable-next) by v-rust-backend. Emit site backend/wasm/mod.rs:9277.")
     (blocked-on
@@ -144,7 +144,7 @@
       (needs "multi-interface host delegation (more than one host effect per envelope)")
       (ref pr 9183)))
   (decline WasmNonScalarExportParamNoBoundaryRep
-    (code UnsupportedConstruct)
+    (code ExportParamNoBoundaryForm)
     (reason "a non-scalar entry parameter has no scalar boundary representation on this export path")
     (doc "A plain (non-heap-return) export with a compound/heap ENTRY parameter (record/tuple/sum/list/string) that has no scalar boundary valtype. A memory-bearing String/Bytes/list or option param on a single export is lifted by the entry-param wrapper, but a record/tuple/other compound entry param is not supported on this export path. Reachable (v-cdz-smith #9183 census). Distinct from WasmHeapReturnParamNoBoundaryRep (the make->own heap-return resource-escape path, whose compound-param branch shares that id). Emit site backend/wasm/mod.rs:1255. Classified feature-gap by v-rust-backend.")
     (blocked-on

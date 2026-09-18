@@ -22,20 +22,21 @@ fn reject_code(src: &str) -> Option<String> {
         if out.artifact(Target::Wasm.artifact_kind()).is_some() {
             return None; // compiled — no rejection
         }
-        // SKIP the umbrella CDZ0900 "unsupported construct" decline (seq-286): it is a safe NOT-YET
-        // decline, NOT a program-is-wrong reject (diag.rs `Code::UnsupportedConstruct`), and it is
-        // commonly a SCAFFOLD artifact here — a test that exports `(def (f (: xs (List/Map/…))) …)` to
-        // exercise a MATCH/pattern hits the "non-scalar entry parameter is not supported on this export
-        // path" CDZ0900 (backend/wasm/mod.rs, flipped decline()→unsupported() in #6101) regardless of the
-        // pattern under test. Before #6101 that decline was code-`None`, so `reject_code` returned `None`
-        // for it (invisible); skipping CDZ0900 restores that intent so `reject_code` surfaces the PATTERN/
-        // program-error code (CDZ0201/CDZ0210/CDZ0101/…) the callers actually assert, not the boundary
-        // not-yet. (No caller asserts a CDZ0900 via `reject_code`; the two CDZ0900 assertions read the
-        // diagnostic directly.)
+        // SKIP any DECLINE (a safe NOT-YET-built outcome, not a program-is-wrong reject): the umbrella
+        // CDZ0900 `Code::UnsupportedConstruct` AND every dedicated decline code split off it (CDZ0901+,
+        // the CDZ0900-elimination sequence — each emitted via `declined(id)`, so it carries a
+        // `decline_id`). These are commonly a SCAFFOLD artifact here — a test that exports
+        // `(def (f (: xs (List/Map/…))) …)` to exercise a MATCH/pattern hits the "non-scalar entry
+        // parameter is not supported on this export path" decline (`WasmNonScalarExportParamNoBoundaryRep`,
+        // CDZ0904 since it got its own code) regardless of the pattern under test. Skipping every decline
+        // (CDZ0900 or any `decline_id`-carrying code) surfaces the PATTERN/program-error code the callers
+        // actually assert (CDZ0201/CDZ0210/CDZ0101/…), not the boundary not-yet. Genuine program-error
+        // rejects never carry a `decline_id`, so this never hides one. (No caller asserts a decline via
+        // `reject_code`; the two CDZ0900 assertions read the diagnostic directly.)
         out.diagnostics
             .iter()
             .filter(|d| d.severity == crate::abi::Severity::Error)
-            .find(|d| d.code.as_deref() != Some("CDZ0900"))
+            .find(|d| d.code.as_deref() != Some("CDZ0900") && d.decline_id.is_none())
             .and_then(|d| d.code.clone())
     })
 }
