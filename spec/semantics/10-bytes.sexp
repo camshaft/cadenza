@@ -2728,6 +2728,49 @@
   (live-objects 0))
 
 (case
+  "TWO slice VIEWS each fed to a tail-call borrow-reader BOTH reclaim their Option shells"
+  (doc
+    "The adversarial DOUBLE of the borrowing-Call slice-view reclaim above (#9218-followup: a
+           `(match (Bytes.slice ..) ((Some s) (fletcher s)))` now reclaims its outer Option shell at every
+           opt level, since `fletcher`'s recursive `go` only BORROWS `s` via `Bytes.at`/`Bytes.len`). Those
+           cases feed ONE slice view to the tail-call reader; this feeds TWO independent `Bytes.slice` views
+           of the same rope — each matched, each `Some`-payload handed to its own `fletcher` borrow-reader,
+           the two checksums summed. st=2: slice(2,2)=[30,40]→25670 + slice(0,2)=[10,20]→10270 = 35940;
+           st=1: slice(1,2)=[20,30]→17970 + [10,20]→10270 = 28240. The reclaim question the single-view pin
+           leaves open: does the borrowing-Call Option-shell reclaim COMPOSE across two independent slice
+           views in one frame — both shells + the shared rope reclaim (census 0) — or does a second
+           borrowing-Call match leak a shell? Value-faithful on both calls confirms the two readers walk
+           independent views of the shared rope with no aliasing.")
+  (input
+    (do
+      (def
+        (go (: b Bytes) (: i Int64) (: n Int64) (: s1 Int64) (: s2 Int64))
+        (if
+          (>= i n)
+          (+ (* s2 256) s1)
+          (match
+            (Bytes.at b i)
+            ((Some v) (do (def t1 (% (+ s1 v) 255)) (go b (+ i 1) n t1 (% (+ s2 t1) 255))))
+            ((None _u) -1))))
+      (def (fletcher (: b Bytes)) (go b 0 (Bytes.len b) 0 0))
+      (def
+        (main (: st Int64))
+        (do
+          (def rope (Bytes.concat (Bytes.of #list(10 20 30)) (Bytes.of #list(40 50 60))))
+          (+
+            (match (Bytes.slice rope st 2) ((Some s1) (fletcher s1)) ((None _u) -1))
+            (match (Bytes.slice rope 0 2) ((Some s2) (fletcher s2)) ((None _u) -1)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 35940 Int64))
+  (call main (: 1 Int64))
+  (output (: 28240 Int64))
+  ; double-probe: hypothesis is the borrowing-Call Option-shell reclaim (#9218-followup) COMPOSES across two
+  ; independent slice views in one frame, so both shells + the shared rope reclaim (census 0). Pinned 0 to let
+  ; the gate rule — a red "got N" would expose a second-borrowing-Call-match shell leak the single pin misses.
+  (live-objects 0))
+
+(case
   "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
   (doc
     "The None face of the decode path (the landed from-bytes pins are happy-path): the bytes of
