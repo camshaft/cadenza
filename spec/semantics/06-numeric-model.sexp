@@ -244,6 +244,55 @@
   (call shl (: 1 Int64) (: 64 Int64))
   (trap "unreachable"))
 
+; The count=64 cases above exercise only the UPPER bound of the 0..=63 range. The guard is TWO-SIDED: a
+; NEGATIVE count is equally out of range and equally an error on both paths. The soundness trap a one-sided
+; (upper-only) guard would spring: wasm i64.shl/shr_s MASK the count mod 64, and -1 reinterpreted as the
+; unsigned 0xFFFF…FF masks to 63 — so `<< 1 -1` would silently become `1 << 63` = Int64.min and `>> -8 -1`
+; would become `-8 >> 63` = -1, both wrong-not-trapped. These pin the LOWER bound the count=64 cases miss.
+; Verified breaker probes: fold rejects, runtime traps, on both `<<` and `>>`.
+(case
+  "a constant negative left-shift count is rejected — the lower bound of the 0..=63 range"
+  (doc
+    "The lower-bound twin of `(<< 1 64)`: `(<< 1 -1)` has a NEGATIVE count, outside 0..=63. The fold
+           REJECTS it (CDZ0304) rather than reinterpreting -1 as unsigned 0xFFFF…FF and masking mod 64 to 63
+           (which would silently yield `1 << 63` = Int64.min). Pins the const shift-count guard is two-sided.")
+  (input (<< 1 -1))
+  (error CDZ0304 (message "shift count") (message "out of range")))
+
+(case
+  "a constant negative right-shift count is rejected — the lower bound holds for >> too"
+  (doc
+    "The `>>` face of the negative-count reject: `(>> -8 -1)` is rejected (CDZ0304), not masked mod 64 to
+           `-8 >> 63` = -1. Pins the two-sided const guard on the right shift alongside the left.")
+  (input (>> -8 -1))
+  (error CDZ0304 (message "shift count") (message "out of range")))
+
+(case
+  "a runtime negative left-shift count traps — the lower-bound range guard"
+  (doc
+    "The runtime companion of the negative-count reject, and the lower-bound twin of the `<< 1 64` trap
+           above: over Int64 params a NEGATIVE count TRAPS rather than being reinterpreted as a huge unsigned
+           count and masked mod 64 (which would make `<< 1 -1` = `1 << 63` = Int64.min, silently wrong).
+           `<< 1 3` = 8 is the in-range control; `<< 1 -1` traps. Pins the runtime `<<` guard is two-sided —
+           the soundness-critical lower bound the count=64 case does not exercise.")
+  (input (do (def (shl (: v Int64) (: n Int64)) (<< v n)) (export shl)))
+  (call shl (: 1 Int64) (: 3 Int64))
+  (output (: 8 Int64))
+  (call shl (: 1 Int64) (: -1 Int64))
+  (trap "unreachable"))
+
+(case
+  "a runtime negative right-shift count traps — the lower bound holds for >> too"
+  (doc
+    "The `>>` face of the runtime negative-count trap: over Int64 params `>> -8 -1` TRAPS rather than
+           masking mod 64 to `-8 >> 63` = -1. `>> -8 1` = -4 is the in-range control; `>> -8 -1` traps. Pins
+           the runtime two-sided guard on the right shift alongside the left.")
+  (input (do (def (shr (: v Int64) (: n Int64)) (>> v n)) (export shr)))
+  (call shr (: -8 Int64) (: 1 Int64))
+  (output (: -4 Int64))
+  (call shr (: -8 Int64) (: -1 Int64))
+  (trap "unreachable"))
+
 ; The two-operand division traps, and the ONE overflowing division. `Int64.min / -1` is the sole integer
 ; division whose quotient (2^63) has no Int64 value — an OVERFLOW that is an error on BOTH paths: the const
 ; fold rejects it (CDZ0304), the RUNTIME traps "integer overflow" (not a wrap to Int64.min the way a bare
