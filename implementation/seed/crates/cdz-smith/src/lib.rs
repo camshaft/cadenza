@@ -55,6 +55,10 @@ pub mod differential;
 // instrumented libFuzzer link — see Cargo.toml); the `cdz_smith_gen_never_panics` target drives the same
 // grammar coverage-guided under `cargo bolero test`.
 pub mod astgen;
+/// The reachable-decline census — an emit-site histogram of every `Reject::decline`/CDZ0900 a
+/// generated program actually reaches, so v-deferral-declines can reconcile the static decline
+/// surface (~741 sites) down to the REACHABLE-untracked prod-readiness denominator.
+pub mod decline_census;
 pub mod driver;
 pub mod finding;
 pub mod generator;
