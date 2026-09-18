@@ -3320,6 +3320,36 @@
   (live-objects 0))
 
 (case
+  "TWO seam-crossing u16 bin fields sliced from ONE reused rope each reclaim their dup-then-slice temp — census 0"
+  (doc
+    "The adversarial DOUBLE face of the seam-crossing bin-field reclaim (0194 above): the SAME owned
+           two-leaf rope `b` = [1,18] ++ [52,5] is sliced TWICE (b reused by two `Bytes.slice` borrows) into
+           overlapping windows `[k,k+2)` and `[k+1,k+2+1)`, and a u16 bin field is read from EACH — so the
+           `BinSizedRead` Owned reclaim fires TWICE over distinct dup-then-slice temporaries in one program,
+           and the reused rope must itself reclaim after its second borrow. Packed `100000·first + second`.
+           k=1: both windows straddle the seam — w1 stitches 18,52 = 0x1234 = 4660, w2 = 52,5 = 0x3405 = 13317
+           → 466013317. k=0: w1 = 1,18 = 274 (single-leaf control), w2 = 18,52 = 4660 → 27404660. A reclaim
+           that leaked a window temp, dropped the rope early (UAF on the second slice), or double-freed it
+           would show a nonzero census or trap; census 0 confirms per-read, reuse-safe reclaim of the rope
+           slice temporaries. Adversarial companion to the single-read 0194.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def b (Bytes.concat (Bytes.of #list(1 18)) (Bytes.of #list(52 5))))
+          (def w1 (Option.expect (Bytes.slice b k 2) "in"))
+          (def w2 (Option.expect (Bytes.slice b (+ k 1) 2) "in"))
+          (+ (* 100000 (match w1 ((bin (u16 x)) x) (_ -1)))
+             (match w2 ((bin (u16 x)) x) (_ -1)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 466013317 Int64))
+  (call main (: 0 Int64))
+  (output (: 27404660 Int64))
+  (live-objects 0))
+
+(case
   "a dependent-size framing loop walks frames that straddle every rope seam"
   (doc
     "The framing-LOOP composition of the dependent-size crown jewel over a ROPE: frames
