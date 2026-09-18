@@ -6329,7 +6329,7 @@
 
         (def (x) 5))
       (m.x unit)))
-  (error CDZ0303))
+  (error CDZ0303 (no-fix)))
 
 (case
   "a bare literal exceeding the default-integer pragma's narrow type is rejected"
@@ -6519,7 +6519,7 @@
 
         (def (x) 5))
       (m.x unit)))
-  (error CDZ0303))
+  (error CDZ0303 (fix (kind replace) (replacement "Rational") (verified))))
 
 (case
   "a default-fraction pragma naming a FLOAT type is rejected (the Float64 leg of the domain check)"
@@ -6535,7 +6535,7 @@
 
         (def (x) 5))
       (m.x unit)))
-  (error CDZ0303))
+  (error CDZ0303 (fix (kind replace) (replacement "Rational") (verified))))
 
 ; The default-FLOAT pragma EFFECT (the positive companion of the reject family below): `(pragma
 ; default-float <T>)` names the type a bare, otherwise-unconstrained DECIMAL literal grounds to. In a
@@ -6614,7 +6614,7 @@
 
         (def (x) 1.5))
       (m.x unit)))
-  (error CDZ0303))
+  (error CDZ0303 (no-fix)))
 
 (case
   "a default-float pragma naming a non-float rational type is rejected"
@@ -6629,7 +6629,7 @@
 
         (def (x) 1.5))
       (m.x unit)))
-  (error CDZ0303))
+  (error CDZ0303 (no-fix)))
 
 (case
   "a default-float pragma with no type argument is a malformed directive"
