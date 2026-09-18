@@ -3228,7 +3228,10 @@ fn callee_reclaims_threaded_binder_arg(db: &mut Db, c: StructId, binder: StructI
                 core_of(db, arg),
                 Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder
             );
-            if is_direct_binder && def_looped_callee_reclaims_threaded_param(db, callee, j) {
+            if is_direct_binder
+                && (def_looped_callee_reclaims_threaded_param(db, callee, j)
+                    || def_nonlooped_callee_reclaims_threaded_param(db, callee, j))
+            {
                 return true;
             }
         }
@@ -3518,7 +3521,24 @@ fn mark_binder_dups_body(
                         && !is_heap_type_for_retain(&type_of(db, c))
                         && !binding_escapes(db, c, binder, false)
                         && !la_in;
+                    // SCALAR consume-spare (disjunct (e)): a scalar-arith operand that CONSUMES `binder` by
+                    // threading it as a DIRECT arg into a callee that RECLAIMS it on its base arm
+                    // (`callee_reclaims_threaded_binder_arg` — the self-recursive-sibling-self-call case, e.g.
+                    // `(+ (go xs d) (go xs d))`). Sound to spare the sibling's retain-dup: the callee's ref is
+                    // freed within the call, AND the callee drops the reused ref on its OWN base arm — the spare
+                    // and that base-arm drop are COUPLED through the same predicate (present together or absent
+                    // together; a missing base drop ⇒ the predicate is false ⇒ NO spare ⇒ a leak, never a UAF).
+                    // EXEMPT from the all-bare-ref gate (like (d)): a scalar arith performs NO in-place FBIP
+                    // mutation, so a sibling `Call` operand is not a read-corruption hazard. `spare_last` is not
+                    // needed — the DIRECTIONAL `scalar_group` `k < i` gate in the main pass already spares only
+                    // the LAST consuming sibling (earlier ones still dup ⇒ `k-1` total). `!la_in`: `binder` dead
+                    // after the group. (v-memory-safety-confirmed; the self-recursive sibling-self-call leak.)
+                    let scalar_consume_spared = scalar_group
+                        && occurs[k]
+                        && callee_reclaims_threaded_binder_arg(db, c, binder)
+                        && !la_in;
                     scalar_borrow_spared
+                        || scalar_consume_spared
                         || (occurs[k]
                             && ((strict_consume_op
                                 && ((!is_heap_type_for_retain(&type_of(db, c))

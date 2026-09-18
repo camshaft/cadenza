@@ -352,20 +352,19 @@
   (live-objects known-leak))
 
 (case
-  "a self-recursive fn passing its heap param to TWO sibling self-calls over-retains a constant 2 (dup/drop residue, present even on the base path)"
+  "a self-recursive fn passing its heap param to TWO sibling self-calls reclaims to 0 (last-sibling consume-spare coupled with the base-arm owned-param drop)"
   (doc
-    "A Perceus dup/drop residue on a SELF-recursive tree over a heap parameter. `go` takes a heap
+    "A Perceus dup/drop balance on a SELF-recursive tree over a heap parameter. `go` takes a heap
            `(List Int64)` and, in its recursive arm, passes `xs` to TWO sibling SELF-calls
-           `(+ (go xs (- depth 1)) (go xs (- depth 1)))` — the two owned uses force a dup of `xs`. The
-           census is a CONSTANT 2 (the list shell + one un-dropped copy) INDEPENDENT of depth (0→3, 1→6,
-           2→12, all census 2) and INDEPENDENT of the list contents. It leaks even at depth=0, where the
-           recursive arm is NEVER taken and the base only BORROWS `xs` (`List.len`) — so the extra retain is
-           inserted at/around function entry for the sibling-self-call path and is not dropped on the base
-           path. Values are correct and there is NO trap (a pure over-retain, the surviving-owned-ref-drop
-           LEAK-side class, cf. the partial-application leaks above). The control below proves the trigger is
-           the SELF-recursion specifically: the identical shape whose two sibling calls target a DIFFERENT
-           function reclaims to 0. IDEAL is 0; `(live-objects 2)` is a drift guard until the self-recursive
-           sibling-call dup balances (flip to 0 then).")
+           `(+ (go xs (- depth 1)) (go xs (- depth 1)))`. The two owned uses need only ONE dup: the LAST
+           consuming sibling reuses the incoming ref (the `scalar_group` consume-spare, directional so exactly
+           the last is spared), so the recursive arm dups `xs` exactly once (rc 1→2, both consumed). On the
+           base path (depth<1, `List.len xs` borrows) the owned param is dropped by the per-path conditional
+           `plan_ifjoin_nested` D-arm drop — reclaiming the frame's owned ref that the borrow path would
+           otherwise leak. The spare and that base drop are COUPLED: the spare is granted only when the callee
+           actually emits the base-arm drop (`def_nonlooped_callee_reclaims_threaded_param`), so a missing drop
+           can never leave a dangling reused ref. Census 0 at every depth (0→3, 2→12), values correct, no trap.
+           The control below (two sibling calls to a DIFFERENT fn) also reclaims to 0.")
   (input
     (do
       (def
@@ -373,13 +372,13 @@
         (if (< depth 1) (List.len xs) (+ (go xs (- depth 1)) (go xs (- depth 1)))))
       (def (main (: depth Int64)) (go #list(1 2 (+ depth 1)) depth))
       (export main)))
-  ; base path (depth<1): only borrows xs, recursive arm never taken — yet still leaks 2.
+  ; base path (depth<1): only borrows xs, recursive arm never taken — the base-arm drop reclaims it.
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  ; recursive tree (2^depth leaves): census stays a constant 2, does NOT scale with the tree.
+  ; recursive tree (2^depth leaves): one dup per frame, all balanced — census 0, does NOT scale.
   (call main (: 2 Int64))
   (output (: 12 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "the control: the SAME two-sibling-call shape targeting a DIFFERENT function reclaims to 0"

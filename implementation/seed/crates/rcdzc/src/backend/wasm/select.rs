@@ -8142,13 +8142,29 @@ fn nonlooped_param_callee_owned(
     param_index: usize,
     layout: &Layout,
 ) -> bool {
+    // The layout-free core is the single source of truth (its export exclusion uses `db.exports`, the same
+    // authoritative def-level list `looped_invariant_param_caller_owned` relies on). `layout` is retained in
+    // the signature only for the existing `select_function_of` / `def_emits_ifjoin_param_drop` call sites.
+    let _ = layout;
+    nonlooped_param_callee_owned_core(db, callee, param_index)
+}
+
+/// LAYOUT-FREE core of [`nonlooped_param_callee_owned`] — usable from the dup pass (which has no `Layout`),
+/// e.g. [`def_nonlooped_callee_reclaims_threaded_param`]. Whether a NON-LOOPED def's heap param at
+/// `param_index` is CALLEE-OWNED, with the SELF-FORWARD RELAX: a SELF-recursive call site whose arg for
+/// `param_index` is exactly the param binder (identity self-forward to the same index) is EXCLUDED from the
+/// all-external-sites-owned check — sound by induction (the def is callee-owned for this param, so forwarding
+/// the same param threads ownership into the recursive frame, which reclaims on ITS base arm; the EXTERNAL
+/// sites establish the ground ownership). Mirrors [`looped_invariant_param_caller_owned`]'s self-back-edge
+/// skip, adapted for the non-looped per-path drop. Wrong FALSE ⇒ a leak (the drop is forgone), never a UAF.
+fn nonlooped_param_callee_owned_core(db: &mut Db, callee: usize, param_index: usize) -> bool {
     let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
         return false;
     };
     // AXIS A (mirrors def_nonlooped_reclaims_param): not an export entry (the trampoline owns the boundary
     // param); non-looped only (the looped epilogue owns that case); not funcref-taken / called-from-lifted
     // (a call_indirect / eta-wrapper edge is invisible to the direct-index owned-arg check → unseen UAF).
-    if layout.exports.iter().any(|e| e.body == body) {
+    if db.exports.iter().any(|e| e.def == Some(callee)) {
         return false;
     }
     if !mutual_loop_group(db, callee).is_empty() {
@@ -8161,28 +8177,75 @@ fn nonlooped_param_callee_owned(
         return false;
     }
     let params = crate::layout::def_params(db, callee);
-    let Some((_binder, param_ty)) = params.get(param_index).cloned() else {
+    let Some((param_binder, param_ty)) = params.get(param_index).cloned() else {
         return false;
     };
     if !is_heap_type(&param_ty) {
         return false;
     }
-    // Every DIRECT call site passes an OWNED arg for this param (unknown/borrowed/missing at ANY site → not
-    // all-owned → decline; a callee with NO known site cannot prove ownership → decline). Same check as
-    // def_nonlooped_reclaims_param's tail — the per-path drop reclaims the frame's owned ref, sound ONLY when
-    // every caller transferred ownership in.
-    let sites = crate::infer::callee_call_site_args(db, callee);
-    if sites.is_empty() {
-        return false;
-    }
-    for args in &sites {
+    // Every EXTERNAL (non-self) call site passes an OWNED arg for this param (unknown/borrowed/missing at any
+    // external site → not all-owned → decline). A SELF-recursive site that identity-forwards THIS param is
+    // skipped (owned-by-induction, see the doc). At least one external owned site must ground the induction.
+    let sites = crate::infer::callee_call_site_args_with_caller(db, callee);
+    let mut saw_external = false;
+    for (caller_body, args) in &sites {
+        let self_forward = *caller_body == body
+            && matches!(
+                args.get(param_index).map(|&a| core_of(db, a)),
+                Some(Core::LocalRef { binder: b } | Core::Param { binder: b }) if b == param_binder
+            );
+        if self_forward {
+            continue;
+        }
+        saw_external = true;
         match args.get(param_index) {
             Some(&arg) if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) => {
             }
             _ => return false,
         }
     }
-    true
+    saw_external
+}
+
+/// NON-LOOPED analog of [`def_looped_callee_reclaims_threaded_param`], for the dup pass's `scalar_group`
+/// consume-spare (via [`callee_reclaims_threaded_binder_arg`]). Whether a NON-LOOPED callee RECLAIMS its heap
+/// param at `param_index` on the path where it is not consumed — i.e. the callee's body would emit a
+/// `plan_ifjoin_nested` base-arm D-arm drop for this callee-owned divergent param (the [`select_function_of`]
+/// half-2 emit). This UNIFIES the two levers of the self-recursive-sibling-consume leak: the caller's spare
+/// (grant `k-1`) is granted IFF the callee actually drops the reused ref on its base arm — so the spare and
+/// the base-arm drop are coupled (present together or absent together; absent ⇒ a leak, never a UAF).
+///
+/// SELF-RECURSION SAFETY: this runs from WITHIN the dup pass (mark_binder_dups → the seq closure), so it must
+/// NOT reconstruct `code.dup_sites` via `collect_dup_sites` (that re-enters mark_binder_dups → this predicate
+/// → infinite recursion for a self-recursive callee). It gates on an EMPTY-dup `plan_ifjoin_nested` instead —
+/// a SOUND UNDER-APPROXIMATION of the real emit: more dups ⇒ `binding_escapes_dup_aware` reports LESS escape
+/// ⇒ an arm is MORE likely dead ⇒ MORE likely to plan the drop. So an empty-dup "plans a drop" ⟹ the real
+/// dup-aware emit also plans it (the base arm's borrow-read, e.g. `List.len xs`, is dup-independent anyway).
+/// A false negative (empty-dup misses a drop the real emit makes) just forgoes the spare → a leak, never UAF.
+pub(crate) fn def_nonlooped_callee_reclaims_threaded_param(
+    db: &mut Db,
+    callee: usize,
+    param_index: usize,
+) -> bool {
+    if !nonlooped_param_callee_owned_core(db, callee, param_index) {
+        return false;
+    }
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    let params = crate::layout::def_params(db, callee);
+    let Some((binder, ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&ty) {
+        return false;
+    }
+    // Empty-dup under-approximation (see the doc — avoids re-entering the dup pass).
+    let dup: HashSet<StructId> = HashSet::new();
+    let aliases = HashSet::from([binder]);
+    let mut plan: HashMap<StructId, Vec<(u32, bool)>> = HashMap::new();
+    plan_ifjoin_nested(db, body, &aliases, 0, &dup, &mut plan);
+    !plan.is_empty()
 }
 
 /// CATALAN 2nd-root (v-memory-safety, framing A-gated-B): whether a THREADED-CALLEE co-operand `(callee … c …)`
