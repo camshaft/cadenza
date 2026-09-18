@@ -115,4 +115,13 @@
       (status blocked)
       (owner v-rust-backend)
       (needs "wire the mem-leaf param lift on the bare resource-escape heap-return export path (exists for the typed-interface member route #6624/#6639)")
-      (ref pr 6624))))
+      (ref pr 6624)))
+  (decline WasmParameterizedHeapReturnNoValueEncode
+    (code UnsupportedConstruct)
+    (reason "a parameterized (non-nullary) export cannot return this heap type; its value form is emitted only for a nullary constant export and it has no runtime value-encode render")
+    (doc "A parameterized (non-nullary) export whose scalar params are fine but whose heap RESULT (List/Option/Result/Tuple/Symbol/...) reached the boundary: the value form is emitted only for a nullary constant-bake export, and a runtime value-encode render for it is not available. The dominant reachable heap-return decline (v-cdz-smith #9183 reachability census; the ~18 return-type variants are one logical gap). Classified feature-gap by v-rust-backend. Emit site backend/wasm/mod.rs:1205.")
+    (blocked-on
+      (status blocked)
+      (owner v-rust-backend)
+      (needs "a runtime value-encode render for a heap return type on the parameterized-export path (the nullary constant-bake path has it)")
+      (ref pr 9183))))

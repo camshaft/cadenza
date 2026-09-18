@@ -34,6 +34,8 @@ pub enum DeclineId {
     WasmClosureBoundaryNoRepr,
     ///A parameterized heap-return export (the make(a…)->own<t> resource-escape path) forwards scalar and fixed-shape scalar tuple/record params only; a String/Bytes/list param has no boundary representation on this path. The mem-leaf param lift that would forward it exists for the typed-interface member route (#6624/#6639) but is not wired on the bare resource-escape path. Fuzzer-surfaced (#6878 face #3); classified feature-gap (buildable-next) by v-rust-backend. Emit site backend/wasm/mod.rs:9277.
     WasmHeapReturnParamNoBoundaryRep,
+    ///A parameterized (non-nullary) export whose scalar params are fine but whose heap RESULT (List/Option/Result/Tuple/Symbol/...) reached the boundary: the value form is emitted only for a nullary constant-bake export, and a runtime value-encode render for it is not available. The dominant reachable heap-return decline (v-cdz-smith #9183 reachability census; the ~18 return-type variants are one logical gap). Classified feature-gap by v-rust-backend. Emit site backend/wasm/mod.rs:1205.
+    WasmParameterizedHeapReturnNoValueEncode,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -51,6 +53,7 @@ impl DeclineId {
         DeclineId::NestedRecordFieldPatternDescent,
         DeclineId::WasmClosureBoundaryNoRepr,
         DeclineId::WasmHeapReturnParamNoBoundaryRep,
+        DeclineId::WasmParameterizedHeapReturnNoValueEncode,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -74,6 +77,9 @@ impl DeclineId {
             DeclineId::NestedRecordFieldPatternDescent => "nested-record-field-pattern-descent",
             DeclineId::WasmClosureBoundaryNoRepr => "wasm-closure-boundary-no-repr",
             DeclineId::WasmHeapReturnParamNoBoundaryRep => "wasm-heap-return-param-no-boundary-rep",
+            DeclineId::WasmParameterizedHeapReturnNoValueEncode => {
+                "wasm-parameterized-heap-return-no-value-encode"
+            }
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -92,6 +98,7 @@ impl DeclineId {
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -133,6 +140,9 @@ impl DeclineId {
             }
             DeclineId::WasmHeapReturnParamNoBoundaryRep => {
                 "a parameterized heap-return export forwards scalar params only; this param type has no boundary representation"
+            }
+            DeclineId::WasmParameterizedHeapReturnNoValueEncode => {
+                "a parameterized (non-nullary) export cannot return this heap type; its value form is emitted only for a nullary constant export and it has no runtime value-encode render"
             }
         }
     }
