@@ -1287,6 +1287,51 @@ fn borrowed_triple_proj_owned_proj_child_dupd_never_over_fires_the_recursion() {
 }
 
 #[test]
+fn escv_escape_admit_excludes_retaining_view_keeps_4917_margin() {
+    // #9200 escv escape-shell admit BOUNDARY (the #4917 leak-over-UAF margin, structural tripwire). The
+    // collect_sumexpect_view_reclaim ESCAPE branch (reclaim.rs: `None if (fresh_payload || compacting_view)
+    // && refs == 0`) admits a raw-ESCAPING COMPACTING-view SumExpect (String.at/String.slice — whose emit
+    // OP_BYTES_COMPACTs the Some payload into an INDEPENDENT flat leaf, so dropping the shell never frees a
+    // still-referenced view) to the shell-set. It must NOT admit a RETAINING view producer (Bytes.slice /
+    // List.at / Map.lookup — whose payload rc-shares its container): freeing THAT shell would cascade-free
+    // the still-escaping view = UAF. BOTH pass the outer `is_owned_single_view_producer` guard, so the
+    // exclusion happens AT the escape branch via `compacting_view == false` — the exact point a regression
+    // (e.g. adding Bytes.slice to `is_compacting_view_producer`) would reintroduce the #4917 UAF. Fast
+    // rust-suite tripwire for the boundary v-memory-safety rc-gates via the mixed compacting/retaining
+    // census pins (#9203/#9206). A raw-escaping body result has refs == 0 (no parent Core node), so the
+    // body SumExpect itself is the escape node under test.
+    let sets_of = |src: &str| -> (bool, bool) {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let _layout = layout_of(&mut db);
+        let (_params, body) = function_of(&mut db, "f");
+        let mut view_set: HashSet<StructId> = HashSet::new();
+        let mut shell_set: HashSet<StructId> = HashSet::new();
+        collect_sumexpect_view_reclaim(&mut db, body, &mut view_set, &mut shell_set);
+        (shell_set.contains(&body), view_set.contains(&body))
+    };
+    // COMPACTING (String.slice) escaping raw → admitted to the SHELL set (reclaimable escape shell, escv 2→0).
+    let (str_shell, str_view) = sets_of(
+        "(module m (def (f (: s String) (: k Int64)) (Option.expect (String.slice s k 3) \"e\")) \
+             (def (main) 0) (export main))",
+    );
+    assert!(
+        str_shell && !str_view,
+        "an escaping String.slice view (COMPACTING) must be in the SHELL set (reclaimable escape shell) — \
+         got shell={str_shell} view={str_view}"
+    );
+    // RETAINING (Bytes.slice) escaping raw → NOT admitted to either set (stays leaking = the #4917 control).
+    let (bytes_shell, bytes_view) = sets_of(
+        "(module m (def (f (: b Bytes) (: k Int64)) (Option.expect (Bytes.slice b k 3) \"e\")) \
+             (def (main) 0) (export main))",
+    );
+    assert!(
+        !bytes_shell && !bytes_view,
+        "an escaping Bytes.slice view (RETAINING) must NOT be admitted to EITHER set — freeing its shell \
+         would UAF the still-escaping rc-shared view (#4917); got shell={bytes_shell} view={bytes_view}"
+    );
+}
+
+#[test]
 fn a_parameterized_addition_selects_to_a_checked_sequence() {
     // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
     // the numeric model requires it to TRAP on overflow, so it selects to the CHECKED sequence.
