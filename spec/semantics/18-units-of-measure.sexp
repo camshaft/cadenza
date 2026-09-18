@@ -791,6 +791,64 @@
         (Qty.of 2 (Unit.of #"kilometer")))))
   (output (: 3000 Int64)))
 
+; The conversion cases above use LITERAL magnitudes (const-fold). These two exercise the conversion EMIT
+; over a RUNTIME magnitude parameter (nothing folds), across a NON-power-of-ten exact ratio and a staged
+; multi-hop, to pin (a) exact-Rational scale composition with Int truncation, (b) conversion transitivity.
+(case
+  "a runtime-magnitude inch→millimeter conversion composes the exact 127/5000 ratio and truncates the non-whole result (not rounded)"
+  (doc
+    "`(Unit.in millimeter (Qty.of n inch))` over a RUNTIME `n` (not a literal, so nothing folds). inch
+           carries the exact scale 127/5000 to the reference meter, mm carries 1/1000, so one inch is exactly
+           127/5 = 25.4 mm and n inch is ⌊n·127/5⌋ over the Int magnitude — the numeric core's rule that a
+           non-whole ratio TRUNCATES over Int (never rounds, never floats). n=1 → 25 (25.4 truncated, NOT 26),
+           n=2 → 50 (50.8 truncated), and at multiples of 5 the ratio is exact: n=5 → 127, n=10 → 254, n=25 →
+           635. A conversion that rounded, used a lossy Float scale, or composed the two exact ratios wrongly
+           would miss these. The literal-magnitude conversions above fold; this pins the runtime emit path.")
+  (input
+    (do
+      (def (main (: n Int64)) (Unit.in (Unit.of #"millimeter") (Qty.of n (Unit.of #"inch"))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 25 Int64))
+  (call main (: 2 Int64))
+  (output (: 50 Int64))
+  (call main (: 5 Int64))
+  (output (: 127 Int64))
+  (call main (: 10 Int64))
+  (output (: 254 Int64))
+  (call main (: 25 Int64))
+  (output (: 635 Int64)))
+
+(case
+  "conversion is transitive over a runtime magnitude: km→mm directly equals km→m→mm staged"
+  (doc
+    "The direct conversion `km → mm` must equal the two-hop `km → m → mm` for the SAME runtime
+           magnitude — the free-abelian-group scales compose associatively, so a staged conversion through an
+           intermediate unit loses nothing when each hop is exact. The residual `(direct - staged)` is packed
+           into the billions place so any nonzero (a scale-composition or intermediate-rewrap bug) blows past
+           the direct value in the low digits; the direct value (n·10^6, every hop a power of ten so all
+           exact) is pinned there. n=1 → 1000000, n=3 → 3000000, n=5 → 5000000. Companion to the non-integer
+           inch case above: that pins one exact ratio, this pins that CHAINING exact ratios stays exact.")
+  (input
+    (do
+      (def (main (: n Int64))
+        (let
+          ((direct (Unit.in (Unit.of #"millimeter") (Qty.of n (Unit.of #"kilometer"))))
+           (staged
+             (Unit.in
+               (Unit.of #"millimeter")
+               (Qty.of
+                 (Unit.in (Unit.of #"meter") (Qty.of n (Unit.of #"kilometer")))
+                 (Unit.of #"meter")))))
+          (+ (* 1000000000 (- direct staged)) direct)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1000000 Int64))
+  (call main (: 3 Int64))
+  (output (: 3000000 Int64))
+  (call main (: 5 Int64))
+  (output (: 5000000 Int64)))
+
 (case
   "recovering two quantities' magnitudes takes their remainder as bare numbers"
   (doc
