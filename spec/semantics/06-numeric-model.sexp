@@ -8198,6 +8198,34 @@
   (output (: 11 Int64)))
 
 (case
+  "wrapping arithmetic is a RING: multiply distributes over add mod 2^8, even when every product overflows"
+  (doc
+    "The individual wrapping-add/mul cases above pin single ops; this pins the LAW that ties them —
+           two's-complement wrapping arithmetic at a fixed width is a commutative RING (Z/2^8 for UInt8), so
+           `UInt8.wrapping-mul a (UInt8.wrapping-add b c)` must equal `UInt8.wrapping-add (a⊗b) (a⊗c)` for ALL
+           runtime a,b,c — distributivity holds through the wrap. Runtime UInt8 params (nothing folds) chosen
+           so every product overflows 255, forcing the re-mask on both sides: a mask applied on only one side,
+           a wrong modulus, or a mul that left the wide product would break the equality. Packed as
+           `1000·(lhs = rhs) + lhs` so the law bit is unmissable and the concrete wrapped value is anchored:
+           a=200,b=100,c=50 → 200⊗150 = 30000 mod 256 = 48 → 1048; a=3,b=200,c=100 → 3⊗(300 mod 256 = 44) =
+           132 → 1132; a=b=c=255 → 255⊗(510 mod 256 = 254) = 64770 mod 256 = 2 → 1002. The 1000s digit MUST
+           stay 1 (law holds).")
+  (input
+    (do
+      (def (main (: a UInt8) (: b UInt8) (: c UInt8))
+        (let
+          ((lhs (UInt8.wrapping-mul a (UInt8.wrapping-add b c)))
+           (rhs (UInt8.wrapping-add (UInt8.wrapping-mul a b) (UInt8.wrapping-mul a c))))
+          (+ (* 1000 (if (= lhs rhs) 1 0)) (Int64.of lhs))))
+      (export main)))
+  (call main (: 200 UInt8) (: 100 UInt8) (: 50 UInt8))
+  (output (: 1048 Int64))
+  (call main (: 3 UInt8) (: 200 UInt8) (: 100 UInt8))
+  (output (: 1132 Int64))
+  (call main (: 255 UInt8) (: 255 UInt8) (: 255 UInt8))
+  (output (: 1002 Int64)))
+
+(case
   "a runtime Int8 wrapping-mul overflow wraps with sign-extension (-128 * -1 = -128)"
   (doc
     "The wrapping-MUL signed face: `(Int8.wrapping-mul x (Int8.wrap -1))` over a runtime Int8 = -128:
