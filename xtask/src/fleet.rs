@@ -9495,6 +9495,15 @@ fn file_mtime_unix(path: &Path) -> Option<u64> {
 const CHECK_LEASE_ADAPTIVE_FLOOR: usize = 2;
 const CHECK_LEASE_ADAPTIVE_CEIL: usize = 5;
 
+/// MemFree (KiB) below which the check-lease cap TIGHTENS to the floor — serializing gate-locals so N
+/// concurrent NAR-copy bursts can't collectively dip MemFree under the harness bg-guardian's 1G os.freemem()
+/// trigger (the 2026-09-18 concurrency→transient-dip→kill mechanism: concierge data = 3 concurrent gate-locals
+/// → 3 instant OOM kills + leaked leases, PSI 0.00). 8 GB is well ABOVE the 1G trigger (headroom for one
+/// copy-burst) and well BELOW the box's between-burst MemFree (25–72G observed), so it only tightens during
+/// genuine low-free contention, never in the normal idle-between-bursts state. `CDZ_CHECK_LEASE_MEMFREE_LOW_MB`
+/// overrides (0 disables the memory-aware tightening entirely).
+const CHECK_LEASE_MEMFREE_LOW_KIB: u64 = 8 * 1024 * 1024;
+
 /// Read the 1-minute load average from `/proc/loadavg` (the first field). `None` off-Linux or on any
 /// parse/read error → the caller fails safe to the FLOOR. Always-fresh + zero-dependency (no coupling to
 /// the cpu-monitor daemon's sample freshness), which is why it's the adaptive-cap signal.
@@ -9525,6 +9534,36 @@ fn adaptive_check_lease_cap(loadavg1: f64, nproc: usize, floor: usize, ceil: usi
     ceil.saturating_sub(shed).max(floor)
 }
 
+/// The MEMORY-aware cap ceiling (pure): `floor` when MemFree is KNOWN and below `low_kib` — serialize
+/// gate-locals (floor == GATE_LEASE_WEIGHT → exactly one weight-2 gate-local at a time, so a lone one can
+/// still run, but a concurrent 2nd waits) — else `ceil` (NO constraint). Composed with the load-adaptive cap
+/// by `min`, so it can ONLY tighten, never grant more → it cannot oversubscribe the box (the load-125 class).
+/// FAIL-OPEN: MemFree unknown (off-Linux / read error / `low_kib`==0 disable) → `ceil` (no constraint), so a
+/// meminfo hiccup never blocks a gate-local. Keyed on MemFree (the guardian's own metric) NOT MemAvailable/PSI
+/// — those stay healthy (~340G / 0.00) during the misfire, so they'd never trip; MemFree low IS the risk.
+fn memfree_adaptive_cap(
+    memfree_kib: Option<u64>,
+    low_kib: u64,
+    floor: usize,
+    ceil: usize,
+) -> usize {
+    match memfree_kib {
+        Some(free) if low_kib > 0 && free < low_kib => floor,
+        _ => ceil,
+    }
+}
+
+/// Current MemFree in KiB from /proc/meminfo (`None` off-Linux / parse error → callers fail open). Distinct
+/// from MemAvailable: MemFree is what the harness guardian keys on, so it's the signal we throttle against.
+fn read_memfree_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("MemFree:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
 /// Max concurrent NON-priority (`vertical`) checks. A full check is a whole build + gate; the heaviest is
 /// gate-local (the 12-constituent required-set aggregate EVERY agent runs pre-merge). LOAD-ADAPTIVE by
 /// default (operator seq-208 2026-08-29): the earlier static cap-2 (a load-108-saturation stopgap) was
@@ -9546,7 +9585,7 @@ fn check_lease_max() -> usize {
     let nproc = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(0);
-    match read_loadavg1() {
+    let load_cap = match read_loadavg1() {
         Some(load) => adaptive_check_lease_cap(
             load,
             nproc,
@@ -9554,7 +9593,24 @@ fn check_lease_max() -> usize {
             CHECK_LEASE_ADAPTIVE_CEIL,
         ),
         None => CHECK_LEASE_ADAPTIVE_FLOOR, // fail safe: no load signal → the saturation-safe floor.
-    }
+    };
+    // MEMORY-aware tightening (2026-09-18): the CPU-loadavg cap is memory-BLIND, so it granted 3 concurrent
+    // gate-locals whose simultaneous NAR-copy bursts dipped MemFree under the harness guardian's 1G trigger →
+    // 3 instant OOM kills + leaked leases (PSI 0.00 = no real pressure). When MemFree lacks headroom, serialize
+    // gate-locals. `min` = tighten-only (never grants more than the load cap → can't oversubscribe); fail-open
+    // when MemFree is unreadable. Explicit CDZ_CHECK_LEASE_MAX above bypasses this (operator's exact value wins).
+    let low_kib = std::env::var("CDZ_CHECK_LEASE_MEMFREE_LOW_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|mb| mb.saturating_mul(1024))
+        .unwrap_or(CHECK_LEASE_MEMFREE_LOW_KIB);
+    let mem_cap = memfree_adaptive_cap(
+        read_memfree_kib(),
+        low_kib,
+        CHECK_LEASE_ADAPTIVE_FLOOR,
+        CHECK_LEASE_ADAPTIVE_CEIL,
+    );
+    load_cap.min(mem_cap)
 }
 
 /// Per-HOLDER nix fan-out budget (cores) for a leased build. The check-lease caps the NUMBER of
@@ -27227,6 +27283,43 @@ branch refs/heads/fleet/trunk-tools
         assert_eq!(adaptive_check_lease_cap(-1.0, 64, floor, ceil), floor);
         assert_eq!(adaptive_check_lease_cap(0.0, 64, 5, 5), 5); // ceil==floor → that value
         assert_eq!(adaptive_check_lease_cap(0.0, 64, 5, 2), 5); // ceil<floor → floor
+    }
+
+    #[test]
+    fn memfree_adaptive_cap_tightens_only_on_low_free_and_fails_open() {
+        let (floor, ceil) = (2, 5);
+        let low = 8 * 1024 * 1024; // 8 GiB in KiB
+        // Healthy MemFree (>= threshold) → NO constraint (ceil): normal between-burst state, don't throttle.
+        assert_eq!(
+            memfree_adaptive_cap(Some(54 * 1024 * 1024), low, floor, ceil),
+            ceil
+        );
+        assert_eq!(
+            memfree_adaptive_cap(Some(low), low, floor, ceil),
+            ceil,
+            "exactly at threshold → not below → ceil"
+        );
+        // Low MemFree (< threshold, e.g. mid multi-copy-burst) → tighten to floor == GATE_LEASE_WEIGHT, i.e.
+        // serialize gate-locals (one weight-2 at a time) so their NAR-copy bursts don't collectively dip <1G.
+        assert_eq!(
+            memfree_adaptive_cap(Some(2 * 1024 * 1024), low, floor, ceil),
+            floor
+        );
+        assert_eq!(memfree_adaptive_cap(Some(0), low, floor, ceil), floor);
+        // FAIL-OPEN: MemFree unknown (read error / off-Linux) → ceil (never blocks a gate-local on a hiccup).
+        assert_eq!(memfree_adaptive_cap(None, low, floor, ceil), ceil);
+        // Disable: low_kib == 0 → always ceil (the CDZ_CHECK_LEASE_MEMFREE_LOW_MB=0 kill-switch), even at 0 free.
+        assert_eq!(memfree_adaptive_cap(Some(0), 0, floor, ceil), ceil);
+        // COMPOSITION invariant: min(load_cap, mem_cap) can only ever TIGHTEN (never exceeds the load cap) —
+        // so the memory signal can never oversubscribe the box (the load-125 class), only serialize.
+        for load_cap in floor..=ceil {
+            let mem_low = memfree_adaptive_cap(Some(1024), low, floor, ceil); // low free → floor
+            assert!(
+                load_cap.min(mem_low) <= load_cap,
+                "mem tightening must not raise the cap"
+            );
+            assert_eq!(load_cap.min(mem_low), floor.min(load_cap));
+        }
     }
 
     #[test]
