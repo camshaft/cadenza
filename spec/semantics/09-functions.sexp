@@ -461,6 +461,39 @@
   (live-objects 0))
 
 (case
+  "the SCC-membership boundary: a NON-recursive caller of a recursive consumer reclaims its borrow-path param to 0"
+  (doc
+    "The boundary that scopes the mutual/self leaks above (the count_param_consumes call-graph-unaware
+           owned-param drop cluster) to RECURSION-SCC MEMBERSHIP of the leaking function — NOT to merely
+           calling a recursive consumer. `go` is NON-recursive: on one path it BORROWS `xs` (`List.len`,
+           dead-after), on the other it passes `xs` to `helper`, a ONE-DIRECTIONAL self-recursive function
+           that consumes it (helper does NOT call back into go, so go is outside any cycle). Despite
+           `count_param_consumes(xs) > 0` (the helper call consumes) AND the consumer being recursive, go's
+           borrow-path param reclaims to 0 — the owned-param drop fires correctly because go itself is not in
+           a recursion SCC. Contrast the leakers above: single-self needs ≥2 sibling self-calls (a forced
+           dup), single-MUTUAL leaks with one call because go IS in the go↔helper cycle. So the miss is the
+           param-owning function's own SCC membership, not the callee's recursiveness — a fix that keys on
+           SCC membership must leave this case at 0. (Adversarial boundary pin from a breaker probe; census
+           gate-confirmed.)")
+  (input
+    (do
+      (def
+        (helper (: ys (List Int64)) (: d Int64))
+        (if (< d 1) (List.len ys) (helper ys (- d 1))))
+      (def
+        (go (: xs (List Int64)) (: which Int64))
+        (if (> which 0) (List.len xs) (helper xs 3)))
+      (def (main (: which Int64)) (go #list(1 2 (+ which 1)) which))
+      (export main)))
+  ; which=1: go borrows xs directly (helper not called) — reclaims to 0.
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  ; which=0: go passes xs to the self-recursive helper (a recursive CONSUMER) — still reclaims to 0 (go not in a cycle).
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
