@@ -36,6 +36,8 @@ pub enum DeclineId {
     WasmHeapReturnParamNoBoundaryRep,
     ///A parameterized (non-nullary) export whose scalar params are fine but whose heap RESULT (List/Option/Result/Tuple/Symbol/...) reached the boundary: the value form is emitted only for a nullary constant-bake export, and a runtime value-encode render for it is not available. The dominant reachable heap-return decline (v-cdz-smith #9183 reachability census; the ~18 return-type variants are one logical gap). Classified feature-gap by v-rust-backend. Emit site backend/wasm/mod.rs:1205.
     WasmParameterizedHeapReturnNoValueEncode,
+    ///A bare (effect ...) host operation whose argument or result type has no component boundary form. On a bare effect, host results cross as a scalar/unit and arguments as a scalar/unit/string or a Bytes (list<u8>); a Bytes/option<list<u8>> RESULT crosses only on the WORLD-DRIVEN (wit-world) path, and a record/compound argument or a list<list<u8>>/list<tuple> result is not supported on a bare effect. THE dominant reachable decline (v-cdz-smith #9183 census: ~17.7k hits across the result and argument faces = one emit site backend/wasm/mod.rs:211, via host::first_unrepresentable_host_op). Distinct from WasmBytesCrossingHostOpNoBoundaryForm (the narrower bytes-crossing-member site). Classified feature-gap by v-rust-backend.
+    WasmHostOpNoBoundaryFormOnBareEffect,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -54,6 +56,7 @@ impl DeclineId {
         DeclineId::WasmClosureBoundaryNoRepr,
         DeclineId::WasmHeapReturnParamNoBoundaryRep,
         DeclineId::WasmParameterizedHeapReturnNoValueEncode,
+        DeclineId::WasmHostOpNoBoundaryFormOnBareEffect,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -80,6 +83,9 @@ impl DeclineId {
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => {
                 "wasm-parameterized-heap-return-no-value-encode"
             }
+            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => {
+                "wasm-host-op-no-boundary-form-on-bare-effect"
+            }
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -99,6 +105,7 @@ impl DeclineId {
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -143,6 +150,9 @@ impl DeclineId {
             }
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => {
                 "a parameterized (non-nullary) export cannot return this heap type; its value form is emitted only for a nullary constant export and it has no runtime value-encode render"
+            }
+            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => {
+                "a host operation whose argument or result type has no component boundary form on a bare effect"
             }
         }
     }
