@@ -1246,7 +1246,9 @@
       (export main)))
   (call main (: 7 UInt8) (: 9 UInt8))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; the synthesized __bytes_of_rt$ fold now reclaims its owned list param at the loop-exit epilogue
+  ; (param_only_borrowed_or_backedge gained the BytesConcat borrow arm) → the list husks are freed.
+  (live-objects 0))
 
 (case
   "a byte read back from a runtime-list-built Bytes has the right value"
@@ -1270,7 +1272,8 @@
       (export main)))
   (call main (: 7 UInt8) (: 9 UInt8))
   (output (: 309 Int64))
-  (live-objects known-leak))
+  ; both synthesized __bytes_of_rt$ folds reclaim their owned list param at the loop-exit epilogue now.
+  (live-objects 0))
 
 (case
   "a recursively-built byte sequence assembles its bytes at run time"

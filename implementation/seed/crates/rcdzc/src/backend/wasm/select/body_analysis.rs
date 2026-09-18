@@ -597,7 +597,24 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::ListPush { list, elem }
         | Core::ListPrepend { list, elem }
         | Core::ListUpdate { list, elem, .. } => recur(db, list, false) && recur(db, elem, false),
-        Core::ListConcat { lhs, rhs } => recur(db, lhs, false) && recur(db, rhs, false),
+        // `Set.insert acc v` — the Set analog of `ListPush` (consumes the base collection, adds one element).
+        // The synthesized `Set.of`-over-a-runtime-list fold (`__set_of_rt$`, set_of_runtime.rs) threads its
+        // owned list param `xs` into the tail back-edge arg `(Set.insert acc (SumPayload (List.at xs i)))`,
+        // whose scalar element read makes `occurs_in(arg, xs)` true → the arg is recursed in this CONSUME
+        // position. Recurse both operands unborrowed (mirrors `ListPush`): a direct `Param(binder)` base/elem
+        // still denies (its shell escapes into the set), a borrow-derived scalar element (the `List.at` read)
+        // is admitted → the invariant list param is borrow-only → the looped epilogue reclaims it.
+        Core::SetInsert { set, elem, .. } => recur(db, set, false) && recur(db, elem, false),
+        // `Bytes.concat` — the Bytes analog of `ListConcat`, MISSING here (only the `arg_reclaims_binder_as_base`
+        // helper listed it). The synthesized `Bytes.of`-over-a-runtime-list fold (`__bytes_of_rt$`,
+        // bytes_of_runtime.rs) threads `xs` into the tail arg `(Bytes.concat acc (Bytes.of (list (SumPayload
+        // (List.at xs i)))))`; the scalar-element read makes `occurs_in(arg, xs)` true, so the arg is recursed
+        // here and, without this arm, fell to `_ => false` → the invariant list param's loop-exit drop was
+        // spuriously declined → the list husks leaked (10-bytes:1251). Same borrow/consume recursion + soundness
+        // as `ListConcat`: a direct `Param(binder)` operand denies (shell escapes), a borrow-scalar admits.
+        Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
+            recur(db, lhs, false) && recur(db, rhs, false)
+        }
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().all(|&e| recur(db, e, false))
         }
