@@ -9656,7 +9656,8 @@
   (output (: 1111 Int64))
   (call main (: 0 Int64))
   (output (: 1122 Int64))
-  (live-objects known-leak))
+  ; census sweep (289c34eb4f base): sw5's per-dispatch Set (built from the last-3 window to distinct-count) + the handler-state window list are reclaimed each suspension (handler-state / per-dispatch-collection reclaim landed); scalar count return, so this is a genuine reclaim (not ABI-transfer); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix"
