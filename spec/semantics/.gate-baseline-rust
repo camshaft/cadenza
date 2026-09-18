@@ -6463,6 +6463,7 @@ pass	an empty-string Ast.Str round-trips through encode and decode
 pass	an empty-string Ast.Str round-trips through print and read
 pass	an empty-tuple element on the HEAP path renders its (Tuple)-typed (tuple), not unit (type-directed, RULED-B ask-17874)
 pass	an encode-decode round-trip preserves an ASCII string's byte length
+pass	an entrypoint delegating two distinct host effects performs both and returns its computed value
 pass	an entrypoint delegation lets a program reach its host function
 pass	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
