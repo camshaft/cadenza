@@ -1111,6 +1111,48 @@
   (live-objects 0))
 
 (case
+  "TWO co-threaded SET accumulators through one recursion leak 2 — the two-accumulator gap is CHAMP-node-wide (Map AND Set), not Map-specific"
+  (doc
+    "The CHAMP-localization probe of the two-accumulator reclaim boundary, and it SHARPENS the finding:
+           two `(Set Int64)` accumulators `s1`/`s2` (Set, like Map, is a CHAMP/HAMT) co-threaded through ONE
+           recursion — both grown by `Set.insert … k` on the identical generated key per step, `s1` borrowed
+           by `Set.contains` (the distinct-count model), `s2` by `Set.len` (end check), returning a SCALAR
+           (so the residual is a genuine leak, not ABI-transfer). Both seeds → 1 (`Set.len s1 = cnt =
+           Set.len s2`, 8 distinct keys). Gate-confirmed it LEAKS 2 — the SAME residual as the two-MAP case
+           (#9218), whereas the list+map case reclaims 0 (#9219). So the reclaim gap is CHAMP-NODE-WIDE: the
+           borrow-thread accumulator reclaim handles ONE CHAMP/HAMT slot per dispatch loop but leaks when TWO
+           CHAMP collections (Map OR Set) are co-threaded — it is NOT Map-specific, and NOT a generic
+           multi-accumulator limit (a single CHAMP slot co-threaded with a non-CHAMP list reclaims, #9219).
+           Pinned known-leak 2 as the current boundary — a tighten candidate once the reclaim composes across
+           two CHAMP slots (surfaced to the borrow-thread-accumulator reclaim owner). Leak-over-UAF: value
+           correct, no double-free.")
+  (input
+    (do
+      (def
+        (next (: sd Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul sd 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: sd Int64) (: n Int64) (: s1 (Set Int64)) (: s2 (Set Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (if (= (Set.len s1) cnt) (if (= (Set.len s2) cnt) 1 0) 0)
+          (let
+            ((k (& (next sd) 7)))
+            (drive
+              (next sd)
+              (- n 1)
+              (Set.insert s1 k)
+              (Set.insert s2 k)
+              (if (Set.contains s1 k) cnt (+ cnt 1))))))
+      (def (main (: seed Int64)) (drive seed 20 (Set.of #list()) (Set.of #list()) 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call main (: 999 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
+
+(case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc
     "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
