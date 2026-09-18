@@ -2982,6 +2982,59 @@
   ; gate-confirmed (every heap trial): one dup, each fold reclaims its own ref — no double-free, all reclaim.
   (live-objects 0))
 
+; The two reuse/double-consume guards above are over a SCALAR-element list (#9160). These two repeat them over
+; a COMPOUND (heap tuple) element list — the 7576bfebec face — where the reclaim also frees the heap ELEMENTS,
+; not just the list shell: a richer double-free surface (each tuple element carries its own rc). The builder
+; dup-retains each borrow-derived element into the set (rc>1) so the list's loop-base cascade only decrements
+; the child; if the reuse/double-consume broke that accounting it would free a tuple a later read/fold holds.
+(case
+  "a runtime list of TUPLES reused after a consuming Set.of does not double-free — compound-element reclaim frees its own refs, List.len borrows the caller's"
+  (doc
+    "The compound-element twin of the scalar reuse guard above (7576bfebec over #9160). `xs` is a runtime
+           list of DISTINCT tuples `#tuple(k k)` bound once and used TWICE: consumed by `(Set.of xs)` (whose
+           synthesized __set_of_rt$ fold reclaims the owned list param AND its heap tuple elements) AND
+           borrowed by `(List.len xs)` after. The caller must dup `xs` so the fold reclaims its own refs while
+           List.len reads the live one — a reclaim of the borrowed list, or of a tuple element the borrow
+           still spans, would rc-underflow. Distinct tuples → Set.len = n, List.len = n → 2n (n=1→2, 3→6,
+           5→10). Gate census + trap grading proves the compound-element reclaim is UAF-safe under reuse.")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) #tuple(n n))))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Set.len (Set.of xs)) (List.len xs))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): caller dups the tuple-list, the fold reclaims its own refs incl the
+  ; heap tuple elements, List.len reads the live caller ref — no double-free, all reclaim. 7576bfebec-safe.
+  (live-objects 0))
+
+(case
+  "a runtime list of TUPLES consumed by TWO Set.of calls does not double-free — one dup, each compound-element fold reclaims its own refs"
+  (doc
+    "The compound-element double-consume face: one runtime tuple-list `xs` feeds TWO `(Set.of xs)` sites,
+           so `xs` (and each heap tuple element) is dup'd once and each synthesized fold reclaims its OWN refs
+           — a missed dup lets the first fold's reclaim free a tuple the second fold still hashes/inserts
+           (UAF/rc-underflow). Distinct tuples: each Set.len = n → 2n (n=1→2, 3→6, 5→10). Companion to the
+           compound reuse case above and the scalar double-consume guard.")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) #tuple(n n))))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Set.len (Set.of xs)) (Set.len (Set.of xs)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): one dup, each compound-element fold reclaims its own refs — no
+  ; double-free, all reclaim.
+  (live-objects 0))
+
 ; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
 ; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
 ; at exactly one element type — and no single generic def is instantiated at two types. This sidesteps the
