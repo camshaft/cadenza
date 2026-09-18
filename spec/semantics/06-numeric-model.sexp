@@ -1104,6 +1104,31 @@
   (output (: 9007199254740996.0 Float64)))
 
 (case
+  "the CONST FOLD of Float64.of-int rounds at the 2^53 tie identically to the runtime path (fold-vs-runtime differential)"
+  (doc
+    "The runtime case above pins `Float64.of-int` over a runtime `n`; this pins that the CONST FOLD of
+           the SAME conversion over the SAME literal boundary values rounds identically — a fold-vs-runtime
+           differential at the round-to-nearest-EVEN tie (the folder's `i64 as f64` must match the runtime
+           `i64.convert`). Every operand is a literal, so the whole expression folds; each `=` compares the
+           folded conversion against the exact expected Float64. 2^53 → exact; 2^53+1 → rounds DOWN to 2^53;
+           2^53+2 → exact; 2^53+3 → rounds UP to 2^53+4 (even). All four must hold → packed 1111. A const
+           folder that rounded a tie half-up (not to-even), or truncated, would drop a digit and diverge from
+           the runtime pins above.")
+  (input
+    (do
+      (def (main)
+        (+
+          (* 1000 (if (= (Float64.of-int 9007199254740992) 9007199254740992.0) 1 0))
+          (+
+            (* 100 (if (= (Float64.of-int 9007199254740993) 9007199254740992.0) 1 0))
+            (+
+              (* 10 (if (= (Float64.of-int 9007199254740994) 9007199254740994.0) 1 0))
+              (if (= (Float64.of-int 9007199254740995) 9007199254740996.0) 1 0)))))
+      (export main)))
+  (call main)
+  (output (: 1111 Int64)))
+
+(case
   "wrapping arithmetic uses the named wrapping form of the operator"
   (doc
     "Witnesses numeric-model.md #A Wrapping Operation Has A Defined Modular Outcome: the wrapping
