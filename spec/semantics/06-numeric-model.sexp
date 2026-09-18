@@ -713,6 +713,29 @@
   (call main (: 5 UInt64))
   (output (: 6 UInt64)))
 
+; UInt64 ORDERING is UNSIGNED across the 2^63 sign boundary: `<` on UInt64 emits an unsigned compare
+; (wasm i64.lt_u), so a value at or above 2^63 orders ABOVE one below it — NOT the signed i64.lt_s that would
+; read a top-bit-set operand as negative and invert the result. The sharp discriminator: 2^63 vs 2^63-1 —
+; unsigned says 2^63 is the LARGER (so `< 2^63 (2^63-1)` is false), but signed reads 2^63 as Int64.min and
+; 2^63-1 as Int64.max, inverting it to true. A signed-compare emit would silently mis-order every UInt64 pair
+; straddling 2^63 (and rank UInt64.max, = -1 signed, as the smallest). Const fold agrees; both paths unsigned.
+(case
+  "UInt64 < is unsigned across the 2^63 boundary at run time (i64.lt_u, not the sign-inverting lt_s)"
+  (doc
+    "`(< a b)` over UInt64 PARAMETERS emits an unsigned compare: lt(2^63, 2^63-1) = 0 — 2^63 orders ABOVE
+           2^63-1 unsigned, so it is NOT less (a signed lt_s would read 2^63 as Int64.min < Int64.max and
+           wrongly return 1). lt(1, UInt64.max) = 1 — UInt64.max (= -1 as signed i64) is the LARGEST UInt64,
+           above 1 (signed lt_s would call it -1 < 1 false). lt(2^63-1, 2^63) = 1 is the ordered control.
+           Pins UInt64 ordering is unsigned across the top-bit boundary — the soundness edge a signed-compare
+           emit would silently invert.")
+  (input (do (def (lt (: a UInt64) (: b UInt64)) (if (< a b) 1 0)) (export lt)))
+  (call lt (: 9223372036854775808 UInt64) (: 9223372036854775807 UInt64))
+  (output (: 0 Int64))
+  (call lt (: 1 UInt64) (: 18446744073709551615 UInt64))
+  (output (: 1 Int64))
+  (call lt (: 9223372036854775807 UInt64) (: 9223372036854775808 UInt64))
+  (output (: 1 Int64)))
+
 ; The runtime-wrap cases above are at i64/u64 width, where the operand width equals the machine word.
 ; These pin the runtime wrap at NARROW widths (8/16), where the backend must MASK to the operand width
 ; after the machine op — the const-fold narrow cases (Int8/UInt8 + and *) already wrap mod 2^width, and
