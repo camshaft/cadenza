@@ -3329,31 +3329,6 @@ fn count_param_consumes(
     }
 }
 
-/// Whether `arg` contains a WHOLE-binder retain-dup site for `binder` — a bare `LocalRef`/`Param(binder)`
-/// node that `mark_binder_dups` marked in `dups` (the `consuming && live_after` whole-binder dup at
-/// reclaim.rs's `Core::LocalRef` arm, NOT a nested `Proj`/`SumPayload` child-dup). Used by
-/// [`emit_loop_iteration`]'s `drop_old_borrowed` to detect that the back-edge CONSUME of a varying loop
-/// param was DUP'd because a sibling back-edge arg co-BORROWS it (the O(n) borrow-thread-accumulator shape):
-/// the dup makes the consuming op (`List.push acc i`) take the COPY path (rc>1), so the OLD accumulator cell
-/// SURVIVES the consume and — being dead after the co-borrow read — must be reclaimed once per iteration.
-/// Gating the extra drop on the dup HAVING FIRED is the double-free guard: without the co-borrow the consume
-/// FBIP-reuses the rc1 cell in place (no surviving old value), and dropping it would free the new accumulator.
-fn arg_has_whole_binder_dup(
-    db: &mut Db,
-    arg: StructId,
-    binder: StructId,
-    dups: &HashSet<StructId>,
-) -> bool {
-    if matches!(core_of(db, arg), Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder)
-        && dups.contains(&arg)
-    {
-        return true;
-    }
-    core_child_ids(db, arg)
-        .into_iter()
-        .any(|c| arg_has_whole_binder_dup(db, c, binder, dups))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn emit_loop_iteration(
     db: &mut Db,
@@ -3484,10 +3459,6 @@ fn emit_loop_iteration(
             heap_param_binders.push(b);
         }
     }
-    // Snapshot the whole-body dup set so the per-arg gate can detect a back-edge CONSUME that was DUP'd for a
-    // sibling co-borrow (the O(n) borrow-thread accumulator drop below) without holding an `out` borrow across
-    // the `db`-mut closure (mirrors the `dup_sites.clone()` at the post-body loop's arm-drop reconstruction).
-    let dup_snapshot = out.dup_sites.clone();
     let drop_old_borrowed: Vec<bool> = (0..args.len())
         .map(|i| {
             if !single_member
@@ -3520,30 +3491,14 @@ fn emit_loop_iteration(
             // escape guard + fresh-cell gate together are the SOUND sufficient condition — see
             // `rebind_produces_fresh`. Extended from numeric-only to fresh product ctors to close the RECURSIVE
             // tuple/record/list-STATE handler per-perform leak (v-effects wasm-dump-confirmed on rectuple_tail).
-            let borrow_not_consumed = !args.iter().any(|&a| binding_escapes(db, a, binder, false))
+            !args.iter().any(|&a| binding_escapes(db, a, binder, false))
                 && (rebind_produces_fresh(db, args[i])
                     || reclaim::rebind_is_cross_param_move(
                         db,
                         args[i],
                         binder,
                         &heap_param_binders,
-                    ));
-            // O(n) BORROW-THREAD ACCUMULATOR (v-memory-safety avenue-A): the param is CONSUMED by its own
-            // rebind arg (args[i], e.g. `(List.push acc i)` → the new acc) AND a sibling back-edge arg
-            // co-BORROWS it (`(+ sum (List.len acc))`), which forced a WHOLE-binder retain-dup at the consume
-            // (`arg_has_whole_binder_dup` — the dup FIRED). The dup makes the consuming op take the COPY path
-            // (rc>1), so the OLD accumulator cell SURVIVES the consume and is dead after the co-borrow read →
-            // reclaim it once per iteration (the save+post-store rc-aware `op_drop` below lands AFTER every
-            // arg's borrow). Gated on the dup having fired (double-free guard: without the co-borrow the
-            // consume FBIP-reuses the rc1 cell → no survivor, and dropping it would free the new acc) AND the
-            // param being only-borrowed (not whole-escaped) through the OTHER args (so the surviving old cell
-            // has no live reader after this iteration). Distinct from `borrow_not_consumed` (which requires the
-            // param be consumed by NO rebind arg); here args[i] IS the consuming rebind.
-            let dup_forced_old_survives =
-                arg_has_whole_binder_dup(db, args[i], binder, &dup_snapshot)
-                    && (0..args.len())
-                        .all(|j| j == i || !binding_escapes(db, args[j], binder, false));
-            borrow_not_consumed || dup_forced_old_survives
+                    ))
         })
         .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
