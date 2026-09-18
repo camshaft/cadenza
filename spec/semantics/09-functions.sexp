@@ -99,6 +99,32 @@
   (output (: 332 Int64)))
 
 (case
+  "a closure captures TWO distinct heap values (a list AND a string) whose frame dies — both captures reclaim after the closure is dropped"
+  (doc
+    "The multi-capture face of the closure-env reclaim (single-capture witness above): `mk` builds a
+           runtime list `#list(k, k+1)` AND a rope `String.concat` locally and returns a closure capturing
+           BOTH — so the closure environment holds TWO distinct heap handles once `mk`'s frame exits. The
+           closure is called twice (each call BORROWS both captures — `List.len` + `String.byte-len`, neither
+           consuming), then dropped at the end of `main`, so the two-handle environment must reclaim BOTH
+           captured heap values exactly once (no leak of either, no double-free). Value = (100 + 2 + 8) +
+           (200 + 2 + 8) = 320 (list length 2, byte-len \"captured\" 8). Probes whether the closure-env drop
+           COMPOSES across multiple captured heap objects — a per-capture reclaim that dropped only one handle
+           would leak, one that double-dropped would trap. (Adversarial breaker probe over the closure-env
+           reclaim; census gate-confirmed.)")
+  (input
+    (do
+      (def
+        (mk (: k Int64))
+        (let ((lst #list(k (+ k 1))))
+          (let ((s (String.concat "cap" "tured")))
+            (fn (u) (+ u (+ (List.len lst) (String.byte-len s)))))))
+      (def (main (: k Int64)) (let ((f (mk k))) (+ (f 100) (f 200))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 320 Int64))
+  (live-objects 0))
+
+(case
   "a closure capturing a heap-capturing closure reads through two exited frames, twice"
   (doc
     "NESTED capture across exited frames: `inner` builds a runtime rope and returns a closure
