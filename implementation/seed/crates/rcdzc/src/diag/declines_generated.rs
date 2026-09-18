@@ -105,7 +105,7 @@ impl DeclineId {
             DeclineId::WasmClosureTransformer => Some(Code::UnsupportedConstruct),
             DeclineId::WasmCompoundResultWithClosureExport => Some(Code::UnsupportedConstruct),
             DeclineId::WasmValueFormWalkerRecursive => Some(Code::UnsupportedConstruct),
-            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => Some(Code::HostOpNoBoundaryForm),
             DeclineId::WasmMapPatternRuntimeMap => Some(Code::UnsupportedConstruct),
             DeclineId::PrimAsValueNeedsClosure => Some(Code::UnsupportedConstruct),
             DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
@@ -117,7 +117,7 @@ impl DeclineId {
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::ClosureAcrossAbiUnsupported),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
-            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::HostOpNoBoundaryForm),
             DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
             DeclineId::WasmNonScalarExportParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
         }

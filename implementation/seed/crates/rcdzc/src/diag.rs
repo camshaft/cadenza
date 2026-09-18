@@ -451,6 +451,18 @@ pub enum Code {
     /// (runtime specialization of a recursive function).
     RecursiveFunctionRuntimeSpecialization,
 
+    /// A HOST OPERATION whose argument or result type has NO COMPONENT BOUNDARY FORM — a host effect
+    /// operation whose signature cannot cross the component boundary in this generation (e.g. a record /
+    /// compound argument, or a `list<list<u8>>` / `list<tuple>` result, on a bare effect). A DEDICATED code
+    /// split off the `UnsupportedConstruct` umbrella (CDZ0900) per the CDZ0900-elimination directive; it is
+    /// THE dominant reachable decline (v-cdz-smith census, ~17.7k hits). ONE user-facing cause + one
+    /// remediation, so it covers BOTH the bare-effect site (`WasmHostOpNoBoundaryFormOnBareEffect`) and the
+    /// narrower bytes-crossing-member site (`WasmBytesCrossingHostOpNoBoundaryForm`) — the DeclineId carries
+    /// the exact-site precision. Still a DECLINE (a safe "not-yet-built" reject — see `is_decline`), in the
+    /// CDZ09xx "declined, not crashed" band. Owner of the build-out is v-rust-backend (the host compound
+    /// boundary ABI, or routing through the wit-world path).
+    HostOpNoBoundaryForm,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -525,6 +537,7 @@ impl Code {
             Code::UnsupportedConstruct => "CDZ0900",
             Code::ClosureAcrossAbiUnsupported => "CDZ0901",
             Code::RecursiveFunctionRuntimeSpecialization => "CDZ0902",
+            Code::HostOpNoBoundaryForm => "CDZ0903",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -541,6 +554,7 @@ impl Code {
             Code::UnsupportedConstruct
                 | Code::ClosureAcrossAbiUnsupported
                 | Code::RecursiveFunctionRuntimeSpecialization
+                | Code::HostOpNoBoundaryForm
         )
     }
 }
