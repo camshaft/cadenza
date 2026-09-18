@@ -1356,6 +1356,40 @@
   (output (: 330 Int64)))
 
 (case
+  "inclusion-exclusion: |A ∪ B| + |A ∩ B| = |A| + |B| holds live over two DISTINCT runtime sets"
+  (doc
+    "A CARDINALITY law (distinct from the structural-equality laws above): the counting identity
+           `|A ∪ B| + |A ∩ B| = |A| + |B|` must hold for the CHAMP set at any overlap. Where the equality
+           laws compare set VALUES, this ties `Set.len` ARITHMETICALLY across union and intersection — a
+           miscount that union double-counts a shared element, or intersection drops/keeps one wrongly, or a
+           collision-node len bug, breaks the arithmetic even if a structural `=` elsewhere happened to pass.
+           Two distinct sets are built with the second's membership DEPENDENT on `n` so the overlap varies at
+           runtime (defeats const-fold): a = {1,2,3,4,5}, b = {4,5,6,(n+6)}. The residual
+           `(|A∪B| + |A∩B|) - (|A| + |B|)` is packed into the 10000s place so any nonzero (a broken law)
+           blows past the low digits; the |A∪B| (100s) and |A∩B| (1s) are pinned absolutely too. At n=0:
+           b={4,5,6} (n+6=6 collides), |A∪B|=6, |A∩B|=2, residual 0 → 602. At n=1: b={4,5,6,7}, |A∪B|=7,
+           |A∩B|=2 → 702. At n=2: b={4,5,6,8}, |A∪B|=7, |A∩B|=2 → 702. MUST hold (residual 0) at every n.")
+  (input
+    (do
+      (def (build (: n Int64)) #tuple((Set.of #list(1 2 3 4 5)) (Set.of #list(4 5 6 (+ n 6)))))
+      (def (main (: n Int64))
+        (match (build n)
+          (#tuple(a b)
+            (+
+              (* 10000
+                 (-
+                   (+ (Set.len (Set.union a b)) (Set.len (Set.intersection a b)))
+                   (+ (Set.len a) (Set.len b))))
+              (+ (* 100 (Set.len (Set.union a b))) (Set.len (Set.intersection a b)))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 602 Int64))
+  (call main (: 1 Int64))
+  (output (: 702 Int64))
+  (call main (: 2 Int64))
+  (output (: 702 Int64)))
+
+(case
   "the difference of a set with the empty set is the set (identity)"
   (doc
     "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list)))` is {1, 2, 3} — removing nothing leaves
