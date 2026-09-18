@@ -497,6 +497,17 @@ pub enum Code {
     /// v-rust-backend's. Still a DECLINE (see `is_decline`), CDZ09xx band.
     MultiHostEffectDelegation,
 
+    /// An EFFECT HANDLER in a form the TAIL-RESUMPTIVE FOLD does not specialize — a handler/`resume` shape
+    /// (a cross-function resume, or a resume in non-tail position) that the effect specializer cannot lower
+    /// this generation. A DEDICATED code split off the `UnsupportedConstruct` umbrella (CDZ0900) per the
+    /// CDZ0900-elimination directive; reachable (v-cdz-smith census, the multi-op / nested-perform shape).
+    /// ONE user-facing cause + remediation ("this effect handler/resume form is not yet reducible — use a
+    /// tail resume within the handler"), covering the `TailResumptiveFoldUnhandledForm` DeclineId's emit
+    /// sites in `lower/compute.rs` (the reduce-handle fallthrough, the recovery-failed return, and the
+    /// `Resolved::Resume` poison — wired by v-effects #9270). The build-out (specializing a cross-function /
+    /// non-tail resume) is v-effects'. Still a DECLINE (see `is_decline`), CDZ09xx band.
+    EffectHandlerNotReducible,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -575,6 +586,7 @@ impl Code {
             Code::ExportParamNoBoundaryForm => "CDZ0904",
             Code::ExportHeapResultNoEncode => "CDZ0905",
             Code::MultiHostEffectDelegation => "CDZ0906",
+            Code::EffectHandlerNotReducible => "CDZ0907",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -595,6 +607,7 @@ impl Code {
                 | Code::ExportParamNoBoundaryForm
                 | Code::ExportHeapResultNoEncode
                 | Code::MultiHostEffectDelegation
+                | Code::EffectHandlerNotReducible
         )
     }
 }

@@ -108,7 +108,7 @@ impl DeclineId {
             DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => Some(Code::HostOpNoBoundaryForm),
             DeclineId::WasmMapPatternRuntimeMap => Some(Code::UnsupportedConstruct),
             DeclineId::PrimAsValueNeedsClosure => Some(Code::UnsupportedConstruct),
-            DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
+            DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::EffectHandlerNotReducible),
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
             DeclineId::RecursiveFunctionRuntimeSpecialization => {
                 Some(Code::RecursiveFunctionRuntimeSpecialization)

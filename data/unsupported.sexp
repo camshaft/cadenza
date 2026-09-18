@@ -63,7 +63,7 @@
       (needs "runtime-closure synthesis for a built-in used as a value")
       (ref pr 6349)))
   (decline TailResumptiveFoldUnhandledForm
-    (code UnsupportedConstruct)
+    (code EffectHandlerNotReducible)
     (reason "an effect handler in a form the tail-resumptive fold does not specialize")
     (doc "An effect handler in a form the tail-resumptive fold does not specialize (cross-function / non-tail resume) — v-effects #6219.")
     (blocked-on
