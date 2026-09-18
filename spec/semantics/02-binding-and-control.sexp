@@ -9521,7 +9521,8 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 120 Int64))
-  (live-objects known-leak))
+  ; census sweep (89aa3e479c base): the String.at guard-extracted char, borrowed through a user-helper CALL frame (is-vowel) in the guard condition, is reclaimed (String view-shell reclaim landed); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- The do-def shadow WORKING perimeter (banked as box-the-fix pins around the v-inference
 ; do-def-shadow-over-param/let unbind fix): the shapes that were CORRECT before and after —
