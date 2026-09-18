@@ -10547,6 +10547,46 @@
   ; trial 0; was known-leak.
   (live-objects 0))
 
+(case
+  "two HEAP-CAPTURING closures swap parameter slots through repeated tail calls and BOTH captured lists reclaim"
+  (doc
+    "The adversarial DOUBLE of the bare-closure slot-swap above: those two closures capture NOTHING,
+           so census 0 only exercises the closure HANDLES reclaiming through the swap. Here each closure
+           captures a DISTINCT runtime heap list — `f` closes over `lst1 = #list(k (+ k 1))`, `g` over
+           `lst2 = #list((+ k 100) (+ k 200))` — and reads element 0 of its capture (forcing materialization,
+           not a foldable `List.len`). `spin` swaps the two closure values every tail call, so the captured
+           environments ride the permuted slots; parity decides which body answers each slot (even k → f
+           first → 10·k + (k+100); odd k → g first → 10·(k+100) + k; k=2 → 122, k=3 → 1033, k=0 identity →
+           100). The reclaim question the bare case leaves open: does the freshly-landed closure-slot-swap
+           reclaim COMPOSE with heap-owning closure environments — must BOTH captured lists reclaim when the
+           swapped closures die at the base (census 0), or does a permuted slot lose track of a captured
+           heap (residual)? Combines the closure-env multi-capture reclaim (#9224, composes for ONE closure)
+           with the slot-swap permutation (this file) — a permuted pair of heap-owning closures.")
+  (input
+    (do
+      (def
+        (spin (: n Int64) (: f (-> Int64 Int64)) (: g (-> Int64 Int64)))
+        (if (= n 0) (+ (* 10 (f 0)) (g 0)) (spin (- n 1) g f)))
+      (def
+        (main (: k Int64))
+        (let
+          ((lst1 #list(k (+ k 1)))
+           (lst2 #list((+ k 100) (+ k 200))))
+          (spin k
+            (fn ((: x Int64)) (+ x (match (List.at lst1 0) ((Some v) v) ((None _u) -1))))
+            (fn ((: x Int64)) (+ x (match (List.at lst2 0) ((Some v) v) ((None _u) -1)))))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 122 Int64))
+  (call main (: 3 Int64))
+  (output (: 1033 Int64))
+  (call main (: 0 Int64))
+  (output (: 100 Int64))
+  ; double-probe: hypothesis is the closure-slot-swap reclaim COMPOSES with heap-owning captures, so both
+  ; lst1 and lst2 reclaim when the swapped closures die (census 0). Pinned 0 to let the gate rule — a red
+  ; "got N" would expose a permuted-slot capture leak in the freshly-landed closure-slot / #9140-family reclaim.
+  (live-objects 0))
+
 ; --- Tail-call parameter permutations (scalar swap, 3-cycle rotation, heap-slot swap) and the
 ; generation-capture-before-shadow closure. ---
 (case
