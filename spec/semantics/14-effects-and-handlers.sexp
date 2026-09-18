@@ -6105,6 +6105,35 @@
   (live-objects 0))
 
 (case
+  "a handler-state list accumulator BORROWED TWICE per dispatch still reclaims each suspension (multi-borrow-thread, 100 dispatches)"
+  (doc
+    "The adversarial multi-borrow face of the handler-state accumulator reclaim above: each `note`
+           dispatch borrows the list state `s` TWICE — `(+ (List.len s) (List.len s))` — before threading the
+           grown state `(List.push s v)` through `resume`. The borrow-thread/handler-state reclaim must keep
+           the accumulated spine balanced when a single suspension reads the shared state through TWO borrows
+           (neither consuming it), then grows it by one: each `List.len` borrows `s` at rc without dup, and the
+           push threads the one identity spine forward, so the accumulated list still reclaims each suspension
+           → census 0 across all 100 dispatches. A borrow that leaked or double-counted `s` on the two-read
+           path would show nonzero census or an rc-underflow trap. Value = 100·Σ(2·(i-1), i=1..100) =
+           100·9900 = 990000 (each dispatch resumes twice the length-before-push). Adversarial companion to
+           the single-borrow accumulator witness above.")
+  (input
+    (do
+      (effect Log (op note (-> Int64 Int64)))
+      (def (loop (: i Int64) (: acc Int64)) (if (> i 100) acc (loop (+ i 1) (+ acc (Log.note i)))))
+      (def
+        (main (: n Int64))
+        (handle
+          Log
+          #list()
+          ((note (v) s (resume (+ (List.len s) (List.len s)) (List.push s v))))
+          (+ (* 100 (loop 1 0)) 0)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 990000 Int64))
+  (live-objects 0))
+
+(case
   "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
   (doc
     "A body-built slice VIEW (not a copy) crossing INTO a dispatch (the existing view pins put
