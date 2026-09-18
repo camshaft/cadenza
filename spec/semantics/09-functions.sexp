@@ -600,6 +600,34 @@
   (live-objects 0))
 
 (case
+  "the STRING-accumulator face: a tail loop borrowing its owned String while concat-threading it also leaks per-iteration (O(n))"
+  (doc
+    "The most-common-heap-type witness of the back-edge borrow-dup miss (the tail-loop face of the
+           count_param_consumes cluster; the List-accumulator version is above, v-memory-safety's String.at
+           SOURCE-borrow is its independent corroboration). `loop` builds a String accumulator via
+           `(String.concat acc \"x\")` (threading/consuming the owned `acc` to the tail self-call) while each
+           iteration BORROWS it (`(String.byte-len acc)`, let-bound). The borrow-dup of `acc` is not released
+           on the self-recursive back-edge, so the residue GROWS with iteration count (a genuine O(n) leak in
+           a ubiquitous idiom — build a string while tracking its running length). Value is correct (n=5: sum
+           of byte-len at each iteration = 0+1+2+3+4 = 10), no trap, opt-invariant O0..O3. The scalar-base
+           `sum i` control above (List) and the no-in-loop-borrow shape reclaim, isolating the leak to the
+           in-loop borrow co-occurring with the concat-thread. `known-leak` (the exact residue grows with n;
+           ideal 0) — flips with the cluster when the back-edge borrow-dup is released.")
+  (input
+    (do
+      (def
+        (loop (: acc String) (: i Int64) (: sum Int64))
+        (if (< i 1)
+            sum
+            (let ((l (String.byte-len acc))) (loop (String.concat acc "x") (- i 1) (+ sum l)))))
+      (def (main (: n Int64)) (loop "" n 0))
+      (export main)))
+  ; n=5: byte-len(acc) at each of 5 iterations = 0+1+2+3+4 = 10; the borrow-dup residue grows ~per-iteration.
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (live-objects known-leak))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
