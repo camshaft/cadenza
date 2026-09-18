@@ -1165,13 +1165,18 @@
       (export main)))
   (call main (: 42 Int64))
   (output (: true Bool))
-  ; KNOWN-LEAK: a runtime Ast-value round-trip leaks heap cells (encode-only leaks 1; this
-  ; encode→decode→`=` round-trip leaks 3) — a PRE-EXISTING runtime Ast-value/`=`/BigInt reclaim gap,
-  ; NOT introduced by runtime Ast.decode (op 94): the analogous reflection round-trip
-  ; (11-modules.sexp `(= (Ast.encode a) (Ast.encode __ast__))`) is already `(live-objects known-leak)`.
-  ; Marked known-leak (consistent with that precedent) so this pins the runtime-decode VALUE round-trip;
-  ; the underlying leak is surfaced to the memory-safety/runtime lane to fix (then drop this marker).
-  (live-objects known-leak 3))
+  ; RECLAIMS 0 (v-memory-safety): the encode→decode→`=` round-trip's 3-cell husk (the Ok Result shell +
+  ; the decoded `Ast.Int` tree + its BigInt Leaf) is now reclaimed. `Ast.decode` is a PURE host op minting a
+  ; FRESH owned `(Result Ast unit)` shell (the ONLY producer of a REAL Result husk — the `Ok`/`Some` ctor
+  ; path niche-optimizes the shell away), so it joins the `Core::Call` owned-scrutinee disjunct in
+  ; `sum_shell_reclaim_ok` (dead-after-destructure + the `nontail_param_compound_extra_ok` fences): the Ok
+  ; shell is deep-dropped after the arm, its cascade reclaiming the decoded tree the arm only BORROWED via
+  ; `=` (value-eq borrows both operands). Sound on the escape disposition — an arm that RETURNS the decoded
+  ; tree (payload-in-result) still declines the drop and stays leaking, no double-free. The `=`/BigInt
+  ; comparison itself was never the leak (a `(= (Ast.Int …) (Ast.Int …))` with both operands freshly built
+  ; balances at 0); only a decode-produced husk was left un-dropped. (11-modules `(= (Ast.encode a) …)` is a
+  ; DISTINCT encode-only residue, still known-leak — a different op-face.)
+  (live-objects 0))
 
 (case
   "Ast.decode of runtime bytes as a VALIDITY CHECK discards the decoded tree and reclaims the Result shell"

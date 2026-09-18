@@ -4717,7 +4717,22 @@ fn sum_shell_reclaim_ok(
             // scrutinee and CANNOT be resume-threaded (a handler THREADED-STATE via If/materialize/Param could
             // `resume`-escape a payload INVISIBLY at Core level → a husk-drop there would free a live escapee).
             // The sound, select.rs-decidable proxy for v-effects' "exclude any resuming arm".
-            || (matches!(core_of(db, scrutinee), Core::Call { .. })
+            // `Core::AstDecode` (op 94) joins `Core::Call` here: it is a PURE host op that mints a FRESH owned
+            // `(Result Ast unit)` shell (a runtime-boxed Sum the ctor path niche-optimizes away, so decode is
+            // the ONLY producer of a real Result husk here), inlined once as the scrutinee, and — being a
+            // primitive, never a handler — CANNOT resume-thread a payload out, so it is STRICTLY at least as
+            // dead-after-destructure-safe as a Call. Without it, a decoded tree consumed/borrowed by a
+            // compound-constructing arm (`(match (Ast.decode …) ((Ok a) (= a (Ast.Int …))) …)`) declined the
+            // husk drop (payload is a COMPOUND Ast → all-scalar floor misses; not a `Core::Call` → this
+            // disjunct missed) → the Ok shell + decoded tree leaked 3 cells (12-metaprogramming:0072, the
+            // runtime Ast round-trip `=`/BigInt gap). The `nontail_param_compound_extra_ok` fences (payload not
+            // returned / no interior-view / no whole-scrutinee return) hold identically for a decode scrutinee,
+            // and the `owned_compound_boxed` dup pass already dups any CONSUMED decode payload child (empty for
+            // a borrow-only `=` arm → the deep-drop cascade frees the once-borrowed payload exactly once).
+            || (matches!(
+                core_of(db, scrutinee),
+                Core::Call { .. } | Core::AstDecode { .. }
+            )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
                 && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))
 }
