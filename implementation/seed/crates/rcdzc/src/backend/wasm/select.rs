@@ -1358,6 +1358,75 @@ fn looped_owned_param_drops(
     drops
 }
 
+/// Whether a direct call to `callee` CONSUMES (takes ownership of / moves out) the arg at `param_index`.
+/// FALSE ⟹ the callee only BORROWS that param (reads it in place + identity-threads it on its own recursive
+/// back-edge). Consulted by the shell-reclaim consuming-site collector's `Core::Call` arm ONLY for an owned
+/// VIEW arg (a `MatchSum`-arm payload projection), so an owned `Bytes.slice`/`String.slice` VIEW passed to a
+/// borrow-only recursive reader (`fletcher b = go b 0 (Bytes.len b) 0 0`, `go` inlined) is NOT a consuming
+/// payload site → its Some-shell reclaims. Uses the back-edge-aware [`param_only_borrowed_or_backedge`] (NOT
+/// [`reclaim::param_escapes_body`], which counts a self-recursive identity back-edge as an escape → always
+/// "consumes" for a recursive reader). DEFAULT-DENY toward CONSUMING (`true`) on any unresolvable callee /
+/// non-heap or missing param / any non-borrow use — leak-beats-UAF. v-memory-safety consuming-analysis lane.
+pub(super) fn def_consumes_param(db: &mut Db, callee: usize, param_index: usize) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return true; // unresolvable callee → assume consuming (safe).
+    };
+    let params = crate::layout::def_params(db, callee);
+    // Re-derive the callee's dense param-slot assignment (Unit elided), matching the emit + the slot maps in
+    // `looped_owned_param_drops` so the member-identity-back-edge test compares against the right slots.
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return true; // a param with no machine rep → don't reason; assume consuming.
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    let Some((binder, ty)) = params.get(param_index).cloned() else {
+        return true; // arity mismatch → assume consuming.
+    };
+    if !is_heap_type(&ty) {
+        return true; // a scalar param can't hold a heap view; keep the conservative default.
+    }
+    let members = {
+        let g = mutual_loop_group(db, callee);
+        if g.is_empty() { vec![callee] } else { g }
+    };
+    // INVARIANCE GATE (v-memory-safety rc-trace of 13-strings:1059): `param_only_borrowed_or_backedge` alone
+    // is UNSOUND for a VARYING param. A recursion that puts a NON-identity value into the param's slot on
+    // some back-edge (run-length's `go … c …` replacing `cur`) DROPS the old value there — the param IS
+    // consumed on that edge — yet `param_only_borrowed_or_backedge` passes it (the replaced-branch subtree
+    // simply doesn't reference the binder → fast-path true). `looped_owned_param_drops` avoids this by gating
+    // the borrow-check behind an INVARIANT classification (a varying param takes the epilogue-drop path
+    // instead); replicate that gate here. Only an INVARIANT (identity-threaded into its own slot on EVERY
+    // recursive edge, never replaced) param can be borrow-only-and-thus-caller-reclaimable. A varying param
+    // is consumed → report CONSUMES. (Fletcher's `b`: identity-threaded on every edge → invariant → borrow;
+    // run-length's `cur`: replaced on the changed branch → varying → consumes → its child-dup is kept.)
+    let mut invariant: std::collections::HashSet<StructId> =
+        params.iter().map(|(b, _)| *b).collect();
+    invalidate_varying_params(
+        db,
+        body,
+        &param_slots,
+        &slot_of,
+        &members,
+        callee,
+        &mut invariant,
+        &params,
+    );
+    if !invariant.contains(&binder) {
+        return true; // varying (slot replaced on a back-edge → old value dropped) → consumed.
+    }
+    // BORROW-only (⇒ NOT consumed) iff every use is a borrow or a member identity back-edge; any non-borrow
+    // use / unmodeled node ⟹ false ⟹ report CONSUMES (default-deny, leak-beats-UAF).
+    !param_only_borrowed_or_backedge(db, body, binder, &members, &param_slots, &slot_of)
+}
+
 /// The EMIT side of [`def_nonlooped_reclaims_param`] (blx1): the param SLOTS a NON-looped def reclaims via
 /// a fn-exit `op_drop`. Mirrors [`looped_owned_param_drops`]'s slot assignment (dense `0..n`, Unit elided)
 /// and gates each heap param on the shared `def_nonlooped_reclaims_param` (SINGLE SOURCE OF TRUTH with the

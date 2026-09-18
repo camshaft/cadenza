@@ -1524,6 +1524,23 @@ fn collect_consuming_payload_sites_expr_inner(
                 collect_consuming_payload_sites_expr(db, a.body, scrut, consuming, out);
             }
         }
+        // A direct def CALL: an arg is CONSUMED unless it is an owned VIEW of the scrutinee (a `MatchSum`-arm
+        // payload projection of `scrut`) passed to a param the callee only BORROWS. A recursive reader that
+        // merely reads a heap param (`fletcher b = go b 0 (Bytes.len b) 0 0`, `go` inlined — reads `b` via
+        // `Bytes.at` + identity-threads it) does NOT take ownership, so such a view arg is BORROWED and its
+        // owned Some-shell must be reclaimed by the shell deep-drop (the still-rc1 view cascades). NARROW by
+        // design (v-memory-safety co-design): ONLY a payload-projection arg to a borrow-only param flips to
+        // borrow — every other arg keeps the CONSUMING default, so a general recursive reader over a non-view
+        // param (`scan s …` over a runtime rope, `s` a plain `Param`) is untouched. `def_consumes_param` uses
+        // the back-edge-aware `param_only_borrowed_or_backedge` and defaults to CONSUMING on any unresolvable
+        // callee / non-borrow use → leak-beats-UAF. Fixes the borrowing-Call view leak (10-bytes Fletcher).
+        Core::Call { callee, args } => {
+            for (i, &c) in args.iter().enumerate() {
+                let borrow_view = payload_proj_chain_roots_at_node(db, c, scrut)
+                    && !super::def_consumes_param(db, callee, i);
+                collect_consuming_payload_sites_expr(db, c, scrut, !borrow_view, out);
+            }
+        }
         _ => {
             for c in core_child_ids(db, id) {
                 collect_consuming_payload_sites_expr(db, c, scrut, true, out);
