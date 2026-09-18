@@ -135,7 +135,7 @@
       (needs "a host-boundary form for a compound/record argument or a compound-list result on a bare effect, or route it through the wit-world path")
       (ref pr 9183)))
   (decline WasmMultiHostEffectDelegation
-    (code UnsupportedConstruct)
+    (code MultiHostEffectDelegation)
     (reason "delegating more than one host effect from one entrypoint (one interface per envelope)")
     (doc "An entrypoint delegating more than one distinct host effect. The host-delegation emit binds one component interface per envelope, so two distinct effect names cannot both be delegated. One logical gap over 6 emit sites in backend/wasm/mod.rs: the bare host-delegating path, four resource-escaping-entrypoint variants, and the closure-export variant. Reachable via the bare path (v-cdz-smith #9183 census, ~216 hits). Classified feature-gap by v-rust-backend.")
     (blocked-on
