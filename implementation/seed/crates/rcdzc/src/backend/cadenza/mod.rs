@@ -593,6 +593,58 @@ fn emit_newtype_unwrap_peel(
     Some(b.list(vec![match_head, scrut, arm]))
 }
 
+/// Re-WRAP `node` (emitted at the INNERMOST inner type of the single-variant-newtype stack `ty`) back
+/// through every `Ty::Nominal` ctor layer, re-typing it as `ty`: `(: (Outer (Inner node)) ty)`. The dual of
+/// [`emit_newtype_unwrap_peel`] — used when a match SCRUTINEE's value emit erased its newtype wrapper(s) but
+/// the reconstructed patterns keep the ctor layer(s) (they derive from the nominal `root_ty` + a decision
+/// tree that switches UNDER the erased `[Payload]` step). Re-wrapping restores the scrutinee to `root_ty` so
+/// it type-checks against the ctor-headed patterns; the wrap is value-identical (the recompile re-erases each
+/// single-variant box). `None` if `ty` is not a nominal newtype, a ctor head can't be recovered, or the type
+/// is not ascribable (an under-determined free arg) — the caller then keeps the bare (peeled) node.
+fn wrap_nominal_ctor_stack(
+    db: &mut Db,
+    b: &mut Builder,
+    node: StructId,
+    ty: &Ty,
+) -> Option<StructId> {
+    // Collect the nominal ctor decls OUTER→INNER.
+    let mut decls = Vec::new();
+    let mut cur = ty;
+    while let Ty::Nominal { decl, inner, .. } = cur {
+        decls.push(*decl);
+        cur = inner;
+    }
+    if decls.is_empty() {
+        return None;
+    }
+    // Wrap INNER→OUTER: the innermost ctor wraps the bare node first.
+    let mut wrapped = node;
+    for &decl in decls.iter().rev() {
+        let head = crate::lower::variant_head_ast(db, b, decl, 0)?;
+        wrapped = b.list(vec![head, wrapped]);
+    }
+    // Ascribe the full nominal type so a generic newtype's type args are pinned (mirrors the `SumNew`
+    // ascription); `type_ast` returns `None` for an under-determined type → keep the bare node.
+    let ncx = db.name_ctx();
+    let ty_node = crate::lower::type_ast(b, ty, &ncx)?;
+    let colon = b.name(":");
+    Some(b.list(vec![colon, wrapped, ty_node]))
+}
+
+/// The type the VALUE emit of `id` actually produces at its outermost position — the type of a representative
+/// LEAF (recursing an `if`/`match` scrutinee into a branch/arm, since the emit peels each leaf independently).
+/// Used to decide whether a match scrutinee whose declared type is a single-variant newtype ACTUALLY emitted
+/// at the erased inner (a bare inner `Core::SumNew` leaf typed the inner sum) or KEPT the nominal (a
+/// `Core::SumNew` typed the nominal — `nominal_disposition` = `Construct`). Conservative: any node that is not
+/// an `if`/`match` returns its own `type_of` (so a binder yields its nominal declared type, a kept-nominal
+/// `SumNew` yields the nominal) → the caller wraps ONLY when this equals the fully-peeled inner.
+fn scrutinee_leaf_ty(db: &mut Db, id: StructId) -> Ty {
+    match core_of(db, id) {
+        Core::If { then_, .. } => scrutinee_leaf_ty(db, then_),
+        _ => crate::infer::type_of(db, id),
+    }
+}
+
 /// DEEP newtype-unwrap peel: unwrap `scrut` (whose declared type is `ty`) through a STACK of single-payload
 /// newtypes until it reaches `expected` — `(match w ((MkO i) (match i ((MkI y) y))))` for a double newtype
 /// `Outer(MkO Inner)`, `Inner(MkI Int64)` consumed as `Int64`. Recurses one level per newtype: mint a payload
@@ -4914,7 +4966,29 @@ fn emit_match_sum(
         SumCont::Switch { .. } | SumCont::LitTest { .. } | SumCont::Guarded { .. } => {
             let root_ty = crate::infer::type_of(db, scrutinee);
             let match_head = b.name("match");
-            let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let mut scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            // ERASED-NEWTYPE SCRUTINEE RE-WRAP. When `root_ty` is a single-variant-newtype stack
+            // (`Ty::Nominal`) but the scrutinee's VALUE emit produced the bare INNER value (its `[Payload]`
+            // wrapper erased upstream — a `Core::SumNew`/`if` leaf typed the inner sum), the reconstructed
+            // patterns still carry the ctor layer(s) (from the nominal `root_ty` + a decision tree that
+            // switches UNDER the erased `[Payload]` step) → matching a peeled inner value against ctor-headed
+            // patterns fails HOP2 (`Box` is not a variant of `L2`, the depth-N erased-boxed nested-sum match,
+            // 05-compound). Detect this by comparing the scrutinee's LEAF emitted type to `root_ty`'s
+            // fully-peeled inner: they're equal ONLY when the emit actually peeled every layer (a
+            // kept-nominal `SumNew` leaf — `nominal_disposition::Construct` — or a binder yields the NOMINAL,
+            // so this is false and we leave the scrutinee alone → no double-wrap). When equal, re-wrap the
+            // scrutinee back through the nominal ctor stack (value-identical; the recompile re-erases it).
+            if matches!(&root_ty, Ty::Nominal { .. }) {
+                let mut inner = &root_ty;
+                while let Ty::Nominal { inner: i, .. } = inner {
+                    inner = i;
+                }
+                if scrutinee_leaf_ty(db, scrutinee) == *inner
+                    && let Some(wrapped) = wrap_nominal_ctor_stack(db, b, scrut_node, &root_ty)
+                {
+                    scrut_node = wrapped;
+                }
+            }
             let mut children = vec![match_head, scrut_node];
             emit_switch_tree(
                 db,
