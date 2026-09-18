@@ -1036,6 +1036,39 @@ fn site_b_reducer_forward_emits_no_surplus_parent_dups() {
 }
 
 #[test]
+fn nested_compacting_view_slice_reclaims_the_inner_view_leaf() {
+    // escv node#1 witness (v-memory-safety CLEAR-TO-LAND on 8dda552520): a NESTED slice-of-slice that
+    // ESCAPES — the outer `String.slice`'s source is a DIRECT `Option.expect` over an inner `String.slice`.
+    // Both `Option.expect` Some SHELLS already reclaim (the escv shell fix: each SumExpect emits dup+drop),
+    // but the INNER extracted view LEAF (the compacted inner slice) was left live: the outer StrSlice's
+    // owned-source reclaim gates on `heap_operand_ownership == Owned` and `Core::SumExpect` is classified
+    // BORROWED (kept un-Owned for value-eq / MatchSum Stage-B), so the inner view leaked one cell per call
+    // (the 2-layer escv `known-leak`, 13-strings 0285/0322). The fix (`is_compacting_view_expect`) makes the
+    // owned-source gate ALSO fire for a direct `Option.expect`-over-compacting-view source. So the escaping
+    // 2-layer emit drops EXACTLY 3: the two Some shells + the inner view leaf. A regression that drops the
+    // owned-source-reclaim extension flips this back to 2 (the inner view leaks). The inner slice's source is
+    // the PARAM `s` (Borrowed), so ITS owned-source gate does NOT fire — no double-free of `s`.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (f (: s String) (: a Int64) (: b Int64)) \
+               (Option.expect (String.slice (Option.expect (String.slice s a b) \"e1\") 0 2) \"e2\")) \
+             (def (main) 0) (export main))",
+    ));
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let f = select_function(&mut db, body, &params, &layout).expect("select nested-slice f");
+    let drops = f
+        .code
+        .iter()
+        .filter(|l| matches!(l, Lir::CallImport(s) if *s == "drop"))
+        .count();
+    assert_eq!(
+        drops, 3,
+        "nested escaping slice-of-slice must emit 3 drops (2 Some shells + the inner view LEAF reclaim) — \
+         got {drops} (pre-fix this was 2: the inner compacted view leaf leaked one cell per call)"
+    );
+}
+
+#[test]
 fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() {
     // #9062 map-owner leak co-fix (v-memory-safety pointer): the map's owner-drop is suppressed on
     // `Map.lookup m k` + a COMPOUND-value project. v-mem's prime suspect was the emit.rs:4405 scope-drop

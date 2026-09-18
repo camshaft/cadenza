@@ -6099,7 +6099,7 @@
   (output (: 41 Int64))
   (call main (: 3 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "String.at through a slice VIEW of a rope reads view-relative scalars at every byte width"
@@ -6845,7 +6845,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 201 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue"
