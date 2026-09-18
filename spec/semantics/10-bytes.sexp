@@ -382,6 +382,50 @@
   (live-objects 0))
 
 (case
+  "a slice OF a slice OF a slice composes THREE offset layers and reclaims BOTH extraction shells"
+  (doc
+    "The DEPTH-COMPOSE probe for the view-of-view reclaim (v-memory-safety, extraction-consume
+           allowlist): the 2-deep cases above balance a SINGLE outer Some shell deep-drop against the
+           allowlisted inner Bytes.slice child-dup 1:1. This nests THREE runtime-start slices, so there
+           are TWO nested extraction shells (outer o1's Some AND middle o2's Some), and EACH inner
+           Bytes.slice CONSUMES its parent's Some-payload view. The question the fix's single-level 1:1
+           balance leaves open: does the allowlist admission COMPOSE across depth (both shells reclaim,
+           census 0), or does an intermediate shell leak because only the innermost consume is balanced?
+           Windows (Bytes.slice is start,LENGTH): parent (10..80), o1=(a,len 6), o2=(1,len 4), o3=(1,len 2) —
+           a=0 lands o3=(30,40)→270, a=2 lands o3=(50,60)→310, so all three layers' start offsets participate
+           (a single dropped layer would misread the window). The depth generalization of the flat + rope pair.")
+  (input
+    (do
+      (def
+        (main (: a Int64))
+        (match
+          (Bytes.slice (Bytes.of #list(10 20 30 40 50 60 70 80)) a 6)
+          ((Some o1)
+            (match
+              (Bytes.slice o1 1 4)
+              ((Some o2)
+                (match
+                  (Bytes.slice o2 1 2)
+                  ((Some o3)
+                    (+
+                      (* 100 (Bytes.len o3))
+                      (+
+                        (match (Bytes.at o3 0) ((Some v) v) ((None _u) -1))
+                        (match (Bytes.at o3 1) ((Some v) v) ((None _u) -1)))))
+                  ((None _u) -2)))
+              ((None _u) -3)))
+          ((None _u) -4)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 270 Int64))
+  (call main (: 2 Int64))
+  (output (: 310 Int64))
+  ; depth-compose probe: hypothesis is the per-level 1:1 balance COMPOSES, so both the outer and middle
+  ; Some shells reclaim (census 0). Pinned 0 to let the gate rule — if a middle shell leaks at depth 3
+  ; this reds "got N" and localizes a non-composing residual in the freshly-landed allowlist admission.
+  (live-objects 0))
+
+(case
   "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
   (doc
     "The identity witness of the rope view-of-view case above: the doubly-sliced seam-crossing
