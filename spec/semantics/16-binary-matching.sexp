@@ -395,6 +395,30 @@
   (output (: 258 Int64)))
 
 (case
+  "construct-LE then decode-BE byte-swaps: the pattern's endianness is independent of the construction's"
+  (doc
+    "The endianness-MISMATCH companion of the matched-`le` round-trip above: a value built LITTLE-endian
+           is decoded by a DEFAULT (big-endian) pattern, and the two bytes come back SWAPPED — proving the
+           decoder honors the PATTERN's byte order, not the construction's (a decoder that inherited the
+           source's endianness, or ignored the pattern modifier, would recover the original instead of the
+           swap). `(bin (u16 (UInt16.wrap 258) le))` emits bytes `[0x02, 0x01]` (LSB first); the default
+           `(bin (u16 x))` reads them big-endian → `0x0201` = 513. The swap is an involution over the byte
+           pair, so it is its own inverse: v=513 (`0x0201`, LE bytes `[0x01,0x02]`) decoded big-endian →
+           `0x0102` = 258. The `_` arm is unreachable (a 2-byte value always matches a `u16` pattern); the
+           value alone is the proof. Complements the matched-endianness round-trips (both sides `le`) by
+           pinning that construct-side and match-side endianness are INDEPENDENT axes.")
+  (input
+    (do
+      (def (main (: v Int64)) (match (bin (u16 (UInt16.wrap v) le)) ((bin (u16 x)) x) (_ -1)))
+      (export main)))
+  ; 258 = 0x0102, LE bytes [02,01], big-endian decode = 0x0201 = 513.
+  (call main (: 258 Int64))
+  (output (: 513 Int64))
+  ; the swap is its own inverse: 513 = 0x0201, LE bytes [01,02], big-endian decode = 0x0102 = 258.
+  (call main (: 513 Int64))
+  (output (: 258 Int64)))
+
+(case
   "a signed pattern segment reads a two's-complement integer as negative"
   (doc
     "The byte 255 read through a SIGNED `(i8 n)` pattern is -1, not 255 — a signed segment
