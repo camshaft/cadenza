@@ -816,7 +816,8 @@
   (output (: 10090 Int64))
   (call main (: 0 Int64))
   (output (: 10020 Int64))
-  (live-objects known-leak))
+  ; census sweep (80c837377b base): 0025 Record.with on a map-extracted record — the Map.lookup+Option.expect base record (rc-shared, DUP-retained by lookup) + the lookup Option shell are reclaimed by the row-op-operand fix (0989482afd); TIGHTEN CANDIDATE, every heap trial 0 on both calls (k=7, k=0); was known-leak.
+  (live-objects 0))
 
 ; --- Fixpoint rewriting and payload-derived renames. ---
 (case
