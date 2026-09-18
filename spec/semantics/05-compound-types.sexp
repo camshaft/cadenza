@@ -4986,7 +4986,8 @@
       (def (main) (h (Map.insert #map() "x" 1) 1))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; census sweep (31cb0246fc base): 0275 map inserted-into in one recursive sub-call, sibling sub-call reads unchanged — reclaimed; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a map threaded through recursion is read at every depth and once more at the base"
@@ -5016,7 +5017,8 @@
   (output (: 80 Int64))
   (call main (: 9 Int64))
   (output (: 59 Int64))
-  (live-objects known-leak))
+  ; census sweep (31cb0246fc base): 0276 map threaded through recursion (read every depth + base) reclaimed; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a map threaded through MUTUAL recursion is read in both functions at alternating depths"
@@ -5776,7 +5778,8 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 112 Int64))
-  (live-objects known-leak))
+  ; census sweep (31cb0246fc base): 0301 five List ops on an unwrapped newtype-list payload re-emit + reclaim (cadenza backend); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; The SCALAR-RESULT SHELL-RECLAIM face: when a match over an OWNED compound-payload sum has a SCALAR (non-heap)
 ; result, the emit reclaims the owned sum SHELL after the arm (the scalar answer cannot carry a shell-child
@@ -28180,7 +28183,8 @@
   (output (: 3142 Int64))
   (call main (: 3 Int64))
   (output (: 312 Int64))
-  (live-objects known-leak))
+  ; census sweep (31cb0246fc base): 1363 order-preserving dedup: seen-Set + out-List twin accumulators both reclaimed at loop-exit; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- Little-interpreter idioms: memoized recursion, an environment-threading evaluator, and a
 ; stack machine. Each threads collection state through recursion in a distinct discipline
