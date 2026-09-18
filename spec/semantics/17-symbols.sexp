@@ -75,6 +75,33 @@
   (output (: false Bool)))
 
 (case
+  "a genuinely-runtime symbol equals a LITERAL symbol of the same content — identity is content-derived, not allocation-order"
+  (doc
+    "THE load-bearing content-identity constraint, made observable at RUNTIME (the constant
+           interning-idempotence case above folds before emit, so it cannot detect an allocation-order id).
+           `mk s = (Symbol.of (String.concat s \"\"))` routes the string through a fn param so the intern
+           happens at RUN TIME, while `(Symbol.of \"map\")` folds at COMPILE TIME — two different construction
+           times/paths. Their equality MUST be true because a Symbol's identity is a deterministic function of
+           its CONTENT, not of when/where it was interned. The forbidden allocation-order-id trick (hand out
+           0,1,2… in first-seen order) would give the runtime-interned symbol a different id than the folded
+           literal and break this. Three faces packed: runtime `mk \"map\"` = literal `map` → 1 (×100); two
+           DIFFERENT runtime paths `mk2 \"m\" \"ap\"` = `mk \"map\"`, both content `map` → 1 (×10); a one-byte
+           difference `mk \"maq\"` ≠ literal `map` → 0 (units). = 110. A content-derived identity gives 110; an
+           allocation-order id would drop the 100s and/or 10s digit.")
+  (input
+    (do
+      (def (mk (: s String)) (Symbol.of (String.concat s "")))
+      (def (mk2 (: a String) (: b String)) (Symbol.of (String.concat a b)))
+      (def (main)
+        (+
+          (* 100 (if (= (mk "map") (Symbol.of "map")) 1 0))
+          (+
+            (* 10 (if (= (mk2 "m" "ap") (mk "map")) 1 0))
+            (if (= (mk "maq") (Symbol.of "map")) 1 0))))
+      (export main)))
+  (output (: 110 Int64)))
+
+(case
   "symbols order by content-lexicographic UTF-8 byte order — less-than"
   (doc
     "`(< (Symbol.of \"a\") (Symbol.of \"b\"))` is true — Symbols carry a total order by the
