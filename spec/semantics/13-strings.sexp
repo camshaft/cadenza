@@ -3746,9 +3746,11 @@
   (output (: 1 Int64))
   (call main (: -1 Int64))
   (output (: 1 Int64))
-  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is now reclaimed (v-core-opt
-  ; owned-single-view MatchSum shell reclaim; the arm only borrows `c` via value-eq) → was 3, now 1.
-  (live-objects known-leak))
+  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is reclaimed (owned-single-view
+  ; MatchSum shell reclaim; the arm only borrows `c` via value-eq) AND the owned-temporary rope source is
+  ; dropped after the borrow-read → fully balanced to 0 (was 3→1; the source-reclaim landings closed the
+  ; residual husk). Gate-graded exact-0 (native over-counts this String.at-view shape; the trap oracle is clean).
+  (live-objects 0))
 
 (case
   "String.at reads a multibyte scalar whole at its position in a runtime two-chunk rope"
@@ -3773,9 +3775,11 @@
   (output (: 1 Int64))
   (call main (: -1 Int64))
   (output (: 2 Int64))
-  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is now reclaimed (v-core-opt
-  ; owned-single-view MatchSum shell reclaim; the arm only borrows `c` via value-eq) → was 3, now 1.
-  (live-objects known-leak))
+  ; The non-recursive `(match (String.at …) ((Some c) …))` Some shell is reclaimed (owned-single-view
+  ; MatchSum shell reclaim; the arm only borrows `c` via value-eq) AND the owned-temporary rope source is
+  ; dropped after the borrow-read → fully balanced to 0 (was 3→1; the source-reclaim landings closed the
+  ; residual husk). Gate-graded exact-0 (native over-counts this String.at-view shape; the trap oracle is clean).
+  (live-objects 0))
 
 (case
   "a runtime string returned across the run boundary renders as its quoted text"
