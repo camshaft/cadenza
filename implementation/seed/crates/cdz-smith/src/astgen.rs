@@ -262,9 +262,21 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
     }
 }
 
-/// Short, valid symbol bodies for the Symbol-in-compound shapes — plain lowercase, so `#"<s>"` needs
-/// no escaping and always parses.
-const SYMS: [&str; 6] = ["a", "foo", "bar", "tag", "x", "key"];
+/// Short, valid symbol bodies for the Symbol-in-compound shapes — ASCII plus two NON-ASCII (multibyte
+/// UTF-8) entries, so `#"<s>"` needs no escaping and always parses while also fuzzing the value-codec /
+/// Symbol.of path on multibyte symbols (unreached when every symbol was ASCII). `caf\u{e9}` is a
+/// precomposed (NFC) `é`; `\u{540d}\u{524d}` is CJK. (The NFD-vs-NFC normalization edge is a dedicated
+/// shape below.)
+const SYMS: [&str; 8] = [
+    "a",
+    "foo",
+    "bar",
+    "tag",
+    "x",
+    "key",
+    "caf\u{e9}",
+    "\u{540d}\u{524d}",
+];
 
 /// Build a param-less `main` body producing a SYMBOL-IN-COMPOUND value — the tag-20 value_codec path
 /// landed by v-nix #7710. cdz-smith emitted NO symbols before, so this codec was entirely un-fuzzed.
@@ -272,7 +284,7 @@ const SYMS: [&str; 6] = ["a", "foo", "bar", "tag", "x", "key"];
 /// rendering, verified): a Symbol in a tuple / a homogeneous `(List Symbol)` / a record field / a NESTED
 /// symbol / structural symbol equality (→ Bool). Self-contained (no top-level defs). Returns the body.
 fn gen_symbol_compound_body<C: Choice>(c: &mut C) -> String {
-    let shape = c.variant(5);
+    let shape = c.variant(6);
     let n = c.int_bounded(0, 9);
     let a = SYMS[c.variant(SYMS.len())];
     let b = SYMS[c.variant(SYMS.len())];
@@ -287,7 +299,13 @@ fn gen_symbol_compound_body<C: Choice>(c: &mut C) -> String {
         // NESTED symbol — a symbol inside an inner tuple inside an outer tuple.
         3 => format!("(tuple (tuple #\"{a}\" {n}) #\"{b}\")"),
         // Structural symbol equality → Bool (exercises the Symbol compare path).
-        _ => format!("(= #\"{a}\" #\"{b}\")"),
+        4 => format!("(= #\"{a}\" #\"{b}\")"),
+        // NFC-NORMALIZATION edge: the SAME symbol written NFD (decomposed `e` + combining acute) vs NFC
+        // (precomposed `é`). Symbol.of NFC-normalizes both constants, so the two spellings are ONE symbol
+        // and this compares `true` — on BOTH backends (verified). Pins rcdzc #9245 (non-ASCII Symbol.of
+        // NFC-normalization, "FINDING #23") in the differential: if a backend stopped normalizing, the
+        // wasm value would diverge from rust (true vs false) and surface as a value miscompile.
+        _ => "(= #\"caf\u{e9}\" #\"cafe\u{301}\")".to_string(),
     }
 }
 
@@ -4445,6 +4463,42 @@ mod tests {
                 other => panic!("symbol-compound program not cleanly handled: {prog}\n{other:?}"),
             }
         }
+    }
+
+    /// The NFD/NFC symbol-normalization shape is REACHABLE (some seed emits it) and COMPILES — it pins
+    /// rcdzc #9245 (non-ASCII Symbol.of NFC-normalization, "FINDING #23") in the differential: the NFD
+    /// (decomposed) and NFC (precomposed) spellings of `café` are ONE symbol, so the equality is a valid
+    /// Bool program both backends must agree on.
+    #[test]
+    fn nfc_symbol_normalization_shape_is_reachable_and_compiles() {
+        let mut saw_nfc = false;
+        for seed in 0u8..60 {
+            let bytes = [
+                seed,
+                seed.wrapping_mul(3),
+                seed.wrapping_add(7),
+                1,
+                2,
+                3,
+                4,
+                5,
+            ];
+            let mut c = ByteCursorChoice::new(&bytes);
+            let body = gen_symbol_compound_body(&mut c);
+            // The NFD form carries a combining acute accent (U+0301).
+            if body.contains("cafe\u{301}") {
+                saw_nfc = true;
+                let prog = format!("(do (def (main) {body}) (export main))");
+                assert!(
+                    matches!(compile_catching(&prog), Verdict::Compiled { .. }),
+                    "the NFC-normalization symbol shape must COMPILE: {prog}"
+                );
+            }
+        }
+        assert!(
+            saw_nfc,
+            "the NFD/NFC symbol shape was never generated across 60 seeds"
+        );
     }
 
     /// Every NOMINAL-over-Symbol shape (v-nix #7714 — a nominal newtype wrapping a Symbol) is a
