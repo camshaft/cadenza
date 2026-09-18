@@ -363,6 +363,37 @@
   (output (: (Some 42) (Option Int64))))
 
 (case
+  "two sequential RUNTIME-DISC `?`s: the FIRST failure short-circuits with ITS OWN error value (first-failure-wins ordering)"
+  (doc
+    "The failure-ordering companion of the happy-path two-`?` case above, over RUNTIME-DISC operands
+           (BRICK 3b's `Core::MatchSum` short-circuit, not a const fold). `safe n` returns `(Ok n)` for n≥0
+           and `(Err n)` for n<0; `chain a b` sequences `(let ((x (try (safe a)))) (let ((y (try (safe b))))
+           (Ok (+ x y))))`. The failure value carries the FAILING input, so which `?` short-circuited is
+           observable: `main` decodes the boundary `Result` to a scalar (`Ok v` → 1000+v, `Err e` → 2000+e).
+           Both ok: chain(5,7) = Ok 12 → 1012. First fails: chain(-3,7) short-circuits at the first `?` →
+           Err -3 → 1997. Only second fails: chain(5,-7) → Err -7 → 1993. The DECISIVE case is BOTH failing,
+           chain(-3,-7): a correct short-circuit stops at the FIRST `?` and propagates Err -3 → 1997, so the
+           second `?` on `(safe -7)` never wins — an implementation that evaluated both and returned the LAST
+           error, or otherwise mis-ordered, would give 1993. Pins first-failure-wins + that the short-circuit
+           precedes the later operand.")
+  (input
+    (do
+      (def (safe (: n Int64)) (: (if (>= n 0) (Ok n) (Err n)) (Result Int64 Int64)))
+      (def (chain (: a Int64) (: b Int64))
+        (: (let ((x (try (safe a)))) (let ((y (try (safe b)))) (Ok (+ x y)))) (Result Int64 Int64)))
+      (def (main (: a Int64) (: b Int64))
+        (match (chain a b) ((Ok v) (+ 1000 v)) ((Err e) (+ 2000 e))))
+      (export main)))
+  (call main (: 5 Int64) (: 7 Int64))
+  (output (: 1012 Int64))
+  (call main (: -3 Int64) (: 7 Int64))
+  (output (: 1997 Int64))
+  (call main (: 5 Int64) (: -7 Int64))
+  (output (: 1993 Int64))
+  (call main (: -3 Int64) (: -7 Int64))
+  (output (: 1997 Int64)))
+
+(case
   "`?` unwraps a COMPOUND (tuple) payload"
   (doc
     "`(try (Some (tuple 1 2)))` unwraps the tuple payload whole, so `(Some x)` = `(Some (tuple 1
