@@ -115,11 +115,13 @@ impl DeclineId {
             }
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::ClosureAcrossAbiUnsupported),
-            DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::ExportParamNoBoundaryForm),
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::HostOpNoBoundaryForm),
             DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
-            DeclineId::WasmNonScalarExportParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmNonScalarExportParamNoBoundaryRep => {
+                Some(Code::ExportParamNoBoundaryForm)
+            }
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.

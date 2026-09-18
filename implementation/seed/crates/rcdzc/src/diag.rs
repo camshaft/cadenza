@@ -463,6 +463,18 @@ pub enum Code {
     /// boundary ABI, or routing through the wit-world path).
     HostOpNoBoundaryForm,
 
+    /// A COMPOUND/HEAP EXPORT PARAMETER has NO BOUNDARY REPRESENTATION — an export whose entry parameter
+    /// is a record/tuple/sum (or a String/Bytes/list on a path that does not lift it) with no scalar
+    /// boundary valtype, so it cannot cross the component boundary in this generation. A DEDICATED code
+    /// split off the `UnsupportedConstruct` umbrella (CDZ0900) per the CDZ0900-elimination directive. ONE
+    /// user-facing cause + remediation ("this export parameter has no boundary representation — use a
+    /// supported/scalar shape"), so it covers BOTH the heap-return resource-escape path
+    /// (`WasmHeapReturnParamNoBoundaryRep`) and the plain-export path (`WasmNonScalarExportParamNoBoundaryRep`)
+    /// — the DeclineId carries which path, and the compiler-side build-out (the entry-param lift) is
+    /// v-rust-backend's. DISTINCT from the export RESULT-encode gap (that is its own code, per the
+    /// concierge's one-code-per-user-cause split). Still a DECLINE (see `is_decline`), CDZ09xx band.
+    ExportParamNoBoundaryForm,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -538,6 +550,7 @@ impl Code {
             Code::ClosureAcrossAbiUnsupported => "CDZ0901",
             Code::RecursiveFunctionRuntimeSpecialization => "CDZ0902",
             Code::HostOpNoBoundaryForm => "CDZ0903",
+            Code::ExportParamNoBoundaryForm => "CDZ0904",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -555,6 +568,7 @@ impl Code {
                 | Code::ClosureAcrossAbiUnsupported
                 | Code::RecursiveFunctionRuntimeSpecialization
                 | Code::HostOpNoBoundaryForm
+                | Code::ExportParamNoBoundaryForm
         )
     }
 }
