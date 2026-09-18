@@ -3921,6 +3921,35 @@ mod tests {
             "census gate: on_message per-fold net ≈ {per_fold} value-heap cell(s) (envelope+step; net-0 as of site-a #9061 + site-b #9128/#9135 — nonzero here is a regression)"
         );
 
+        // Payload-SIZE independence of net-0. The reclaim SHELLS are structural (envelope + step) and
+        // payload-independent, but the payload BYTES cross the boundary via the bulk-copy path (bytes-new on
+        // lift / bytes-read on lower, #9058) — a DISTINCT reclaim from the shells. A regression that leaked a
+        // large payload's bulk-copy handle (e.g. a bytes-new backing buffer not dropped) would be payload-size
+        // DEPENDENT and invisible to the fixed 4-byte "ping" folds above. Fold the same reused instance across a
+        // size sweep and require net-0 after each — this pins the bulk-bytes marshaling reclaim across sizes,
+        // guarding the #9058 lever from a large-payload leak the shell census would miss.
+        let mut sweep_max_delta: i64 = 0;
+        for payload_bytes in [0usize, 256, 4096] {
+            let sized = crate::Message {
+                payload: Bytes::from(vec![0x61u8; payload_bytes]),
+                ..base.clone()
+            };
+            let _ = reducer
+                .on_message(sized)
+                .await
+                .expect("sized-payload fold succeeds");
+            let after = reducer.live_object_census().await.expect("census reads");
+            sweep_max_delta = sweep_max_delta.max(after as i64 - baseline as i64);
+            eprintln!(
+                "census gate: after {payload_bytes}-byte-payload fold: live-objects delta from baseline = {}",
+                after as i64 - baseline as i64
+            );
+        }
+        assert!(
+            sweep_max_delta == 0,
+            "REGRESSION: a reducer fold leaked value-heap cells for a non-trivial payload (max delta {sweep_max_delta} across 0/256/4096-byte payloads while the 4-byte folds netted 0) — the bulk-bytes marshaling reclaim (bytes-new/bytes-read, #9058) is payload-size-DEPENDENT; a large-payload bulk-copy handle is not being dropped"
+        );
+
         // Per-ENTRY-POINT breakdown (seq-916 shell-drop fix SCOPE). The echo's on_response / on_notification are
         // INERT (return requests=[]): a fold of either DECODES the incoming envelope but emits NO outgoing
         // step/request shells. Censusing each on a FRESH instance isolates the ENVELOPE-DECODE shell leak from
