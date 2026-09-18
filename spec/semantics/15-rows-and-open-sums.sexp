@@ -2201,6 +2201,37 @@
   (output (: 1 Int64)))
 
 (case
+  "complementarity: merging a record's projection onto its complement (Record.without of the same fields) reconstructs the original"
+  (doc
+    "The defining relation between `Record.project` and `Record.without` — they are COMPLEMENTARY
+           restrictions of the same field set, so `Record.merge (project r S) (without r S) = r`. Project
+           keeps exactly S, without drops exactly S, so the two pieces are DISJOINT (merge's precondition is
+           satisfied by construction) and together cover every field — reassembling them must recover the
+           original record exactly. A project that kept the wrong fields, a without that left a tombstone or
+           dropped the wrong field, or a merge that assembled an unsorted/overlapping layout would make the
+           reconstruction differ from `r`. Runtime field values (`n`, `n+1`, `n+2`, so nothing folds) over a
+           3-field record with S = {a, b}: `project (a b)` = {a, b}, `without (a b)` = {c}. The `Set.len`
+           of {reconstruction, original} is 1 iff they are structurally equal (weight ×100 → 100, a broken
+           law gives 200); the reconstructed field reads `10·a + c` = 10n + (n+2) anchor the values. n=0 →
+           100+0+2 = 102, n=5 → 100+50+7 = 157, n=9 → 100+90+11 = 201.")
+  (input
+    (do
+      (def (main (: n Int64))
+        (do
+          (def r #record((= a n) (= b (+ n 1)) (= c (+ n 2))))
+          (def kept (Record.project r (a b)))
+          (def dropped (Record.without r (a b)))
+          (def recon (Record.merge kept dropped))
+          (+ (* 100 (Set.len #set(recon r))) (+ (* 10 recon.a) recon.c))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 102 Int64))
+  (call main (: 5 Int64))
+  (output (: 157 Int64))
+  (call main (: 9 Int64))
+  (output (: 201 Int64)))
+
+(case
   "a record reached VIA Record.with keys a Map like the directly-built record"
   (doc
     "The Map-KEY face of row-op canonicalization (the merge/without Set-dedupe case above pins
