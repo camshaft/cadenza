@@ -1031,6 +1031,46 @@
   (live-objects 0))
 
 (case
+  "TWO CHAMP Map accumulators threaded through one drive recursion leak 2 — the borrow-thread reclaim does NOT compose across multiple threaded accumulators"
+  (doc
+    "The adversarial DOUBLE of the CHAMP-map-accumulator reclaim above (0038, single map → 0) reveals its
+           BOUNDARY: the drive loop threads TWO independent `(Map Int64 Int64)` accumulators `m1`/`m2` through
+           the SAME recursion — each grown by `Map.insert … k 1` on the identical generated key per step, `m1`
+           borrowed by `Map.lookup m1 k` (the count-distinct model) and `m2` by `Map.len m2` (end check). The
+           property `Map.len m1 = cnt AND Map.len m2 = cnt` holds → 1 on both seeds (12345/999), VALUE correct
+           and NO trap/UAF. But the borrow-thread accumulator reclaim does NOT compose across two
+           independently-threaded map accumulators: it is gate-confirmed to leak 2 (the single-map 0038
+           reclaims to 0; adding a second threaded map leaks a constant 2). Marked known-leak as the current
+           boundary — a TIGHTEN CANDIDATE the day the borrow-thread reclaim handles multiple accumulators
+           threaded through one recursion (surfaced to the borrow-thread-accumulator reclaim owner). Leak-over-
+           UAF: value-correct, no double-free. Adversarial companion to the single-map model-oracle 0038.")
+  (input
+    (do
+      (def
+        (next (: s Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: s Int64) (: n Int64) (: m1 (Map Int64 Int64)) (: m2 (Map Int64 Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (if (= (Map.len m1) cnt) (if (= (Map.len m2) cnt) 1 0) 0)
+          (let
+            ((k (& (next s) 7)))
+            (drive
+              (next s)
+              (- n 1)
+              (Map.insert m1 k 1)
+              (Map.insert m2 k 1)
+              (match (Map.lookup m1 k) ((Some v) cnt) ((None u) (+ cnt 1)))))))
+      (def (main (: seed Int64)) (drive seed 20 Map.empty Map.empty 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call main (: 999 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
+
+(case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc
     "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
