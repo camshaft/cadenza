@@ -665,6 +665,32 @@ mod tests {
     }
 
     #[test]
+    fn a_coded_escaping_closure_decline_buckets_under_its_code_not_codeless() {
+        // REGRESSION GUARD (v-deferral-declines 2026-09-18 phantom-codeless worry): an escaping
+        // closure whose param type IS determined (so it is NOT the CDZ0203 undetermined-type reject)
+        // crosses the host boundary as a heap value the walker cannot render — a CODED decline
+        // (CDZ0900 value-form-walker family at this tip). The census once feared the oracle would
+        // latch a RAW pre-dedup CODELESS `lower_lambda_value` sibling while the CLI surfaces the coded
+        // one, inflating "reachable-untracked codeless" with a phantom. It cannot: `compile_component`
+        // reads the SAME post-dedup `out.diagnostics` (`fail_with(dedup_faults(..))`) the CLI reads,
+        // and PREFERS a coded diagnostic. So the oracle's `code` MUST equal what the user sees. Pin it:
+        // this shape declines with SOME code (never `None`) — matching `cdz compile`'s CDZ0900. If a
+        // future dedup change let the codeless sibling win the oracle verdict while the CLI stays coded,
+        // this reds and the census would otherwise silently over-count the codeless gap.
+        let _g = slot_guard();
+        let v = compile_catching("(do (def (main) (list (fn ((: v0 Int64)) v0))) (export main))");
+        match v {
+            Verdict::Declined { code, .. } => assert!(
+                code.is_some(),
+                "an escaping closure with a determined param type must decline UNDER A CODE (the \
+                 post-dedup diagnostic the user sees), not as a phantom codeless sibling; got \
+                 code=None"
+            ),
+            other => panic!("expected a coded Declined, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn unparseable_source_is_a_parse_error_not_a_crash() {
         let _g = slot_guard();
         let v = compile_catching("(do (def (main) ");
