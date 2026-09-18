@@ -1358,6 +1358,75 @@ fn looped_owned_param_drops(
     drops
 }
 
+/// Whether a direct call to `callee` CONSUMES (takes ownership of / moves out) the arg at `param_index`.
+/// FALSE ⟹ the callee only BORROWS that param — reads it in place + identity-threads it on its own recursive
+/// back-edge, never returning / storing / consuming-forwarding it, and reclaims a caller-transferred ref at
+/// its own loop exit. Consulted by the borrowing-Call view reclaim (#9218-followup): (iii) the
+/// `arm_borrows_heap_subvalue_seen` `Core::Call` arm treats a borrow-read view arg as borrowed (un-blocking
+/// the shell-reclaim gate), and (ii) the `returncall_shell_drop` fence allows the shell deep-drop before a
+/// cross-fn `return_call` when the tail-consumed payload goes to a borrow-read param. Uses the back-edge-aware
+/// [`param_only_borrowed_or_backedge`] rather than [`reclaim::param_escapes_body`], which counts a
+/// self-recursive identity back-edge as an escape → `true` for every recursive reader. INVARIANCE-GATED: a
+/// VARYING param (a non-identity value put into its slot on some back-edge — run-length's `go … c …` replacing
+/// `cur`) DROPS the old value there = consumed, but `param_only_borrowed_or_backedge`'s fast-path passes it
+/// (the replaced branch doesn't reference the binder); `looped_owned_param_drops` guards this with an INVARIANT
+/// classification, replicated here. DEFAULT-DENY toward CONSUMING (`true`) on unresolvable callee / non-heap /
+/// missing / varying / non-borrow — leak-beats-UAF (a wrong "consumes" leaks; a wrong "borrows" could
+/// double-free). v-memory-safety co-design; v-core-opt owns this predicate.
+pub(super) fn def_consumes_param(db: &mut Db, callee: usize, param_index: usize) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return true; // unresolvable callee → assume consuming (safe).
+    };
+    let params = crate::layout::def_params(db, callee);
+    // Re-derive the callee's dense param-slot assignment (Unit elided), matching the emit + the slot maps in
+    // `looped_owned_param_drops` so the member-identity-back-edge test compares against the right slots.
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return true; // a param with no machine rep → don't reason; assume consuming.
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    let Some((binder, ty)) = params.get(param_index).cloned() else {
+        return true; // arity mismatch → assume consuming.
+    };
+    if !is_heap_type(&ty) {
+        return true; // a scalar param can't hold a heap view; keep the conservative default.
+    }
+    let members = {
+        let g = mutual_loop_group(db, callee);
+        if g.is_empty() { vec![callee] } else { g }
+    };
+    // INVARIANCE GATE (v-memory-safety rc-trace of 13-strings:1059): only an INVARIANT (identity-threaded into
+    // its own slot on EVERY recursive edge, never replaced) param can be borrow-only-and-caller-reclaimable; a
+    // varying (replaced-slot) param is consumed on the replacing edge even though its body reads look borrow-
+    // only.
+    let mut invariant: std::collections::HashSet<StructId> =
+        params.iter().map(|(b, _)| *b).collect();
+    invalidate_varying_params(
+        db,
+        body,
+        &param_slots,
+        &slot_of,
+        &members,
+        callee,
+        &mut invariant,
+        &params,
+    );
+    if !invariant.contains(&binder) {
+        return true; // varying (slot replaced on a back-edge → old value dropped) → consumed.
+    }
+    // BORROW-only (⇒ NOT consumed) iff every use is a borrow or a member identity back-edge; any non-borrow
+    // use / unmodeled node ⟹ false ⟹ report CONSUMES (default-deny, leak-beats-UAF).
+    !param_only_borrowed_or_backedge(db, body, binder, &members, &param_slots, &slot_of)
+}
+
 /// The EMIT side of [`def_nonlooped_reclaims_param`] (blx1): the param SLOTS a NON-looped def reclaims via
 /// a fn-exit `op_drop`. Mirrors [`looped_owned_param_drops`]'s slot assignment (dense `0..n`, Unit elided)
 /// and gates each heap param on the shared `def_nonlooped_reclaims_param` (SINGLE SOURCE OF TRUTH with the
@@ -3138,9 +3207,23 @@ fn emit_tail(
                 sum_cont_tail_callees(db, &root, &mut callees);
                 !callees.is_empty()
             };
+            // The fence blocks the drop when a tail-call consumes a payload-of-scrutinee (a live handle into
+            // the shell escapes into the call → deep-dropping the shell would free it → UAF). RELAXED for the
+            // borrowing-Call view reclaim (#9218-followup): ALSO allow the drop when the consumed payload flows
+            // ONLY into borrow-only recursive readers (`sum_cont_payload_tail_all_borrow_reader`) AND the
+            // scrutinee is OWNED (so `collect_shell_reclaim_child_dups`'s owned_compound_boxed arm emits the
+            // child-dup of that payload IN LOCKSTEP). Then the shell deep-drop cascades the shell's OWN ref
+            // (rc2→1), the child-dup keeps the callee's ref alive, and the borrow-reader reclaims it at its own
+            // exit (rc1→0) — BALANCED, census 0 for BOTH the view Leaf and the outer Some shell. Without the
+            // OWNED gate the child-dup might not be emitted → drop-without-dup double-free, so the gate is the
+            // lockstep guarantee. A genuine consumer among the tail calls → not all-borrow → fence holds (leak).
             let returncall_shell_drop = if reclaim_shell
                 && has_tail_call
-                && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee)
+                && (!sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee)
+                    || (matches!(
+                        heap_operand_ownership(db, scrutinee),
+                        Ok(HandleOwnership::Owned)
+                    ) && sum_cont_payload_tail_all_borrow_reader(db, &root, scrutinee)))
             {
                 reclaim_slot
             } else {
@@ -6769,7 +6852,28 @@ fn arm_borrows_heap_subvalue_seen(
                     .iter()
                     .any(|&a| arm_borrows_heap_subvalue_seen(db, a, false, seen))
         }
-        // Every other node kind (calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
+        // (C) A direct def CALL, v-memory-safety borrowing-Call view reclaim (co-design). An arg the callee
+        // only BORROWS (`!def_consumes_param(callee, i)` — a borrow-only recursive reader like Fletcher's `go`
+        // reading `s` via `Bytes.at` + identity-threading it) is READ IN PLACE, so a shell-owned payload-VIEW
+        // (`SumPayload`) passed there does NOT escape as a live handle — relax it to `borrowed`, un-blocking the
+        // enclosing MatchSum shell-reclaim (the borrow-Call twin of the `CallClosure`/`Map.lookup`/`Set.contains`
+        // borrowed-operand relaxations above). A CONSUMED arg (`def_consumes_param=true`) genuinely escapes into
+        // the callee → stays CONSUMING (`borrowed=false`). LOCKSTEP PARTNER (consume-path, NOT the abandoned
+        // callee-drop suppression): the enclosing shell is reclaimed by the CONSUME path — the view stays a
+        // consuming payload site so `collect_shell_reclaim_child_dups` emits a child-dup (rc1→2), the shell is
+        // deep-dropped BEFORE the `return_call` (cascading the view rc2→1 via the relaxed `returncall_shell_drop`
+        // fence), and the callee consumes+drops its dup'd ref at its base (rc1→0). So the shell deep-drop is NOT
+        // the sole reclaim — it drops the shell's OWN ref; the child-dup keeps the callee's ref alive. A wrong
+        // borrow-relax can only leave the reclaim un-blocked elsewhere (a leak), never free a still-live handle
+        // (leak-over-UAF). `HostCall` (no def callee) falls to the default (args consuming).
+        Core::Call { callee, ref args } => {
+            let args: Vec<StructId> = args.to_vec();
+            args.iter().enumerate().any(|(i, &a)| {
+                let borrowed = !def_consumes_param(db, callee, i);
+                arm_borrows_heap_subvalue_seen(db, a, borrowed, seen)
+            })
+        }
+        // Every other node kind (host calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
         // children carry no borrow relaxation. SAFE-BY-DEFAULT: an unhandled shape can only over-decline.
         _ => core_child_ids(db, id)
             .into_iter()
