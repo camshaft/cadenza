@@ -2192,6 +2192,15 @@ pub struct Db {
     /// it O(N), reintroducing the O(N²)). Surfaced via `CompileOutput::referenced_closure_codes_builds`.
     #[cfg(test)]
     pub(crate) referenced_closure_codes_builds: u64,
+    /// Test-only compile-cost counter: how many def bodies [`crate::layout`]'s closure-reachability fixpoint
+    /// closure-SEEDS (a `collect_closure_codes` walk of a def body, at the initial seed + the joint-fixpoint
+    /// re-seed). The `closure_seeded_upto` watermark seeds each def body AT MOST ONCE, so this stays ~O(defs)
+    /// — the regression guard `layout_closure_seeding_is_linear_...` asserts it does NOT grow super-linearly
+    /// with def count (the old `order.clone()` re-walked ALL of `order` every worklist iteration → O(defs²)
+    /// on a runtime-dispatched table of N distinct closures, 60%+ of that compile). Db-scoped (the layout
+    /// pass holds `&mut Db`) so the parallel test harness cannot pollute it; NOT surfaced to `CompileOutput`.
+    #[cfg(test)]
+    pub(crate) layout_closure_seed_body_walks: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3427,6 +3436,8 @@ impl Db {
             is_cse_shareable_uncached_calls: 0,
             #[cfg(test)]
             referenced_closure_codes_builds: 0,
+            #[cfg(test)]
+            layout_closure_seed_body_walks: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,

@@ -1004,9 +1004,21 @@ fn finish_layout_bounded(
     // Seed from every reachable def body.
     for &def in &order {
         if let Some(body) = db.defs[def].body {
+            #[cfg(test)]
+            {
+                db.layout_closure_seed_body_walks += 1;
+            }
             collect_closure_codes(db, body, &mut reached_codes);
         }
     }
+    // Watermark into `order`: every def below this index has already had its body closure-seeded (the loop
+    // above did `[0, order.len())`). The joint-fixpoint loop below RESUMES from here — like `call_i` for the
+    // call worklist — so each def body is closure-seeded AT MOST ONCE across the whole fixpoint. (Before,
+    // the re-seed re-cloned + re-walked ALL of `order` every iteration: O(defs²) on a closure-heavy program
+    // — a runtime-dispatched table of N distinct closures spent 60%+ of compile here. `collect_closure_
+    // codes(db, body)` is a pure function of the immutable def body, so re-walking an already-seeded def
+    // only re-derives codes already in `reached_codes` — pure wasted work; the watermark drops it.)
+    let mut closure_seeded_upto = order.len();
     // Transitively close: a reached lambda's body may build further closures AND call further defs.
     let mut work: Vec<usize> = reached_codes.iter().copied().collect();
     while let Some(code) = work.pop() {
@@ -1048,12 +1060,19 @@ fn finish_layout_bounded(
             &mut call_i,
             &mut boundary_hits,
         );
-        // Seed closure codes from any defs just added to `order` (a spec's body may build closures whose
-        // lifted bodies must be reached); push newly-seen codes onto the lifted worklist so this loop
-        // converges to the joint fixpoint.
-        let order_snapshot: Vec<usize> = order.clone();
-        for def in order_snapshot {
+        // Seed closure codes from any defs JUST ADDED to `order` since the last pass (a spec's body may
+        // build closures whose lifted bodies must be reached); push newly-seen codes onto the lifted
+        // worklist so this loop converges to the joint fixpoint. Resume from the `closure_seeded_upto`
+        // watermark so each def body is seeded at most once (was `order.clone()` + a full re-walk every
+        // iteration = O(defs²); see the watermark note above).
+        while closure_seeded_upto < order.len() {
+            let def = order[closure_seeded_upto];
+            closure_seeded_upto += 1;
             if let Some(dbody) = db.defs[def].body {
+                #[cfg(test)]
+                {
+                    db.layout_closure_seed_body_walks += 1;
+                }
                 let mut more = std::collections::HashSet::new();
                 collect_closure_codes(db, dbody, &mut more);
                 for c in more {
@@ -2450,5 +2469,66 @@ mod tests {
         let root = b.list(vec![module, m, def_form]);
         let mut db = Db::load(b.finish(root));
         assert!(compute(&mut db).is_err());
+    }
+
+    // A runtime-dispatched table of N distinct escaping closures: `main` applies each `mk{i}` (a def whose
+    // body BUILDS a `(fn …)` closure) so all N are reached — each enters the closure-reachability fixpoint's
+    // work queue, so the joint-fixpoint re-seed pass runs ~N times. The `closure_seeded_upto` watermark seeds
+    // each def body AT MOST ONCE, so the total seed-body-walk count stays ~O(defs) (LINEAR). Before the fix
+    // the re-seed `order.clone()`d + re-walked ALL of `order` every iteration → O(defs²). This guard pins the
+    // watermark: the walk count must grow ~LINEARLY (≤ order.len()·small-const), not quadratically. See
+    // `layout.rs` `closure_seeded_upto`.
+    // N distinct closures stored in a LIST and selected by a RUNTIME index — the shape that DEFEATS
+    // devirtualization (a direct `apply (mk i)` would inline the closure away, never lifting it, so the
+    // fixpoint work queue would stay empty and this pass wouldn't run at all). Runtime-indexed, each `c{i}`
+    // closure SURVIVES into `db.lifted` and is reached → the closure-reachability fixpoint iterates ~N times.
+    fn closure_table_program(n: usize) -> String {
+        let mut s = String::from("(module m ");
+        for i in 0..n {
+            s.push_str(&format!(
+                "(def (c{i} (: k Int64)) (fn ((: y Int64)) (+ (+ y k) {i}))) "
+            ));
+        }
+        s.push_str("(def (pick (: n Int64) (: idx Int64)) (let ((fs (list ");
+        for i in 0..n {
+            s.push_str(&format!("(c{i} n) "));
+        }
+        s.push_str("))) (match (List.at fs idx) ((Some g) (g n)) ((None) 0)))) (export pick))");
+        s
+    }
+
+    #[test]
+    fn layout_closure_seeding_is_linear_in_the_def_count_not_quadratic() {
+        let run = |n: usize| -> (u64, usize) {
+            let ast = crate::testkit::parse(&closure_table_program(n));
+            let mut db = Db::load(ast);
+            let layout = compute(&mut db).expect("closure-table layout");
+            (db.layout_closure_seed_body_walks, layout.order.len())
+        };
+        let (walks_small, order_small) = run(100);
+        let (walks_big, order_big) = run(400);
+        // The watermark seeds each reachable def body AT MOST ONCE, so the re-seed walk count never exceeds
+        // the emission-order size — the tight structural invariant the fix guarantees. The old full re-scan
+        // re-walked ALL of `order` on every one of the ~N fixpoint iterations, so the walk count was
+        // order.len()·iterations ≫ order.len() (measured: 101 at N=100, 401 at N=400 — one per iteration).
+        assert!(
+            walks_small <= order_small as u64,
+            "N=100: seed walks {walks_small} must not exceed order.len() {order_small} (watermark seeds each def once; \
+             a reintroduced full re-scan makes this order.len()·iterations)"
+        );
+        assert!(
+            walks_big <= order_big as u64,
+            "N=400: seed walks {walks_big} must not exceed order.len() {order_big} (watermark seeds each def once; \
+             a reintroduced full re-scan makes this order.len()·iterations)"
+        );
+        // `order.len()` is INDEPENDENT of the closure count N for this program (only `pick` is a top-level
+        // def; the N `c{i}` closures are lifted-table bodies, not emission-order defs). So the re-seed count
+        // must be FLAT in N — quadrupling the closures must NOT change it. The old re-scan made it grow ~4×
+        // (101 -> 401); the watermark keeps it constant.
+        assert_eq!(
+            walks_small, walks_big,
+            "closure seed-walk count must be FLAT in the closure count (order.len() is N-independent here), \
+             but grew {walks_small} (N=100) -> {walks_big} (N=400) — a reintroduced O(N²) full re-scan"
+        );
     }
 }
