@@ -627,6 +627,19 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::If { cond, then_, else_ } => {
             recur(db, cond, false) && recur(db, then_, false) && recur(db, else_, false)
         }
+        // SHORT-CIRCUIT boolean `and`/`or` (`Core::And`, `is_and` picks the semantics) DESUGARS to
+        // `if lhs then rhs else <const bool>` (and) / `if lhs then <const bool> else rhs` (or) — its operands
+        // are RESULT-position boolean expressions, exactly an `If` over the operands with a constant in the
+        // short-circuit branch. Recurse both operands unborrowed (mirrors `If`/`Compare`): a heap `binder`
+        // read inside a condition is borrow-classified by the deeper arms (`MapSize`/`SetLen`/`Compare`/…), a
+        // direct whole-`binder` operand consume still DENIES. Without this arm a nested-`if` base case that
+        // `lower` FOLDED to `and` — the multi-condition end-check `(if (= (Map.len m1) cnt) (if (= (Map.len m2)
+        // cnt) 1 0) 0)` of a two-CHAMP-accumulator self-loop — fell to `_ => false`, spuriously declining the
+        // borrow-only map params' loop-exit reclaim → the co-threaded CHAMP accumulators leaked their final
+        // shells (#9218 two-map/two-set/three-map/map+set; a single-map end-check has no `and` → already
+        // reclaimed). Strictly widens acceptance toward the equivalent un-folded nested-`if` (which the `If`
+        // arm already admits), so leak-over-UAF sound: only reclaims more, never suppresses a needed suppress.
+        Core::And { lhs, rhs, .. } => recur(db, lhs, false) && recur(db, rhs, false),
         Core::Let { bindings, body } => {
             bindings.iter().all(|&(_, v)| recur(db, v, false)) && recur(db, body, false)
         }

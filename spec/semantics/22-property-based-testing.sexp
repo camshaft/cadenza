@@ -1031,19 +1031,22 @@
   (live-objects 0))
 
 (case
-  "TWO CHAMP Map accumulators threaded through one drive recursion leak 2 — the borrow-thread reclaim does NOT compose across multiple threaded accumulators"
+  "TWO CHAMP Map accumulators threaded through one drive recursion BOTH reclaim (census 0) — the multi-condition end-check no longer suppresses the loop-exit reclaim (#9218)"
   (doc
-    "The adversarial DOUBLE of the CHAMP-map-accumulator reclaim above (0038, single map → 0) reveals its
-           BOUNDARY: the drive loop threads TWO independent `(Map Int64 Int64)` accumulators `m1`/`m2` through
-           the SAME recursion — each grown by `Map.insert … k 1` on the identical generated key per step, `m1`
-           borrowed by `Map.lookup m1 k` (the count-distinct model) and `m2` by `Map.len m2` (end check). The
-           property `Map.len m1 = cnt AND Map.len m2 = cnt` holds → 1 on both seeds (12345/999), VALUE correct
-           and NO trap/UAF. But the borrow-thread accumulator reclaim does NOT compose across two
-           independently-threaded map accumulators: it is gate-confirmed to leak 2 (the single-map 0038
-           reclaims to 0; adding a second threaded map leaks a constant 2). Marked known-leak as the current
-           boundary — a TIGHTEN CANDIDATE the day the borrow-thread reclaim handles multiple accumulators
-           threaded through one recursion (surfaced to the borrow-thread-accumulator reclaim owner). Leak-over-
-           UAF: value-correct, no double-free. Adversarial companion to the single-map model-oracle 0038.")
+    "The adversarial DOUBLE of the CHAMP-map-accumulator reclaim above (0038, single map → 0): the drive loop
+           threads TWO independent `(Map Int64 Int64)` accumulators `m1`/`m2` through the SAME recursion — each
+           grown by `Map.insert … k 1` on the identical generated key per step, `m1` borrowed by `Map.lookup m1
+           k` (the count-distinct model) and `m2` by `Map.len m2` (end check). The property `Map.len m1 = cnt
+           AND Map.len m2 = cnt` holds → 1 on both seeds (12345/999), VALUE correct and NO trap/UAF. It NOW
+           RECLAIMS to census 0 (#9218) — was known-leak 2. ROOT CAUSE (was a constant 2 regardless of slot
+           count): the multi-condition end-check `(if (= (Map.len m1) cnt) (if (= (Map.len m2) cnt) 1 0) 0)` is
+           FOLDED by `lower` into a short-circuit `Core::And`, and the loop-param borrow-analysis
+           (`param_only_borrowed_or_backedge_rec`) had no `Core::And` arm → it fell to the deny fallback →
+           spuriously declined the borrow-only map params' loop-exit reclaim, leaking each final map shell (a
+           single-condition end-check has no `and`, so 0038 was already 0). Adding the `Core::And` arm (recurse
+           both operands like the equivalent un-folded nested-`if`) reclaims both. Leak-over-UAF safe: the
+           final maps are borrow-only in the base case and owned by this frame, so the exit deep-drop is their
+           sole reclaim (no double-free). Was the adversarial companion to the single-map model-oracle 0038.")
   (input
     (do
       (def
@@ -1068,22 +1071,23 @@
   (output (: 1 Int64))
   (call main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case
-  "a LIST and a MAP accumulator threaded through one recursion BOTH reclaim (census 0) — the two-accumulator non-compose is MAP-SPECIFIC, not type-general"
+  "a LIST and a MAP accumulator threaded through one recursion BOTH reclaim (census 0) — an arithmetic-base end-check has no And-fold to suppress the reclaim (#9219)"
   (doc
-    "The type-generality probe of the two-accumulator reclaim boundary above (two maps leak 2) — and it
-           NARROWS that boundary: this threads a MIXED pair — a `(List Int64)` accumulator `lst` (pushed every
-           step) AND a `(Map Int64 Int64)` accumulator `m` (inserted every step, borrowed by `Map.lookup` for
-           the distinct-count model) — through ONE recursion, returning a SCALAR checksum `100·List.len + cnt`
-           (NOT the collections, so any residual would be a genuine guest leak, not an ABI-transferred return
-           value). Both seeds → 2008 (List.len 20 · 100 + 8 distinct keys). It RECLAIMS to census 0 — so the
-           two-accumulator non-compose is NOT count-based/type-general: a list + a map threaded together both
-           reclaim, whereas TWO MAPS (same type, both grown by Map.insert on the same key per step) leak 2.
-           The gap is therefore MAP-SPECIFIC (two co-threaded map accumulators), not a generic multi-accumulator
-           limitation — a sharper localization for the borrow-thread-accumulator reclaim owner. Pins that a
-           heterogeneous list+map co-thread is fully reclaimed. Value correct, no trap.")
+    "A MIXED two-accumulator co-thread — a `(List Int64)` accumulator `lst` (pushed every step) AND a `(Map
+           Int64 Int64)` accumulator `m` (inserted every step, borrowed by `Map.lookup` for the distinct-count
+           model) — through ONE recursion, returning a SCALAR checksum `100·List.len + cnt` (NOT the
+           collections, so any residual would be a genuine guest leak, not an ABI-transferred return value).
+           Both seeds → 2008 (List.len 20 · 100 + 8 distinct keys). It RECLAIMS to census 0. Notably this case
+           was ALREADY 0 before the #9218 `Core::And` fix (which flipped the two-map/two-set/three-map/map+set
+           multi-condition end-checks): its base case is a single ARITHMETIC expression `(+ (* 100 (List.len
+           lst)) cnt)` with NO multi-condition end-check, so `lower` never folds it to a short-circuit
+           `Core::And` — the loop-param borrow-analysis saw the plain arithmetic/`List.len`/`Map.lookup`
+           borrows and reclaimed both params. The complement to the And-folding CHAMP witnesses: pins that a
+           heterogeneous list+map co-thread with a straight-line end-check is fully reclaimed. Value correct,
+           no trap.")
   (input
     (do
       (def
@@ -1111,21 +1115,21 @@
   (live-objects 0))
 
 (case
-  "TWO co-threaded SET accumulators through one recursion leak 2 — the two-accumulator gap is CHAMP-node-wide (Map AND Set), not Map-specific"
+  "TWO co-threaded SET accumulators through one recursion BOTH reclaim (census 0) — the fix is CHAMP-node-wide (Map AND Set) (#9218)"
   (doc
-    "The CHAMP-localization probe of the two-accumulator reclaim boundary, and it SHARPENS the finding:
-           two `(Set Int64)` accumulators `s1`/`s2` (Set, like Map, is a CHAMP/HAMT) co-threaded through ONE
-           recursion — both grown by `Set.insert … k` on the identical generated key per step, `s1` borrowed
-           by `Set.contains` (the distinct-count model), `s2` by `Set.len` (end check), returning a SCALAR
-           (so the residual is a genuine leak, not ABI-transfer). Both seeds → 1 (`Set.len s1 = cnt =
-           Set.len s2`, 8 distinct keys). Gate-confirmed it LEAKS 2 — the SAME residual as the two-MAP case
-           (#9218), whereas the list+map case reclaims 0 (#9219). So the reclaim gap is CHAMP-NODE-WIDE: the
-           borrow-thread accumulator reclaim handles ONE CHAMP/HAMT slot per dispatch loop but leaks when TWO
-           CHAMP collections (Map OR Set) are co-threaded — it is NOT Map-specific, and NOT a generic
-           multi-accumulator limit (a single CHAMP slot co-threaded with a non-CHAMP list reclaims, #9219).
-           Pinned known-leak 2 as the current boundary — a tighten candidate once the reclaim composes across
-           two CHAMP slots (surfaced to the borrow-thread-accumulator reclaim owner). Leak-over-UAF: value
-           correct, no double-free.")
+    "The CHAMP-localization probe of the two-accumulator reclaim: two `(Set Int64)` accumulators `s1`/`s2`
+           (Set, like Map, is a CHAMP/HAMT) co-threaded through ONE recursion — both grown by `Set.insert … k`
+           on the identical generated key per step, `s1` borrowed by `Set.contains` (the distinct-count model),
+           `s2` by `Set.len` (end check), returning a SCALAR (so any residual is a genuine leak, not
+           ABI-transfer). Both seeds → 1 (`Set.len s1 = cnt = Set.len s2`, 8 distinct keys). It NOW RECLAIMS to
+           census 0 (#9218) — was known-leak 2, the SAME residual as the two-MAP case, confirming the fix is
+           CHAMP-NODE-WIDE (Map AND Set, not Map-specific). ROOT CAUSE: the multi-condition `Set.len` end-check
+           `(if (= (Set.len s1) cnt) (if (= (Set.len s2) cnt) 1 0) 0)` folds to a short-circuit `Core::And`
+           that the loop-param borrow-analysis did not traverse → the borrow-only set params' loop-exit reclaim
+           was spuriously declined; the `Core::And` arm fixes it (a single-CHAMP-slot co-threaded with a
+           non-CHAMP list already reclaimed, #9219 — its base is arithmetic, no `and`). Leak-over-UAF: value
+           correct, no double-free (the final sets are borrow-only in the base, owned here → exit deep-drop is
+           their sole reclaim).")
   (input
     (do
       (def
@@ -1150,23 +1154,23 @@
   (output (: 1 Int64))
   (call main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case
-  "THREE co-threaded MAP accumulators leak 2 — the CHAMP-multi-slot reclaim residual is CONSTANT, not per-slot"
+  "THREE co-threaded MAP accumulators ALL reclaim (census 0) — confirms the residual was the CONSTANT end-check And-fold, not per-slot (#9218)"
   (doc
-    "The scaling probe of the CHAMP-node-wide two-accumulator reclaim gap (two maps leak 2 #9218, two sets
-           leak 2 #9221), and it fixes the scaling law: THREE `(Map Int64 Int64)` accumulators `m1`/`m2`/`m3`
-           co-threaded through ONE recursion — all grown by `Map.insert … k 1` on the identical generated key
-           per step, `m1` borrowed by `Map.lookup` (the distinct-count model), `m2`/`m3` by `Map.len` (end
-           checks) — scalar return (genuine leak, not ABI-transfer), value 1 both seeds (all three
-           `Map.len = cnt`, 8 distinct keys). Gate-confirmed it leaks 2 — the SAME residual as TWO co-threaded
-           CHAMP slots (#9218/#9221), NOT 3. So the multi-CHAMP-slot reclaim residual is CONSTANT (a fixed 2
-           cells once ≥2 CHAMP/HAMT slots are threaded through one dispatch loop), NOT one-unreclaimed-per-slot:
-           the borrow-thread reclaim does not degrade further as more CHAMP slots are added. This points the
-           reclaim owner at a single fixed mis-accounting on the multi-CHAMP-slot dispatch path (e.g. a
-           2-cell root/node pair), not a per-slot loop leak. Pinned known-leak 2 (tighten candidate once the
-           multi-CHAMP-slot path reclaims). Leak-over-UAF: value correct, no double-free.")
+    "The scaling probe of the CHAMP-node-wide two-accumulator reclaim: THREE `(Map Int64 Int64)` accumulators
+           `m1`/`m2`/`m3` co-threaded through ONE recursion — all grown by `Map.insert … k 1` on the identical
+           generated key per step, `m1` borrowed by `Map.lookup` (the distinct-count model), `m2`/`m3` by
+           `Map.len` (end checks) — scalar return (genuine leak, not ABI-transfer), value 1 both seeds (all
+           three `Map.len = cnt`, 8 distinct keys). It NOW RECLAIMS to census 0 (#9218) — was known-leak 2, the
+           SAME residual as TWO co-threaded CHAMP slots, NOT 3. The pre-fix residual being CONSTANT (a fixed 2
+           regardless of slot count) was the tell: the nested-`if` end-check `(if C1 (if C2 (if C3 1 0) 0) 0)`
+           folds LEFT-associatively to `And{And{C1,C2}, C3}`, and the loop-param borrow-analysis' missing
+           `Core::And` arm declined the reclaim for every param the top `And` references (m1/m2), while m3 —
+           reached only if the top passes — escaped; two declined final-map shells × 1 each = the constant 2.
+           The `Core::And` arm (recurse both operands like the un-folded nested-`if`) reclaims all three.
+           Leak-over-UAF: value correct, no double-free (final maps borrow-only in the base, owned here).")
   (input
     (do
       (def
@@ -1192,24 +1196,24 @@
   (output (: 1 Int64))
   (call main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case
-  "a MAP and a SET co-threaded through one recursion leak 2 — the multi-CHAMP-slot residual is the HAMT MECHANISM, independent of element type"
+  "a MAP and a SET co-threaded through one recursion BOTH reclaim (census 0) — the fix is independent of element type (#9218)"
   (doc
-    "The cross-type discriminator that closes the CHAMP-multi-slot localization (v-memory-safety
-           requested): a `(Map Int64 Int64)` `m` AND a `(Set Int64)` `s` — TWO DIFFERENT CHAMP/HAMT types —
-           co-threaded through ONE recursion, both grown on the identical generated key per step (`Map.insert`
-           / `Set.insert`), `m` borrowed by `Map.lookup` (the distinct-count model), `s` by `Set.len` (end
-           check). Scalar return (genuine leak, not ABI-transfer), value 1 both seeds (`Map.len m = cnt =
-           Set.len s`, 8 distinct keys). Gate-confirmed it leaks 2 — the SAME residual as two maps (#9218),
-           two sets (#9221), and three maps (#9222). Since a Map+Set pair leaks identically, the residual is
-           the HAMT-SLOT MECHANISM (a fixed 2-cell root/node pair mis-counted whenever >1 HAMT slot threads
-           one dispatch loop), NOT keyed on Map-vs-Set element type — ruling out any per-type hypothesis and
-           placing the fix at the slot-iteration level (the self-loop owned-CHAMP exit-drop in
-           looped_owned_param_drops). Pinned known-leak 2 as the fourth boundary witness (all four go 2→0 when
-           the multi-CHAMP-slot exit-drop is fixed; single-CHAMP + list-companion #9219 stays 0). Leak-over-UAF:
-           value correct, no double-free.")
+    "The cross-type discriminator (v-memory-safety requested): a `(Map Int64 Int64)` `m` AND a `(Set Int64)`
+           `s` — TWO DIFFERENT CHAMP/HAMT types — co-threaded through ONE recursion, both grown on the
+           identical generated key per step (`Map.insert` / `Set.insert`), `m` borrowed by `Map.lookup` (the
+           distinct-count model), `s` by `Set.len` (end check). Scalar return (genuine leak, not ABI-transfer),
+           value 1 both seeds (`Map.len m = cnt = Set.len s`, 8 distinct keys). It NOW RECLAIMS to census 0
+           (#9218) — was known-leak 2, the SAME residual as two maps, two sets, and three maps, confirming the
+           fix is independent of Map-vs-Set element type. ROOT CAUSE (was mis-attributed to the CHAMP exit-drop
+           slot-iteration): the multi-condition end-check `(if (= (Map.len m) cnt) (if (= (Set.len s) cnt) 1 0)
+           0)` folds to a short-circuit `Core::And` that the loop-param borrow-analysis
+           (`param_only_borrowed_or_backedge_rec`) did not traverse → the borrow-only params' loop-exit reclaim
+           was declined; the `Core::And` arm fixes all four CHAMP witnesses (single-CHAMP + list-companion
+           #9219 was already 0 — arithmetic base, no `and`). Leak-over-UAF: value correct, no double-free (both
+           final collections are borrow-only in the base, owned here → exit deep-drop is their sole reclaim).")
   (input
     (do
       (def
@@ -1234,7 +1238,7 @@
   (output (: 1 Int64))
   (call main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
