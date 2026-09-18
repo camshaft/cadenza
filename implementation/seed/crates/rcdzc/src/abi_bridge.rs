@@ -41,6 +41,9 @@ pub fn diagnostic_from_reject(reject: &crate::diag::Reject) -> Diagnostic {
         message: reject.message.clone(),
         node: reject.at.map(|id| id.0),
         fix: reject.fix.as_ref().map(|f| diagnostic_fix_from_fix(f)),
+        // Carry the stable catalog KEY of a `declined(id, …)` reject — the TRACKED-ness marker a
+        // consumer uses to tell a tracked decline from a bare (untracked) decline/unsupported.
+        decline_id: reject.id.map(|id| id.key().to_string()),
     }
 }
 
@@ -58,5 +61,7 @@ pub fn diagnostic_warning(
         message: message.into(),
         node: node.map(|id| id.0),
         fix: None,
+        // A warning is never a decline, so it carries no tracked-decline id.
+        decline_id: None,
     }
 }

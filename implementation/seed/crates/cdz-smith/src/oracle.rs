@@ -50,9 +50,13 @@ pub enum Verdict {
     Compiled { component_len: usize },
     /// The compiler rejected or declined the program AS DATA — the expected, correct "no". Not a
     /// bug. `code` is the `CDZ####` for a coded rejection, `None` for an uncoded decline.
+    /// `decline_id` is the stable catalog KEY of a `declined(id, …)`-TRACKED decline (`Some(key)`),
+    /// or `None` for an untracked bare decline/unsupported (or any non-decline reject) — the marker
+    /// the reachable-decline census uses to split reachable declines into tracked vs untracked.
     Declined {
         code: Option<String>,
         message: String,
+        decline_id: Option<String>,
     },
     /// The generated source did not parse. Not a COMPILER finding (the generator should only emit
     /// parseable text); surfaced separately so the driver can count it as a generator-quality
@@ -201,6 +205,10 @@ pub enum ComponentFail {
 /// the compile through this guard turns a panic into a filed crash finding + a continued sweep. Returns
 /// `Ok(component)` on a clean compile, `Err(Declined(code))` on an errors-as-data decline, or
 /// `Err(Crashed(info))` on a compiler panic (site captured via the same hook `compile_catching` uses).
+// `rcdzc::compile_component` returns `Result<_, Diagnostic>`; the `Diagnostic` Err is ~144 bytes
+// (message-carrying), which trips `result_large_err` on the wrapping closure. Boxing it upstream would
+// ripple through every compiler caller for no benefit — a failed compile is not a hot path. Allow it.
+#[allow(clippy::result_large_err)]
 pub fn compile_component_catching(bytes: &[u8]) -> Result<Vec<u8>, ComponentFail> {
     install_panic_hook();
     // Clear the slot so, on a crash, we read THIS compile's panic and not a stale one.
@@ -273,6 +281,9 @@ pub fn compile_catching_ast(ast_bytes: &[u8]) -> Verdict {
 /// TWO emit backends are driven per program (see [`compile_catching`] for the full rationale): the
 /// primary WebAssembly-component path yields the reported verdict, and — only when that path did not
 /// itself crash — the Rust-source backend is driven purely as a second crash oracle.
+// See `compile_component_catching`: the `compile_component` closure's `Result<_, Diagnostic>` Err is
+// large; allow it rather than box the diagnostic through every caller.
+#[allow(clippy::result_large_err)]
 fn compile_bytes_catching(bytes: &[u8]) -> Verdict {
     // Clear the slot so, on a crash, we read THIS run's panic and not a stale one.
     *slot().lock().unwrap() = None;
@@ -293,6 +304,7 @@ fn compile_bytes_catching(bytes: &[u8]) -> Verdict {
         Ok(Err(diag)) => Verdict::Declined {
             code: diag.code.clone(),
             message: diag.message.clone(),
+            decline_id: diag.decline_id.clone(),
         },
         Err(_) => Verdict::Crash(capture_crash("")),
     };
@@ -420,10 +432,12 @@ fn wasm_output_verdict(out: &rcdzc::CompileOutput) -> Verdict {
                 Some(d) => Verdict::Declined {
                     code: d.code.clone(),
                     message: d.message.clone(),
+                    decline_id: d.decline_id.clone(),
                 },
                 None => Verdict::Declined {
                     code: None,
                     message: "compilation produced no component".into(),
+                    decline_id: None,
                 },
             }
         }

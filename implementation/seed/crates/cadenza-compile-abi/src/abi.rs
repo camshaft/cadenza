@@ -215,6 +215,15 @@ pub struct Diagnostic {
     /// A proposed structural repair, if the producer knew one — the "route to a fix" an agent applies
     /// directly. `None` when the compiler has no actionable suggestion.
     pub fix: Option<DiagnosticFix>,
+    /// For a DECLINE that names a stable catalog id (`Reject::declined(id, …)`), the id's kebab-case
+    /// catalog KEY (`DeclineId::key()`, e.g. `"wasm-host-op-no-boundary-form-on-bare-effect"`); `None`
+    /// for a bare codeless decline / `unsupported` with no id, and for any non-decline diagnostic.
+    /// This is the TRACKED-ness marker: `Some(key)` = a `declined(id)`-tracked site, `None` = untracked.
+    /// The catalog KEY (not the numeric discriminant, which is unstable as the catalog grows) is the
+    /// stable referent that aligns with corpus `(declines …)` pins and the deferral-declines catalog —
+    /// letting a consumer (cdz-smith's reachable-decline census) split reachable declines into tracked
+    /// vs untracked without a manual subtraction.
+    pub decline_id: Option<String>,
 }
 
 impl Diagnostic {

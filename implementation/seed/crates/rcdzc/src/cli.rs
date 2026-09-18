@@ -69,6 +69,7 @@ fn validate_wasm_outputs(out: &mut crate::CompileOutput) {
                 ),
                 node: None,
                 fix: None,
+                decline_id: None,
             })
         })
         .collect();

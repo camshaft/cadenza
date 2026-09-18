@@ -441,7 +441,11 @@ fn cmd_decline_histogram(args: &[String]) -> ExitCode {
         };
         match verdict {
             Verdict::Compiled { .. } => hist.record_compiled(),
-            Verdict::Declined { code, message } => hist.record_decline(code.as_deref(), &message),
+            Verdict::Declined {
+                code,
+                message,
+                decline_id,
+            } => hist.record_decline(code.as_deref(), &message, decline_id.as_deref()),
             // Crash / invalid-wasm / parse-error are NOT declines — the fuzz/differential targets own
             // filing those. Here we only count them so the census totals reconcile.
             _ => hist.record_other(),
@@ -515,7 +519,7 @@ fn cmd_host_declines(args: &[String]) -> ExitCode {
         let program = cdz_smith::hostgen::generate_host(&bytes);
         match compile_catching(&program.source) {
             Verdict::Compiled { .. } => compiled += 1,
-            Verdict::Declined { code, message } => {
+            Verdict::Declined { code, message, .. } => {
                 declined += 1;
                 // RAW reason (breaker routes on the actual error): the CDZ code (if any) + full message,
                 // so `decline_signature` groups coded declines by code and uncoded host gaps by prefix.
@@ -725,7 +729,7 @@ fn cmd_module_declines(args: &[String]) -> ExitCode {
             &entry_src,
         ) {
             Verdict::Compiled { .. } => compiled += 1,
-            Verdict::Declined { code, message } => {
+            Verdict::Declined { code, message, .. } => {
                 declined += 1;
                 let reason = match code {
                     Some(c) => format!("{c}: {message}"),
@@ -810,7 +814,7 @@ fn cmd_world_declines(args: &[String]) -> ExitCode {
         let (guest, iface, world) = cdz_smith::hostgen::generate_world_program(&bytes);
         match cdz_smith::oracle::compile_world_catching(&guest, &iface, &world) {
             Verdict::Compiled { .. } => compiled += 1,
-            Verdict::Declined { code, message } => {
+            Verdict::Declined { code, message, .. } => {
                 declined += 1;
                 let reason = match code {
                     Some(c) => format!("{c}: {message}"),
@@ -1969,7 +1973,7 @@ fn report(v: &Verdict) -> ExitCode {
             println!("COMPILED ({component_len} bytes) — not a bug");
             ExitCode::SUCCESS
         }
-        Verdict::Declined { code, message } => {
+        Verdict::Declined { code, message, .. } => {
             println!(
                 "DECLINED [{}] — not a bug: {message}",
                 code.as_deref().unwrap_or("uncoded")

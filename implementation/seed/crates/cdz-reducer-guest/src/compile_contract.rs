@@ -164,6 +164,9 @@ fn read_diagnostic(arenas: &value::Arenas, id: value::ValueId) -> Option<Diagnos
         node: read_option_uint(arenas, value::record_field(arenas, id, "node")?)
             .and_then(|n| u32::try_from(n).ok()),
         fix: None,
+        // The reducer contract does not carry the tracked-decline id (only cdz-smith's census consumes
+        // it, off the in-process compile path); a decoded contract diagnostic is always untracked here.
+        decline_id: None,
     })
 }
 
@@ -236,6 +239,7 @@ mod tests {
                 message: "unbound name".to_string(),
                 node: Some(7),
                 fix: None,
+                decline_id: None,
             },
             Diagnostic {
                 severity: Severity::Warning,
@@ -243,6 +247,7 @@ mod tests {
                 message: "unused".to_string(),
                 node: None,
                 fix: None,
+                decline_id: None,
             },
         ];
         let (arts, diags) = decode_compile_result(&encode_compile_result(&artifacts, &diagnostics));

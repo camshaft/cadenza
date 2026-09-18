@@ -55,7 +55,10 @@ fn encode_one(b: &mut Builder, d: &Diagnostic) -> StructId {
             b.list(vec![form])
         }
     };
-    b.list(vec![sev, code, node, msg, fix])
+    // `decline_id` is APPENDED as a 6th element (an optional string). Appending keeps the decoder
+    // backward-compatible: an older 5-element encoding simply has no position 5 → decodes to `None`.
+    let did = opt_str(b, d.decline_id.as_deref());
+    b.list(vec![sev, code, node, msg, fix, did])
 }
 
 fn decode_one(a: &Arenas, form: StructId) -> Option<Diagnostic> {
@@ -67,12 +70,15 @@ fn decode_one(a: &Arenas, form: StructId) -> Option<Diagnostic> {
     let node = opt_int_of(a, *c.get(2)?);
     let message = a.as_str(*c.get(3)?)?.to_string();
     let fix = fix_of(a, *c.get(4)?);
+    // Optional trailing field: absent in a pre-`decline_id` encoding → `None` (backward-compatible).
+    let decline_id = c.get(5).and_then(|&x| opt_str_of(a, x));
     Some(Diagnostic {
         severity,
         code,
         message,
         node,
         fix,
+        decline_id,
     })
 }
 
@@ -198,6 +204,7 @@ mod tests {
                     replacement: "(Int64.wrapping-add …)".into(),
                     verified: true,
                 }),
+                decline_id: None,
             },
             Diagnostic {
                 severity: Severity::Error,
@@ -205,6 +212,9 @@ mod tests {
                 message: "unsupported construct".into(),
                 node: None,
                 fix: None,
+                // A codeless-but-TRACKED decline (`declined(id)` with a codeless id) — exercises the
+                // new `decline_id` field round-tripping through the wire (Some case).
+                decline_id: Some("some-tracked-codeless-decline".into()),
             },
             Diagnostic {
                 severity: Severity::Warning,
@@ -218,6 +228,7 @@ mod tests {
                     replacement: String::new(),
                     verified: false,
                 }),
+                decline_id: None,
             },
         ];
         assert_eq!(decode_diagnostics(&encode_diagnostics(&diags)), diags);

@@ -203,7 +203,7 @@ fn compile_seed(seed: u64, mode: GenMode) -> Verdict {
 fn classify(verdict: &Verdict, seed: u64, cfg: &Config, store: &FindingStore, stats: &mut Stats) {
     match verdict {
         Verdict::Compiled { .. } => stats.compiled += 1,
-        Verdict::Declined { code, message } => {
+        Verdict::Declined { code, message, .. } => {
             stats.declined += 1;
             // Operator directive: a CODELESS decline (`code == None`) on a program that already
             // passed every coded well-formedness check is the class-2 / assumed-unreachable set —
@@ -1191,6 +1191,7 @@ mod tests {
             &Verdict::Declined {
                 code: Some("CDZ0900".into()),
                 message: "an effect handler in a form the fold does not specialize".into(),
+                decline_id: None,
             },
             1,
             &cfg,
@@ -1213,6 +1214,7 @@ mod tests {
             &Verdict::Declined {
                 code: None,
                 message: "internal: unexpected node after resolution".into(),
+                decline_id: None,
             },
             2,
             &cfg,
