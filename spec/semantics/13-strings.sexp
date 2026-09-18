@@ -2453,7 +2453,14 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; NfcNormalize reclaim landed (v-memory-safety, #NfcNormalize-allowlist): `Symbol.of` on a runtime String
+  ; lowers to `StrToBytes(NfcNormalize(operand))`, so the escaping-slice payload `s` is consumed DIRECTLY by
+  ; `NfcNormalize` (an already-allowlisted `StrToBytes` only sees its result). Adding `NfcNormalize` — a
+  ; single-owned-ref-move PRIM (identity when already-NFC, else a fresh leaf with the original dropped) — to
+  ; `is_allowlisted_builder` lets the extraction-consume recognizer see `s` consumed by an allowlisted op, so
+  ; the outer String.slice Some shell reclaims: census 2->0, no rc-underflow (DBG+RCT), value-faithful; the
+  ; multi-use control (s ALSO borrowed by String.byte-len) stays balanced (no over-reclaim UAF). Was known-leak.
+  (live-objects 0))
 
 (case
   "a runtime string rope inserted into a set is a member"

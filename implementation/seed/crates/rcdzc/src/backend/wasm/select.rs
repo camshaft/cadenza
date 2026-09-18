@@ -4720,6 +4720,19 @@ fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
             // (10-bytes:919): the outer Bytes.slice Some shell was left unreclaimed because `String.from-bytes`
             // consuming `s` was neither borrow-clean nor an allowlisted builder.
             | Core::StrFromBytes { .. }
+            // Single-owned-ref-move CONVERTER (v-memory-safety): `Core::NfcNormalize` (`str-nfc-normalize`)
+            // CONSUMES exactly one owned ref to its String operand and returns exactly one — the SAME handle
+            // when the input is already NFC (the common ASCII case, an identity passthrough), else a fresh
+            // canonical leaf with the original `op_drop`ped. Either way it retains NO alias to the input and
+            // is a PRIM (never a Call/Closure → cannot resume-thread), so a scrutinee-payload view CONSUMED by
+            // it is a clean single-owned-ref move: the one dup-on-escape balances the extraction shell's
+            // deep-drop 1:1, exactly like `StrToBytes`. `Symbol.of` on a runtime String lowers to
+            // `StrToBytes(NfcNormalize(operand))` (lower/compute.rs), so the payload is consumed by
+            // `NfcNormalize` DIRECTLY (StrToBytes only sees its result) — without this arm the outer slice
+            // `Some` shell was left unreclaimed (`(match (String.slice …) ((Some s) (Symbol.of s)) …)`
+            // intern-a-transient-window leak, 13-strings:2456), even though the allowlisted `StrToBytes`
+            // downstream would have reclaimed it had `s` reached it unwrapped.
+            | Core::NfcNormalize { .. }
     )
 }
 
