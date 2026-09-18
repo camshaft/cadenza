@@ -306,9 +306,16 @@ fn run_wasm_bytes(
         // unguarded native panic aborting the whole run.
         Err(crate::oracle::ComponentFail::Crashed(info)) => return Side::CompilePanic(info),
     };
+    run_component(&component, store, args)
+}
 
+/// Run an already-compiled wasm `component` in-process with `cdz-run`, resolving the value-heap runtime by
+/// content address from `store`, and reduce the outcome to a [`Side`]. The shared run tail of
+/// [`run_wasm_bytes`] (default-opt path) and [`run_wasm_at_opt`] (the opt-invariance path) — both produce a
+/// component differently (default `compile_component` vs `compile_with_opt`) but run it identically.
+fn run_component(component: &[u8], store: &std::path::Path, args: &[String]) -> Side {
     // Resolve the value-heap runtime by content address, if the component imports one.
-    let runtime = match cdz_run::required_runtime(&component) {
+    let runtime = match cdz_run::required_runtime(component) {
         Ok(Some(req)) => {
             let path = store.join(format!("{}.wasm", req.hash));
             match std::fs::read(&path) {
@@ -333,7 +340,7 @@ fn run_wasm_bytes(
         args: args.to_vec(),
         ..Default::default()
     };
-    match cdz_run::run(&component, &opts) {
+    match cdz_run::run(component, &opts) {
         // NORMALIZE to the bare value. `cdz-run` renders a COMPOUND (and, depending on the ABI, a
         // scalar) result as the full `(: <value> <Type>)` value-form, while `cdz run-rust` renders the
         // bare `<value>`. Comparing the two raw would flag every string/tuple as a false "mismatch"
@@ -346,6 +353,30 @@ fn run_wasm_bytes(
         // don't file it as a mismatch. (An INVALID component is already the invalid-wasm oracle's job.)
         Err(e) => Side::Declined(format!("wasm run failed: {e}")),
     }
+}
+
+/// Run one program through the WASM backend IN-PROCESS at a CHOSEN [`rcdzc::OptLevel`] — the opt-varying
+/// twin of [`run_wasm`]. Compiles via [`crate::oracle::compile_component_at_opt_catching`] (under the same
+/// compile-hang watchdog) and runs the component with [`run_component`]. This is the primitive behind the
+/// OPT-INVARIANCE oracle ([`opt_invariance`]): comparing this at two levels surfaces opt-level-specific
+/// miscompiles (the O2/O3 global-CSE / lifted-analysis reclaim class) the fixed-default value oracle cannot
+/// reach. A parse failure is [`Side::Declined`] (generator-quality, not a finding).
+pub fn run_wasm_at_opt(source: &str, store: &std::path::Path, opt: rcdzc::OptLevel) -> Side {
+    let arenas = match cadenza_syntax::sexpr::read(source) {
+        Ok(a) => a,
+        Err(e) => return Side::Declined(format!("parse: {:?}", e.0)),
+    };
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    let component = match crate::compile_guard::guard(source, || {
+        crate::oracle::compile_component_at_opt_catching(&bytes, opt)
+    }) {
+        Ok(c) => c,
+        Err(crate::oracle::ComponentFail::Declined(code)) => {
+            return Side::Declined(code.unwrap_or_else(|| "wasm-decline".to_string()));
+        }
+        Err(crate::oracle::ComponentFail::Crashed(info)) => return Side::CompilePanic(info),
+    };
+    run_component(&component, store, &[])
 }
 
 /// True if two rendered VALUE strings denote the SAME value despite render-DIALECT differences. INTERIM
@@ -1022,6 +1053,85 @@ pub fn differential(source: &str, store: &std::path::Path, cdz: &std::path::Path
     compare(&wasm, &rust)
 }
 
+/// The OPT-INVARIANCE oracle: compile+run ONE program at the DEFAULT level (`O1`, via [`run_wasm`]) AND at
+/// `O3` (via [`run_wasm_at_opt`]), and check the two RUNTIME VALUES agree. Optimization is a
+/// meaning-preserving transform, so a value/liveness disagreement between levels is a pure optimizer
+/// MISCOMPILE — the class the fixed-default wasm-vs-rust oracle structurally cannot reach (both its sides
+/// run at O1), e.g. the O2/O3 whole-function global-CSE or lifted-analysis reclaim leaks. Same backend +
+/// same renderer on both sides, so the comparison is [`compare_opt_invariance`] (EXACT value equality, no
+/// render-dialect tolerance). A decline/parse-skip on either level → not comparable (`Agree`).
+pub fn opt_invariance(source: &str, store: &std::path::Path) -> Diff {
+    let lo = run_wasm(source, store); // default level (O1)
+    // Cheap short-circuit: a decline/parse-skip at the default level is never comparable.
+    if let Side::Declined(_) = lo {
+        return Diff::Agree;
+    }
+    let hi = run_wasm_at_opt(source, store, rcdzc::OptLevel::O3);
+    compare_opt_invariance(&lo, &hi)
+}
+
+/// Compare two outcomes of the SAME program at two OPT LEVELS. Unlike [`compare`] (asymmetric wasm-vs-rust,
+/// with render-dialect tolerance + rust-only Artifact/Unavailable arms), this is SYMMETRIC and demands EXACT
+/// value equality: both sides are the same wasm backend + `cdz-run` renderer, so any textual value
+/// difference is a real divergence, and there is no dialect to bridge. Rules: a compiler PANIC on either
+/// level → `CompileCrash`; a decline on either → not comparable (`Agree`, since a fault is pre-emit and
+/// level-independent); two values → agree iff byte-identical, else a `Value` mismatch; two traps → agree; a
+/// value-vs-trap split → a `Liveness` mismatch UNLESS a stack-exhaustion resource trap (opt can change
+/// inlining depth, and both sides share the wasm stack limit, so tolerate it exactly as [`compare`] does).
+pub fn compare_opt_invariance(lo: &Side, hi: &Side) -> Diff {
+    match (lo, hi) {
+        // A compiler panic at either level is a crash finding — checked first so it is never masked.
+        (Side::CompilePanic(c), _) | (_, Side::CompilePanic(c)) => Diff::CompileCrash(c.clone()),
+        // A decline/skip on either level (rejected program, unresolved runtime, run-harness error) → not
+        // comparable. Declines are pre-emit faults, so they do not depend on the opt level.
+        (Side::Declined(_), _) | (_, Side::Declined(_)) => Diff::Agree,
+        // Both ran to a value: same backend+renderer, so EXACT equality (no `renders_agree` tolerance).
+        (Side::Value(a), Side::Value(b)) => {
+            if a == b {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Value,
+                    wasm: format!("O1={a}"),
+                    rust: format!("O3={b}"),
+                }
+            }
+        }
+        // Both trapped — agree (the reason text is not level-comparable).
+        (Side::Trap(_), Side::Trap(_)) => Diff::Agree,
+        // One value, one trap — a liveness disagreement between levels (opt changed whether it traps),
+        // EXCEPT a stack-exhaustion resource trap (opt-driven inlining can shift recursion depth).
+        (Side::Value(v), Side::Trap(t)) => {
+            if is_resource_trap(t) {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Liveness,
+                    wasm: format!("O1=value {v}"),
+                    rust: format!("O3=trap {t}"),
+                }
+            }
+        }
+        (Side::Trap(t), Side::Value(v)) => {
+            if is_resource_trap(t) {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Liveness,
+                    wasm: format!("O1=trap {t}"),
+                    rust: format!("O3=value {v}"),
+                }
+            }
+        }
+        // ArtifactError / Unavailable are rust-subprocess-only outcomes; the wasm-only opt-invariance
+        // oracle never produces them. Treat defensively as not-comparable rather than a mismatch.
+        (Side::ArtifactError(_), _)
+        | (_, Side::ArtifactError(_))
+        | (Side::Unavailable(_), _)
+        | (_, Side::Unavailable(_)) => Diff::Agree,
+    }
+}
+
 /// Greedily minimize a program that triggers a differential MISMATCH, preserving that the shrunk
 /// program STILL mismatches (of the SAME [`MismatchKind`]). Mirrors `finding::shrink*` but its
 /// predicate re-runs the full two-backend `differential` (each accepted step re-derives spans on the
@@ -1051,6 +1161,41 @@ pub fn shrink_differential(
             }
             // Keep the deletion only if it still mismatches the SAME way.
             if let Diff::Mismatch { kind: k, .. } = differential(&candidate, store, cdz)
+                && k == kind
+            {
+                best = candidate;
+                improved = true;
+                break; // re-derive spans on the smaller program
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    best
+}
+
+/// Greedily minimize a program that triggers an OPT-INVARIANCE mismatch, preserving that the shrunk
+/// program STILL mismatches (of the SAME [`MismatchKind`]) between the default level and `O3`. The
+/// opt-invariance twin of [`shrink_differential`] — same bounded balanced-span deletion, but its predicate
+/// re-runs [`opt_invariance`] (no `cdz` subprocess; both levels are in-process wasm).
+pub fn shrink_opt_invariance(source: &str, kind: MismatchKind, store: &std::path::Path) -> String {
+    let mut best = source.to_string();
+    for _ in 0..12 {
+        let mut improved = false;
+        let spans = crate::finding::balanced_spans(&best);
+        for (lo, hi) in spans.into_iter().rev() {
+            if lo == 0 && hi == best.len() {
+                continue; // never delete the whole program
+            }
+            let mut candidate = String::with_capacity(best.len() - (hi - lo));
+            candidate.push_str(&best[..lo]);
+            candidate.push_str(&best[hi..]);
+            let candidate = candidate.trim().to_string();
+            if candidate.len() >= best.len() {
+                continue;
+            }
+            if let Diff::Mismatch { kind: k, .. } = opt_invariance(&candidate, store)
                 && k == kind
             {
                 best = candidate;
@@ -1857,4 +2002,106 @@ mod tests {
     // logic (the pure tests above + `lean_differential_sweep_holds_for_benign_scalars`, whose Int64
     // programs hold on any oracle version). Float-literal holds are validated by CAMPAIGN runs against a
     // freshly-built oracle, not a standing test.
+
+    // ── opt-invariance pairing rules (pure `compare_opt_invariance`) ─────────────────────────────
+
+    #[test]
+    fn opt_invariance_identical_values_agree() {
+        // O1 and O3 produced the same value — optimization preserved meaning.
+        assert_eq!(
+            compare_opt_invariance(&Side::Value("42".into()), &Side::Value("42".into())),
+            Diff::Agree
+        );
+    }
+
+    #[test]
+    fn opt_invariance_differing_values_are_a_value_miscompile() {
+        // O1 and O3 disagree on the VALUE — a pure-optimizer miscompile (the headline finding). Uses EXACT
+        // equality, so this fires even for renders that `compare`'s dialect tolerance would bridge — right,
+        // because both sides share the wasm/cdz-run renderer, so a textual difference IS a value difference.
+        match compare_opt_invariance(&Side::Value("3".into()), &Side::Value("4".into())) {
+            Diff::Mismatch {
+                kind: MismatchKind::Value,
+                wasm,
+                rust,
+            } => {
+                assert_eq!(wasm, "O1=3");
+                assert_eq!(rust, "O3=4");
+            }
+            other => panic!("expected a value mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opt_invariance_no_render_dialect_tolerance() {
+        // `compare` treats `#tuple(1 2)` and `(tuple 1 2)` as equal (interim rust-vs-wasm dialect bridge).
+        // opt-invariance must NOT: both O-levels use the SAME renderer, so a dialect difference cannot
+        // arise from a benign renderer split — it would be a real divergence. Demand exact equality.
+        assert!(matches!(
+            compare_opt_invariance(
+                &Side::Value("#tuple(1 2)".into()),
+                &Side::Value("(tuple 1 2)".into())
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Value,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn opt_invariance_value_vs_semantic_trap_is_a_liveness_miscompile() {
+        // One level returns a value, the other traps on a SEMANTIC fault (divide-by-zero) — opt changed
+        // whether the program traps: a liveness miscompile.
+        assert!(matches!(
+            compare_opt_invariance(
+                &Side::Value("7".into()),
+                &Side::Trap("integer divide by zero".into())
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Liveness,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn opt_invariance_tolerates_a_stack_exhaustion_resource_split() {
+        // A value-vs-stack-exhaustion split is a tolerated RESOURCE divergence (opt-driven inlining can
+        // shift recursion depth), not a liveness miscompile — mirrors `compare`.
+        assert_eq!(
+            compare_opt_invariance(
+                &Side::Value("1".into()),
+                &Side::Trap("call stack exhausted".into())
+            ),
+            Diff::Agree
+        );
+    }
+
+    #[test]
+    fn opt_invariance_both_trap_agree_and_declines_skip() {
+        assert_eq!(
+            compare_opt_invariance(&Side::Trap("a".into()), &Side::Trap("b".into())),
+            Diff::Agree
+        );
+        // A decline is a pre-emit fault → level-independent, never a mismatch.
+        assert_eq!(
+            compare_opt_invariance(&Side::Declined("d".into()), &Side::Value("1".into())),
+            Diff::Agree
+        );
+    }
+
+    #[test]
+    fn opt_invariance_a_compile_panic_is_a_crash_and_is_never_masked() {
+        let info = crate::oracle::CrashInfo {
+            site: Some("crates/rcdzc/src/opt.rs:1:1".into()),
+            message: "opt pass panicked".into(),
+            backtrace: String::new(),
+        };
+        // A panic while compiling at EITHER level is a crash finding, never swallowed by the other side.
+        assert_eq!(
+            compare_opt_invariance(&Side::Value("1".into()), &Side::CompilePanic(info.clone())),
+            Diff::CompileCrash(info)
+        );
+    }
 }

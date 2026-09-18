@@ -220,6 +220,55 @@ pub fn compile_component_catching(bytes: &[u8]) -> Result<Vec<u8>, ComponentFail
     }
 }
 
+/// Like [`compile_component_catching`] but at a CHOSEN [`rcdzc::OptLevel`] — the primitive behind the
+/// OPT-INVARIANCE oracle ([`crate::differential::opt_invariance`]). `compile_component` bakes in the
+/// default level (O1), so it cannot exercise the O2/O3 whole-function passes (global CSE, the lifted-
+/// analysis reclaim seam) where opt-level-specific miscompiles live — e.g. the fldirect O2/O3 slice-view
+/// reclaim leaks. This compiles the SAME program at an explicit level so two levels' RUNTIME VALUES can be
+/// cross-checked. Extracts the Wasm component artifact exactly as `wasm_output_verdict` does (preferring a
+/// coded error's code on a decline); a compiler panic is captured as `Crashed` so the sweep files + continues.
+#[allow(clippy::result_large_err)]
+pub fn compile_component_at_opt_catching(
+    bytes: &[u8],
+    opt: rcdzc::OptLevel,
+) -> Result<Vec<u8>, ComponentFail> {
+    install_panic_hook();
+    *slot().lock().unwrap() = None;
+    let compiled = panic::catch_unwind(AssertUnwindSafe(|| {
+        rcdzc::compile_with_opt(
+            &[rcdzc::abi::Artifact::new(
+                rcdzc::abi::Artifact::KIND_AST,
+                "main",
+                bytes.to_vec(),
+            )],
+            &[rcdzc::Target::Wasm],
+            opt,
+        )
+    }));
+    let out = match compiled {
+        Ok(out) => out,
+        Err(_) => return Err(ComponentFail::Crashed(capture_crash(""))),
+    };
+    match out.artifact(rcdzc::Target::Wasm.artifact_kind()) {
+        Some(component) => Ok(component.to_vec()),
+        None => {
+            // Prefer a CODED error's code, else any error's, matching the safety ordering the single-level
+            // path uses. A decline here is expected output (a rejected program), never a bug.
+            let code = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == rcdzc::Severity::Error && d.code.is_some())
+                .or_else(|| {
+                    out.diagnostics
+                        .iter()
+                        .find(|d| d.severity == rcdzc::Severity::Error)
+                })
+                .and_then(|d| d.code.clone());
+            Err(ComponentFail::Declined(code))
+        }
+    }
+}
+
 /// Compile one program source in-process, catching any panic. This is the crash oracle.
 ///
 /// TWO emit backends are driven per program. The primary WebAssembly-component path
