@@ -3936,3 +3936,79 @@ fn result_reaches_binder_does_not_fire_for_a_fresh_construction_consuming_the_pa
          fence (else the fresh owned result over-suppresses = the PAIRWISE/PASCAL leak)"
     );
 }
+
+// REGRESSION (perf, compile-time): `def_funcref_taken(body)` answers a WHOLE-PROGRAM question ("is any of
+// this body's lifted codes taken as a funcref anywhere?") by walking every def body — and it is queried
+// PER def from 4 reclaim sites, so the un-memoized walk was O(defs · program-nodes) = O(N²) (measured at
+// 65% of a real self-host file `sread.cdz` compile; this memo cut that compile 2.57×). The
+// referenced-closure-code SET is a program-wide fact INDEPENDENT of `body`, so it is built once on first
+// demand and cached on the `Db` (lazy memo, keyed by `lifted.len()`), making every per-body query O(1).
+// This guard drives the query directly: after resetting the memo it queries `def_funcref_taken` for every
+// def AND lifted body over SEVERAL rounds; `referenced_closure_codes_builds` must stay 1 (one build for
+// many queries). A regression that re-walked per call would make it grow with the query count.
+#[test]
+fn def_funcref_taken_builds_its_referenced_code_memo_once_not_per_query() {
+    crate::host::run_with_compiler_stack(|| {
+        // A capturing closure stored in a variant (the `a_known_closure_stored_in_a_variant` shape) — a
+        // genuine lifted `Core::Closure`, so `def_funcref_taken` on its body has NON-EMPTY codes and
+        // reaches the memoized whole-program walk.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m \
+               (type Box (Mk (-> Int64 Int64))) \
+               (def (mk (: k Int64)) (Box.Mk (fn ((: p Int64)) (+ p k)))) \
+               (def (use2 (: b Box)) (match b ((Box.Mk f) (+ (f 10) (f 20))))) \
+               (def (main) (use2 (mk 5))) (export main))",
+        ));
+        // Force full lowering so ALL lambda-lifting settles (in a real compile lifting is complete before
+        // select runs the funcref-reclaim queries — the memo is keyed on `lifted.len()`, so a query taken
+        // WHILE lifting is still growing correctly rebuilds; we measure the settled steady state select sees).
+        let _ = crate::layout::compute(&mut db);
+        let names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
+        for n in &names {
+            let _ = function_of(&mut db, n);
+        }
+        assert!(
+            !db.lifted.is_empty(),
+            "the capturing closure must be lifted so def_funcref_taken has non-empty codes to look up"
+        );
+        // Settle any remaining lazy lifting reachable via the funcref-taken walk itself: query every body
+        // until `lifted.len()` reaches a fixpoint, so the subsequent measurement is over a STABLE program.
+        loop {
+            let before = db.lifted.len();
+            let bodies: Vec<StructId> = db
+                .lifted
+                .iter()
+                .map(|l| l.body)
+                .chain(db.defs.iter().filter_map(|d| d.body))
+                .collect();
+            for b in &bodies {
+                let _ = def_funcref_taken(&mut db, *b);
+            }
+            if db.lifted.len() == before {
+                break;
+            }
+        }
+        // Now lifting is settled — reset the lazy memo + its build counter and hammer `def_funcref_taken`
+        // with many per-body queries (every lifted AND def body, several rounds), the concentrated form of
+        // the per-def reclaim query pattern. With the memo this builds the set ONCE regardless of query count.
+        db.referenced_closure_codes = None;
+        db.referenced_closure_codes_builds = 0;
+        let bodies: Vec<StructId> = db
+            .lifted
+            .iter()
+            .map(|l| l.body)
+            .chain(db.defs.iter().filter_map(|d| d.body))
+            .collect();
+        for _round in 0..3 {
+            for b in &bodies {
+                let _ = def_funcref_taken(&mut db, *b);
+            }
+        }
+        assert_eq!(
+            db.referenced_closure_codes_builds, 1,
+            "def_funcref_taken must build the referenced-closure-code set ONCE (lazy memo) across MANY \
+             per-body queries, not re-walk the whole program per call — a per-call rebuild is the O(N²) \
+             regression this memo removed (it was 65% of a real self-host file compile)"
+        );
+    });
+}

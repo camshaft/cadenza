@@ -2014,6 +2014,18 @@ pub struct Db {
     /// with `lifted` (an entry is inserted exactly when a new lambda is pushed).
     pub(crate) lifted_by_body: crate::fxhash::FxHashMap<StructId, usize>,
 
+    /// Lazy-memoized set of ALL closure `code`s referenced by a `Core::Closure` anywhere in the program
+    /// (across every `db.defs` body), paired with the `lifted.len()` snapshot it was built at. Answers
+    /// `select::def_funcref_taken` ("is this body's lifted code taken as a funcref anywhere?") in O(1) after
+    /// ONE demand-driven whole-program walk, instead of re-walking the whole program PER def — the reclaim
+    /// analysis queries `def_funcref_taken` per-def from 4 sites, so the un-memoized walk was
+    /// O(defs · program-nodes) = O(N²) (65% of a real self-host file compile). Built on FIRST demand and
+    /// cached — a compile that never asks (no funcref-taken reclaim query) never builds it; rebuilt only if
+    /// `lifted` grew (lift is append-only, so the referenced-code set is fixed once lifting settles, which it
+    /// has by the emit phase). Lazy-memoized-database style (like `types` / `escape_verdict_memo`), NOT an
+    /// eager precompute pass. Cleared like the other emit memos on the relevant reset.
+    pub(crate) referenced_closure_codes: Option<(usize, std::collections::HashSet<usize>)>,
+
     /// `sum-decl occ → the set of sum decls its payloads TRANSITIVELY reach` — the memo behind the Rust
     /// backend's recursive-variant boxing cycle detector (`backend::rust::enums`). Deciding whether a
     /// variant is recursive asks "does this payload type reach the sum's own decl?", a graph reachability
@@ -2173,6 +2185,13 @@ pub struct Db {
     /// (the emit path holds `&mut Db`) so the parallel test harness cannot pollute it.
     #[cfg(test)]
     pub(crate) is_cse_shareable_uncached_calls: u64,
+    /// Test-only compile-cost counter: how many times the `referenced_closure_codes` set was BUILT (a full
+    /// whole-program walk). The lazy memo builds it ONCE per compile (or once per `lifted`-count change), so
+    /// this stays O(1) in the def count — the regression guard `def_funcref_taken_stays_linear_...` asserts
+    /// it does NOT grow with def count (a broken memo that re-walked per `def_funcref_taken` call would make
+    /// it O(N), reintroducing the O(N²)). Surfaced via `CompileOutput::referenced_closure_codes_builds`.
+    #[cfg(test)]
+    pub(crate) referenced_closure_codes_builds: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3373,6 +3392,7 @@ impl Db {
             strict_force_eval: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
             lifted_by_body: crate::fxhash::FxHashMap::default(),
+            referenced_closure_codes: None,
             sum_reachable: crate::fxhash::FxHashMap::default(),
             sum_out_edges: crate::fxhash::FxHashMap::default(),
             suggest_pool: [None, None, None],
@@ -3405,6 +3425,8 @@ impl Db {
             param_apply_extra_handled_calls: 0,
             #[cfg(test)]
             is_cse_shareable_uncached_calls: 0,
+            #[cfg(test)]
+            referenced_closure_codes_builds: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,
