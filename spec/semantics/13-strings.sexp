@@ -3246,15 +3246,18 @@
   "TWO single-layer String.slice views escaping in one tuple leak — the escv shell reclaim does NOT compose across a multi-view tuple escape"
   (doc
     "The BOUNDARY of the escv escaping-shell reclaim (#9200): two INDEPENDENT single-layer
-           `Option.expect (String.slice s …)` results escape to the host together in one `#tuple(a b)`. A
-           SINGLE such escape reclaims its orphaned Option shell (escv 2→0), but two escaping together do NOT
-           — this measures live-objects 3 (a gate-confirmed known-leak), so the escaping-shell reclaim does
-           not yet COMPOSE across a multi-view tuple escape. The VALUE is correct and there is no trap/UAF
-           (leak-over-UAF, the deliberate margin): k=0 a=[0,3)=\"abc\", b=[4,7)=\"efg\" → tuple(\"abc\",\"efg\");
-           k=1 a=[1,3)=\"bc\" → tuple(\"bc\",\"efg\"). Marked known-leak as the current boundary — a TIGHTEN
-           CANDIDATE the day escv's escape-shell recognition extends to multi-view tuple results (surfaced to
-           v-memory-safety, who own the escape-shell lane). Adversarial companion to the single-escape escv
-           witness, and the escaping twin of the still-leaking nested slice-of-slice above.")
+           `Option.expect (String.slice s …)` results escape to the host together in one `#tuple(a b)`. This
+           measures live-objects 3 = the RETURNED value's exact cell count (the tuple wrapper + two compacting
+           view leaves), which is NOT a guest leak: the value is ABI-TRANSFERRED to the host, which owns and
+           frees it. Both Option Some shells DO reclaim (rc-trace verified — the leaked cells are node#0 tuple
+           + node#2/#4 the two view leaves, never a shell), and each compacting view leaf escapes at rc1
+           IDENTICALLY to a fresh `String.concat` result (v-memory-safety census: raw-concat escape == view
+           escape == return-value size). So it is pinned `(live-objects 3)` (the EXACT count, not `known-leak`):
+           this stays enforced (a real over-leak beyond the return value → census 4 → gate reds), and it must
+           never drop below 3 (freeing an escaping return value = UAF the host's transferred value). Values:
+           k=0 a=[0,3)=\"abc\", b=[4,7)=\"efg\" → tuple(\"abc\",\"efg\"); k=1 a=[1,3)=\"bc\" → tuple(\"bc\",\"efg\").
+           (Resolved by v-memory-safety + v-cdz-wasm-codegen + v-corpus-harness: an escape-to-host reclaim
+           would double-free; there is nothing to reclaim — the escv escape-shell emit is already optimal.)")
   (input
     (do
       (def
@@ -3269,18 +3272,21 @@
   (output (: #tuple("abc" "efg") (Tuple String String)))
   (call main (: 1 Int64))
   (output (: #tuple("bc" "efg") (Tuple String String)))
-  (live-objects known-leak 3))
+  ; RE-PIN (v-corpus-harness ruling): known-leak 3 → (live-objects 3). N=3 is the ABI-transferred return-value cell count (tuple + 2 compacting view leaves), NOT a guest leak; both Some shells reclaim (rc-trace). Enforced exactly — an over-leak reds; must never drop below 3 (escaping return value).
+  (live-objects 3))
 
 (case
   "THREE single-layer String.slice views escaping in one tuple leak — confirms N-views + wrapper scaling of the escv escape-shell gap"
   (doc
     "Extends the two-view escape boundary above to THREE: three INDEPENDENT single-layer
            `Option.expect (String.slice s …)` compacting-view results escape together in one `#tuple(a b c)`.
-           The escv escape-shell reclaim (#9200) does not fire for the bare/tuple-result SumExpect escape
-           disposition, so this leaks (each escaping compacting view + the tuple wrapper cell — the N-views
-           scaling v-memory-safety isolated). k=0: a=[0,2)=\"ab\", b=[3,5)=\"de\", c=[5,8)=\"fgh\" →
-           tuple(\"ab\",\"de\",\"fgh\"). Value correct, no trap/UAF (leak-over-UAF). Known-leak boundary — a
-           tighten candidate the day escv's escape-shell recognition covers multi-view tuple results.")
+           This measures live-objects 4 = the RETURNED value's exact cell count (tuple wrapper + three
+           compacting view leaves), the N-views + wrapper scaling — NOT a guest leak: the tuple is
+           ABI-TRANSFERRED to the host (rc-trace: leaked = node#0 tuple + node#2/#4/#5 the three view leaves;
+           all Some shells reclaim). Each view leaf escapes at rc1 like a fresh String result. Pinned
+           `(live-objects 4)` (exact count, not known-leak): an over-leak → census 5 → reds; never drops below
+           4 (escaping return value). k=0: a=[0,2)=\"ab\", b=[3,5)=\"de\", c=[5,8)=\"fgh\" → tuple(\"ab\",\"de\",\"fgh\").
+           Value correct, no trap/UAF. (Resolved: escv escape-to-host is ABI-transfer, nothing to reclaim.)")
   (input
     (do
       (def
@@ -3294,7 +3300,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: #tuple("ab" "de" "fgh") (Tuple String String String)))
-  (live-objects known-leak 4))
+  ; RE-PIN (v-corpus-harness ruling): known-leak 4 → (live-objects 4). N=4 is the ABI-transferred return-value cell count (tuple + 3 compacting view leaves), NOT a guest leak; all Some shells reclaim (rc-trace). Enforced exactly — an over-leak reds; must never drop below 4.
+  (live-objects 4))
 
 (case
   "a COMPACTING and a RETAINING view escaping in one tuple both leak — the retaining view MUST stay leaking (escv escape-control, UAF margin)"
@@ -3302,12 +3309,16 @@
     "The escape-CONTROL boundary v-memory-safety needs for the escv escape-shell lane: one COMPACTING view
            (`String.slice` — payload OP_BYTES_COMPACTed to an independent flat leaf, reclaim-eligible) and one
            RETAINING view (`Bytes.slice` — payload rc-shares its source container) escape together in one
-           `#tuple(sv bv)`. Today BOTH leak. The compacting one is a tighten candidate once escv covers the
-           tuple-escape disposition; the RETAINING one MUST STAY leaking — reclaiming a retaining view's shell
-           could deep-drop a still-referenced parent (the #4917 UAF), so it is the deliberate leak-over-UAF
-           margin and this case is its durable boundary pin (it must never flip to 0 while Bytes.slice retains).
-           k=0: sv=[0,3)=\"abc\", bv=Bytes.slice([1,2,3,4,5],1,3)=[2,3,4] → tuple(\"abc\", b\"\\x02\\x03\\x04\").
-           Value correct, no trap/UAF. Known-leak boundary.")
+           `#tuple(sv bv)`. This measures live-objects 3 = the RETURNED value's exact cell count (tuple + sv
+           compacting-view leaf + bv retaining-view leaf) — NOT a guest leak: the tuple is ABI-TRANSFERRED to
+           the host. rc-trace: leaked = node#0 tuple + node#2 sv + node#4 bv; BOTH Some shells (String + Bytes)
+           reclaim, and the Bytes source bs is freed — so bv is self-contained at return. Pinned
+           `(live-objects 3)` (exact, not known-leak). This is the DURABLE #4917 leak-over-UAF boundary: the
+           count must NEVER drop below 3 — reclaiming (deep-dropping) EITHER escaping view frees a value the
+           host owns, and for bv specifically the retaining slice aliases its source, so a deep-drop would
+           UAF a still-referenced parent. An extra cell beyond 3 → reds (a real over-retain). k=0:
+           sv=[0,3)=\"abc\", bv=Bytes.slice([1,2,3,4,5],1,3)=[2,3,4] → tuple(\"abc\", b\"\\x02\\x03\\x04\").
+           Value correct, no trap/UAF. (Retaining views excluded from escape-admit by #9215/#4917.)")
   (input
     (do
       (def
@@ -3321,7 +3332,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: #tuple("abc" b"\x02\x03\x04") (Tuple String Bytes)))
-  (live-objects known-leak 3))
+  ; RE-PIN (v-corpus-harness ruling): known-leak 3 → (live-objects 3). N=3 = ABI-transferred return value (tuple + compacting sv + retaining bv); both Some shells reclaim (rc-trace). DURABLE #4917 boundary: must NEVER drop below 3 (deep-dropping the retaining bv would UAF its source); an over-retain reds.
+  (live-objects 3))
 
 (case
   "a concat of two runtime SLICES joins the sliced views, not the originals"
