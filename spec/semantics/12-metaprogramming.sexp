@@ -1179,6 +1179,33 @@
   (live-objects 0))
 
 (case
+  "TWO runtime Ast.decode round-trips each CONSUME their tree in a compound arm — both husks reclaim to 0"
+  (doc
+    "The adversarial DOUBLE of the consume-into-compound reclaim (0072 above, fix 5949182a9a): TWO
+           independent runtime `Ast.decode` round-trips in one program, each whose `Ok` arm CONSUMES the
+           decoded tree in a compound op (`(= a (Ast.Int (BigInt.of n)))` — value-eq borrows the tree) rather
+           than discarding it (0073's face). Each mints a fresh `(Result Ast unit)` husk (Ok shell + decoded
+           Ast.Int tree + BigInt Leaf) that the `Core::AstDecode` owned-scrutinee shell-drop must reclaim —
+           and here the reclaim fires TWICE in one program over distinct runtime husks (n and n+1). Packed
+           `10·first + second` = 11 (both round-trips decode to an equal Ast.Int). Unlike the escape
+           disposition (which correctly declines and leaks), this dead-after-destructure consume path composes:
+           a reclaim that fired for only one round-trip, or double-freed a borrowed tree, would show nonzero
+           census or trap. census 0 confirms the AstDecode husk reclaim is per-round-trip on the consume path.
+           Adversarial companion to 0072 (single consume) and 0073 (double discard, #9194).")
+  (input
+    (do
+      (def
+        (rt (: n Int64))
+        (match (Ast.decode (Ast.encode (Ast.Int (BigInt.of n))))
+          ((Ok a) (if (= a (Ast.Int (BigInt.of n))) 1 0))
+          ((Err _e) -1)))
+      (def (main (: n Int64)) (+ (* 10 (rt n)) (rt (+ n 1))))
+      (export main)))
+  (call main (: 42 Int64))
+  (output (: 11 Int64))
+  (live-objects 0))
+
+(case
   "Ast.decode of runtime bytes as a VALIDITY CHECK discards the decoded tree and reclaims the Result shell"
   (doc
     "The DEAD-AFTER-DECODE face of the runtime `Ast.decode` above: a validity check parses runtime bytes
