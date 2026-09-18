@@ -3272,6 +3272,58 @@
   (live-objects known-leak 3))
 
 (case
+  "THREE single-layer String.slice views escaping in one tuple leak — confirms N-views + wrapper scaling of the escv escape-shell gap"
+  (doc
+    "Extends the two-view escape boundary above to THREE: three INDEPENDENT single-layer
+           `Option.expect (String.slice s …)` compacting-view results escape together in one `#tuple(a b c)`.
+           The escv escape-shell reclaim (#9200) does not fire for the bare/tuple-result SumExpect escape
+           disposition, so this leaks (each escaping compacting view + the tuple wrapper cell — the N-views
+           scaling v-memory-safety isolated). k=0: a=[0,2)=\"ab\", b=[3,5)=\"de\", c=[5,8)=\"fgh\" →
+           tuple(\"ab\",\"de\",\"fgh\"). Value correct, no trap/UAF (leak-over-UAF). Known-leak boundary — a
+           tighten candidate the day escv's escape-shell recognition covers multi-view tuple results.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def s (String.concat "abcd" "efgh"))
+          (def a (Option.expect (String.slice s k 2) "a"))
+          (def b (Option.expect (String.slice s 3 5) "b"))
+          (def c (Option.expect (String.slice s 5 8) "c"))
+          #tuple(a b c)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: #tuple("ab" "de" "fgh") (Tuple String String String)))
+  (live-objects known-leak 4))
+
+(case
+  "a COMPACTING and a RETAINING view escaping in one tuple both leak — the retaining view MUST stay leaking (escv escape-control, UAF margin)"
+  (doc
+    "The escape-CONTROL boundary v-memory-safety needs for the escv escape-shell lane: one COMPACTING view
+           (`String.slice` — payload OP_BYTES_COMPACTed to an independent flat leaf, reclaim-eligible) and one
+           RETAINING view (`Bytes.slice` — payload rc-shares its source container) escape together in one
+           `#tuple(sv bv)`. Today BOTH leak. The compacting one is a tighten candidate once escv covers the
+           tuple-escape disposition; the RETAINING one MUST STAY leaking — reclaiming a retaining view's shell
+           could deep-drop a still-referenced parent (the #4917 UAF), so it is the deliberate leak-over-UAF
+           margin and this case is its durable boundary pin (it must never flip to 0 while Bytes.slice retains).
+           k=0: sv=[0,3)=\"abc\", bv=Bytes.slice([1,2,3,4,5],1,3)=[2,3,4] → tuple(\"abc\", b\"\\x02\\x03\\x04\").
+           Value correct, no trap/UAF. Known-leak boundary.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def s (String.concat "abcd" "efgh"))
+          (def bs (Bytes.of #list(1 2 3 4 5)))
+          (def sv (Option.expect (String.slice s k 3) "sv"))
+          (def bv (Option.expect (Bytes.slice bs 1 3) "bv"))
+          #tuple(sv bv)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: #tuple("abc" b"\x02\x03\x04") (Tuple String Bytes)))
+  (live-objects known-leak 3))
+
+(case
   "a concat of two runtime SLICES joins the sliced views, not the originals"
   (doc
     "The build-from-parts idiom: both concat operands are SLICES (of different strings, split at the
