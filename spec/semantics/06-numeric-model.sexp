@@ -4778,6 +4778,31 @@
   (live-objects 1))
 
 (case
+  "a recursive factorial accumulates exact BigInt multiplies far past Int64.max (21! via the runtime limb loop)"
+  (doc
+    "The single multiply above uses constant operands; this drives BigInt multiplication in a RUNTIME
+           LOOP — a recursive factorial `(fact n) = n · (fact (n-1))` over `(BigInt.of n)`, folding 21
+           multiplies whose running product grows well past 64 bits. 21! = 51090942171709440000 exceeds
+           Int64.max (9223372036854775807) — over Int64 the product would trap; BigInt's limb representation
+           grows instead, exact. Observed via `=` against the `N`-suffixed BigInt literal so the check is a
+           genuine content compare of the full magnitude (sidestepping any host-boundary rendering): fact(21)
+           equals 21! → 1, while fact(20) = 2432902008176640000 and fact(22) = 1124000727777607680000 do NOT
+           → 0. Pins that the runtime limb multiply is exact under ITERATION (not just a single op) and that
+           the growing product is neither wrapped nor truncated across the recursion. A limb-multiply carry
+           bug or an intermediate narrowing would flip fact(21) off 21!.")
+  (input
+    (do
+      (def (fact (: n Int64)) (if (< n 1) 1N (* (BigInt.of n) (fact (- n 1)))))
+      (def (main (: n Int64)) (if (= (fact n) 51090942171709440000N) 1 0))
+      (export main)))
+  (call main (: 21 Int64))
+  (output (: 1 Int64))
+  (call main (: 20 Int64))
+  (output (: 0 Int64))
+  (call main (: 22 Int64))
+  (output (: 0 Int64)))
+
+(case
   "runtime BigInt arithmetic leaves no live heap objects (balanced)"
   (doc
     "`(Int64.of (+ (BigInt.of a) (BigInt.of b)))` over two runtime Int64 params allocates two owned
