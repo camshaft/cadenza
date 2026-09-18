@@ -3938,6 +3938,51 @@ fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
     Some(parse_offload_stamp(&std::fs::read_to_string(&stamp).ok()?))
 }
 
+/// Build the `fleet status` distributed-offload health line — the branch table (cert validity × the last
+/// gate-local's offload OUTCOME → the surfaced message). PURE so the composition is unit-testable; the I/O
+/// (reading /etc/nix/machines, the cert via ssh-keygen, the outcome stamp) stays in the `status` caller.
+///   `n_builders` — configured remote-builder count (caller guards > 0).
+///   `cert`        — Some((valid_to_str, expiry_epoch)) or None if the cert couldn't be read.
+///   `now`         — current epoch, for the expiry comparison.
+///   `outcome`     — the last gate-local's offload outcome (None = no fresh stamp).
+/// A valid cert only proves REACHABILITY, so the cert-valid branch is AUGMENTED with the actual build
+/// outcome: a reachable-but-broken peer (accept-then-error, which `fallback=true` does NOT rescue) surfaces
+/// as a ⚠ instead of masquerading healthy; a copied-back success reads ACTIVE + VERIFIED; no fresh stamp
+/// reads ACTIVE (unverified). An expired cert → DEGRADED (graceful local fallback); unreadable → unknown.
+fn offload_health_line(
+    n_builders: usize,
+    cert: Option<(&str, u64)>,
+    now: u64,
+    outcome: Option<&OffloadBuildOutcome>,
+) -> String {
+    match cert {
+        Some((to, exp)) if now < exp => match outcome {
+            Some(OffloadBuildOutcome::Failed(reason)) => format!(
+                "  ⚠ distributed builds: {n_builders} remote builder(s) — id_rsa cert valid to {to} BUT the last \
+                 gate-local hit a remote-BUILD failure (accept-then-error; fallback=true does NOT cover this): \
+                 {reason}. A peer may be misconfigured — verify with `.claude/fleet/setup-nix-builder-peer.sh verify <peer-fqdn>`"
+            ),
+            Some(OffloadBuildOutcome::Succeeded) => format!(
+                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE + VERIFIED (id_rsa cert valid \
+                 to {to}; last gate-local built on a remote builder + copied back)"
+            ),
+            _ => format!(
+                "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to}; \
+                 no recent offloaded build observed to verify)"
+            ),
+        },
+        Some((to, _)) => format!(
+            "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
+             id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
+             local, no red gate — just no OOM relief)"
+        ),
+        None => format!(
+            "  distributed builds: {n_builders} remote builder(s) configured (offload health unknown — \
+             couldn't read the cert validity)"
+        ),
+    }
+}
+
 /// Parse `(use_pct, avail_kib)` from `df -P <fs>` output — the POSIX columns are a header line then ONE
 /// data line (`-P` never wraps long device names) whose field 5 is Capacity (`NN%`) and field 4 is
 /// Available (1K-blocks). `None` if it didn't parse — the caller treats that as "unknown, print nothing"
@@ -4152,36 +4197,26 @@ fn status(fleet: &Fleet) {
             let exp: u64 = String::from_utf8_lossy(&d.stdout).trim().parse().ok()?;
             Some((valid_to, exp))
         });
-        match cert_status {
-            // Cert is valid — but a valid cert only proves we CAN reach the peer, not that offloaded
-            // builds SUCCEED (a misconfigured peer accepts then errors; fallback=true doesn't cover it).
-            // Augment with the last gate-local's actual offload outcome so a silently-broken-but-reachable
-            // peer surfaces here instead of masquerading as healthy.
-            Some((to, exp)) if now_unix() < exp => match last_gate_local_offload_outcome(now) {
-                Some(OffloadBuildOutcome::Failed(reason)) => println!(
-                    "  ⚠ distributed builds: {n_builders} remote builder(s) — id_rsa cert valid to {to} BUT the last \
-                     gate-local hit a remote-BUILD failure (accept-then-error; fallback=true does NOT cover this): \
-                     {reason}. A peer may be misconfigured — verify with `.claude/fleet/setup-nix-builder-peer.sh verify <peer-fqdn>`"
-                ),
-                Some(OffloadBuildOutcome::Succeeded) => println!(
-                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE + VERIFIED (id_rsa cert valid \
-                     to {to}; last gate-local built on a remote builder + copied back)"
-                ),
-                _ => println!(
-                    "  distributed builds: {n_builders} remote builder(s) — offload ACTIVE (id_rsa cert valid to {to}; \
-                     no recent offloaded build observed to verify)"
-                ),
-            },
-            Some((to, _)) => println!(
-                "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
-                 id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
-                 local, no red gate — just no OOM relief)"
-            ),
-            None => println!(
-                "  distributed builds: {n_builders} remote builder(s) configured (offload health unknown — \
-                 couldn't read the cert validity)"
-            ),
-        }
+        // A valid cert only proves we CAN reach the peer, not that offloaded builds SUCCEED (a misconfigured
+        // peer accepts then errors; fallback=true doesn't cover it), so the cert-valid branch is augmented
+        // with the last gate-local's actual outcome. Read the stamp only when the cert is valid (matches the
+        // prior behaviour — no stamp read when degraded/unknown). Branch table lives in `offload_health_line`.
+        let now_cert = now_unix();
+        let cert_valid = matches!(cert_status, Some((_, exp)) if now_cert < exp);
+        let outcome = if cert_valid {
+            last_gate_local_offload_outcome(now)
+        } else {
+            None
+        };
+        println!(
+            "{}",
+            offload_health_line(
+                n_builders,
+                cert_status.as_ref().map(|(to, exp)| (to.as_str(), *exp)),
+                now_cert,
+                outcome.as_ref(),
+            )
+        );
     }
 
     // Trunk-ref-regression watch — OBSOLETE under the --publish-origin model, kept only as a genuine-
@@ -21512,6 +21547,60 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             classify_gate_log_offload("Finished release; decision: LANDABLE\n"),
             OffloadBuildOutcome::Inconclusive
         );
+    }
+
+    #[test]
+    fn offload_health_line_composes_cert_validity_with_build_outcome() {
+        use OffloadBuildOutcome::*;
+        let now = 1_000_000u64;
+        let valid = Some(("2026-09-18T04:20:53", now + 3600)); // cert valid (expires in the future)
+        let expired = Some(("2026-09-17T04:20:53", now - 3600)); // cert already expired
+
+        // Cert valid + a copied-back success → ACTIVE + VERIFIED (the strongest healthy signal).
+        let s = offload_health_line(2, valid, now, Some(&Succeeded));
+        assert!(
+            s.contains("ACTIVE + VERIFIED") && !s.contains('⚠'),
+            "got: {s}"
+        );
+
+        // Cert valid BUT the last offload hard-failed (accept-then-error) → ⚠, carries the reason + the
+        // verify hint; must NOT read healthy (this is the reachable-but-broken-peer case fallback misses).
+        let s = offload_health_line(
+            2,
+            valid,
+            now,
+            Some(&Failed("ca hash mismatch importing path X".into())),
+        );
+        assert!(
+            s.contains('⚠') && s.contains("remote-BUILD failure"),
+            "got: {s}"
+        );
+        assert!(
+            s.contains("ca hash mismatch importing path X"),
+            "carries the reason: {s}"
+        );
+        assert!(
+            !s.contains("VERIFIED"),
+            "a failed offload must not read VERIFIED: {s}"
+        );
+
+        // Cert valid, no fresh stamp → ACTIVE but explicitly unverified (never claim VERIFIED without proof).
+        let s = offload_health_line(2, valid, now, None);
+        assert!(
+            s.contains("ACTIVE")
+                && s.contains("no recent offloaded build")
+                && !s.contains("VERIFIED"),
+            "got: {s}"
+        );
+        // An outcome is IGNORED once the cert is expired (the degraded branch wins regardless).
+        let s = offload_health_line(2, expired, now, Some(&Succeeded));
+        assert!(
+            s.contains('⚠') && s.contains("DEGRADED") && s.contains("EXPIRED"),
+            "expired cert dominates: {s}"
+        );
+        // Unreadable cert → health unknown (fail-safe: never a false DEGRADED or a false ACTIVE).
+        let s = offload_health_line(2, None, now, None);
+        assert!(s.contains("health unknown") && !s.contains('⚠'), "got: {s}");
     }
 
     #[test]
