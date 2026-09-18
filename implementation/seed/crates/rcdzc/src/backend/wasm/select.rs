@@ -4740,17 +4740,17 @@ fn matchsum_view_shell_reclaim_ok(
     let compound_boxed = is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
         && !sum_has_only_scalar_payloads(db, scrut_ty);
-    top_body.is_some_and(|tb| {
-        (strat_view_multi_consume(db, tb, root, scrutinee, compound_boxed)
-            && (sum_cont_result_all_scalar(db, root)
-                || !view_escapes_as_arm_result(db, scrutinee, root)))
-            // SINGLE-CONSUME-SCALAR (v-memory-safety solo, single-consume analog of the muv subset above): a
-            // StrAt view consumed EXACTLY once with an all-scalar arm result. The `> 1` muv gate declined it,
-            // leaving the Some shell leaked (the lone consume freed the payload but nothing dropped the shell).
-            // The dup pass now child-`dup`s that lone site (SAME `strat_view_scalar_result_consume` predicate),
-            // so the shell deep-drop balances 1:1. Scalar result structurally proves the view does not escape.
-            || strat_view_scalar_result_consume(db, tb, root, scrutinee, compound_boxed)
-    })
+    // Reclaim the StrAt `Some` shell whenever the view is consumed (≥1) AND the arm result does NOT carry the
+    // view out (all-scalar result, OR the escape classifier proves non-escape). This SUBSUMES the earlier
+    // muv-only `> 1` gate: `strat_view_consume_nonescaping` is `≥1 && (scalar || !view_escapes)`, which the
+    // `> 1 && (scalar || !escapes)` muv condition implies, and it ALSO covers SINGLE-consume (the lone
+    // consume + a child-`dup` from the dup pass balances the shell deep-drop 1:1). The escaping case (view
+    // returned / stored into a returned collection) declines here — its multi-consume child-`dup`s (needed
+    // for the multi-consume double-free) are still emitted UNCONDITIONALLY by the dup pass's bare
+    // `strat_view_multi_consume`, leaving the shell + one ref as a residual leak (leak beats UAF). Dup-side
+    // and gate share this ONE predicate → exact lockstep.
+    top_body
+        .is_some_and(|tb| strat_view_consume_nonescaping(db, tb, root, scrutinee, compound_boxed))
 }
 
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed

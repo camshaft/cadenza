@@ -303,8 +303,8 @@
   (doc
     "The accounting-sensitive companion of the single-consume completion above (f9a4118430): the
            extracted char view `c` is BOTH borrowed (`String.byte-len c`) AND single-consumed
-           (`String.to-bytes c` → `Core::StrToBytes`) in the SAME all-scalar-result arm. The new
-           `strat_view_scalar_result_consume` child-dups the lone consuming site (rc1→2) so the shell
+           (`String.to-bytes c` → `Core::StrToBytes`) in the SAME all-scalar-result arm. The
+           `strat_view_consume_nonescaping` child-dups the lone consuming site (rc1→2) so the shell
            deep-drop cascade balances 1:1, while the borrow reads `c` without consuming it — the child-dup
            and the borrow must stay in exact lockstep or the shell cascade would underflow the payload (a
            double-free the debug-counters runtime asserts). Value = byte-len(\"y\")=1 + Bytes.len(to-bytes
@@ -321,6 +321,32 @@
           ((Some c) (+ (String.byte-len c) (Bytes.len (String.to-bytes c))))
           ((None _u) -1)))
       (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "a String.at extracted view consumed ONCE into a HEAP result that does not carry the view out reclaims its Some shell (heap-result single-consume completion)"
+  (doc
+    "The HEAP-result face completing the single-consume family (the scalar-result sibling is directly
+           above; the multi-consume heap-result face is the muv `view_escapes_as_arm_result` gate, #9137).
+           `g`'s Some arm builds `(String.concat c \"z\")` — a FRESH rope — from the extracted char view `c`;
+           `String.concat` COPIES `c`'s bytes and aliases nothing, so the view does NOT escape as (part of)
+           the arm result even though that result is HEAP. The single-consume shell-reclaim
+           (`strat_view_consume_nonescaping`) now admits this via `!view_escapes_as_arm_result` (not just the
+           scalar-result floor): the lone consume + a child-`dup` of it balances the shell deep-drop 1:1
+           (rc1→2 dup, 2→1 consume, 1→0 shell cascade). `g` returns the rope, `main` byte-lens it (\"y\"+\"z\"
+           = 2 bytes). The ESCAPING twin (the char view returned/stored as the result itself, e.g. into a
+           List) has `view_escapes_as_arm_result` TRUE → stays declined (leak beats UAF). No underflow; value
+           + balance hold. Census is gate-graded (native `--report-live-objects` over-counts this String.at
+           view shape; the trap oracle confirms UAF-safety).")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i) ((Some c) (String.concat c "z")) ((None _u) "")))
+      (def (main (: n Int64)) (String.byte-len (g (String.concat "he" (if (> n 0) "y" "Y")) 1)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64))
