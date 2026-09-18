@@ -164,7 +164,8 @@
       (def (main) (rd (rep "hi" 3)))
       (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0007 String.at result then reuse of the source — the StrAt view + reused source reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a String.at source reused in only ONE match arm is not freed by the owned-source-drop on the live path"
@@ -676,7 +677,8 @@
   (output (: 633 Int64))
   (call main (: 3 Int64))
   (output (: 630 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0022 concat-built rope of 1/2/3-byte scalars measured+indexed — rope scalar-at view reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a scalar slice spanning a width TRANSITION carries its multibyte content exactly"
@@ -1563,7 +1565,8 @@
       (export main)))
   (call main (: 500 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0039 deep rope indexes by scalar-at at both extremes — rope scalar-at view reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "two deep ropes built in OPPOSITE orders compare equal by content"
@@ -3942,7 +3945,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 295 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0162 to-bytes of a sliced multibyte string read twice — slice-view→bytes reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes"
@@ -3975,7 +3979,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0163 Bytes.concat of two sliced-view to-bytes read twice — slice-view→bytes concat reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points"
@@ -6258,7 +6263,8 @@
     (: 4611686018427387904 Int64)
     (: 4611686018427387905 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0291 String.at/String.slice with near-i64::MAX indices decline to None — the None-path view/shell reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "String.at with an index at 2^32+2 declines to None, not an i32-wrapped read"
@@ -6276,7 +6282,8 @@
       (export main)))
   (call main (: 4294967298 Int64) (: 4294967297 Int64) (: 4294967299 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; census sweep (5949182a9a base): 0292 String.at with an index at 2^32+2 declines to None (not an i32-wrapped read) — the None-path view/shell reclaim (escv #9200 + view-shell reclaim); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- String batch: the 4-width scalar walk, scalar-wise reversal, the runtime to-bytes round
 ; trip (with the mid-scalar-cut decline), and a String-to-String effect op whose result feeds
