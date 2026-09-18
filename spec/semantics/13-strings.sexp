@@ -3243,6 +3243,35 @@
   (live-objects known-leak))
 
 (case
+  "TWO single-layer String.slice views escaping in one tuple leak — the escv shell reclaim does NOT compose across a multi-view tuple escape"
+  (doc
+    "The BOUNDARY of the escv escaping-shell reclaim (#9200): two INDEPENDENT single-layer
+           `Option.expect (String.slice s …)` results escape to the host together in one `#tuple(a b)`. A
+           SINGLE such escape reclaims its orphaned Option shell (escv 2→0), but two escaping together do NOT
+           — this measures live-objects 3 (a gate-confirmed known-leak), so the escaping-shell reclaim does
+           not yet COMPOSE across a multi-view tuple escape. The VALUE is correct and there is no trap/UAF
+           (leak-over-UAF, the deliberate margin): k=0 a=[0,3)=\"abc\", b=[4,7)=\"efg\" → tuple(\"abc\",\"efg\");
+           k=1 a=[1,3)=\"bc\" → tuple(\"bc\",\"efg\"). Marked known-leak as the current boundary — a TIGHTEN
+           CANDIDATE the day escv's escape-shell recognition extends to multi-view tuple results (surfaced to
+           v-memory-safety, who own the escape-shell lane). Adversarial companion to the single-escape escv
+           witness, and the escaping twin of the still-leaking nested slice-of-slice above.")
+  (input
+    (do
+      (def
+        (main (: k Int64))
+        (do
+          (def s (String.concat "abcd" "efgh"))
+          (def a (Option.expect (String.slice s k 3) "a"))
+          (def b (Option.expect (String.slice s 4 7) "b"))
+          #tuple(a b)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: #tuple("abc" "efg") (Tuple String String)))
+  (call main (: 1 Int64))
+  (output (: #tuple("bc" "efg") (Tuple String String)))
+  (live-objects known-leak 3))
+
+(case
   "a concat of two runtime SLICES joins the sliced views, not the originals"
   (doc
     "The build-from-parts idiom: both concat operands are SLICES (of different strings, split at the
