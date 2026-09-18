@@ -7065,8 +7065,9 @@
         corpus flip → #6092 hop): a runtime-index scalar-at re-emits as ((. String scalar-at) op idx)
         and recompiles. Multi-byte discrimination through the hop: 'café' scalar 3 is é (U+00E9=233,
         a SCALAR index, not a byte), scalar 1 is 'a' (97); out-of-range (\"ab\" at 5) → None → -1.
-        n=7 → 1000·233-1 = 232999; n=0 → 1000·97-1 = 96999. Byte-idempotent; hop/direct live parity
-        (the interim scalar-at result-cell leak-pin, 1/call).")
+        n=7 → 1000·233-1 = 232999; n=0 → 1000·97-1 = 96999. Byte-idempotent; hop/direct live parity.
+        The interim scalar-at result-cell leak (1/call) is now RECLAIMED (b8e550bb26 classified
+        Core::StrScalarAt Owned so its (Option Char) Some-shell deep-drops): census 0, no underflow.")
   (input
     (do
       (def
@@ -7084,7 +7085,7 @@
   (output (: 232999 Int64))
   (call main (: 0 Int64))
   (output (: 96999 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; `String` in type position is transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)`
 ; conflicts the String value with the Int64 annotation (CDZ0203), the String counterpart of `(: 5 Bool)`.
