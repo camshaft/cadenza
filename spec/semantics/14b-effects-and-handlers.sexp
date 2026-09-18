@@ -5570,7 +5570,8 @@
       (export main)))
   (call main (: 20 Int64))
   (output (: 13 Int64))
-  (live-objects known-leak))
+  ; census sweep (9f8af0dd5b base): the Set handler-state accumulator threaded through resume (Set.insert s v) with a borrowing Set.contains per mark is reclaimed each suspension (single-accumulator handler-state / borrow-thread reclaim landed, #9213 family); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a perform in a match-arm guard is discharged by the enclosing handle"
