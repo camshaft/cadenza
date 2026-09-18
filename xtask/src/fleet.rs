@@ -14088,6 +14088,22 @@ fn gate_output_is_corrupt_substituter_transient(output: &str) -> bool {
                 || output.contains("downloading")))
 }
 
+/// A PERSISTENT remote-BUILDER MISCONFIG — a peer daemon ACCEPTS an offloaded derivation then ERRORS on a
+/// config a re-run can't fix, so `--fallback` doesn't rescue it (fallback covers substitution, not a reachable
+/// builder that accepts-then-errors) and a plain re-run is FUTILE (identical failure until the PEER is
+/// repaired). This is the PERSISTENT half of the accept-then-error family, split from the TRANSIENT peer blips
+/// (network reset / OOM-kill / GC race → re-run) by keying on two DOCUMENTED, definitively-persistent shapes
+/// (`setup-nix-builder-peer.sh` GOTCHA A + E): the missing build-users-group (`… 'build-users-group' …` — the
+/// 2026-09-16 nixbld incident that reddened offload fleet-wide) and a disabled experimental feature
+/// (`experimental Nix feature '…' is disabled` — a peer lacking the coordinator's ca-derivations/
+/// dynamic-derivations). Distinct from the stale-pin CA mismatch (own branch → v-nix) and every transient
+/// class. Guidance-only + both signatures are UNAMBIGUOUSLY persistent, so a misread costs at most a wasted
+/// re-run, never a false pass. Pure so the match is unit-tested.
+fn gate_output_is_persistent_peer_misconfig(output: &str) -> bool {
+    output.contains("build-users-group")
+        || (output.contains("experimental Nix feature") && output.contains("is disabled"))
+}
+
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
@@ -14118,6 +14134,13 @@ fn gate_local_hold_advisory(captured: &str) -> &'static str {
         "gate-local: NOTE — a sub-check builder was KILLED (exit 137/143 or signal 9/15 = SIGKILL/SIGTERM \
          from the OOM-killer, a reaper, or the loop timeout under check-lease contention), NOT a test/compile \
          failure; RE-RUN gate-local when the box is quieter before treating this as a regression."
+    } else if gate_output_is_persistent_peer_misconfig(captured) {
+        "gate-local: NOTE — the failure is a PERSISTENT remote-BUILDER MISCONFIG (a `build-users-group` / \
+         disabled-`experimental Nix feature` peer-config error), NOT your code and NOT a transient — a re-run \
+         is FUTILE (it fails identically until the PEER is repaired; `--fallback` does not cover an \
+         accept-then-error). Verify + repair the builder: `.claude/fleet/setup-nix-builder-peer.sh verify \
+         <peer-fqdn>` (then the `peer` step to re-provision). Route to v-fleet-tooling if it persists; do NOT \
+         re-run or treat it as your regression."
     } else {
         "gate-local: NOTE — no nix-transient signature in the output; treat this as a REAL sub-check \
          failure (a regression to route/fix), not infra flake."
@@ -22244,10 +22267,31 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             !gate_output_is_gc_race_transient(nixbld),
             "nixbld group error is not a GC race"
         );
+        // A persistent build-users-group peer-config error must NOT re-run (futile) AND must get the
+        // specific PEER MISCONFIG guidance (verify/repair the peer) rather than the misleading generic
+        // "your code regression" advisory — it is a peer to repair, not the agent's code.
+        let nixbld_adv = gate_local_hold_advisory(nixbld);
         assert!(
-            gate_local_hold_advisory(nixbld).contains("REAL sub-check"),
-            "a persistent build-users-group config error must read as REAL (fix it), not a GC-race re-run"
+            nixbld_adv.contains("PERSISTENT remote-BUILDER MISCONFIG")
+                && nixbld_adv.contains("setup-nix-builder-peer.sh")
+                && !nixbld_adv.contains("RE-RUN")
+                && !nixbld_adv.contains("REAL sub-check"),
+            "a build-users-group peer misconfig must read as a persistent peer-repair, not a re-run or a code regression: {nixbld_adv}"
         );
+        // A peer with a disabled experimental feature (GOTCHA E: ca-derivations missing) is the same
+        // persistent-misconfig class → peer-repair guidance, not a re-run.
+        let exp_disabled = "error: build of '/nix/store/aaaa-guide-build-0017.drv' on 'ssh://bythewc@peer' \
+                            failed: error: experimental Nix feature 'ca-derivations' is disabled; \
+                            add '--extra-experimental-features ca-derivations' to enable it";
+        assert!(gate_output_is_persistent_peer_misconfig(exp_disabled));
+        let exp_adv = gate_local_hold_advisory(exp_disabled);
+        assert!(
+            exp_adv.contains("PERSISTENT remote-BUILDER MISCONFIG")
+                && !exp_adv.contains("REAL sub-check"),
+            "a disabled-experimental-feature peer error must read as a persistent peer-repair: {exp_adv}"
+        );
+        // A genuine local sub-check failure (no peer-config signature) must still read REAL, not peer-misconfig.
+        assert!(!gate_output_is_persistent_peer_misconfig(real));
         // GUARD: a REAL builder failure that happens to name a /nix/store path but reports an exit code
         // (NOT "does not exist") must NOT be misread as the GC race — stays REAL.
         assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
