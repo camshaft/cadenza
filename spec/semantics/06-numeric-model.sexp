@@ -2050,7 +2050,8 @@
       (export main)))
   (call main (: -7 Int64))
   (output (: (tuple -3 -4 -3 -4) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; RE-PIN (v-memory-safety, applying v-corpus-harness's escv ruling): known-leak → (live-objects 1). N=1 is the ABI-transferred RETURN-VALUE cell count — the returned `#tuple(-3 -4 -3 -4)` (one Compound, scalars inline), which the host owns and frees. rc-trace verified: the list `xs` AND every Rational intermediate reclaim (freed); the four List.at Option shells reclaim; the SOLE residual (node#137) is the result tuple itself. NOT a guest leak (the earlier known-leak framing was stale — a peer reclaim fix made xs reclaim). Enforced exactly: an over-leak beyond the return tuple → census 2 → reds; must never drop below 1 (freeing the returned tuple = UAF the host's value). A scalar-bodied twin (e.g. `(+ …)` instead of the tuple) censuses 0 — the result SHAPE, not a drop-epilogue bug.
+  (live-objects 1))
 
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
