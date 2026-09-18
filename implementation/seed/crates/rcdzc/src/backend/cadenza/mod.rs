@@ -3705,7 +3705,30 @@ fn emit_expr_viewed(
             for &a in args.iter() {
                 children.push(emit_expr(db, b, a, None, env, emitted)?);
             }
-            Ok(b.list(children))
+            let call = b.list(children);
+            // PEEL an erased-newtype RETURN — the CallClosure twin of the `Core::Call` peel above. A closure
+            // whose type returns `Nominal{decl, inner}` (e.g. a `(-> Int64 Tag)` param `g`, `type Tag (Mk
+            // Int64)`) reaches an ERASING consumer that folded the `(match (g x) ((Mk n) n))` unwrap, leaving
+            // THIS node's solved type `inner` while the closure still mints the nominal → the bare `(g x)`
+            // yields `Tag` where `Int64` is required (`(* (g x) 2)` → CDZ0201 "a Tag and an Int64", 21-host-
+            // closures). Recover the closure's return type by stripping the applied-arg arrows off the
+            // closure's `Ty::Fn` spine; wrap `(match (g x) ((Mk n) n))` when it is an emitted single-payload
+            // newtype whose inner equals `eff_ty` (and `eff_ty` is not the nominal itself).
+            let mut ret = crate::infer::type_of(db, closure);
+            for _ in 0..args.len() {
+                match ret {
+                    Ty::Fn(_, r) => ret = (*r).clone(),
+                    _ => break,
+                }
+            }
+            if let Ty::Nominal { decl, inner, .. } = &ret
+                && eff_ty == **inner
+                && is_emitted_single_payload_newtype(db, *decl, emitted)
+                && let Some(peel) = emit_newtype_unwrap_peel(db, b, call, *decl, env)
+            {
+                return Ok(peel);
+            }
+            Ok(call)
         }
         // STRING OPERATIONS — member-access ops `((. String <member>) <op>…)`. `String.at`/`scalar-at`
         // share ONE `Core::StrAt` (both walk the scalar buffer), distinguished by the RESULT's `Option`
