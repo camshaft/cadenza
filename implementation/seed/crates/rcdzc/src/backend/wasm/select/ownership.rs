@@ -435,6 +435,15 @@ pub(crate) fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<Handle
         // / `ValueEncode` above.
         | Core::AstEncode { .. }
         | Core::AstPrint { .. }
+        // `Ast.decode` (`Core::AstDecode`, op 94) returns a FRESH owned `(Result Ast unit)`: op 94 hands back
+        // an OWNED Ast handle on success (`sum-new(Ok, handle)`, used directly — no dup) or 0 → `(Err unit)`,
+        // exactly the null-wrap `StrFromBytes`/`ValueDecode` use (both Owned above). As a `MatchSum` SCRUTINEE
+        // — `(match (Ast.decode …) ((Ok d) …) ((Err _) …))` — the Result is an OWNED computed boxed-sum whose
+        // shell (and the decoded Ast payload, when the arm does not carry it out) the shell-reclaim must drop.
+        // WITHOUT this it fell to `_ => decline`, so `sum_shell_reclaim_ok`'s Owned gate MISSED it and the
+        // Result shell + dead payload LEAKED. The Ast twin of `ValueDecode`(Option value)/`StrFromBytes`; the
+        // decode counterpart to `AstEncode` above (the two are one round-trip).
+        | Core::AstDecode { .. }
         // A runtime `(bin …)` construction builds a FRESH owned Bytes on the rope heap (`bytes-alloc` +
         // per-segment range-check-and-write, exactly like `BytesOf`), so as a `value-eq` operand it is
         // Owned and the emit drops it after the borrowing compare. WITHOUT this a runtime `(bin …)` result

@@ -1174,6 +1174,30 @@
   (live-objects known-leak 3))
 
 (case
+  "Ast.decode of runtime bytes as a VALIDITY CHECK discards the decoded tree and reclaims the Result shell"
+  (doc
+    "The DEAD-AFTER-DECODE face of the runtime `Ast.decode` above: a validity check parses runtime bytes
+           (`Ast.encode (Ast.Int (BigInt.of n))`, op 93 at run time so the compiler cannot fold it) and asks
+           only WHETHER they decode — the `Ok` arm DISCARDS the decoded tree (`_d`) and answers 1, the `Err`
+           arm 0. Unlike the round-trip above (whose `Ok` arm CONSUMES the tree in `(= a …)` — a broader
+           `=`/BigInt reclaim gap that still leaks 3), here the decoded Ast is dead the instant it is bound, so
+           the whole owned chain — the `(Result Ast unit)` Some shell, its dead Ast payload, and the transient
+           encode Bytes — is reclaimed to 0. Pins the runtime-`Ast.decode` Result-shell reclaim: `Ast.decode`
+           (`Core::AstDecode`) is now classified an OWNED fresh-sum producer (the `ValueDecode`/`StrFromBytes`
+           twin), so its shell deep-drops after a dead-after-destructure match. Value 1 (the bytes are valid
+           Ast); a decode that could not reclaim its discarded result LEAKED 3 (the pre-fix residue).")
+  (input
+    (do
+      (def
+        (valid? (: n Int64))
+        (match (Ast.decode (Ast.encode (Ast.Int (BigInt.of n)))) ((Ok _d) 1) ((Err _e) 0)))
+      (def (main (: n Int64)) (valid? n))
+      (export main)))
+  (call main (: 42 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
   "an Ast.Bytes nested in an Ast.List round-trips through encode and decode"
   (doc
     "Composition: an `Ast.Bytes` as a child of an `Ast.List` (`(f b\"hi\")`) round-trips through the
