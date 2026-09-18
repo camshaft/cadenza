@@ -352,6 +352,33 @@ pub(super) fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: St
 /// transfer OUT (deny). Mirrors `binding_escapes`'s `tail_borrowed` threading. `allow_reclaimed_rebox`
 /// relaxes ONLY the member back-edge arm (see `param_only_borrowed_or_reclaimed_backedge`); `false` = the
 /// original coarse `!occurs_in` back-edge rule (the invariant-param path, UNCHANGED).
+/// Whether `id` reads a HEAP CHILD out of `binder` via a borrow-derived EXTRACTION (a `List.at`/`Str.at`/
+/// `Str.slice`/`Bytes.slice`/`Map.lookup` interior read, or a `Proj`/`SumPayload`/`SumExpect` chain bottoming
+/// in one whose source contains `binder`) — i.e. NOT the whole `binder`. Consumed by a DUP-RETAINING
+/// collection builder (`Set.insert`/`List.push`/…), such a child is dup'd into the collection (rc>1), so
+/// `binder` stays reclaimable: its loop-base cascade drop only DECREMENTS the child (the collection keeps its
+/// own ref) — no UAF. This is the HEAP-element companion of the ListAt `elem_scalar` fast-admit, used ONLY at
+/// a dup-ing-builder element operand (where the dup-retain is guaranteed). A WHOLE `Param(binder)` element is
+/// NOT an extraction → returns false → the builder arm's `recur` denies it (its shell would escape). A
+/// genuine escape of the child ELSEWHERE (returned / aliased-out) recurs in a non-dup-builder position and is
+/// denied by the surrounding walk, so admitting it here is leak-over-UAF sound. v-mem-safety, 19-sets:2904.
+fn is_borrow_derived_heap_child(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    if !is_heap_type(&type_of(db, id)) {
+        return false;
+    }
+    match core_of(db, id) {
+        Core::ListAt { list, .. } => occurs_in(db, list, binder),
+        Core::StrAt { string, .. } | Core::StrSlice { string, .. } => occurs_in(db, string, binder),
+        Core::BytesSlice { bytes, .. } => occurs_in(db, bytes, binder),
+        Core::MapLookup { map, .. } => occurs_in(db, map, binder),
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            is_borrow_derived_heap_child(db, scrutinee, binder)
+        }
+        Core::Proj { operand, .. } => is_borrow_derived_heap_child(db, operand, binder),
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn param_only_borrowed_or_backedge_rec(
     db: &mut Db,
@@ -557,7 +584,25 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
                 Some(container) if occurs_in(db, container, binder) => {
                     let mut sites = HashSet::new();
                     collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
-                    if sites.is_empty() {
+                    // Borrow-clean (empty sites — the scalar/get-int path), OR every consuming payload site is
+                    // a dup-ing collection builder ELEMENT arg (v-mem-safety, 19-sets:2904 tuple-element
+                    // Set.of; the heap-element sibling of #9160, v-core-opt ceded). A HEAP element read by
+                    // `(List.at xs i)` and consumed by `(Set.insert acc v)` / `List.push` / `Map.insert`
+                    // registers a consuming site → this arm would otherwise `recur(scrutinee)` → the ListAt
+                    // heap-element deny → the container (list) is not borrow-only → its loop-exit reclaim is
+                    // suppressed → list+elements leak. But a dup-ing collection builder DUP-RETAINS the element
+                    // into the threaded collection (rc>1), so the container's loop-base cascade drop only
+                    // DECREMENTS the element (the collection keeps its own ref) — no UAF. SOUND (leak-over-UAF):
+                    // an ESCAPE (payload returned / embedded in a returned ctor / passed to an opaque Call)
+                    // registers a consuming site that is NOT a builder element arg → `sites ⊄ dup_elems` →
+                    // declines → stays leaking (the #4917 view-producer control). The site node IS the builder's
+                    // `elem` node (`Set.insert acc v` → elem == the payload site), so the subset test is exact.
+                    let borrow_or_dup_absorbed = sites.is_empty() || {
+                        let mut dup_elems = HashSet::new();
+                        collect_dup_builder_elem_args_cont(db, &root, &mut dup_elems);
+                        sites.iter().all(|s| dup_elems.contains(s))
+                    };
+                    if borrow_or_dup_absorbed {
                         recur(db, container, true)
                     } else {
                         recur(db, scrutinee, true)
@@ -596,7 +641,10 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         // documented widening of the NARROW whitelist for the self-loop-list-fold terminal-arm result shapes.
         Core::ListPush { list, elem }
         | Core::ListPrepend { list, elem }
-        | Core::ListUpdate { list, elem, .. } => recur(db, list, false) && recur(db, elem, false),
+        | Core::ListUpdate { list, elem, .. } => {
+            recur(db, list, false)
+                && (recur(db, elem, false) || is_borrow_derived_heap_child(db, elem, binder))
+        }
         // `Set.insert acc v` — the Set analog of `ListPush` (consumes the base collection, adds one element).
         // The synthesized `Set.of`-over-a-runtime-list fold (`__set_of_rt$`, set_of_runtime.rs) threads its
         // owned list param `xs` into the tail back-edge arg `(Set.insert acc (SumPayload (List.at xs i)))`,
@@ -604,7 +652,20 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         // position. Recurse both operands unborrowed (mirrors `ListPush`): a direct `Param(binder)` base/elem
         // still denies (its shell escapes into the set), a borrow-derived scalar element (the `List.at` read)
         // is admitted → the invariant list param is borrow-only → the looped epilogue reclaims it.
-        Core::SetInsert { set, elem, .. } => recur(db, set, false) && recur(db, elem, false),
+        // HEAP-ELEMENT relaxation (v-mem-safety, 19-sets:2904 tuple-element Set.of): the `elem` operand may be
+        // a borrow-derived HEAP CHILD extraction of `binder` (`(SumPayload (List.at xs i))` over a list of
+        // TUPLES) — `recur(elem, false)` would DENY it at the ListAt heap-element gate. But `Set.insert`
+        // DUP-RETAINS the element into the CHAMP (rc>1), so consuming a child extraction of `binder` here does
+        // NOT move `binder`'s shell out — `binder` stays reclaimable (its loop-base drop only decrements the
+        // child; the set keeps its own ref). Admit such a child extraction; a WHOLE `Param(binder)` element
+        // (no extraction) still DENIES via `recur` (its shell WOULD escape into the set). Any genuine escape of
+        // the child elsewhere in the body is caught by the walk's other visits (a returned/aliased-out child
+        // recurs in a non-dup-builder consuming position → denies), so this local admission is leak-over-UAF
+        // sound. (Set analog of the ListPush relaxation above; the heap-element sibling of #9160's scalar arm.)
+        Core::SetInsert { set, elem, .. } => {
+            recur(db, set, false)
+                && (recur(db, elem, false) || is_borrow_derived_heap_child(db, elem, binder))
+        }
         // `Bytes.concat` — the Bytes analog of `ListConcat`, MISSING here (only the `arg_reclaims_binder_as_base`
         // helper listed it). The synthesized `Bytes.of`-over-a-runtime-list fold (`__bytes_of_rt$`,
         // bytes_of_runtime.rs) threads `xs` into the tail arg `(Bytes.concat acc (Bytes.of (list (SumPayload
@@ -698,6 +759,64 @@ pub(super) fn cont_only_borrowed_or_backedge(
                 allow_reclaimed_rebox,
             )
         }),
+    }
+}
+
+/// Collect every DUP-RETAINING collection builder's ELEMENT-value operand node in the sum-match `cont`'s arm
+/// bodies (`Set.insert` elem, `Map.insert` val, `List.push`/`prepend`/`update` elem). A fallible heap
+/// extraction whose payload's EVERY consuming site is one of these nodes is safely container-reclaimable: the
+/// builder dup-retains the element into the threaded collection (rc>1), so the container's loop-base cascade
+/// drop only decrements the element (the collection keeps its own ref) — no UAF (v-memory-safety, the
+/// heap-element sibling of #9160). The payload site node IS the builder's `elem`/`val` node (`Set.insert acc
+/// v` → the site is `v` == the elem operand), so the caller's `sites ⊆ these` subset test is exact.
+pub(super) fn collect_dup_builder_elem_args_cont(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    out: &mut HashSet<StructId>,
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            collect_dup_builder_elem_args_expr(db, *body, out, &mut HashSet::new())
+        }
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            collect_dup_builder_elem_args_expr(db, *body, out, &mut HashSet::new());
+            collect_dup_builder_elem_args_cont(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_dup_builder_elem_args_cont(db, then_, out);
+            collect_dup_builder_elem_args_cont(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms {
+                collect_dup_builder_elem_args_cont(db, &a.cont, out);
+            }
+        }
+    }
+}
+
+fn collect_dup_builder_elem_args_expr(
+    db: &mut Db,
+    id: StructId,
+    out: &mut HashSet<StructId>,
+    seen: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    match core_of(db, id) {
+        Core::SetInsert { elem, .. }
+        | Core::ListPush { elem, .. }
+        | Core::ListPrepend { elem, .. }
+        | Core::ListUpdate { elem, .. } => {
+            out.insert(elem);
+        }
+        Core::MapInsert { val, .. } => {
+            out.insert(val);
+        }
+        _ => {}
+    }
+    for c in core_child_ids(db, id) {
+        collect_dup_builder_elem_args_expr(db, c, out, seen);
     }
 }
 

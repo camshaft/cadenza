@@ -2901,7 +2901,14 @@
       (export main)))
   (call main (: 5 Int64) (: 7 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak))
+  ; the synthesized `Set.of`-over-a-runtime-list fold now reclaims its owned list param even for HEAP (tuple)
+  ; elements: the ListAt heap-element read whose extracted element is CONSUMED into the dup-retaining
+  ; `Set.insert` is admitted as borrow-only (param_only_borrowed_or_backedge — the MatchSum-scrutinee path via
+  ; sites⊆dup-builder-elems, and the SetInsert element operand via is_borrow_derived_heap_child), so the
+  ; looped epilogue drops the list; the set dup-retained the tuples so the cascade only decrements them. The
+  ; heap-element sibling of #9160's scalar arm; an ESCAPING element (returned/ctor-embedded) still leaks (no
+  ; UAF). (v-memory-safety, v-core-opt ceded)
+  (live-objects 0))
 
 (case
   "Set.of of a computed (concatenated) runtime list dedups by value"
