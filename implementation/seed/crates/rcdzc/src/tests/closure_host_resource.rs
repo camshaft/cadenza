@@ -4766,7 +4766,7 @@ fn a_fixed_shape_scalar_tuple_arg_emits_but_a_collection_bearing_one_declines() 
     assert!(
         err.message
             .contains("no scalar host-boundary representation")
-            && err.code.is_none(),
+            && err.code.as_deref() == Some("CDZ0901"),
         "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
         err.code,
         err.message
@@ -4860,7 +4860,7 @@ fn a_tuple_arg_composes_with_compound_and_collection_results() {
     assert!(
         err.message
             .contains("no scalar host-boundary representation")
-            && err.code.is_none(),
+            && err.code.as_deref() == Some("CDZ0901"),
         "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
         err.code,
         err.message
