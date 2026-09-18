@@ -741,9 +741,10 @@
   (output (: 20 Int64))
   (call main (: 10 Int64))
   (output (: 90 Int64))
-  ; gate-confirmed (every heap trial): drop_old_borrowed reclaims the one survivor cell per iteration and
-  ; the op_drop lands AFTER both borrows (l and m) — no double-free, O(n) residue gone. #9172 multi-borrow-safe.
-  (live-objects 0))
+  ; #9172 (drop_old_borrowed) was REVERTED in #9181, so the per-iteration borrow-dup of acc is no longer
+  ; dropped and the O(n) residue returns — back to known-leak (value stays correct, no double-free). The
+  ; multi-borrow drop-after-BOTH-borrows property re-verifies when the accumulator reclaim re-lands (→ 0).
+  (live-objects known-leak))
 
 (case
   "the STRING-accumulator face: a tail loop borrowing its owned String while concat-threading it also leaks per-iteration (O(n))"
@@ -769,11 +770,11 @@
       (def (main (: n Int64)) (loop "" n 0))
       (export main)))
   ; n=5: byte-len(acc) at each of 5 iterations = 0+1+2+3+4 = 10.
-  ; #9172 tighten (gate TIGHTEN CANDIDATE, every heap trial 0): drop_old_borrowed reclaims the String-accumulator
-  ; back-edge borrow-dup too — the O(n) residue is gone; was known-leak.
+  ; #9172 (drop_old_borrowed) was REVERTED in #9181 → the String-accumulator back-edge borrow-dup leaks again;
+  ; back to known-leak (re-tighten when the accumulator reclaim re-lands).
   (call main (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects 0))
+  (live-objects known-leak))
 
 (case
   "the back-edge borrow-dup leak is TAIL-specific: a BODY-recursive (non-tail) borrow-thread RECLAIMS to 0"
@@ -9732,8 +9733,10 @@
   (output (: 666 Int64))
   (call main (: 0 Int64))
   (output (: 666 Int64))
-  ; census sweep (#9179 base): built-in-as-value closure synth reclaims the captured heap capture; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
-  (live-objects 0))
+  ; was tightened to 0 by the #54e395d96c census sweep, but #9181's revert of #9172 (drop_old_borrowed in
+  ; select.rs) regressed this to a leak of 2 (gate: expected 0, got 2) — back to known-leak to match the
+  ; reverted codegen; re-tighten when the reclaim re-lands. Value unchanged, no double-free.
+  (live-objects known-leak))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
