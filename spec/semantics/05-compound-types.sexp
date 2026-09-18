@@ -37443,3 +37443,91 @@
   (call main (: 5 Int64))
   (output (: 3 Int64))
   (live-objects 0))
+
+; A single-variant newtype whose inner is a scalar-orderable type carries the inner's total ORDER when the
+; no-op unwrap is folded away — the cadenza re-emit must peel the newtype operands of an ordering comparison
+; to that inner on BOTH sides (rcdzc #9170; the wasm path always compared the erased inner). These breaker
+; cases attack the peel beyond the DES UInt64 cluster it landed for: a SIGNED Int64 inner with negatives
+; across all four ordering ops, mixed operand construction shapes that must both peel, and the three-way
+; Ordering.of over the same newtype.
+(case
+  "the four ordering comparisons over a SIGNED-Int64 newtype's inner agree with the inner's signed order (negatives)"
+  (doc
+    "`type Sc (Sc Int64)` is a single-variant newtype; `(uw s) = (match s ((Sc n) n))` is the no-op
+           unwrap the optimizer folds, so `(< (uw x) (uw y))` becomes an ordering `Core::Compare` over `Sc`
+           — the shape #9170 peels to the signed `Int64` inner on the cadenza re-emit (wasm always compared
+           the inner). Signed with negatives across all four ops, packed 1000·(<) + 100·(≤) + 10·(>) + (≥):
+           a=-5,b=3 → < and ≤ true, > and ≥ false → 1100; a=3,b=3 → ≤ and ≥ true → 101; a=5,b=-2 → > and ≥
+           true → 11. A peel that used an UNSIGNED compare (as the DES UInt64 cases would allow) would order
+           -5 as a huge positive and flip every row.")
+  (input
+    (do
+      (type Sc (Sc Int64))
+      (def (uw (: s Sc)) (match s ((Sc.Sc n) n)))
+      (def (ops (: a Int64) (: b Int64))
+        (let ((x (Sc.Sc a)) (y (Sc.Sc b)))
+          (+
+            (* 1000 (if (< (uw x) (uw y)) 1 0))
+            (+
+              (* 100 (if (<= (uw x) (uw y)) 1 0))
+              (+ (* 10 (if (> (uw x) (uw y)) 1 0)) (if (>= (uw x) (uw y)) 1 0))))))
+      (def (main (: a Int64) (: b Int64)) (ops a b))
+      (export main)))
+  (call main (: -5 Int64) (: 3 Int64))
+  (output (: 1100 Int64))
+  (call main (: 3 Int64) (: 3 Int64))
+  (output (: 101 Int64))
+  (call main (: 5 Int64) (: -2 Int64))
+  (output (: 11 Int64)))
+
+(case
+  "an ordering comparison peels BOTH operands when they have DIFFERENT construction shapes (tuple-field vs local newtype)"
+  (doc
+    "The peel is keyed on the operand's DECLARED type, and BOTH operands of an ordering compare must
+           peel or the re-emit mismatches (`< Int64 Sc`, CDZ0202). Here one operand is a tuple-FIELD newtype
+           (`x` from destructuring `#tuple((Sc pb) (Sc (+ pb 1)))`) and the other a locally-bound newtype
+           (`p = (Sc pa)`) — two different construction shapes that both emit the nominal `Sc` and must both
+           peel to `Int64`. `(< (uw p) (uw x))`: pa=2 < pb=5 → 1; pa=9 < 5 → 0.")
+  (input
+    (do
+      (type Sc (Sc Int64))
+      (def (uw (: s Sc)) (match s ((Sc.Sc n) n)))
+      (def (mixed (: pa Int64) (: pb Int64))
+        (let ((p (Sc.Sc pa)) (t #tuple((Sc.Sc pb) (Sc.Sc (+ pb 1)))))
+          (match t (#tuple(x _y) (if (< (uw p) (uw x)) 1 0)))))
+      (def (main (: pa Int64) (: pb Int64)) (mixed pa pb))
+      (export main)))
+  (call main (: 2 Int64) (: 5 Int64))
+  (output (: 1 Int64))
+  (call main (: 9 Int64) (: 5 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "the THREE-WAY Ordering.of over a single-variant newtype's inner peels like the boolean ordering ops"
+  (doc
+    "The three-way companion: `(Ordering.of (uw x) (uw y))` over the same `Sc` newtype. Ordering.of
+           does NOT reach the cadenza emit as a raw three-way compare — the optimizer desugars the
+           observe-the-Ordering into an if-chain of relational `<`/`>` BEFORE the backend sees it, so its
+           operands flow through the exact same #9170 `ord_peel_decl` relational peel as the boolean ops
+           (v-cadenza-backend confirmed: HOP1+HOP2 clean, re-emit `(if (< a b) Less (if (> a b) Greater
+           Equal))` over the peeled inner). Signed inner: a=-5,b=3 → Less → 1; a=3,b=3 → Equal → 2; a=5,
+           b=-2 → Greater → 3. Guards that the three-way surface keeps agreeing with the boolean ops through
+           the newtype peel (core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison).")
+  (input
+    (do
+      (type Sc (Sc Int64))
+      (def (uw (: s Sc)) (match s ((Sc.Sc n) n)))
+      (def (three (: a Int64) (: b Int64))
+        (match
+          (Ordering.of (uw (Sc.Sc a)) (uw (Sc.Sc b)))
+          ((Ordering.Less _) 1)
+          ((Ordering.Equal _) 2)
+          ((Ordering.Greater _) 3)))
+      (def (main (: a Int64) (: b Int64)) (three a b))
+      (export main)))
+  (call main (: -5 Int64) (: 3 Int64))
+  (output (: 1 Int64))
+  (call main (: 3 Int64) (: 3 Int64))
+  (output (: 2 Int64))
+  (call main (: 5 Int64) (: -2 Int64))
+  (output (: 3 Int64)))
