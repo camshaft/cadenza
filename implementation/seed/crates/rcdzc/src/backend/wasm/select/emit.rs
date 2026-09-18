@@ -4546,8 +4546,20 @@ pub(super) fn emit(
                 // leak). The bypass is scoped to exactly these binders (never the genuine self-keyed row-op
                 // materialize-borrow the gate protects, breaker #45); and the earlier `escapes_body`/D1 gates
                 // still ran first, so a forced binder that genuinely escapes is already (correctly) not here.
+                // SHELL-RECLAIMED EXTRACTION VIEW (15-rows:778/821, v-mem-safety): a self-keyed materialize
+                // whose operand is a SumExpect extraction view (`Option.expect (Map.lookup …)`) in the
+                // `sumexpect_shell_reclaim` set is INDEPENDENT-OWNED here, NOT the borrowed-operand the #45
+                // gate protects: the SumExpect reclaim already `dup`'d the payload and DROPPED the Option
+                // shell, so the Option (and any `Some`/scrutinee that a re-projection could alias) is CONSUMED
+                // — there is no live owner left to reclaim it, and the map it came from is dropped. So its
+                // materialize base-drop MUST fire (else the extracted base leaks, the 2nd husk after the shell
+                // is reclaimed). BYPASS the borrowed-operand skip for exactly these (scoped like the ifjoin
+                // bypass); the row op's heap field-copies are `dup`'d (`collect_row_op_field_dups`) so the
+                // fresh record survives this drop. No #45 UAF: the shell reclaim's consumption of the Some is
+                // precisely the proof no live borrow of the base remains.
                 if binder == value
                     && !out.ifjoin_forced_drops.contains(&binder)
+                    && !out.sumexpect_shell_reclaim.contains(&value)
                     && !matches!(
                         heap_operand_ownership(db, value),
                         Ok(HandleOwnership::Owned)

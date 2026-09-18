@@ -775,7 +775,11 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak))
+  ; the map-extracted-record row op (Option.expect (Map.lookup …) consumed by Record.without/extend) now
+  ; reclaims the Option shell AND the extracted base: SumExpect view-reclaim admits a row-op-operand
+  ; extraction into the shell-set (is_sumexpect_row_op_operand) and the materialize base-drop fires for a
+  ; shell-reclaimed view (Some consumed → no live borrow; row-op heap fields stay dup'd). (v-memory-safety)
+  (live-objects 0))
 
 (case
   "the same without-extend chain on a LIST-borne record computes"
@@ -818,7 +822,11 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 65 Int64))
-  (live-objects known-leak))
+  ; the map-extracted-record row op (Option.expect (Map.lookup …) consumed by Record.without/extend) now
+  ; reclaims the Option shell AND the extracted base: SumExpect view-reclaim admits a row-op-operand
+  ; extraction into the shell-set (is_sumexpect_row_op_operand) and the materialize base-drop fires for a
+  ; shell-reclaimed view (Some consumed → no live borrow; row-op heap fields stay dup'd). (v-memory-safety)
+  (live-objects 0))
 
 (case
   "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
@@ -2033,7 +2041,11 @@
   (output (: 510 Int64))
   (call main (: 0 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak))
+  ; the map-extracted-record row op (Option.expect (Map.lookup …) consumed by Record.without/extend) now
+  ; reclaims the Option shell AND the extracted base: SumExpect view-reclaim admits a row-op-operand
+  ; extraction into the shell-set (is_sumexpect_row_op_operand) and the materialize base-drop fires for a
+  ; shell-reclaimed view (Some consumed → no live borrow; row-op heap fields stay dup'd). (v-memory-safety)
+  (live-objects 0))
 
 ; --- Record.without on a map-extracted record, both maps staying typed. ---
 (case
@@ -2063,7 +2075,11 @@
   (output (: 1005 Int64))
   (call main (: 0 Int64))
   (output (: 1000 Int64))
-  (live-objects known-leak))
+  ; the map-extracted-record row op (Option.expect (Map.lookup …) consumed by Record.without/extend) now
+  ; reclaims the Option shell AND the extracted base: SumExpect view-reclaim admits a row-op-operand
+  ; extraction into the shell-set (is_sumexpect_row_op_operand) and the materialize base-drop fires for a
+  ; shell-reclaimed view (Some consumed → no live borrow; row-op heap fields stay dup'd). (v-memory-safety)
+  (live-objects 0))
 
 ; --- Open-row projection over COLLECTION-borne records. ---
 (case

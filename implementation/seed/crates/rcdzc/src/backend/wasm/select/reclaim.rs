@@ -1883,6 +1883,39 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
 /// no self-keyed `Let` here → not marked (the list-borne / fresh-record controls stay green). Mirrors
 /// `collect_shell_reclaim_child_dups`'s structure; run alongside it so the emit's child-`dup` + the `dup`
 /// IMPORT decision (`collect_used_ops`) read the SAME set.
+/// Whether `operand` is the OPERAND of a runtime row-op materialize — i.e. `top_body` contains a self-keyed
+/// `Let{[(operand, operand)], body}` whose body is a `Core::Record` (the exact `Record.without`/`extend`
+/// signature `collect_row_op_field_dups` keys on). Used by `collect_sumexpect_view_reclaim_seen` to admit a
+/// SumExpect extraction view consumed by a row op into the SHELL-set even though its self-keyed materialize
+/// binding is a SECOND structural reference (so `count_node_refs == 2` defeats the single-consumer gate). The
+/// row op's heap field-copies are DUP'd (`collect_row_op_field_dups` — same signature), so the shell reclaim
+/// balances against those dups + the materialize `Let`'s own escape-gated base drop.
+pub(super) fn is_sumexpect_row_op_operand(
+    db: &mut Db,
+    top_body: StructId,
+    operand: StructId,
+) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![top_body];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let Core::Let { bindings, body } = core_of(db, n)
+            && let [(bk, bv)] = &bindings[..]
+            && *bk == operand
+            && *bv == operand
+            && matches!(core_of(db, body), Core::Record { .. })
+        {
+            return true;
+        }
+        for c in core_child_ids(db, n) {
+            stack.push(c);
+        }
+    }
+    false
+}
+
 pub(super) fn collect_row_op_field_dups(
     db: &mut Db,
     id: StructId,
@@ -2064,6 +2097,31 @@ pub(super) fn collect_sumexpect_view_reclaim_seen(
     // A fresh `Option.expect` extraction (`Core::SumExpect`) over an Owned single-view Some producer, used
     // EXACTLY ONCE (single-consumer + no-escape: count > 1 ⟹ multi-consumer/escape ⟹ neither set). Classify
     // by its single consumer's kind — the disjoint two-set partition.
+    // ROW-OP-CONSUMED extraction view (15-rows:778/821, v-mem-safety). A `Record.without`/`extend` over a
+    // Map.lookup/List.at extraction `(Option.expect (Map.lookup m k))` lowers the row op to a SELF-KEYED
+    // materialize `Let{(x,x), Core::Record{field ↦ (. x field)}}` whose OPERAND `x` IS this SumExpect. That
+    // Let binding `(x,x)` is a SECOND structural reference to `x` on top of the field `Proj`, so
+    // `count_node_refs(x) == 2` and the single-consumer classifier below (which gates on `refs == 1`) declines
+    // → the Option SHELL + the extracted base record both leak. But the row op is a SINGLE consumer: its
+    // heap fields are DUP'd (`collect_row_op_field_dups`) so the new record is rc-independent, and the
+    // materialize `Let`'s escape-gated drop reclaims the base `x` after the record is built. So the Option
+    // shell is safely orphan-reclaimable (SHELL-set: dup the extracted base +1, drop the shell cascade -1 =
+    // NET-0 on the base, the base's own lifecycle = the row-op field-dups + the Let-drop). SOUND (leak-over-
+    // UAF): keyed on the EXACT row-op signature (`is_sumexpect_row_op_operand`) — a self-keyed `Let{(x,x)}`
+    // with a `Core::Record` body whose fields Proj off `x` — the same shape `collect_row_op_field_dups` keys
+    // on, so the field-dups that balance the base drop are guaranteed present. Route it to SHELL-set here,
+    // before the `refs == 1` single-consumer branches (which the row op's extra self-keyed ref defeats).
+    if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
+        && is_owned_single_view_producer(db, scrutinee)
+        && is_heap_type(&type_of(db, id))
+        && is_sumexpect_row_op_operand(db, top_body, id)
+    {
+        shell_set.insert(id);
+        for child in core_child_ids(db, id) {
+            collect_sumexpect_view_reclaim_seen(db, child, top_body, view_set, shell_set, seen);
+        }
+        return;
+    }
     if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
         && (is_owned_single_view_producer(db, scrutinee)
             || is_owned_fresh_payload_producer(db, scrutinee))
