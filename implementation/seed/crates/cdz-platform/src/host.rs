@@ -3981,6 +3981,106 @@ mod tests {
         );
     }
 
+    // The O(n) borrow-thread-accumulator reclaim tripwire (v-core-opt co-verify for the back-edge/TCO
+    // borrow-dup family). The accum guest's `on_message` runs a bounded loop that BORROWS an owned List
+    // (`List.len`) while THREADING it (`List.push`) — the single-use borrowed-length inlines into the back-edge
+    // call arg, co-locating acc's borrow with its consume, which is the per-iteration borrow-forced dup the
+    // `drop_old_borrowed` reclaim (#9172, trunk e8808d610e) fixes. Pre-fix each fold leaked ~O(loop) value-heap
+    // cells, so a REUSED instance grew MONOTONICALLY across folds; post-fix a fold nets to baseline. This drives
+    // one reused instance across N folds and GATES that the census stays FLAT (delta 0 after every fold) — a
+    // re-emergence of the borrow-thread dup shows monotonic per-fold growth and REDs this.
+    //
+    // Distinct from `a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline`: that guards the envelope +
+    // outgoing-forward-dup SHELLS of a straight echo forward (a constant per-fold residue if it regresses);
+    // THIS exercises a LOOP BACK-EDGE end-to-end through the reducer forward path, so it is the independent
+    // platform-path SCALING confirmation (net-0 vs O(n)) that a single-fold delta cannot make — complementing
+    // v-core-opt's corpus 09-functions:608 and v-memory-safety's rc-gate. Env-gated on CDZ_REDUCER_ECHO_ACCUM_WASM
+    // + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM; SKIPS cleanly when unset (safe in the routine gate).
+    #[tokio::test]
+    async fn a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero() {
+        let (Ok(path), Ok(dir), Ok(dbg)) = (
+            std::env::var("CDZ_REDUCER_ECHO_ACCUM_WASM"),
+            std::env::var("CDZ_COMPONENT_STORE_DIR"),
+            std::env::var("CDZ_DEBUG_RUNTIME_WASM"),
+        ) else {
+            eprintln!(
+                "accum census env unset (need CDZ_REDUCER_ECHO_ACCUM_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM) — skipping"
+            );
+            return;
+        };
+        let guest = std::fs::read(&path).expect("read the accumulator-loop reducer component");
+        let debug_heap = std::fs::read(&dbg).expect("read the debug-counters runtime component");
+
+        // Compose the guest against the debug-counters value-heap runtime (its live-objects is a real census;
+        // the shipped build reports 0), resolving the rest of its closure from the seeded component-store dir.
+        let engine = super::reducer_engine(&super::ResourceLimits::default()).expect("engine");
+        let component =
+            wasmtime::component::Component::from_binary(&engine, &guest).expect("parse component");
+        let heap_hash = super::component_dependencies(&engine, &component)
+            .into_iter()
+            .find(|d| d.import_name.contains("cadenza:runtime/heap"))
+            .expect("the accumulator guest imports the value-heap runtime")
+            .hash;
+
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(guest.clone())).await.unwrap();
+        for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+            let p = entry.expect("dir entry").path();
+            if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                    .await
+                    .unwrap();
+            }
+        }
+        let program = ProgramHash::of(&guest);
+        let store = wasm_program_store(Arc::new(cas))
+            .with_component_override(heap_hash, Bytes::from(debug_heap));
+        let mut reducer = store
+            .spawn(program, ord(b"accum-census"))
+            .await
+            .expect("spawn the accumulator guest composed against the debug-counters runtime");
+
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        let baseline = reducer.live_object_census().await.expect(
+            "the debug-counters runtime exposes live-objects (is CDZ_DEBUG_RUNTIME_WASM the debug build?)",
+        );
+        eprintln!("accum census: pre-fold baseline live-objects = {baseline}");
+
+        // N folds on a REUSED instance. The loop's per-iteration borrow-forced dup (pre-#9172) accumulates
+        // ~O(loop) cells PER FOLD, so a regression shows MONOTONIC growth over N; post-fix each fold nets to
+        // baseline (flat). N=100 makes O(n) growth unmistakable against net-0.
+        const FOLDS: usize = 100;
+        let mut last = baseline;
+        let mut max_delta: i64 = 0;
+        for _ in 1..=FOLDS {
+            let _ = reducer
+                .on_message(base.clone())
+                .await
+                .expect("accumulator fold succeeds");
+            last = reducer.live_object_census().await.expect("census reads");
+            max_delta = max_delta.max(last as i64 - baseline as i64);
+        }
+        let total_delta = last as i64 - baseline as i64;
+        let per_fold = total_delta / FOLDS as i64;
+        eprintln!(
+            "accum census: after {FOLDS} folds live-objects delta from baseline = {total_delta} (per-fold ≈ {per_fold}, max {max_delta}; net-0 as of the drop_old_borrowed reclaim #9172 — monotonic growth here is a regression)"
+        );
+
+        assert!(
+            total_delta == 0,
+            "REGRESSION: a reused reducer folding the accumulator-loop guest grew the value-heap by {total_delta} cell(s) over {FOLDS} folds (per-fold ≈ {per_fold}, max {max_delta}) — the O(n) per-iteration borrow-forced-dup reclaim (drop_old_borrowed #9172) regressed; the borrowed-then-threaded owned accumulator is leaking again"
+        );
+    }
+
     // ATTRIBUTION harness (v-memory-safety, site-b node-kind rc-trace for v-cdz-wasm-codegen): drive ONE
     // on_message fold on reducer-echo composed against the RC-TRACE runtime (.#rctrace-runtime), drain the
     // per-node ALLOC/DUP/DROP trace, and print the LEAKED node KINDS + residual RCs. Disambiguates the
