@@ -2420,9 +2420,11 @@ pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (
 pass	a deeply-nested tuple map value sub-pattern binds through two tuple levels
 pass	a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation
 pass	a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision
+pass	a def PARAMETER missing its colon before a bare-name type is a VERIFIED add-: fix
 pass	a def body that is a bare N-suffixed BigInt literal round-trips (no spurious return-type hoist)
 pass	a def named after a prelude type name is a plain rebind and compiles
 pass	a def parameter may be a record pattern that destructures by field
+pass	a def parameter missing its colon before a COMPOUND type names the shape but carries no fix
 pass	a def shadowing the prelude String type name is likewise a plain rebind
 pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body

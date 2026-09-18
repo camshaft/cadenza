@@ -572,6 +572,29 @@
   (input (do (def (main) (5 (List Int64))) (export main)))
   (error CDZ0201 (message "juxtaposed with a type") (no-fix)))
 
+; The BINDER-position twin of the value-position pair above: a def PARAMETER written `(a Float64)` without
+; the colon reads as a constructor pattern juxtaposing the binder with its type. Unlike the value-position
+; case (a guess — the author might have meant to apply `5`, so the add-`:` is HEURISTIC/unverified), a bare
+; `(name <Type>)` in a binder slot has exactly ONE valid repair: it IS the annotated binder `(: name Type)`,
+; so the add-`:` swap is behaviour-preserving and VERIFIED (`diagnostics.md` §A Confirmed Fix Is Marked
+; Verified; the fix is only carried when the type is a bare name that can be spliced — a COMPOUND type has no
+; single name atom, so it names the shape with no fix, mirroring the value-position compound case). The
+; misread binder also surfaces its own CDZ0101 unbound-name (the constructor reading of `a`), which is a
+; tolerated cascade here (no `(no-other-errors)`).
+(case
+  "a def PARAMETER missing its colon before a bare-name type is a VERIFIED add-: fix"
+  (input (do (def (f (a Float64)) a) (export f)))
+  (error
+    CDZ0201
+    (message "annotated binder")
+    (message "leading `:`")
+    (fix (kind replace) (replacement "(: a Float64)") (verified))))
+
+(case
+  "a def parameter missing its colon before a COMPOUND type names the shape but carries no fix"
+  (input (do (def (g (a (List Int64))) a) (export g)))
+  (error CDZ0201 (message "annotated binder") (no-fix)))
+
 (case
   "applying a value to a NON-type value keeps the generic not-a-function message, not missing-colon"
   (doc
