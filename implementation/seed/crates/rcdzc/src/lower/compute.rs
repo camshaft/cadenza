@@ -3200,7 +3200,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                 }
                             }
                         }
-                        return Core::Poison(Reject::unsupported(
+                        return Core::Poison(Reject::declined(
+                            crate::diag::DeclineId::TailResumptiveFoldUnhandledForm,
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         ));
                     }
@@ -3251,7 +3252,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                 crate::diag::MULTISHOT_CROSSES_BOUNDARY_DECLINE,
                             ))
                         }
-                        None => Core::Poison(Reject::unsupported(
+                        None => Core::Poison(Reject::declined(
+                            crate::diag::DeclineId::TailResumptiveFoldUnhandledForm,
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         )),
                     }
@@ -3264,7 +3266,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // (the perform arm resolves the enclosing `host` via `perform_host_target`). The manifest
         // contribution (the escaping effect row) is handled at serialization.
         Resolved::Host { body, .. } => core_of(db, body),
-        Resolved::Resume { .. } => Core::Poison(Reject::unsupported(
+        Resolved::Resume { .. } => Core::Poison(Reject::declined(
+            crate::diag::DeclineId::TailResumptiveFoldUnhandledForm,
             crate::diag::RESUME_NOT_REDUCIBLE_DECLINE,
         )),
     }
