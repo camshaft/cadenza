@@ -993,12 +993,33 @@ pub(super) fn emit(
             // (String.from-bytes …)))` extracts a fresh String the SumExpect dup'd (rc1) + freed the shell,
             // and THIS borrowing len-read is its sole scalar-read consumer → drop it post-read (the
             // byte-len-of-decoded-String husk; VIEW set only — a SHELL-set view is owned by its Call consumer).
+            // (4) SHELL-RECLAIM CHILD-DUP'd VIEW as a borrow-ONLY-primitive operand (#9218-followup,
+            // v-core-opt ⟷ v-memory-safety lockstep): a `Core::SumPayload` payload-view that the shell-reclaim
+            // pass CHILD-DUP'd (`operand ∈ dup_sites`) but that reaches `bytes-len` as a BORROW is the residual
+            // Fletcher slice-view leak (10-bytes:2689/:2728). Shape: `(go s 0 (Bytes.len s) 0 0)` where `s` is
+            // ONE shared payload-view node used at a CONSUMING call arg (arg0 → go, dup'd + consumed) AND at the
+            // BORROWING `(Bytes.len s)` arg. The `Core::SumPayload` emit dups the node at EVERY materialization
+            // (it is node-keyed on `dup_sites`), so the borrow-site materialization gets an OWNED child-dup that
+            // `bytes-len` never consumes → +1 leak (the shell's own cascade + go's consume balance only the
+            // alloc + arg0-dup). A recognizer change cannot help: the node is LEGITIMATELY in `dup_sites` from
+            // the arg0 consume, and the `Core::BytesLen` recognizer arm already descends its operand
+            // `consuming=false`. So reclaim the dup HERE, matched 1:1 to the child-dup. LOCKSTEP: this fires iff
+            // the emit's dup fired — mirror its gate (`dup_sites.contains` + NOT a `RestFrom` tail; a bytes
+            // operand is always a heap leaf, so `unboxed.is_none()` + `!unit_leaf` hold by construction), so
+            // drop ⟺ dup, never a drop-without-dup double-free. `heap_operand_ownership(view)==Borrowed` (a
+            // view is shell-owned), so this is DISJOINT from the Owned branch above (no double-drop).
+            let child_dup_borrowed_view = matches!(
+                core_of(db, operand),
+                Core::SumPayload { ref path, .. }
+                    if !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            ) && out.dup_sites.contains(&operand);
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
                 ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
-                    || out.sumexpect_view_reclaim.contains(&operand);
+                    || out.sumexpect_view_reclaim.contains(&operand)
+                    || child_dup_borrowed_view;
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);
@@ -1007,7 +1028,7 @@ pub(super) fn emit(
                 out.push(Lir::LocalTee(bytes_slot)); // [bytes], bytes_slot = the owned bytes
                 out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32] (borrows the bytes)
                 out.push(Lir::LocalGet(bytes_slot)); // [len, bytes]
-                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary)
+                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary / child-dup'd view)
                 out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
                 return Ok(());
             }
