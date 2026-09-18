@@ -1332,7 +1332,15 @@ fn emit_def(
         {
             let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
             let colon = b.name(":");
-            let ty_node = b.name(rt.render_name(&db.name_ctx()).as_str());
+            // Build the RECOMPILABLE type node, not a bare `render_name` string: an UNUSUAL-width int
+            // (`(Int 4)` — a width the surface has no bare alias for, only `Int8/16/32/64`) renders as the
+            // ctor application `(Int 4)`, which `int_module_ast` produces; `render_name` would emit the bare
+            // `Int4`, an UNBOUND name → CDZ0101 on recompile (06-numeric runtime unusual-width arith). A
+            // standard-width int (`Int8`) and a float (`Float32`) render identically to the old bare name.
+            let ty_node = match &rt {
+                Ty::Int(it) => int_module_ast(b, *it),
+                _ => b.name(rt.render_name(&db.name_ctx()).as_str()),
+            };
             b.list(vec![colon, body_node, ty_node])
         }
         // Thread the world-declared export RESULT type (typed-WIT-export boundary) as the body's `expected`,
