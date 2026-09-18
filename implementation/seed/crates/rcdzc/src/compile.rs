@@ -505,6 +505,7 @@ fn compile_with_opt_inner(
             value_range_uncached_calls: 0,
             param_apply_extra_handled_calls: 0,
             is_cse_shareable_uncached_calls: 0,
+            referenced_closure_codes_builds: 0,
         };
     }
 
@@ -1246,6 +1247,16 @@ fn compile_with_opt_inner(
             #[cfg(test)]
             {
                 db.is_cse_shareable_uncached_calls
+            }
+            #[cfg(not(test))]
+            {
+                0
+            }
+        },
+        referenced_closure_codes_builds: {
+            #[cfg(test)]
+            {
+                db.referenced_closure_codes_builds
             }
             #[cfg(not(test))]
             {
@@ -7403,6 +7414,7 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
         value_range_uncached_calls: 0,
         param_apply_extra_handled_calls: 0,
         is_cse_shareable_uncached_calls: 0,
+        referenced_closure_codes_builds: 0,
     }
 }
 

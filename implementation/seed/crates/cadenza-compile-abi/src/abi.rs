@@ -368,6 +368,15 @@ pub struct CompileOutput {
     /// bound — a future un-memoization flips it back to quadratic. `0` outside `rcdzc`'s emit path.
     /// Always-present (same cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
     pub is_cse_shareable_uncached_calls: u64,
+    /// A DIAGNOSTIC METRIC: how many times this compile BUILT the `rcdzc` Db's `referenced_closure_codes`
+    /// set (the lazy whole-program walk behind `backend::wasm::select::def_funcref_taken`). The set is a
+    /// whole-program fact cached on first demand and reused, so this stays O(1) in the def count; a broken
+    /// memo that re-walked the whole program per `def_funcref_taken` call (it is queried per-def from 4
+    /// reclaim sites) would make it O(N), reintroducing the O(N²) that was 65% of a real self-host file
+    /// compile. Surfaced here for the regression-guard test (`def_funcref_taken_stays_linear...`) to assert
+    /// builds do NOT grow with def count. `0` outside `rcdzc`'s emit path. Always-present (same
+    /// cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
+    pub referenced_closure_codes_builds: u64,
 }
 
 impl CompileOutput {

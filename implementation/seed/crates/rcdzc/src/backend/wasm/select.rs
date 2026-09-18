@@ -8128,22 +8128,53 @@ fn def_funcref_taken(db: &mut Db, body: StructId) -> bool {
     if codes.is_empty() {
         return false;
     }
-    fn walk(db: &mut Db, id: StructId, codes: &[usize], seen: &mut HashSet<StructId>) -> bool {
+    // LAZY MEMO (operator directive 2026-09-18: collapse this quadratic via demand-driven memoization, not
+    // an eager precompute pass). "Is any code referenced by a `Core::Closure` anywhere?" is a WHOLE-PROGRAM
+    // fact INDEPENDENT of `body`, so computing it once and caching it answers every per-def query in O(1) —
+    // instead of re-walking the whole program per def (this fn is called per-def from 4 reclaim sites, so the
+    // old walk was O(defs · program-nodes) = O(N²); it was 65% of a real self-host file compile). Built on
+    // FIRST demand and cached on `db` — a compile with no funcref-taken query never builds it.
+    ensure_referenced_closure_codes(db);
+    let referenced = &db
+        .referenced_closure_codes
+        .as_ref()
+        .expect("ensure_referenced_closure_codes populates the cache")
+        .1;
+    codes.iter().any(|c| referenced.contains(c))
+}
+
+/// Lazily build + cache [`Db::referenced_closure_codes`]: every `Core::Closure` `code` reachable from any
+/// `db.defs` body. Rebuilds only when `lifted` grew since the cached snapshot (lift is append-only, so the
+/// referenced-code set is fixed once lifting settles — by the emit phase it has). ONE whole-program walk,
+/// `seen`-deduped across bodies (a DAG-shared subtree is visited once) — the SAME node coverage the old
+/// per-call `def_funcref_taken` walk had, just collecting the complete code set instead of early-out per body.
+fn ensure_referenced_closure_codes(db: &mut Db) {
+    let version = db.lifted.len();
+    if matches!(&db.referenced_closure_codes, Some((v, _)) if *v == version) {
+        return;
+    }
+    #[cfg(test)]
+    {
+        db.referenced_closure_codes_builds += 1;
+    }
+    fn walk(db: &mut Db, id: StructId, set: &mut HashSet<usize>, seen: &mut HashSet<StructId>) {
         if !seen.insert(id) {
-            return false;
+            return;
         }
-        if let Core::Closure { code, .. } = core_of(db, id)
-            && codes.contains(&code)
-        {
-            return true;
+        if let Core::Closure { code, .. } = core_of(db, id) {
+            set.insert(code);
         }
-        crate::backend::wasm::select::reclaim::core_child_ids(db, id)
-            .into_iter()
-            .any(|c| walk(db, c, codes, seen))
+        for c in crate::backend::wasm::select::reclaim::core_child_ids(db, id) {
+            walk(db, c, set, seen);
+        }
     }
     let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    let mut set = HashSet::new();
     let mut seen = HashSet::new();
-    bodies.into_iter().any(|b| walk(db, b, &codes, &mut seen))
+    for b in bodies {
+        walk(db, b, &mut set, &mut seen);
+    }
+    db.referenced_closure_codes = Some((version, set));
 }
 
 /// blx1 caveat-(a) COMPLETENESS (v-mem rc-co-read gap): whether `callee` is called from ANY LIFTED body
