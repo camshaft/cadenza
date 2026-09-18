@@ -4008,6 +4008,54 @@
   (live-objects 0))
 
 (case
+  "a fresh String.from-bytes leaf stored into a list is read back UAF-safe (store-into-collection leaves a conservative residual)"
+  (doc
+    "The COLLECTION-escape complement of the runtime from-bytes consume above (which reads the fresh leaf
+           by scalar ops only → census 0). `String.from-bytes` yields a FRESH owned String leaf (an
+           INDEPENDENT decoded value that does NOT alias its source Bytes — the `fresh_payload` disposition
+           the escape-admit boundary just completed white-box: the sum-expect view-reclaim branch admits
+           fresh IN alongside compacting IN / retaining OUT). Here the decoded `s` (\"AAA\", built by
+           recursion so nothing folds) is stored into a runtime `#list(s (String.concat s \"X\"))` — used
+           TWICE, once as an element and once as a `String.concat` operand — then read back by index and its
+           byte-len taken: k=0 → \"AAA\" → 3, k=1 → \"AAAX\" → 4, k=2 → OOB → -1. SOUNDNESS (the value pins):
+           if a fresh-payload admission wrongly reclaimed the leaf while it is live inside the list, or the
+           second use double-freed it, the read-back or the concat would walk a freed/garbled leaf — the
+           values HOLD on all backends, so the store-into-collection path is UAF-safe. CENSUS (measured):
+           NOT 0 — store-into-a-collection is classified as an escape (conservatively, even though the list
+           is a local read via a borrow and dropped, the return being scalar), so the shell is NOT reclaimed
+           and a residual survives (call 0 → 2 live cells). Leak-over-UAF SOUND: the same conservative
+           store-into-collection disposition as the String.at-view-into-returned-List escape control, here on
+           the FRESH-leaf-into-LOCAL-list face — a TIGHTEN CANDIDATE (a reclaim that proved the local list is
+           dead-and-dropped could flip this to 0, but never at the cost of the UAF-safety the values pin).")
+  (input
+    (do
+      (def
+        (rep (: acc Bytes) (: n Int64))
+        (if (< n 1) acc (rep (Bytes.concat acc (Bytes.of #list(65))) (- n 1))))
+      (def
+        (main (: k Int64))
+        (match
+          (String.from-bytes (rep (Bytes.of #list()) 3))
+          ((Some s)
+            (match
+              (List.at #list(s (String.concat s "X")) k)
+              ((Some got) (String.byte-len got))
+              ((None _u) -1)))
+          ((None _u) -2)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 4 Int64))
+  (call main (: 2 Int64))
+  (output (: -1 Int64))
+  ; MEASURED (breaker, this gate): census is NOT 0 — store-into-collection is treated as a conservative escape,
+  ; so the fresh from-bytes leaf + its list residual survive (call 0 → 2 live cells). UAF-safe (values hold),
+  ; leak-over-UAF sound, TIGHTEN CANDIDATE. Was probed at (live-objects 0); gate red'd "expected 0, got 2" →
+  ; corrected to known-leak. Same disposition as the String.at-view-into-returned-List escape control above.
+  (live-objects known-leak))
+
+(case
   "to-bytes of a sliced multibyte string is read twice and both reads see the right bytes"
   (doc
     "The `String.slice`/`to-bytes` member of the consuming-op-double-read family (the sibling the
