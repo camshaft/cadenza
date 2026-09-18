@@ -3,18 +3,22 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/camshaft/cadenza/main/install.sh | sh
 #
-# Detects your OS/arch, downloads the matching prebuilt `cdz` + `cdz-run` binaries from a GitHub
-# release, verifies the SHA-256, and installs both onto PATH. By default it installs the rolling
-# `nightly` prerelease (always the tip build). Pin a version with CDZ_VERSION (a tag like v1.2.3,
-# or "latest" for the newest stable v* release), or override the install dir with CDZ_INSTALL_DIR.
+# Detects your OS/arch, downloads the matching prebuilt `cdz` binary from a GitHub release, verifies
+# the SHA-256, and installs it onto PATH. `cdz` is the whole toolchain in one binary — it compiles AND
+# runs (`cdz run`/`cdz test` link the runner in-process), so no other binary need be on your PATH. By
+# default it installs the rolling `nightly` prerelease (always the tip build). Pin a version with
+# CDZ_VERSION (a tag like v1.2.3, or "latest" for the newest stable v* release), or override the install
+# dir with CDZ_INSTALL_DIR.
 #
-# The binaries are dynamically linked against the system glibc — a normal Linux/macOS host has
-# everything they need. The content-addressed value-heap runtime is NOT bundled here; cdz fetches
-# and pins it separately by content hash on first use.
+# The binary is dynamically linked against the system glibc — a normal Linux/macOS host has everything
+# it needs. The content-addressed value-heap runtime is NOT bundled here; cdz fetches and pins it
+# separately by content hash on first use.
 set -eu
 
 REPO="camshaft/cadenza"
-BINS="cdz cdz-run"
+# Just `cdz` — the single mega-binary. (`cdz run`/`cdz test` run in-process, so the old standalone
+# `cdz-run` binary is not needed on PATH; `cdz run <component.wasm>` replaces `cdz-run <component.wasm>`.)
+BINS="cdz"
 # The release to install from. Default: the rolling "nightly" prerelease, whose asset filenames are
 # stable (cdz-nightly-<target>.tar.gz). A literal tag (v1.2.3) installs that release. "latest"
 # resolves the newest NON-prerelease v* tag via GitHub's /releases/latest redirect (needed because
@@ -53,10 +57,10 @@ case "$os/$arch" in
 	Linux/aarch64 | Linux/arm64) target="aarch64-unknown-linux-gnu" ;;
 	Darwin/arm64) target="aarch64-apple-darwin" ;;
 	Darwin/x86_64)
-		err "no prebuilt binary for Intel macOS; build from source with: cargo build --release -p cdz -p cdz-run"
+		err "no prebuilt binary for Intel macOS; build from source with: cargo build --release -p cdz --bin cdz"
 		;;
 	*)
-		err "unsupported platform $os/$arch; build from source with: cargo build --release -p cdz -p cdz-run"
+		err "unsupported platform $os/$arch; build from source with: cargo build --release -p cdz --bin cdz"
 		;;
 esac
 
@@ -101,7 +105,7 @@ else
 	echo "install: warning: no checksum file found; skipping verification" >&2
 fi
 
-# Each tarball stages the binaries under cdz-<version>-<target>/. Extract and install both.
+# The tarball stages the binary under cdz-<version>-<target>/. Extract and install it.
 tar -xzf "${tmp}/${archive}" -C "$tmp"
 mkdir -p "$INSTALL_DIR"
 for bin in $BINS; do

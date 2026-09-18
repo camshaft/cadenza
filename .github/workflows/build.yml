@@ -1,9 +1,12 @@
 # Reusable artifact-build workflow — produces the release payload.
 #
 # Shared by release.yml (tags) and nightly.yml (rolling prerelease). Two parallel legs:
-#   - `binaries`: the CLI tools (cdz, cdz-run) built per platform, NATIVELY
-#     (each platform on its own runner — GitHub now offers free x86_64 + arm64 Linux and arm64
-#     macOS runners, so no cross toolchain is needed), tarred as `cdz-<version>-<target>.tar.gz`.
+#   - `binaries`: the `cdz` mega-binary (the WHOLE toolchain in one — it compiles AND runs, since
+#     `cdz run`/`cdz test` link the runner in-process), built per platform, NATIVELY (each platform on
+#     its own runner — GitHub now offers free x86_64 + arm64 Linux and arm64 macOS runners, so no cross
+#     toolchain is needed), tarred as `cdz-<version>-<target>.tar.gz`. Only `cdz` is shipped: the old
+#     standalone `cdz-run` binary is redundant on PATH (`cdz run <c.wasm>` == `cdz-run <c.wasm>`), so
+#     the tarball is a single self-contained binary (operator: "nothing else on the path other than cdz").
 #   - `runtime`: the content-addressed value-heap runtime component, produced ONCE (it is a
 #     wasm32 artifact, platform-independent), named by its content hash.
 #
@@ -51,8 +54,7 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release --locked \
-            -p cdz --bin cdz \
-            -p cdz-run --bin cdz-run
+            -p cdz --bin cdz
 
       # Package. `tar` the binaries + a README pointer under a versioned name.
       - name: Package
@@ -61,7 +63,7 @@ jobs:
           set -euo pipefail
           stage="cdz-${{ inputs.version }}-${{ matrix.target }}"
           mkdir -p "dist/$stage"
-          cp target/release/cdz target/release/cdz-run "dist/$stage/"
+          cp target/release/cdz "dist/$stage/"
           cp README.md "dist/$stage/" 2>/dev/null || true
           tar -C dist -czf "dist/$stage.tar.gz" "$stage"
           ( cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256" )

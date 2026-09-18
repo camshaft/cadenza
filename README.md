@@ -29,18 +29,20 @@ capability-gated build tool that turns source into those components, and is itse
 
 ## Install
 
-Grab the prebuilt `cdz` toolchain (the `cdz` compiler + the `cdz-run` runner):
+Grab the prebuilt `cdz` toolchain — one self-contained binary that both compiles and runs Cadenza:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/camshaft/cadenza/main/install.sh | sh
 ```
 
 It detects your OS/architecture, downloads and checksum-verifies the matching release tarball, and
-installs `cdz` + `cdz-run` to `~/.local/bin`. By default it installs the rolling `nightly` build; set
-`CDZ_VERSION=vX.Y.Z` to pin a release (or `CDZ_VERSION=latest` for the newest stable), and
-`CDZ_INSTALL_DIR` to change where the binaries land. Prebuilt binaries are dynamically linked against
-the system glibc; the content-addressed value-heap runtime is fetched and pinned separately on first
-use. To build from source instead, see **Working in the repo** below.
+installs `cdz` to `~/.local/bin`. `cdz` is the whole toolchain in one binary — `cdz compile`/`build`
+produce components and `cdz run`/`cdz test` execute them in-process, so nothing else needs to be on
+your PATH. By default it installs the rolling `nightly` build; set `CDZ_VERSION=vX.Y.Z` to pin a
+release (or `CDZ_VERSION=latest` for the newest stable), and `CDZ_INSTALL_DIR` to change where it
+lands. The binary is dynamically linked against the system glibc; the content-addressed value-heap
+runtime is fetched and pinned separately on first use. To build from source instead, see **Working in
+the repo** below.
 
 ## Working in the repo
 
