@@ -5281,6 +5281,37 @@
   (live-objects 0))
 
 (case
+  "Map.merge cardinality dedups BOTH intra-operand and cross-operand keys: |merge a b| respects shared keys"
+  (doc
+    "The merge-CARDINALITY law (the merge cases above pin last-writer VALUE; this pins how `Map.len`
+           of a merge counts keys). `a = {1,2,3}` (3 keys); `b = {n, 10, 11}` built by inserting key `n`
+           then 10 then 11. `Map.len (Map.merge a b)` must count each DISTINCT key once, deduping across the
+           two operands (a shared key contributes 1, not 2) AND within `b` (if `n` equals one of b's own
+           later keys, b holds fewer entries). Runtime `n` (defeats fold): n∈{1,2,3} shares one key with a →
+           union of 5 distinct keys; n=7 shares nothing → 6; n=10 collides with b's OWN key 10 so b holds
+           only {10,11} → a{1,2,3}∪{10,11} = 5. A merge that double-counted a shared key would give 6 at
+           n=2, and a b-build that failed to overwrite its own duplicate key would give 6 at n=10. Pins the
+           set-of-keys cardinality (inclusion-exclusion) of the CHAMP union, the Map twin of the Set
+           inclusion-exclusion law.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((a (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30))
+           (b (Map.insert (Map.insert (Map.insert (Map.empty) n 99) 10 40) 11 50)))
+          (Map.len (Map.merge a b))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 5 Int64))
+  (call main (: 7 Int64))
+  (output (: 6 Int64))
+  (call main (: 10 Int64))
+  (output (: 5 Int64))
+  ; gate-confirmed (every heap trial): the operand maps + merge result all reclaim in-body (Map.len is scalar).
+  (live-objects 0))
+
+(case
   "dropping a map derived by persistent insert must not free nodes shared with the survivor"
   (doc
     "The RECLAIM side of the persistence pins above: those check the SURVIVOR's content when a
