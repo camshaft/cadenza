@@ -593,6 +593,27 @@ fn emit_newtype_unwrap_peel(
     Some(b.list(vec![match_head, scrut, arm]))
 }
 
+/// The single-payload-newtype an operand STRUCTURALLY emits when its OWN solved type has been erased to the
+/// inner but the emitted surface value is still the nominal — a `Core::Proj` reading a TUPLE slot whose
+/// declared element type is a newtype (the tuple stores the nominal; the projection emits `(. tup i)` typed
+/// the element's nominal, but the optimizer folded the read's solved type to the erased inner). Returns
+/// `(decl, inner)`. `None` for a non-Proj, a non-tuple/out-of-range operand, or a non-newtype element.
+/// (A binder's declared-vs-solved gap is already handled by [`emit_binder_newtype_inner_peel`]; this is the
+/// projection twin — the missing signal for an arith/compare over a tuple-projected newtype field.)
+fn proj_structural_newtype(db: &mut Db, n: StructId) -> Option<(StructId, Ty)> {
+    let Core::Proj { operand, index } = core_of(db, n) else {
+        return None;
+    };
+    let elem_ty = match crate::infer::type_of(db, operand) {
+        Ty::Tuple(ts) => ts.get(index).cloned()?,
+        _ => return None,
+    };
+    match elem_ty {
+        Ty::Nominal { decl, inner, .. } => Some((decl, (*inner).clone())),
+        _ => None,
+    }
+}
+
 /// Re-WRAP `node` (emitted at the INNERMOST inner type of the single-variant-newtype stack `ty`) back
 /// through every `Ty::Nominal` ctor layer, re-typing it as `ty`: `(: (Outer (Inner node)) ty)`. The dual of
 /// [`emit_newtype_unwrap_peel`] — used when a match SCRUTINEE's value emit erased its newtype wrapper(s) but
@@ -2222,6 +2243,21 @@ fn emit_expr_viewed(
                     }
                     if let Ty::Nominal { decl, inner, .. } = crate::infer::type_of(db, n)
                         && *inner == result_ty
+                        && is_emitted_single_payload_newtype(db, decl, emitted)
+                    {
+                        let scrut = emit_expr(db, b, n, None, env, emitted)?;
+                        if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env) {
+                            return Ok(peel);
+                        }
+                    }
+                    // A TUPLE-PROJECTED newtype field: the projection emits the nominal (`(. tup i)` typed the
+                    // declared element type) though its solved type is the erased inner, so the two checks above
+                    // (solved-type / binder) MISS it. `(/ (. <state-tuple> 1) 1000000000)` over an `Instant`
+                    // element → `/ Instant UInt64` CDZ0201 (27-DES effect-handler state threading, where the
+                    // handler compiles to a fn returning `#tuple(_, Instant-state)`). Peel via the element's
+                    // declared newtype decl.
+                    if let Some((decl, inner)) = proj_structural_newtype(db, n)
+                        && inner == result_ty
                         && is_emitted_single_payload_newtype(db, decl, emitted)
                     {
                         let scrut = emit_expr(db, b, n, None, env, emitted)?;
