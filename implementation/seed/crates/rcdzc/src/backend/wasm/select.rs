@@ -1120,6 +1120,119 @@ fn param_compared_in_loop_body(db: &mut Db, id: StructId, binder: StructId) -> b
         .any(|c| param_compared_in_loop_body(db, c, binder))
 }
 
+/// #9140 (v-memory-safety co-design): whether the SHARED heap param `slot` of a MUTUAL loop group (a
+/// trampolined dispatch over `members`, all sharing one param-slot set) is reclaimable by the group's single
+/// dispatch-loop exit drop. cut-1 is INVARIANT-only (identity-threaded): a member that RE-BOXES the shared
+/// slot is varying → declined (a varying mutual param needs a cross-member per-back-edge old-value reclaim,
+/// the `drop_old_borrowed` analog coordinated across the dispatch — a follow-up). Reclaimable iff EVERY
+/// member (a) binds a heap param at `slot`, (b) keeps it INVARIANT (only identity-threaded on its member
+/// back-edges — `invalidate_varying_params` over that member's body), (c) uses it BORROW + back-edge-only
+/// (`param_only_borrowed_or_backedge` — a NON-tail consume by any member, e.g. a `read-do-next`/`read-do-form`
+/// pair consuming `tree`, FAILS this → decline), AND — the load-bearing UAF guard (the mutual analog of the
+/// single-member AXIS A `looped_invariant_param_caller_owned`) — every EXTERNAL entry (a non-group caller of
+/// any member) passes the slot OWNED, with at least one such owned entry. A member with no external caller
+/// imposes no constraint (intra-group back-edges are owned-by-flow); a truly external caller that passes it
+/// BORROWED-and-reuses it (the CAESAR class) → decline (leak, never a double-free). Any export-boundary /
+/// funcref-taken / lifted-called member conservatively declines (the trampoline / an invisible edge owns it).
+/// Since a pure borrow + identity back-edge emits NO dup, each member leaves the slot at the SAME rc it
+/// received, so a single rc1 exit drop is balanced (v-mem Q1: no cross-member dup ⟹ no double-free).
+fn mutual_group_slot_reclaimable(
+    db: &mut Db,
+    members: &[usize],
+    slot: u32,
+    _param_slots: &[u32],
+) -> bool {
+    // Conservative invisible-edge / export-boundary decline (any member): the trampoline or an eta-lifted /
+    // call_indirect edge could own or forward the handle in a way the direct call-site scan misses.
+    for &m in members {
+        let Some(body_m) = db.defs.get(m).and_then(|d| d.body) else {
+            return false;
+        };
+        if db.exports.iter().any(|e| e.def == Some(m)) {
+            return false; // an export entry's boundary param is owned/dropped by the trampoline.
+        }
+        if def_funcref_taken(db, body_m) || callee_called_from_lifted_body(db, m) {
+            return false;
+        }
+    }
+    let member_bodies: std::collections::HashSet<StructId> = members
+        .iter()
+        .filter_map(|&m| db.defs.get(m).and_then(|d| d.body))
+        .collect();
+    let mut any_external_owned = false;
+    for &m in members {
+        let Some(body_m) = db.defs.get(m).and_then(|d| d.body) else {
+            return false;
+        };
+        let params_m = crate::layout::def_params(db, m);
+        // Re-derive member `m`'s slot assignment exactly as the emit does (dense `0..n`, Unit elided).
+        let mut slots_m: HashMap<StructId, u32> = HashMap::new();
+        let mut pslots_m: Vec<u32> = Vec::new();
+        for (b, ty) in params_m.iter() {
+            if matches!(ty.strip_nominal(), Ty::Unit) {
+                continue;
+            }
+            if valtype_of(ty).is_none() {
+                return false;
+            }
+            let s = pslots_m.len() as u32;
+            slots_m.insert(*b, s);
+            pslots_m.push(s);
+        }
+        // The member's own binder + type at the shared slot (must be a heap param in EVERY member).
+        let Some((binder_m, ty_m)) = params_m
+            .iter()
+            .find(|(b, _)| slots_m.get(b) == Some(&slot))
+            .cloned()
+        else {
+            return false;
+        };
+        if !is_heap_type(&ty_m) {
+            return false;
+        }
+        // (b) INVARIANT (identity-threaded) in member `m` — cut-1 declines a re-boxed (varying) shared slot.
+        let mut invariant_m: std::collections::HashSet<StructId> =
+            params_m.iter().map(|(b, _)| *b).collect();
+        invalidate_varying_params(
+            db,
+            body_m,
+            &pslots_m,
+            &slots_m,
+            members,
+            m,
+            &mut invariant_m,
+            &params_m,
+        );
+        if !invariant_m.contains(&binder_m) {
+            return false;
+        }
+        // (c) BORROW + back-edge-only in member `m` (a non-tail consume by any member fails this → decline).
+        if !param_only_borrowed_or_backedge(db, body_m, binder_m, members, &pslots_m, &slots_m) {
+            return false;
+        }
+        // Caller-ownership (the CAESAR UAF guard, generalized to the mutual group): every EXTERNAL entry
+        // (a non-group caller of `m`) must pass the slot OWNED; a borrowed-and-reused external arg declines.
+        let Some(param_index) = params_m.iter().position(|(b, _)| *b == binder_m) else {
+            return false;
+        };
+        let sites = crate::infer::callee_call_site_args_with_caller(db, m);
+        for (caller_body, args) in sites {
+            if member_bodies.contains(&caller_body) {
+                continue; // intra-group back-edge: owned-by-flow, not a fresh external entry.
+            }
+            match args.get(param_index) {
+                Some(&arg)
+                    if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) =>
+                {
+                    any_external_owned = true;
+                }
+                _ => return false, // external borrowed / unknown / missing → decline (leak, not UAF).
+            }
+        }
+    }
+    any_external_owned // no external owned entry proves ownership → decline (leak-safe).
+}
+
 fn looped_owned_param_drops(
     db: &mut Db,
     body: StructId,
@@ -1155,15 +1268,28 @@ fn looped_owned_param_drops(
     if loop_members.is_empty() {
         return Vec::new(); // not a looping function → the non-tail `emit` path handles dead-binding drops.
     }
-    // NARROW: only PLAIN SELF-recursion (a single-member loop group). A MUTUAL group shares one set of
-    // parameter slots across members whose bodies are emitted inline under a dispatch — a heap param is
-    // carried BETWEEN members, and a partner member may CONSUME it (a non-tail call), so `tree` in a
-    // `read-do-next`/`read-do-form` mutual pair is NOT owned at the group's exit even though each member
-    // passes it identity on its own back-edge. Jointly analyzing every member's body is the general pass's
-    // job; the narrow gate declines the whole mutual case (leak, never a double-free). The witnessed leak
-    // shape (`walk`) is single-member self-recursion, so it is unaffected.
-    if loop_members.len() != 1 {
-        return Vec::new();
+    // #9140 MUTUAL group (more than one member): the members are trampolined into ONE dispatch loop sharing
+    // one param-slot set (the bodies emitted inline under a `which`-discriminant dispatch), so there is a
+    // SINGLE loop-exit and an invariant shared slot holds one identity handle throughout → a single exit drop
+    // reclaims it iff EVERY member borrow+identity-threads it AND every external entry owns it. Delegated to
+    // `mutual_group_slot_reclaimable` (which analyzes every member's body + the group-wide caller-ownership);
+    // cut-1 is INVARIANT-only (a re-boxed/varying shared slot is declined = leak, never a double-free). This
+    // is called once per emitted member-function; each is a distinct dispatch invocation reclaiming ITS OWN
+    // external-entry handle at its own single exit, so no shared handle is double-dropped across members.
+    if loop_members.len() > 1 {
+        let mut drops = Vec::new();
+        for (binder, ty) in params.iter() {
+            if !is_heap_type(ty) {
+                continue;
+            }
+            let Some(&slot) = slot_of.get(binder) else {
+                continue;
+            };
+            if mutual_group_slot_reclaimable(db, &loop_members, slot, param_slots) {
+                drops.push(slot);
+            }
+        }
+        return drops;
     }
     // Params identity-passed on EVERY back-edge (invariant) — a varying heap param is left to leak (a single
     // exit drop would miss the per-iteration re-boxed values).

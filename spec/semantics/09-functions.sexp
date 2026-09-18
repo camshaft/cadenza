@@ -474,8 +474,11 @@
            owned-param drop can reason about a SELF-recursive-call consume (same frame) but DECLINES across a
            mutual-recursion cycle — `count_param_consumes(xs) > 0` via the cross-function call makes the
            base-arm drop decline, leaking on the borrow-dead path. Unlike the self-recursive case above, this
-           needs NO sibling dup — a single mutual call suffices. IDEAL 0; flip when the drop becomes
-           call-graph-aware. (Adversarial pin from a breaker probe; census gate-confirmed.)")
+           needs NO sibling dup — a single mutual call suffices. NOW RECLAIMS to 0 (#9140): the owned-param
+           drop is call-graph-aware for a mutual group — `looped_owned_param_drops` analyzes the SHARED slot
+           across EVERY member (borrow + identity-thread only across the go↔helper SCC) and every external
+           entry owns it, so the single trampolined dispatch-loop exit reclaims the one identity handle. Value
+           3, no trap, opt-invariant O0..O3. (Adversarial pin from a breaker probe; census gate-confirmed.)")
   (input
     (do
       (def
@@ -486,13 +489,13 @@
         (if (< d 1) (List.len xs) (go xs (- d 1))))
       (def (main (: d Int64)) (go #list(1 2 (+ d 1)) d))
       (export main)))
-  ; base arm (d<1): borrows xs, mutual partner never called — yet still leaks 2.
+  ; base arm (d<1): borrows xs, mutual partner never called — the mutual-group exit drop reclaims xs.
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  ; one mutual hop (d=1 → helper d=0 → List.len): value stays 3, census still 2.
+  ; one mutual hop (d=1 → helper d=0 → List.len): value stays 3, census now 0 (#9140 reclaim).
   (call main (: 2 Int64))
   (output (: 3 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "the self-recursion control: the SAME single-call shape recursing on ITSELF reclaims to 0"
@@ -548,6 +551,35 @@
   (call main (: 0 Int64))
   (output (: 3 Int64))
   (live-objects 0))
+
+(case
+  "the caller-ownership guard: an EXTERNAL caller that passes the mutual SCC's owned param BORROWED-and-REUSES it stays leaking (no double-free)"
+  (doc
+    "The load-bearing UAF guard-witness for #9140's group-wide caller-ownership (the mutual analog of the
+           single-member AXIS A `looped_invariant_param_caller_owned`). `go`/`helper` are the reclaiming mutual
+           SCC above, but here `caller` passes `xs` to `(go xs 2)` AND REUSES it after via `(List.len xs)`, so
+           the SCC does NOT own `xs` — the caller holds a live borrow across the call. The mutual-group exit
+           drop MUST DECLINE: freeing `xs` at the group exit would dangle the caller's reused handle (the
+           CAESAR-class double-free/UAF). So `xs` STAYS leaking (leak-over-UAF). Value = go(xs,2) + len(xs) =
+           3 + 3 = 6. A regression that dropped the caller-ownership guard would UAF-trap / misvalue on the
+           debug-counters+rctrace runtimes OR wrongly reclaim to 0 — this exact `(live-objects 2)` pin trips on
+           all three. (v-memory-safety rc-gate-confirmed: value 6 correct, NO rc-underflow, stays leaking 2.)")
+  (input
+    (do
+      (def
+        (go (: xs (List Int64)) (: d Int64))
+        (if (< d 1) (List.len xs) (helper xs (- d 1))))
+      (def
+        (helper (: xs (List Int64)) (: d Int64))
+        (if (< d 1) (List.len xs) (go xs (- d 1))))
+      (def (caller (: xs (List Int64))) (+ (go xs 2) (List.len xs)))
+      (def (main (: n Int64)) (caller #list(1 2 (+ n 1))))
+      (export main)))
+  ; n=0: caller passes xs to the go↔helper SCC (which borrows len=3) AND reuses xs after (len=3) → 3+3=6;
+  ; the SCC must NOT free the caller's borrowed xs → it stays leaking (the caller-ownership guard declines).
+  (call main (: 0 Int64))
+  (output (: 6 Int64))
+  (live-objects 2))
 
 (case
   "a CLOSURE param carrying a captured heap env leaks in a self-recursive fn with a SINGLE call (closures trip the SCC miss more readily than list params)"
