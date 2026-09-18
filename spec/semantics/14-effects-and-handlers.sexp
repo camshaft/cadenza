@@ -6101,7 +6101,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 495000 Int64))
-  (live-objects known-leak))
+  ; census sweep (dd6c9e1312 base): the handler-state list accumulator threaded through resume (List.push s v) across 100 dispatches is reclaimed each suspension (borrow-thread-accumulator / handler-state reclaim landed); TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
