@@ -9126,6 +9126,22 @@
               CDZ_COMPONENT_STORE_DIR = "${componentStore}";
               CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
             });
+            # reducer-fold-accum-census (v-nix, wiring v-reducer-pooling #9193): the END-TO-END O(n) reclaim
+            # tripwire — runs the reused-instance N=100 accumulator-loop census (host test
+            # a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero) against the reducer-echo-ACCUM
+            # guest (#9176) composed with the debug-counters runtime, asserting net-0. Net-0 holds post-#9191
+            # (the sibling-narrowed drop_old_borrowed re-land reclaims the single-accumulator co-borrow shape).
+            # Same shape as reducer-fold-census; the ONLY delta is CDZ_REDUCER_ECHO_ACCUM_WASM → the accum guest
+            # component (a DIFFERENT env var than reducer-fold-census's CDZ_REDUCER_ECHO_WASM) + the single
+            # accum test name. STANDALONE (heavy fixtures), off perCrateTestCrane/testCrateCoverageAssert.
+            reducer-fold-accum-census = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
+              pname = "cargo-test-reducer-fold-accum-census";
+              cargoTestExtraArgs = "-p cdz-platform --features host -- "
+                + "a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero";
+              CDZ_REDUCER_ECHO_ACCUM_WASM = "${reducerEchoAccumComponent}/reducer-echo-accum.wasm";
+              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
+              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
+            });
           }
           # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the

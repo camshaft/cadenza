@@ -158,6 +158,12 @@ jobs:
         # source-built cdz-platform + reducer-echo guest (the whole point is to catch a reclaim regression from
         # a HEAD change), closing the stale-eval-cache footgun — same determinism the rust-gate job forces.
         run: nix build .#checks.aarch64-linux.reducer-fold-census --print-build-logs --option eval-cache false
+      # The END-TO-END O(n) accumulator-loop reclaim tripwire (v-reducer-pooling #9193, wired #9176/this-PR):
+      # a reused-instance N=100 census over the reducer-echo-ACCUM guest, asserting net-0 (holds post-#9191).
+      # Same job (shares the nix setup + store cache) as a second step; eval-cache false for the same
+      # current-HEAD determinism. A RED here = a re-emergence of the back-edge/TCO borrow-forced-dup leak.
+      - name: reducer-fold-accum-census (via nix — end-to-end O(n) accumulator-loop reclaim tripwire)
+        run: nix build .#checks.aarch64-linux.reducer-fold-accum-census --print-build-logs --option eval-cache false
 
   publish:
     name: rolling nightly prerelease
