@@ -474,8 +474,11 @@
            owned-param drop can reason about a SELF-recursive-call consume (same frame) but DECLINES across a
            mutual-recursion cycle — `count_param_consumes(xs) > 0` via the cross-function call makes the
            base-arm drop decline, leaking on the borrow-dead path. Unlike the self-recursive case above, this
-           needs NO sibling dup — a single mutual call suffices. IDEAL 0; flip when the drop becomes
-           call-graph-aware. (Adversarial pin from a breaker probe; census gate-confirmed.)")
+           needs NO sibling dup — a single mutual call suffices. NOW RECLAIMS to 0 (#9140): the owned-param
+           drop is call-graph-aware for a mutual group — `looped_owned_param_drops` analyzes the SHARED slot
+           across EVERY member (borrow + identity-thread only across the go↔helper SCC) and every external
+           entry owns it, so the single trampolined dispatch-loop exit reclaims the one identity handle. Value
+           3, no trap, opt-invariant O0..O3. (Adversarial pin from a breaker probe; census gate-confirmed.)")
   (input
     (do
       (def
@@ -486,13 +489,13 @@
         (if (< d 1) (List.len xs) (go xs (- d 1))))
       (def (main (: d Int64)) (go #list(1 2 (+ d 1)) d))
       (export main)))
-  ; base arm (d<1): borrows xs, mutual partner never called — yet still leaks 2.
+  ; base arm (d<1): borrows xs, mutual partner never called — the mutual-group exit drop reclaims xs.
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  ; one mutual hop (d=1 → helper d=0 → List.len): value stays 3, census still 2.
+  ; one mutual hop (d=1 → helper d=0 → List.len): value stays 3, census now 0 (#9140 reclaim).
   (call main (: 2 Int64))
   (output (: 3 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "the self-recursion control: the SAME single-call shape recursing on ITSELF reclaims to 0"
