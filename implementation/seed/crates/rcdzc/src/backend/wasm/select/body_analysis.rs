@@ -685,6 +685,18 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
             recur(db, lhs, false) && recur(db, rhs, false)
         }
         Core::Not { operand } | Core::Convert { operand, .. } => recur(db, operand, false),
+        // Applying a closure BORROWS its callee (reclaim.rs `binding_escapes`/`binder_must_escape` CallClosure
+        // arms: the closure operand escapes ONLY when SITE-A drops an OWNED operand after the apply; a
+        // borrowed/param closure that is merely APPLIED does not escape). So a closure loop-param `f` invoked
+        // in a terminal/back-edge (`(f 0)`) is a BORROW of `f` → recurse the callee BORROWED; the ARGS stay
+        // CONSUMING (a heap arg genuinely escapes into the callee — a direct `Param(binder)` arg denies). This
+        // is the closure-param twin of the ListAt/BytesConcat/Set borrow arms: a self-recursive fn over an
+        // owned closure param that only APPLIES it (base arm) + identity-threads it (back-edge) is borrow/back-
+        // edge-only, so the looped epilogue reclaims the closure's captured env (09-functions:552, #9144). The
+        // loop-exit drop is the SOLE reclaim (SITE-A skips the borrowed loop-param operand), so no double-free.
+        Core::CallClosure { closure, args } => {
+            recur(db, closure, true) && args.iter().all(|&a| recur(db, a, false))
+        }
         // Every OTHER node kind that references `binder` (a non-member Call, a Closure, a Seq, a mutating op,
         // …) is not whitelisted → deny. NARROW by design (an unlisted shape = a leak, never a double-free).
         _ => false,
