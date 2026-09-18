@@ -2062,6 +2062,27 @@ pub(super) fn is_compacting_view_producer(db: &mut Db, scrutinee: StructId) -> b
     )
 }
 
+/// Whether `id` is a `Core::SumExpect` (an `Option.expect`) over a COMPACTING view producer
+/// (`String.at`/`String.slice`) — i.e. the extracted payload is an INDEPENDENT compacted flat leaf (both
+/// producers' emit `OP_BYTES_COMPACT` the Some payload to an owned flat leaf; StrAt at emit.rs:2318,
+/// StrSlice at emit.rs:2506). As a DIRECT (single-use, inlined) operand of a borrowing/consuming producer —
+/// e.g. the `string` source of a NESTED `(String.slice (Option.expect (String.slice …) …) …)` — such an
+/// extracted view is a fresh OWNED TEMPORARY the consumer must reclaim after it is done, exactly like a
+/// `String.concat`/`SumNew` source. But `heap_operand_ownership(Core::SumExpect)` is BORROWED (ownership.rs,
+/// the value-eq/MatchSum-Stage-B note keeps it un-Owned globally), so the consumer's owned-source-reclaim
+/// gate (which keys on `== Owned`) MISSES it and the inner view leaf LEAKS one cell per call. This LOCAL
+/// predicate lets a compacting-view producer's own emit admit the reclaim without the global
+/// reclassification (the local>global discipline `is_owned_single_view_producer`/`reclaim_shell` already
+/// use). SOUND: the compacted leaf never aliases its own source, and a DIRECT `SumExpect` operand is
+/// single-use (a multi-use view is a kept `LocalRef`=Borrowed, NOT a direct `SumExpect`, so it never matches
+/// here → no double-free — the owner reclaims it).
+pub(super) fn is_compacting_view_expect(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::SumExpect { scrutinee, .. } => is_compacting_view_producer(db, scrutinee),
+        _ => false,
+    }
+}
+
 /// Whether `scrutinee` is an owned producer whose `Some` payload is a FRESHLY-ALLOCATED, INDEPENDENT heap
 /// handle — NOT a VIEW that aliases the shell's own storage. `String.from-bytes` (`Core::StrFromBytes`)
 /// decodes the byte range into a BRAND-NEW `String` leaf (`str-from-bytes` transfers the decoded buffer

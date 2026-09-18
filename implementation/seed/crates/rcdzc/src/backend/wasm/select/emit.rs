@@ -2520,10 +2520,20 @@ pub(super) fn emit(
             // aliasing view), freeing the source never frees a still-referenced view — the drop is the
             // #9078/ValueEq drop-owned-operand pattern applied to a compacting view producer's source. The
             // Some/None handle sits BENEATH on the stack; `LocalGet(str_slot); OP_DROP` pops only `str`.
+            // ALSO reclaim when `string` is a DIRECT `Option.expect` over a COMPACTING view producer
+            // (`is_compacting_view_expect`): the NESTED-slice source `(String.slice (Option.expect (String.slice
+            // …) …) …)`. That inner extracted view is a fresh independent compacted leaf (owned temporary), but
+            // `heap_operand_ownership(SumExpect)` is BORROWED (kept un-Owned globally for value-eq/Stage-B), so the
+            // `== Owned` gate above MISSES it and the inner view leaf LEAKS one cell per call (v-memory-safety
+            // escv 2-layer node#1). A direct `SumExpect` operand is single-use — a multi-use inner view is a kept
+            // `LocalRef`=Borrowed, not a direct `SumExpect`, so it never matches → no double-free (the owner
+            // reclaims it). Sound on the escape disposition for the same reason as the `== Owned` case: the payload
+            // is COMPACTED-INDEPENDENT, so freeing the source never frees a still-referenced view.
             if matches!(
                 heap_operand_ownership(db, string),
                 Ok(HandleOwnership::Owned)
-            ) {
+            ) || is_compacting_view_expect(db, string)
+            {
                 out.push(Lir::LocalGet(str_slot));
                 out.push(Lir::CallImport(OP_DROP));
             }
