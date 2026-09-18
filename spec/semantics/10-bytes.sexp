@@ -1069,7 +1069,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -1588,7 +1589,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 40 10 20 10 20 1 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
@@ -1751,7 +1753,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 1 4 30) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string"
@@ -1999,7 +2002,8 @@
         #tuple((major (Bytes.of #list(0x19 0x1 0x2c)) 0) (arg (Bytes.of #list(0x19 0x1 0x2c)) 0)))
       (export main)))
   (output (: (tuple 0 300) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "a CBOR atom decodes each scalar major type to its value"
