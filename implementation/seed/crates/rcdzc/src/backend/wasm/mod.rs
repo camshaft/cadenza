@@ -1201,9 +1201,12 @@ pub fn emit(
                 // the runtime has no `Shape::Sym` and renders it as a String, not its canonical `(Symbol.of …)`
                 // form the constant bake produces — so admitting it would cross a NON-canonical value). Name
                 // the RESULT truthfully rather than blaming the scalar param.
-                return Err(Reject::unsupported(format!(
-                    "{prefix}: a parameterized export cannot return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not available (the scalar parameters are fine)"
-                )));
+                return Err(Reject::declined(
+                    crate::diag::DeclineId::WasmParameterizedHeapReturnNoValueEncode,
+                    format!(
+                        "{prefix}: a parameterized export cannot return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not available (the scalar parameters are fine)"
+                    ),
+                ));
             } else {
                 // A single NULLARY export whose heap result reached here — the resource-escape path above
                 // TRIED and its value-form template was `None`: the result has no runtime value form yet.
