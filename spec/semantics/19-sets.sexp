@@ -2319,7 +2319,9 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  ; #9160 tighten (gate TIGHTEN CANDIDATE, every heap trial 0): the synthesized Set.of fold reclaims its
+  ; owned list param, so the 100-element round-trip's input-list husks are freed — was known-leak.
+  (live-objects 0))
 
 (case
   "Set.to-list length is the set's cardinality (deduped)"
@@ -2874,7 +2876,9 @@
       (export main)))
   (call main (: 5 Int64) (: 7 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; #9160 tighten (gate TIGHTEN CANDIDATE, every heap trial 0): the synthesized Set.of fold now reclaims its
+  ; owned list param — the scalar-element round-trip's input-list husks are freed — was known-leak.
+  (live-objects 0))
 
 (case
   "Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold"
@@ -2915,6 +2919,60 @@
   (output (: 2 Int64))
   ; the synthesized __set_of_rt$ fold now reclaims its owned list param at the loop-exit epilogue
   ; (param_only_borrowed_or_backedge gained the SetInsert borrow arm) → the input-list husks are freed.
+  (live-objects 0))
+
+; The reclaim above frees the __set_of_rt$ fold's OWNED list param. These two adversarial cases (breaker)
+; guard the UAF face the fix note itself calls out — "xs must be caller-owned by X.of's consuming
+; semantics": when the SAME runtime list is ALSO used outside the consuming `Set.of`, the caller must dup it
+; so the fold reclaims its own ref while the other use reads a still-live one. A fix that reclaimed a
+; borrowed (not owned) list would double-free (rc-underflow trap on the debug runtime); a missed dup would
+; leak. Both build a runtime list of DISTINCT elements [1..n] (Set.len = n).
+(case
+  "a runtime list REUSED after a consuming Set.of does not double-free — the fold reclaims its own ref, the later List.len borrows the caller's"
+  (doc
+    "The borrowed-reused-list UAF probe #9160 asks for. `xs` is bound once and used TWICE: consumed by
+           `(Set.of xs)` (whose synthesized fold now reclaims its owned param) AND borrowed by `(List.len xs)`
+           AFTER. `Set.of`'s consuming semantics mean the caller must retain/dup `xs` so the fold owns its own
+           copy — if the fold instead reclaimed the caller's still-live list, `List.len` would read freed
+           memory (or the drop would rc-underflow → trap). Distinct elements [1..n] so `Set.len (Set.of xs)` =
+           n and `List.len xs` = n → 2n (n=1→2, 3→6, 5→10). The value proves both reads see the full list;
+           the gate's census + trap grading proves the reclaim is UAF-safe.")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) n)))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Set.len (Set.of xs)) (List.len xs))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): the caller dups xs, the fold reclaims its own ref, List.len reads the
+  ; live caller ref — no double-free, everything reclaims. #9160's reclaim is UAF-safe on the reuse shape.
+  (live-objects 0))
+
+(case
+  "a runtime list consumed by TWO Set.of calls does not double-free — one dup, each fold reclaims its own ref"
+  (doc
+    "The double-consume face: one `xs` feeds TWO `(Set.of xs)` sites in one expression, so `xs` is a
+           CONSUMED operand at two call sites and must be dup'd once (rc 1→2), each synthesized fold then
+           reclaiming its OWN ref. A single missed dup lets the first fold's reclaim free the list the second
+           fold still iterates → UAF/rc-underflow trap; a doubled reclaim of one ref underflows. Distinct
+           elements [1..n]: each `Set.len (Set.of xs)` = n → 2n (n=1→2, 3→6, 5→10). Companion to the reuse
+           case above (borrow-after vs consume-twice).")
+  (input
+    (do
+      (def (build (: n Int64)) (if (< n 1) #list() (List.push (build (- n 1)) n)))
+      (def (main (: n Int64)) (let ((xs (build n))) (+ (Set.len (Set.of xs)) (Set.len (Set.of xs)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  ; gate-confirmed (every heap trial): one dup, each fold reclaims its own ref — no double-free, all reclaim.
   (live-objects 0))
 
 ; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
