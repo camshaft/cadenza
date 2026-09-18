@@ -533,12 +533,23 @@ pub(super) fn emit(
             // `List.len (Option.expect (List.at …))` over a heap-element list extracts a fresh element the
             // SumExpect dup'd (rc1) + freed the shell; this borrowing len-read is its sole scalar-read consumer
             // → drop it post-read (VIEW set only — a SHELL-set view is owned by its Call consumer, not here).
+            // (4) B2/CSE-dup'd BORROWED BINDER (same as the `Core::BytesLen` `b2_dup_borrowed_binder`, #9218-
+            // followup): the O2+ sharing pass dups a `Param`/`LocalRef` used both as a consumed call arg AND as
+            // the borrowing `(List.len l)` arg; the borrow-site dup is never consumed by `vec-len` → +1 leak
+            // (a list `(go l 0 (List.len l) 0)` over an owned list param leaks its spine at O2/O3). drop⟺dup
+            // (fires iff the emit's per-occurrence retain fired); `vec-len` borrows → the dup is always
+            // unbalanced; `Param`/`LocalRef` is Borrowed → disjoint from the Owned branch; O2-specific (at O0/O1
+            // the operand is a fresh Owned producer, not a binder in dup_sites).
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
                 ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
-                    || out.sumexpect_view_reclaim.contains(&operand);
+                    || out.sumexpect_view_reclaim.contains(&operand)
+                    || (matches!(
+                        core_of(db, operand),
+                        Core::Param { .. } | Core::LocalRef { .. }
+                    ) && out.dup_sites.contains(&operand));
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -1070,10 +1081,19 @@ pub(super) fn emit(
             // SumExpect emit dup'd it (rc1 owned) + freed the shell, and THIS (the sole scalar-read consumer)
             // is its liveness last-use, so the post-scan drop reclaims the view (the String twin of
             // reclaim_bytes; VIEW set only — a SHELL-set view is owned by its Call consumer, NOT dropped here).
+            // (3) B2/CSE-dup'd BORROWED BINDER (same as the `Core::BytesLen` `b2_dup_borrowed_binder`,
+            // #9218-followup): the O2+ sharing pass dups a `Param`/`LocalRef` used both as a consumed call arg
+            // AND as the borrowing scalar-len operand; the borrow-scan dup is never consumed → +1 leak. drop⟺dup;
+            // the scan borrows so the dup is always unbalanced; `Param`/`LocalRef` is Borrowed → disjoint from the
+            // Owned branch; O2-specific (at O0/O1 the operand is a fresh Owned producer, not a binder in dup_sites).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            ) || out.sumexpect_view_reclaim.contains(&operand);
+            ) || out.sumexpect_view_reclaim.contains(&operand)
+                || (matches!(
+                    core_of(db, operand),
+                    Core::Param { .. } | Core::LocalRef { .. }
+                ) && out.dup_sites.contains(&operand));
             let str_slot = base;
             let pos_slot = base + 1;
             let bytelen_slot = base + 2;
@@ -1588,8 +1608,15 @@ pub(super) fn emit(
             // Borrowed, but the `Proj` emit DUP'd the extracted child into a standalone owned handle, which
             // this borrowing read must then drop (drop-iff-dup'd — see `owned_proj_child_dupd`). Fixes the
             // Map.len-over-a-projected-fresh-record disjoint-slot leak (corpus-05 #4547).
+            // ALSO reclaim a B2/CSE-dup'd BORROWED BINDER (same as the `Core::BytesLen`
+            // `b2_dup_borrowed_binder`, #9218-followup): the O2+ sharing pass dups a `Param`/`LocalRef` used both
+            // as a consumed call arg AND as the borrowing `map-size` operand; the borrow-site dup is never
+            // consumed → +1 leak. drop⟺dup; `map-size` borrows so the dup is always unbalanced; `Param`/`LocalRef`
+            // is Borrowed → disjoint from the Owned branch; O2-specific (O0/O1 operand is a fresh Owned producer).
             let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned))
-                || owned_proj_child_dupd(db, map, slots, &out.sumexpect_shell_reclaim);
+                || owned_proj_child_dupd(db, map, slots, &out.sumexpect_shell_reclaim)
+                || (matches!(core_of(db, map), Core::Param { .. } | Core::LocalRef { .. })
+                    && out.dup_sites.contains(&map));
             if reclaim {
                 let map_slot = base;
                 *high = (*high).max(map_slot + 1);
@@ -1707,8 +1734,15 @@ pub(super) fn emit(
             // RECLAMATION (same as `Core::MapSize`/`Core::ListLen`): `set-size` BORROWS the set, so an
             // OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell. A borrowed
             // param/local is left to its owner.
+            // ALSO reclaim a B2/CSE-dup'd BORROWED BINDER (same as the `Core::BytesLen`
+            // `b2_dup_borrowed_binder`, #9218-followup): the O2+ sharing pass dups a `Param`/`LocalRef` used both
+            // as a consumed call arg AND as the borrowing `set-size` operand; the borrow-site dup is never
+            // consumed → +1 leak. drop⟺dup; `set-size` borrows so the dup is always unbalanced; `Param`/`LocalRef`
+            // is Borrowed → disjoint from the Owned branch; O2-specific (O0/O1 operand is a fresh Owned producer).
             let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned))
-                || owned_proj_child_dupd(db, set, slots, &out.sumexpect_shell_reclaim);
+                || owned_proj_child_dupd(db, set, slots, &out.sumexpect_shell_reclaim)
+                || (matches!(core_of(db, set), Core::Param { .. } | Core::LocalRef { .. })
+                    && out.dup_sites.contains(&set));
             if reclaim {
                 let set_slot = base;
                 *high = (*high).max(set_slot + 1);
