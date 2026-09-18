@@ -1013,13 +1013,33 @@ pub(super) fn emit(
                 Core::SumPayload { ref path, .. }
                     if !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
             ) && out.dup_sites.contains(&operand);
+            // (5) B2/CSE-dup'd BORROWED BINDER as a borrow-only-primitive operand (v-memory-safety follow-up to
+            // (4), same `(Bytes.len b)` invariant, different dup SOURCE). The O2+ sharing-aware-emit (B2/CSE)
+            // binds a binder used BOTH as a CONSUMED call arg AND as the BORROWING `(Bytes.len b)` arg into ONE
+            // node and dups it at each materialization (node-keyed on `dup_sites`, exactly like (4)'s SumPayload).
+            // The borrow-site materialization gets a dup `bytes-len` never consumes → +1 leak. This is the direct
+            // Fletcher `(go b 0 (Bytes.len b) 0 0)` over an OWNED ROPE PARAM `b` (fldirect O2/O3=1; the `Core::
+            // Param`/`LocalRef` twin of (4)'s `Core::SumPayload` view). O2-SPECIFIC by construction: at O0/O1 the
+            // sharing pass does NOT run, so the operand is a FRESH `build`-Call result (`Owned` → reclaimed by the
+            // branch above), NOT a `Param`/`LocalRef` → this disjunct cannot match there (verified: O1 emits two
+            // `build`s, zero dups, census 0). LOCKSTEP: fires iff `operand ∈ dup_sites` (the emit's per-occurrence
+            // retain fired), and `bytes-len` DEFINITIONALLY borrows (returns a scalar, consumes nothing) → the
+            // borrow-site dup is ALWAYS unbalanced → drop ⟺ dup, never a drop-without-dup double-free. A
+            // `Param`/`LocalRef` is `heap_operand_ownership==Borrowed` → DISJOINT from the Owned branch (no
+            // double-drop). Covers the fldirect O2/O3 divergence v-core-opt assigned to this lane (the B2/CSE dup
+            // source); the sibling length-prims (ListLen/StrScalarLen/MapSize/SetLen) are a separate follow-up.
+            let b2_dup_borrowed_binder = matches!(
+                core_of(db, operand),
+                Core::Param { .. } | Core::LocalRef { .. }
+            ) && out.dup_sites.contains(&operand);
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
                     Ok(HandleOwnership::Owned)
                 ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
                     || out.sumexpect_view_reclaim.contains(&operand)
-                    || child_dup_borrowed_view;
+                    || child_dup_borrowed_view
+                    || b2_dup_borrowed_binder;
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);
