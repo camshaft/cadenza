@@ -150,12 +150,19 @@ impl DeclineHistogram {
             self.hits_in(&DeclineClass::Unsupported)
         ));
         s.push_str(&format!(
-            "REACHABLE-UNTRACKED denominator (codeless + CDZ0900): {} distinct site(s)\n",
+            "REACHABLE decline surface (codeless + CDZ0900): {} distinct site(s) — UPPER BOUND on reachable-untracked\n",
             codeless_sites + unsupported_sites
         ));
         s.push_str(
-            "  (subtract the declined(id)-tracked sites for the true reachable-untracked gap)\n",
+            "  NOTE: a declined(id)-TAGGED site STILL appears above — `declined(id)` keeps code None/CDZ0900,\n",
         );
+        s.push_str(
+            "  and the DeclineId that marks it tracked is dropped in the Reject->Diagnostic ABI projection,\n",
+        );
+        s.push_str(
+            "  so this oracle cannot yet subtract tracked sites. Subtract the declined(id)-tracked set for the\n",
+        );
+        s.push_str("  true reachable-untracked gap (see cdz-smith note to v-deferral-declines, 2026-09-18).\n");
         s.push_str("--- histogram (class · hits · masked emit site) ---\n");
         for (key, n) in self.sorted() {
             s.push_str(&format!("{:>7}  {:>6}  {}\n", key.class.tag(), n, key.site));
@@ -345,14 +352,14 @@ mod tests {
     }
 
     #[test]
-    fn report_names_the_reachable_untracked_denominator() {
+    fn report_names_the_reachable_decline_surface_with_tracked_caveat() {
         let mut h = DeclineHistogram::new();
         h.record_decline(None, "codeless A");
         h.record_decline(Some("CDZ0900"), "unsupported B");
         let r = h.report();
-        assert!(
-            r.contains("REACHABLE-UNTRACKED denominator (codeless + CDZ0900): 2 distinct site(s)")
-        );
+        assert!(r.contains("REACHABLE decline surface (codeless + CDZ0900): 2 distinct site(s)"));
+        // The report must flag that declined(id)-tracked sites are NOT yet subtractable by this oracle.
+        assert!(r.contains("declined(id)-TAGGED site STILL appears"));
         assert!(r.contains("codeless"));
         assert!(r.contains("CDZ0900"));
     }
