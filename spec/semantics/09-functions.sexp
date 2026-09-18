@@ -498,6 +498,37 @@
   (live-objects 0))
 
 (case
+  "a THREE-member mutual recursion cycle over an owned heap param reclaims SCC-wide (scale-invariant, depths 0..6)"
+  (doc
+    "The adversarial extension of the mutual-recursion owned-param reclaim (#9140, go↔helper 2-cycle
+           above): a THREE-member cycle `a→b→c→a`, each with the same borrow-dead base arm (`List.len xs`,
+           dead-after) and a recursive arm passing the owned heap `xs` by IDENTITY to the NEXT member. This
+           tests that `mutual_group_slot_reclaimable` is genuinely SCC-WIDE (analyzes EVERY member of the
+           recursion cycle, not just a 2-cycle): all three members are trampolined into ONE dispatch loop
+           sharing one param-slot, so a single loop-exit drop reclaims the one identity handle — for a 3-cycle
+           exactly as for a 2-cycle. Value is List.len = 3 at every depth (the list has 3 elements). Depths
+           exercise the cycle at every phase: d=0 exits in `a` (base only); d=2 walks a→b→c; d=3 completes one
+           full cycle back to `a`; d=6 completes TWO full cycles — census must be 0 at all of them
+           (scale-invariant across cycle count). A reclaim that only handled a 2-member SCC, or that
+           double-freed the identity handle across the extra member, would show nonzero census or trap.")
+  (input
+    (do
+      (def (a (: xs (List Int64)) (: d Int64)) (if (< d 1) (List.len xs) (b xs (- d 1))))
+      (def (b (: xs (List Int64)) (: d Int64)) (if (< d 1) (List.len xs) (c xs (- d 1))))
+      (def (c (: xs (List Int64)) (: d Int64)) (if (< d 1) (List.len xs) (a xs (- d 1))))
+      (def (main (: d Int64)) (a #list(1 2 (+ d 1)) d))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 6 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "the self-recursion control: the SAME single-call shape recursing on ITSELF reclaims to 0"
   (doc
     "Isolates the mutual-vs-self distinction of the leak above. `go` has the identical structure — a
