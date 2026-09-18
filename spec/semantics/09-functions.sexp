@@ -3064,6 +3064,36 @@
   (live-objects 0))
 
 (case
+  "TWO operator eta-closures threaded through a recursive HOF over n>0 dispatches BOTH reclaim"
+  (doc
+    "The adversarial strengthening of the single recursive-HOF operator-arg reclaim above (2975/3047):
+           those pins only `(call main 0)` — n=0 hits the base case immediately, so the eta-expanded operator
+           closure is NEVER threaded through an actual recursive dispatch; their 'reclaims each dispatch' claim
+           is untested at the corpus level. This DOUBLES the fn-handle count (`ap2x` takes TWO function params
+           `g`/`h`, passed the bare operators `+` and `*` — each eta-expanded to a runtime closure at the
+           emitted call) AND drives real recursion depth (n=7): both eta-closures ride every `(ap2x g h x y
+           (- n 1))` self-call, then apply at the base `(+ (g x y) (h x y))` = `(+ 7 12)` = 19. The reclaim
+           question the n=0 pins leave open: do BOTH operator eta-closures reclaim when threaded through
+           MULTIPLE dispatches (census 0), or does a per-dispatch dup/drop imbalance leak a handle per level?
+           n=0 (base only) and n=7 (seven dispatches) both yield 19 — value-invariant across depth, census 0
+           at both if the operator-arg / closure-handle reclaim composes across depth and co-threaded handles.")
+  (input
+    (do
+      (def
+        (ap2x (: g (-> Int64 Int64 Int64)) (: h (-> Int64 Int64 Int64)) (: x Int64) (: y Int64) (: n Int64))
+        (if (< n 1) (+ (g x y) (h x y)) (ap2x g h x y (- n 1))))
+      (def (main (: n Int64)) (ap2x + * 3 4 n))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 19 Int64))
+  (call main (: 7 Int64))
+  (output (: 19 Int64))
+  ; double-probe: hypothesis is the HOF operator-arg / eta-closure reclaim COMPOSES across recursion depth
+  ; AND co-threaded fn-handles, so both eta-closures reclaim after n dispatches (census 0). Pinned 0 to let
+  ; the gate rule — a red "got N" would expose a per-dispatch handle dup/drop imbalance the n=0 pins can't see.
+  (live-objects 0))
+
+(case
   "a function is returned as a result"
   (doc
     "Witnesses core-semantics.md §A Function Is A First-Class Value: adder returns a closure over
