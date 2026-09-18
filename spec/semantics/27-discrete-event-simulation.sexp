@@ -335,6 +335,58 @@
   (live-objects known-leak))
 
 (case
+  "the event queue is a STABLE time-sort over RUNTIME instants — non-adjacent same-time events keep insertion order, offset-independent"
+  (doc
+    "The drain case above uses LITERAL instants (const-fold) with ONE adjacent same-time pair; this
+           sharpens the stability guarantee over RUNTIME instants (all wake times are `base + k` for a
+           parameter `base`, so `before?`/`q-insert` run on the emit path, nothing folds) with TWO same-time
+           groups whose members are NON-ADJACENT in insertion order. Insert labels 1..5 at offsets
+           +2,+1,+2,+1,+3 — so the two `+2` events (labels 1 and 3) and the two `+1` events (labels 2 and 4)
+           are each split apart by an intervening different-time insert. A correct STABLE time-sort drains
+           `2 4 1 3 5`: the `+1` group first in insertion order (2 then 4), then the `+2` group in insertion
+           order (1 then 3), then `+3` (5). The result is identical at base 0, 100, and 1e9 — the ordering
+           depends only on relative times, not the absolute runtime clock. A non-stable insert (`<=` in
+           `before?`, or one that reordered a same-time group split across inserts) would scramble the
+           same-time runs to e.g. `42135` or `24315`.")
+  (input
+    (do
+      (type Instant (Instant UInt64))
+      (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+      (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+      (type Q QNil (QCons (Tuple Instant String Q)))
+      (def
+        (q-insert (: q Q) (: t Instant) (: v String))
+        (match
+          q
+          ((Q.QNil _) (Q.QCons #tuple(t v (Q.QNil ()))))
+          ((Q.QCons #tuple(ht hv rest))
+            (if
+              (before? t ht)
+              (Q.QCons #tuple(t v (Q.QCons #tuple(ht hv rest))))
+              (Q.QCons #tuple(ht hv (q-insert rest t v)))))))
+      (def
+        (q-drain (: q Q))
+        (match q ((Q.QNil _) "") ((Q.QCons #tuple(_ hv rest)) (String.concat hv (q-drain rest)))))
+      (def
+        (main (: base UInt64))
+        (let
+          ((q0 (Q.QNil ()))
+            (q1 (q-insert q0 (Instant.Instant (+ base 2)) "1"))
+            (q2 (q-insert q1 (Instant.Instant (+ base 1)) "2"))
+            (q3 (q-insert q2 (Instant.Instant (+ base 2)) "3"))
+            (q4 (q-insert q3 (Instant.Instant (+ base 1)) "4"))
+            (q5 (q-insert q4 (Instant.Instant (+ base 3)) "5")))
+          (q-drain q5)))
+      (export main)))
+  (call main (: 0 UInt64))
+  (output (: "24135" String))
+  (call main (: 100 UInt64))
+  (output (: "24135" String))
+  (call main (: 1000000000 UInt64))
+  (output (: "24135" String))
+  (live-objects known-leak))
+
+(case
   "INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation"
   (doc
     "The LIVE-MUTATION face (the draining case above inserts everything THEN drains): pops and
