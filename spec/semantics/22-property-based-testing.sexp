@@ -1195,6 +1195,48 @@
   (live-objects known-leak 2))
 
 (case
+  "a MAP and a SET co-threaded through one recursion leak 2 — the multi-CHAMP-slot residual is the HAMT MECHANISM, independent of element type"
+  (doc
+    "The cross-type discriminator that closes the CHAMP-multi-slot localization (v-memory-safety
+           requested): a `(Map Int64 Int64)` `m` AND a `(Set Int64)` `s` — TWO DIFFERENT CHAMP/HAMT types —
+           co-threaded through ONE recursion, both grown on the identical generated key per step (`Map.insert`
+           / `Set.insert`), `m` borrowed by `Map.lookup` (the distinct-count model), `s` by `Set.len` (end
+           check). Scalar return (genuine leak, not ABI-transfer), value 1 both seeds (`Map.len m = cnt =
+           Set.len s`, 8 distinct keys). Gate-confirmed it leaks 2 — the SAME residual as two maps (#9218),
+           two sets (#9221), and three maps (#9222). Since a Map+Set pair leaks identically, the residual is
+           the HAMT-SLOT MECHANISM (a fixed 2-cell root/node pair mis-counted whenever >1 HAMT slot threads
+           one dispatch loop), NOT keyed on Map-vs-Set element type — ruling out any per-type hypothesis and
+           placing the fix at the slot-iteration level (the self-loop owned-CHAMP exit-drop in
+           looped_owned_param_drops). Pinned known-leak 2 as the fourth boundary witness (all four go 2→0 when
+           the multi-CHAMP-slot exit-drop is fixed; single-CHAMP + list-companion #9219 stays 0). Leak-over-UAF:
+           value correct, no double-free.")
+  (input
+    (do
+      (def
+        (next (: sd Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul sd 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: sd Int64) (: n Int64) (: m (Map Int64 Int64)) (: s (Set Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (if (= (Map.len m) cnt) (if (= (Set.len s) cnt) 1 0) 0)
+          (let
+            ((k (& (next sd) 7)))
+            (drive
+              (next sd)
+              (- n 1)
+              (Map.insert m k 1)
+              (Set.insert s k)
+              (match (Map.lookup m k) ((Some v) cnt) ((None u) (+ cnt 1)))))))
+      (def (main (: seed Int64)) (drive seed 20 Map.empty (Set.of #list()) 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call main (: 999 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
+
+(case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc
     "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
