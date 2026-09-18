@@ -1692,6 +1692,39 @@ pub(super) fn strat_view_multi_consume(
     total_consumes > 1
 }
 
+/// The SINGLE-consume companion of [`strat_view_multi_consume`]: a `Core::StrAt` scrutinee whose extracted
+/// view is CONSUMED EXACTLY ONCE across the arms AND every arm RESULT is a scalar (`sum_cont_result_all_
+/// scalar` — a STRUCTURAL non-escape proof: no heap handle, in particular the view, survives as the arm
+/// terminal). `strat_view_multi_consume`'s `> 1` gate deliberately excludes single-consume on the premise
+/// that "a shell cascade would double-free the lone-consumed payload" — but that holds only WITHOUT a
+/// child-`dup`. With a child-`dup` of the single consuming site (rc1→2), the lone consume drops it to rc1
+/// and the shell deep-drop's cascade drops it to rc0: BALANCED 1:1, exactly as the multi case. Restricting
+/// to a SCALAR arm result keeps this SOUND without the escape classifier — a heap-result arm (where the
+/// view could escape, e.g. stored into a returned List) is left declined (leak beats UAF; that is
+/// `view_escapes_as_arm_result`'s heap-result lane). The dup-side and the shell-reclaim gate BOTH consult
+/// this ONE predicate so the child-`dup` and the shell-drop stay in EXACT lockstep (divergence = a leak or a
+/// double-free). Because `sum_cont_result_all_scalar` also holds for the MULTI-consume-scalar case, this
+/// predicate SUBSUMES that slice of `strat_view_multi_consume` — harmless (same dup + same reclaim), and the
+/// gate keeps the multi disjunct for the HEAP-result-non-escaping cases scalar cannot cover.
+pub(super) fn strat_view_scalar_result_consume(
+    db: &mut Db,
+    top_body: StructId,
+    root: &crate::core::SumCont,
+    scrutinee: StructId,
+    compound_boxed: bool,
+) -> bool {
+    if !(compound_boxed && matches!(core_of(db, scrutinee), Core::StrAt { .. })) {
+        return false;
+    }
+    let mut sites = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut sites);
+    let total_consumes: usize = sites
+        .iter()
+        .map(|&s| count_node_refs(db, top_body, s))
+        .sum();
+    total_consumes >= 1 && super::sum_cont_result_all_scalar(db, root)
+}
+
 pub(super) fn collect_shell_reclaim_child_dups_seen(
     db: &mut Db,
     id: StructId,
@@ -1769,7 +1802,19 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
                     dup_sites.insert(s);
                 }
             }
-        } else if strat_view_multi_consume(db, top_body, &root, scrutinee, compound_boxed) {
+        } else if strat_view_multi_consume(db, top_body, &root, scrutinee, compound_boxed)
+            || strat_view_scalar_result_consume(db, top_body, &root, scrutinee, compound_boxed)
+        {
+            // SINGLE-CONSUME-SCALAR extension (v-memory-safety, the single-consume analog of the multi note
+            // below): `strat_view_scalar_result_consume` additionally fires for a StrAt view consumed EXACTLY
+            // ONCE when every arm result is a scalar. Its lone consume frees the payload's rc1, but the Some
+            // SHELL was declined by `matchsum_view_shell_reclaim_ok`'s `> 1` gate → leaked (the single-consume
+            // residual husk). Child-`dup`ping that lone consuming site (rc1→2) lets the shell deep-drop's
+            // cascade reclaim it (rc2→1 by the consume, 1→0 by the cascade) — BALANCED, same as multi. The
+            // scalar-result restriction structurally proves the view does not escape (so freeing the shell is
+            // UAF-safe); a heap-result single-consume stays declined. The shell-reclaim GATE consults the SAME
+            // `strat_view_scalar_result_consume`, so dup ⟺ shell-drop. Below is the original multi-consume note:
+            //
             // UAF FIX (v-memory-safety, multi-use `String.at` view double-free): `String.at` (`Core::StrAt`)
             // is the ONE single-view producer deliberately NOT globally `Owned` (the Stage-B `String.concat`
             // note at select.rs's StrAt comment) — its `Bytes.at`/`List.at`/`Map.lookup`/`String.slice`/

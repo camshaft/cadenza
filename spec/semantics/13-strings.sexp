@@ -271,6 +271,34 @@
   (live-objects 0))
 
 (case
+  "a String.at extracted view consumed ONCE with a scalar result reclaims its Some shell (single-consume completion)"
+  (doc
+    "The SINGLE-consume face completing the twice-/thrice-consumed family above. `(String.concat c
+           \"z\")` consumes the extracted char view `c` EXACTLY once, and the arm result is a scalar
+           (`String.byte-len`). The multi-consume shell-reclaim gate keyed on `> 1` consumes deliberately
+           LEFT single-consume alone — its lone consume freed the payload's rc1, but the `Some` SHELL was
+           declined → leaked (a 1-object residue). The reclaim now child-`dup`s the lone consuming site (so
+           the shell deep-drop's cascade balances it 1:1, exactly as the multi case), GATED to an all-scalar
+           arm result which structurally proves the view does not escape (a heap-result single-consume, where
+           the view could be returned/stored, stays declined — leak beats UAF). Char at index 1 of \"hey\"
+           is \"y\"; \"y\"+\"z\" is 2 bytes. Reclaimed to census 0 by the single-consume-scalar StrAt view
+           shell-drop (`strat_view_scalar_result_consume`, the single-consume companion of the multi-consume
+           predicate); no underflow, value + balance hold. The escape twin (a `String.at` view stored into a
+           returned List) stays known-leak — that heap-result path is `view_escapes_as_arm_result`'s lane.")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (String.byte-len (String.concat c "z")))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
   "a String.at view STORED into a returned List and read back is UAF-safe (escape-as-arm-result: no reclaim, no double-free)"
   (doc
     "The UAF-safety twin of the scalar-result reclaim (2fb30175d3 generalized the multi-consume String.at

@@ -4740,9 +4740,17 @@ fn matchsum_view_shell_reclaim_ok(
     let compound_boxed = is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
         && !sum_has_only_scalar_payloads(db, scrut_ty);
-    top_body.is_some_and(|tb| strat_view_multi_consume(db, tb, root, scrutinee, compound_boxed))
-        && (sum_cont_result_all_scalar(db, root)
-            || !view_escapes_as_arm_result(db, scrutinee, root))
+    top_body.is_some_and(|tb| {
+        (strat_view_multi_consume(db, tb, root, scrutinee, compound_boxed)
+            && (sum_cont_result_all_scalar(db, root)
+                || !view_escapes_as_arm_result(db, scrutinee, root)))
+            // SINGLE-CONSUME-SCALAR (v-memory-safety solo, single-consume analog of the muv subset above): a
+            // StrAt view consumed EXACTLY once with an all-scalar arm result. The `> 1` muv gate declined it,
+            // leaving the Some shell leaked (the lone consume freed the payload but nothing dropped the shell).
+            // The dup pass now child-`dup`s that lone site (SAME `strat_view_scalar_result_consume` predicate),
+            // so the shell deep-drop balances 1:1. Scalar result structurally proves the view does not escape.
+            || strat_view_scalar_result_consume(db, tb, root, scrutinee, compound_boxed)
+    })
 }
 
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
