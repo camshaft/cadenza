@@ -3662,21 +3662,18 @@ mod tests {
         Some((reducer, base))
     }
 
-    // Reclaim regression witness (v-runtime co-verify of the seq-916 caveat): a reducer-export `on_message` fold
-    // leaks a FIXED set of value-heap SHELLS per fold — the decoded incoming-msg envelope shells AND the
-    // constructed step shells (rc-trace: 9 un-dropped nodes, ZERO drops, payload-independent). The emit does not
-    // drop them and NO host mechanism reclaims value-heap nodes (the driver's `run_mailbox_loop` drop is
-    // host-side Rust; `post_return`/`cabi_post` free only the return's linear-memory buffers — not the value-heap
-    // handles). So on a REUSED instance the shells accumulate until wasm `memory.grow` can no longer satisfy a
-    // realloc and the fold traps. This drives one reused instance and reports whether it accumulates to a trap
-    // (gap present) or survives the cap (reclaim landed). `#[ignore]` + env-gated like the sibling bench.
-    //
-    // POST-FIX (v-cdz-wasm-codegen lands the envelope+step shell-drops): the reused instance should fold the full
-    // cap without trapping — replace the report with `assert!(trap.is_none(), …)` (+ a live-objects≈0 check on
-    // the debug-counters runtime) and drop `#[ignore]` to GATE the reclaim regression.
+    // Reclaim regression gate (seq-916, now LIVE-GREEN): a reducer-export `on_message` fold used to leak a FIXED
+    // set of value-heap SHELLS per fold — the decoded incoming-msg envelope shells AND the constructed step
+    // shells (rc-trace: 9 un-dropped nodes, ZERO drops, payload-independent), so on a REUSED instance the shells
+    // accumulated until wasm `memory.grow` could no longer satisfy a realloc and the fold trapped (~2000 folds at
+    // the default 256 MiB ceiling). The reducer-export shell-drop reclaim landed (envelope-decode site-a #9061 +
+    // outgoing forward-dup site-b: v-core-opt binder_is_param gate #9128 + escape-query #9135), so a reused
+    // instance now folds the full cap with FLAT value-heap memory and NO trap. This drives one reused instance
+    // and GATES that: it survives the cap AND never traps — a re-emergence of the per-fold shell leak would
+    // re-accumulate and trap this RED. Env-gated like the sibling bench: SKIPS cleanly when the fixtures are
+    // unset.
     #[tokio::test]
-    #[ignore = "env-gated reclaim witness; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR"]
-    async fn a_reused_reducer_instance_accumulates_fold_shells_until_the_emit_reclaim_lands() {
+    async fn a_reused_reducer_instance_folds_the_cap_without_accumulating_shells() {
         let Some((mut reducer, base)) = seed_and_spawn_reducer_echo().await else {
             eprintln!(
                 "CDZ_REDUCER_ECHO_WASM/CDZ_COMPONENT_STORE_DIR unset or closure mismatch — skipping the reclaim witness"
@@ -3684,8 +3681,8 @@ mod tests {
             return;
         };
 
-        // Above the ~2000-fold trap point seen at the default 256 MiB ceiling, with headroom to confirm survival
-        // once the emit reclaim lands. Fast while the gap is present (traps early); ~cap×fold-cost post-fix.
+        // Above the ~2000-fold trap point the leak used to hit at the default 256 MiB ceiling, so a regression
+        // that re-accumulates shells traps well within the cap. Post-reclaim this folds the full cap (~cap×fold).
         const CAP: usize = 20_000;
         let mut survived = 0usize;
         let mut trap: Option<String> = None;
@@ -3700,18 +3697,23 @@ mod tests {
         }
         match &trap {
             Some(e) => eprintln!(
-                "reclaim witness: reused instance ACCUMULATED to a trap after {survived} fold(s) (emit reclaim gap PRESENT): {e}"
+                "reclaim gate: reused instance TRAPPED after {survived} fold(s) — per-fold shell leak REGRESSED: {e}"
             ),
             None => eprintln!(
-                "reclaim witness: reused instance SURVIVED all {CAP} folds without trapping (emit reclaim appears FIXED)"
+                "reclaim gate: reused instance folded all {CAP} without trapping (reclaim net-0, flat value-heap)"
             ),
         }
-        // Report-only: the accumulation is a diagnosed gap owned by v-cdz-wasm-codegen (the reducer-export emit
-        // must drop the envelope + step shells). This asserts only that the FIRST fold worked, so a broken
-        // fixture is not silently read as "fixed" (zero survivals with no trap would be a setup error).
+        // The reclaim is landed (site-a #9061 + site-b #9128/#9135), so the reused instance must fold the whole
+        // cap and never trap. `survived > 0` also catches a broken fixture (zero folds with no trap = setup
+        // error, not a reclaim result); `trap.is_none()` is the regression gate proper — a re-emergent per-fold
+        // shell leak re-accumulates and traps within the cap.
         assert!(
-            survived > 0 || trap.is_some(),
+            survived > 0,
             "no fold ran — fixture/closure setup error, not a reclaim result"
+        );
+        assert!(
+            trap.is_none(),
+            "REGRESSION: reused instance TRAPPED after {survived}/{CAP} folds — the reducer-export shell-drop reclaim (envelope-decode site-a #9061 / outgoing forward-dup site-b #9128/#9135) regressed and per-fold value-heap shells are accumulating again: {trap:?}"
         );
     }
 
@@ -3811,27 +3813,30 @@ mod tests {
     // (spawn → on_message through WasmReducer), so it also catches a future Mode-2 host-held value-heap handle
     // that a host forgot to free.
     //
-    // It currently FAILS BY DESIGN: the reducer-export emit does not yet drop the incoming-envelope + outgoing-
-    // step shells, so a fold does NOT net to baseline. That is the intended forcing function + co-verify — it
-    // auto-flips GREEN when v-cdz-wasm-codegen lands the shell-drops; drop `#[ignore]` then to GATE the reclaim
-    // regression. `#[ignore]` keeps it out of the routine gate meanwhile.
-    //
-    // PINNED per-fold leak on the LANDED runtime (main 3b2ee6ef88): on_message ≈7 (envelope + step),
-    // on_notification 3, on_response 5 (both inert ⇒ envelope-only), payload-length-independent. Down from
-    // 13/6/8 measured 2026-09-15 — the drop is CUMULATIVE RECLAIM (the guards #9010..#9038 + the landed runtime),
-    // NOT the bulk-bytes flag-day: reducer-echo is a PURE non-host reducer, so it keeps the per-byte
-    // bytes-alloc/set path (verified: its wasm imports bytes-alloc/set/get/len, NOT bytes-new/bytes-read — the
-    // bulk gate excludes non-host typed interfaces). Envelope-decode shells ≈3 (matches v-runtime's standalone
-    // witness); the extra ~4 on on_message are the outgoing step/request shells the inert paths lack. Target 0
-    // on all three once the shared-envelope-decode + on_message-step shell-drops land.
+    // NET-0 ACHIEVED (assertion now PASSES): a fold returns the composed value-heap to its pre-fold baseline on
+    // all three entry points. The reducer-export shell-drop landed in stages: site-a (#9061, the envelope-decode
+    // drop) took the inert paths on_notification/on_response to 0, and site-b (v-core-opt's binder_is_param
+    // parent-dup gate #9128 + v-cdz-wasm-codegen's dup_sites-conditional projection-borrow escape-query #9135)
+    // took on_message 7 → 0 by removing the surplus parent dups on the forwarded wrapper-cell payload (one child
+    // dup per field, no parent dups). Confirmed on landed main: on_message 0, on_notification 0, on_response 0,
+    // delta-per-fold 0 across 5 folds (history: 13/6/8 on 2026-09-15 → 7/3/5 after the envelope reclaim → 0/0/0).
+    // (An earlier site-b, #9101, was reverted #9104: an ALWAYS-borrow reclassification under-retained + trapped a
+    // partition fold (UAF); the landed fix is per-site — borrow only where dup_sites says so — with corpus pins
+    // #9125/#9130 guarding the escaping+consumed partition-fold shape.)
+    // This is a LIVE regression gate now (no longer fails-by-design): a re-emergence of the envelope OR the
+    // outgoing forward-dup leak makes a fold net nonzero and this test RED. It also catches a future Mode-2
+    // host-held value-heap handle a host forgot to free.
     //
     // Censuses ALL THREE fold entry points (on_message on a reused instance for the accumulation signal;
     // on_notification + on_response each on a fresh instance). The two inert paths (requests=[]) isolate the
-    // ENVELOPE-DECODE shell leak from on_message's envelope+step leak, so the gate catches a shell-drop fix
-    // scoped to on_message alone — one that would leave on_notification / on_response silently leaking their
-    // envelope shells — not just the on_message regression.
+    // ENVELOPE-DECODE reclaim from on_message's envelope+step reclaim, so the gate catches a regression scoped
+    // to on_message alone — one that would leave on_notification / on_response silently leaking their envelope
+    // shells — not just the on_message path.
+    //
+    // Env-gated (needs the reducer-echo guest + component-store closure + the debug-counters runtime): it SKIPS
+    // cleanly when CDZ_REDUCER_ECHO_WASM / CDZ_COMPONENT_STORE_DIR / CDZ_DEBUG_RUNTIME_WASM are unset, so it is
+    // safe in the routine gate (which does not supply them) and GATES net-0 wherever the fixtures are provided.
     #[tokio::test]
-    #[ignore = "env-gated census gate; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR + CDZ_DEBUG_RUNTIME_WASM"]
     async fn a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline() {
         let (Ok(path), Ok(dir), Ok(dbg)) = (
             std::env::var("CDZ_REDUCER_ECHO_WASM"),
@@ -3892,8 +3897,8 @@ mod tests {
         );
         eprintln!("census gate: pre-fold baseline live-objects = {baseline}");
 
-        // After each fold the count should return to baseline (net-0 per fold). Bounded — a reused instance
-        // traps after ~hundreds of folds while the emit reclaim is pending.
+        // After each fold the count returns to baseline (net-0 per fold). A few folds suffice to detect a
+        // per-fold delta; a regressed reclaim would show a positive drift that compounds every fold.
         const FOLDS: usize = 5;
         let mut last = baseline;
         let mut leaked = false;
@@ -3913,7 +3918,7 @@ mod tests {
         }
         let per_fold = (last as i64 - baseline as i64) / FOLDS as i64;
         eprintln!(
-            "census gate: on_message per-fold leak ≈ {per_fold} value-heap cell(s) (envelope+step; target 0 once the reducer-export shell-drops land)"
+            "census gate: on_message per-fold net ≈ {per_fold} value-heap cell(s) (envelope+step; net-0 as of site-a #9061 + site-b #9128/#9135 — nonzero here is a regression)"
         );
 
         // Per-ENTRY-POINT breakdown (seq-916 shell-drop fix SCOPE). The echo's on_response / on_notification are
@@ -3968,11 +3973,11 @@ mod tests {
             per_fold - note_delta
         );
 
-        // The trusted-signal invariant. FAILS BY DESIGN until the shell-drop reclaim lands (auto-flips GREEN
-        // then); `#[ignore]` keeps it out of the routine gate meanwhile.
+        // The trusted-signal invariant: a fold nets the composed value-heap to its pre-fold baseline on all three
+        // entry points. Now PASSES (net-0 landed); a nonzero delta means a shell-drop regressed.
         assert!(
             !leaked,
-            "a reducer fold leaked value-heap cells (on_message≈{per_fold}/fold, on_notification={note_delta}, on_response={resp_delta}) — reducer-export shell-drop reclaim not yet landed on one or more entry points; census not net-0"
+            "REGRESSION: a reducer fold leaked value-heap cells (on_message≈{per_fold}/fold, on_notification={note_delta}, on_response={resp_delta}) — the reducer-export shell-drop reclaim (envelope-decode site-a #9061 / outgoing forward-dup site-b #9128/#9135) regressed; census not net-0"
         );
     }
 
