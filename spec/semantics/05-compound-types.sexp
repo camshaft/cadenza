@@ -26283,7 +26283,7 @@
   (input (do (def (main) (match #tuple(3 4) (#tuple(a b) 99))) (export main)))
   (output (: 99 Int64))
   (count 2)
-  (warning CDZ0306 (message "unused match binding")))
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (verified))))
 
 (case
   "a guarded binder referenced in NEITHER the guard cond nor the body still warns unused"
