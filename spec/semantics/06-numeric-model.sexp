@@ -865,6 +865,57 @@
   (call main (: 5 Int16))
   (output (: 6 Int16)))
 
+; A NARROW signed value (Int8/Int16) is held in a wider machine register, so its ORDER comparison must
+; SIGN-EXTEND the operand to the register width before the compare — a negative narrow value (top bit set)
+; must read as negative, NOT as the large positive its raw masked bit-pattern would be (-1 : Int8 is the
+; byte 0xFF = 255 unsigned). A backend that zero-extended (or compared the masked pattern) would invert every
+; comparison involving a negative narrow operand: `< -1 5` would read 255 < 5 = false. These pin the
+; sign-extend on `<`/`>=` at Int8 and Int16 — the narrow-signed complement of the UInt64 unsigned-order pins
+; above (there the register op must stay UNSIGNED; here the narrow operand must be SIGN-extended). Const
+; folds agree; verified breaker probes.
+(case
+  "Int8 < sign-extends a negative operand at run time (i8→i32 sign-extend, not the masked byte)"
+  (doc
+    "`(< a b)` over Int8 PARAMETERS sign-extends each operand: lt(-1, 5) = 1 (-1 < 5; a zero-extend of the
+           masked 0xFF = 255 would give 255 < 5 = 0). lt(-128, 127) = 1 (Int8.min < Int8.max). lt(5, -1) = 0
+           (5 is not < -1; a zero-extend would give 5 < 255 = 1). lt(3, 5) = 1 is the all-positive control.
+           Pins Int8 order is signed with the operand sign-extended, not its masked byte pattern.")
+  (input (do (def (lt (: a Int8) (: b Int8)) (if (< a b) 1 0)) (export lt)))
+  (call lt (: -1 Int8) (: 5 Int8))
+  (output (: 1 Int64))
+  (call lt (: -128 Int8) (: 127 Int8))
+  (output (: 1 Int64))
+  (call lt (: 5 Int8) (: -1 Int8))
+  (output (: 0 Int64))
+  (call lt (: 3 Int8) (: 5 Int8))
+  (output (: 1 Int64)))
+
+(case
+  "Int8 >= sign-extends a negative operand at run time (the relation-twin of the signed narrow <)"
+  (doc
+    "The `>=` face of the Int8 sign-extend: ge(-1, 5) = 0 (-1 is not >= 5; a zero-extend would give
+           255 >= 5 = 1). ge(-1, -1) = 1 (equal control). Pins the sign-extend is not `<`-specific — the
+           whole signed narrow order family sign-extends the operand.")
+  (input (do (def (ge (: a Int8) (: b Int8)) (if (>= a b) 1 0)) (export ge)))
+  (call ge (: -1 Int8) (: 5 Int8))
+  (output (: 0 Int64))
+  (call ge (: -1 Int8) (: -1 Int8))
+  (output (: 1 Int64)))
+
+(case
+  "Int16 < sign-extends a negative operand at run time (the intermediate-width face of the signed narrow order)"
+  (doc
+    "The Int16 face of the signed narrow sign-extend: lt(-1, 5) = 1 (a zero-extend of 0xFFFF = 65535 would
+           give 65535 < 5 = 0). lt(-32768, 32767) = 1 (Int16.min < Int16.max). lt(5, -1) = 0. Pins the
+           sign-extend holds at the intermediate width too, not only Int8.")
+  (input (do (def (lt (: a Int16) (: b Int16)) (if (< a b) 1 0)) (export lt)))
+  (call lt (: -1 Int16) (: 5 Int16))
+  (output (: 1 Int64))
+  (call lt (: -32768 Int16) (: 32767 Int16))
+  (output (: 1 Int64))
+  (call lt (: 5 Int16) (: -1 Int16))
+  (output (: 0 Int64)))
+
 (case
   "under (pragma overflow (signed wrap)) a RUNTIME Int8 multiplication overflow wraps mod 2^8"
   (doc
