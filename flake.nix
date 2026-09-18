@@ -2642,6 +2642,25 @@
           grep -q '^reducer-echo=' ${reducerEchoComponent}/hashes.env || { echo "hashes.env missing reducer-echo entry"; exit 1; }
           echo "ok: reducer-echo component (valid wasm magic + ProgramHash + .gitattributes LFS)" > "$out"
         '';
+        # reducerEchoAccumComponent (v-nix, wiring v-reducer-pooling's accumulator-loop reclaim tripwire —
+        # follow-on to reducer-fold-census #9163): the guests/inline/reducer-echo-accum-cdz variant, identical
+        # to reducer-echo-cdz except on-message runs a bounded owned-accumulator loop (grow) first — an
+        # END-TO-END O(n) reclaim tripwire (net-0-vs-monotonic through the platform) for v-core-opt's
+        # back-edge/TCO borrow-forced-dup family. A buildable fixture NOW; the paired reused-instance accum
+        # census (v-reducer-pooling's host test + the flake check) is wired only AFTER #9172 lands (pre-#9172
+        # the guest leaks ~O(n)/fold, so an accum-census would be RED). Mirrors reducerEchoComponent.
+        reducerEchoAccumComponent = pkgs.runCommand "reducer-echo-accum-component" { } ''
+          mkdir -p "$out"
+          cp ${cadenzaGuests."reducer-echo-accum-cdz"} "$out/reducer-echo-accum.wasm"
+          echo "reducer-echo-accum=$(cat ${hashOf cadenzaGuests."reducer-echo-accum-cdz" "reducer-echo-accum-hash"})" > "$out/hashes.env"
+          printf '%s\n' '*.wasm filter=lfs diff=lfs merge=lfs -text' > "$out/.gitattributes"
+        '';
+        reducerEchoAccumComponentCheck = pkgs.runCommand "reducer-echo-accum-component-check" { } ''
+          magic=$(head -c 4 ${reducerEchoAccumComponent}/reducer-echo-accum.wasm | od -An -tx1 | tr -d ' \n')
+          [ "$magic" = "0061736d" ] || { echo "reducer-echo-accum.wasm not a wasm module (magic $magic)"; exit 1; }
+          grep -q '^reducer-echo-accum=' ${reducerEchoAccumComponent}/hashes.env || { echo "hashes.env missing reducer-echo-accum entry"; exit 1; }
+          echo "ok: reducer-echo-accum component (valid wasm magic + ProgramHash + .gitattributes LFS)" > "$out"
+        '';
         # reducerFaultFixtures (v-nix-projection, for v-hivemind inc-7/8 fault coverage): two reducer-world
         # fault fixtures so the consumer can e2e-test the #8882 ReducerFault classification —
         #   - reducer-trap: on-message calls the `trap` primitive (→ unconditional wasm unreachable), so a
@@ -7297,6 +7316,10 @@
         # reducer-echo-component (v-nix-projection, for v-hivemind inc-7): a minimal reducer-echo wasm blob
         # (git-LFS) test fixture to validate the real WasmReducer fold path in a Brazil test.
         packages.reducer-echo-component = reducerEchoComponent;
+        # reducer-echo-accum-component (v-nix, v-reducer-pooling accumulator-loop reclaim tripwire): the
+        # reducer-echo variant whose on-message runs a bounded owned-accumulator loop — a buildable O(n)
+        # reclaim tripwire fixture; the paired accum-census check is wired after #9172 (see reducerEchoAccumComponent).
+        packages.reducer-echo-accum-component = reducerEchoAccumComponent;
         # reducer-fault-fixtures (v-nix-projection, for v-hivemind): reducer-trap (traps → GuestCrashed) +
         # reducer-state (calls state → HostBackend when the backend Errs) wasm blobs (git-LFS) for the
         # consumer's e2e ReducerFault classification test.
@@ -9033,6 +9056,10 @@
             # reducer-echo-component: the echo test-fixture blob is a valid wasm module + has its ProgramHash.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-echo-component`.
             reducer-echo-component = reducerEchoComponentCheck;
+            # reducer-echo-accum-component: the accumulator-loop tripwire fixture is a valid wasm module + has
+            # its ProgramHash (this only checks the ARTIFACT builds; the reclaim CENSUS is v-reducer-pooling's
+            # host test + a flake check wired after #9172). STANDALONE. `nix build .#checks.<sys>.reducer-echo-accum-component`.
+            reducer-echo-accum-component = reducerEchoAccumComponentCheck;
             # reducer-fault-fixtures: reducer-trap + reducer-state blobs are valid wasm + have ProgramHashes.
             # STANDALONE — NOT in local-gate. `nix build .#checks.<sys>.reducer-fault-fixtures`.
             reducer-fault-fixtures = reducerFaultFixturesCheck;
