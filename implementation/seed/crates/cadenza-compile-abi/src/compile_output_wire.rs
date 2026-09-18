@@ -148,6 +148,7 @@ mod tests {
                         replacement: String::new(),
                         verified: false,
                     }),
+                    decline_id: None,
                 },
                 Diagnostic {
                     severity: Severity::Error,
@@ -155,6 +156,7 @@ mod tests {
                     message: "unsupported construct".into(),
                     node: None,
                     fix: None,
+                    decline_id: None,
                 },
             ],
             cse_partition_core_eq_calls: 0,

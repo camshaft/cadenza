@@ -14,9 +14,12 @@
 //! AND bare parenthesized type-spans ALSO collapsed to placeholders — so a single compiler emit site
 //! that names a varying type (e.g. the host-boundary-form check, or the parameterized-heap-return
 //! export) stays ONE bucket instead of splitting per type. Each
-//! bucket carries its [`DeclineClass`] (codeless / CDZ0900-unsupported / other-coded), which is the
-//! axis v-deferral-declines splits on (codeless + CDZ0900, minus the already-`declined(id)`-tracked
-//! set, is the reachable-untracked number).
+//! bucket carries its [`DeclineClass`] (codeless / CDZ0900-unsupported / other-coded) AND whether the
+//! site is `declined(id)`-TRACKED — surfaced through the compile ABI as `Diagnostic::decline_id` (the
+//! stable catalog key, `None` for a bare untracked decline). So the census reports the TRUE
+//! reachable-UNTRACKED count directly (codeless + CDZ0900 with no `declined(id)`), no manual
+//! subtraction: a reachable site already migrated to `declined(id)` is counted as tracked, not
+//! untracked.
 //!
 //! Declines are EXPECTED compiler output, never a bug — this is a GAP INVENTORY, not a finding hunt.
 
@@ -57,12 +60,18 @@ impl DeclineClass {
     }
 }
 
-/// The key of a histogram bucket: the decline class + the masked emit-site template.
+/// The key of a histogram bucket: the decline class, the emit-site identity, and whether the site is
+/// `declined(id)`-TRACKED.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeclineKey {
     pub class: DeclineClass,
-    /// The masked first line of the decline message — the emit-site template (dedup key).
+    /// The emit-site identity: for a TRACKED decline, the stable catalog KEY (`DeclineId::key()`, the
+    /// canonical site id); for an UNTRACKED decline, the masked message template ([`emit_site_key`]).
     pub site: String,
+    /// `true` iff this decline named a stable catalog id (`declined(id, …)`) — i.e. it is TRACKED in the
+    /// deferral-declines catalog. `false` for a bare codeless decline / `unsupported` with no id. This is
+    /// the axis that turns "reachable codeless + CDZ0900" into the TRUE reachable-UNTRACKED count.
+    pub tracked: bool,
 }
 
 /// A running census of reached declines, keyed by emit site, plus outcome tallies.
@@ -83,12 +92,21 @@ impl DeclineHistogram {
         DeclineHistogram::default()
     }
 
-    /// Record one reached decline (`code` from `Verdict::Declined`, `message` its detail).
-    pub fn record_decline(&mut self, code: Option<&str>, message: &str) {
+    /// Record one reached decline. `code`/`message` come from `Verdict::Declined`; `decline_id` is the
+    /// stable catalog KEY of a `declined(id, …)`-TRACKED decline (`Some(key)`), or `None` for an
+    /// untracked bare decline/unsupported. A TRACKED site is keyed by its catalog key (the canonical
+    /// site id); an UNTRACKED site by its masked message template.
+    pub fn record_decline(&mut self, code: Option<&str>, message: &str, decline_id: Option<&str>) {
         self.declined += 1;
+        let tracked = decline_id.is_some();
+        let site = match decline_id {
+            Some(key) => key.to_string(),
+            None => emit_site_key(message),
+        };
         let key = DeclineKey {
             class: DeclineClass::from_code(code),
-            site: emit_site_key(message),
+            site,
+            tracked,
         };
         *self.hits.entry(key.clone()).or_insert(0) += 1;
         self.example
@@ -104,9 +122,25 @@ impl DeclineHistogram {
         self.other += 1;
     }
 
-    /// The number of DISTINCT reachable emit sites in a class.
+    /// The number of DISTINCT reachable emit sites in a class (tracked + untracked).
     pub fn distinct_sites(&self, class: &DeclineClass) -> usize {
         self.hits.keys().filter(|k| &k.class == class).count()
+    }
+
+    /// DISTINCT reachable UNTRACKED sites in a class (no `declined(id)`) — the true untracked surface.
+    pub fn distinct_untracked_sites(&self, class: &DeclineClass) -> usize {
+        self.hits
+            .keys()
+            .filter(|k| &k.class == class && !k.tracked)
+            .count()
+    }
+
+    /// DISTINCT reachable TRACKED sites in a class (already `declined(id)`-tagged).
+    pub fn distinct_tracked_sites(&self, class: &DeclineClass) -> usize {
+        self.hits
+            .keys()
+            .filter(|k| &k.class == class && k.tracked)
+            .count()
     }
 
     /// Total decline hits in a class (across all its sites).
@@ -134,38 +168,42 @@ impl DeclineHistogram {
     /// v-deferral-declines reconciles the static 741 surface against.
     pub fn report(&self) -> String {
         let mut s = String::new();
-        let codeless_sites = self.distinct_sites(&DeclineClass::Codeless);
-        let unsupported_sites = self.distinct_sites(&DeclineClass::Unsupported);
+        let codeless_u = self.distinct_untracked_sites(&DeclineClass::Codeless);
+        let codeless_t = self.distinct_tracked_sites(&DeclineClass::Codeless);
+        let unsupported_u = self.distinct_untracked_sites(&DeclineClass::Unsupported);
+        let unsupported_t = self.distinct_tracked_sites(&DeclineClass::Unsupported);
         s.push_str("=== reachable-decline census (emit-site histogram) ===\n");
         s.push_str(&format!(
             "outcomes: {} compiled | {} declined | {} other (crash/invalid-wasm/parse)\n",
             self.compiled, self.declined, self.other
         ));
         s.push_str(&format!(
-            "reachable CODELESS declines : {codeless_sites} distinct site(s), {} hit(s)\n",
+            "reachable CODELESS declines : {} site(s) [{codeless_u} untracked / {codeless_t} tracked], {} hit(s)\n",
+            codeless_u + codeless_t,
             self.hits_in(&DeclineClass::Codeless)
         ));
         s.push_str(&format!(
-            "reachable CDZ0900 (unsupported): {unsupported_sites} distinct site(s), {} hit(s)\n",
+            "reachable CDZ0900 (unsupported): {} site(s) [{unsupported_u} untracked / {unsupported_t} tracked], {} hit(s)\n",
+            unsupported_u + unsupported_t,
             self.hits_in(&DeclineClass::Unsupported)
         ));
         s.push_str(&format!(
-            "REACHABLE decline surface (codeless + CDZ0900): {} distinct site(s) — UPPER BOUND on reachable-untracked\n",
-            codeless_sites + unsupported_sites
+            "TRUE REACHABLE-UNTRACKED (codeless + CDZ0900, no declined(id)): {} distinct site(s)\n",
+            codeless_u + unsupported_u
         ));
-        s.push_str(
-            "  NOTE: a declined(id)-TAGGED site STILL appears above — `declined(id)` keeps code None/CDZ0900,\n",
-        );
-        s.push_str(
-            "  and the DeclineId that marks it tracked is dropped in the Reject->Diagnostic ABI projection,\n",
-        );
-        s.push_str(
-            "  so this oracle cannot yet subtract tracked sites. Subtract the declined(id)-tracked set for the\n",
-        );
-        s.push_str("  true reachable-untracked gap (see cdz-smith note to v-deferral-declines, 2026-09-18).\n");
-        s.push_str("--- histogram (class · hits · masked emit site) ---\n");
+        s.push_str(&format!(
+            "  (of which {} reachable site(s) are ALREADY declined(id)-tracked — excluded above)\n",
+            codeless_t + unsupported_t
+        ));
+        s.push_str("--- histogram (class · T=tracked/U=untracked · hits · emit site) ---\n");
         for (key, n) in self.sorted() {
-            s.push_str(&format!("{:>7}  {:>6}  {}\n", key.class.tag(), n, key.site));
+            let tag = if key.tracked { "T" } else { "U" };
+            s.push_str(&format!(
+                "{:>7} {tag}  {:>6}  {}\n",
+                key.class.tag(),
+                n,
+                key.site
+            ));
         }
         s
     }
@@ -270,15 +308,15 @@ mod tests {
     fn buckets_by_masked_site_and_tallies_per_class() {
         let mut h = DeclineHistogram::new();
         // Two codeless declines whose messages differ only in numbers → ONE masked site, 2 hits.
-        h.record_decline(None, "cannot lower node 1830 here");
-        h.record_decline(None, "cannot lower node 42 here");
+        h.record_decline(None, "cannot lower node 1830 here", None);
+        h.record_decline(None, "cannot lower node 42 here", None);
         // A distinct codeless site.
-        h.record_decline(None, "unexpected shape in escape");
+        h.record_decline(None, "unexpected shape in escape", None);
         // Two CDZ0900 hits at one site.
-        h.record_decline(Some("CDZ0900"), "unsupported: higher-rank type");
-        h.record_decline(Some("CDZ0900"), "unsupported: higher-rank type");
+        h.record_decline(Some("CDZ0900"), "unsupported: higher-rank type", None);
+        h.record_decline(Some("CDZ0900"), "unsupported: higher-rank type", None);
         // An other-coded reject.
-        h.record_decline(Some("CDZ0203"), "type mismatch");
+        h.record_decline(Some("CDZ0203"), "type mismatch", None);
         h.record_compiled();
         h.record_other();
 
@@ -304,9 +342,9 @@ mod tests {
         // The real host-boundary-form check emits the SAME message with only the quoted result type
         // varying — one emit site, many types. The census must key them to ONE bucket.
         let mut h = DeclineHistogram::new();
-        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `String`, which has no component boundary form");
-        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `(Option Unit)`, which has no component boundary form");
-        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `(List Int64)`, which has no component boundary form");
+        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `String`, which has no component boundary form", None);
+        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `(Option Unit)`, which has no component boundary form", None);
+        h.record_decline(Some("CDZ0900"), "the host operation `o` has a result of type `(List Int64)`, which has no component boundary form", None);
         assert_eq!(h.distinct_sites(&DeclineClass::Unsupported), 1);
         assert_eq!(h.hits_in(&DeclineClass::Unsupported), 3);
     }
@@ -345,6 +383,7 @@ mod tests {
                 &format!(
                     "returning a {ty} from `_`: a parameterized export cannot return this heap type"
                 ),
+                None,
             );
         }
         assert_eq!(h.distinct_sites(&DeclineClass::Unsupported), 1);
@@ -352,15 +391,31 @@ mod tests {
     }
 
     #[test]
-    fn report_names_the_reachable_decline_surface_with_tracked_caveat() {
+    fn tracked_declines_are_excluded_from_the_true_untracked_count() {
         let mut h = DeclineHistogram::new();
-        h.record_decline(None, "codeless A");
-        h.record_decline(Some("CDZ0900"), "unsupported B");
+        // One untracked codeless + one untracked CDZ0900 = the true reachable-untracked surface.
+        h.record_decline(None, "codeless A", None);
+        h.record_decline(Some("CDZ0900"), "unsupported B", None);
+        // Two TRACKED declines (declined(id)) — reachable but already migrated, must NOT count as untracked.
+        h.record_decline(None, "codeless C", Some("some-tracked-codeless"));
+        h.record_decline(
+            Some("CDZ0900"),
+            "unsupported D",
+            Some("wasm-host-op-no-boundary-form"),
+        );
+
+        assert_eq!(h.distinct_untracked_sites(&DeclineClass::Codeless), 1);
+        assert_eq!(h.distinct_tracked_sites(&DeclineClass::Codeless), 1);
+        assert_eq!(h.distinct_untracked_sites(&DeclineClass::Unsupported), 1);
+        assert_eq!(h.distinct_tracked_sites(&DeclineClass::Unsupported), 1);
+
         let r = h.report();
-        assert!(r.contains("REACHABLE decline surface (codeless + CDZ0900): 2 distinct site(s)"));
-        // The report must flag that declined(id)-tracked sites are NOT yet subtractable by this oracle.
-        assert!(r.contains("declined(id)-TAGGED site STILL appears"));
-        assert!(r.contains("codeless"));
-        assert!(r.contains("CDZ0900"));
+        // The true untracked number excludes the 2 tracked sites (2 untracked, not 4).
+        assert!(r.contains(
+            "TRUE REACHABLE-UNTRACKED (codeless + CDZ0900, no declined(id)): 2 distinct site(s)"
+        ));
+        assert!(r.contains("2 reachable site(s) are ALREADY declined(id)-tracked"));
+        // A tracked site is keyed by its stable catalog key, not the message.
+        assert!(r.contains("wasm-host-op-no-boundary-form"));
     }
 }

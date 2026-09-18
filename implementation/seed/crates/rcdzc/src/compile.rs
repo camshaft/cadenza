@@ -1288,6 +1288,10 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
 /// shared sink `compile_with_opt`, so this — like every other `compile` caller (the bin, the tests) —
 /// gets the guard-sized worker stack without needing its own wrap. See `crate::host` for why the stack
 /// is sized from `DESCENT_DEPTH_LIMIT`.
+// The `Err` is a `Diagnostic` (a rich, message-carrying error). At ~144 bytes it trips
+// `result_large_err`, but boxing it would ripple `Box<Diagnostic>` through every caller for no real
+// benefit — a compile that FAILS produces exactly one diagnostic, not a hot allocation path. Allow it.
+#[allow(clippy::result_large_err)]
 pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
     let out = compile(
         &[Artifact::new(
@@ -1332,6 +1336,7 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
                 message: "compilation produced no component".into(),
                 node: None,
                 fix: None,
+                decline_id: None,
             }))
         }
     }

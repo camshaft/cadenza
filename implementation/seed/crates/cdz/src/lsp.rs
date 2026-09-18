@@ -4430,6 +4430,7 @@ mod tests {
             message: "unbound name `<error>`".into(),
             node: None,
             fix: None,
+            decline_id: None,
         };
         assert!(parse_diag_line(&d, "x", &spans).is_none());
     }
@@ -4445,6 +4446,7 @@ mod tests {
             message: "something is unused".into(),
             node: None,
             fix: None,
+            decline_id: None,
         };
         let d = parse_diag_line(&fault, "x", &spans).expect("a diagnostic");
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));

@@ -499,7 +499,7 @@ pub fn shrink_invalid_wasm(source: &str) -> String {
 pub fn shrink_codeless_decline(source: &str, target_message: &str) -> String {
     shrink_while(
         source,
-        |v| matches!(v, Verdict::Declined { code: None, message } if message == target_message),
+        |v| matches!(v, Verdict::Declined { code: None, message, .. } if message == target_message),
     )
 }
 

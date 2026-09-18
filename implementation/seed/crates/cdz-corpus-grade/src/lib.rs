@@ -2122,6 +2122,7 @@ mod tests {
                         replacement: r.to_string(),
                         verified: v,
                     }),
+                    decline_id: None,
                 },
             )
             .collect();
