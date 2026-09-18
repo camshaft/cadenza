@@ -3931,18 +3931,32 @@ fn write_offload_outcome_stamp(outcome: &OffloadBuildOutcome) {
     );
 }
 
-/// The LAST gate-local's offload outcome, from the stamp, if RECENT (< 24h). `None` when the stamp is
-/// absent or stale → `fleet status` falls back to the cert-only signal and never asserts a stale
-/// outcome. 24h window: a stamp older than that predates any config change (e.g. a peer fix) and would
-/// mislead.
-fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
-    const RECENT_SECS: u64 = 24 * 3600;
-    let stamp = offload_outcome_stamp_path();
-    let mtime = file_mtime_unix(&stamp)?;
-    if now.saturating_sub(mtime) > RECENT_SECS {
+/// A gate-local offload stamp is only trusted for [`OFFLOAD_STAMP_RECENT_SECS`] (24h): an older stamp
+/// predates any config change (e.g. a peer fix / cert refresh) and would MISLEAD the board into asserting a
+/// stale VERIFIED/FAILED. Beyond it, `fleet status` falls back to the cert-only signal.
+const OFFLOAD_STAMP_RECENT_SECS: u64 = 24 * 3600;
+
+/// The FRESHNESS decision, split out pure so the 24h-window invariant is unit-testable without touching the
+/// real temp-dir stamp: given the stamp's `mtime`, `now`, and its `body`, return the parsed outcome only when
+/// the stamp is RECENT (age ≤ [`OFFLOAD_STAMP_RECENT_SECS`]); a stale stamp → `None` so the board never
+/// surfaces an outdated outcome. The boundary is inclusive (age exactly 24h is still recent; only STRICTLY
+/// older is stale), matching the original `> RECENT_SECS` guard. A garbled but fresh body stays fail-safe via
+/// [`parse_offload_stamp`] (→ Inconclusive), never a false Succeeded/Failed.
+fn offload_outcome_from_stamp(mtime: u64, now: u64, body: &str) -> Option<OffloadBuildOutcome> {
+    if now.saturating_sub(mtime) > OFFLOAD_STAMP_RECENT_SECS {
         return None; // stale → don't assert an outcome
     }
-    Some(parse_offload_stamp(&std::fs::read_to_string(&stamp).ok()?))
+    Some(parse_offload_stamp(body))
+}
+
+/// The LAST gate-local's offload outcome, from the stamp, if RECENT. `None` when the stamp is absent or
+/// stale → `fleet status` falls back to the cert-only signal and never asserts a stale outcome. Thin I/O
+/// wrapper over the pure [`offload_outcome_from_stamp`] (path resolution + mtime/body reads live here).
+fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
+    let stamp = offload_outcome_stamp_path();
+    let mtime = file_mtime_unix(&stamp)?;
+    let body = std::fs::read_to_string(&stamp).ok()?;
+    offload_outcome_from_stamp(mtime, now, &body)
 }
 
 /// Build the `fleet status` distributed-offload health line — the branch table (cert validity × the last
@@ -21834,6 +21848,41 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(
             parse_offload_stamp("FAILED\tremote build failed"),
             OffloadBuildOutcome::Failed("remote build failed".to_string())
+        );
+    }
+
+    #[test]
+    fn offload_outcome_from_stamp_honors_the_24h_freshness_window() {
+        let now = 10 * 24 * 3600u64; // comfortably > the window, so mtime subtraction never saturates to 0
+        // FRESH (age 0) → the parsed outcome is trusted.
+        assert_eq!(
+            offload_outcome_from_stamp(now, now, "SUCCEEDED"),
+            Some(OffloadBuildOutcome::Succeeded),
+            "a fresh stamp surfaces its outcome"
+        );
+        // Age EXACTLY at the window boundary → still recent (inclusive boundary, matching the original
+        // `> RECENT_SECS` guard); the board may still assert it.
+        assert_eq!(
+            offload_outcome_from_stamp(now - OFFLOAD_STAMP_RECENT_SECS, now, "SUCCEEDED"),
+            Some(OffloadBuildOutcome::Succeeded),
+            "a stamp exactly at the 24h boundary is still trusted"
+        );
+        // One second PAST the window → stale → None, so a >24h-old outcome can NEVER mislead the board
+        // into asserting a stale VERIFIED/FAILED (the exact hazard the freshness window guards).
+        assert_eq!(
+            offload_outcome_from_stamp(
+                now - OFFLOAD_STAMP_RECENT_SECS - 1,
+                now,
+                "FAILED\tpeer broke"
+            ),
+            None,
+            "a stamp past the 24h window is dropped regardless of its content"
+        );
+        // A garbled but FRESH stamp stays fail-safe (Inconclusive), never a false success/failure.
+        assert_eq!(
+            offload_outcome_from_stamp(now, now, "garbage"),
+            Some(OffloadBuildOutcome::Inconclusive),
+            "a fresh but garbled stamp is Inconclusive, not a false claim"
         );
     }
 
