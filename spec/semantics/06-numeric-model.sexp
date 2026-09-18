@@ -1288,6 +1288,35 @@
   (call main (: 6 Int64))
   (output (: 2 Int64)))
 
+; The component-read cases above read a rational BUILT by `Rational.of`; this pins rational ARITHMETIC — `+`
+; over two rationals — which is EXACT and re-reduces the result, the property no `Float64` sum has. The
+; canonical float-failure `0.1 + 0.2 ≠ 0.3` (binary64 gives 0.30000000000000004) is EXACT over rationals:
+; `1/10 + 2/10 = 3/10`. Runtime operands (numerators are parameters, so nothing folds) exercise the runtime
+; rational-add + the gcd re-reduction of the sum. A backend that added rationals as floats, or forgot to
+; re-reduce after the add, would miss the reduced pair. Packs 100·numerator + denominator of the reduced sum.
+(case
+  "rational addition is exact and re-reduces the sum (0.1 + 0.2 = 3/10 exactly, unlike Float64), at runtime"
+  (doc
+    "`(+ (Rational.of a 10) (Rational.of b 10))` over runtime numerators `a`, `b`, then reading the
+           REDUCED numerator/denominator of the sum. a=1,b=2: 1/10 + 2/10 = 3/10 — the exact result binary64
+           cannot represent (0.1+0.2 = 0.30000000000000004) — num 3, den 10 → 100·3+10 = 310. a=5,b=5:
+           5/10 + 5/10 = 10/10 = 1/1, re-reduced to a whole → 100·1+1 = 101. a=2,b=4: 2/10 + 4/10 = 6/10 =
+           3/5 → 100·3+5 = 305. Pins that rational `+` computes exactly over the numerator/denominator
+           lattice and re-reduces by gcd — a float add or a missing re-reduction would change the packed
+           pair.")
+  (input
+    (do
+      (def (main (: a Int64) (: b Int64))
+        (let ((r (+ (Rational.of a 10) (Rational.of b 10))))
+          (+ (* 100 (Int64.of (Rational.numerator r))) (Int64.of (Rational.denominator r)))))
+      (export main)))
+  (call main (: 1 Int64) (: 2 Int64))
+  (output (: 310 Int64))
+  (call main (: 5 Int64) (: 5 Int64))
+  (output (: 101 Int64))
+  (call main (: 2 Int64) (: 4 Int64))
+  (output (: 305 Int64)))
+
 ; `Rational.truncate : Rational → Int64` — the integer part of a rational TOWARD ZERO, narrowed to a fixed
 ; Int64 (unlike numerator/denominator which stay BigInt: the integer part is a single small value that must
 ; land in a fixed width to be useful — MIDI ticks, indices). It is NOT a new runtime op: it lowers as a
