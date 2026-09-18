@@ -2686,7 +2686,7 @@
   (output (: 13010 Int64))
   (call main (: 3 Int64) (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view"
@@ -2725,7 +2725,7 @@
   (output (: 11660 Int64))
   (call main (: 3 Int64) (: 1 Int64))
   (output (: 12850 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
