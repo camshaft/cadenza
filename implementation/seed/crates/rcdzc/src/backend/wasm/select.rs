@@ -1358,21 +1358,16 @@ fn looped_owned_param_drops(
     drops
 }
 
-/// Whether a direct call to `callee` CONSUMES (takes ownership of / moves out) the arg at `param_index`.
-/// FALSE ⟹ the callee only BORROWS that param — reads it in place + identity-threads it on its own recursive
-/// back-edge, never returning / storing / consuming-forwarding it, and reclaims a caller-transferred ref at
-/// its own loop exit. Consulted by the borrowing-Call view reclaim (#9218-followup): (iii) the
-/// `arm_borrows_heap_subvalue_seen` `Core::Call` arm treats a borrow-read view arg as borrowed (un-blocking
-/// the shell-reclaim gate), and (ii) the `returncall_shell_drop` fence allows the shell deep-drop before a
-/// cross-fn `return_call` when the tail-consumed payload goes to a borrow-read param. Uses the back-edge-aware
-/// [`param_only_borrowed_or_backedge`] rather than [`reclaim::param_escapes_body`], which counts a
-/// self-recursive identity back-edge as an escape → `true` for every recursive reader. INVARIANCE-GATED: a
-/// VARYING param (a non-identity value put into its slot on some back-edge — run-length's `go … c …` replacing
-/// `cur`) DROPS the old value there = consumed, but `param_only_borrowed_or_backedge`'s fast-path passes it
-/// (the replaced branch doesn't reference the binder); `looped_owned_param_drops` guards this with an INVARIANT
-/// classification, replicated here. DEFAULT-DENY toward CONSUMING (`true`) on unresolvable callee / non-heap /
-/// missing / varying / non-borrow — leak-beats-UAF (a wrong "consumes" leaks; a wrong "borrows" could
-/// double-free). v-memory-safety co-design; v-core-opt owns this predicate.
+/// Whether a direct call to `callee` CONSUMES (moves out) the arg at `param_index`. FALSE ⟹ the callee only
+/// BORROWS it — reads it in place, identity-threads it on its own back-edge, reclaims a caller-transferred ref
+/// at its own loop exit. Drives the borrowing-Call view reclaim (#9218-followup): (iii) the
+/// `arm_borrows_heap_subvalue_seen` Call arm and (ii) the `returncall_shell_drop` fence treat a borrow-read
+/// payload-view arg as borrowed. Uses back-edge-aware [`param_only_borrowed_or_backedge`], NOT
+/// [`reclaim::param_escapes_body`] (which counts the self-recursive identity back-edge as an escape → `true`
+/// for every recursive reader). INVARIANCE-GATED: a VARYING param (slot replaced on a back-edge) drops the old
+/// value = consumed despite borrow-only body reads, so an invariant classification guards it (as in
+/// `looped_owned_param_drops`). DEFAULT-DENY to CONSUMING on unresolvable/non-heap/varying/non-borrow —
+/// leak-beats-UAF (a wrong "borrows" could double-free). v-memory-safety co-design; v-core-opt owns it.
 pub(super) fn def_consumes_param(db: &mut Db, callee: usize, param_index: usize) -> bool {
     let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
         return true; // unresolvable callee → assume consuming (safe).
@@ -3207,16 +3202,13 @@ fn emit_tail(
                 sum_cont_tail_callees(db, &root, &mut callees);
                 !callees.is_empty()
             };
-            // The fence blocks the drop when a tail-call consumes a payload-of-scrutinee (a live handle into
-            // the shell escapes into the call → deep-dropping the shell would free it → UAF). RELAXED for the
-            // borrowing-Call view reclaim (#9218-followup): ALSO allow the drop when the consumed payload flows
-            // ONLY into borrow-only recursive readers (`sum_cont_payload_tail_all_borrow_reader`) AND the
-            // scrutinee is OWNED (so `collect_shell_reclaim_child_dups`'s owned_compound_boxed arm emits the
-            // child-dup of that payload IN LOCKSTEP). Then the shell deep-drop cascades the shell's OWN ref
-            // (rc2→1), the child-dup keeps the callee's ref alive, and the borrow-reader reclaims it at its own
-            // exit (rc1→0) — BALANCED, census 0 for BOTH the view Leaf and the outer Some shell. Without the
-            // OWNED gate the child-dup might not be emitted → drop-without-dup double-free, so the gate is the
-            // lockstep guarantee. A genuine consumer among the tail calls → not all-borrow → fence holds (leak).
+            // Fence: block the drop when a tail-call consumes a payload-of-scrutinee (a live handle escapes →
+            // deep-dropping the shell would free it → UAF). RELAXED for the borrowing-Call view reclaim
+            // (#9218-followup): ALSO drop when the consumed payload flows ONLY to borrow-only recursive readers
+            // (`sum_cont_payload_tail_all_borrow_reader`) AND the scrutinee is OWNED — the OWNED gate is the
+            // lockstep guarantee that `collect_shell_reclaim_child_dups` emitted the child-dup (shell deep-drop
+            // cascades the shell's own ref, the child-dup keeps the callee's ref alive → balanced; without it,
+            // drop-without-dup = double-free). A genuine consumer → not all-borrow → fence holds (leak).
             let returncall_shell_drop = if reclaim_shell
                 && has_tail_call
                 && (!sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee)
@@ -6852,20 +6844,15 @@ fn arm_borrows_heap_subvalue_seen(
                     .iter()
                     .any(|&a| arm_borrows_heap_subvalue_seen(db, a, false, seen))
         }
-        // (C) A direct def CALL, v-memory-safety borrowing-Call view reclaim (co-design). An arg the callee
-        // only BORROWS (`!def_consumes_param(callee, i)` — a borrow-only recursive reader like Fletcher's `go`
-        // reading `s` via `Bytes.at` + identity-threading it) is READ IN PLACE, so a shell-owned payload-VIEW
-        // (`SumPayload`) passed there does NOT escape as a live handle — relax it to `borrowed`, un-blocking the
-        // enclosing MatchSum shell-reclaim (the borrow-Call twin of the `CallClosure`/`Map.lookup`/`Set.contains`
-        // borrowed-operand relaxations above). A CONSUMED arg (`def_consumes_param=true`) genuinely escapes into
-        // the callee → stays CONSUMING (`borrowed=false`). LOCKSTEP PARTNER (consume-path, NOT the abandoned
-        // callee-drop suppression): the enclosing shell is reclaimed by the CONSUME path — the view stays a
-        // consuming payload site so `collect_shell_reclaim_child_dups` emits a child-dup (rc1→2), the shell is
-        // deep-dropped BEFORE the `return_call` (cascading the view rc2→1 via the relaxed `returncall_shell_drop`
-        // fence), and the callee consumes+drops its dup'd ref at its base (rc1→0). So the shell deep-drop is NOT
-        // the sole reclaim — it drops the shell's OWN ref; the child-dup keeps the callee's ref alive. A wrong
-        // borrow-relax can only leave the reclaim un-blocked elsewhere (a leak), never free a still-live handle
-        // (leak-over-UAF). `HostCall` (no def callee) falls to the default (args consuming).
+        // (C) A direct def CALL (v-memory-safety borrowing-Call view reclaim, co-design). An arg the callee
+        // only BORROWS (`!def_consumes_param(callee, i)` — a borrow-only reader like Fletcher's `go` reading `s`
+        // via `Bytes.at`) is read in place, so a shell-owned payload-VIEW (`SumPayload`) passed there does NOT
+        // escape as a live handle → relax to `borrowed`, un-blocking the enclosing MatchSum shell-reclaim (the
+        // borrow-Call twin of the CallClosure/Map.lookup/Set.contains relaxations above). A CONSUMED arg stays
+        // CONSUMING. LOCKSTEP (consume-path): the view stays a consuming payload site so
+        // `collect_shell_reclaim_child_dups` child-dups it, the shell is deep-dropped before the `return_call`
+        // (relaxed `returncall_shell_drop`), and the callee consumes+drops its dup at base. A wrong borrow-relax
+        // only leaves a reclaim un-blocked (leak), never frees a live handle (leak-over-UAF).
         Core::Call { callee, ref args } => {
             let args: Vec<StructId> = args.to_vec();
             args.iter().enumerate().any(|(i, &a)| {
