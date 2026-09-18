@@ -2989,7 +2989,10 @@
       (export main)))
   (call main 0)
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety): the bare-operator function-arg threaded through the recursive HOF now
+  ; reclaims each dispatch (HOF operator-arg / closure-handle reclaim landed); TIGHTEN candidate, every heap
+  ; trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "an inline HOF applies a bare operator passed as its function argument"
@@ -3055,7 +3058,10 @@
       (export main)))
   (call main 0)
   (output (: true Bool))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety): the comparison operator passed to the recursive HOF (emit-call) now
+  ; reclaims each dispatch (HOF operator-arg / closure-handle reclaim landed); TIGHTEN candidate, every heap
+  ; trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a function is returned as a result"
@@ -10536,7 +10542,10 @@
   (output (: 21 Int64))
   (call main (: 0 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety): the two closure handles swapping parameter slots through repeated tail
+  ; calls now reclaim (mutual/tail closure-slot reclaim landed, #9140 family); TIGHTEN candidate, every heap
+  ; trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- Tail-call parameter permutations (scalar swap, 3-cycle rotation, heap-slot swap) and the
 ; generation-capture-before-shadow closure. ---
