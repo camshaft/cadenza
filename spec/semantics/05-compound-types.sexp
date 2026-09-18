@@ -26499,7 +26499,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record-field loop invariant consumed per iteration accumulates stably"
@@ -26516,7 +26516,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a sum-payload loop invariant consumed per iteration accumulates stably"

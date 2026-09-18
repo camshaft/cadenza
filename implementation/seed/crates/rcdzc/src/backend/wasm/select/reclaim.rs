@@ -3952,9 +3952,20 @@ fn mark_binder_dups_body(
             // parts; binder_is_param can (Param=reclaimed-outside-body=surplus=SUBTRACT; Let=in-body-shallow-
             // epilogue=load-bearing=KEEP). `!must_escapes` stays in the BASE term (dqe7/8 whole-escape
             // suppression) — only the subtract drops it.
+            // BACK-EDGE RELAXATION (v-core-opt, extraction-consume-per-iter leak, 05:26488 family): the
+            // site-b subtract drops its `never_escapes` conjunct. A LOOP-INVARIANT param projected + child-
+            // consumed per iteration (`(List.push (. pr 0) 9)`, `pr` threaded UNCHANGED to the self-call) has
+            // `never_escapes == false` ONLY because the identity back-edge `(go pr …)` reads as an escape — but
+            // the element is already retained by the child-dup (`is_child_dup_site`), so the per-iteration
+            // PARENT dup is surplus and unbalanced (dup'd each iter, dropped once at loop exit → leak N-1). The
+            // SumPayload/SumExpect arms recurse their aggregate BORROWED unconditionally for this reason; mirror
+            // it for Proj gated on `is_child_dup_site && binder_is_param` — which EXCLUDES move-outs (a moved-out
+            // element is NOT child-dup'd ⇒ `is_child_dup_site` false) and dqe11/17 (child not `live_after` ⇒ not
+            // a dup site), and KEEPS the #9101 partition Let-epilogue dup (`binder_is_param` false). `must_escapes`
+            // stays in the base term (dqe7/8 straight-line-escape suppression intact).
             let parent_consuming = !scalar_element
                 && (consuming || (!never_escapes && !must_escapes))
-                && !(is_child_dup_site && never_escapes && binder_is_param(db, operand, binder));
+                && !(is_child_dup_site && binder_is_param(db, operand, binder));
             mark_binder_dups_inner(
                 db,
                 operand,
