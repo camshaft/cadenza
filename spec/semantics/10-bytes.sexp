@@ -1397,7 +1397,8 @@
       (def (main) (rep 4))
       (export main)))
   (output (: b"XXXX" Bytes))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "a 2000-deep runtime Bytes.concat rope flattens iteratively and reads its content stack-safe"
@@ -1458,7 +1459,8 @@
       (def (main) (uleb 624485))
       (export main)))
   (output (: b"\xe5\x8e&" Bytes))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "an unsigned LEB128 encoder emits a single byte below the continuation threshold"
@@ -1478,7 +1480,8 @@
       (def (main) (uleb 100))
       (export main)))
   (output (: b"d" Bytes))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "a recursive emitter dispatches on a sum's variants to build bytes per node"
@@ -1509,7 +1512,8 @@
       (def (main) (emit (Expr.Add #tuple((Expr.Lit 1) (Expr.Neg (Expr.Lit 2))))))
       (export main)))
   (output (: b"BB|j" Bytes))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 (case
   "a recursive fold of a cons-list to bytes is the whole program result"
@@ -1544,7 +1548,8 @@
       (def (main) (cat-all (build 3)))
       (export main)))
   (output (: b"CBA" Bytes))
-  (live-objects known-leak))
+  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
+  (live-objects 1))
 
 ; The recursive fold above renders a SMALL rope (3 fragments) as its whole result, but does not read back a
 ; DEEP rope's content by position. A many-chunk byte rope (repeated Bytes.concat) is a deep byte-rope;
