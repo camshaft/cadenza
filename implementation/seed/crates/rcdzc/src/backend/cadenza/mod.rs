@@ -2120,6 +2120,47 @@ fn emit_expr_viewed(
                 ))
             })?;
             let head = b.name(sym);
+            // An ORDERING comparison (`<`/`<=`/`>`/`>=`) — its operands must be an orderable scalar; a newtype
+            // over such a scalar (`Instant`, an `Int`-newtype) is rejected as an unorderable compound, so its
+            // operands need a newtype peel even though the RESULT is `Bool` (not numeric). Equality (`=`) is
+            // fine on a newtype (value-eq works on any value) and is NOT included. Detect the newtype decl to
+            // peel to from EITHER operand's solved type (the optimizer may fold one operand's unwrap to the
+            // bare inner while the other keeps the nominal — both still EMIT the nominal), gated to an emitted
+            // single-payload newtype over a scalar-orderable inner.
+            // Key on the operand's DECLARED type, not its SOLVED type: the optimizer folds the no-op newtype
+            // unwrap so BOTH operands' solved types are already the erased inner (`UInt64`), yet both still
+            // EMIT the nominal (a param emits its declared `Instant`; a tuple/field read emits the declared
+            // element type `Instant`). A `Core::Param`/`LocalRef` exposes the declared type via its binder.
+            let ord_peel_decl: Option<StructId> = if matches!(sym, "<" | "<=" | ">" | ">=") {
+                [lhs, rhs].into_iter().find_map(|op| {
+                    let decl_ty = match core_of(db, op) {
+                        Core::Param { binder } | Core::LocalRef { binder } => {
+                            crate::infer::type_of(db, binder)
+                        }
+                        _ => crate::infer::type_of(db, op),
+                    };
+                    match decl_ty {
+                        Ty::Nominal { decl, inner, .. }
+                            if matches!(
+                                &*inner,
+                                Ty::Int(_)
+                                    | Ty::Float(_)
+                                    | Ty::BigInt
+                                    | Ty::Rational
+                                    | Ty::String
+                                    | Ty::Char
+                                    | Ty::Bool
+                                    | Ty::Symbol
+                            ) && is_emitted_single_payload_newtype(db, decl, emitted) =>
+                        {
+                            Some(decl)
+                        }
+                        _ => None,
+                    }
+                })
+            } else {
+                None
+            };
             // PEEL a Qty-typed operand of a BARE-NUMERIC-result operator. An erased `Qty.value` peel
             // (`(Qty.value (+ q r))`) folds so the ARITH RESULT type peels to the bare inner while the
             // OPERANDS keep `Ty::Qty` — then each operand self-constructs `(Qty.of a u)` via the `Ty::Qty`
@@ -2188,6 +2229,27 @@ fn emit_expr_viewed(
                             return Ok(peel);
                         }
                     }
+                }
+                // PEEL a NEWTYPE operand of an ORDERING comparison to its orderable scalar inner. `<`/`<=`/
+                // `>`/`>=` over a single-variant newtype (`(type Instant (Instant UInt64))`) is rejected —
+                // a nominal/sum has no total order (CDZ0203) — but the source ordered the unwrapped inner
+                // (`(< (inst-ns a) (inst-ns b))`) and the optimizer folded the no-op unwrap away, leaving
+                // `Core::Compare` over the nominal (27-DES event-queue ordering). Re-insert the unwrap so `<`
+                // sees the orderable scalar. `ord_peel_decl` is the newtype decl detected from EITHER operand
+                // (below) — BOTH operands are peeled to it, because the optimizer can fold the unwrap on ONE
+                // operand's read (its solved type is the erased inner) but not the other (a param keeps the
+                // nominal): both still EMIT the nominal (a same-type comparison), so both need the peel or
+                // they mismatch (`< UInt64 Instant`, CDZ0202). A FOLDED binder (solved type already the
+                // inner, so it emits the inner directly) short-circuits via `emit_binder_newtype_inner_peel`.
+                if let Some(decl) = ord_peel_decl {
+                    if let Some(peel) = emit_binder_newtype_inner_peel(db, b, n, env, emitted)? {
+                        return Ok(peel);
+                    }
+                    let scrut = emit_expr(db, b, n, None, env, emitted)?;
+                    if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env) {
+                        return Ok(peel);
+                    }
+                    return Ok(scrut);
                 }
                 emit_expr(db, b, n, None, env, emitted)
             };
