@@ -14,10 +14,10 @@
 //! AND bare parenthesized type-spans ALSO collapsed to placeholders — so a single compiler emit site
 //! that names a varying type (e.g. the host-boundary-form check, or the parameterized-heap-return
 //! export) stays ONE bucket instead of splitting per type. Each
-//! bucket carries its [`DeclineClass`] (codeless / CDZ0900-unsupported / other-coded) AND whether the
-//! site is `declined(id)`-TRACKED — surfaced through the compile ABI as `Diagnostic::decline_id` (the
-//! stable catalog key, `None` for a bare untracked decline). So the census reports the TRUE
-//! reachable-UNTRACKED count directly (codeless + CDZ0900 with no `declined(id)`), no manual
+//! bucket carries its [`DeclineClass`] (codeless / CDZ09xx-unsupported-gap / other-coded) AND whether
+//! the site is `declined(id)`-TRACKED — surfaced through the compile ABI as `Diagnostic::decline_id`
+//! (the stable catalog key, `None` for a bare untracked decline). So the census reports the TRUE
+//! reachable-UNTRACKED count directly (codeless + CDZ09xx-gap with no `declined(id)`), no manual
 //! subtraction: a reachable site already migrated to `declined(id)` is counted as tracked, not
 //! untracked.
 //!
@@ -33,11 +33,25 @@ pub enum DeclineClass {
     /// A codeless `Reject::decline` (`code == None`) — the class-2 / assumed-unreachable set (the 528
     /// static codeless sites). A reached one is the reachable-codeless denominator.
     Codeless,
-    /// A `Reject::unsupported` — the `CDZ0900` "not lowered yet" gap (the 197 static CDZ0900 sites).
+    /// A code in the CDZ09xx not-yet-built DECLINE band — `CDZ0900` (the `unsupported` umbrella) OR a
+    /// dedicated split-off like `CDZ0901` (closure-across-ABI, family E, rcdzc #9252). ALL are declines
+    /// (rcdzc `Reject::is_decline` holds for them), so ALL count toward the reachable-untracked gap — the
+    /// band, not just the umbrella. See [`is_decline_band_code`]; keep it in sync with rcdzc `is_decline`.
     Unsupported,
-    /// Any OTHER coded rejection (`CDZ####`, not `CDZ0900`) — a genuine semantic reject, tracked here
-    /// for completeness so a caller can subtract it. Carries the raw code.
+    /// Any OTHER coded rejection (`CDZ####` outside the decline band) — a genuine "the program is WRONG"
+    /// rejection (CDZ0101 unbound, CDZ0203 type mismatch, CDZ0999 recursion bound, …), NOT part of the
+    /// gap denominator. Carries the raw code.
     Coded(String),
+}
+
+/// The `CDZ09xx` codes that are DECLINES (a not-yet-built construct), not genuine rejections — the gap
+/// band the census counts toward reachable-untracked. Mirrors rcdzc `diag::Reject::is_decline` (which
+/// enumerates `UnsupportedConstruct`=CDZ0900 + `ClosureAcrossAbiUnsupported`=CDZ0901). NOTE: NOT every
+/// CDZ09xx is a decline (e.g. CDZ0999 recursion/resource bound is a rejection), so this ENUMERATES the
+/// decline codes rather than pattern-matching the `CDZ09` prefix. Add any future split-off decline code
+/// here when rcdzc adds it to `is_decline`.
+fn is_decline_band_code(code: &str) -> bool {
+    matches!(code, "CDZ0900" | "CDZ0901")
 }
 
 impl DeclineClass {
@@ -45,7 +59,7 @@ impl DeclineClass {
     pub fn from_code(code: Option<&str>) -> DeclineClass {
         match code {
             None => DeclineClass::Codeless,
-            Some("CDZ0900") => DeclineClass::Unsupported,
+            Some(c) if is_decline_band_code(c) => DeclineClass::Unsupported,
             Some(c) => DeclineClass::Coded(c.to_string()),
         }
     }
@@ -54,7 +68,7 @@ impl DeclineClass {
     pub fn tag(&self) -> &str {
         match self {
             DeclineClass::Codeless => "codeless",
-            DeclineClass::Unsupported => "CDZ0900",
+            DeclineClass::Unsupported => "CDZ09xx",
             DeclineClass::Coded(c) => c,
         }
     }
@@ -183,12 +197,12 @@ impl DeclineHistogram {
             self.hits_in(&DeclineClass::Codeless)
         ));
         s.push_str(&format!(
-            "reachable CDZ0900 (unsupported): {} site(s) [{unsupported_u} untracked / {unsupported_t} tracked], {} hit(s)\n",
+            "reachable UNSUPPORTED-gap (CDZ09xx band: CDZ0900/CDZ0901): {} site(s) [{unsupported_u} untracked / {unsupported_t} tracked], {} hit(s)\n",
             unsupported_u + unsupported_t,
             self.hits_in(&DeclineClass::Unsupported)
         ));
         s.push_str(&format!(
-            "TRUE REACHABLE-UNTRACKED (codeless + CDZ0900, no declined(id)): {} distinct site(s)\n",
+            "TRUE REACHABLE-UNTRACKED (codeless + CDZ09xx, no declined(id)): {} distinct site(s)\n",
             codeless_u + unsupported_u
         ));
         s.push_str(&format!(
@@ -297,6 +311,17 @@ mod tests {
         assert_eq!(
             DeclineClass::from_code(Some("CDZ0900")),
             DeclineClass::Unsupported
+        );
+        // CDZ0901 (closure-across-ABI, family E) is a DECLINE-band code (rcdzc #9252) — it counts as
+        // Unsupported (part of the gap denominator), NOT a generic coded rejection.
+        assert_eq!(
+            DeclineClass::from_code(Some("CDZ0901")),
+            DeclineClass::Unsupported
+        );
+        // CDZ0999 (recursion/resource bound) is NOT a decline → a genuine coded rejection, excluded.
+        assert_eq!(
+            DeclineClass::from_code(Some("CDZ0999")),
+            DeclineClass::Coded("CDZ0999".to_string())
         );
         assert_eq!(
             DeclineClass::from_code(Some("CDZ0203")),
@@ -412,7 +437,7 @@ mod tests {
         let r = h.report();
         // The true untracked number excludes the 2 tracked sites (2 untracked, not 4).
         assert!(r.contains(
-            "TRUE REACHABLE-UNTRACKED (codeless + CDZ0900, no declined(id)): 2 distinct site(s)"
+            "TRUE REACHABLE-UNTRACKED (codeless + CDZ09xx, no declined(id)): 2 distinct site(s)"
         ));
         assert!(r.contains("2 reachable site(s) are ALREADY declined(id)-tracked"));
         // A tracked site is keyed by its stable catalog key, not the message.
