@@ -81,7 +81,7 @@
       (needs "match lowering that emits a heap walk over a Set/Map scrutinee (even a whole-value binder)")
       (ref pr 6417)))
   (decline RecursiveFunctionRuntimeSpecialization
-    (code UnsupportedConstruct)
+    (code RecursiveFunctionRuntimeSpecialization)
     (reason "a recursive function needs runtime specialization")
     (doc "A recursive function applied where it would need runtime specialization (the eval beta-reduction recursion guard, eval.rs); reworded off deferral wording to \"which is not supported\" by v-core-opt #6565.")
     (blocked-on

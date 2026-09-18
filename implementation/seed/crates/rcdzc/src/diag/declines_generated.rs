@@ -110,7 +110,9 @@ impl DeclineId {
             DeclineId::PrimAsValueNeedsClosure => Some(Code::UnsupportedConstruct),
             DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
-            DeclineId::RecursiveFunctionRuntimeSpecialization => Some(Code::UnsupportedConstruct),
+            DeclineId::RecursiveFunctionRuntimeSpecialization => {
+                Some(Code::RecursiveFunctionRuntimeSpecialization)
+            }
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::ClosureAcrossAbiUnsupported),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
