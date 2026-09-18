@@ -9142,6 +9142,34 @@
               CDZ_COMPONENT_STORE_DIR = "${componentStore}";
               CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
             });
+            # reducer-bench (v-nix, answering v-reducer-pooling's ask 000000080526): a MANUAL/ADVISORY runner
+            # for the two committed cdz-platform host BENCHES whose deliverable is their eprintln timing REPORT
+            # (not a pass/fail): warm_per_fold_execution_cost_of_a_single_reducer_function (per-fold cost) and
+            # per_request_instantiation_cost_quantifies_the_reducer_pooling_opportunity (#9228, spawn-vs-fold
+            # pooling opportunity). Both are #[tokio::test] + #[ignore] (env-gated micro-benchmarks) and read
+            # CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR — so a plain `cargo test` skips them and the
+            # reducer-fold-census check (non-ignored net-0 tests only) never runs them. v-reducer-pooling can't
+            # run them natively (wasmtime E0463 on --features host; cdz-run lacks cranelift). This wires the
+            # reducerEchoComponent + componentStore fixtures + --features host and runs ONLY these two ignored
+            # benches with --nocapture, so the eprintln REPORT lands in the build log: read it via
+            #   nix build .#checks.<arch>-linux.reducer-bench && nix log .#checks.<arch>-linux.reducer-bench
+            # (re-measure on current trunk with --rebuild). craneLib.cargoTest already builds/runs in --release
+            # (its injected `cargo test --release --locked`), so representative timing needs no extra profile flag
+            # (passing --release again errors "cannot be used multiple times").
+            # DELIBERATELY NON-GATING: timing is non-deterministic, so this is NOT in localGate NOR nightly (an
+            # advisory bench, like the census-family checks but --ignored + report-capturing rather than net-0).
+            # NO CDZ_DEBUG_RUNTIME_WASM / CDZ_REDUCER_ECHO_ACCUM_WASM — the benches read neither (verified). Same
+            # STANDALONE placement (off perCrateTestCrane/testCrateCoverageAssert) as the census family.
+            reducer-bench = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
+              pname = "cargo-test-reducer-bench";
+              # --ignored (run ONLY the #[ignore]d benches) + --nocapture (let their eprintln report reach the
+              # build log) + both unique bench names as substring filters. (crane injects --release already.)
+              cargoTestExtraArgs = "-p cdz-platform --features host -- --ignored --nocapture "
+                + "warm_per_fold_execution_cost_of_a_single_reducer_function "
+                + "per_request_instantiation_cost_quantifies_the_reducer_pooling_opportunity";
+              CDZ_REDUCER_ECHO_WASM = "${reducerEchoComponent}/reducer-echo.wasm";
+              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
+            });
           }
           # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
