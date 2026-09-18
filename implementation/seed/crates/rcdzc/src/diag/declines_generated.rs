@@ -38,6 +38,8 @@ pub enum DeclineId {
     WasmParameterizedHeapReturnNoValueEncode,
     ///A bare (effect ...) host operation whose argument or result type has no component boundary form. On a bare effect, host results cross as a scalar/unit and arguments as a scalar/unit/string or a Bytes (list<u8>); a Bytes/option<list<u8>> RESULT crosses only on the WORLD-DRIVEN (wit-world) path, and a record/compound argument or a list<list<u8>>/list<tuple> result is not supported on a bare effect. THE dominant reachable decline (v-cdz-smith #9183 census: ~17.7k hits across the result and argument faces = one emit site backend/wasm/mod.rs:211, via host::first_unrepresentable_host_op). Distinct from WasmBytesCrossingHostOpNoBoundaryForm (the narrower bytes-crossing-member site). Classified feature-gap by v-rust-backend.
     WasmHostOpNoBoundaryFormOnBareEffect,
+    ///An entrypoint delegating more than one distinct host effect. The host-delegation emit binds one component interface per envelope, so two distinct effect names cannot both be delegated. One logical gap over 6 emit sites in backend/wasm/mod.rs: the bare host-delegating path, four resource-escaping-entrypoint variants, and the closure-export variant. Reachable via the bare path (v-cdz-smith #9183 census, ~216 hits). Classified feature-gap by v-rust-backend.
+    WasmMultiHostEffectDelegation,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -57,6 +59,7 @@ impl DeclineId {
         DeclineId::WasmHeapReturnParamNoBoundaryRep,
         DeclineId::WasmParameterizedHeapReturnNoValueEncode,
         DeclineId::WasmHostOpNoBoundaryFormOnBareEffect,
+        DeclineId::WasmMultiHostEffectDelegation,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -86,6 +89,7 @@ impl DeclineId {
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => {
                 "wasm-host-op-no-boundary-form-on-bare-effect"
             }
+            DeclineId::WasmMultiHostEffectDelegation => "wasm-multi-host-effect-delegation",
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -106,6 +110,7 @@ impl DeclineId {
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -153,6 +158,9 @@ impl DeclineId {
             }
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => {
                 "a host operation whose argument or result type has no component boundary form on a bare effect"
+            }
+            DeclineId::WasmMultiHostEffectDelegation => {
+                "delegating more than one host effect from one entrypoint (one interface per envelope)"
             }
         }
     }
