@@ -708,3 +708,31 @@
   (host-responses (respond out.put (: 41 Int64)) (respond out.put (: 43 Int64)))
   (host-calls (call out.put (: 7 Int64)) (call out.put (: 8 Int64)))
   (output (: 4341 Int64)))
+
+; --- Delegating a SET of TWO distinct host effects (the multi-interface face) --------------------------
+; capabilities-and-effects.md MANDATES delegating a SET/UNION of effects ("An entrypoint MUST be able to
+; delegate a SET of effects to the host boundary"), so a single entrypoint delegating two distinct effects
+; is WELL-FORMED. The wasm backend today emits only ONE host interface per envelope, so it DECLINES
+; (CDZ0900 "delegating more than one host effect is not supported (one interface per envelope)") — a
+; not-yet-implemented STAGING gap (v-effects: the multi-interface envelope composes in a later increment,
+; a Reject::unsupported not a semantic error), never a miscompile. So this LOCKS IN the idealistic
+; behavior and grades todo on wasm, auto-flipping PASS when the multi-interface envelope lands. Distinct
+; from the two-ENTRYPOINT cases above (each entrypoint delegates ONE effect) — here ONE entrypoint
+; delegates a SET of two.
+(case
+  "an entrypoint delegating two distinct host effects performs both and returns its computed value"
+  (doc
+    "A single entrypoint delegates the SET `(host (log out) …)` of two distinct host effects and performs
+           one op of each — `log.emit` then `out.put`, both fire-and-forget (Unit) — then returns a pure
+           computed value. The spec mandates delegating a set/union of effects, so this is well-formed and
+           must cross BOTH host interfaces. The wasm backend emits a single host interface per envelope today,
+           so it declines CDZ0900 (multi-interface envelope is a later increment); the decline is a staging
+           gap, never a wrong answer. Idealistic: emits \"a\", puts 5, returns 42.")
+  (input
+    (do
+      (effect log (op emit (-> String Unit)))
+      (effect out (op put (-> Int64 Unit)))
+      (def (main) (host (log out) (do (log.emit "a") (out.put 5) 42)))
+      (export main)))
+  (host-calls (call log.emit (: "a" String)) (call out.put (: 5 Int64)))
+  (output (: 42 Int64)))
