@@ -1482,7 +1482,8 @@ pub fn emit(
     if !host_imports.is_empty() {
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|h| h.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect is not supported (one interface per envelope)",
             ));
         }
@@ -2460,7 +2461,8 @@ fn emit_runtime_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
                  supported (one interface per envelope)",
             ));
@@ -2869,7 +2871,8 @@ fn emit_closure_resource(
         }
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "a closure export delegating more than one host effect is not supported (one interface \
                  per closure envelope)",
             ));
@@ -5212,7 +5215,8 @@ fn emit_runtime_bytes_resource(
         }
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
                  supported (one interface per envelope)",
             ));
@@ -5545,7 +5549,8 @@ fn emit_runtime_sum_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
                  supported (one interface per envelope)",
             ));
@@ -5854,7 +5859,8 @@ fn emit_recursive_sum_resource(
         // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
         // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
                  supported (one interface per envelope)",
             ));
