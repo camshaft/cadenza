@@ -36,7 +36,7 @@
       (needs "a value-form walker that loops to a runtime-determined depth (folding to a scalar works)")
       (ref pr 6216)))
   (decline WasmBytesCrossingHostOpNoBoundaryForm
-    (code UnsupportedConstruct)
+    (code HostOpNoBoundaryForm)
     (reason "a host op whose signature has no host-boundary form")
     (doc "A bytes-crossing host op whose signature has no host-boundary form (#6216).")
     (blocked-on
@@ -126,7 +126,7 @@
       (needs "a runtime value-encode render for a heap return type on the parameterized-export path (the nullary constant-bake path has it)")
       (ref pr 9183)))
   (decline WasmHostOpNoBoundaryFormOnBareEffect
-    (code UnsupportedConstruct)
+    (code HostOpNoBoundaryForm)
     (reason "a host operation whose argument or result type has no component boundary form on a bare effect")
     (doc "A bare (effect ...) host operation whose argument or result type has no component boundary form. On a bare effect, host results cross as a scalar/unit and arguments as a scalar/unit/string or a Bytes (list<u8>); a Bytes/option<list<u8>> RESULT crosses only on the WORLD-DRIVEN (wit-world) path, and a record/compound argument or a list<list<u8>>/list<tuple> result is not supported on a bare effect. THE dominant reachable decline (v-cdz-smith #9183 census: ~17.7k hits across the result and argument faces = one emit site backend/wasm/mod.rs:211, via host::first_unrepresentable_host_op). Distinct from WasmBytesCrossingHostOpNoBoundaryForm (the narrower bytes-crossing-member site). Classified feature-gap by v-rust-backend.")
     (blocked-on
