@@ -40,6 +40,8 @@ pub enum DeclineId {
     WasmHostOpNoBoundaryFormOnBareEffect,
     ///An entrypoint delegating more than one distinct host effect. The host-delegation emit binds one component interface per envelope, so two distinct effect names cannot both be delegated. One logical gap over 6 emit sites in backend/wasm/mod.rs: the bare host-delegating path, four resource-escaping-entrypoint variants, and the closure-export variant. Reachable via the bare path (v-cdz-smith #9183 census, ~216 hits). Classified feature-gap by v-rust-backend.
     WasmMultiHostEffectDelegation,
+    ///A plain (non-heap-return) export with a compound/heap ENTRY parameter (record/tuple/sum/list/string) that has no scalar boundary valtype. A memory-bearing String/Bytes/list or option param on a single export is lifted by the entry-param wrapper, but a record/tuple/other compound entry param is not supported on this export path. Reachable (v-cdz-smith #9183 census). Distinct from WasmHeapReturnParamNoBoundaryRep (the make->own heap-return resource-escape path, whose compound-param branch shares that id). Emit site backend/wasm/mod.rs:1255. Classified feature-gap by v-rust-backend.
+    WasmNonScalarExportParamNoBoundaryRep,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -60,6 +62,7 @@ impl DeclineId {
         DeclineId::WasmParameterizedHeapReturnNoValueEncode,
         DeclineId::WasmHostOpNoBoundaryFormOnBareEffect,
         DeclineId::WasmMultiHostEffectDelegation,
+        DeclineId::WasmNonScalarExportParamNoBoundaryRep,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -90,6 +93,9 @@ impl DeclineId {
                 "wasm-host-op-no-boundary-form-on-bare-effect"
             }
             DeclineId::WasmMultiHostEffectDelegation => "wasm-multi-host-effect-delegation",
+            DeclineId::WasmNonScalarExportParamNoBoundaryRep => {
+                "wasm-non-scalar-export-param-no-boundary-rep"
+            }
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -111,6 +117,7 @@ impl DeclineId {
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::UnsupportedConstruct),
             DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmNonScalarExportParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -161,6 +168,9 @@ impl DeclineId {
             }
             DeclineId::WasmMultiHostEffectDelegation => {
                 "delegating more than one host effect from one entrypoint (one interface per envelope)"
+            }
+            DeclineId::WasmNonScalarExportParamNoBoundaryRep => {
+                "a non-scalar entry parameter has no scalar boundary representation on this export path"
             }
         }
     }

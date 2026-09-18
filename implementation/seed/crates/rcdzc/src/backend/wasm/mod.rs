@@ -1193,9 +1193,12 @@ pub fn emit(
                 // which `make` cannot yet forward — that widening is a later increment. (Guarded on a param
                 // genuinely lacking a scalar valtype so a scalar-param heap return whose RESULT is the real
                 // constraint is NOT misdiagnosed as a param fault — see the result-constraint arm below.)
-                return Err(Reject::unsupported(format!(
-                    "{prefix}: a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not supported)"
-                )));
+                return Err(Reject::declined(
+                    crate::diag::DeclineId::WasmHeapReturnParamNoBoundaryRep,
+                    format!(
+                        "{prefix}: a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not supported)"
+                    ),
+                ));
             } else if !e.params.is_empty() {
                 // A single PARAMETERIZED export whose params are ALL scalar (an Int64, say) but whose heap
                 // RESULT reached here: the param is fine — the RESULT is the constraint. Its value-form is
@@ -1251,12 +1254,15 @@ pub fn emit(
             let vt = match serialize::export_result_valtype(ty, &db.name_ctx()) {
                 Ok(Some(vt)) => vt,
                 _ => {
-                    return Err(Reject::unsupported(format!(
-                        "parameter `{}` of `{}` has no scalar boundary representation — a non-scalar entry \
+                    return Err(Reject::declined(
+                        crate::diag::DeclineId::WasmNonScalarExportParamNoBoundaryRep,
+                        format!(
+                            "parameter `{}` of `{}` has no scalar boundary representation — a non-scalar entry \
                          parameter is not supported on this export path",
-                        ty.render_name(&db.name_ctx()),
-                        e.name
-                    )));
+                            ty.render_name(&db.name_ctx()),
+                            e.name
+                        ),
+                    ));
                 }
             };
             params.push(vt);

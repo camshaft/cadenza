@@ -142,4 +142,13 @@
       (status blocked)
       (owner v-rust-backend)
       (needs "multi-interface host delegation (more than one host effect per envelope)")
+      (ref pr 9183)))
+  (decline WasmNonScalarExportParamNoBoundaryRep
+    (code UnsupportedConstruct)
+    (reason "a non-scalar entry parameter has no scalar boundary representation on this export path")
+    (doc "A plain (non-heap-return) export with a compound/heap ENTRY parameter (record/tuple/sum/list/string) that has no scalar boundary valtype. A memory-bearing String/Bytes/list or option param on a single export is lifted by the entry-param wrapper, but a record/tuple/other compound entry param is not supported on this export path. Reachable (v-cdz-smith #9183 census). Distinct from WasmHeapReturnParamNoBoundaryRep (the make->own heap-return resource-escape path, whose compound-param branch shares that id). Emit site backend/wasm/mod.rs:1255. Classified feature-gap by v-rust-backend.")
+    (blocked-on
+      (status blocked)
+      (owner v-rust-backend)
+      (needs "a boundary representation or entry-param lift for a compound/record entry parameter on the plain export path")
       (ref pr 9183))))
