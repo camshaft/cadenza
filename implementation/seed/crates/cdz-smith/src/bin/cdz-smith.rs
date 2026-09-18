@@ -130,6 +130,7 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+        "decline-histogram" => cmd_decline_histogram(&args[1..]),
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -161,6 +162,7 @@ fn usage() {
          \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith module-declines   [--count N] [--seed S] [--declines-dir DIR]   (cross-module WIT-binding gap hunt → breaker)\n\
          \x20 cdz-smith world-declines    [--count N] [--seed S] [--declines-dir DIR]   (WIT-world ABI per-cell gap hunt → breaker)\n\
+         \x20 cdz-smith decline-histogram [--count N] [--seed S] [--out FILE]   (reachable-decline emit-site census → v-deferral-declines)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -358,6 +360,109 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// The REACHABLE-DECLINE CENSUS (v-deferral-declines request, 2026-09-18): sweep `count` programs
+/// across ALL the generators (text-grammar / coercing-AST / type-fuzz single programs + host/effect +
+/// multi-module import/export), compile each, and bucket EVERY reached `Reject::decline` /
+/// `Reject::unsupported` (CDZ0900) by its (masked) emit site. A decline reached by a generated program
+/// is REACHABLE by construction, so the resulting histogram is the reachable-decline surface — the
+/// honest prod-readiness denominator that reconciles the static ~741-site count (16 declined(id)-tracked,
+/// 197 CDZ0900, 528 codeless) down to what a valid/generated program actually hits. Declines are
+/// EXPECTED output (never a finding); this command NEVER files, always exits 0. Rotating the generator
+/// per program maximizes the reachable surface (each grammar reaches a different decline cluster).
+/// Args: --count (default 4000), --seed (else wall-clock), --out FILE (else stdout). No feature needed.
+fn cmd_decline_histogram(args: &[String]) -> ExitCode {
+    use cdz_smith::decline_census::DeclineHistogram;
+    use cdz_smith::driver::GenMode;
+    use cdz_smith::hostgen;
+    use cdz_smith::oracle::compile_modules_catching;
+
+    let mut count: u64 = 4000;
+    let mut seed: Option<u64> = None;
+    let mut out: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--out" => out = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith decline-histogram: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    eprintln!(
+        "[cdz-smith] decline-histogram @{} | {count} programs | seed {run_seed}",
+        driver::detect_commit()
+    );
+
+    // splitmix64 per-program seed — one fresh well-distributed seed per iteration.
+    let mut rng = run_seed;
+    let mut next_seed = || {
+        rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    // Expand a seed into `n` entropy bytes for the byte-cursor generators (host/module).
+    let entropy = |mut s: u64, n: usize| -> Vec<u8> {
+        let mut v = Vec::with_capacity(n);
+        while v.len() < n {
+            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            v.extend_from_slice(&z.to_le_bytes());
+        }
+        v.truncate(n);
+        v
+    };
+
+    let mut hist = DeclineHistogram::new();
+    for i in 0..count {
+        let s = next_seed();
+        // Rotate the generator so the census spans the whole reachable surface, not one grammar.
+        let verdict = match i % 5 {
+            0 => compile_catching(&driver::program_for_seed_with(s, GenMode::Text)),
+            1 => compile_catching(&driver::program_for_seed_with(s, GenMode::Astgen)),
+            2 => compile_catching(&driver::program_for_seed_with(s, GenMode::TypeFuzz)),
+            3 => compile_catching(&hostgen::generate_host(&entropy(s, 32)).source),
+            _ => {
+                let (mods, entry) = hostgen::generate_module_fuzz(&entropy(s, 48));
+                compile_modules_catching(&mods, &entry)
+            }
+        };
+        match verdict {
+            Verdict::Compiled { .. } => hist.record_compiled(),
+            Verdict::Declined { code, message } => hist.record_decline(code.as_deref(), &message),
+            // Crash / invalid-wasm / parse-error are NOT declines — the fuzz/differential targets own
+            // filing those. Here we only count them so the census totals reconcile.
+            _ => hist.record_other(),
+        }
+    }
+
+    let report = hist.report();
+    match &out {
+        Some(path) => match std::fs::write(path, &report) {
+            Ok(()) => eprintln!("[cdz-smith] decline-histogram → {}", path.display()),
+            Err(e) => {
+                eprintln!(
+                    "cdz-smith decline-histogram: cannot write {}: {e}",
+                    path.display()
+                );
+                return ExitCode::from(1);
+            }
+        },
+        None => print!("{report}"),
+    }
+    ExitCode::SUCCESS
 }
 
 /// The HOST-DECLINE sweep: generate `count` HOST/EFFECT programs (see `hostgen`) and compile each,

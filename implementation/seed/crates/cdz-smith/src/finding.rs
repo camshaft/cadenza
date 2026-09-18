@@ -574,8 +574,10 @@ pub fn normalize_site(site: &str) -> String {
 }
 
 /// Collapse the variable parts of a panic message (numbers, hex) so two messages that differ only
-/// in incidental values share a template — the dedup key.
-fn mask_message(msg: &str) -> String {
+/// in incidental values share a template — the dedup key. `pub(crate)` so the decline-census
+/// histogram keys reachable declines by the SAME masked template the finding dedup uses (letting
+/// v-deferral-declines reconcile a histogram bucket against a filed reachability finding directly).
+pub(crate) fn mask_message(msg: &str) -> String {
     let first = first_line(msg);
     let mut out = String::with_capacity(first.len());
     let mut chars = first.chars().peekable();
@@ -596,7 +598,7 @@ fn mask_message(msg: &str) -> String {
     out
 }
 
-fn first_line(s: &str) -> &str {
+pub(crate) fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s).trim()
 }
 
