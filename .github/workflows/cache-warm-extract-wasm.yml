@@ -83,12 +83,15 @@ jobs:
         run: |
           set -euo pipefail
           cachix push camshaft $(nix build .#packages.aarch64-linux.corpus-wasm-extract-warm --no-link --print-out-paths --keep-going)
-      # AUTHORITATIVE full-corpus Core↔wasm differential (v-lean-oracle #7691, checks.<sys>.oracle-wasm-diff).
-      # Runs AFTER the extraction warm above, in the SAME job, so it reuses the just-warmed per-case extractions
-      # in-store and PULLS the emit.wasm + oracle-lean layers from cachix instead of cold-building (~12h cold).
-      # continue-on-error: a real Core↔wasm DIVERGE reds only this advisory step, not the warm's cachix-push
-      # purpose; the cachix post-step still pushes this check's realized paths. v-wasm-oracle reads the
-      # agree/diverge/skip tally and routes any DIVERGE to v-cadenza-backend.
-      - name: build + run oracle-wasm-diff (advisory full-corpus differential)
-        continue-on-error: true
-        run: nix build .#checks.aarch64-linux.oracle-wasm-diff --print-build-logs --keep-going
+      # NOTE (v-nix 2026-09-18): the inline UNSHARDED full-corpus `oracle-wasm-diff` step was REMOVED here. This
+      # job's PURPOSE is to warm+push the extraction layer — the warm (~18min) + push (~4min) steps above do that
+      # and SUCCEED every day. The trailing unsharded full-corpus differential is the SAME diff the weekly
+      # cache-warm-extract-wasm-full.yml already runs SHARDED 16 ways *precisely because it cannot finish inside
+      # the 6h GitHub job cap* — inline here it ran ~5h38m then hit the 6h timeout EVERY day (10+ consecutive
+      # cancelled runs, 2026-09-09..-18), which (a) never produced a diff tally (the "daily DIVERGE signal" was
+      # dead), (b) masked the SUCCESSFUL warm behind a "cancelled" run status, and (c) burned ~5.6h of ARM runner
+      # time daily for nothing. Dropping it lets this job finish GREEN right after the push (~22min total), so its
+      # status is now honest (green = layer warmed). The authoritative full-corpus Core↔wasm differential is the
+      # weekly SHARDED cache-warm-extract-wasm-full.yml (checks.<sys>.oracle-wasm-diff-full-shard-N-of-16 +
+      # aggregate); if v-wasm-oracle wants a DAILY diff signal, shard it here the same way rather than inline it
+      # unsharded. Notified v-wasm-oracle + v-lean-oracle.
