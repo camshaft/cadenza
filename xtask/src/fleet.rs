@@ -22214,6 +22214,18 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(gate_local_hold_advisory(fetch502).contains("SUBSTITUTER FETCH"));
         assert!(gate_local_hold_advisory(fetch502).contains("RE-RUN"));
         assert!(!gate_local_hold_advisory(fetch502).contains("REAL sub-check"));
+        // Regression pin (2026-09-18 incident, verified against the preserved gate-local log): the
+        // camshaft.cachix.org build-trace / REALISATION `…%21out.doi` lookup returning HTTP 522 hard-blocked
+        // 3 gate-local attempts fleet-wide (nix's build-time --fallback does NOT cover a realisation-resolution
+        // failure — there is no NAR to rebuild from source). The POST-hoc advisory already re-run-classifies it
+        // (it is an `unable to download … HTTP error 5xx` fetch transient) — pin the EXACT real signature so a
+        // future narrowing of the fetch-transient matcher can't silently stop covering it and re-strand agents.
+        let build_trace_522 = "error: unable to download \
+                               'https://camshaft.cachix.org/realisations/sha256:48f7bb048e5486ce7370b7c2c98914e4818f8c02fdccc7bf6ca940f359f66a0d%21out.doi': \
+                               HTTP error 522";
+        assert!(gate_local_hold_advisory(build_trace_522).contains("SUBSTITUTER FETCH"));
+        assert!(gate_local_hold_advisory(build_trace_522).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(build_trace_522).contains("REAL sub-check"));
         // A nix auto-GC freed a crane eval input MID-BUILD (findCargoFiles.nix vanished) → GC/crane race,
         // advise RE-RUN, not a regression (concierge/v-streaming-contract 2026-09-12 false-red).
         let gc_race = "error: getting status of \
