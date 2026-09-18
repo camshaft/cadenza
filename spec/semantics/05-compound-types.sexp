@@ -9455,6 +9455,36 @@
   (output (: 0 Int64)))
 
 (case
+  "a newtype wrapping a heap list as a MAP KEY hashes AND matches through the erasure into the inner list"
+  (doc
+    "The CHAMP-KEY face of the heap-newtype erasure: the scalar newtype map-key case above (`(Id a)`)
+           and the heap-newtype `=` case above (`(= (Xs …) (Xs …))`) each cover ONE half — but a newtype
+           wrapping a HEAP list used as a MAP KEY needs BOTH halves to see through the wrapper: the CHAMP
+           HASH must descend through the newtype into the list's element bytes (so two independently-built
+           equal keys land in the same bucket), and the eq must then confirm by the inner heap walk. A hash
+           that keyed on the wrapper cell (or failed to descend into the list) would send equal keys to
+           different buckets → a spurious MISS despite content-equality, which a bare `=` (no hashing) cannot
+           catch. `m` is keyed by `(B [1,2])`→42 and `(B [9])`→7; the lookup rebuilds `(B [1, n+1])`
+           independently: n=1 → `(B [1,2])` HITS (42, content-equal to a differently-constructed key), n=2 →
+           `(B [1,3])` MISSES (-1, no content match). Runtime operands (nothing folds), value-uniform O0..O3.
+           Completes the newtype-erasure-at-the-collection-boundary matrix (scalar set/map + heap `=` + THIS
+           heap map-key).")
+  (input
+    (do
+      (type Box (B (List Int64)))
+      (def
+        (main (: n Int64))
+        (let ((m (Map.insert (Map.insert (Map.empty) (B #list(1 2)) 42) (B #list(9)) 7)))
+          (match (Map.lookup m (B #list(1 (+ n 1)))) ((Some v) v) ((None _u) -1))))
+      (export main)))
+  ; n=1: (B [1,2]) content-equals the (differently-built) key -> HIT 42 (hash descended into the list).
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  ; n=2: (B [1,3]) has no content match -> MISS -1 (keying is by inner content, not wrapper identity).
+  (call main (: 2 Int64))
+  (output (: -1 Int64)))
+
+(case
   "a newtype match-arm destructure reads the erased scalar back"
   (doc
     "The pattern-path control: `(match (M a) ((M v) (* v 2)))` — construct the newtype from a runtime
