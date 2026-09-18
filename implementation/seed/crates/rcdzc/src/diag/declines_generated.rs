@@ -116,7 +116,9 @@ impl DeclineId {
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
             DeclineId::WasmClosureBoundaryNoRepr => Some(Code::ClosureAcrossAbiUnsupported),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::ExportParamNoBoundaryForm),
-            DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmParameterizedHeapReturnNoValueEncode => {
+                Some(Code::ExportHeapResultNoEncode)
+            }
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::HostOpNoBoundaryForm),
             DeclineId::WasmMultiHostEffectDelegation => Some(Code::UnsupportedConstruct),
             DeclineId::WasmNonScalarExportParamNoBoundaryRep => {

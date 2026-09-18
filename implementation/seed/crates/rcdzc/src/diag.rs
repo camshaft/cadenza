@@ -475,6 +475,18 @@ pub enum Code {
     /// concierge's one-code-per-user-cause split). Still a DECLINE (see `is_decline`), CDZ09xx band.
     ExportParamNoBoundaryForm,
 
+    /// A PARAMETERIZED EXPORT cannot RETURN this HEAP TYPE — a non-nullary export whose scalar params are
+    /// fine but whose heap RESULT (List/Option/Result/Tuple/Symbol/…) reaches the boundary: the value form
+    /// is emitted only for a nullary constant-bake export, and no runtime value-encode render for it is
+    /// available on the parameterized-export path. A DEDICATED code split off the `UnsupportedConstruct`
+    /// umbrella (CDZ0900) per the CDZ0900-elimination directive. DISTINCT from the export-PARAMETER gap
+    /// (`ExportParamNoBoundaryForm`, CDZ0904): a materially different user-facing remediation — this is
+    /// about the RETURN type, not a parameter — per the concierge's one-code-per-user-cause split. The
+    /// `WasmParameterizedHeapReturnNoValueEncode` DeclineId carries it; the build-out (a runtime
+    /// value-encode render on the parameterized-export path) is v-rust-backend's. Still a DECLINE (see
+    /// `is_decline`), CDZ09xx band.
+    ExportHeapResultNoEncode,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -551,6 +563,7 @@ impl Code {
             Code::RecursiveFunctionRuntimeSpecialization => "CDZ0902",
             Code::HostOpNoBoundaryForm => "CDZ0903",
             Code::ExportParamNoBoundaryForm => "CDZ0904",
+            Code::ExportHeapResultNoEncode => "CDZ0905",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -569,6 +582,7 @@ impl Code {
                 | Code::RecursiveFunctionRuntimeSpecialization
                 | Code::HostOpNoBoundaryForm
                 | Code::ExportParamNoBoundaryForm
+                | Code::ExportHeapResultNoEncode
         )
     }
 }
