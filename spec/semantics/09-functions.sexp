@@ -608,6 +608,62 @@
   (live-objects 0))
 
 (case
+  "a self-recursive fn APPLYING its owned closure param TWICE on the base arm reclaims the captured env without double-free"
+  (doc
+    "The multi-apply UAF face of #9175's CallClosure borrow arm. The fixed shape above applies the owned
+           closure `f` ONCE on the base arm; here the base arm applies it TWICE — `(+ (f 0) (f 1))` — beside
+           the identity thread on the back-edge `(go f (- d 1))`. Each apply BORROWS `f` (CallClosure), so `f`
+           is borrow+back-edge-only and the sole reclaim is the loop-exit epilogue drop of the owned closure +
+           its captured 3-cell env. TWO borrows before that single drop must not race it: a drop between/at
+           the applies would free the captured env the other apply still reads (rc-underflow/UAF), and a
+           per-apply drop would double-free. The closure ignores its arg (returns `List.len xs` = 3), so value
+           = f(0)+f(1) = 6, invariant across depth (d=0/2/4 → 6). Gate census + trap grading proves the
+           multi-apply reclaim is UAF-safe.")
+  (input
+    (do
+      (def
+        (go (: f (-> Int64 Int64)) (: d Int64))
+        (if (< d 1) (+ (f 0) (f 1)) (go f (- d 1))))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1)))) (go (fn (_d) (List.len xs)) n)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 6 Int64))
+  (call main (: 4 Int64))
+  (output (: 6 Int64))
+  (live-objects known-leak))
+
+(case
+  "a closure param passed to TWO SIBLING self-calls reclaims its captured env — the closure twin of the sibling consume-spare (#9155 × #9175)"
+  (doc
+    "Crosses #9175's closure-env reclaim with #9155's sibling-self-call consume-spare. `go` passes its
+           owned closure `f` to TWO sibling self-calls in the recursive arm — `(+ (go f (- d 1)) (go f (- d
+           1)))` — and applies it on the base arm `(f 0)`. The two sibling consumes force one dup of `f` per
+           frame (the last-sibling consume-spare), while the base-arm apply borrows it and the loop-exit drop
+           reclaims the owned closure + captured 3-cell env. The dup + spare + loop-exit drop must balance:
+           an over-drop double-frees the shared closure a sibling still holds; a missed drop leaks the env.
+           The closure returns `List.len xs` = 3, and the recursive tree has 2^d leaves each applying `f`, so
+           value = 3·2^d (d=0→3, d=2→12, d=3→24) — no scaling residue if balanced. Guards the closure-param
+           face of the sibling reclaim, distinct from the list-param #9157 three-sibling case.")
+  (input
+    (do
+      (def
+        (go (: f (-> Int64 Int64)) (: d Int64))
+        (if (< d 1) (f 0) (+ (go f (- d 1)) (go f (- d 1)))))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1)))) (go (fn (_d) (List.len xs)) n)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 2 Int64))
+  (output (: 12 Int64))
+  (call main (: 3 Int64))
+  (output (: 24 Int64))
+  (live-objects known-leak))
+
+(case
   "a tail loop that BORROWS its owned heap accumulator while THREADING it leaks PER-ITERATION (O(n) residue)"
   (doc
     "The per-iteration (scaling) face of the owned-param dup/drop miss — distinct from the constant
