@@ -736,6 +736,54 @@
   (call lt (: 9223372036854775807 UInt64) (: 9223372036854775808 UInt64))
   (output (: 1 Int64)))
 
+; The unsigned-op dispatch companions of the `<` case above, all across the same 2^63 top-bit boundary
+; where a signed machine op would misread a top-bit-set UInt64 as negative: `/` must emit i64.div_u (not
+; div_s), `%` i64.rem_u (not rem_s), and `>>` the LOGICAL i64.shr_u (not the sign-extending shr_s pinned for
+; signed Int64 at line 209). Each is a distinct opcode in the backend's signedness dispatch, so each needs
+; its own witness. The narrow-width UInt8 logical shift is pinned below (~8244); these are the machine-word
+; (UInt64) faces where the top bit is the 2^63 sign bit. Const fold agrees; verified breaker probes.
+(case
+  "UInt64 / is unsigned division across the 2^63 boundary (i64.div_u, not div_s)"
+  (doc
+    "`(/ a b)` over UInt64 emits an unsigned divide: dv(UInt64.max, 2) = 9223372036854775807 (= (2^64-1)/2);
+           a signed div_s would read UInt64.max as -1 and give -1/2 = 0. dv(2^63, 2) = 4611686018427387904;
+           signed would read 2^63 as Int64.min and give Int64.min/2 = -4611686018427387904. dv(100, 7) = 14 is
+           the small control. Pins UInt64 `/` is unsigned across the top-bit boundary.")
+  (input (do (def (dv (: a UInt64) (: b UInt64)) (/ a b)) (export dv)))
+  (call dv (: 18446744073709551615 UInt64) (: 2 UInt64))
+  (output (: 9223372036854775807 UInt64))
+  (call dv (: 9223372036854775808 UInt64) (: 2 UInt64))
+  (output (: 4611686018427387904 UInt64))
+  (call dv (: 100 UInt64) (: 7 UInt64))
+  (output (: 14 UInt64)))
+
+(case
+  "UInt64 % is unsigned remainder across the 2^63 boundary (i64.rem_u, not rem_s)"
+  (doc
+    "`(% a b)` over UInt64 emits an unsigned remainder: rm(UInt64.max, 10) = 5 (…615 mod 10); a signed rem_s
+           would read UInt64.max as -1 and give -1 rem 10 = -1. rm(2^63, 3) = 2; signed would give Int64.min
+           rem 3 = -2. Pins UInt64 `%` is unsigned across the top-bit boundary, the remainder twin of `/`.")
+  (input (do (def (rm (: a UInt64) (: b UInt64)) (% a b)) (export rm)))
+  (call rm (: 18446744073709551615 UInt64) (: 10 UInt64))
+  (output (: 5 UInt64))
+  (call rm (: 9223372036854775808 UInt64) (: 3 UInt64))
+  (output (: 2 UInt64)))
+
+(case
+  "UInt64 >> is a LOGICAL shift across the 2^63 boundary (i64.shr_u, not the sign-extending shr_s)"
+  (doc
+    "`(>> a b)` over UInt64 is a LOGICAL (zero-fill) shift, NOT the arithmetic sign-extending shr_s pinned
+           for signed Int64 (line 209): sr(UInt64.max, 1) = 9223372036854775807 (= (2^64-1)>>1, top bit
+           zero-filled); an arithmetic shr_s would preserve the set top bit and leave all ones =
+           18446744073709551615. sr(2^63, 1) = 4611686018427387904 (the 2^63 bit shifts down, no sign
+           extension); arithmetic would give 13835058055282163712. Pins UInt64 `>>` is logical — the
+           machine-word face of the UInt8 logical shift below.")
+  (input (do (def (sr (: a UInt64) (: b UInt64)) (>> a b)) (export sr)))
+  (call sr (: 18446744073709551615 UInt64) (: 1 UInt64))
+  (output (: 9223372036854775807 UInt64))
+  (call sr (: 9223372036854775808 UInt64) (: 1 UInt64))
+  (output (: 4611686018427387904 UInt64)))
+
 ; The runtime-wrap cases above are at i64/u64 width, where the operand width equals the machine word.
 ; These pin the runtime wrap at NARROW widths (8/16), where the backend must MASK to the operand width
 ; after the machine op — the const-fold narrow cases (Int8/UInt8 + and *) already wrap mod 2^width, and
