@@ -236,6 +236,24 @@
   (input (= (Symbol.of "café") (Symbol.of "café")))
   (output (: true Bool)))
 
+(case
+  "a symbol interned from a DECOMPOSED (NFD) String.from-bytes canonicalizes to NFC — equals its composed twin"
+  (doc
+    "The case above compares two STRING LITERALS, which the reader already normalizes to NFC before
+           Symbol.of — so it does not exercise a genuinely decomposed operand. `String.from-bytes` does
+           NOT normalize (it only validates UTF-8), so a String built from NFD bytes (`e` + U+0301
+           combining acute = 101,204,129) carries a DECOMPOSED spelling that BYPASSES the reader's
+           literal-normalization. Symbol identity is its NFC-normalized content (FINDING #23), so this
+           symbol MUST equal the one interned from the composed NFC spelling (U+00E9 = 195,169), even
+           though the raw byte-lengths differ (3 vs 2). Pins the content-identity MUST for the
+           from-bytes path across normalization forms: the Symbol.of const-fold must NFC-normalize a
+           non-ASCII constant (route it through the runtime `str-nfc-normalize`), not return the raw
+           decomposed bytes (breaker #9242 / v-memory-safety).")
+  (input
+    (= (Symbol.of (Option.expect (String.from-bytes (Bytes.of #list(((. (UInt 8) wrap) 101) ((. (UInt 8) wrap) 204) ((. (UInt 8) wrap) 129)))) #"nfd"))
+       (Symbol.of (Option.expect (String.from-bytes (Bytes.of #list(((. (UInt 8) wrap) 195) ((. (UInt 8) wrap) 169)))) #"nfc"))))
+  (output (: true Bool)))
+
 ; ============================================================================================
 ; The empty symbol is an ordinary Symbol value (the degenerate boundary)
 ; ============================================================================================

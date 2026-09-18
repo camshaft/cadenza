@@ -2583,7 +2583,18 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // `String.to-bytes` reuses `bytes-compact` to retag a runtime string as Bytes. Frozen hash
                 // unchanged (reuses an existing runtime op).
                 Some(Prim::SymbolOf) if args.len() == 1 => match core_of(db, args[0]) {
-                    c @ Core::ConstStr(_) => c,
+                    // A CONSTANT string folds to a constant symbol sharing the `Core::ConstStr` rep ONLY
+                    // when the constant is ALREADY its own NFC form. ASCII is trivially NFC, so keep the
+                    // identity fast-path for an ASCII constant (the overwhelmingly common symbol case, and
+                    // it preserves constant Symbol equality folding). A NON-ASCII constant may be DECOMPOSED
+                    // — e.g. `String.from-bytes` of NFD bytes folds to a `ConstStr` WITHOUT normalizing
+                    // (`from_utf8` validates well-formedness but does not compose) — so returning it as-is
+                    // would let an NFD constant symbol compare UNEQUAL to its NFC twin, violating the
+                    // 17-symbols content-identity MUST (FINDING #23). Route a non-ASCII constant through the
+                    // runtime NFC path below (the `Ty::String` arm): `NfcNormalize` canonicalizes it, exactly
+                    // like a runtime string. (rcdzc's core excludes `unicode-normalization`, so the compiler
+                    // cannot fold the NFC here — the correct runtime `str-nfc-normalize` op does it.)
+                    Core::ConstStr(ref s) if s.is_ascii() => Core::ConstStr(s.clone()),
                     Core::Poison(r) => Core::Poison(r),
                     _ if matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::String) => {
                         trace!(target: "rcdzc::lower", "Symbol.of on a runtime string → NFC-normalize then compact its byte-rope to a canonical Symbol leaf");
