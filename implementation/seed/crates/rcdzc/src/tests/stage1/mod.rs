@@ -3147,11 +3147,12 @@ fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
         )],
         &[crate::backend::Target::Wasm],
     );
-    // No INVALID-MODULE / codegen error: either it declines (uncoded todo) or it folds — never a coded
-    // reject and never an emit failure. Assert no error-severity diagnostic carries a wasm-validation
-    // failure, AND that every error (if any) is UNCODED — the honest "not yet reducible" decline, never a
-    // coded CDZ0xxx reject (PR#883 Copilot: the negative-substring check alone would pass on an unrelated
-    // coded error, missing the "never a coded reject" half of the contract).
+    // No INVALID-MODULE / codegen error: either it DECLINES (the "not yet reducible" tail-resumptive-fold
+    // decline) or it folds — never a hard coded REJECT and never an emit failure. Assert no error-severity
+    // diagnostic carries a wasm-validation failure, AND that every error (if any) is a DECLINE-band code
+    // (CDZ090x — the CDZ0900 umbrella or a dedicated decline code split off it; this form is CDZ0907), the
+    // honest "not yet reducible" decline, never a hard coded reject (PR#883 Copilot: the negative-substring
+    // check alone would pass on an unrelated coded error, missing the "never a coded reject" half).
     let errors: Vec<&crate::abi::Diagnostic> = out
         .diagnostics
         .iter()
@@ -3165,8 +3166,14 @@ fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(
-        errors.iter().all(|d| d.code.as_deref() == Some("CDZ0900")),
-        "any error must be the CDZ0900 deferred decline (not a hard coded reject): {:?}",
+        // A DECLINE-band code (CDZ0900 umbrella OR a dedicated decline code split off it, CDZ0901-0909 —
+        // this tail-resumptive-fold form is CDZ0907 since v-deferral-declines' CDZ0900-elimination), never
+        // a hard coded REJECT. The band excludes CDZ0910 (InvalidWasmEmitted) and CDZ0999 (RecursionBound),
+        // which are NOT declines — so this still enforces "a clean not-yet decline, not a coded reject".
+        errors
+            .iter()
+            .all(|d| d.code.as_deref().is_some_and(|c| c.starts_with("CDZ090"))),
+        "any error must be a CDZ090x deferred decline (not a hard coded reject): {:?}",
         errors
             .iter()
             .map(|d| (&d.code, &d.message))
