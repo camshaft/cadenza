@@ -1071,6 +1071,46 @@
   (live-objects known-leak 2))
 
 (case
+  "a LIST and a MAP accumulator threaded through one recursion BOTH reclaim (census 0) — the two-accumulator non-compose is MAP-SPECIFIC, not type-general"
+  (doc
+    "The type-generality probe of the two-accumulator reclaim boundary above (two maps leak 2) — and it
+           NARROWS that boundary: this threads a MIXED pair — a `(List Int64)` accumulator `lst` (pushed every
+           step) AND a `(Map Int64 Int64)` accumulator `m` (inserted every step, borrowed by `Map.lookup` for
+           the distinct-count model) — through ONE recursion, returning a SCALAR checksum `100·List.len + cnt`
+           (NOT the collections, so any residual would be a genuine guest leak, not an ABI-transferred return
+           value). Both seeds → 2008 (List.len 20 · 100 + 8 distinct keys). It RECLAIMS to census 0 — so the
+           two-accumulator non-compose is NOT count-based/type-general: a list + a map threaded together both
+           reclaim, whereas TWO MAPS (same type, both grown by Map.insert on the same key per step) leak 2.
+           The gap is therefore MAP-SPECIFIC (two co-threaded map accumulators), not a generic multi-accumulator
+           limitation — a sharper localization for the borrow-thread-accumulator reclaim owner. Pins that a
+           heterogeneous list+map co-thread is fully reclaimed. Value correct, no trap.")
+  (input
+    (do
+      (def
+        (next (: s Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: s Int64) (: n Int64) (: lst (List Int64)) (: m (Map Int64 Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (+ (* 100 (List.len lst)) cnt)
+          (let
+            ((k (& (next s) 7)))
+            (drive
+              (next s)
+              (- n 1)
+              (List.push lst k)
+              (Map.insert m k 1)
+              (match (Map.lookup m k) ((Some v) cnt) ((None u) (+ cnt 1)))))))
+      (def (main (: seed Int64)) (drive seed 20 #list() Map.empty 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 2008 Int64))
+  (call main (: 999 Int64))
+  (output (: 2008 Int64))
+  (live-objects 0))
+
+(case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc
     "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
