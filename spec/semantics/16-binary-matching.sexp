@@ -4670,7 +4670,8 @@
   (call main (: 105 Int64))
   (output (: "hi!" String))
   (call main (: 255 Int64))
-  (output (: "none" String)))
+  (output (: "none" String))
+  (live-objects 1))
 
 ; cux1: a CONST-SIZE utf8 segment over a RUNTIME scrutinee — (bin (u8 t) (utf8 s 2)) where the bytes
 ; carry a runtime first byte, so nothing folds and the decode must run. The existing const-size utf8
@@ -4697,7 +4698,8 @@
   (call main (: 1 Int64))
   (output (: "hi!" String))
   (call main (: 50 Int64))
-  (output (: "hi?" String)))
+  (output (: "hi?" String))
+  (live-objects 1))
 
 ; ebx1: a bin match NESTED INSIDE another bin match's ARM BODY — outer (bin (u8 x) (u8 y)) arm whose
 ; body bin-matches a SECOND helper-returned Bytes. Computes tri-target (182010 + 101n; all four
@@ -4822,7 +4824,8 @@
   (call main (: 1 Int64))
   (output (: "hihi!" String))
   (call main (: 42 Int64))
-  (output (: "hihi?" String)))
+  (output (: "hihi?" String))
+  (live-objects 1))
 
 ; cux3: DEPENDENT-size utf8 nested — the #8008 x #8024 composition. Both the outer and the inner arm
 ; use (u8 c) (utf8 s c) length-prefixed segmentation (identical offsets AND widths across the two
@@ -4845,7 +4848,8 @@
   (call main (: 105 Int64))
   (output (: "hihj" String))
   (call main (: 255 Int64))
-  (output (: "x" String)))
+  (output (: "x" String))
+  (live-objects 1))
 
 ; plx1: a post-payload literal probe that FAILS at the dynamic offset — the mismatch face of the
 ; non-final dependent-utf8 case above (which pins the utf8-VALIDITY fall-through; here the utf8 is
@@ -4864,7 +4868,8 @@
   (call main (: 7 Int64))
   (output (: "hi-ok" String))
   (call main (: 8 Int64))
-  (output (: "x" String)))
+  (output (: "x" String))
+  (live-objects 1))
 
 ; plx2: a MULTI-BYTE literal segment after a dependent payload — (u16 258) spans TWO bytes at the
 ; dynamic offset 1+n (0x0102 big-endian = bytes 1,2), widening the single-byte (u8 lit) post-payload
@@ -4882,7 +4887,8 @@
   (call main (: 105 Int64))
   (output (: "hi-16ok" String))
   (call main (: 255 Int64))
-  (output (: "x" String)))
+  (output (: "x" String))
+  (live-objects 1))
 
 ; plx3: TWO length-prefixed dependent frames chained at RUNTIME — (u8 c)(utf8 s c)(u8 0)(u8 d)
 ; (utf8 r d), a separator-delimited two-string frame. The CONST twin folds (the chained-dependent
@@ -4959,7 +4965,8 @@
   (call main (: 1 Int64))
   (output (: "jk!" String))
   (call main (: 42 Int64))
-  (output (: "jk?" String)))
+  (output (: "jk?" String))
+  (live-objects 1))
 
 ; cgx1: a guard reading the DEPENDENT-PAYLOAD binder — (Bytes.len p) in GUARD position over
 ; (u8 k)(bytes p k). Until #8090 this EMITTED AN INVALID MODULE (Core::And rhs slot-width collision:
