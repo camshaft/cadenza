@@ -7139,6 +7139,54 @@
   (call main (: 200 UInt8))
   (output (: 200 Int64)))
 
+; The SIGNED narrowing-wrap twin of the unsigned const fold (`(Int64.of (UInt8.wrap 300))` = 44) and the
+; lone runtime `Int8.wrap 200` = -56 pin (09-functions): a differential that the const fold and the runtime
+; path agree on `Int8.wrap` across the SIGN BOUNDARY. `Int8.wrap` keeps the low 8 bits and SIGN-EXTENDS from
+; bit 7 (mod-256, never saturates): 384 & 0xFF = 0x80 → -128; 383 & 0xFF = 0x7F → +127 (the one-below-boundary
+; twin); 256 → 0; -1 → -1 (0xFF sign-extended). A fold that masked WITHOUT sign-extending (leaving +128) or
+; saturated instead of wrapping would diverge from the runtime i32.wrap+sign-extend. Verified breaker probe
+; (rt vs cfold): fold == runtime at every edge.
+(case
+  "a runtime signed narrowing Int8.wrap sign-extends across the high-bit boundary (mod-256, never saturates)"
+  (doc
+    "The runtime signed narrowing face across the sign boundary. `(Int8.wrap n)` keeps the low 8 bits
+           and sign-extends from bit 7: 128 → -128 (0x80), 256 → 0 (wraps, does NOT saturate to 127), -1 →
+           -1 (0xFF), 384 → -128 (384 mod 256 = 128 = 0x80), 383 → 127 (0x7F, the highest positive). Widens
+           back via `Int64.of` (sign-extends, since the Int8 source is signed) to make the value visible.")
+  (input (do (def (main (: n Int64)) (Int64.of (Int8.wrap n))) (export main)))
+  (call main (: 128 Int64))
+  (output (: -128 Int64))
+  (call main (: 256 Int64))
+  (output (: 0 Int64))
+  (call main (: -1 Int64))
+  (output (: -1 Int64))
+  (call main (: 384 Int64))
+  (output (: -128 Int64))
+  (call main (: 383 Int64))
+  (output (: 127 Int64)))
+
+(case
+  "the const fold of a signed narrowing Int8.wrap agrees with the runtime path at every sign-boundary edge"
+  (doc
+    "The const-fold twin of the runtime case above — a fold-vs-runtime differential for SIGNED
+           narrowing. Every operand is a literal, so the whole expression const-folds; a fold that diverged
+           from the runtime sign-extension (e.g. masked without sign-extending, or saturated) would change
+           the encoded sum. Four sign-boundary edges are weight-packed into one Int64 so a single wrong fold
+           is detectable: 1·(Int8.wrap 384 = -128) + 10000·(Int8.wrap 256 = 0) + 1000·(Int8.wrap -1 = -1) +
+           100·(Int8.wrap 383 = 127) = -128 + 0 - 1000 + 12700 = 11572. Matches the runtime values pinned
+           above at 384/256/-1/383, so fold == runtime.")
+  (input
+    (do
+      (def (main)
+        (+
+          (Int64.of (Int8.wrap 384))
+          (+
+            (* 10000 (Int64.of (Int8.wrap 256)))
+            (+ (* 1000 (Int64.of (Int8.wrap -1))) (* 100 (Int64.of (Int8.wrap 383)))))))
+      (export main)))
+  (call main)
+  (output (: 11572 Int64)))
+
 (case
   "narrow unsigned comparison division and remainder compose unsigned over a high-bit operand"
   (doc
