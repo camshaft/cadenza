@@ -1074,6 +1074,48 @@
   (live-objects 0))
 
 (case
+  "TWO CHAMP Map accumulators with an OR-shaped end-check BOTH reclaim (census 0) — locks the is_and=false operand of the Core::And borrow-arm (#9233)"
+  (doc
+    "The OR-connective twin of the two-map AND-fold witness above (#9218): the #9233 borrow-arm is
+           `Core::And { lhs, rhs, .. }` — the `..` ignores `is_and`, so ONE arm is claimed to cover BOTH
+           short-circuit connectives (`and` = `if lhs then rhs else false`, `or` = `if lhs then true else
+           rhs`; the compiler has no separate `Core::Or` — `is_and` picks the semantics). But the four
+           flipped witnesses ALL use the `and`-fold end-check, so the `is_and=false` (OR) operand path had
+           NO corpus witness: a regression narrowing the arm to `Core::And { is_and: true, .. }` would pass
+           every existing test while re-leaking every or-gated co-threaded CHAMP loop. This threads the same
+           two `(Map Int64 Int64)` accumulators but gates the base case on an explicit `(or (= (Map.len m1)
+           cnt) (= (Map.len m2) cnt))` → lowers to `Core::And { is_and: false }` with BOTH `Map.len` borrows
+           as operands. Both maps grow identically so both lens equal cnt → the `or` is true → 1 on both
+           seeds (VALUE correct, no trap/UAF); census 0 confirms both borrow-only map params' loop-exit
+           reclaim survives the OR fold exactly as the AND fold. Leak-over-UAF safe (borrow-only in base,
+           frame-owned, exit deep-drop is the sole reclaim).")
+  (input
+    (do
+      (def
+        (next (: s Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: s Int64) (: n Int64) (: m1 (Map Int64 Int64)) (: m2 (Map Int64 Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (if (or (= (Map.len m1) cnt) (= (Map.len m2) cnt)) 1 0)
+          (let
+            ((k (& (next s) 7)))
+            (drive
+              (next s)
+              (- n 1)
+              (Map.insert m1 k 1)
+              (Map.insert m2 k 1)
+              (match (Map.lookup m1 k) ((Some _v) cnt) ((None _u) (+ cnt 1)))))))
+      (def (main (: seed Int64)) (drive seed 20 Map.empty Map.empty 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call main (: 999 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
   "a LIST and a MAP accumulator threaded through one recursion BOTH reclaim (census 0) — an arithmetic-base end-check has no And-fold to suppress the reclaim (#9219)"
   (doc
     "A MIXED two-accumulator co-thread — a `(List Int64)` accumulator `lst` (pushed every step) AND a `(Map
