@@ -3627,6 +3627,124 @@ mod tests {
         );
     }
 
+    // Quantifies the reducer-POOLING opportunity — the reason this vertical exists. The platform instantiates a
+    // FRESH reducer per event (`system.rs`: "instantiates a fresh per-event reducer"), so a request pays
+    // `store.spawn` (resolve + compose the dependency-graph closure + instantiate the component) PLUS one fold.
+    // The sibling `warm_per_fold_…` bench deliberately leaves `spawn` UNTIMED (it answers the fold-EXECUTION
+    // question); this one times ONLY `spawn`, then the cold first fold, so the per-request breakdown is explicit.
+    // Reusing a warm instance across events — now proven LEAK-FREE by the net-0 census + reclaim-witness gates
+    // (a reused instance folds the cap flat, #9147/#9193/#9195) — amortizes `spawn` toward zero, so the pooling
+    // win is `spawn / (spawn + fold)` of per-request wall-clock. This turns "you CAN pool safely" into "here is
+    // what pooling BUYS", the decision input for a warm-instance pool. `#[ignore]` + env-gated like the sibling;
+    // run with `--ignored --nocapture` + the same CDZ_REDUCER_ECHO_WASM / CDZ_COMPONENT_STORE_DIR fixtures.
+    #[tokio::test]
+    #[ignore = "env-gated micro-benchmark; needs CDZ_REDUCER_ECHO_WASM + CDZ_COMPONENT_STORE_DIR"]
+    async fn per_request_instantiation_cost_quantifies_the_reducer_pooling_opportunity() {
+        use std::time::{Duration, Instant};
+
+        let Ok(path) = std::env::var("CDZ_REDUCER_ECHO_WASM") else {
+            eprintln!(
+                "CDZ_REDUCER_ECHO_WASM unset — skipping the instantiation-cost / pooling-opportunity measurement"
+            );
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read the reducer-echo wasm component");
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(bytes.clone())).await.unwrap();
+        if let Ok(dir) = std::env::var("CDZ_COMPONENT_STORE_DIR") {
+            for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+                let p = entry.expect("dir entry").path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                    cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        let program = ProgramHash::of(&bytes);
+        let store = wasm_program_store(Arc::new(cas));
+
+        // Confirm the closure resolves before timing (a declined spawn ⇒ wrong/partial store dir).
+        let Some(probe) = store.spawn(program, ord(b"bench-inst")).await else {
+            eprintln!(
+                "spawn DECLINED — is CDZ_COMPONENT_STORE_DIR the closure matching this reducer-echo build?"
+            );
+            return;
+        };
+        drop(probe);
+
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        // Warm-up (cranelift code cache / pooling slabs) — discarded.
+        for _ in 0..500 {
+            let mut r = store
+                .spawn(program, ord(b"bench-inst"))
+                .await
+                .expect("warm-up spawn");
+            let _ = r.on_message(base.clone()).await.expect("warm-up fold");
+        }
+
+        const N: usize = 2_000;
+        let mut spawn_samples: Vec<Duration> = Vec::with_capacity(N);
+        let mut cold_fold_samples: Vec<Duration> = Vec::with_capacity(N);
+        for _ in 0..N {
+            // Time ONLY the instantiation (resolve + compose the dependency graph + instantiate the component).
+            let t = Instant::now();
+            let mut r = store
+                .spawn(program, ord(b"bench-inst"))
+                .await
+                .expect("spawn a fresh instance");
+            spawn_samples.push(t.elapsed());
+            // Then the cold FIRST fold this fresh per-event instance serves (the rest of the per-request cost).
+            let msg = base.clone();
+            let tf = Instant::now();
+            let out = r.on_message(msg).await.expect("cold fold");
+            cold_fold_samples.push(tf.elapsed());
+            std::hint::black_box(&out);
+            drop(r);
+        }
+        let med = |v: &mut Vec<Duration>| {
+            v.sort_unstable();
+            v.get(v.len() / 2).copied().unwrap_or_default()
+        };
+        let us = |d: Duration| d.as_secs_f64() * 1e6;
+        let spawn_med = med(&mut spawn_samples);
+        let fold_med = med(&mut cold_fold_samples);
+        let per_request = us(spawn_med) + us(fold_med);
+        let opportunity = if per_request > 0.0 {
+            us(spawn_med) / per_request * 100.0
+        } else {
+            0.0
+        };
+
+        eprintln!(
+            "reducer-pooling opportunity (fresh per-event instantiation model — system.rs instantiates a fresh reducer per event):"
+        );
+        eprintln!("  instantiate (store.spawn) p50 = {:.2}µs", us(spawn_med));
+        eprintln!("  cold first fold p50           = {:.2}µs", us(fold_med));
+        eprintln!("  per-request TODAY (spawn+fold) = {per_request:.2}µs");
+        eprintln!(
+            "  POOLING OPPORTUNITY: reusing a warm (leak-free, net-0-gated) instance amortizes spawn → saves ≈{opportunity:.0}% of per-request wall-clock (~{:.2}µs/req)",
+            us(spawn_med)
+        );
+
+        // Sanity only (the numbers are the deliverable, reported above): instantiation is finite + non-zero, so
+        // a broken run isn't read as a result.
+        assert!(
+            us(spawn_med) > 0.0 && us(spawn_med) < 1e7,
+            "instantiation p50 is implausible: {:.2}µs",
+            us(spawn_med)
+        );
+    }
+
     /// Shared setup for the env-gated reducer-echo benches: seed the guest + its whole component-store closure
     /// (heap-runtime + nfc + …) into a fresh CAS, spawn ONE instance, and hand it back with a minimal
     /// fold-clean message. `None` (env unset / closure mismatch) so a caller early-returns. See
