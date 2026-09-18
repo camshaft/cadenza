@@ -299,6 +299,34 @@
   (live-objects 0))
 
 (case
+  "a String.at view BORROWED and single-CONSUMED in one scalar-result arm reclaims the shell with no double-free (child-dup vs borrow lockstep)"
+  (doc
+    "The accounting-sensitive companion of the single-consume completion above (f9a4118430): the
+           extracted char view `c` is BOTH borrowed (`String.byte-len c`) AND single-consumed
+           (`String.to-bytes c` → `Core::StrToBytes`) in the SAME all-scalar-result arm. The new
+           `strat_view_scalar_result_consume` child-dups the lone consuming site (rc1→2) so the shell
+           deep-drop cascade balances 1:1, while the borrow reads `c` without consuming it — the child-dup
+           and the borrow must stay in exact lockstep or the shell cascade would underflow the payload (a
+           double-free the debug-counters runtime asserts). Value = byte-len(\"y\")=1 + Bytes.len(to-bytes
+           \"y\")=1 = 2; reclaims to census 0 with NO trap, level-uniform O0..O3. A UAF tripwire: a
+           mis-count between the child-dup, the borrow, and the shell cascade on this scalar-result single-
+           consume path would trap here. Complements the pure single-consume pin above (borrow co-occurring
+           with the consume) and the escape controls below. (Adversarial pin from a breaker probe over
+           f9a4118430; census gate-confirmed.)")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (+ (String.byte-len c) (Bytes.len (String.to-bytes c))))
+          ((None _u) -1)))
+      (def (main (: n Int64)) (g (String.concat "he" (if (> n 0) "y" "Y")) 1))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
   "a String.at view STORED into a returned List and read back is UAF-safe (escape-as-arm-result: no reclaim, no double-free)"
   (doc
     "The UAF-safety twin of the scalar-result reclaim (2fb30175d3 generalized the multi-consume String.at
