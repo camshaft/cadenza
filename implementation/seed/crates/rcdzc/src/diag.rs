@@ -427,6 +427,19 @@ pub enum Code {
     /// rejections (those keep their own coded semantics) nor the recursion/resource bound (CDZ0999).
     UnsupportedConstruct,
 
+    /// A CLOSURE crossing the component/host ABI whose shape is NOT YET IMPLEMENTED OR DESIGNED — a
+    /// closure whose parameter/result/capture type has no machine representation at the `call` boundary,
+    /// or a closure crossing with an unconstrained (inference-unfixed) argument type. A DEDICATED code for
+    /// the closure-across-ABI class (operator ruling: "for closures across the ABI ... that should be a
+    /// dedicated code; I don't want the general decline code anywhere") — the permanent classification for
+    /// this not-yet-built/not-yet-designed boundary, split off the umbrella `UnsupportedConstruct`
+    /// (CDZ0900). Still a DECLINE (a safe reject, not a "the program is wrong" rejection — see
+    /// `is_decline`), in the CDZ09xx "declined, not crashed" band; the `WasmClosureBoundaryNoRepr`
+    /// DeclineId carries it. Reclassifying the pure-Any-param face to a coded CDZ0203 "annotate the
+    /// closure parameter type" reject, or the host-closure-boundary materialization fix (v-rust-backend),
+    /// stays open.
+    ClosureAcrossAbiUnsupported,
+
     /// The compiler EMITTED a WebAssembly component that FAILS validation — an INTERNAL codegen defect,
     /// caught by a host-side output self-check (`cli::run_with_specs`) that runs `wasmparser` over the
     /// produced `"component"` artifact before writing it. NOT a program error and NOT a decline: the
@@ -499,6 +512,7 @@ impl Code {
             Code::RenamedOp => "CDZ0603",
             Code::RecursionBound => "CDZ0999",
             Code::UnsupportedConstruct => "CDZ0900",
+            Code::ClosureAcrossAbiUnsupported => "CDZ0901",
             Code::InvalidWasmEmitted => "CDZ0910",
         }
     }
@@ -860,7 +874,9 @@ impl Reject {
     /// ordering / dedup logic that branches on `is_decline` treats them identically. A `CDZ0999`
     /// recursion/resource bound and any permanent design rejection are NOT declines here.
     pub fn is_decline(&self) -> bool {
-        self.code.is_none() || self.code == Some(Code::UnsupportedConstruct)
+        self.code.is_none()
+            || self.code == Some(Code::UnsupportedConstruct)
+            || self.code == Some(Code::ClosureAcrossAbiUnsupported)
     }
 }
 
@@ -1699,8 +1715,9 @@ mod decline_catalog_tests {
     #[test]
     fn declined_carries_the_ids_code_and_stays_a_decline() {
         // `declined(id, msg)` takes its umbrella code from `id.code()` and records the id; the message
-        // keeps the runtime specifics. Every seeded reason is either codeless (None) or CDZ0900 — so it
-        // is ALWAYS a decline (is_decline holds), leaving safety-ordering / dedup logic unaffected.
+        // keeps the runtime specifics. Every seeded reason is either codeless (None), the CDZ0900 umbrella,
+        // or a DEDICATED CDZ09xx decline code split off it (e.g. CDZ0901 closure-across-ABI) — so it is
+        // ALWAYS a decline (is_decline holds), leaving safety-ordering / dedup logic unaffected.
         for &id in DeclineId::ALL {
             let r = Reject::declined(id, "specifics");
             assert_eq!(r.id, Some(id));
@@ -1710,8 +1727,12 @@ mod decline_catalog_tests {
                 "declined() code must derive from id.code() for {id:?}"
             );
             assert!(
-                matches!(id.code(), None | Some(Code::UnsupportedConstruct)),
-                "a seeded decline reason must be codeless or CDZ0900, got {:?} for {id:?}",
+                matches!(
+                    id.code(),
+                    None | Some(Code::UnsupportedConstruct)
+                        | Some(Code::ClosureAcrossAbiUnsupported)
+                ),
+                "a seeded decline reason must be codeless or a CDZ09xx decline code, got {:?} for {id:?}",
                 id.code()
             );
             assert!(r.is_decline(), "declined({id:?}) must be a decline");

@@ -99,7 +99,7 @@
       (needs "the match-arm switch-lowering path for a refutable variant sub-pattern below a record field (the positional + record/tuple/list-below-field cases are built — #6890/#6911/#6944)")
       (ref pr 6944)))
   (decline WasmClosureBoundaryNoRepr
-    (code UnsupportedConstruct)
+    (code ClosureAcrossAbiUnsupported)
     (reason "a closure's param, result, or capture type has no machine representation")
     (doc "A closure crossing the host boundary whose parameter, result, or capture type has no machine representation — one family over the 3 sibling diag.rs declines CLOSURE_PARAM/RESULT/CAPTURE_NO_REPR. A fully-typed closure crosses via the host-closure resource; these are the un-built frontier (e.g. a bare `(fn (v1) v1)` in a list whose v1 solves to Any — infer recovers the param type from an enclosing higher-order arrow when it can, this face cannot). Fuzzer-surfaced (v-cdz-smith reachability sweep #6878, faces #1/#6); classified feature-gap by v-rust-backend. NUANCE: the pure-Any param subcase borders the CDZ0203 annotate-it undetermined-type reject — kept as a closure-boundary family tag; the operator may reclassify the pure-Any face to a coded CDZ0203 reject later.")
     (blocked-on

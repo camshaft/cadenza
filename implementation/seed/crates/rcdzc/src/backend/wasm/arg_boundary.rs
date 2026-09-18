@@ -32,18 +32,24 @@ pub(super) fn closure_boundary_reject(
     ncx: &crate::ty::NameCtx,
 ) -> Reject {
     if matches!(ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
-        Reject::decline(format!(
-            "a closure crossing the host boundary has an unconstrained {role} type — the entrypoint's \
+        Reject::declined(
+            crate::diag::DeclineId::WasmClosureBoundaryNoRepr,
+            format!(
+                "a closure crossing the host boundary has an unconstrained {role} type — the entrypoint's \
              result is a closure whose {role} type inference never fixed (a partial application like \
              `(f 1)` for a two-parameter `f`, or a closure with an unannotated parameter); a closure \
              crosses the boundary only with concrete, aliased-width scalar {role}s",
-        ))
+            ),
+        )
     } else {
-        Reject::decline(format!(
-            "a closure {role} of type {} has no scalar host-boundary representation (only aliased-width \
+        Reject::declined(
+            crate::diag::DeclineId::WasmClosureBoundaryNoRepr,
+            format!(
+                "a closure {role} of type {} has no scalar host-boundary representation (only aliased-width \
              scalars — every s8/u8/…/s64/u64 int, bool, f32/f64 — cross the closure `call` boundary)",
-            ty.render_name(ncx)
-        ))
+                ty.render_name(ncx)
+            ),
+        )
     }
 }
 

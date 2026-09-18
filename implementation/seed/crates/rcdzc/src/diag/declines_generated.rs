@@ -112,7 +112,7 @@ impl DeclineId {
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
             DeclineId::RecursiveFunctionRuntimeSpecialization => Some(Code::UnsupportedConstruct),
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
-            DeclineId::WasmClosureBoundaryNoRepr => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmClosureBoundaryNoRepr => Some(Code::ClosureAcrossAbiUnsupported),
             DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
             DeclineId::WasmParameterizedHeapReturnNoValueEncode => Some(Code::UnsupportedConstruct),
             DeclineId::WasmHostOpNoBoundaryFormOnBareEffect => Some(Code::UnsupportedConstruct),
