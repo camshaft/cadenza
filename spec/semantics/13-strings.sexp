@@ -271,6 +271,41 @@
   (live-objects 0))
 
 (case
+  "a String.at view STORED into a returned List and read back is UAF-safe (escape-as-arm-result: no reclaim, no double-free)"
+  (doc
+    "The UAF-safety twin of the scalar-result reclaim (2fb30175d3 generalized the multi-consume String.at
+           view shell-reclaim to HEAP arm results via `view_escapes_as_arm_result`, reclaiming only when the
+           view does NOT escape). Here the extracted char view `c` is STORED into a returned `List`
+           (`List.push #list() c`) — `List.push` RETAINS the reference (unlike `String.concat`, which copies
+           its bytes and aliases nothing), so `c` escapes as a heap component of the returned list. The
+           classifier MUST detect this escape and NOT reclaim the shell here (reclaiming would free `c`'s
+           backing while the list still points at it — a use-after-free). `main` then reads `c` BACK out of
+           the list (`List.at … 0` → byte-len), so a wrong reclaim would TRAP on the debug-counters runtime or
+           mis-read: the value 1 (\"y\" is one byte) + NO TRAP is the UAF tripwire, and it holds level-uniform
+           O0..O3 — the classifier is sound in the dangerous direction for a store-into-collection escape.
+           `lst` is dead by the time `main` returns its scalar, so the ideal census is 0; the conservative
+           escape path leaves a 1-object residue (`known-leak`, tracked with the general escape-shell reclaim
+           balance). Complements the scalar-result → 0 reclaim and the `#tuple(c …)` escape control: this is
+           the store-into-collection + read-back face, the escape that most resembles a real UAF.
+           (Adversarial pin from a breaker probe over 2fb30175d3; census gate-confirmed, native
+           report-live-objects was off by one here.)")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i)
+          ((Some c) (List.push #list() c))
+          ((None _u) #list())))
+      (def
+        (main (: n Int64))
+        (let ((lst (g (String.concat "he" (if (> n 0) "y" "Y")) 1)))
+          (String.byte-len (Option.expect (List.at lst 0) "x"))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak))
+
+(case
   "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
   (doc
     "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
