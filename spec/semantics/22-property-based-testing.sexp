@@ -1153,6 +1153,48 @@
   (live-objects known-leak 2))
 
 (case
+  "THREE co-threaded MAP accumulators leak 2 — the CHAMP-multi-slot reclaim residual is CONSTANT, not per-slot"
+  (doc
+    "The scaling probe of the CHAMP-node-wide two-accumulator reclaim gap (two maps leak 2 #9218, two sets
+           leak 2 #9221), and it fixes the scaling law: THREE `(Map Int64 Int64)` accumulators `m1`/`m2`/`m3`
+           co-threaded through ONE recursion — all grown by `Map.insert … k 1` on the identical generated key
+           per step, `m1` borrowed by `Map.lookup` (the distinct-count model), `m2`/`m3` by `Map.len` (end
+           checks) — scalar return (genuine leak, not ABI-transfer), value 1 both seeds (all three
+           `Map.len = cnt`, 8 distinct keys). Gate-confirmed it leaks 2 — the SAME residual as TWO co-threaded
+           CHAMP slots (#9218/#9221), NOT 3. So the multi-CHAMP-slot reclaim residual is CONSTANT (a fixed 2
+           cells once ≥2 CHAMP/HAMT slots are threaded through one dispatch loop), NOT one-unreclaimed-per-slot:
+           the borrow-thread reclaim does not degrade further as more CHAMP slots are added. This points the
+           reclaim owner at a single fixed mis-accounting on the multi-CHAMP-slot dispatch path (e.g. a
+           2-cell root/node pair), not a per-slot loop leak. Pinned known-leak 2 (tighten candidate once the
+           multi-CHAMP-slot path reclaims). Leak-over-UAF: value correct, no double-free.")
+  (input
+    (do
+      (def
+        (next (: sd Int64))
+        (Int64.wrapping-add (Int64.wrapping-mul sd 6364136223846793005) 1442695040888963407))
+      (def
+        (drive (: sd Int64) (: n Int64) (: m1 (Map Int64 Int64)) (: m2 (Map Int64 Int64)) (: m3 (Map Int64 Int64)) (: cnt Int64))
+        (if
+          (< n 1)
+          (if (= (Map.len m1) cnt) (if (= (Map.len m2) cnt) (if (= (Map.len m3) cnt) 1 0) 0) 0)
+          (let
+            ((k (& (next sd) 7)))
+            (drive
+              (next sd)
+              (- n 1)
+              (Map.insert m1 k 1)
+              (Map.insert m2 k 1)
+              (Map.insert m3 k 1)
+              (match (Map.lookup m1 k) ((Some v) cnt) ((None u) (+ cnt 1)))))))
+      (def (main (: seed Int64)) (drive seed 20 Map.empty Map.empty Map.empty 0))
+      (export main)))
+  (call main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call main (: 999 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
+
+(case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc
     "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
