@@ -449,6 +449,7 @@ dependencies = [
  "rcdzc",
  "serde",
  "serde_json",
+ "tikv-jemallocator",
  "tracing-subscriber",
 ]
 
@@ -553,6 +554,7 @@ dependencies = [
  "cdz-contract",
  "cdz-corpus-grade",
  "clap",
+ "tikv-jemallocator",
  "wasmtime",
  "wat",
 ]

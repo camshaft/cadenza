@@ -27,6 +27,14 @@
 //! separate `cdz-run` bin the user must also install. The standalone `cdz-run` bin remains as a thin
 //! shim over the same `cdz_run::cli` code (so existing call sites keep working); both share one impl.
 
+// Ship jemalloc as the process allocator for the packaged CLI (operator ruling 2026-09-18: "just use
+// jemalloc"; "both glibc and musl are terrible"). Feature-gated + default-ON (see Cargo.toml): a
+// normal/dev/release `cdz` uses jemalloc; the `--no-default-features` seedCompiler/nix build falls back
+// to the system allocator and sheds the tikv-jemalloc-sys C build.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

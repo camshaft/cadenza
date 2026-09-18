@@ -57,10 +57,10 @@ case "$os/$arch" in
 	Linux/aarch64 | Linux/arm64) target="aarch64-unknown-linux-gnu" ;;
 	Darwin/arm64) target="aarch64-apple-darwin" ;;
 	Darwin/x86_64)
-		err "no prebuilt binary for Intel macOS; build from source with: cargo build --release -p cdz --bin cdz"
+		err "no prebuilt binary for Intel macOS; build from source with: cargo build --release -p cdz --bin cdz --features jemalloc"
 		;;
 	*)
-		err "unsupported platform $os/$arch; build from source with: cargo build --release -p cdz --bin cdz"
+		err "unsupported platform $os/$arch; build from source with: cargo build --release -p cdz --bin cdz --features jemalloc"
 		;;
 esac
 

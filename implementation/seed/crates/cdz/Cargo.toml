@@ -100,6 +100,18 @@ notify = { version = "6", optional = true }
 # installed and every `trace!` compiles to a runtime no-op — a normal run pays nothing. (rcdzc's OWN bin
 # uses the tool-private `CDZ_LOG` to avoid fan-out inside the piped pipeline; `cdz` isn't in that pipe.)
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Non-default global allocator for the packaged CLI (operator ruling 2026-09-18: jemalloc — "both glibc
+# and musl are terrible"). `tikv-jemallocator` is the maintained jemalloc binding (already in the
+# workspace lock via cdz-platform). OPTIONAL behind the `jemalloc` feature — but NOT in `default`
+# (unlike cedar/lsp/watch): the RELEASE pipeline enables it EXPLICITLY (`build.yml` builds the shipped
+# `cdz` with `--features jemalloc`), so the shipped binary links jemalloc as its `#[global_allocator]`,
+# while every OTHER build (dev `cargo build`, and crucially the nix `cdz-default-features` gate) stays on
+# the system allocator. WHY not default: tikv-jemalloc-sys's bundled-jemalloc C `configure` fails in the
+# nix build sandbox ("cannot determine return type of strerror_r" — modern gcc turns jemalloc's ancient
+# autoconf probes into hard errors), so a default-ON jemalloc breaks the `cdz-default-features` check.
+# Keeping it opt-in + release-only ships jemalloc where it matters (GHA plain-cargo release build, full
+# toolchain) without dragging the un-buildable C lib into the nix default closure.
+tikv-jemallocator = { version = "0.6", optional = true }
 
 [features]
 # `corpus` (in `default`) mounts the `cdz corpus` subcommand (the cdz-corpus reader/migrator). Split out
@@ -110,6 +122,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
 default = ["corpus", "standalone", "lsp", "watch", "completions"]
 corpus = ["dep:cdz-corpus"]
+# `jemalloc` installs `tikv_jemallocator::Jemalloc` as the `#[global_allocator]` (see the dep note). NOT
+# in `default`: the RELEASE build enables it explicitly (`build.yml` → `--features jemalloc`), so only the
+# shipped binary links jemalloc. It stays OUT of default because tikv-jemalloc-sys's C build fails in the
+# nix `cdz-default-features` sandbox (modern-gcc strerror_r configure break); a from-source build that
+# wants jemalloc opts in with `--features jemalloc` on a full toolchain.
+jemalloc = ["dep:tikv-jemallocator"]
 # `lsp` (ON by default) mounts the `cdz lsp` stdio Language Server (its whole impl is `mod lsp`, the sole
 # user of `lsp-server`/`lsp-types`). `watch` (ON by default) mounts `cdz watch` (the sole user of `notify`,
 # → mio/inotify/filetime). Split out as cdz features — same rationale as `cedar` — so a `--no-default-features`

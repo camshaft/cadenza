@@ -15,6 +15,12 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+// jemalloc as the process allocator for the packaged runner (operator ruling 2026-09-18). Feature-gated
+// + default-ON (see Cargo.toml); a `--no-default-features` build uses the system allocator.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 /// Run a finished Cadenza wasm component and print its result.
 #[derive(Parser)]
 #[command(

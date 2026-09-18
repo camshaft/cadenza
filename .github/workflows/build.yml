@@ -46,15 +46,21 @@ jobs:
         with:
           cache-key: release-${{ matrix.target }}
 
-      # Build the three shipped CLI binaries. Native host target, so no `--target` flag: the
-      # runner's host IS matrix.target (pin verified by the check below). `--locked` enforces the
-      # committed root Cargo.lock (tracked as of #1748, the operator's determinism directive): the
-      # build fails if the lock is stale vs any Cargo.toml, so a dep bump must land the updated lock
-      # deliberately rather than silently regenerate one per checkout.
+      # Build the shipped `cdz` mega-binary. Native host target, so no `--target` flag: the runner's
+      # host IS matrix.target (pin verified by the check below). `--locked` enforces the committed root
+      # Cargo.lock (tracked as of #1748, the operator's determinism directive): the build fails if the
+      # lock is stale vs any Cargo.toml, so a dep bump must land the updated lock deliberately rather
+      # than silently regenerate one per checkout.
+      #
+      # `--features jemalloc` links tikv-jemallocator as the `#[global_allocator]` (operator ruling
+      # 2026-09-18). jemalloc is deliberately NOT a cargo default feature: its bundled-C `configure`
+      # fails in the nix build sandbox (modern-gcc strerror_r probe), which would break the
+      # `cdz-default-features` gate check. Enabling it HERE — plain cargo on a full GHA toolchain — ships
+      # jemalloc in the release binary while keeping it out of the nix default closure.
       - name: Build release binaries
         run: |
           cargo build --release --locked \
-            -p cdz --bin cdz
+            -p cdz --bin cdz --features jemalloc
 
       # Package. `tar` the binaries + a README pointer under a versioned name.
       - name: Package
