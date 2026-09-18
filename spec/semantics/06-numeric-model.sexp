@@ -784,6 +784,46 @@
   (call sr (: 9223372036854775808 UInt64) (: 1 UInt64))
   (output (: 4611686018427387904 UInt64)))
 
+; The remaining UInt64 ORDER comparisons complete the family begun by `<` above. Each is a SEPARATE opcode
+; in the backend's signedness dispatch (i64.gt_u / ge_u / le_u), so the `<` (lt_u) witness does not protect
+; them — a signed-emit regression could hit one relation and not another. Same 2^63 top-bit discriminator:
+; a value at/above 2^63 must order ABOVE one below it, not read as negative. Const fold agrees; verified.
+(case
+  "UInt64 > is unsigned across the 2^63 boundary (i64.gt_u, not gt_s)"
+  (doc
+    "gt(2^63, 2^63-1) = 1 — 2^63 orders above 2^63-1 unsigned (a signed gt_s reads Int64.min > Int64.max =
+           false → 0). gt(1, UInt64.max) = 0 — max is the largest UInt64, so 1 is not greater (signed would
+           read max as -1 and call 1 > -1 true → 1). Pins UInt64 `>` is unsigned.")
+  (input (do (def (gt (: a UInt64) (: b UInt64)) (if (> a b) 1 0)) (export gt)))
+  (call gt (: 9223372036854775808 UInt64) (: 9223372036854775807 UInt64))
+  (output (: 1 Int64))
+  (call gt (: 1 UInt64) (: 18446744073709551615 UInt64))
+  (output (: 0 Int64)))
+
+(case
+  "UInt64 >= is unsigned across the 2^63 boundary (i64.ge_u, not ge_s)"
+  (doc
+    "ge(UInt64.max, UInt64.max) = 1 is the equal-boundary control. ge(1, UInt64.max) = 0 — 1 is not >= the
+           largest UInt64 (a signed ge_s would read max as -1 and call 1 >= -1 true → 1). Pins UInt64 `>=` is
+           unsigned.")
+  (input (do (def (ge (: a UInt64) (: b UInt64)) (if (>= a b) 1 0)) (export ge)))
+  (call ge (: 18446744073709551615 UInt64) (: 18446744073709551615 UInt64))
+  (output (: 1 Int64))
+  (call ge (: 1 UInt64) (: 18446744073709551615 UInt64))
+  (output (: 0 Int64)))
+
+(case
+  "UInt64 <= is unsigned across the 2^63 boundary (i64.le_u, not le_s)"
+  (doc
+    "le(2^63, 2^63-1) = 0 — 2^63 is not <= 2^63-1 unsigned (a signed le_s reads Int64.min <= Int64.max =
+           true → 1). le(1, UInt64.max) = 1 — 1 is <= the largest UInt64 (signed would read max as -1 and call
+           1 <= -1 false → 0). Pins UInt64 `<=` is unsigned, completing the < > >= <= family.")
+  (input (do (def (le (: a UInt64) (: b UInt64)) (if (<= a b) 1 0)) (export le)))
+  (call le (: 9223372036854775808 UInt64) (: 9223372036854775807 UInt64))
+  (output (: 0 Int64))
+  (call le (: 1 UInt64) (: 18446744073709551615 UInt64))
+  (output (: 1 Int64)))
+
 ; The runtime-wrap cases above are at i64/u64 width, where the operand width equals the machine word.
 ; These pin the runtime wrap at NARROW widths (8/16), where the backend must MASK to the operand width
 ; after the machine op — the const-fold narrow cases (Int8/UInt8 + and *) already wrap mod 2^width, and
