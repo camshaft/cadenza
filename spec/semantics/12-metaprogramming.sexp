@@ -1198,6 +1198,32 @@
   (live-objects 0))
 
 (case
+  "TWO runtime Ast.decode validity-checks in one program each discard their tree — both Result shells reclaim to 0"
+  (doc
+    "The DOUBLE face of the dead-after-decode reclaim above (0073): TWO independent runtime `Ast.decode`
+           results in ONE program, each a validity check that DISCARDS its decoded tree (`_d`) — the first over
+           `n`, the second over `n+1`, so both `Ast.encode` calls run at run time (op 93) and both `Ast.decode`s
+           parse at run time (op 94), neither folding. Packed `10·first + second` = 11 (both byte sequences are
+           valid Ast). This exercises the runtime-`Ast.decode` Result-shell reclaim (the `Core::AstDecode` Owned
+           classification) TWICE in one program over DISTINCT transient encode Bytes: each `(Result Ast unit)`
+           Some shell, its dead Ast payload, and its transient encode Bytes must ALL deep-drop. A reclaim with
+           any repeat-invocation ordering/aliasing fault — or that reclaimed only the last — would leave a
+           residue; both chains reclaiming to (live-objects 0) confirms the shell deep-drop is per-result and
+           order-independent. Adversarial companion to 0073's single decode-and-discard.")
+  (input
+    (do
+      (def
+        (valid? (: n Int64))
+        (match (Ast.decode (Ast.encode (Ast.Int (BigInt.of n)))) ((Ok _d) 1) ((Err _e) 0)))
+      (def
+        (main (: n Int64))
+        (+ (* 10 (valid? n)) (valid? (+ n 1))))
+      (export main)))
+  (call main (: 42 Int64))
+  (output (: 11 Int64))
+  (live-objects 0))
+
+(case
   "an Ast.Bytes nested in an Ast.List round-trips through encode and decode"
   (doc
     "Composition: an `Ast.Bytes` as a child of an `Ast.List` (`(f b\"hi\")`) round-trips through the
