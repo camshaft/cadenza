@@ -405,6 +405,62 @@
   (live-objects 0))
 
 (case
+  "MUTUAL recursion over an owned heap param leaks 2 even with a SINGLE call per step (no sibling dup) — the cross-function count_param_consumes miss"
+  (doc
+    "A sharper, more minimal witness of the same count_param_consumes path/call-graph-unaware owned-param
+           drop as the sibling-self-call leak above (v-memory-safety's per-path conditional owned-param-drop
+           cluster, #9092/#9113/mwalk/3712). Here `go` and `helper` are MUTUALLY recursive: each has a
+           borrow-dead base arm (`List.len xs`, dead-after) and a recursive arm that passes the owned heap
+           `xs` to a SINGLE call of the OTHER function. No dup is needed (one call per step), yet it leaks a
+           constant 2 (the runtime list, alloc'd rc1 and never dropped) at every depth (0→3, 1→3, 2→3),
+           opt-invariant O0..O3, value-correct, NO trap. The control below proves the distinction from
+           self-recursion: the IDENTICAL single-call shape that recurses on ITSELF reclaims to 0. So the
+           owned-param drop can reason about a SELF-recursive-call consume (same frame) but DECLINES across a
+           mutual-recursion cycle — `count_param_consumes(xs) > 0` via the cross-function call makes the
+           base-arm drop decline, leaking on the borrow-dead path. Unlike the self-recursive case above, this
+           needs NO sibling dup — a single mutual call suffices. IDEAL 0; flip when the drop becomes
+           call-graph-aware. (Adversarial pin from a breaker probe; census gate-confirmed.)")
+  (input
+    (do
+      (def
+        (go (: xs (List Int64)) (: d Int64))
+        (if (< d 1) (List.len xs) (helper xs (- d 1))))
+      (def
+        (helper (: xs (List Int64)) (: d Int64))
+        (if (< d 1) (List.len xs) (go xs (- d 1))))
+      (def (main (: d Int64)) (go #list(1 2 (+ d 1)) d))
+      (export main)))
+  ; base arm (d<1): borrows xs, mutual partner never called — yet still leaks 2.
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  ; one mutual hop (d=1 → helper d=0 → List.len): value stays 3, census still 2.
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (live-objects 2))
+
+(case
+  "the self-recursion control: the SAME single-call shape recursing on ITSELF reclaims to 0"
+  (doc
+    "Isolates the mutual-vs-self distinction of the leak above. `go` has the identical structure — a
+           borrow-dead base arm and a recursive arm with a SINGLE call passing `xs` by value — but it recurses
+           on ITSELF rather than a mutual partner. This reclaims to 0 at every depth, proving the owned-param
+           drop handles a self-recursive consume correctly; only the CROSS-FUNCTION (mutual) consume defeats
+           it. Together with the leaker above, the pair localizes the miss to the call-graph-unaware
+           count_param_consumes across a recursion cycle.")
+  (input
+    (do
+      (def
+        (go (: xs (List Int64)) (: d Int64))
+        (if (< d 1) (List.len xs) (go xs (- d 1))))
+      (def (main (: d Int64)) (go #list(1 2 (+ d 1)) d))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
