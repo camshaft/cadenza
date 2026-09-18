@@ -1027,7 +1027,8 @@
   (output (: 1 Int64))
   (call main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; census sweep (a78c03c91e base): the CHAMP Map accumulator threaded through the drive recursion (Map.insert m k 1 + a borrowing Map.lookup m k per step) is reclaimed each iteration (borrow-thread-accumulator reclaim landed); TIGHTEN CANDIDATE, every heap trial 0 on both seeds; was known-leak.
+  (live-objects 0))
 
 (case
   "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
