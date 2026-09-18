@@ -472,6 +472,20 @@ pub(crate) fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<Handle
         // match (arm- AND payload-independent — the shell, not the boxed Char; v-mem's chfi triage). The Char
         // twin of the `StrSlice`(Option String) / `ValueDecode`(Option value) fresh-owned-sum producer arms.
         | Core::IntToCharChecked { .. }
+        // `String.scalar-at` (`Core::StrScalarAt`) BORROWS its string operand (`bytes-scalar-at` reads the
+        // buffer — that operand-borrow is reclaimed at StrScalarAt's own emit) and returns a FRESH owned
+        // `(Option Char)` sum: `sum-new(Some, codepoint)` / nullary `None`, exactly like `IntToCharChecked`
+        // and the `StrSlice`(Option String)/`ValueDecode`(Option value) fallible-read producers. So its result
+        // used as a `MatchSum` SCRUTINEE — `(match (String.scalar-at s i) ((Some c) …) ((None) …))` — is an
+        // OWNED computed boxed-sum whose Option SHELL the shell-reclaim must drop. WITHOUT this it fell to the
+        // `_ => decline` default, so `sum_shell_reclaim_ok`'s Owned gate MISSED it (and it is NOT a heap-VIEW
+        // producer, so `matchsum_view_shell_reclaim_ok` misses it too) and the `(Option Char)` Some shell
+        // LEAKED one cell per match (13-strings:0341 su2, rc-trace: node#1 Sum ALLOC, no DROP). SAFE — the
+        // payload is a SCALAR Char (get-int COPY-out, never a cell alias), so the all-scalar floor in
+        // `sum_shell_reclaim_payload_ok` admits the shell deep-drop with NO child-dup and no double-free.
+        // Unlike `StrAt` above (a HEAP VIEW consumed by allowlisted builders → deliberately non-Owned to avoid
+        // the Stage-B imbalance), StrScalarAt's scalar payload has no such consumer → no Stage-B concern.
+        | Core::StrScalarAt { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }

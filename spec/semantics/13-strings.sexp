@@ -7167,7 +7167,10 @@
   (call main (: 2 Int64))
   (output (: 233002 Int64))
   (call main (: 4 Int64))
-  (output (: -1001 Int64)))
+  (output (: -1001 Int64))
+  ; su2 String.scalar-at (Option Char) Some-shell now reclaimed (heap_operand_ownership StrScalarAt→Owned,
+  ; the IntToCharChecked twin); was a latent unpinned leak of 1 (rc-trace node#1 Sum), now census 0.
+  (live-objects 0))
 
 ; ssx2: String.slice with a RUNTIME start over the same astral string — scalar-window [i, i+2) as an
 ; Option. In-range windows land on scalar boundaries regardless of byte widths ([1,3) spans the
