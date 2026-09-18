@@ -3316,7 +3316,8 @@
   (output (: 274 Int64))
   (call main (: 2 Int64))
   (output (: 13317 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0194 u16 bin field straddles a byte-rope seam — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a dependent-size framing loop walks frames that straddle every rope seam"
@@ -3378,7 +3379,8 @@
   (output (: 4660 Int64))
   (call main (: 3 Int64))
   (output (: 13398 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0196 u16 bin field reads correctly at every runtime slice — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a u32 bin binding with the top bit set does unsigned arithmetic"
@@ -3559,7 +3561,8 @@
   (output (: 4294837251 Int64))
   (call main (: 5 Int64))
   (output (: -2 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0203 LE multi-byte fields read little-endian at runtime offset — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a runtime bin ENCODE lays out le and signed fields byte-exactly"
@@ -3784,7 +3787,8 @@
   (output (: 4609 Int64))
   (call main (: 2 Int64))
   (output (: 1332 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0212 little-endian u16 bin field stitches bytes across seam — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes"
@@ -3805,7 +3809,8 @@
   (output (: 511 Int64))
   (call main (: 2 Int64))
   (output (: -507 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0213 signed i16 bin field spanning a rope seam — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a u64 bin field with the top bit set reads unsigned across a rope seam"
@@ -3845,7 +3850,8 @@
   (output (: 101298 Int64))
   (call main (: 2 Int64))
   (output (: 31029 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0215 bit-field segments spanning a rope seam — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 (case
   "a dependent-size body straddling a rope seam stitches, and an oversize count fails the match"
@@ -3870,7 +3876,8 @@
   (output (: 60015 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; census sweep (20db8ffed0 base): 0216 dependent-size body straddling a rope seam — bin-field rope-seam read (BinSizedRead/BinRestRead/BinIntRead Owned) reclaims its dup-then-slice temp; TIGHTEN CANDIDATE, every heap trial 0; was known-leak.
+  (live-objects 0))
 
 ; --- bin construction/decode order + the frame-body perform walk. ---
 (case
