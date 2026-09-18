@@ -353,6 +353,30 @@
   (live-objects 0))
 
 (case
+  "the heap-result single-consume reclaim preserves the view's CONTENT (byte-exact, not just length — a corruption-UAF tripwire)"
+  (doc
+    "The CONTENT-verifying companion of the heap-result single-consume reclaim above (876b91de83). That pin
+           byte-LENs the `(String.concat c \"Z\")` result (length 2), which a byte-CORRUPTION use-after-free
+           preserving the length would still pass. This reads the result BACK by CONTENT: `c` is the char at
+           index 1 of `\"hey\"` = `\"e\"`, so `(String.concat c \"Z\")` must equal `\"eZ\"` byte-for-byte. If the
+           shell deep-drop freed `c`'s backing before the fresh rope's copy completed (the classifier wrongly
+           admitting an aliasing result, or the child-dup/cascade racing the copy), the compare would see
+           corrupted bytes and yield 0 — so the `1` is a byte-exact UAF tripwire the length pin cannot catch.
+           Uses String `=` (canonical-byte equality). Value-uniform O0..O3.")
+  (input
+    (do
+      (def
+        (g (: s String) (: i Int64))
+        (match (String.at s i) ((Some c) (String.concat c "Z")) ((None _u) "")))
+      (def
+        (main (: n Int64))
+        (if (= (g (String.concat "he" (if (> n 0) "y" "Y")) 1) "eZ") 1 0))
+      (export main)))
+  ; c = char@1 of "hey" = "e"; (String.concat c "Z") must be byte-exactly "eZ" -> 1 (a corrupted first byte would give 0).
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case
   "a String.at view STORED into a returned List and read back is UAF-safe (escape-as-arm-result: no reclaim, no double-free)"
   (doc
     "The UAF-safety twin of the scalar-result reclaim (2fb30175d3 generalized the multi-consume String.at
