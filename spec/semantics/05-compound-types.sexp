@@ -2173,9 +2173,13 @@
            `Some` shell + the payload String), independent of rope size (n) and opt level (O0..O3), while
            BORROWING the same payload (the sibling below) reclaims to 0. Value is correct (\"a\"+n·\"x\" =
            n+1 bytes; n=3 → 4) and there is NO double-free (debug-counters runtime does not trap) — a pure
-           over-retain, not a UAF. IDEAL is 0 (the borrow sibling proves the scaffold is fully reclaimable);
-           the `(live-objects 2)` pin locks the current runtime-heap residue as a drift guard until the
-           StrToBytes extraction-shell reclaim balances a heap payload (flip to 0 then).")
+           over-retain, not a UAF. IDEAL is 0 (the borrow sibling proves the scaffold is fully reclaimable).
+           NOW RECLAIMS TO 0 (rcdzc: `sum_cont_owned_call_consume_allowlisted`'s scrutinee gate generalized
+           from bare `Core::Call` to `is_fresh_owned_sum_producer` — admitting the INLINED `mk` = `(if ..(Some
+           (rep..))(None))` computed-Some producer, so the extraction-shell deep-drop now COMPLETES the
+           `owned_compound_boxed` orphaned dup for the heap payload. Structural payload-freshness gate rejects
+           `(Some <shared/borrowed local>)` so a shared payload is never over-freed; `neg_shared` UAF control
+           declines structurally). The borrow sibling below stays the reclaimable-scaffold proof.")
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
@@ -2188,7 +2192,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 4 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "the borrow sibling: a runtime-heap Some payload only BORROWED reclaims to zero"

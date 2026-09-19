@@ -4905,28 +4905,56 @@ fn sum_cont_extraction_consume_allowlisted(
     consuming.iter().all(|s| builder_children.contains(s))
 }
 
-/// The COMPUTED-`Some` companion of [`sum_cont_extraction_consume_allowlisted`] (05:#9134 — the
-/// runtime-heap non-extraction sibling of the 289e75fbba StrToBytes fix). An extraction-`Some`
-/// (`Map.lookup`/`List.at`/…) dup-RETAINS its payload (rc>=2 by construction); a COMPUTED owned `Some` (a
-/// fresh `Core::Call` result — `(match (mk n) ((Some s) (Bytes.len (String.to-bytes s))) …)`) instead moves
-/// its payload in at rc1, but `owned_compound_boxed` DUP's each consuming payload site in the dup pass
-/// (`collect_shell_reclaim_child_dups` — the scrutinee is `Owned`), so the payload is likewise at rc>=2
-/// through the arm. So the SAME 1:1 balance holds: each consuming site that is a DIRECT child of an
-/// allowlisted single-owned-ref-move builder is balanced by that `dup` + the shell deep-drop, with FBIP
-/// reuse suppressed (rc>1 path-copies). GATED `Core::Call` + DEAD-AFTER-DESTRUCTURE (mirrors the
-/// all-scalar-product Call disjunct): a `Call` result is inlined once as the scrutinee and CANNOT be a
-/// resume-threaded handler state (the invisible-resume escape the opaque-consumer decline guards), and
-/// dead-after means the whole scrutinee does not re-escape. Any imprecision only OVER-DECLINES (leak beats
-/// UAF), never over-reclaims.
+/// Whether `id` is a FRESHLY-PRODUCED owned value minted at this site — so it cannot be a pre-existing binding
+/// an effect handler threaded as state that a `resume` continuation re-reads (the resume-escape the `Core::Call`
+/// gate originally guarded; the "inlined once, never resume-threaded" argument holds verbatim for every fresh
+/// producer). Fresh set: `Core::Call` (a fresh function return, the original shape); `Core::SumNew` iff each
+/// HEAP payload is itself fresh (recurse; scalar/unit OK) — this rejects `(Some <shared/borrowed local>)` whose
+/// shell-drop cascade would free a still-held value (the `neg_shared` UAF control: `base` shared into
+/// `(Some base)` AND reused), structural not reliant on the incidental match-of-if fold; `Core::If` iff BOTH
+/// branches are (the INLINED `mk`=`(if ..(Some(rep..))(None))` producer the bare-`Core::Call` gate MISSED,
+/// 05-compound:2163/2214); `Core::Let` iff its body is. `Param`/`LocalRef`/`MatchSum`/`CallClosure` excluded
+/// (may carry a threaded/shared binding → not provably resume-safe nor fresh-payload; leak>UAF). Bounded walk.
+fn is_fresh_owned_sum_producer(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Call { .. } => true,
+        // Fresh shell reclaim-safe only if each heap payload is itself fresh (scalar/unit OK); a bare
+        // shared/borrowed `LocalRef`/`Param` payload would be freed out from under the surrounding scope.
+        Core::SumNew { payloads, .. } => payloads
+            .iter()
+            .all(|&p| !is_heap_type(&type_of(db, p)) || is_fresh_owned_sum_producer(db, p)),
+        Core::If { then_, else_, .. } => {
+            is_fresh_owned_sum_producer(db, then_) && is_fresh_owned_sum_producer(db, else_)
+        }
+        Core::Let { body, .. } => is_fresh_owned_sum_producer(db, body),
+        _ => false,
+    }
+}
+
+/// The COMPUTED-`Some` companion of [`sum_cont_extraction_consume_allowlisted`] (05:#9134). An extraction-
+/// `Some` dup-RETAINS its payload (rc>=2); a COMPUTED owned `Some` (fresh `Core::Call`, OR the INLINED
+/// `Core::If` of two `SumNew`s) moves it in at rc1, but `owned_compound_boxed` DUP's each consuming payload
+/// site (`collect_shell_reclaim_child_dups`, keyed on the scrutinee `Owned` NOT `Core::Call`) → rc>=2 through
+/// the arm, so the 1:1 balance holds (each allowlisted-builder-child consume balanced by that dup + the shell
+/// deep-drop, FBIP reuse suppressed). GATED [`is_fresh_owned_sum_producer`] (resume-safety) + DEAD-AFTER-
+/// DESTRUCTURE + `!view_escapes_as_arm_result`. Since the dup side keys on `Owned` alone, the bare-`Core::Call`
+/// drop gate left an ORPHANED dup for the inlined-`If` scrutinee (leak); widening to the fresh-producer set
+/// COMPLETES that lockstep — no unbalanced drop added. Imprecision only OVER-DECLINES (leak>UAF).
 fn sum_cont_owned_call_consume_allowlisted(
     db: &mut Db,
     root: &crate::core::SumCont,
     scrutinee: StructId,
 ) -> bool {
-    if !matches!(core_of(db, scrutinee), Core::Call { .. }) {
+    if !is_fresh_owned_sum_producer(db, scrutinee) {
         return false;
     }
     if !scrutinee_dead_after_destructure(db, scrutinee, root) {
+        return false;
+    }
+    // ESCAPE AXIS (v-memory-safety defense-in-depth): the payload must NOT survive as (part of) any arm's
+    // terminal RESULT — a consuming builder RESULT returned whole (e.g. the Map.insert result) would carry the
+    // payload out and the deep-drop cascade would race the escaped copy. Stricter-only (OVER-DECLINE, leak>UAF).
+    if view_escapes_as_arm_result(db, scrutinee, root) {
         return false;
     }
     let mut consuming = HashSet::new();
@@ -4958,45 +4986,21 @@ fn sum_shell_reclaim_ok(
             Ok(HandleOwnership::Owned)
         )
         && (sum_shell_reclaim_payload_ok(db, scrutinee, scrut_ty, never_diverges, root)
-            // STASHED-OWNED-COMPUTED COMPOUND increment (v-core-opt + v-mem-safety co-design; fp
-            // `Result((value,cursor),String)` husk leak). The all-scalar floor in
-            // `sum_shell_reclaim_payload_ok` leaves a COMPOUND-payload owned COMPUTED scrutinee's shell
-            // un-dropped. But the dup-pass ALREADY dups this scrutinee's consumed children — the
-            // `owned_compound_boxed` arm of `collect_shell_reclaim_child_dups` fires for exactly this shape
-            // (computed + `Owned` + compound-boxed sum) — so the compensating deep-drop is the MISSING half
-            // of the lockstep (an orphaned dup = a leak). Complete it under the SAME safe-drop fences the
-            // compound PARAM path uses (`nontail_param_compound_extra_ok`): G4 no arm returns the shell whole
-            // + no payload-in-result, G5 no arm alias-outs a shell child via a fallible interior-view op (the
-            // 2026-07-19 sread-UAF fence). `dup ⊇ drop` (owned_compound_boxed dups a superset of what this
-            // gate drops), so the deep-drop cascade nets — never a double-free (residual over-dup = a leak).
-            // RESUME-ESCAPE GUARD (mirrors the FIND3 all-scalar-product disjunct above, rrb1): restrict to a
-            // fresh `Core::Call` result that is DEAD-AFTER-DESTRUCTURE — a Call result is inlined once as the
-            // scrutinee and CANNOT be resume-threaded (a handler THREADED-STATE via If/materialize/Param could
-            // `resume`-escape a payload INVISIBLY at Core level → a husk-drop there would free a live escapee).
-            // The sound, select.rs-decidable proxy for v-effects' "exclude any resuming arm".
-            // `Core::AstDecode` (op 94) joins `Core::Call` here: it is a PURE host op that mints a FRESH owned
-            // `(Result Ast unit)` shell (a runtime-boxed Sum the ctor path niche-optimizes away, so decode is
-            // the ONLY producer of a real Result husk here), inlined once as the scrutinee, and — being a
-            // primitive, never a handler — CANNOT resume-thread a payload out, so it is STRICTLY at least as
-            // dead-after-destructure-safe as a Call. Without it, a decoded tree consumed/borrowed by a
-            // compound-constructing arm (`(match (Ast.decode …) ((Ok a) (= a (Ast.Int …))) …)`) declined the
-            // husk drop (payload is a COMPOUND Ast → all-scalar floor misses; not a `Core::Call` → this
-            // disjunct missed) → the Ok shell + decoded tree leaked 3 cells (12-metaprogramming:0072, the
-            // runtime Ast round-trip `=`/BigInt gap). The `nontail_param_compound_extra_ok` fences (payload not
-            // returned / no interior-view / no whole-scrutinee return) hold identically for a decode scrutinee,
-            // and the `owned_compound_boxed` dup pass already dups any CONSUMED decode payload child (empty for
-            // a borrow-only `=` arm → the deep-drop cascade frees the once-borrowed payload exactly once).
-            // `Core::StrFromBytes` (op 96, `str-from-bytes`) joins `Core::Call`/`Core::AstDecode` for the SAME
-            // reason (v-memory-safety, 10-bytes:919): it is a PURE PRIM that mints a FRESH owned `(Option String)`
-            // shell (the fallible decode either wraps the moved String in `Some` or returns `None`), inlined once
-            // as the scrutinee, and — being a primitive, never a handler — CANNOT resume-thread a payload out, so
-            // it is STRICTLY at least as dead-after-destructure-safe as a `Call`. Its `Some` payload is a FRESH
-            // owned String leaf (the storage moved out of the consumed bytes), so a borrow-only arm
-            // (`String.byte-len str`) is escape-clean + reuse-clean → the deep husk-drop reclaims the `Some`
-            // shell + the String exactly once. Without it, the inner `(match (String.from-bytes s) ((Some str)
-            // (String.byte-len str)) …)` shell + its String leaked (the outer Bytes.slice shell is separately
-            // reclaimed once `StrFromBytes` is an allowlisted extraction-consume builder above). The
-            // `nontail_param_compound_extra_ok` fences hold identically for a decode-String scrutinee.
+            // STASHED-OWNED-COMPUTED COMPOUND increment (v-core-opt + v-mem-safety co-design). The all-scalar
+            // floor in `sum_shell_reclaim_payload_ok` leaves a COMPOUND-payload owned COMPUTED scrutinee's shell
+            // un-dropped, yet the dup-pass ALREADY dups its consumed children (`owned_compound_boxed` arm of
+            // `collect_shell_reclaim_child_dups` fires for computed + `Owned` + compound-boxed sum) — so the
+            // deep-drop is the MISSING half of that lockstep (orphaned dup = leak). Completed under the compound
+            // PARAM path's `nontail_param_compound_extra_ok` fences (G4 no arm returns the shell whole / no
+            // payload-in-result; G5 no arm alias-outs a shell child via a fallible interior-view op — the
+            // sread-UAF fence). `dup ⊇ drop` so the cascade nets, never a double-free (residual over-dup = leak).
+            // RESUME-ESCAPE GUARD: restrict to a fresh `Core::Call` result DEAD-AFTER-DESTRUCTURE — inlined once,
+            // CANNOT be resume-threaded (a handler threading state via If/materialize/Param could `resume`-escape
+            // a payload invisibly → a husk-drop would free a live escapee). `Core::AstDecode` (op 94) and
+            // `Core::StrFromBytes` (op 96) JOIN `Core::Call` here: both are PURE prims (never handlers) minting a
+            // FRESH owned shell inlined once, so strictly at least as dead-after-safe as a Call; the fences hold
+            // identically and the dup pass dups any consumed payload child (12-metaprogramming:0072 Ast round-
+            // trip; 10-bytes:919 str-from-bytes `Some String`). Without them those husks + payloads leaked.
             || (matches!(
                 core_of(db, scrutinee),
                 Core::Call { .. } | Core::AstDecode { .. } | Core::StrFromBytes { .. }
