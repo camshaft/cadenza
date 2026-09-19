@@ -246,7 +246,7 @@
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
   (output (: 7/2 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)"
@@ -275,7 +275,7 @@
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
   (output (: 7/1 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
 ; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
@@ -1873,7 +1873,7 @@
       (export main)))
   (call main (: 25 Int64))
   (output (: 25 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an effect op resumed with a whole MAP threads the CHAMP through the continuation"
