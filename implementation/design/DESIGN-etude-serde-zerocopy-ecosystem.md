@@ -46,7 +46,12 @@ _Empirically confirmed (etude-json spike, etude PR #184, do-not-merge)._ A real 
 Deserializer over the live `etude-json` tokenizer, driving this Visitor, passes a differential test vs
 `serde_json` (accept/reject + value equality) across 1-byte / 3-byte / whole-buffer rope chunk layouts.
 Nested seq/map values re-enter `deserialize_any` over the shared token stream with _zero_ lifetime plumbing —
-Decision 0 holds against the real cursor. Still awaiting the operator's sign-off on the PR (§8.1).
+Decision 0 holds against the real cursor. And the copy-avoidance thesis is now quantified: a streaming digest
+(count nodes + sum string lengths, retain nothing) over a 17 KB container/string-heavy document costs
+`serde_json::from_slice::<Value>` 2207 allocations / 227146 bytes (it builds the whole tree) versus the
+rope-native Visitor adapter's 1 allocation / 24 bytes — ~2200× fewer allocations, ~9400× fewer bytes, both
+paths asserting the same digest. This extract-without-materializing workload is precisely what the no-`'de`
+SAX seam is for. Still awaiting the operator's sign-off on the PR (§8.1).
 
 ---
 
