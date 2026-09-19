@@ -65,6 +65,15 @@ human library author wrote it.
   crates first (etude-ensure/-buffer/-bytevec) while byterope churns. Rebase your doc PR on the latest
   origin/main so you document the code as landed, not a stale copy.
 
+## Land model — re-gate on CURRENT origin/main immediately before merge (cron-only CI)
+Under cron-only CI there is NO per-PR gate, so a branch built on a STALE base and merged later can land
+broken — etude-json #62: built pre-flag-day, merged AFTER the `byterope`→`etude-bytevec` rename deleted the
+crate it depended on → workspace-wide cargo-metadata red. RULE: immediately BEFORE any `--admin` merge you
+perform, bring your branch onto the CURRENT tip — `git fetch origin main && git rebase origin/main` — and
+RE-RUN the doc gate on THAT tree; merge ONLY if green on current origin/main, never on the branch's stale
+base. Docs are especially prone to this — you document a crate another agent is renaming/rewriting, so a
+rebase-before-merge keeps your rustdoc pointing at the code as landed.
+
 ## Stop conditions
 - STANDING vertical — you do not self-remove. Once every public item across all etude crates is documented
   + `deny(missing_docs)` is on everywhere, shift to MAINTENANCE: keep new public API documented as the code

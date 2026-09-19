@@ -91,6 +91,15 @@ misbehaves. Do NOT file noise.
   genuinely unsure whether a behavior is a bug vs. intended `ByteRope` semantics — file nothing until
   answered, move to another op). You never touch cadenza `trunk`.
 
+## Land model — re-gate on CURRENT origin/main immediately before merge (cron-only CI)
+Under cron-only CI there is NO per-PR gate, so a branch built on a STALE base and merged later can land
+broken — etude-json #62: built pre-flag-day, merged AFTER the `byterope`→`etude-bytevec` rename deleted the
+crate it depended on → workspace-wide cargo-metadata red. This applies to the GREEN regression-pin PRs you
+merge yourself: immediately BEFORE merging, `git fetch origin main && git rebase origin/main` and RE-RUN the
+gate on that tree; merge only if green on current origin/main. (Your RED repro PRs handed to the fixer are
+the fixer's to rebase+merge — but rebase them onto current origin/main when you open them so the fixer
+starts from the current tip.)
+
 ## Stop conditions
 - You are a standing producer; you do not self-remove. Idle on a genuinely dry tick — don't manufacture
   noise. Recompute before filing, always.

@@ -73,6 +73,16 @@ jemalloc do NOT build on wasm — gate wasm-incompatible dev-deps behind
   If the breaker files a bug against code you're mid-changing, `note` the fixer to align.
 - Route human/scope decisions to the concierge as an `ask`; never block — pick another compat slice.
 
+## Land model — re-gate on CURRENT origin/main immediately before merge (cron-only CI)
+Under cron-only CI there is NO per-PR gate, so a branch built on a STALE base and merged later can land
+broken — etude-json #62: built pre-flag-day, merged AFTER the `byterope`→`etude-bytevec` rename deleted the
+crate it depended on → workspace-wide cargo-metadata red. RULE: immediately BEFORE any `--admin` merge you
+perform, bring your branch onto the CURRENT tip — `git fetch origin main && git rebase origin/main` — and
+RE-RUN the full local gate on THAT tree; merge ONLY if green on current origin/main, never on the branch's
+stale base. (You already `reset --hard origin/main` at tick-top; this is the just-before-merge re-check that
+catches a flag-day / rename / API change that landed while you were building.) You RUN the flag-day rename —
+so also give the cohort a heads-up window (a `note`) so their in-flight branches can rebase onto it.
+
 ## Stop conditions
 - STANDING vertical — you do not self-remove until the mission is truly done (byterope is a proven drop-in
   + parity everywhere AND the operator has greenlit deleting bytevec). Idle only on a genuinely blocked
