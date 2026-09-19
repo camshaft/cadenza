@@ -26559,6 +26559,36 @@
   (live-objects known-leak))
 
 (case
+  "a NESTED (depth-2) projection of a loop invariant consumed per iteration accumulates stably (VALUE) but still leaks the parent chain"
+  (doc
+    "The proj-chain-DEPTH face of the consumed-loop-invariant family: the #9279-flipped members above all
+           project the invariant ONE level (`(. pr 0)` / `r.f` / `(Option.expect s)`) → census 0; this
+           projects a param TWO levels — `(. (. pr 0) 0)` reaches the inner list of a `(Tuple (Tuple (List
+           Int64) Int64) Int64)` threaded UNCHANGED to the self-call, consumed per iteration (`List.push … 9`
+           → len 3, four iters → 12). VALUE is stable at 12 on both backends (a per-iter parent retain would
+           NOT corrupt the accumulation — the consumed child is correctly retained). CENSUS (breaker probe,
+           MEASURED): the #9279 surplus-parent-dup drop does NOT extend to depth 2 — its is_child_dup_site
+           `proj-chain-roots-at-binder` clause reclaims the depth-1 parent-dup but the OUTER Proj's parent-dup
+           STILL fires per iteration, leaking the intermediate `(Tuple (List Int64) Int64)` shells (probed at
+           (live-objects 0); gate red'd expected 0, got 4). Leak-over-UAF SOUND (value holds, no over-reclaim)
+           — a TIGHTEN CANDIDATE: the depth extension of exactly the leak #9279 fixed, unhandled at chain
+           depth ≥2. Distinct sub-shape, filed to v-memory-safety.")
+  (input
+    (do
+      (def
+        (go (: pr (Tuple (Tuple (List Int64) Int64) Int64)) (: n Int64) (: acc Int64))
+        (if (= n 0) acc (go pr (- n 1) (+ acc (List.len (List.push (. (. pr 0) 0) 9))))))
+      (def (main (: d Int64)) (go #tuple(#tuple((List.push (List.push #list() d) 8) 0) 0) 4 0))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 12 Int64))
+  ; MEASURED (breaker, this gate): the #9279 depth-1 parent-dup drop does NOT extend to depth 2 — the OUTER
+  ; Proj's parent-dup fires per iteration, leaking the intermediate compound shells (probed at (live-objects 0);
+  ; gate red'd expected 0, got 4). UAF-safe (value holds), leak-over-UAF sound, TIGHTEN CANDIDATE — the depth
+  ; extension of the leak #9279 fixed. Filed to v-memory-safety.
+  (live-objects known-leak))
+
+(case
   "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"
   (doc
     "MISCOMPILE regression (was Todo→Fail-class silent wrong-value). A match nesting a variant of the
