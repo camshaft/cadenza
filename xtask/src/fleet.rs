@@ -11428,6 +11428,26 @@ fn sync_base_pause_prefers_origin_main(
         && pr_sync_paused_by_trunk_lag(om_ahead_of_trunk)
 }
 
+/// Format how HEAD relates to origin/main for sync's NO-OP messages. The "already current / nothing to
+/// replay" line is about the CHOSEN BASE at that instant (which is `trunk` when trunk is only mildly
+/// stale) — so on its own it can be misread as "HEAD is at the LIVE tip" when origin/main has advanced.
+/// design-cadenza-abi flagged the hazard: an agent trusting a stale "current" and force-pushing/merging a
+/// behind-branch could revert peers' recent origin/main commits. Appending the true HEAD↔origin/main
+/// relationship (with a ⚠ + rebase hint when behind or diverged) makes the message unambiguous. `behind` =
+/// `git rev-list --count HEAD..origin/main`, `ahead` = `origin/main..HEAD`. Pure so it is unit-tested.
+fn sync_head_vs_origin_note(behind: usize, ahead: usize) -> String {
+    match (behind, ahead) {
+        (0, 0) => " HEAD is level with origin/main.".to_string(),
+        (0, a) => format!(" HEAD is {a} commit(s) ahead of origin/main (your unlanded work)."),
+        (b, 0) => format!(
+            " ⚠ HEAD is {b} commit(s) BEHIND origin/main — rebase onto origin/main before you push or merge."
+        ),
+        (b, a) => format!(
+            " ⚠ HEAD has DIVERGED from origin/main ({a} ahead, {b} behind) — rebase onto origin/main before you push or merge."
+        ),
+    }
+}
+
 /// Re-run `refresh-tools.sh` (reinstall the cargo/nix shims + re-sync the nix PATH wrappers) from the
 /// current worktree, so a RUNNING agent picks up a landed shim/tooling change WITHOUT a window restart
 /// (operator seq-267). `refresh-tools.sh` ALREADY documents `fleet sync` as its "agent update path" caller
@@ -11607,13 +11627,27 @@ fn sync(fleet: &Fleet, force: bool) {
         let base_sha = git_stdout(&["rev-parse", "--short", base]);
         let ahead = git_stdout(&["rev-list", "--count", &format!("{base}..{old_head}")]);
         let n: usize = ahead.parse().unwrap_or(0);
+        // Report HEAD vs the AUTHORITATIVE tip (origin/main) too — the base-relative "current" claim is
+        // about `base` at this instant and must not be misread as "at the live tip" once origin/main has
+        // advanced (the force-push-a-behind-branch hazard). Warns when HEAD is behind/diverged.
+        let behind_om: usize =
+            git_stdout(&["rev-list", "--count", &format!("{old_head}..origin/main")])
+                .parse()
+                .unwrap_or(0);
+        let ahead_om: usize =
+            git_stdout(&["rev-list", "--count", &format!("origin/main..{old_head}")])
+                .parse()
+                .unwrap_or(0);
+        let om_note = sync_head_vs_origin_note(behind_om, ahead_om);
         if n == 0 {
-            println!("fleet sync: on {base} ({base_sha}); already current, nothing to replay.");
+            println!(
+                "fleet sync: on {base} ({base_sha}); already current, nothing to replay.{om_note}"
+            );
         } else {
             println!(
                 "fleet sync: already on {base} ({base_sha}) with {n} local commit(s) on top — base \
                  has not advanced, so nothing to rebase; leaving the branch UNCHANGED (no re-sha, so \
-                 any queued merge-request --ref stays valid)."
+                 any queued merge-request --ref stays valid).{om_note}"
             );
         }
         return;
@@ -26869,6 +26903,28 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!sync_head_should_fast_forward_to_origin_main(false, true));
         // Forked (neither is an ancestor) → not a pure fast-forward; leave to the normal path.
         assert!(!sync_head_should_fast_forward_to_origin_main(false, false));
+    }
+
+    #[test]
+    fn sync_head_vs_origin_note_warns_when_behind_or_diverged() {
+        // Level → plain, no warning.
+        let level = sync_head_vs_origin_note(0, 0);
+        assert!(level.contains("level with origin/main") && !level.contains('⚠'));
+        // Ahead only (unlanded work) → informational, no warning.
+        let ahead = sync_head_vs_origin_note(0, 3);
+        assert!(ahead.contains("3 commit(s) ahead") && !ahead.contains('⚠'));
+        // Behind → WARN + rebase hint (the force-push-a-behind-branch hazard).
+        let behind = sync_head_vs_origin_note(2, 0);
+        assert!(behind.contains('⚠') && behind.contains("BEHIND") && behind.contains("rebase"));
+        // Diverged (ahead AND behind) → WARN + rebase hint, reporting both counts.
+        let div = sync_head_vs_origin_note(2, 1);
+        assert!(
+            div.contains('⚠')
+                && div.contains("DIVERGED")
+                && div.contains("1 ahead")
+                && div.contains("2 behind")
+                && div.contains("rebase")
+        );
     }
 
     #[test]
