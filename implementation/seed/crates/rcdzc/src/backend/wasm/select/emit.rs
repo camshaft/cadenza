@@ -5735,9 +5735,25 @@ pub(super) fn emit(
                 heap_operand_ownership(db, closure),
                 Ok(HandleOwnership::Owned)
             );
-            if operand_owned && !result_is_fn {
+            // 11:1403 SITE-A DUP'D-INVARIANT-ENV reclaim (b2, v-memory-safety #9378 discriminator + this drop):
+            // a BARE Param closure operand whose binder is an INVARIANT-borrow-clean Fn loop-param (identity-
+            // passed on every back-edge, no genuine second consume) AND whose occurrence was dup-marked by
+            // `mark_binder_dups` — the apply only BORROWS the env cell (see the SITE-A comment above), so that
+            // per-application caller dup is a DEAD owned temporary. Drop it after the call, balancing the dup
+            // 1:1 (the entry-owned ref is reclaimed by the EXISTING `looped_owned_param_drops` epilogue). The
+            // invariant-borrow-clean set EXCLUDES the 09-functions:0411 shape (a genuine second consume → the
+            // binder is absent → dup KEPT → no under-retain UAF). `!result_is_fn` unchanged (a Fn result may
+            // re-apply/return the cell, unsound to drop). A mis-classification here only LEAKS (leaves the dup
+            // un-dropped) — never a double-free (dup_sites membership guarantees a dup exists to reclaim).
+            let dupd_invariant_env = out.dup_sites.contains(&closure)
+                && matches!(
+                    core_of(db, closure),
+                    Core::Param { binder }
+                        if out.closure_env_invariant_reclaim_binders.contains(&binder)
+                );
+            if (operand_owned || dupd_invariant_env) && !result_is_fn {
                 out.push(Lir::LocalGet(cell_slot)); // [result, cell]
-                out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned env cell)
+                out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned / dup'd-invariant env cell)
             }
             Ok(())
         }

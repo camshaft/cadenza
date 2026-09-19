@@ -178,6 +178,18 @@ pub struct Emit {
     /// shape. A DEDICATED set (disjoint from `dup_sites`) so the single-source-of-truth double-mark discipline
     /// holds. Empty for a non-closure body (no `Core::Captured`) → the fast path is untouched.
     captured_escape_dup_sites: HashSet<StructId>,
+    /// 11:1403 SITE-A closure-env invariant-borrow-clean reclaim binders (`closure_env_invariant_borrow_clean_
+    /// binders`, v-memory-safety's #9378 discriminator): the Fn-typed INVARIANT loop-param binders (identity-
+    /// passed on every back-edge) that are borrow-clean whole-body (every non-back-edge use — incl. the
+    /// `CallClosure` apply — is a borrow, no genuine second consume/escape). For such a binder the per-
+    /// application caller-side dup (`mark_binder_dups` CallClosure arm) is SPURIOUS — the apply only BORROWS the
+    /// env cell (emit.rs SITE-A "the call BORROWS the env cell") — so the SITE-A env-cell reclaim drops that
+    /// dead dup PER APPLICATION, balancing it 1:1 (the entry-owned ref is reclaimed by the EXISTING
+    /// `looped_owned_param_drops` epilogue). Fires the drop ONLY when the operand is a bare `Param` in this set
+    /// AND `dup_sites` marked that occurrence (a dup exists to reclaim) AND the result is not a Fn. Single self-
+    /// loop only; default-deny (leak-over-UAF). Excludes 09-functions:0411 (a genuine 2nd consume → absent →
+    /// dup kept → no under-retain). Empty for a non-looping / non-closure-threading body.
+    closure_env_invariant_reclaim_binders: HashSet<StructId>,
     /// (2) rope/slice-view SumExpect reclaim — the `Core::SumExpect` NODE ids whose extracted COMPOUND view
     /// payload is SCALAR-READ (consumed by exactly ONE `Bytes.at`) and does NOT escape, so the extraction is
     /// reclaimable: `compound_dupd` (the SumExpect emit) dup's the view at extract + drops the Some-shell, and
@@ -1833,6 +1845,11 @@ pub fn select_function_of(
             );
         }
     }
+    // 11:1403 SITE-A: the Fn-typed invariant-borrow-clean loop-param binders whose per-application caller dup
+    // the `CallClosure` emit will reclaim (drop the dead env-cell copy after the borrowing apply). v-mem's
+    // #9378 discriminator; empty for a non-self_def / non-closure-threading body (leak-over-UAF default-deny).
+    code.closure_env_invariant_reclaim_binders =
+        closure_env_invariant_borrow_clean_binders(db, body, params, self_def);
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
     // (consumed-onward single consumer → dup+shell-drop only, net-0, consumer owns the view). Dedicated sets
