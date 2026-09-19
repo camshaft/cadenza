@@ -26586,7 +26586,7 @@
   ; Proj's parent-dup fires per iteration, leaking the intermediate compound shells (probed at (live-objects 0);
   ; gate red'd expected 0, got 4). UAF-safe (value holds), leak-over-UAF sound, TIGHTEN CANDIDATE — the depth
   ; extension of the leak #9279 fixed. Filed to v-memory-safety.
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"
