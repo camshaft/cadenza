@@ -4438,6 +4438,30 @@ fn add(
     ensure_inbox(fleet, &name);
     let _ = std::fs::remove_file(fleet.stopfile(&name));
 
+    // BODILESS-WORKTREE guard (2026-09-19): `add` validates the role body against THIS invoking worktree
+    // (`self.src`), but the agent reads its role body from its OWN new worktree at runtime — and that
+    // worktree was just cut from `trunk`/`origin/main`. So if the role loop was authored here but NOT yet
+    // landed upstream (the recurring "land-before-add" trap: it bit etude-bigint/rational/json/decimal, and
+    // caused a drain-stall while the agent ran erratically off only its kickoff prompt), the new worktree
+    // LACKS `fleet/loops/<role>.md` and the agent starts BLIND. Warn loudly at creation time so the operator
+    // lands the loop + heals the worktree immediately, instead of discovering the bodiless window ticks later.
+    // Non-fatal: the agent is still registered/launched (and self-heals once the loop lands + it syncs).
+    let new_body = Path::new(&agent.worktree)
+        .join("fleet")
+        .join("loops")
+        .join(format!("{role}.md"));
+    if !new_body.exists() {
+        eprintln!(
+            "  ⚠ fleet add: the new worktree LACKS its role body ({}) — the loop `fleet/loops/{role}.md` is \
+             not on the branch this worktree was cut from (the land-before-add trap). '{name}' will run BLIND \
+             off only its kickoff prompt until you LAND `fleet/loops/{role}.md` to origin/main AND it syncs. \
+             FIX: land the loop, then `git -C {} fetch origin main && git reset --hard origin/main` to heal it \
+             now (or wait for its next `fleet sync`). Prefer landing the loop BEFORE `fleet add` next time.",
+            new_body.display(),
+            agent.worktree,
+        );
+    }
+
     // Seed the one work item into the new agent's inbox as an `assign`, so a fix agent starts with
     // its job in hand. Copy the seed file alongside so the agent can read the full case.
     if let Some(seed) = seed {
