@@ -26589,6 +26589,31 @@
   (live-objects 0))
 
 (case
+  "a DEPTH-3 nested projection of a loop invariant consumed per iteration is fully reclaimed (the propagation generalizes)"
+  (doc
+    "The depth generalization of the #9282 fix (#9299 propagated the child-dup-chain parent-dup suppression
+           to chain depth ≥2 via a threaded `in_child_dup_chain` flag). #9282 pinned depth-2; this pins depth-3 —
+           `(. (. (. pr 0) 0) 0)` reaches the inner list of a `(Tuple (Tuple (Tuple (List Int64) Int64) Int64)
+           Int64)` param threaded UNCHANGED to the self-call, consumed per iteration (`List.push … 9` → len 3,
+           four iters → 12). Guards that the fix's chain flag is a GENERAL walk-to-the-binder, not a depth-2
+           special case: were the propagation depth-2-only, the outermost Proj's parent-dup would fire per
+           iteration and leak (as depth-2 did before #9299, got 4). Value stable at 12; census 0 confirms the
+           whole projection chain's parent-dups are suppressed at depth 3.")
+  (input
+    (do
+      (def
+        (go (: pr (Tuple (Tuple (Tuple (List Int64) Int64) Int64) Int64)) (: n Int64) (: acc Int64))
+        (if (= n 0) acc (go pr (- n 1) (+ acc (List.len (List.push (. (. (. pr 0) 0) 0) 9))))))
+      (def (main (: d Int64)) (go #tuple(#tuple(#tuple((List.push (List.push #list() d) 8) 0) 0) 0) 4 0))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 12 Int64))
+  ; depth-generalization probe: hypothesis is #9299's in_child_dup_chain flag walks the WHOLE chain to the
+  ; loop-invariant binder at DEPTH 3 (not a depth-2 special case), so all parent-dups suppress (census 0).
+  ; Pinned 0 to let the gate rule — a red "got N" would expose a depth-2-only propagation.
+  (live-objects 0))
+
+(case
   "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"
   (doc
     "MISCOMPILE regression (was Todo→Fail-class silent wrong-value). A match nesting a variant of the
