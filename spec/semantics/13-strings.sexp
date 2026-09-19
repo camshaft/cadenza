@@ -6877,10 +6877,10 @@
            payload-escape root as the Option.expect/String.slice sibling, distinct leak magnitude — op
            specific). Each iteration builds a fresh runtime rope \"hiii\" (0x68 + 3x 0x69), `String.from-bytes`
            it to a `Some(String)` compound shell, then BORROWS the payload via `String.byte-len` (4). The
-           non-dup'd compound Some shell is dead after the borrow and left un-dropped: 2 cells per iteration
-           (no once-built base — the rope is rebuilt each iter), so 5 iters leak 10 cells, value-correct
-           throughout (byte-len \"hiii\" = 4, summed 5x = 20; a UAF would trap, a wrong reclaim would garble).
-           Flips to 0 when the node-keyed payload-escape fix lands (select.rs).")
+           non-dup'd compound Some shell is dead after the borrow; the node-keyed payload-escape reclaim
+           (select.rs) now drops it each iteration — historically it was left un-dropped (2 cells/iter, so
+           5 iters leaked 10 cells). Value-correct throughout (byte-len \"hiii\" = 4, summed 5x = 20; a UAF
+           would trap, a wrong reclaim would garble), and the dead shell now reclaims to `(live-objects 0)`.")
   (input
     (do
       (def (rep (: acc Bytes) (: n Int64)) (if (= n 0) acc (rep (Bytes.concat acc b"i") (- n 1))))
