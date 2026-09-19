@@ -22292,6 +22292,23 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         // A genuine local sub-check failure (no peer-config signature) must still read REAL, not peer-misconfig.
         assert!(!gate_output_is_persistent_peer_misconfig(real));
+        // GUARD (2026-09-19, from mining preserved gate-local logs): nix's remote-build `Cannot build
+        // '<drv>'.` is a WRAPPER — the discriminating reason is always elsewhere in the output. When that
+        // reason is a REAL builder failure (`Reason: builder failed with exit code 1` + a real diagnostic,
+        // here a cargo-fmt Diff), it MUST stay REAL — never a re-run, never peer-misconfig. This pins the
+        // negative result that closed the accept-then-error residual: a bare-`Cannot build` re-run heuristic
+        // would MASK real fmt/clippy/codegen failures wrapped this way, so it must never be added.
+        let cannot_build_real = "error: Cannot build '/nix/store/dxdb-cargo-fmt-0.0.0.drv'.\n       \
+                                 Reason: builder failed with exit code 1.\n       > Diff in \
+                                 /build/source/implementation/seed/crates/cdz-platform/src/lifecycle.rs:120:";
+        assert!(!gate_output_is_persistent_peer_misconfig(cannot_build_real));
+        let cb_adv = gate_local_hold_advisory(cannot_build_real);
+        assert!(
+            cb_adv.contains("REAL sub-check")
+                && !cb_adv.contains("RE-RUN")
+                && !cb_adv.contains("PERSISTENT remote-BUILDER MISCONFIG"),
+            "a `Cannot build` wrapper around a REAL exit-code-1 builder failure must stay REAL, not re-run: {cb_adv}"
+        );
         // GUARD: a REAL builder failure that happens to name a /nix/store path but reports an exit code
         // (NOT "does not exist") must NOT be misread as the GC race — stays REAL.
         assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
