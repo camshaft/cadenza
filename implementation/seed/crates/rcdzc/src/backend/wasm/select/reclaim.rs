@@ -1349,6 +1349,38 @@ pub(super) fn rebind_produces_fresh(db: &mut Db, arg: StructId) -> bool {
         // `(List.push c …)` carries `c` WHOLE (consumed) → escapes → blocked (a DISTINCT multi-use read-
         // borrow-dup leak, v-runtime-classified Fix-A-adjacent, deferred).
         Core::ListConcat { .. } => true,
+        // A fresh SUM ctor — `sum-new` `arr-alloc`s a brand-new sum cell, a distinct allocation that is never
+        // the old accumulator's own cell (the sum analog of the product-ctor arm above). The fn-doc deferred
+        // `SumNew` "to a separately-verified follow-up … the sum-state leak wants its own before/after pin";
+        // 05-compound:2412 IS that pin — a decode loop rebinds its boxed-sum accumulator `last` to a folded
+        // `(if c (W.Atom v) (W.Atom v))` (the `(. r 0)` projection folded through the inlined `one` builder
+        // into a fresh `SumNew` per branch), and the OLD `last` was clobbered without a drop (+1/iter). SOUND
+        // by the SAME fence as the product-ctor arms: the caller's conjunctive escape guard
+        // (`!binding_escapes(arg, binder)` for EVERY rebind arg) BLOCKS the drop if the old accumulator is a
+        // PAYLOAD of the new sum (`(W.Atom acc)` embeds acc → acc escapes through the consuming payload
+        // position → guard true → blocked), so when the drop fires the new sum cell is provably independent
+        // of the old accumulator. `SumNew` is INLINE in the arg (no let-bound-operand hole). FBIP-reuse note
+        // (v-core-opt landmine): a dead varying param cell reused for this SumNew would double-free the
+        // explicit drop — but that is the SAME reuse-vs-drop coordination the product-ctor arms already rely
+        // on (a reused param is consumed → escapes → guard blocks), and 2412 is pinned known-leak so its
+        // `last` is provably NOT reused (reuse would have eliminated the leak).
+        // FUTURE-PROOFING (v-core-opt FBIP eyeball): this arm is sound WHILE rcdzc has NO dataflow-invisible
+        // heap-cell reuse pass. Its only cell reuse is the IN-PLACE collection ops (ListPush/ListUpdate/
+        // MapInsert/…) which reuse the BASE — always a dataflow operand the escape guard sees. `sum-new` emits
+        // an UNCONDITIONAL fresh `arr-alloc` (never a recycled cell). If a Perceus-style drop+alloc reuse-token
+        // pass is ever added (recycling a dropped cell for an unrelated same-size ctor), it MUST exclude
+        // `drop_old_borrowed`'s back-edge drops as reuse SOURCES, or run BEFORE drop-placement — else this arm
+        // regresses into a double-free.
+        Core::SumNew { .. } => true,
+        // An `if`/`match` whose EVERY branch produces a fresh cell is itself fresh-producing — the rebind
+        // value is one of the branch results, all fresh (05:2412's `last` = `(if c (W.Atom v) (W.Atom v))`
+        // after the projection folded through the inlined builder). If ANY branch could return/reuse the old
+        // accumulator (a bare `Param`/borrow) that branch is not fresh → the whole `if` declines (leak, never
+        // a double-free). The escape guard still applies to the whole arg, so an accumulator carried through
+        // a branch also blocks the drop.
+        Core::If { then_, else_, .. } => {
+            rebind_produces_fresh(db, then_) && rebind_produces_fresh(db, else_)
+        }
         Core::Let { body, .. } => rebind_produces_fresh(db, body),
         Core::Seq { tail, .. } => rebind_produces_fresh(db, tail),
         Core::Block { body, .. } => rebind_produces_fresh(db, body),
