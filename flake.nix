@@ -8072,6 +8072,41 @@
             runtimeHashParity = parity { name = "runtime"; hashFile = runtimeHash; constName = "REQUIRED_RUNTIME_HASH"; };
             runtimeDebugHashParity = parity { name = "runtime-debug"; hashFile = runtimeDebugHash; constName = "DEBUG_RUNTIME_HASH"; };
             nfcHashParity = parity { name = "nfc"; hashFile = nfcHash; constName = "REQUIRED_NFC_HASH"; };
+            # profileCiGuard (v-nix 2026-09-19): pins the profile.ci OVERRIDE-APPLIED invariant. The whole
+            # profile.ci arc (opt-sweep #9292, platform-itest #9294, full corpus-gate #9307, cad-tests #9309)
+            # rests on the ci-profile derivations actually carrying `CARGO_PROFILE = "ci"`. If a future refactor
+            # of mkPhaseBin/mkSeedCompiler/cargoArtifactsCi silently DROPS that override, those gates would
+            # compile under RELEASE again — defeating the debug-assertions+overflow-checks coverage the ci
+            # profile exists to provide, while staying GREEN (an undetectable no-op the shared gate can't see).
+            # This asserts the override is PRESENT on the three ci-profile derivations and ABSENT on the release
+            # cdzCompile (proving the release path is untouched). EVAL-ONLY + INSTANT: CARGO_PROFILE is a plain
+            # string attr (no store-path context), so interpolating it forces NO build of the compilers — the
+            # guard is a bash string-compare, adding ~0 gate time. Cheap teeth for a silent-no-op class a
+            # required-status can't catch under self-merge. `… or "UNSET"` so the release compiler (which sets
+            # no CARGO_PROFILE) reads as an explicit sentinel rather than an eval error.
+            profileCiGuard = pkgs.runCommand "profile-ci-guard"
+              {
+                ciCompileProfile = cdzCompileCi.CARGO_PROFILE or "UNSET";
+                ciDepsProfile = cargoArtifactsCi.CARGO_PROFILE or "UNSET";
+                ciRunnerProfile = seedCompilerTestRunnerCi.CARGO_PROFILE or "UNSET";
+                releaseCompileProfile = cdzCompile.CARGO_PROFILE or "UNSET";
+              } ''
+              set -euo pipefail
+              fail=0
+              want() { # label expected actual
+                if [ "$3" != "$2" ]; then echo "profile.ci guard: $1 CARGO_PROFILE=$3, expected $2" >&2; fail=1; fi
+              }
+              want "cdz-compile-ci" ci "$ciCompileProfile"
+              want "cargo-artifacts-ci" ci "$ciDepsProfile"
+              want "seed-compiler-testrunner-ci" ci "$ciRunnerProfile"
+              # the RELEASE compiler must carry NO profile override (proves the release path is untouched)
+              want "cdz-compile (release)" UNSET "$releaseCompileProfile"
+              if [ "$fail" != 0 ]; then
+                echo "profile.ci override regressed — the ci gates would silently compile under RELEASE" >&2
+                exit 1
+              fi
+              echo "ok: profile.ci override intact (cdz-compile-ci / cargo-artifacts-ci / seed-compiler-testrunner-ci = ci; release cdz-compile unset)" > "$out"
+            '';
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
             # base62 contract-id (§8 text form — `[0-9A-Za-z]`, the one post-flag-day form; no hex/base64url).
             # Catches a silently-empty mapping (e.g. a contracts dir that stopped parsing) that a run not
@@ -8868,7 +8903,12 @@
                   # instead of a day-late nightly (the gap that let the Catalan regression slip pre-#9172). A red =
                   # a blocking reclaim regression (v-core-opt's ruling). Cache-warm/offloaded host fixtures + ~0.5s
                   # tests; reruns only on a compiler/runtime/cdz-platform closure rotation (same as the corpus gates).
-                  reducerFoldCensus reducerFoldAccumCensus;
+                  reducerFoldCensus reducerFoldAccumCensus
+                  # profileCiGuard FOLDED IN (v-nix 2026-09-19): pins that the ci-profile derivations still
+                  # carry CARGO_PROFILE=ci (and release does not) so a future mk*/cargoArtifactsCi refactor
+                  # can't silently make the ci gates run RELEASE (a green no-op). Eval-only string compare —
+                  # forces no compiler build, ~0 gate cost; green-confirmed standalone before the fold.
+                  profileCiGuard;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -8891,6 +8931,10 @@
             # `nix flake check` locally still runs them + they stay independently buildable).
             flake-repro-backstop = flakeReproBackstop;
             runtime-hash-parity = runtimeHashParity;
+            # `nix build .#checks.<sys>.profile-ci-guard` — pins the profile.ci override-applied invariant
+            # (also folded into the localGate fail-set; see its def note). Teeth against a silent ci→release
+            # no-op regression under self-merge.
+            profile-ci-guard = profileCiGuard;
             # v-corpus-harness harvest-vs-gate live-objects exec-mode drift-guard (advisory): interpreted harvest
             # verdict == AOT gate verdict on a count-checked (live-objects 0) sample (Map/handler + String + List
             # husk shapes). Reds if a future genuine interpreted-vs-AOT count divergence would silently red --check.
