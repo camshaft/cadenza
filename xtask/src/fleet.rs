@@ -12142,17 +12142,25 @@ enum InboxShadowAction {
     AlreadyLinked,
     /// Nothing at the shadow path — create the symlink so a relative glob resolves to the hub inbox.
     CreateLink,
-    /// A REAL directory (or a symlink to somewhere else) occupies the shadow path — do NOT clobber it (it
-    /// may hold mail a past relative `--processed` mis-moved); warn so it's reconciled by hand.
+    /// A REAL directory holding NO message files occupies the shadow path — a stale empty scaffold left
+    /// by an old worktree creation (the fleet-wide common case). Remove the empty tree and link, so these
+    /// worktrees are covered too. Only ever when provably empty of regular files (see the wrapper).
+    ReplaceEmpty,
+    /// A real dir that HOLDS files, or a symlink to somewhere else, occupies the shadow path — do NOT
+    /// clobber it (it may hold mail a past relative `--processed` mis-moved); warn so it's reconciled by
+    /// hand.
     SkipConflict,
 }
 
 /// Pure decision for [`ensure_worktree_inbox_link`] — see [`InboxShadowAction`]. Split out so the
 /// idempotency + never-clobber semantics are unit-tested without touching the filesystem.
+/// `shadow_is_empty_real_dir` is true ONLY when the shadow is a real directory (not a symlink) that holds
+/// no regular files anywhere beneath it — the only case safe to remove and replace with the link.
 fn inbox_shadow_action(
     worktree_exists: bool,
     shadow_present: bool,
     shadow_is_correct_link: bool,
+    shadow_is_empty_real_dir: bool,
 ) -> InboxShadowAction {
     if !worktree_exists {
         return InboxShadowAction::NoWorktree;
@@ -12160,10 +12168,35 @@ fn inbox_shadow_action(
     if shadow_is_correct_link {
         return InboxShadowAction::AlreadyLinked;
     }
-    if shadow_present {
-        return InboxShadowAction::SkipConflict;
+    if !shadow_present {
+        return InboxShadowAction::CreateLink;
     }
-    InboxShadowAction::CreateLink
+    if shadow_is_empty_real_dir {
+        return InboxShadowAction::ReplaceEmpty;
+    }
+    InboxShadowAction::SkipConflict
+}
+
+/// True iff `path` (a directory) contains NO regular file anywhere beneath it — used to decide whether a
+/// stale inbox-shadow dir is a safe-to-remove empty scaffold. CONSERVATIVE: an unreadable dir or ANY
+/// symlink/file encountered counts as "not empty" (returns false), so we never remove something we can't
+/// prove is empty of content.
+fn dir_is_empty_of_files(path: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return false; // can't verify → treat as non-empty (do not remove)
+    };
+    for entry in rd.flatten() {
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => {
+                if !dir_is_empty_of_files(&entry.path()) {
+                    return false;
+                }
+            }
+            // A regular file, a symlink, or an unknowable type → content present, not safe to remove.
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Reconcile the worktree-relative inbox shadow into a SYMLINK to the hub inbox, so an agent that (wrongly)
@@ -12179,20 +12212,40 @@ fn ensure_worktree_inbox_link(fleet: &Fleet, name: &str) {
     let shadow = worktree.join(".claude").join("fleet").join("inbox");
     let meta = std::fs::symlink_metadata(&shadow).ok();
     let shadow_present = meta.is_some();
-    let shadow_is_correct_link = meta.is_some_and(|m| m.file_type().is_symlink())
-        && std::fs::read_link(&shadow).is_ok_and(|t| t == hub_inbox);
-    match inbox_shadow_action(worktree.is_dir(), shadow_present, shadow_is_correct_link) {
+    let is_symlink = meta.as_ref().is_some_and(|m| m.file_type().is_symlink());
+    let is_real_dir = meta.as_ref().is_some_and(|m| m.file_type().is_dir());
+    let shadow_is_correct_link =
+        is_symlink && std::fs::read_link(&shadow).is_ok_and(|t| t == hub_inbox);
+    // Only a REAL dir (not a symlink) that holds no regular files is safe to remove and replace.
+    let shadow_is_empty_real_dir = is_real_dir && dir_is_empty_of_files(&shadow);
+    let link = || {
+        if let Some(parent) = shadow.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        #[cfg(unix)]
+        if let Err(e) = std::os::unix::fs::symlink(&hub_inbox, &shadow) {
+            eprintln!(
+                "  ⚠ could not link worktree inbox shadow {} → hub inbox: {e}",
+                shadow.display()
+            );
+        }
+    };
+    match inbox_shadow_action(
+        worktree.is_dir(),
+        shadow_present,
+        shadow_is_correct_link,
+        shadow_is_empty_real_dir,
+    ) {
         InboxShadowAction::NoWorktree | InboxShadowAction::AlreadyLinked => {}
-        InboxShadowAction::CreateLink => {
-            if let Some(parent) = shadow.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            #[cfg(unix)]
-            if let Err(e) = std::os::unix::fs::symlink(&hub_inbox, &shadow) {
+        InboxShadowAction::CreateLink => link(),
+        InboxShadowAction::ReplaceEmpty => {
+            if let Err(e) = std::fs::remove_dir_all(&shadow) {
                 eprintln!(
-                    "  ⚠ could not link worktree inbox shadow {} → hub inbox: {e}",
+                    "  ⚠ could not remove empty worktree inbox shadow {} (left as-is): {e}",
                     shadow.display()
                 );
+            } else {
+                link();
             }
         }
         InboxShadowAction::SkipConflict => {
@@ -25330,18 +25383,19 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn inbox_shadow_action_links_only_when_free_and_never_clobbers() {
+    fn inbox_shadow_action_links_when_free_or_empty_and_never_clobbers_content() {
         use InboxShadowAction::*;
         // No worktree yet → nothing to link (creation is ensure_worktree's job).
-        assert_eq!(inbox_shadow_action(false, false, false), NoWorktree);
-        assert_eq!(inbox_shadow_action(false, true, true), NoWorktree);
-        // Worktree exists + shadow path FREE → create the symlink (the fix for the stalling agents,
-        // whose worktrees have no shadow at all).
-        assert_eq!(inbox_shadow_action(true, false, false), CreateLink);
+        assert_eq!(inbox_shadow_action(false, false, false, false), NoWorktree);
+        assert_eq!(inbox_shadow_action(false, true, true, false), NoWorktree);
+        // Worktree exists + shadow path FREE → create the symlink (the newer cohort worktrees, no shadow).
+        assert_eq!(inbox_shadow_action(true, false, false, false), CreateLink);
         // Already the correct link → idempotent no-op (safe to re-run on every `up`).
-        assert_eq!(inbox_shadow_action(true, true, true), AlreadyLinked);
-        // A real dir / foreign link occupies the path → NEVER clobber (it may hold mis-moved mail).
-        assert_eq!(inbox_shadow_action(true, true, false), SkipConflict);
+        assert_eq!(inbox_shadow_action(true, true, true, false), AlreadyLinked);
+        // A real dir that is EMPTY of message files (the fleet-wide stale-scaffold case) → remove + link.
+        assert_eq!(inbox_shadow_action(true, true, false, true), ReplaceEmpty);
+        // A real dir that HOLDS files (empty flag false) → NEVER clobber; warn instead.
+        assert_eq!(inbox_shadow_action(true, true, false, false), SkipConflict);
     }
 
     #[test]
