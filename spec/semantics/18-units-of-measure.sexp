@@ -1337,7 +1337,7 @@
   (output (: 105 BigInt))
   (call main (: 1000000000000 Int64))
   (output (: 1000000000100 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a quantity over a BigInt magnitude compares by its exact value"
@@ -2093,7 +2093,7 @@
   (output (: 25 BigInt))
   (call main (: 1000000 Int64))
   (output (: 1000000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the power form derives the same dimension as repeated multiplication"
@@ -2251,7 +2251,7 @@
       (def (main) (Qty.value (Qty.pow (Qty.of (BigInt.of 4) (Unit.base #"meter")) -1)))
       (export main)))
   (output (: 0 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ============================================================================================
 ; Comparison — same dimension required (the ordering/equality obligation)
@@ -3278,7 +3278,7 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 2500 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)"
@@ -3332,7 +3332,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 6500 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime mixed-scale combine converts a COMPUTED Float quantity operand"
@@ -3397,7 +3397,7 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 2500/1 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime exact mixing of inch and millimeter keeps the fractional scale"
@@ -3419,7 +3419,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 33/1250 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Unit.in conversion emits the scale multiply (Int)"
@@ -3453,7 +3453,7 @@
   (output (: 3000 BigInt))
   (call main (: 1000000000000 Int64))
   (output (: 1000000000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Unit.in over a BigInt quantity truncates a non-dividing ratio"
@@ -3470,7 +3470,7 @@
       (export main)))
   (call main (: 2500 Int64))
   (output (: 2 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps"
@@ -3489,7 +3489,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 3000/1 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Unit.in over a runtime Rational quantity keeps a fractional scale exact"
@@ -3506,7 +3506,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 127/5000 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ============================================================================================
 ; DERIVED-dimension families — a named unit can name a DERIVED dimension (a rate = information/time, a
@@ -3790,7 +3790,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a BigInt-inner quantity grows past Int64.max without trapping"
@@ -3808,7 +3808,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 18446744073709551614 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper"
@@ -5393,7 +5393,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 6500 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 553: quantities as CHAMP KEYS (the hash/eq agreement pattern on a type whose
 ; `=` is scale-converting). The design forecloses the divergence: same-unit keys round-trip with
