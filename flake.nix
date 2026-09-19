@@ -8656,6 +8656,36 @@
             # matching prod). They stay independently buildable + warm via their own `checks.*` attrs; pr-sync
             # can build them separately for extra signal without gating. FAIL-CLOSED: the aggregate depends on
             # all 9 required, so `nix build` of it is red if ANY required check fails — no silent gap. aarch64.
+            # reducerFoldCensus / reducerFoldAccumCensus (v-nix, HOISTED to let-bindings from the checks attrset
+            # so they can be FOLDED INTO localGate — v-reducer-pooling ask 080933, v-core-opt endorsed). The two
+            # seq-916 reducer-path reclaim census gates: echo net-0 + payload-sweep + interleaved-reuse; and the
+            # end-to-end O(n) sibling-co-borrow accumulator tripwire (guest List.len(acc)). Previously nightly-only
+            # (kept off localGate for host-fixture cost), but v-core-opt's #9218 borrow/drop reclaim campaign keeps
+            # landing followups touching these gates' exact patterns UNVERIFIED-against-these-gates until nightly
+            # (the day-late gap that let the Catalan regression slip pre-#9172). Folding them in gives per-MR teeth
+            # (v-core-opt treats a red as a blocking reclaim regression). Cost is bounded: the host cargoTest deps
+            # layer (wasmtime) is cache-warm/offloaded + nightly-pushed, and these rerun only when the compiler/
+            # runtime/cdz-platform closure rotates (same model as the corpus-gate constituents); ~0.5s tests. They
+            # stay exposed as standalone checks + in nightly (see the checks-attrset references below).
+            reducerFoldCensus = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
+              pname = "cargo-test-reducer-fold-census";
+              # substring filters (NOT --exact) so the match is robust to the test module path; both names are
+              # unique so exactly these two run. (They are #[tokio::test], not #[ignore], so no --ignored needed.)
+              cargoTestExtraArgs = "-p cdz-platform --features host -- "
+                + "a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline "
+                + "a_reused_reducer_instance_folds_the_cap_without_accumulating_shells";
+              CDZ_REDUCER_ECHO_WASM = "${reducerEchoComponent}/reducer-echo.wasm";
+              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
+              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
+            });
+            reducerFoldAccumCensus = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
+              pname = "cargo-test-reducer-fold-accum-census";
+              cargoTestExtraArgs = "-p cdz-platform --features host -- "
+                + "a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero";
+              CDZ_REDUCER_ECHO_ACCUM_WASM = "${reducerEchoAccumComponent}/reducer-echo-accum.wasm";
+              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
+              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
+            });
             localGate = pkgs.runCommand "local-gate"
               {
                 # The 9 merge-required-minus-macos contexts.
@@ -8732,7 +8762,15 @@
                   # corpus case pins a capability-limit code (CDZ0900) as an (error …) — the impl-independent-
                   # spec guard. Starts GREEN (v-corpus-harness confirmed 0 hits, no residue → folds immediately,
                   # no fix-then-fold wait); cheap cdzCorpus static parse, same shape as corpusNativizeCheck.
-                  capabilityErrorCheck;
+                  capabilityErrorCheck
+                  # reducer-path reclaim census gates FOLDED IN (v-nix 2026-09-19, v-reducer-pooling ask 080933 +
+                  # v-core-opt endorsement): the two seq-916 reclaim gates now run PER-MR, not nightly-only, so
+                  # v-core-opt's #9218 borrow/drop reclaim followups (Bytes.len #9266, ListLen/StrScalarLen/MapSize/
+                  # SetLen #9277, queued nested-proj/StrAt/deep-rope) are verified against them AT the authoring MR
+                  # instead of a day-late nightly (the gap that let the Catalan regression slip pre-#9172). A red =
+                  # a blocking reclaim regression (v-core-opt's ruling). Cache-warm/offloaded host fixtures + ~0.5s
+                  # tests; reruns only on a compiler/runtime/cdz-platform closure rotation (same as the corpus gates).
+                  reducerFoldCensus reducerFoldAccumCensus;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -9115,33 +9153,15 @@
           # is the closure dir. Merged HERE (NOT into perCrateTestCrane) so it stays OFF testCrateCoverageAssert —
           # it is a fixture-driven host-feature test, not a per-crate workspace-member test.
           // {
-            reducer-fold-census = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
-              pname = "cargo-test-reducer-fold-census";
-              # substring filters (NOT --exact) so the match is robust to the test module path; both names are
-              # unique so exactly these two run. (They are #[tokio::test], not #[ignore], so no --ignored needed.)
-              cargoTestExtraArgs = "-p cdz-platform --features host -- "
-                + "a_reducer_fold_nets_live_objects_to_its_pre_fold_baseline "
-                + "a_reused_reducer_instance_folds_the_cap_without_accumulating_shells";
-              CDZ_REDUCER_ECHO_WASM = "${reducerEchoComponent}/reducer-echo.wasm";
-              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
-              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
-            });
-            # reducer-fold-accum-census (v-nix, wiring v-reducer-pooling #9193): the END-TO-END O(n) reclaim
-            # tripwire — runs the reused-instance N=100 accumulator-loop census (host test
-            # a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero) against the reducer-echo-ACCUM
-            # guest (#9176) composed with the debug-counters runtime, asserting net-0. Net-0 holds post-#9191
-            # (the sibling-narrowed drop_old_borrowed re-land reclaims the single-accumulator co-borrow shape).
-            # Same shape as reducer-fold-census; the ONLY delta is CDZ_REDUCER_ECHO_ACCUM_WASM → the accum guest
-            # component (a DIFFERENT env var than reducer-fold-census's CDZ_REDUCER_ECHO_WASM) + the single
-            # accum test name. STANDALONE (heavy fixtures), off perCrateTestCrane/testCrateCoverageAssert.
-            reducer-fold-accum-census = craneLib.cargoTest ((craneCrateCommon { crate = "cdz-platform"; extraSrc = [ ./implementation/seed/crates/cdz-platform/wit ]; }) // {
-              pname = "cargo-test-reducer-fold-accum-census";
-              cargoTestExtraArgs = "-p cdz-platform --features host -- "
-                + "a_reused_reducer_folding_an_accumulator_loop_guest_stays_net_zero";
-              CDZ_REDUCER_ECHO_ACCUM_WASM = "${reducerEchoAccumComponent}/reducer-echo-accum.wasm";
-              CDZ_COMPONENT_STORE_DIR = "${componentStore}";
-              CDZ_DEBUG_RUNTIME_WASM = "${runtimeDebug}";
-            });
+            # reducer-fold-census + reducer-fold-accum-census: DEFINED as let-bindings (reducerFoldCensus /
+            # reducerFoldAccumCensus, above near localGate) so they can ALSO be folded into the localGate fail-set
+            # (v-reducer-pooling ask 080933, v-core-opt endorsed — per-MR reclaim-gate coverage). Full rationale +
+            # env-fixture wiring are in the let-binding notes. Exposed here under the SAME attr names so nightly.yml
+            # (which builds .#checks.<sys>.reducer-fold-census + .reducer-fold-accum-census) is unchanged, and both
+            # stay independently buildable / warmable. reducer-fold-census = echo net-0 + payload-sweep +
+            # interleaved-reuse; reducer-fold-accum-census = the end-to-end O(n) sibling-co-borrow accum tripwire.
+            reducer-fold-census = reducerFoldCensus;
+            reducer-fold-accum-census = reducerFoldAccumCensus;
             # reducer-bench (v-nix, answering v-reducer-pooling's ask 000000080526): a MANUAL/ADVISORY runner
             # for the two committed cdz-platform host BENCHES whose deliverable is their eprintln timing REPORT
             # (not a pass/fail): warm_per_fold_execution_cost_of_a_single_reducer_function (per-fold cost) and
