@@ -308,7 +308,7 @@
       (export f)))
   (call f (: #record((= tok #list(10 20 30))) (Record (: tok Bytes))))
   (output #record((= items #list(#record((= echo b"\n\x14\x1e"))))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare list<u8>/Bytes RESULT member of a typed export interface crosses (multi-export list<u8> result — operator §2 encode-quoted half)"
