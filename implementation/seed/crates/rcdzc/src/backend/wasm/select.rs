@@ -1364,6 +1364,91 @@ fn looped_owned_param_drops(
     drops
 }
 
+/// 11:1403 b2 co-fix — MY LANE (v-memory-safety) = this discriminator predicate; v-core-opt wires the SITE-A
+/// env-cell drop that consults it. The set of CLOSURE/fn-typed loop-PARAM binders that are INVARIANT (identity-
+/// passed on EVERY back-edge) AND provably BORROW-CLEAN whole-body (every non-back-edge use is a borrow — the
+/// CallClosure-borrows-callee arm of `param_only_borrowed_or_backedge`). For such a binder the per-application
+/// caller-side dup (`mark_binder_dups` CallClosure arm, reclaim.rs) is SPURIOUS: applying the closure only
+/// BORROWS its env cell (the lifted body reads captures via `Core::Captured` arr-get and never self-drops —
+/// SITE-A's invariant), so the dup'd env temp is DEAD after the borrowed apply. v-core-opt's SITE-A env-cell
+/// reclaim (emit.rs `CallClosure`) drops that dead dup PER APPLICATION — balancing the per-iteration dups —
+/// while the loop-exit epilogue drop (`looped_owned_param_drops`, which ALREADY reclaims this same invariant
+/// borrow-clean param exactly once) reclaims the entry-owned ref. Net: dup/drop balanced → the 11:1403 shape
+/// `times f n x = (if (< n 1) x (times f (- n 1) (f x)))` leak (leaks 1: one un-dropped env cell) clears.
+/// DEFAULT-DENY (leak-over-UAF): a binder that is not PROVABLY invariant + borrow-clean is ABSENT from the set
+/// → its dup stays un-dropped = the EXISTING leak, never an under-retain UAF. Excludes the 09-functions:0411
+/// shape (a genuine SECOND CONSUME of the closure operand ⟹ `param_only_borrowed_or_backedge` denies ⟹ absent
+/// ⟹ the dup is kept and feeds the real consume — no under-retain). SINGLE self-loop member only (the witnessed
+/// combinator shape); a mutual dispatch group is an unwitnessed case → default-deny. Computed from
+/// `body`/`params`/`self_def` alone (like `looped_owned_param_drops`), so the emit can thread the set down.
+pub fn closure_env_invariant_borrow_clean_binders(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+) -> HashSet<StructId> {
+    let mut out: HashSet<StructId> = HashSet::new();
+    let Some(self_d) = self_def else {
+        return out;
+    };
+    // Re-derive the param slot assignment EXACTLY as `select_function_of`/`looped_owned_param_drops` do
+    // (dense `0..n`, Unit elided) so the invariance/borrow-clean queries see the emit's slots.
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return out; // a param with no machine rep → this def won't select.
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    if param_slots.is_empty() {
+        return out;
+    }
+    // SINGLE-member self-loop only (the witnessed `times` combinator). A mutual dispatch group shares one
+    // param-slot set across members and is not the witnessed shape → default-deny (leak, never a UAF).
+    let loop_members = mutual_loop_group(db, self_d);
+    if loop_members.len() != 1 {
+        return out;
+    }
+    // Params identity-passed on EVERY back-edge (invariant): a varying closure param's slot is replaced each
+    // iteration, so its per-application dup is NOT the invariant-reclaim shape → default-deny.
+    let mut invariant: HashSet<StructId> = params.iter().map(|(b, _)| *b).collect();
+    invalidate_varying_params(
+        db,
+        body,
+        &param_slots,
+        &slot_of,
+        &loop_members,
+        self_d,
+        &mut invariant,
+        params,
+    );
+    for (binder, ty) in params.iter() {
+        // Fn/closure-typed only — SITE-A is the `CallClosure` env-cell reclaim; a non-closure param is not
+        // applicable (and would not reach the SITE-A dup at issue).
+        if !matches!(ty.strip_nominal(), Ty::Fn(_, _)) {
+            continue;
+        }
+        if !invariant.contains(binder) {
+            continue; // varying closure param → default-deny.
+        }
+        // Whole-body borrow-clean: every non-back-edge occurrence is a borrow (incl. the CallClosure apply,
+        // which borrows the env cell). This is the SAME predicate whose truth put this invariant param into
+        // `looped_owned_param_drops` (the loop-exit drop that already reclaims the entry-owned ref once), so a
+        // per-application SITE-A drop of the SPURIOUS dup is the only missing half.
+        if param_only_borrowed_or_backedge(db, body, *binder, &loop_members, &param_slots, &slot_of)
+        {
+            out.insert(*binder);
+        }
+    }
+    out
+}
+
 /// Whether a direct call to `callee` CONSUMES (moves out) the arg at `param_index`. FALSE ⟹ the callee only
 /// BORROWS it — reads it in place, identity-threads it on its own back-edge, reclaims a caller-transferred ref
 /// at its own loop exit. Drives the borrowing-Call view reclaim (#9218-followup): (iii) the
