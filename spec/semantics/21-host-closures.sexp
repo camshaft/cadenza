@@ -7954,7 +7954,7 @@
   (call-method len)
   (then)
   (output (: (tuple 3 3) (Tuple UInt32 UInt32)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Bytes value exposes a repeatable is-empty member (call-method)"
@@ -7973,7 +7973,7 @@
       (export main)))
   (call-method is-empty)
   (output (: false Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)"
@@ -7992,7 +7992,7 @@
       (export main)))
   (call-method to-bytes)
   (output #list(229 142 38))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Bytes value's encode member still renders after other member calls (call-method)"
@@ -8011,7 +8011,7 @@
       (export main)))
   (call-method encode)
   (output (: b"\xe5\x8e&" Bytes))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; VM-2 — the value-resource's OTHER emitted members: `is-empty : borrow<t> -> bool` and
 ; `to-bytes : borrow<t> -> list<u8>` (besides `len`/`encode`, backend/wasm/mod.rs). Same `(call-method
@@ -8034,7 +8034,7 @@
       (export main)))
   (call-method is-empty)
   (output (: false Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Bytes value's to-bytes member crosses (call-method, raw bytes result)"
@@ -8054,7 +8054,7 @@
       (export main)))
   (call-method to-bytes)
   (output #list(229 142 38))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 566: the host-closure × immortal-era campaign opens. hcp1-3 = the green capture
 ; cells with truthful census (whole-tuple return; immortal-trie + scalar captures; runtime-list
