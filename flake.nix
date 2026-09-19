@@ -3117,8 +3117,15 @@
         # is not in their snapshot → those bins CACHE-HIT → so does an exec keyed on them. A shared
         # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
         # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
-        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false, extraArgs ? "" }:
-          craneLib.buildPackage {
+        # cargoArtifacts + cargoProfile params (v-nix, profile.ci compiler-under-ci — operator greenlit
+        # ~2x cadence-CI cost): a ci variant passes cargoArtifacts=cargoArtifactsCi + cargoProfile="ci" so the
+        # phase-bin builds under [profile.ci] (assertions + overflow-checks) drawing the ci deps layer (NOT the
+        # release layer — else crane restores release target/ + cold-recompiles wasmtime under target/ci/, the
+        # 'stop recompiling wasmtime' regression v-corpus-harness flagged). DEFAULTS preserve the exact release
+        # behavior (cargoArtifactsRelease + NO CARGO_PROFILE via optionalAttrs) so every existing caller's drv is
+        # BYTE-IDENTICAL — verified below (release cdzCompile drvPath unchanged).
+        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false, extraArgs ? "", cargoArtifacts ? cargoArtifactsRelease, cargoProfile ? null }:
+          craneLib.buildPackage ({
             inherit pname;
             version = "0.0.0";
             src = pkgs.lib.fileset.toSource {
@@ -3138,9 +3145,9 @@
             # corpus/guide exec (cdz-run feeds them all). crane restores the release deps target/ (matching
             # profile — cargoArtifactsRelease is CARGO_PROFILE=release), then builds only first-party. Mirrors
             # `seedCompiler`'s crane shape (scoped src + stubNonClosure + seedCargoVendor + hash inject).
-            cargoArtifacts = cargoArtifactsRelease;
+            inherit cargoArtifacts;
             cargoVendorDir = seedCargoVendor;
-            # preBuild (crane's hook — runs AFTER crane restores cargoArtifactsRelease' target/, before build).
+            # preBuild (crane's hook — runs AFTER crane restores cargoArtifacts' target/, before build).
             preBuild = ''
               ${pkgs.lib.optionalString injectRuntimeHash ''
                 # Same nix-built-hash injection as `seedCompiler`: this compiler stamps the runtime/nfc content
@@ -3164,7 +3171,7 @@
             # `cargo build -p <crate> --bin <bin>`). Build only — no tests (the gate/CI run those).
             cargoExtraArgs = "-p ${crate} --bin ${bin} ${extraArgs}";
             doCheck = false;
-          };
+          } // pkgs.lib.optionalAttrs (cargoProfile != null) { CARGO_PROFILE = cargoProfile; });
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
         # cdz-run deps wasmtime/cadenza-syntax/cdz-contract/cdz-rt, NO rcdzc, so COMPILER-FREE by construction).
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
@@ -3173,6 +3180,17 @@
         # rcdzc-cli's closure = rcdzc's closure ∪ {rcdzc-cli} (clap/tracing-subscriber are external, not
         # first-party), so the compiler-only closure is unchanged apart from the thin clap leaf.
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc-cli"; bin = "cdz-compile"; closure = crateClosure "rcdzc-cli"; injectRuntimeHash = true; };
+        # cdzCompileCi — the CI-profile compiler (v-nix, profile.ci compiler-under-ci; operator greenlit the
+        # ~2x cadence-CI cost). SAME cdz-compile bin built under [profile.ci] (debug-assertions + overflow-checks)
+        # so the CADENCE checks (full corpus-gate-coarse in nightly + cad-tests) surface compiler integer-overflow
+        # / debug_assert! failures that a plain release build silently passes. Draws cargoArtifactsCi (ci deps
+        # layer) so it does NOT cold-recompile wasmtime. FROZEN-HASH SAFE: injectRuntimeHash stamps the SAME
+        # release runtime/nfc hashes (shared runtimeHash derivations), so programs it compiles still target the
+        # release runtime, and it EMITS byte-identical wasm to release cdz-compile (assertions/overflow only PANIC
+        # on a bug — they don't change correct output; verified by an emit-diff on a sample + v-corpus-harness's
+        # 0-red full-corpus run). The per-MR localGate corpusGateCoarseSubset stays on the RELEASE cdzCompile
+        # (fast local); only the cadence checks draw this.
+        cdzCompileCi = mkPhaseBin { pname = "cdz-compile-ci"; crate = "rcdzc-cli"; bin = "cdz-compile"; closure = crateClosure "rcdzc-cli"; injectRuntimeHash = true; cargoArtifacts = cargoArtifactsCi; cargoProfile = "ci"; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
         # cdzRunExec — CRANELIFT-FREE corpus executor (seq-250/271 AOT split, #5893/#5910/#5922). Drops the
         # default `cranelift` feature → deserialize-only (Component::deserialize of precompiled .cwasm), no JIT.
@@ -5109,12 +5127,18 @@
         # canonical_output_value on both paths). NO CDZ_VALUE_DOC (the wasm baseline is the bare-render coarse
         # harvest). Swap into localGate is HELD until the bare-(tuple)→#tuple corpus nativization settles (else
         # it gates against a baseline about to change on ~127 cases); the derivation itself is baseline-agnostic.
-        mkCorpusGateFileCoarse = { name, file }:
+        # `compiler ? cdzCompile` (v-nix, profile.ci): the CADENCE full corpusGateCoarse passes cdzCompileCi so
+        # the whole-corpus nightly gate compiles under [profile.ci] (assertions + overflow-checks → surfaces
+        # compiler integer-overflow / debug_assert! bugs the plain-release build silently passes). DEFAULT stays
+        # cdzCompile (release), so the per-MR localGate corpusGateCoarseSubset + the exposed per-file
+        # corpus-gate-coarse-<stem> checks are BYTE-IDENTICAL (fast local untouched). mkCorpusShred is
+        # compiler-free (parser closure), so only the compile+grade step changes with the compiler.
+        mkCorpusGateFileCoarse = { name, file, compiler ? cdzCompile }:
           let shred = mkCorpusShred { inherit name file; };
           in
           pkgs.runCommand "corpus-gate-coarse-${name}"
             {
-              nativeBuildInputs = [ cdzCompile cdzRun ];
+              nativeBuildInputs = [ compiler cdzRun ];
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
@@ -5181,13 +5205,15 @@
         # case-set + #7329 single-sourced canonical_output_value grader, PLUS the diagnostics wire (--diagnostics)
         # that fixes gateCheck's warning-capture blind spot → strictly-better coverage. Committed .gate-baseline
         # == the #7692 coarse harvest by construction, so this is green on a clean main.
+        # FULL corpus gate = CADENCE (nightly), so it runs under the ci COMPILER (compiler = cdzCompileCi) —
+        # operator-greenlit ~2x cost paid at cadence, per-MR localGate subset stays release (v-nix profile.ci).
         corpusGateCoarse = pkgs.runCommand "corpus-gate-coarse" { } ''
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
               (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
-                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; compiler = cdzCompileCi; }} >> "$out"'')
               corpusFileNames}
-          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline (no regression)" >> "$out"
+          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline under [profile.ci] compiler (no regression)" >> "$out"
         '';
 
         # BOUNDED-SUBSET COARSE WASM GATE (v-nix — FOLD B, the localGate gateCheck swap, atomic with v-xtask's
@@ -7618,6 +7644,10 @@
         # ci-profile dep-cache (profile.ci work) — exposed so a cache-warm workflow can seed it + opt-sweep PULLs
         # it instead of a cold ci-dep recompile (mirrors packages.cargo-artifacts-release).
         packages.cargo-artifacts-ci = cargoArtifactsCi;
+        # the release + ci compiler phase-bins, exposed for warming + the emit-determinism proof (a ci-profile
+        # compiler must emit byte-identical wasm to the release one — assertions only panic on a bug).
+        packages.cdz-compile = cdzCompile;
+        packages.cdz-compile-ci = cdzCompileCi;
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
         # B3 (v-reducer-targets): the rcdzc reducer-world guest component + its CAS hash (the program-hash
