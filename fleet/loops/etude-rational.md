@@ -41,6 +41,15 @@ cadenza's copy-don't-depend rule). Generate operand sequences, run the same ops 
 `0/1`). Make it ONE growing harness (a shared op-driver + generators, bolero property tests), not N
 one-offs; if it can't express a case, improve the harness.
 
+## SHARED WASM-BENCH RUNNER — reuse it, do NOT re-install or duplicate (2026-09-19)
+Wasm benches run on the `wasm32-wasip1` target via the SHARED runner already at WORKSPACE-ROOT
+`etude/.cargo/config.toml` (`[target.wasm32-wasip1] runner = "wasmtime run --"`), and wasmtime is installed
+host-globally (`~/.wasmtime/bin`). So `cargo test/bench --target wasm32-wasip1` works with ZERO extra setup
+— do NOT re-install wasmtime, and do NOT add a crate-local `.cargo/config.toml` runner (it shadows the
+shared one). Need a runner change? Edit the workspace-root config + `note` the cohort. 🪤 criterion +
+jemalloc do NOT build on wasm — gate wasm-incompatible dev-deps behind
+`[target.'cfg(not(target_family="wasm"))'.dev-dependencies]`.
+
 ## The work — in your ETUDE worktree, ONE landable slice per tick
 1. **Build (slice 1).** Create `crates/etude-rational` with `Rat { num: Big, den: Big }` + canonical-form
    normalization, wiring the `num-rational` differential oracle FIRST. Core surface: constructors
