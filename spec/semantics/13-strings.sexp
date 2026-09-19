@@ -544,20 +544,21 @@
   (live-objects 0))
 
 (case
-  "a String.at self-tail-loop over a RUNTIME-DEEP rope param leaves a reclaim residual (the deep-rope face)"
+  "a String.at self-tail-loop over a RUNTIME-DEEP rope param is fully reclaimed (StrAt scrutinee-alias drop)"
   (doc
-    "The DEEP-ROPE complement of the concat-rope case above (which reclaims to 0). Where that threads a
-           SHALLOW `(String.concat \"ab\" \"cd\")`, this builds a RUNTIME-DEEP rope — `rep` concatenates `\"ab\"`
-           `(+ r 2)` times (runtime count → the rope depth cannot pre-fold to a flat leaf) — then runs the SAME
+    "The DEEP-ROPE complement of the concat-rope case above. `rep` concatenates `\"ab\"` `(+ r 2)` times
+           (runtime count → the rope depth cannot pre-fold to a flat leaf), then runs the
            `(match (String.at s i) ((Some _c) (go s (+ i 1) n (+ acc 1))))` self-tail loop over it (walk 4
-           scalars → 4). v-memory-safety isolated exactly this shape (rep-built deep rope + StrAt loop, literal
-           bound) and measured a 1-cell residual — and confirmed `rep`-rope build ALONE (no String.at) censuses
-           0, so it is specifically the DEEP-rope × StrAt-self-tail-loop interaction that isn't reclaimed
-           (distinct from the shallow concat-rope, which is). The owner-requested coarse-gate witness for the
-           deep-rope shape (gate-proven positive residual — I pinned (live-objects 0) first and the gate reported
-           the count; see the trailing comment). VALUE stable at 4 (no miscompile), UAF-safe → leak-over-UAF
-           sound, TIGHTEN CANDIDATE, tracked by v-memory-safety (possible StrAt-over-deep-rope reclaim gap or a
-           runtime rope-reclaim thing).")
+           scalars → 4). This shape previously leaked 1 cell (deep-rope × StrAt-self-tail-loop): the StrAt
+           lowering dups the scrutinee string `s` into its scratch `str_slot` for the borrow-reads, but the
+           enclosing MatchSum recycles that slot for its Option scrutinee, orphaning the per-iteration alias dup.
+           FIXED (v-memory-safety, #9271-followup): the tail-MatchSum arm PRE-marks a self-tail-loop StrAt whose
+           string operand is a borrow-and-back-edge-threaded Param/LocalRef (predicate co-derived with
+           v-core-opt: `param_only_borrowed_or_backedge` && `arms_tail_call`), so the StrAt lowering drops
+           `str_slot` after the extraction (drop⟺dup balanced; UAF-safe by the `bytes-compact` fence that
+           flattens the Some payload to an independent leaf). Now censuses 0 at O0-O3 for all args. (The scalar-
+           len-bounded 501 balanced-paren scan is the same family but its tail-calls nest inside arm `if`s, not
+           yet matched — tracked separately.)")
   (input
     (do
       (def
@@ -572,11 +573,10 @@
   (output (: 4 Int64))
   (call main (: 2 Int64))
   (output (: 4 Int64))
-  ; GATE-PROVEN (breaker, this gate): pinned (live-objects 0) first → gate red'd "expected 0, got 1" on call 0
-  ; for this runtime-deep rep-rope + StrAt-self-tail-loop shape (the shallow concat-rope twin above reclaims to
-  ; 0). Confirms v-memory-safety's DBG+RCT 1-cell residual for the DEEP-rope shape. UAF-safe (value holds 4),
-  ; leak-over-UAF sound, TIGHTEN CANDIDATE tracked by v-memory-safety (deep-rope×StrAt reclaim gap / runtime rope).
-  (live-objects known-leak))
+  ; FIXED (v-memory-safety, #9271-followup): the StrAt self-tail-loop scrutinee-alias drop (tail-MatchSum
+  ; pre-mark + emit.rs StrAt-gate) reclaims the orphaned per-iteration `s` dup. Census 0 at O0-O3 for both args
+  ; (DBG+RCT), guarded-all GREEN. Was known-leak (deep-rope×StrAt residual, 1 cell). Value stable 4.
+  (live-objects 0))
 
 (case
   "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
