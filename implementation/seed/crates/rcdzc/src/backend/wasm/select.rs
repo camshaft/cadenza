@@ -4902,13 +4902,10 @@ fn collect_allowlisted_builder_children_expr(
 /// allowlist ([`is_allowlisted_builder`]). Fires iff the scrutinee is a fallible extraction AND there is
 /// at least one CONSUMING scrutinee-payload site AND every such site (the set
 /// `collect_shell_reclaim_child_dups` will `dup`) is a DIRECT child of an allowlisted builder — so each
-/// `dup` is balanced 1:1 by the builder's single-owned-ref move plus the shell deep-drop. A borrow-only
-/// arm (no consuming site) is left to Stage A's escape-clean branch; a payload consumed by an opaque
-/// `Call`/`CallClosure` (including a reduced `resume`-thread) is not a builder child, so the subset check
-/// fails and the shell declines (leak beats UAF). Reuse-clean is not required: the extraction holds the
-/// payload at rc >= 2, so any in-place FBIP reuse path-copies (v-runtime's Stage-A argument) and the
-/// allowlisted builder likewise path-copies its rc >= 2 input. Any imprecision in either set only
-/// OVER-DECLINES (a site missing from the builder set fails the subset check) — never over-reclaims.
+/// `dup` is balanced 1:1 by the builder's single-owned-ref move + the shell deep-drop. Borrow-only arms go
+/// to Stage A; a payload consumed by an opaque `Call`/`CallClosure` (or reduced `resume`-thread) is not a
+/// builder child → subset fails → shell declines (leak>UAF). Reuse-clean unneeded (extraction holds rc>=2 →
+/// FBIP path-copies). Imprecision only OVER-DECLINES, never over-reclaims.
 fn sum_cont_extraction_consume_allowlisted(
     db: &mut Db,
     root: &crate::core::SumCont,
@@ -4928,21 +4925,18 @@ fn sum_cont_extraction_consume_allowlisted(
     consuming.iter().all(|s| builder_children.contains(s))
 }
 
-/// Whether `id` is a FRESHLY-PRODUCED owned value minted at this site — so it cannot be a pre-existing binding
-/// an effect handler threaded as state that a `resume` continuation re-reads (the resume-escape the `Core::Call`
-/// gate originally guarded; the "inlined once, never resume-threaded" argument holds verbatim for every fresh
-/// producer). Fresh set: `Core::Call` (a fresh function return, the original shape); `Core::SumNew` iff each
-/// HEAP payload is itself fresh (recurse; scalar/unit OK) — this rejects `(Some <shared/borrowed local>)` whose
-/// shell-drop cascade would free a still-held value (the `neg_shared` UAF control: `base` shared into
-/// `(Some base)` AND reused), structural not reliant on the incidental match-of-if fold; `Core::If` iff BOTH
-/// branches are (the INLINED `mk`=`(if ..(Some(rep..))(None))` producer the bare-`Core::Call` gate MISSED,
-/// 05-compound:2163/2214); `Core::Let` iff its body is. `Param`/`LocalRef`/`MatchSum`/`CallClosure` excluded
-/// (may carry a threaded/shared binding → not provably resume-safe nor fresh-payload; leak>UAF). Bounded walk.
+/// Whether `id` is FRESHLY PRODUCED here — so it can't be a pre-existing binding a `resume` continuation
+/// re-reads (the resume-escape the `Core::Call` gate guarded; "inlined once, never resume-threaded" holds for
+/// any fresh producer). Fresh: `Core::Call`; `Core::SumNew` iff each HEAP payload is itself fresh (recurse;
+/// scalar/unit OK) — rejects `(Some <shared/borrowed local>)` whose shell-drop would free a still-held value
+/// (the `neg_shared` UAF control), structural not fold-reliant; `Core::If` iff BOTH branches are (the INLINED
+/// `mk` producer the bare-`Call` gate missed, 05:2163/2214); `Core::Let` iff body is. Others excluded (may
+/// carry a threaded/shared binding; leak>UAF). Bounded walk.
 fn is_fresh_owned_sum_producer(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::Call { .. } => true,
-        // Fresh shell reclaim-safe only if each heap payload is itself fresh (scalar/unit OK); a bare
-        // shared/borrowed `LocalRef`/`Param` payload would be freed out from under the surrounding scope.
+        // Reclaim-safe only if each heap payload is itself fresh (scalar/unit OK); a bare shared/borrowed
+        // `LocalRef`/`Param` payload would be freed out from under the surrounding scope.
         Core::SumNew { payloads, .. } => payloads
             .iter()
             .all(|&p| !is_heap_type(&type_of(db, p)) || is_fresh_owned_sum_producer(db, p)),
@@ -4954,15 +4948,12 @@ fn is_fresh_owned_sum_producer(db: &mut Db, id: StructId) -> bool {
     }
 }
 
-/// The COMPUTED-`Some` companion of [`sum_cont_extraction_consume_allowlisted`] (05:#9134). An extraction-
-/// `Some` dup-RETAINS its payload (rc>=2); a COMPUTED owned `Some` (fresh `Core::Call`, OR the INLINED
-/// `Core::If` of two `SumNew`s) moves it in at rc1, but `owned_compound_boxed` DUP's each consuming payload
-/// site (`collect_shell_reclaim_child_dups`, keyed on the scrutinee `Owned` NOT `Core::Call`) → rc>=2 through
-/// the arm, so the 1:1 balance holds (each allowlisted-builder-child consume balanced by that dup + the shell
-/// deep-drop, FBIP reuse suppressed). GATED [`is_fresh_owned_sum_producer`] (resume-safety) + DEAD-AFTER-
-/// DESTRUCTURE + `!view_escapes_as_arm_result`. Since the dup side keys on `Owned` alone, the bare-`Core::Call`
-/// drop gate left an ORPHANED dup for the inlined-`If` scrutinee (leak); widening to the fresh-producer set
-/// COMPLETES that lockstep — no unbalanced drop added. Imprecision only OVER-DECLINES (leak>UAF).
+/// COMPUTED-`Some` companion of [`sum_cont_extraction_consume_allowlisted`] (05:#9134). A computed owned `Some`
+/// (fresh `Core::Call`, or the INLINED `Core::If` of two `SumNew`s) moves its payload in at rc1, but
+/// `owned_compound_boxed` dups each consuming site (keyed on scrutinee `Owned`, not `Core::Call`) → rc>=2, so
+/// the 1:1 balance holds. GATED [`is_fresh_owned_sum_producer`] + DEAD-AFTER-DESTRUCTURE +
+/// `!view_escapes_as_arm_result`. Widening the bare-`Call` drop gate to the fresh-producer set COMPLETES the
+/// lockstep the dup side already ran (Owned-keyed) — no unbalanced drop added. Imprecision only OVER-DECLINES.
 fn sum_cont_owned_call_consume_allowlisted(
     db: &mut Db,
     root: &crate::core::SumCont,
@@ -4974,9 +4965,8 @@ fn sum_cont_owned_call_consume_allowlisted(
     if !scrutinee_dead_after_destructure(db, scrutinee, root) {
         return false;
     }
-    // ESCAPE AXIS (v-memory-safety defense-in-depth): the payload must NOT survive as (part of) any arm's
-    // terminal RESULT — a consuming builder RESULT returned whole (e.g. the Map.insert result) would carry the
-    // payload out and the deep-drop cascade would race the escaped copy. Stricter-only (OVER-DECLINE, leak>UAF).
+    // ESCAPE AXIS (defense-in-depth): payload must not survive as an arm's terminal RESULT (a builder result
+    // returned whole would carry it out, racing the deep-drop cascade). Stricter-only (OVER-DECLINE).
     if view_escapes_as_arm_result(db, scrutinee, root) {
         return false;
     }
