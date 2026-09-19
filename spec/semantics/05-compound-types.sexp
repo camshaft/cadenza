@@ -4318,7 +4318,8 @@
   (call main (: 0 Int64))
   (output
     (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "a map churned up to 200 entries and back to its original 2 EQUALS the direct 2-entry build"
@@ -21846,7 +21847,8 @@
            Lookup Are Fallible, Not Trapping — the map clause). Here the key `1` maps to `10`.")
   (input (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 1)) (export main)))
   (output (: (Some 10) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "looking up an absent key yields None"
@@ -21856,7 +21858,8 @@
            Trapping): absence is data, not a trap. `2` is not a key of a map that holds only `1`.")
   (input (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 2)) (export main)))
   (output (: (None unit) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 ; A `Map.lookup` result MUST match its true variant regardless of how the map was constructed. A map built
 ; by a `(map …)` LITERAL with a RUN-TIME-computed key is mis-represented: `Map.lookup` on it renders the
@@ -21973,7 +21976,8 @@
               (Map.len m2)))))
       (export main)))
   (output (: (tuple 10 -1 2 1) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "the value-yielding insert reports the value it replaced"
@@ -21984,7 +21988,8 @@
            optional. Adding a NEW key would report `(None unit)`.")
   (input (do (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 1 99) 0)) (export main)))
   (output (: (Some 10) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "the value-yielding remove reports the value it dropped"
@@ -21995,7 +22000,8 @@
            the reported optional.")
   (input (do (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
   (output (: (Some 10) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "the value-yielding insert reports None when the key is new"
@@ -22007,7 +22013,8 @@
            form the runtime-key swap case reaches only through a match.")
   (input (do (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 0)) (export main)))
   (output (: (None unit) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "the value-yielding insert of a new key adds the entry"
@@ -22057,7 +22064,8 @@
            absent-dropped form as a constant, the companion of the `(Some 10)` present-key take.")
   (input (do (def (main) (. (Map.take (Map.insert Map.empty 1 10) 2) 0)) (export main)))
   (output (: (None unit) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "the value-yielding remove of an absent key leaves the map unchanged"
@@ -22338,7 +22346,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — map/set-KEY case, determinism-CLEARED by v-corpus-harness (opt-sweep x2 0-divergence + nix corpus-gate-coarse-05 GREEN) + v-core-opt full-rebuild; scalar/Option return, map+keys reclaim to 0. Not a deliberate key-ownership hold. Pin-flip only (no reclaim code — key-ownership CODE hold untouched).
+  (live-objects 0))
 
 (case
   "tuple keys differing only in the FLOAT component stay distinct and look up"
