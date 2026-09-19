@@ -117,6 +117,11 @@ pub enum MismatchKind {
     /// A backend emitted un-compilable source (`ArtifactError`) — a build-blocking miscompile,
     /// surfaced regardless of the other side's outcome (even if the other also trapped).
     Artifact,
+    /// The compiler produced DIFFERENT output for the SAME input across two compiles — a determinism
+    /// violation (`spec …#each-phase-is-a-deterministic-function-of-its-input`), e.g. a std-`HashMap`
+    /// iteration order (its per-map random seed) leaking into codegen. Breaks content-addressing / caching
+    /// / reproducible builds. Surfaced by [`compile_determinism`], not the two-backend `compare`.
+    Nondeterminism,
 }
 
 impl MismatchKind {
@@ -125,6 +130,7 @@ impl MismatchKind {
             MismatchKind::Value => "value",
             MismatchKind::Liveness => "liveness",
             MismatchKind::Artifact => "artifact",
+            MismatchKind::Nondeterminism => "nondeterminism",
         }
     }
 }
@@ -1182,6 +1188,96 @@ pub fn compare_opt_invariance(lo: &Side, hi: &Side, lo_label: &str, hi_label: &s
     }
 }
 
+/// One compile outcome, reduced to what the DETERMINISM oracle compares. Deliberately drops the crash
+/// SITE (a captured backtrace carries nondeterministic addresses) — a crash is the crash oracle's domain,
+/// so determinism treats any crash as not-comparable rather than false-flagging on backtrace variance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DetOutcome {
+    /// Compiled to a component — the exact bytes (compared for equality).
+    Compiled(Vec<u8>),
+    /// Declined (errors-as-data) with this code (`None` = uncoded). A decline is deterministic too.
+    Declined(Option<String>),
+    /// The compile panicked — not compared (the crash oracle owns crashes).
+    Crashed,
+}
+
+fn det_outcome(bytes: &[u8]) -> DetOutcome {
+    match crate::oracle::compile_component_catching(bytes) {
+        Ok(component) => DetOutcome::Compiled(component),
+        Err(crate::oracle::ComponentFail::Declined(code)) => DetOutcome::Declined(code),
+        Err(crate::oracle::ComponentFail::Crashed(_)) => DetOutcome::Crashed,
+    }
+}
+
+/// The DETERMINISM oracle: compile ONE program TWICE and require byte-identical output. The compiler is
+/// spec-mandated to be a deterministic function of its input
+/// (`spec/capabilities/…#each-phase-…-deterministic-function-of-its-input`), and the whole content-addressed
+/// pipeline (binary-AST exchange, the CAS runtime store, caching) depends on it — so a byte divergence
+/// between two compiles of the same source is a real bug (classically a std-`HashMap`'s per-instance random
+/// iteration seed leaking into codegen: two `HashMap`s in one process get different seeds, so an emit path
+/// that iterates one into output differs run-to-run). IN-PROCESS + no store/run — just two compiles. A
+/// divergence is reported unshrunk (nondeterminism can be intermittent, so a shrink predicate that re-runs
+/// the compile is unreliable — re-run to confirm instead).
+pub fn compile_determinism(source: &str) -> Diff {
+    let arenas = match cadenza_syntax::sexpr::read(source) {
+        Ok(a) => a,
+        // A parse failure is generator-quality, not a compiler finding.
+        Err(_) => return Diff::Agree,
+    };
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    // Two independent compiles under the hang-watchdog (a non-terminating compile is captured + aborted by
+    // the watchdog, not returned). A compiler panic is caught inside `det_outcome` and mapped to
+    // `Crashed` — not-comparable here, since the crash oracle owns crashes (see `compare_determinism`).
+    let a = crate::compile_guard::guard(source, || det_outcome(&bytes));
+    let b = crate::compile_guard::guard(source, || det_outcome(&bytes));
+    compare_determinism(&a, &b)
+}
+
+/// Compare two compile outcomes of the SAME source for DETERMINISM. Pure — unit-testable without a compiler.
+/// Two `Compiled` must be byte-identical; two `Declined` must carry the same code; a `Compiled`-vs-`Declined`
+/// split is itself nondeterminism (the compiler cannot decide if the program compiles). Any crash → not
+/// comparable (the crash oracle's domain; backtraces vary nondeterministically).
+fn compare_determinism(a: &DetOutcome, b: &DetOutcome) -> Diff {
+    match (a, b) {
+        (DetOutcome::Crashed, _) | (_, DetOutcome::Crashed) => Diff::Agree,
+        (DetOutcome::Compiled(x), DetOutcome::Compiled(y)) => {
+            if x == y {
+                Diff::Agree
+            } else {
+                let diff_at = x.iter().zip(y).position(|(p, q)| p != q);
+                Diff::Mismatch {
+                    kind: MismatchKind::Nondeterminism,
+                    wasm: format!("compile#1 len={}", x.len()),
+                    rust: format!(
+                        "compile#2 len={} (first byte diff at offset {})",
+                        y.len(),
+                        diff_at
+                            .map(|o| o.to_string())
+                            .unwrap_or_else(|| "len".to_string())
+                    ),
+                }
+            }
+        }
+        (DetOutcome::Declined(x), DetOutcome::Declined(y)) => {
+            if x == y {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Nondeterminism,
+                    wasm: format!("compile#1 declined {x:?}"),
+                    rust: format!("compile#2 declined {y:?}"),
+                }
+            }
+        }
+        (DetOutcome::Compiled(x), DetOutcome::Declined(c))
+        | (DetOutcome::Declined(c), DetOutcome::Compiled(x)) => Diff::Mismatch {
+            kind: MismatchKind::Nondeterminism,
+            wasm: format!("one compile produced a component (len={})", x.len()),
+            rust: format!("the other DECLINED {c:?} — flaky compile-vs-decline"),
+        },
+    }
+}
+
 /// Greedily minimize a program that triggers a differential MISMATCH, preserving that the shrunk
 /// program STILL mismatches (of the SAME [`MismatchKind`]). Mirrors `finding::shrink*` but its
 /// predicate re-runs the full two-backend `differential` (each accepted step re-derives spans on the
@@ -2207,6 +2303,89 @@ mod tests {
         assert_eq!(compare_opt_invariance(&bad, &bad, "O0", "O3"), Diff::Agree);
         assert_eq!(
             compare_opt_invariance(&bad, &Side::Declined("x".into()), "O0", "O3"),
+            Diff::Agree
+        );
+    }
+
+    // ── determinism pairing rules (pure `compare_determinism`) ───────────────────────────────────
+
+    #[test]
+    fn determinism_identical_output_agrees() {
+        // Two compiles of the same source produced byte-identical output — deterministic, as mandated.
+        assert_eq!(
+            compare_determinism(
+                &DetOutcome::Compiled(vec![0, 1, 2, 3]),
+                &DetOutcome::Compiled(vec![0, 1, 2, 3])
+            ),
+            Diff::Agree
+        );
+        // Same decline code both times → deterministic.
+        assert_eq!(
+            compare_determinism(
+                &DetOutcome::Declined(Some("CDZ0203".into())),
+                &DetOutcome::Declined(Some("CDZ0203".into()))
+            ),
+            Diff::Agree
+        );
+    }
+
+    #[test]
+    fn determinism_differing_bytes_are_a_nondeterminism_finding() {
+        // Two compiles of the SAME source produced DIFFERENT bytes — the determinism violation (e.g. a
+        // std-HashMap iteration-order leak into codegen), which breaks content-addressing.
+        match compare_determinism(
+            &DetOutcome::Compiled(vec![0, 1, 2, 3]),
+            &DetOutcome::Compiled(vec![0, 9, 2, 3]),
+        ) {
+            Diff::Mismatch {
+                kind: MismatchKind::Nondeterminism,
+                rust,
+                ..
+            } => assert!(
+                rust.contains("offset 1"),
+                "should report the first diff offset: {rust}"
+            ),
+            other => panic!("expected a nondeterminism mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn determinism_flaky_compile_vs_decline_is_nondeterminism() {
+        // The compiler compiled the program once and DECLINED it the other time — it cannot decide if the
+        // program is well-formed: a serious nondeterminism bug.
+        assert!(matches!(
+            compare_determinism(
+                &DetOutcome::Compiled(vec![1, 2, 3]),
+                &DetOutcome::Declined(Some("CDZ0101".into()))
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Nondeterminism,
+                ..
+            }
+        ));
+        // A differing decline CODE across compiles is also nondeterminism.
+        assert!(matches!(
+            compare_determinism(
+                &DetOutcome::Declined(Some("CDZ0203".into())),
+                &DetOutcome::Declined(None)
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Nondeterminism,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn determinism_any_crash_is_not_comparable() {
+        // A crash is the crash oracle's domain (captured backtraces carry nondeterministic addresses), so
+        // determinism treats any crash as not-comparable rather than false-flagging on backtrace variance.
+        assert_eq!(
+            compare_determinism(&DetOutcome::Crashed, &DetOutcome::Compiled(vec![1])),
+            Diff::Agree
+        );
+        assert_eq!(
+            compare_determinism(&DetOutcome::Crashed, &DetOutcome::Crashed),
             Diff::Agree
         );
     }
