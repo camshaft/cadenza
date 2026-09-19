@@ -101,7 +101,7 @@
       (def (main) (match (tagged-template two (chunks "") (holes)) ((Ast.Int n) (+ 40N n)) (_ 0N)))
       (export main)))
   (output (: 42 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A DISTINCT fixpoint dimension: a tag function whose BODY is ITSELF a tagged template (not just a tag
 ; returning a plain Ast). `outer` expands to `(tagged-template inner …)`, which must ITSELF be expanded —
@@ -148,7 +148,7 @@
       (def (main) (match (tagged-template tri (chunks "x") (holes)) ((Ast.Int n) n) (_ 0N)))
       (export main)))
   (output (: 10 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The JSX precursor: a recursive tag that BUILDS A COMPOUND `Ast` (not just a scalar) — the shape a real
 ; recursive-descent parser tag has (recursively assembling child nodes into an `Ast.List`). `build-list`
@@ -207,7 +207,7 @@
       (def (main) (match (tagged-template scan (chunks "abbcbb") (holes)) ((Ast.Int n) n) (_ 0N)))
       (export main)))
   (output (: 4 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
@@ -292,7 +292,7 @@
           (_ 0N)))
       (export main)))
   (output (: 33 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a three-hole tag reads its holes in exact left-to-right order"
@@ -316,7 +316,7 @@
           (_ 0N)))
       (export main)))
   (output (: 312 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
 ; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
@@ -383,7 +383,7 @@
           (_ 0N)))
       (export main)))
   (output (: 46 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's
 ; The chunks/holes count invariant (`chunks.len() == holes.len() + 1`) is guaranteed by the READER on the
@@ -506,7 +506,7 @@
   (output (: 7 BigInt))
   (call main (: 9 Int64))
   (output (: 9 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime hole woven into a compound Ast is read back by a nested match"
@@ -532,7 +532,7 @@
       (export main)))
   (call main (: 4 Int64))
   (output (: 41 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around runtime holes"
@@ -584,7 +584,7 @@
   (output (: 3 BigInt))
   (call main (: 0 Int64) (: 2 Int64))
   (output (: 0 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tag function recurses over its HOLES list and folds their sum"
@@ -710,7 +710,7 @@
       (export main)))
   (call main (: 21 Int64))
   (output (: 42 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tag that SWAPS its two holes delivers each runtime subtree to the exchanged slot"
@@ -731,7 +731,7 @@
       (export main)))
   (call main (: 3 Int64) (: 7 Int64))
   (output (: 697 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- A tag resolving through a re-export chain. ---
 (case
