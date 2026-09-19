@@ -7311,7 +7311,7 @@
   (output (: 21 Int64))
   (call main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with

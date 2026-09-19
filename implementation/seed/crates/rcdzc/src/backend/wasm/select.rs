@@ -3159,9 +3159,21 @@ fn emit_tail(
             // (the extracted scalar `v` is COPIED into `acc + v`), so freeing the shell before the `br` is
             // safe — the same alias-safety the non-tail arm relies on.
             let looped_scalar_shell = arms_tail_call && scalar_shell_ok;
+            // PROJ-of-fresh-owned-aggregate local reclaim: a `(. <fresh-owned-aggregate> i)` scrutinee's
+            // extracted `Some` shell leaks because `Core::Proj` is not globally `Owned`
+            // (`matchsum_proj_owned_aggregate_reclaim_ok`). Non-looping only (the borrow-clean path has no
+            // back-edge threading); the post-match fall-through drop covers it (02:7314 fresh-tuple proj).
+            let proj_reclaim = matchsum_proj_owned_aggregate_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
             let reclaim_shell = view_reclaim
                 || looped_scalar_shell
-                || (!arms_tail_call && (scalar_shell_ok || param_reclaim));
+                || (!arms_tail_call && (scalar_shell_ok || param_reclaim || proj_reclaim));
             // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
