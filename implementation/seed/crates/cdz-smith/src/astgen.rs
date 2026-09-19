@@ -4704,6 +4704,67 @@ mod tests {
         }
     }
 
+    /// [`generate_large_value`] — the LargeValue generator behind `--large` (opt-invariance + wasm-vs-rust
+    /// differential) — must keep its two load-bearing invariants, or every `--large` sweep silently
+    /// degrades: (1) the builder count exceeds ONE 64 KiB linear-memory page (8 B × 8192 = 64 KiB), the
+    /// whole point being to stress the >64 KiB value-escape copy-out path where the #7793/#7800 OOBs lived
+    /// — a future edit lowering the `int_bounded(8500, …)` floor below 8192 would quietly stop reaching it;
+    /// (2) the program COMPILES cleanly (a tail-recursive builder + a param-less `main`). Pin BOTH across
+    /// varied entropy, and pin that BOTH main-body variants (return the list / `List.len` it) are reached.
+    #[test]
+    fn generate_large_value_exceeds_a_page_and_compiles() {
+        // Extract the literal build count `n` from the main body: the sole `(build <digits> (list))` call
+        // (the builder def uses `(build (- n 1) …)`, never a bare digit, so a digits-after-`(build ` match
+        // is unambiguous).
+        fn build_count(src: &str) -> u64 {
+            let after = src
+                .split("(build ")
+                .find(|seg| seg.starts_with(|ch: char| ch.is_ascii_digit()))
+                .expect("a `(build <n> (list))` call with a literal count");
+            after
+                .split(|ch: char| !ch.is_ascii_digit())
+                .next()
+                .and_then(|d| d.parse().ok())
+                .expect("a parseable build count")
+        }
+        let (mut saw_return, mut saw_consume) = (false, false);
+        for seed in 0u64..64 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(11);
+            let mut bytes = Vec::new();
+            // ≥17 bytes: the two `int_bounded(…)` calls consume 8 bytes EACH (16 total), so the
+            // `variant(2)` that picks the main-body shape needs a live byte past them or it always
+            // coerces to 0 (only the return variant) — 32 gives both variants real entropy.
+            for _ in 0..32 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_large_value(&bytes).source;
+            // (1) exceeds one 64 KiB page (8 B/Int64 × 8192).
+            let n = build_count(&src);
+            assert!(
+                n >= 8192,
+                "large-value builder count {n} must exceed one 64 KiB page (>= 8192 Int64 elements) so it \
+                 stresses the >64 KiB value-escape copy-out path: {src}"
+            );
+            // (2) compiles cleanly.
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "the large-value builder must COMPILE: {src}"
+            );
+            if src.contains("(def (main) (List.len (build ") {
+                saw_consume = true;
+            } else if src.contains("(def (main) (build ") {
+                saw_return = true;
+            }
+        }
+        assert!(
+            saw_return && saw_consume,
+            "both main-body variants must be reachable across seeds (return the list AND List.len it): \
+             saw_return={saw_return} saw_consume={saw_consume}"
+        );
+    }
+
     /// The generator REACHES the heap-param-entry shape (the #4961 regression-guard path) across varied
     /// entropy — so the coercing fuzzer actually exercises the exported-entry heap-param ABI lowering, not
     /// only param-less `main`.
