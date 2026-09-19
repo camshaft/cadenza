@@ -155,6 +155,27 @@ genuinely benefits from `Spans`; the ZST gives both at zero cost. Alt (c) from P
 only + an O(1) `resolve_at(cursor)` — is subsumed: it is exactly the `Spans` policy plus in-order
 resolution, so we keep it as the opt-down path rather than the default.)*
 
+### 2.3 Measured validation (etude-json prototype, etude PR #124)
+
+The core hypothesis — *O(1) chunk access beats the O(log₃₂ n) span descent by a wide margin on
+realistic token streams* — was falsifiably tested by the `etude-json` vertical, which prototyped the
+**single-leaf** case of this design (a `Token::bytes() -> Option<&[u8]>`: `Some` when the lexeme fits
+one leaf = the degenerate `Chunk`-or-nothing form of `Bytes<'a>`, `None` on straddle). Measured on the
+etude-json benchmark scoreboard (same criterion + jemalloc harness §7 will use):
+
+- Reading every token via the O(1) `bytes()` path is **4–6× faster** than the O(log₃₂ n) span descent,
+  and **restores faster-than-`serde_json`** (0.37–0.93×) on all 5 multi-token shapes — e.g. `array_ints`
+  1063→233 µs, `objects_1k` 1729→297 µs, `nested` 11.7→2.0 µs.
+- `big_string_100k` (a single ~100 KB lexeme straddling many leaves → `bytes()==None` → span fallback)
+  is unaffected by the single-leaf prototype — which is **exactly the case the `Split(..)` arm of the
+  full `Bytes<'a>` (§2.1) closes**, so the complete design is expected to beat even the prototype there
+  (a `Slice 4` bench will confirm Split closes big_string).
+
+etude-json confirmed the `Bytes<'a>` + `Capture` shape maps cleanly onto its `String`+`Number` spans
+with **no divergence** (one shared type), that the free `Chunk` capture from `Cursor::chunk_tail` is how
+it already works, and that alt (c) correctly folds into the `Spans` policy — and offered to **co-own**
+the `etude-span` types. So the design is empirically backed before build, not just argued.
+
 ## 3. The tokenizer shape
 
 ### 3.1 Tokens
@@ -350,9 +371,13 @@ first-class** (target: **0** — tokens are chunk-views/spans, like etude-json) 
 ## 10. Coordination
 
 - **etude-json** owns landing `etude-span`. This design's Slice 0 (`Bytes`/policy) is the ADDITION that
-  resolves etude-json's PR-#101 open question; both tokenizers adopt one shared value-ref. A `note` to
-  etude-json accompanies this doc with the agreed `Bytes<'a>` + `Capture` API so it lands the shared
-  type once.
+  resolves etude-json's PR-#101 open question; both tokenizers adopt one shared value-ref.
+  **AGREED (etude-json reply, 2026-09-19):** the `Bytes<'a>` + `Capture` shape maps cleanly onto
+  etude-json's `String`+`Number` spans with no divergence — ONE shared type — and etude-json will
+  **co-own** the `etude-span` types. Sequencing: etude-json's #101 `Span`+`Cursor` extraction lands
+  first → then `Bytes<'a>`+`Capture` in `etude-span` (Slice 0, co-owned) → etude-json migrates its
+  prototype (etude PR #124, the single-leaf `bytes()`) to the full `Chunk`/`Split` enum + wires the
+  `Spans` policy. §2.3 records the measured validation from that prototype.
 - **etude-byterope-compat / fixer-byterope** own `etude-bytevec`; this design only *consumes* its public
   `chunks()`/`slice()`/`reader()` — no changes requested. (If the split-value `Chunks`-clone bookmark
   wants a cheaper clone than the current walk-stack, that is a possible future `note` to them, not a
