@@ -8383,16 +8383,6 @@ fn collect_module_used_ops(
         if select::def_rebinds_fresh_accumulator(db, body, &params, Some(def)) {
             used.insert("drop");
         }
-        // 11:1403 SITE-A closure-env reclaim: a single self-loop threading an INVARIANT-borrow-clean Fn loop-
-        // param through a borrowing `call_indirect` gets a per-application env-cell `drop` (emit.rs CallClosure
-        // dup'd-invariant-env). Import `drop` iff the discriminator set is non-empty — precise import/emit
-        // agreement (in practice `def_drops_owned_param` above already imports it, since the same param is an
-        // epilogue-dropped invariant heap loop-param, but declare it explicitly so the link is robust).
-        if !select::closure_env_invariant_borrow_clean_binders(db, body, &params, Some(def))
-            .is_empty()
-        {
-            used.insert("drop");
-        }
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         if layout.lifted_reached.get(code).copied().unwrap_or(true) {

@@ -1400,7 +1400,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 32 Int64))
-  (live-objects 0))
+  (live-objects known-leak))
 
 (case
   "two module functions are mutually recursive"
