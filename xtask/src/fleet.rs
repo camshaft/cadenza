@@ -11447,6 +11447,17 @@ fn sync(fleet: &Fleet, force: bool) {
 
     // Refuse on a dirty tree — a reset --hard would silently discard uncommitted work. (The tick
     // contract expects the agent to commit before syncing; guard it rather than trust that.)
+    //
+    // FIRST refresh the index stat-cache (etude-str-migration bug report 2026-09-19): `git diff --quiet`
+    // consults the index stat cache and, on "racily clean" entries (a file whose mtime equals the index
+    // mtime — exactly the state left right after `refresh_fleet_tools`'s rebuild above, or a prior
+    // `reset --hard`, touches many files in the same second), can exit NON-ZERO with NO content diff. That
+    // stat race made sync FALSE-POSITIVE "DIRTY" and refuse a clean fast-forward until some unrelated git
+    // command happened to rewrite the index. `update-index --refresh` resolves the racily-clean entries by
+    // re-stat'ing them, so the guard below reflects REAL dirtiness. Fail-open: ignore its exit status (it
+    // returns non-zero when a genuinely-modified entry needs updating — that is the true-dirty case the
+    // guard then catches); we run it only for the cache-refresh SIDE EFFECT.
+    let _ = git_ok(&["update-index", "-q", "--refresh"]);
     if !git_ok(&["diff", "--quiet"]) || !git_ok(&["diff", "--cached", "--quiet"]) {
         eprintln!(
             "fleet sync: worktree is DIRTY — refusing to reset (it would discard uncommitted work). \
