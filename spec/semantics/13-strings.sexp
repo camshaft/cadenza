@@ -544,6 +544,41 @@
   (live-objects 0))
 
 (case
+  "a String.at self-tail-loop over a RUNTIME-DEEP rope param leaves a reclaim residual (the deep-rope face)"
+  (doc
+    "The DEEP-ROPE complement of the concat-rope case above (which reclaims to 0). Where that threads a
+           SHALLOW `(String.concat \"ab\" \"cd\")`, this builds a RUNTIME-DEEP rope — `rep` concatenates `\"ab\"`
+           `(+ r 2)` times (runtime count → the rope depth cannot pre-fold to a flat leaf) — then runs the SAME
+           `(match (String.at s i) ((Some _c) (go s (+ i 1) n (+ acc 1))))` self-tail loop over it (walk 4
+           scalars → 4). v-memory-safety isolated exactly this shape (rep-built deep rope + StrAt loop, literal
+           bound) and measured a 1-cell residual — and confirmed `rep`-rope build ALONE (no String.at) censuses
+           0, so it is specifically the DEEP-rope × StrAt-self-tail-loop interaction that isn't reclaimed
+           (distinct from the shallow concat-rope, which is). The owner-requested coarse-gate witness for the
+           deep-rope shape (gate-proven positive residual — I pinned (live-objects 0) first and the gate reported
+           the count; see the trailing comment). VALUE stable at 4 (no miscompile), UAF-safe → leak-over-UAF
+           sound, TIGHTEN CANDIDATE, tracked by v-memory-safety (possible StrAt-over-deep-rope reclaim gap or a
+           runtime rope-reclaim thing).")
+  (input
+    (do
+      (def
+        (rep (: chunk String) (: n Int64) (: acc String))
+        (if (< n 1) acc (rep chunk (- n 1) (String.concat acc chunk))))
+      (def
+        (go (: s String) (: i Int64) (: n Int64) (: acc Int64))
+        (if (>= i n) acc (match (String.at s i) ((Some _c) (go s (+ i 1) n (+ acc 1))) ((None _u) acc))))
+      (def (main (: r Int64)) (go (rep "ab" (+ r 2) "") 0 4 0))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 4 Int64))
+  (call main (: 2 Int64))
+  (output (: 4 Int64))
+  ; GATE-PROVEN (breaker, this gate): pinned (live-objects 0) first → gate red'd "expected 0, got 1" on call 0
+  ; for this runtime-deep rep-rope + StrAt-self-tail-loop shape (the shallow concat-rope twin above reclaims to
+  ; 0). Confirms v-memory-safety's DBG+RCT 1-cell residual for the DEEP-rope shape. UAF-safe (value holds 4),
+  ; leak-over-UAF sound, TIGHTEN CANDIDATE tracked by v-memory-safety (deep-rope×StrAt reclaim gap / runtime rope).
+  (live-objects known-leak))
+
+(case
   "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
   (doc
     "The depth counter above suffices for ONE bracket type; with three, the counter is provably
