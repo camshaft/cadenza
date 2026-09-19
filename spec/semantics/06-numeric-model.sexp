@@ -13190,8 +13190,9 @@
            under the other alias. Three steps from (s, s): (s,2s) → (2s,3s) → (3s,5s) → 3s+5s = 8s =
            8e25. An over-drop of the aliased seed corrupts the first addition. (Adversarial pin from
            a breaker probe against the multi-accumulator loop-reclaim landing, which was seeded with
-           distinct values.) UPDATE (v-memory-safety): now reclaims to (live-objects 1) — only the
-           escaping BigInt result stays live, matching the escaping-BigInt sibling above. The residual
+           distinct values.) UPDATE: reclaims to a single escaping BigInt result — only that result stays
+           live, matching the escaping-BigInt sibling above; under drop-before-census the host drops that
+           returned result before census → (live-objects 0). The residual
            was NOT aliasing-specific (a distinct-seed escaping variant leaked the same two husks): the
            base case `(+ a b)` BORROWS both accumulator slots and re-boxes a fresh result, but the
            varying-param loop-exit epilogue did not recognize BigInt/Rational arithmetic as a borrow
@@ -18299,7 +18300,7 @@
         are themselves a tuple and a list — must re-emit + round-trip preserving structure, field values, AND
         field order. At n=3 → `(record (= pair (tuple 3 4)) (= xs (list 3 6)))` (dual-path verified byte-equal
         sexp→cadenza→wasm vs direct). Additive over cdzw1-10 (scalars/params/ops/control/let/calls/Match — no
-        compounds). `(live-objects 4)` = the reachable return compound (record + tuple + list nodes). A
+        compounds). The reachable return compound is 4 cells (record + tuple + list nodes); under drop-before-census the host drops it before census → `(live-objects 0)`. A
         regression mis-nesting, mis-ordering the record fields, or dropping a field would change the value.")
   (input
     (do
@@ -18361,9 +18362,10 @@
     "The recursive-payload face of cdzw12: `(type E (Lit Int64) (Neg E))` is self-referential, and the
         n=8 value is the NESTED `(Neg (Lit 8))` — the decl re-emit must handle the recursive payload type
         and the value emit must recurse into the variant payload (a SumNew inside a SumNew, each carrying
-        its ascription through the hop). `(live-objects 2 1)`: the returned nested sum is REACHABLE at the
-        reported point — n=8 returns `(Neg (Lit 8))` = 2 cells, n=-9 returns `(Lit 9)` = 1 cell (per-call,
-        measured on the DEBUG-COUNTERS runtime; the shipped runtime always reports 0, which earlier masked
+        its ascription through the hop). The returned nested sum is REACHABLE (n=8 returns `(Neg (Lit 8))`
+        = 2 cells, n=-9 returns `(Lit 9)` = 1 cell); under drop-before-census the host drops the returned
+        value before census → `(live-objects 0 0)`. (Reachable counts measured on the DEBUG-COUNTERS
+        runtime; the shipped runtime always reports 0, which earlier masked
         this as a false-0). The cadenza hop reclaims identically to the direct path, so this is the correct
         reachable-return balance, not a leak or a divergence. Dual-path verified; the evl def keeps the sum
         consumed too (match arms over both variants).")
@@ -18462,7 +18464,7 @@
     "The sharpest #4960 face: `(map (n 1) (n 2))` writes the SAME runtime key twice, so the built map
         holds the LAST value. The hop re-emits entries in STORED order and the recompiled program rebuilds
         by re-inserting — if the emit reordered entries, last-wins would flip the value. n=5 →
-        (map (5 2)). Dual-path verified. `(live-objects 1)` = the reachable returned map.")
+        (map (5 2)). Dual-path verified. The returned map is reachable (1 cell); host-dropped before census → `(live-objects 0)`.")
   (input (do (def (main (: n Int64)) #map((= n 1) (= n 2))) (export main)))
   (call main (: 5 Int64))
   (output (: #map((= 5 2)) (Map Int64 Int64)))
@@ -18517,7 +18519,7 @@
     "The #4972 fence (breaker-found GAP fixed): a bare `(None)` in an if-arm whose Option type is
         solved only by the JOIN with the sibling `(Some …)` arm — the backend recovers the concrete
         sum type from the threaded expected-type instead of declining as under-determined. Both arms
-        exercised. Dual-path verified; `(live-objects 1)` = the reachable returned Option.")
+        exercised. Dual-path verified; the returned Option is reachable (1 cell); host-dropped before census → `(live-objects 0)`.")
   (input (do (def (main (: n Int64)) (if (> n 0) (Some (* n 2)) (None))) (export main)))
   (call main (: 7 Int64))
   (output (: (Some 14) (Option Int64)))
@@ -18568,9 +18570,10 @@
         PAYLOAD — `(Some (None))` typed `Option (Option Int64)` — recovers `Option Int64` via
         payload-type instantiation at the concrete sum (the outer if-join solves only the OUTER type;
         the inner None's type must derive from the variant's instantiated payload). All three arms
-        exercised: nested-Some, Some-of-bare-None, bare outer None. `(live-objects 2 0 0)`: the returned
-        nested Option is REACHABLE at the reported point — n=9 returns `(Some (Some 9))` = 2 cells, while
-        `(Some (None))` / `(None)` are unit-payload (0 cells), per-call (measured on the DEBUG-COUNTERS
+        exercised: nested-Some, Some-of-bare-None, bare outer None. The returned nested Option is REACHABLE
+        (n=9 returns `(Some (Some 9))` = 2 cells, while `(Some (None))` / `(None)` are unit-payload = 0 cells);
+        under drop-before-census the host drops the returned value before census → `(live-objects 0 0 0)`.
+        (Reachable counts measured on the DEBUG-COUNTERS
         runtime; the shipped runtime always reports 0, which earlier masked this as a false-0). The cadenza
         hop reclaims identically to the direct path, so this is the correct reachable-return balance.")
   (input
@@ -18591,8 +18594,8 @@
   (doc
     "The compound-element face of the #4972/#4996 threading: a bare `(None)` as a list element derives
         `Option Int64` from the list's element type (solved by the sibling `(Some …)` elements). A
-        threading that missed element positions declined here (the tick-446/474 cell). `(live-objects 4)`
-        = the reachable returned list + its Some cells.")
+        threading that missed element positions declined here (the tick-446/474 cell). The returned list +
+        its Some cells are reachable (4 cells); host-dropped before census → `(live-objects 0)`.")
   (input (do (def (main (: n Int64)) #list((Some n) (None) (Some (+ n 2)))) (export main)))
   (call main (: 9 Int64))
   (output (: #list((Some 9) (None unit) (Some 11)) (List (Option Int64))))
@@ -18687,7 +18690,7 @@
   (doc
     "The compound-inner construct face (was an ambiguous-site decline before the generic-decl era):
         `(Mk (list n (+ n 1)))` over `(type LW (Mk (List Int64)))` returned whole — decl + construct
-        re-emit with the heap payload. `(live-objects 2)` = the reachable returned value.")
+        re-emit with the heap payload. The returned value is reachable (2 cells); host-dropped before census → `(live-objects 0)`.")
   (input
     (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk #list(n (+ n 1)))) (export main)))
   (call main (: 4 Int64))
