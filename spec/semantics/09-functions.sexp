@@ -13672,8 +13672,8 @@
            `xs` is dup'd for the two consumers (dup <=> drop coupled), so `len xs` reads it intact AFTER `sum`
            has consumed its copy: `1000*sum(1..4) + len = 1000*10 + 4` = 10004. A regression that narrowed the
            callee-owned exclusion (dropping a shared/boundary spine) would double-free → a wrong value or a
-           trap in `len`. The residual `known-leak 8` is the tracked spine residue (the conservative fix reduces
-           it, never increases; flips lower when the full §5 reclaim lands). release==debug (no latent UAF).")
+           trap in `len`. The shared spine now fully reclaims to `(live-objects 0)` — the §5 reclaim landed;
+           a regression that over-reclaimed the shared spine would double-free, not leak. release==debug (no latent UAF).")
   (input
     (do
       (type L (Cons Int64 L) (Nil))
