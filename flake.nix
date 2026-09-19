@@ -4317,14 +4317,17 @@
         # `compile.err`, and the run metadata forwarded from the shred (`test-run.ast`, `expect-kind`,
         # `component-name`). Because it is content-addressed, a compiler change that re-emits identical
         # bytes + identical metadata produces the SAME output path → the exec cache-hits.
-        # Per-case COMPILE wall-clock cap (v-nix 2026-09-19, v-fleet-tooling RCA #82018). A single corpus case
-        # compiles in seconds, so 300s is a HUGE margin — its only job is to convert a PATHOLOGICAL compile hang
-        # (rcdzc looping on a case) from an indefinite wedge of the whole corpus aggregate (which force-realizes
-        # every per-file shard, so one stuck shard blocks the lot → the reported ~88min-then-idle hang) into a
-        # fast RED naming the offending case. Mirrors cadTestTimeoutSecs, which fixed this exact class for
-        # cad-tests. (mkCorpusExec's run is already bounded by cdz-run's internal CDZ_RUN_TIMEOUT_SECS=300 epoch
-        # deadline; the COMPILE was the unguarded gap.)
-        corpusCaseCompileTimeoutSecs = 300;
+        # Per-case COMPILE wall-clock cap (v-nix 2026-09-19, v-fleet-tooling RCA #82018 + v-corpus-harness
+        # grading-path input). A single corpus case compiles in seconds, so 180s is ~6x the observed-normal
+        # ceiling (generous for the known heavy paths — deep recursion, large const-fold, the O(N²) select
+        # class) yet still UNDER both run caps (mkCorpusGateFileCoarse's ~30s cdz-run default AND the fine
+        # graph's CDZ_RUN_TIMEOUT_SECS=300), so a compiler infinite-loop trips as a COMPILE-timeout and is
+        # attributed to the compile phase, not confused with a run-timeout. Its only job: convert a PATHOLOGICAL
+        # compile hang (rcdzc looping on a case) from an indefinite wedge of the corpus aggregate (which
+        # force-realizes every per-file shard, so one stuck shard blocks the lot → the reported ~88min-then-idle
+        # hang) into a fast RED naming the case. Shared by mkCorpusGateFileCoarse (the COARSE aggregate that
+        # wedges) + mkCorpusBuild (the fine per-case graph, same gap). Mirrors cadTestTimeoutSecs.
+        corpusCaseCompileTimeoutSecs = 180;
         mkCorpusBuild = { name, shred, idx }:
           pkgs.runCommand "corpus-build-${name}-${idx}"
             {
@@ -4363,7 +4366,7 @@
             timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
               cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" --emit-diagnostics "$out/diagnostics" 2>"$out/compile.err" || st=$?
             if [ "$st" = 124 ] || [ "$st" = 137 ]; then
-              echo "TIMEOUT: compile of case ${idx} of '${name}' exceeded the ${toString corpusCaseCompileTimeoutSecs}s wall-clock cap — treating as a compile HANG (fail-fast, not an aggregate wedge)." >&2
+              echo "compile-timeout: case ${idx} of '${name}' exceeded the ${toString corpusCaseCompileTimeoutSecs}s compile cap — COMPILER hang/pathological-blowup (fail-fast, not an aggregate wedge)." >&2
               exit 1
             fi
             printf '%s' "$st" > "$out/compile.status"
@@ -5125,15 +5128,23 @@
               cfg=()
               if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
               if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
-              if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err"; then
-                status=0
-              else
-                status=$?
+              # Compile under a wall-clock cap. On a compile-TIMEOUT (124 / 137) HARD-FAIL the harvest rather
+              # than emitting a verdict: a hang must NEVER be recorded into .gate-baseline as an accepted verdict
+              # (v-corpus-harness — a compile hang is a compiler bug, never 'expected'). A normal refusal is a
+              # non-124 non-zero → captured as $status + emit-verdicted as before.
+              comp_st=0
+              timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+                cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err" || comp_st=$?
+              if [ "$comp_st" = 124 ] || [ "$comp_st" = 137 ]; then
+                echo "compile-timeout: case $(basename "$case") of '${name}' exceeded the ${toString corpusCaseCompileTimeoutSecs}s compile cap — COMPILER hang; refusing to harvest a verdict for a hang (never baseline-suppressible)." >&2
+                exit 1
               fi
+              status=$comp_st
               for p in "$case"/peer-*.ast; do
                 [ -e "$p" ] || continue
                 pn=$(basename "$p" .ast)
-                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+                  cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
                   -o "$work/$pn.wasm" 2>>"$work/compile.err" || true
               done
               # --- grade + emit-verdict (mirrors mkCorpusVerdict EXACTLY) ---
@@ -5202,15 +5213,25 @@
               cfg=()
               if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
               if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
-              if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err"; then
-                status=0
-              else
-                status=$?
+              # Compile under a wall-clock cap. A compile-TIMEOUT (124 / 137 timeout+SIGKILL) is a DISTINCT hard
+              # fail — a COMPILER termination bug (infinite loop / pathological blowup), categorically not a
+              # value/census mismatch — so it exits RED naming the case and does NOT route through the
+              # `cdz-run --grade --baseline` below, so it can NEVER be baseline-suppressed (a hang is never an
+              # 'expected' tracked known-fail). A NORMAL refusal (error/declines) is a non-124 non-zero → captured
+              # as $status + graded vs .gate-baseline exactly as before (v-corpus-harness grading-path input).
+              comp_st=0
+              timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+                cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err" || comp_st=$?
+              if [ "$comp_st" = 124 ] || [ "$comp_st" = 137 ]; then
+                echo "compile-timeout: case $(basename "$case") of '${name}' exceeded the ${toString corpusCaseCompileTimeoutSecs}s compile cap — COMPILER hang/pathological-blowup (hard gate-red, NOT baseline-suppressible)." >&2
+                exit 1
               fi
+              status=$comp_st
               for p in "$case"/peer-*.ast; do
                 [ -e "$p" ] || continue
                 pn=$(basename "$p" .ast)
-                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+                  cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
                   -o "$work/$pn.wasm" 2>>"$work/compile.err" || true
               done
               # --grade + --baseline (NO --emit-verdict) → cdz-run exits non-zero on a pass→not-pass regression.
