@@ -12118,6 +12118,92 @@ fn ensure_worktree(fleet: &Fleet, a: &Agent) {
 fn ensure_inbox(fleet: &Fleet, name: &str) {
     let inbox = fleet.inbox(name);
     std::fs::create_dir_all(inbox.join("processed")).ok();
+    // Also reconcile the worktree-relative inbox SHADOW into a symlink to the hub inbox, so an agent that
+    // (wrongly) globs a worktree-relative `.claude/fleet/inbox/...` path instead of the `fleet inbox`
+    // resolver still resolves to REAL hub mail rather than an empty tree — neutralizes the recurring
+    // drain-stall class at the filesystem level. Idempotent + non-destructive. See the fn doc.
+    ensure_worktree_inbox_link(fleet, name);
+}
+
+/// The disposition of the worktree-relative inbox SHADOW at `<worktree>/.claude/fleet/inbox` — the path an
+/// agent hits if it (mistakenly) `ls`es a worktree-RELATIVE `.claude/fleet/inbox/...` glob instead of the
+/// `cargo xtask fleet inbox <self>` RESOLVER. That relative path historically matched an EMPTY tree (it
+/// did not exist, or was a stale hand-created shadow dir), so the agent read "no mail" and STALLED with
+/// live mail sitting in the HUB inbox — the recurring drain-stall class (concierge systemic flag
+/// 2026-09-19; the loop bodies themselves are all correct — they prescribe the resolver — so this is a
+/// filesystem-level defense, not a loop-text fix). Making the shadow a SYMLINK to the hub inbox turns that
+/// mistake HARMLESS: a relative glob now resolves to the real hub mail. This enum is the pure decision;
+/// [`ensure_worktree_inbox_link`] performs it.
+#[derive(Debug, PartialEq, Eq)]
+enum InboxShadowAction {
+    /// The worktree doesn't exist — nothing to link (creation is `ensure_worktree`'s job).
+    NoWorktree,
+    /// Already the correct symlink to the hub inbox — idempotent no-op.
+    AlreadyLinked,
+    /// Nothing at the shadow path — create the symlink so a relative glob resolves to the hub inbox.
+    CreateLink,
+    /// A REAL directory (or a symlink to somewhere else) occupies the shadow path — do NOT clobber it (it
+    /// may hold mail a past relative `--processed` mis-moved); warn so it's reconciled by hand.
+    SkipConflict,
+}
+
+/// Pure decision for [`ensure_worktree_inbox_link`] — see [`InboxShadowAction`]. Split out so the
+/// idempotency + never-clobber semantics are unit-tested without touching the filesystem.
+fn inbox_shadow_action(
+    worktree_exists: bool,
+    shadow_present: bool,
+    shadow_is_correct_link: bool,
+) -> InboxShadowAction {
+    if !worktree_exists {
+        return InboxShadowAction::NoWorktree;
+    }
+    if shadow_is_correct_link {
+        return InboxShadowAction::AlreadyLinked;
+    }
+    if shadow_present {
+        return InboxShadowAction::SkipConflict;
+    }
+    InboxShadowAction::CreateLink
+}
+
+/// Reconcile the worktree-relative inbox shadow into a SYMLINK to the hub inbox, so an agent that (wrongly)
+/// globs a worktree-relative `.claude/fleet/inbox/...` path resolves to REAL hub mail instead of an empty
+/// tree — killing the recurring drain-stall class at the filesystem level (the RESOLVER
+/// `cargo xtask fleet inbox <self>` stays the blessed path; this only makes the common mistake harmless).
+/// Idempotent + non-destructive: creates the link only when the shadow path is FREE, and NEVER clobbers a
+/// real dir (which could hold mis-moved mail). Called from [`ensure_inbox`], so it runs on `up` (every
+/// agent), `add`, and the single-agent relaunch path. Unix symlink; fail-open on any IO error.
+fn ensure_worktree_inbox_link(fleet: &Fleet, name: &str) {
+    let worktree = fleet.worktrees.join(name);
+    let hub_inbox = fleet.root.join("inbox");
+    let shadow = worktree.join(".claude").join("fleet").join("inbox");
+    let meta = std::fs::symlink_metadata(&shadow).ok();
+    let shadow_present = meta.is_some();
+    let shadow_is_correct_link = meta.is_some_and(|m| m.file_type().is_symlink())
+        && std::fs::read_link(&shadow).is_ok_and(|t| t == hub_inbox);
+    match inbox_shadow_action(worktree.is_dir(), shadow_present, shadow_is_correct_link) {
+        InboxShadowAction::NoWorktree | InboxShadowAction::AlreadyLinked => {}
+        InboxShadowAction::CreateLink => {
+            if let Some(parent) = shadow.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            #[cfg(unix)]
+            if let Err(e) = std::os::unix::fs::symlink(&hub_inbox, &shadow) {
+                eprintln!(
+                    "  ⚠ could not link worktree inbox shadow {} → hub inbox: {e}",
+                    shadow.display()
+                );
+            }
+        }
+        InboxShadowAction::SkipConflict => {
+            eprintln!(
+                "  ⚠ worktree inbox shadow {} is a real dir / foreign link — NOT clobbered; if an agent \
+                 drain-stalled here, reconcile it by hand (the HUB resolver `cargo xtask fleet inbox \
+                 {name}` is authoritative).",
+                shadow.display()
+            );
+        }
+    }
 }
 
 /// A DURABLE, hub-global delivery sequence for message filenames — monotonic ACROSS processes.
@@ -25241,6 +25327,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 "role {r:?} is not terminal-interactive"
             );
         }
+    }
+
+    #[test]
+    fn inbox_shadow_action_links_only_when_free_and_never_clobbers() {
+        use InboxShadowAction::*;
+        // No worktree yet → nothing to link (creation is ensure_worktree's job).
+        assert_eq!(inbox_shadow_action(false, false, false), NoWorktree);
+        assert_eq!(inbox_shadow_action(false, true, true), NoWorktree);
+        // Worktree exists + shadow path FREE → create the symlink (the fix for the stalling agents,
+        // whose worktrees have no shadow at all).
+        assert_eq!(inbox_shadow_action(true, false, false), CreateLink);
+        // Already the correct link → idempotent no-op (safe to re-run on every `up`).
+        assert_eq!(inbox_shadow_action(true, true, true), AlreadyLinked);
+        // A real dir / foreign link occupies the path → NEVER clobber (it may hold mis-moved mail).
+        assert_eq!(inbox_shadow_action(true, true, false), SkipConflict);
     }
 
     #[test]
