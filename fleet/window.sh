@@ -20,6 +20,16 @@ AGENT="${1:?usage: window.sh <agent-name>}"
 # and ../.. climbs the two levels (fleet → .claude → <hub>) up to the hub.
 HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# ── cdz-smith TYPE-DIFFERENTIAL oracle activation (v-cdz-smith #9314) ──────────────────────────────
+# fuzz-cycle.sh runs its Lean type-differential sweep only when a fresh `oracle-check` is discoverable
+# (`CDZ_SMITH_ORACLE_CHECK` or on PATH), else it skips cleanly. The `# fleet:oracle-lean` nightly cron
+# (stage-oracle-lean.sh) builds + stages it here; point every window at it when present so the smith
+# agent's next relaunch picks it up. Harmless for other roles — only fuzz-cycle consults this var. Respect
+# an explicit operator override if already set.
+if [ -z "${CDZ_SMITH_ORACLE_CHECK:-}" ] && [ -x "$HUB/.claude/fleet/oracle-lean/bin/oracle-check" ]; then
+  export CDZ_SMITH_ORACLE_CHECK="$HUB/.claude/fleet/oracle-lean/bin/oracle-check"
+fi
+
 # Silence cargo's global-registry auto-clean GC for every `cargo xtask …` this window runs. The whole
 # fleet shares one ~/.cargo registry, so cargo's periodic GC tries to delete peer-owned cache files
 # this uid can't remove and prints a bare `Caused by: Permission denied (os error 13)` — NON-fatal

@@ -335,6 +335,7 @@ const MATERIALIZED_FLEET_FILES: &[&str] = &[
     "cpu-monitor.sh",
     "warm-keep.sh",
     "baseline-drift-monitor.sh",
+    "stage-oracle-lean.sh",
     "drain-nudge.sh",
     "compact-nudge.sh",
     "reap-leases.sh",
@@ -2205,6 +2206,50 @@ fn ensure_baseline_drift_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired DAILY user-crontab line for staging the Lean `.#oracle-lean` (v-fleet-tooling, v-cdz-smith
+/// request 2026-09-19), tagged `# fleet:oracle-lean` so [`reconcile_tagged_crons`] can find/heal it. Runs the
+/// HUB copy of `stage-oracle-lean.sh`, which builds `oracle-check` and stages it at `<hub>/.claude/fleet/
+/// oracle-lean` so cdz-smith's TYPE-DIFFERENTIAL sweep (#9314) can activate (window.sh exports
+/// `CDZ_SMITH_ORACLE_CHECK` to it when present). DAILY at an off-minute distinct from `# fleet:baseline-drift`
+/// (`23 4`) to avoid the 4-o'clock herd. The build is cache-stable (a no-op most nights — only a changed Lean
+/// oracle rebuilds), bounded by the script's own `timeout`, and FAIL-OPEN (a miss leaves the sweep skipping).
+fn oracle_lean_cron_line(hub_script: &str) -> String {
+    format!("41 4 * * * bash {hub_script} >/dev/null 2>&1 # fleet:oracle-lean")
+}
+
+/// Ensure the `# fleet:oracle-lean` daily user-crontab entry exists + points at THIS hub's
+/// `stage-oracle-lean.sh` (v-cdz-smith #9314 activation). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN
+/// discipline as the other self-crons, and INDEPENDENT of them (its own reconcile/write in `up`, preserving
+/// the others' lines). Skips silently if the script isn't materialized yet (older tree) or `crontab` errs.
+fn ensure_oracle_lean_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("stage-oracle-lean.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:oracle-lean",
+        oracle_lean_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-3-min user-crontab line for the autonomous DRAIN-NUDGE heartbeat (v-fleet-tooling
 /// 2026-09-01, operator-GO'd wake-path hardening), tagged `# fleet:drain-nudge` so [`reconcile_tagged_crons`]
 /// can find/heal it. Runs the HUB copy of `drain-nudge.sh`, which runs a worktree's `xtask fleet drain-nudge
@@ -2584,6 +2629,10 @@ fn up(fleet: &Fleet) {
     // scan that notifies v-corpus-harness when `.gate-baseline` drifts past threshold behind the corpus (it
     // went 911 behind silently). DETECT-only; the heavy `gate --save` stays triggered. Fail-open, drift-healed.
     ensure_baseline_drift_cron(fleet);
+    // Re-arm the DAILY oracle-lean staging cron (v-cdz-smith #9314 activation) — builds `.#oracle-lean` and
+    // stages `oracle-check` at `<hub>/.claude/fleet/oracle-lean` so cdz-smith's type-differential sweep can
+    // run (else it skips for want of a fresh oracle). Cache-stable no-op most nights; bounded + fail-open.
+    ensure_oracle_lean_cron(fleet);
     // Re-arm the every-3-min autonomous DRAIN-NUDGE cron (operator-GO'd 2026-09-01 wake-path hardening) —
     // runs `drain-nudge.sh` → `xtask fleet drain-nudge`, the strict-subset scan that nudges an idle agent
     // with unconsumed actionable mail (no re-arm/restart). Decouples drain-nudging from the concierge's */4
@@ -21493,6 +21542,36 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             !line.contains("gate"),
             "detect-only, no gate --save on a timer: {line}"
+        );
+    }
+
+    #[test]
+    fn oracle_lean_cron_line_is_daily_off_minute_silent_and_tagged() {
+        let line = oracle_lean_cron_line("/hub/stage-oracle-lean.sh");
+        // DAILY at an off-minute DISTINCT from baseline-drift's `23 4` (avoid the 4-o'clock herd), runs the
+        // hub script, silent, tagged for reconcile/heal. Generic cron-health parse gives 86400s / stem
+        // "stage-oracle-lean" with no changes to the monitor.
+        assert!(
+            line.starts_with("41 4 * * * bash /hub/stage-oracle-lean.sh"),
+            "daily off-minute, invoking the hub script: {line}"
+        );
+        assert_ne!(
+            parse_cron_line(&line),
+            None,
+            "the cron-health monitor recognizes the line generically: {line}"
+        );
+        assert_eq!(
+            parse_cron_line(&line),
+            Some((86400, "stage-oracle-lean".to_string())),
+            "daily interval + script stem: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — no cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:oracle-lean"),
+            "carries the reconcile tag: {line}"
         );
     }
 
