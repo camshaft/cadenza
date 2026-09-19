@@ -4642,8 +4642,8 @@
            UNEQUAL (0). The emit now compacts a borrowed String operand in place before the compare -> equal
            (1). Compacting a BORROWED operand is refcount-neutral (in-place flatten, same handle, no drop
            follows the borrow), so it leaves the SAME live count as the byte-identical flat-value baseline
-           below (known-leak 2, a pre-existing map-temporary residual the scalar-returning main does not yet
-           reclaim). Their equal 2 is the leak-neutrality guard: a compaction leak would push this above 2.")
+           below (both now reclaim fully — the map-temporary residual reclaim landed, so both census 0).
+           Their equal count is the leak-neutrality guard: a compaction leak would push this above the baseline.")
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
@@ -4661,9 +4661,8 @@
   (doc
     "The byte-identical flat-value baseline for the borrowed-rope-eq neutrality pin above: the map value
            is the flat literal \"hixxx\" (no rope, no compaction needed). It builds the SAME map + value-box
-           shape, whose pre-existing map-temporary residual (2 cells, orthogonal to the compaction) the
-           scalar-returning main does not yet reclaim. Its known-leak 2 equalling the rope program's 2 proves
-           the borrowed-operand compaction added nothing.")
+           shape, whose map-temporary residual now reclaims fully (0 cells, orthogonal to the compaction).
+           Its count equalling the rope program's proves the borrowed-operand compaction added nothing.")
   (input
     (do
       (def
