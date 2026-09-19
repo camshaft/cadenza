@@ -276,4 +276,59 @@ mod tests {
             "heartbeat beaten on unwind too"
         );
     }
+
+    /// A compile HANG must be SURFACED as a reproducible on-disk `Timeout` finding BEFORE the watchdog
+    /// aborts — that capture is cdz-smith's entire value when the compiler wedges (the very class the
+    /// corpus coarse-gate wall-clock timeouts, #9355/#9357, exist to bound). Pins that `file_hang`
+    /// writes a `Timeout`-category finding carrying the EXACT hung source, so a regression (wrong
+    /// category, a dropped program, or a `FindingStore` API drift) can't silently lose the offending
+    /// input while the process still aborts as if it had been handled.
+    #[test]
+    fn a_hang_is_filed_as_a_reproducible_timeout_finding() {
+        // A UNIQUE scratch dir so the read-back sees ONLY this finding (findings key on a content
+        // signature, so a stale sibling from another run would confuse the count assertion).
+        let dir = std::env::temp_dir().join(format!(
+            "cdz-smith-filehang-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut w = bare_watch();
+        w.findings_dir = dir.clone();
+
+        let hung = "(do (def (main) (self-app-nonterminating)) (export main))";
+        file_hang(&w, hung.to_string());
+
+        // The repro `.smith.sexp` carries the EXACT hung source (so the finding stays runnable).
+        let repros: Vec<_> = std::fs::read_dir(&dir)
+            .expect("findings dir was created")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.to_string_lossy().ends_with(".smith.sexp"))
+            .collect();
+        assert_eq!(repros.len(), 1, "exactly one repro filed, got {repros:?}");
+        assert_eq!(
+            std::fs::read_to_string(&repros[0]).unwrap().trim_end(),
+            hung,
+            "the repro must carry the exact hung program"
+        );
+
+        // The paired `.smith.md` note marks it a Timeout, so triage routes it as a hang (not a value
+        // diff). `file()` names the pair `<sig>.smith.sexp` / `<sig>.smith.md` off the same signature.
+        let sig = repros[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_end_matches(".smith.sexp")
+            .to_string();
+        let note = std::fs::read_to_string(dir.join(format!("{sig}.smith.md"))).unwrap();
+        assert!(
+            note.contains("Timeout"),
+            "the note must mark the finding a Timeout hang: {note}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
