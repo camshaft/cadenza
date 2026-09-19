@@ -11497,6 +11497,27 @@ fn sync_head_vs_origin_note(behind: usize, ahead: usize) -> String {
     }
 }
 
+/// STALE-TOOLING guard (design-cadenza-abi ergonomics request 2026-09-19). The `cargo xtask fleet …` shim
+/// only rebuilds the xtask binary when the INVOKING worktree's sources change — so a worktree whose `xtask/`
+/// is frozen behind origin/main (a design branch that only advances on rebase; the pr-sync-pause frozen
+/// trunk) silently runs OLD fleet-tooling behavior while reading CURRENT git state. That cost three ticks of
+/// ghost-chasing (an agent diagnosed "sync bugs" that were really its own lagging binary observing old sync
+/// code). Warn when origin/main carries `xtask/` commits HEAD lacks. `behind` = the caller's
+/// `git rev-list --count HEAD..origin/main -- xtask/`. Returns None when not behind, so an AUTHOR of xtask
+/// (HEAD ahead of / level with origin/main on `xtask/`) is never warned — only a genuinely-lagging binary.
+fn fleet_binary_stale_note(xtask_commits_behind: usize) -> Option<String> {
+    (xtask_commits_behind > 0).then(|| {
+        format!(
+            "fleet sync: ⚠ STALE TOOLING — origin/main has {xtask_commits_behind} commit(s) touching \
+             xtask/ that your HEAD lacks. The `cargo xtask fleet` shim only rebuilds when THIS worktree's \
+             xtask sources change, so until this sync rebases you onto origin/main you may be running OLD \
+             fleet behavior while reading CURRENT git state (the recurring stale-binary trap — it makes \
+             tooling look buggy when it is not). This sync brings xtask current; the next `cargo xtask` \
+             invocation rebuilds from it."
+        )
+    })
+}
+
 /// Re-run `refresh-tools.sh` (reinstall the cargo/nix shims + re-sync the nix PATH wrappers) from the
 /// current worktree, so a RUNNING agent picks up a landed shim/tooling change WITHOUT a window restart
 /// (operator seq-267). `refresh-tools.sh` ALREADY documents `fleet sync` as its "agent update path" caller
@@ -11568,6 +11589,24 @@ fn sync(fleet: &Fleet, force: bool) {
     // Bring trunk current (the hub shares the object store, but `fetch` refreshes origin for the
     // ahead/behind reporting and is harmless if there's nothing new).
     let _ = git_ok(&["fetch", "-q", "origin"]);
+
+    // STALE-TOOLING guard (design-cadenza-abi 2026-09-19): warn up-front when origin/main carries `xtask/`
+    // commits this HEAD lacks — the `cargo xtask fleet` shim rebuilds only on THIS worktree's source
+    // changes, so a lagging worktree runs OLD fleet behavior while reading CURRENT git state (the trap that
+    // cost three ticks of ghost-chasing). Only fires when genuinely behind (an xtask author is never
+    // warned). Origin/main is freshly fetched above, so the count is current. Advisory only.
+    let xtask_behind: usize = git_stdout(&[
+        "rev-list",
+        "--count",
+        &format!("{old_head}..origin/main"),
+        "--",
+        "xtask/",
+    ])
+    .parse()
+    .unwrap_or(0);
+    if let Some(note) = fleet_binary_stale_note(xtask_behind) {
+        eprintln!("{note}");
+    }
 
     // BELT-AND-BRACES (concierge 2026-08-28, confirmed gap): a worktree whose HEAD is a STRICT ANCESTOR
     // of origin/main — purely behind with ZERO own commits (e.g. HEAD == the frozen stale-trunk commit
@@ -26982,6 +27021,20 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!sync_head_should_fast_forward_to_origin_main(false, true));
         // Forked (neither is an ancestor) → not a pure fast-forward; leave to the normal path.
         assert!(!sync_head_should_fast_forward_to_origin_main(false, false));
+    }
+
+    #[test]
+    fn fleet_binary_stale_note_warns_only_when_behind_on_xtask() {
+        // Not behind (author of xtask, or fully current) → no warning (never nags the author).
+        assert_eq!(fleet_binary_stale_note(0), None);
+        // Behind on xtask/ → advisory stale-tooling warning naming the count.
+        let w = fleet_binary_stale_note(3).expect("warns when behind");
+        assert!(w.contains("STALE TOOLING") && w.contains('⚠'));
+        assert!(w.contains('3'), "names the commit count: {w}");
+        assert!(
+            w.contains("cargo xtask"),
+            "explains the shim rebuild trigger: {w}"
+        );
     }
 
     #[test]
