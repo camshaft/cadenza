@@ -31439,10 +31439,10 @@
            consumed: shell_reclaim must NOT fire on the borrowed `w` (its shell is not owned — the second match
            still reads it) and the shared scrutinee read is covered by mark_binder_dups instead. Memory-SAFE
            (value correct, NO use-after-free under the detector): f(Wrap[1,2,3]) = List.len(push[1,2,3] 9) +
-           List.len[1,2,3] = 4 + 3 = 7. Leaks 1 — the pre-existing consume-first-arm shared-scrutinee shell
-           leak (same family as xop1/xop4/xop5, NOT the borrow-only ruw twins); flips to 0 when the shared
-           boxed-sum shell reclaim lands. A regression that reclaimed `w`'s shell after the first (consuming)
-           match would read freed memory in the second match → detector UAF trap or a value off 7.")
+           List.len[1,2,3] = 4 + 3 = 7. Reclaims to 0 — the consume-first-arm shared-scrutinee shell reclaim
+           has LANDED (same family as xop1/xop4/xop5, NOT the borrow-only ruw twins). SAFETY GUARD (still
+           load-bearing): a regression that reclaimed `w`'s shell after the first (consuming) match would read
+           freed memory in the second match → detector UAF trap or a value off 7.")
   (input
     (do
       (type Box (Wrap (List Int64)) (Empty))
@@ -35595,8 +35595,8 @@
 ; shell) on the self-loop-tail back-edge) reclaims direct-payload spines (reconciled rows dropped
 ; 5001→1) but does NOT reach the TUPLE-payload Cons shape (rsl1's class): the tail walk leaks the
 ; full spine identically to the non-tail walk (11 = 5 Cons + 5 tuples + Nil), and per-frame
-; amplification is LINEAR (50 frames → 550). Calibration for the next §5 increment: ss1/ss3 flip
-; (11→~0, 550→~0) when the tuple-payload back-edge reclaim lands; ss2 keys the non-tail sibling.
+; amplification is LINEAR (50 frames → 550). Historical calibration: ss1/ss3 flipped
+; (11→0, 550→0) WITH the tuple-payload back-edge reclaim (landed; pins now 0); ss2 keys the non-tail sibling.
 (case
   "ss1 a TAIL self-loop walk over a tuple-payload sum spine RECLAIMS the full spine (INC1 pt3 crossed the #4597 fix's boundary)"
   (input

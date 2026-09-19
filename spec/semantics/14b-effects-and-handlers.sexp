@@ -96,8 +96,8 @@
            NOTHING heap escapes (the result is a scalar; the final state rope is discarded at handle
            completion), yet the census reads 3 live objects — the discarded final handler-state rope
            is not fully reclaimed. The record-with-heap-LIST state sibling above reclaims clean, so
-           this is specific to the bare string-rope state. Ideal is (live-objects 0); flip this
-           marker when the handle-exit state reclaim lands.
+           this is specific to the bare string-rope state. Ideal is (live-objects 0) — now ACHIEVED (the
+           handle-exit state reclaim LANDED; see UPDATE below).
            UPDATE (v-memory-safety): now (live-objects 0). The handler reduces to a synthesized
            genuinely-recursive fold fn `f#ctx(n, state)` that owns its heap state param; the leak was
            TWO reclaim gaps, both now closed: (1) #9088 — a scalar-borrow co-operand (`byte-len s`) no
