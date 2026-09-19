@@ -26559,20 +26559,21 @@
   (live-objects known-leak))
 
 (case
-  "a NESTED (depth-2) projection of a loop invariant consumed per iteration accumulates stably (VALUE) but still leaks the parent chain"
+  "a NESTED (depth-2) projection of a loop invariant consumed per iteration accumulates stably (VALUE) and its parent chain is FULLY RECLAIMED"
   (doc
     "The proj-chain-DEPTH face of the consumed-loop-invariant family: the #9279-flipped members above all
            project the invariant ONE level (`(. pr 0)` / `r.f` / `(Option.expect s)`) → census 0; this
            projects a param TWO levels — `(. (. pr 0) 0)` reaches the inner list of a `(Tuple (Tuple (List
            Int64) Int64) Int64)` threaded UNCHANGED to the self-call, consumed per iteration (`List.push … 9`
            → len 3, four iters → 12). VALUE is stable at 12 on both backends (a per-iter parent retain would
-           NOT corrupt the accumulation — the consumed child is correctly retained). CENSUS (breaker probe,
-           MEASURED): the #9279 surplus-parent-dup drop does NOT extend to depth 2 — its is_child_dup_site
-           `proj-chain-roots-at-binder` clause reclaims the depth-1 parent-dup but the OUTER Proj's parent-dup
-           STILL fires per iteration, leaking the intermediate `(Tuple (List Int64) Int64)` shells (probed at
-           (live-objects 0); gate red'd expected 0, got 4). Leak-over-UAF SOUND (value holds, no over-reclaim)
-           — a TIGHTEN CANDIDATE: the depth extension of exactly the leak #9279 fixed, unhandled at chain
-           depth ≥2. Distinct sub-shape, filed to v-memory-safety.")
+           NOT corrupt the accumulation — the consumed child is correctly retained). CENSUS (#9282, extends
+           #9279): FULLY RECLAIMED to (live-objects 0) at O0-O3. #9279's surplus-parent-dup drop originally
+           reclaimed only the depth-1 parent-dup (its is_child_dup_site `proj-chain-roots-at-binder` clause),
+           so the OUTER Proj's parent-dup still fired per iteration and leaked the intermediate `(Tuple (List
+           Int64) Int64)` shells (was: probed 0, got 4). #9282 propagates the child-dup-chain suppression
+           (an `in_child_dup_chain` flag threaded through `mark_binder_dups`, gated on `binder_is_param`) down
+           to chain depth ≥2 → the outer parent-dup is now dropped too. Sound (value holds); the param gate
+           keeps it off #9101 partition Let-dups and dqe cases.")
   (input
     (do
       (def
@@ -26582,11 +26583,10 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: 12 Int64))
-  ; MEASURED (breaker, this gate): the #9279 depth-1 parent-dup drop does NOT extend to depth 2 — the OUTER
-  ; Proj's parent-dup fires per iteration, leaking the intermediate compound shells (probed at (live-objects 0);
-  ; gate red'd expected 0, got 4). UAF-safe (value holds), leak-over-UAF sound, TIGHTEN CANDIDATE — the depth
-  ; extension of the leak #9279 fixed. Filed to v-memory-safety.
-  (live-objects known-leak))
+  ; FIXED #9282 (extends #9279): child-dup-chain parent-dup suppression now propagates to depth ≥2 nested
+  ; Proj of a loop-invariant param → (live-objects 0) at O0-O3 (was: got 4). Value 12 stable. Sound —
+  ; `binder_is_param`-gated, off #9101 partition Let-dups + dqe.
+  (live-objects 0))
 
 (case
   "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"

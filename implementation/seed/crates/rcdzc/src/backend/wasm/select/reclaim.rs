@@ -2713,6 +2713,9 @@ impl Drop for OracleGuard {
 /// [`build_occurrence_bitsets`].
 pub(super) type DupOccurrenceOracle = (HashMap<StructId, usize>, HashMap<StructId, Vec<u64>>);
 
+/// [`DUP_MARK_MEMO`] map: `(node, consuming, live_after, in_proj_operand, in_child_dup_chain) → occurrence-bool`.
+type DupMarkMemo = HashMap<(StructId, bool, bool, bool, bool), bool>;
+
 thread_local! {
     // The SHARED occurrence oracle for the active `collect_dup_sites` run. Set for the duration of one
     // `collect_dup_sites` call, consulted by `mark_binder_dups_inner` for the O(1) occurrence EARLY-PRUNE
@@ -2832,14 +2835,14 @@ thread_local! {
     // (never a UAF — the unsound direction the marker guards against) and inserts none twice. Installed FRESH
     // per binder in `collect_dup_sites` (the guards change per binder); RAII-restored so a panicking
     // `mark_binder_dups` cannot leak a stale memo into the next binder / `collect_dup_sites`.
-    static DUP_MARK_MEMO: std::cell::RefCell<HashMap<(StructId, bool, bool, bool), bool>> =
+    static DUP_MARK_MEMO: std::cell::RefCell<DupMarkMemo> =
         std::cell::RefCell::new(HashMap::new());
 }
 
 /// RAII guard installing a FRESH empty [`DUP_MARK_MEMO`] for one `mark_binder_dups` binder, restoring the
 /// prior map on drop (normal return OR panic unwind) — nesting-safe, the [`OracleGuard`] twin.
 struct DupMarkMemoGuard {
-    prev: HashMap<(StructId, bool, bool, bool), bool>,
+    prev: DupMarkMemo,
 }
 
 impl DupMarkMemoGuard {
@@ -3447,8 +3450,9 @@ pub(super) fn mark_binder_dups(
     live_after: bool,
     sites: &mut HashSet<StructId>,
 ) -> bool {
-    // Thin entry: every position EXCEPT a `Proj`'s own operand is a "top" position for child-dup marking.
-    mark_binder_dups_inner(db, id, binder, consuming, live_after, false, sites)
+    // Thin entry: every position EXCEPT a `Proj`'s own operand is a "top" position for child-dup marking
+    // (in_proj_operand=false), and NOT inside a child-dup'd param-proj chain (in_child_dup_chain=false).
+    mark_binder_dups_inner(db, id, binder, consuming, live_after, false, false, sites)
 }
 
 /// Whether `id` is a chain of nested-compound `Core::Proj`s ultimately rooted at `binder` — `binder`
@@ -3532,6 +3536,7 @@ pub(super) fn payload_or_proj_chain_roots_at_binder(
 /// continuation / `If`-arm join) — the residual exponential of the self-recursive `bin`-match emit hang once
 /// the occurrence walks are O(1) off the oracle. Only the BOOL is cached; the dup SITES were already inserted
 /// on the first visit (idempotent `HashSet`), so a hit re-inserts nothing and drops nothing (never a UAF).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mark_binder_dups_inner(
     db: &mut Db,
     id: StructId,
@@ -3539,9 +3544,18 @@ pub(super) fn mark_binder_dups_inner(
     consuming: bool,
     live_after: bool,
     in_proj_operand: bool,
+    // Set ONLY while descending a child-dup'd, PARAM-rooted `Proj` chain (see the `Core::Proj` arm) — extends
+    // the site-b parent-dup subtract to a chain's INTERMEDIATE projs (the depth>=2 nested-proj leak #9282).
+    in_child_dup_chain: bool,
     sites: &mut HashSet<StructId>,
 ) -> bool {
-    let memo_key = (id, consuming, live_after, in_proj_operand);
+    let memo_key = (
+        id,
+        consuming,
+        live_after,
+        in_proj_operand,
+        in_child_dup_chain,
+    );
     if let Some(cached) = DUP_MARK_MEMO.with(|m| m.borrow().get(&memo_key).copied()) {
         return cached;
     }
@@ -3552,6 +3566,7 @@ pub(super) fn mark_binder_dups_inner(
         consuming,
         live_after,
         in_proj_operand,
+        in_child_dup_chain,
         sites,
     );
     DUP_MARK_MEMO.with(|m| {
@@ -3560,6 +3575,7 @@ pub(super) fn mark_binder_dups_inner(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mark_binder_dups_body(
     db: &mut Db,
     id: StructId,
@@ -3567,6 +3583,7 @@ fn mark_binder_dups_body(
     consuming: bool,
     live_after: bool,
     in_proj_operand: bool,
+    in_child_dup_chain: bool,
     sites: &mut HashSet<StructId>,
 ) -> bool {
     // O(1) EARLY-PRUNE (the traversal-share win): if the occurrence oracle proves `binder` does not occur
@@ -3963,9 +3980,19 @@ fn mark_binder_dups_body(
             // element is NOT child-dup'd ⇒ `is_child_dup_site` false) and dqe11/17 (child not `live_after` ⇒ not
             // a dup site), and KEEPS the #9101 partition Let-epilogue dup (`binder_is_param` false). `must_escapes`
             // stays in the base term (dqe7/8 straight-line-escape suppression intact).
+            // DEPTH>=2 EXTENSION (v-core-opt x v-memory-safety, #9282): the depth-1 subtract fires only on the
+            // OUTER proj (is_child_dup_site true there). A depth>=2 chain `(. (. pr 0) 0)` recurses its INNER
+            // proj `(. pr 0)` with consuming=false ⇒ is_child_dup_site false ⇒ the inner would keep its surplus
+            // parent dup of the loop-invariant param (leaking the intermediate shell per iter). `in_child_dup_chain`
+            // propagates the child-dup'd, PARAM-rooted context down the chain so every borrowing intermediate
+            // subtracts its surplus parent dup too. Gated on binder_is_param (param = reclaimed OUTSIDE the body =
+            // surplus) ⇒ EXCLUDES LocalRef let-epilogue dups (#9101) + non-child-dup dqe move/escape shapes (flag
+            // never set: it originates only at an is_child_dup_site && binder_is_param proj).
+            let in_child_dup_param_chain =
+                (is_child_dup_site || in_child_dup_chain) && binder_is_param(db, operand, binder);
             let parent_consuming = !scalar_element
                 && (consuming || (!never_escapes && !must_escapes))
-                && !(is_child_dup_site && binder_is_param(db, operand, binder));
+                && !in_child_dup_param_chain;
             mark_binder_dups_inner(
                 db,
                 operand,
@@ -3973,6 +4000,7 @@ fn mark_binder_dups_body(
                 parent_consuming,
                 live_after,
                 true,
+                in_child_dup_param_chain,
                 sites,
             )
         }
@@ -4014,7 +4042,7 @@ fn mark_binder_dups_body(
             // Recurse for BINDER-marking on the scrutinee (borrowed), flagging it as a projection operand so a
             // nested payload/proj there does not re-mark a redundant child-dup (only the outermost consuming
             // extraction dups).
-            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, sites)
+            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, false, sites)
         }
         Core::SumExpect { scrutinee, .. } => {
             // The `SumExpect` twin of the `SumPayload` child-retain above: `Option.expect`/`Result.expect`
@@ -4033,7 +4061,7 @@ fn mark_binder_dups_body(
             {
                 sites.insert(id);
             }
-            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, sites)
+            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, false, sites)
         }
         // `List.at`/`Bytes.at` BORROW the sequence; the index is a scalar (consume position, no heap).
         Core::ListAt { list, index, .. } => {
