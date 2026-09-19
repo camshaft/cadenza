@@ -10247,7 +10247,7 @@
   (output (: 27000000000000000027 BigInt))
   (call main (: 0 Int64))
   (output (: 27000000000000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value"
@@ -10296,7 +10296,7 @@
   (output (: 2/1 Rational))
   (call main (: -1 Int64))
   (output (: 0/1 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned"
