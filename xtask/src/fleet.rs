@@ -21886,18 +21886,30 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             "2026-09-15T12:00:02+00:00 band=OK use=58%\n",
         )
         .unwrap();
+        // The oracle-lean staging cron now writes rc= (this PR): a PERSISTENT build failure (rc=1) must
+        // surface here so the type-differential sweep can't stay silently dark; a successful night (rc=0)
+        // self-clears. Pin that the rc=1 stamp is flagged.
+        std::fs::write(
+            dir.join("stage-oracle-lean.last-run"),
+            "2026-09-19T04:41:07+00:00 rc=1 BUILD-FAILED-OR-TIMED-OUT\n",
+        )
+        .unwrap();
         // A non-.last-run file → ignored.
         std::fs::write(dir.join("registry.json"), "{}").unwrap();
 
         let got = cron_health_failures(&dir);
         assert_eq!(
             got.len(),
-            1,
-            "only the nonzero-rc stamp is flagged: {got:?}"
+            2,
+            "both nonzero-rc stamps are flagged (compact-nudge + stage-oracle-lean): {got:?}"
         );
+        // Output is sorted by filename → compact-nudge before stage-oracle-lean.
         assert_eq!(got[0].0, "compact-nudge.last-run");
         assert_eq!(got[0].1, 127);
         assert!(got[0].2.contains("cargo: command not found"));
+        assert_eq!(got[1].0, "stage-oracle-lean.last-run");
+        assert_eq!(got[1].1, 1);
+        assert!(got[1].2.contains("BUILD-FAILED-OR-TIMED-OUT"));
 
         // Missing dir → no failures (never a false positive).
         let _ = std::fs::remove_dir_all(&dir);

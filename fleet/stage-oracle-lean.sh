@@ -62,7 +62,7 @@ flock -n 9 || { echo "stage-oracle-lean: another run holds the lock — skip." >
 # already resolves to it AND it's realized in the store. Only a changed oracle (new outPath) triggers a build.
 want="$(cd "$wt" && timeout 120 nix eval --raw --accept-flake-config '.#oracle-lean.outPath' 2>/dev/null || true)"
 if [ -n "$want" ] && [ -e "$want" ] && [ "$(readlink -f "$OUTLINK" 2>/dev/null || true)" = "$want" ] && [ -x "$OUTLINK/bin/oracle-check" ]; then
-  printf '%s fresh outPath=%s (no build)\n' "$(date -Is 2>/dev/null || echo now)" "$want" > "$LASTRUN" 2>/dev/null || true
+  printf '%s rc=0 fresh outPath=%s (no build)\n' "$(date -Is 2>/dev/null || echo now)" "$want" > "$LASTRUN" 2>/dev/null || true
   echo "stage-oracle-lean: oracle-check already fresh at $OUTLINK/bin/oracle-check — no build."
   exit 0
 fi
@@ -73,10 +73,12 @@ fi
 echo "stage-oracle-lean: building .#oracle-lean (out-link $OUTLINK, timeout ${BUILD_TIMEOUT}s) from $(basename "$wt") ..."
 if (cd "$wt" && timeout "$BUILD_TIMEOUT" nix build --accept-flake-config --out-link "$OUTLINK" '.#oracle-lean' >/dev/null 2>&1) \
    && [ -x "$OUTLINK/bin/oracle-check" ]; then
-  printf '%s BUILT outPath=%s\n' "$(date -Is 2>/dev/null || echo now)" "$(readlink -f "$OUTLINK" 2>/dev/null)" > "$LASTRUN" 2>/dev/null || true
+  printf '%s rc=0 BUILT outPath=%s\n' "$(date -Is 2>/dev/null || echo now)" "$(readlink -f "$OUTLINK" 2>/dev/null)" > "$LASTRUN" 2>/dev/null || true
   echo "stage-oracle-lean: staged oracle-check at $OUTLINK/bin/oracle-check (type-differential sweep will activate for cdz-smith on its next relaunch)."
 else
-  printf '%s BUILD-FAILED-OR-TIMED-OUT\n' "$(date -Is 2>/dev/null || echo now)" > "$LASTRUN" 2>/dev/null || true
+  # rc=1 so a PERSISTENT build failure surfaces in `fleet status` via cron_health_failures (a transient
+  # starvation self-clears on the next successful night's rc=0). Fail-open behavior is unchanged.
+  printf '%s rc=1 BUILD-FAILED-OR-TIMED-OUT\n' "$(date -Is 2>/dev/null || echo now)" > "$LASTRUN" 2>/dev/null || true
   echo "stage-oracle-lean: build failed or timed out — type sweep stays skipping (fail-open, retry next run)." >&2
 fi
 exit 0
