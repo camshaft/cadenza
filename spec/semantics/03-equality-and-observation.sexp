@@ -492,7 +492,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — runtime-Rational map/set-KEY found by normalized-equal key. Determinism-CLEARED + NIX-CONFIRMED =0 by v-corpus-harness (opt-sweep x3 282/0-div O0-O3 + nix corpus-gate-coarse-03 GREEN). escv host-drop: map result dropped-before-census so keys reclaim WITH the map; Rational normalization affects only the compared value, not the live count. Value-observation case, NOT key-reclaim code — key-ownership CODE hold untouched. Pin-flip only.
+  (live-objects 0))
 
 (case
   "a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order"
