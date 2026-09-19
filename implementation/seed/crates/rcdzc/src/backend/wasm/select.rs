@@ -3171,9 +3171,21 @@ fn emit_tail(
                 never_diverges,
                 &root,
             );
+            // EXPECT-of-owned-Some local reclaim: an `(Option.expect <owned-Some> …)` scrutinee's extracted
+            // payload shell leaks because `Core::SumExpect` is not globally `Owned`
+            // (`matchsum_expect_owned_reclaim_ok`). Non-looping, borrow-clean (05:2117 disc-only nc match).
+            let expect_reclaim = matchsum_expect_owned_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
             let reclaim_shell = view_reclaim
                 || looped_scalar_shell
-                || (!arms_tail_call && (scalar_shell_ok || param_reclaim || proj_reclaim));
+                || (!arms_tail_call
+                    && (scalar_shell_ok || param_reclaim || proj_reclaim || expect_reclaim));
             // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
