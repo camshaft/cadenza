@@ -1931,7 +1931,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend"
