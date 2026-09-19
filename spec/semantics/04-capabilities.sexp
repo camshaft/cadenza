@@ -656,7 +656,7 @@
   (host-responses (respond hr.h (: 7 UInt8)))
   (host-calls (call hr.h))
   (output (: b"\x07" Bytes))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; hrx1: an UNRESPONDED host call is a TRAP, not a hang or a default value — the negative-space
 ; companion of every (host-responses …) fixture in this chapter. The delegated (H.ask) reaches the

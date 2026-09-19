@@ -732,7 +732,7 @@
   (input (do (def (main (: x Float64)) #tuple(x 1)) (export main)))
   (call main (: 340282350000000000000000000000000000000.0 Float64))
   (output (: #tuple(340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The hex sibling of the bare-overflow malformed literal: `0xFFFFFFFFFFFFFFFF` is a VALID hex radix (unlike
 ; the bad-radix cases) but its value (2^64-1) overflows the signed Int64 a bare literal defaults to, so it is

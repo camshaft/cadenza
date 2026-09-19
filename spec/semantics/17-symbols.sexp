@@ -1346,7 +1346,7 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: #tuple((Symbol.of "alpha") 7) (Tuple Symbol Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; syx1: the full Symbol ROUND-TRIP identity on a RUNTIME symbol — Symbol.of (Symbol.to-string s) = s.
 ; The pins above cover the two half-trips: to-string(of("lit")) = "lit" (content round-trip) and

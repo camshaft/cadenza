@@ -290,7 +290,7 @@
           (match (match e ((Ast.Int n) (Ast.Int (+ n 100N))) (o o)) ((Ast.Int r) r) (_ 0N))))
       (export main)))
   (output (: 105 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ============================================================================================
 ; ASPIRATIONAL — the fuller structural-editing surface (a later generation realizes these)
@@ -429,7 +429,7 @@
   (output (: 105 BigInt))
   (call main (: -100 Int64))
   (output (: 0 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive walk over a runtime-SHAPED tree dispatches per call"
@@ -670,7 +670,7 @@
   (output (: 20 Int64))
   (call main (: 2 Int64) (: 9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time"
