@@ -18,15 +18,23 @@
 # the 8 partial tallies (A agree / D diverge / S skip / L leak) + concatenates per-shard DIVERGE/LEAK lines.
 # Post-seed the closure is WARM, so bumping N is now SAFE (16 shards pull warm + smaller 1/N slices, no added realize thrash) — N bumped 8→16 after the fuel-heavy tail capped 4/8 even warm (run 33902175678). N=16.
 #
-# SCHEDULED Sunday 04:00 UTC — a low-traffic off-peak slot well clear of the daily emit-warm (08:00), extract-
-# warm (10:00) and the nightly (07:00), so the heavy full warm never contends with them for the shared nix
-# daemon. NON-required / advisory: a failure just means "cold / not-measured this week", never reds a PR.
+# WAS SCHEDULED Sunday 04:00 UTC; now workflow_dispatch-ONLY (v-nix 2026-09-19, concierge greenlight option (b),
+# operator veto-window). WHY dispatch-only: (1) the oracle consumers this differential feeds — v-wasm-oracle +
+# v-lean-oracle — are AT-REST, so nothing currently READS the tally (same at-rest-consumer logic as #9265, which
+# dropped the daily inline diff); (2) even 16-way sharded, a "fuel-heavy tail" (a few very expensive cases that
+# round-robin index%N can't dilute) left 3/16 shards running the full ~6h and CANCELLED at GitHub's hard 6h job
+# cap on 3/3 recent weekly runs (09-05/06/13) — the run never produced a complete tally and burned ~18 ARM-runner-
+# hours/week on the always-capped shards. The full differential is regenerable ON-DEMAND (Run workflow) any time.
+# TO REACTIVATE (when an oracle consumer comes back and wants a scheduled full sweep): restore the `schedule:`
+# cron below AND bump N 16→24/32 (matrix + the two `-of-16` refs + shard-count comments) so the fuel-heavy shards
+# land under the 6h cap — the extra shards only pay off once the tail is the bottleneck, which it now is.
+# NON-required / advisory: a failure just means "cold / not-measured", never reds a PR.
 name: cache-warm-extract-wasm-full
 
 on:
-  schedule:
-    - cron: "0 4 * * 0" # weekly, Sunday 04:00 UTC (off-peak, clear of daily emit-08/extract-10 + nightly-07)
-  workflow_dispatch: {} # manual on-demand (the FIRST measurement + any ad-hoc full-corpus sweep) — v-gha-green may retune
+  # schedule: DISABLED (dispatch-only) — see the header note above (at-rest oracle consumers + 6h-cap fuel tail).
+  #   - cron: "0 4 * * 0" # weekly, Sunday 04:00 UTC — restore + bump N on oracle-consumer reactivation.
+  workflow_dispatch: {} # manual on-demand: the full-corpus sweep is now run explicitly (any ad-hoc / reactivation sweep)
 
 # Own group, fully outside ci's push-supersede group + cache-warm's group + the daily emit/extract groups, so
 # the heavy full-corpus warm never contends with or supersedes the critical dep-cache warm or the daily warms.
