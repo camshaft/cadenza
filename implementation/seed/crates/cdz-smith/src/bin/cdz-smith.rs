@@ -165,7 +165,7 @@ fn usage() {
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large]\n\
-         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large]   (O1-vs-O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz)\n\
+         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -1190,10 +1190,11 @@ fn cmd_differential(args: &[String]) -> ExitCode {
     }
 }
 
-/// The OPT-INVARIANCE dimension: for each generated program compare its VALUE at the default level (`O1`)
-/// against its value at `O3`; a divergence is a pure-optimizer miscompile (the O2/O3 global-CSE /
-/// lifted-analysis reclaim class the wasm-vs-rust oracle — both sides at O1 — cannot reach). WASM-only +
-/// in-process, so it needs the runtime store but NO `cdz` binary.
+/// The OPT-INVARIANCE dimension: for each generated program compare its VALUE at the `O0` baseline against
+/// its value at every higher level (`O1`/`O2`/`O3`); a divergence is a pure-optimizer miscompile (the O2/O3
+/// global-CSE / lifted-analysis reclaim class the wasm-vs-rust oracle — both sides at O1 — cannot reach) and
+/// the finding names the diverging level. WASM-only + in-process, so it needs the runtime store but NO `cdz`
+/// binary.
 #[cfg(feature = "differential")]
 fn cmd_opt_differential(args: &[String]) -> ExitCode {
     let mut count: u64 = 1000;

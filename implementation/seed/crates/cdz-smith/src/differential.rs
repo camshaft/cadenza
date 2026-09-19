@@ -1053,32 +1053,56 @@ pub fn differential(source: &str, store: &std::path::Path, cdz: &std::path::Path
     compare(&wasm, &rust)
 }
 
-/// The OPT-INVARIANCE oracle: compile+run ONE program at the DEFAULT level (`O1`, via [`run_wasm`]) AND at
-/// `O3` (via [`run_wasm_at_opt`]), and check the two RUNTIME VALUES agree. Optimization is a
-/// meaning-preserving transform, so a value/liveness disagreement between levels is a pure optimizer
-/// MISCOMPILE — the class the fixed-default wasm-vs-rust oracle structurally cannot reach (both its sides
-/// run at O1), e.g. the O2/O3 whole-function global-CSE or lifted-analysis reclaim leaks. Same backend +
-/// same renderer on both sides, so the comparison is [`compare_opt_invariance`] (EXACT value equality, no
-/// render-dialect tolerance). A decline/parse-skip on either level → not comparable (`Agree`).
+/// The OPT-INVARIANCE oracle: compile+run ONE program at the `O0` BASELINE and at EVERY higher level
+/// (`O1`/`O2`/`O3`), checking each level's RUNTIME VALUE against the baseline. The spec mandates it
+/// (`cadenza-compile-abi/src/opt.rs`: "Every level MUST produce OBSERVABLY-IDENTICAL behavior"), so a
+/// value/liveness disagreement between levels is a pure optimizer MISCOMPILE — the class the fixed-default
+/// wasm-vs-rust oracle structurally cannot reach (both its sides run at O1), e.g. the O2/O3 whole-function
+/// global-CSE / lifted-analysis reclaim leaks. `O0` is the reference because it applies only the
+/// canonicalizations (the least-transformed correct emit); comparing every level against it catches a
+/// miscompile introduced at ANY level and PINPOINTS the culprit (the mismatch names the diverging level),
+/// unlike an O1-vs-O3 check that would miss an O1 or O2 fault a later pass happens to undo. Same backend +
+/// renderer on both sides, so the comparison is [`compare_opt_invariance`] (EXACT value equality, no
+/// render-dialect tolerance). A decline/parse-skip at the baseline → not comparable (`Agree`); the FIRST
+/// (lowest-level) divergence is returned.
 pub fn opt_invariance(source: &str, store: &std::path::Path) -> Diff {
-    let lo = run_wasm(source, store); // default level (O1)
-    // Cheap short-circuit: a decline/parse-skip at the default level is never comparable.
-    if let Side::Declined(_) = lo {
+    let baseline = run_wasm_at_opt(source, store, rcdzc::OptLevel::O0);
+    // A compiler panic even at O0 is a crash finding, surfaced immediately.
+    if let Side::CompilePanic(info) = &baseline {
+        return Diff::CompileCrash(info.clone());
+    }
+    // A decline/parse-skip at the baseline is never comparable — a decline is a pre-emit fault, so it is
+    // level-independent (every level declines identically).
+    if let Side::Declined(_) = baseline {
         return Diff::Agree;
     }
-    let hi = run_wasm_at_opt(source, store, rcdzc::OptLevel::O3);
-    compare_opt_invariance(&lo, &hi)
+    // Compare each higher level against the O0 baseline; return the FIRST (lowest-level) divergence so the
+    // finding names exactly where the transform stops preserving meaning.
+    for level in [
+        rcdzc::OptLevel::O1,
+        rcdzc::OptLevel::O2,
+        rcdzc::OptLevel::O3,
+    ] {
+        let side = run_wasm_at_opt(source, store, level);
+        match compare_opt_invariance(&baseline, &side, "O0", level.as_str()) {
+            Diff::Agree => {}
+            other => return other,
+        }
+    }
+    Diff::Agree
 }
 
-/// Compare two outcomes of the SAME program at two OPT LEVELS. Unlike [`compare`] (asymmetric wasm-vs-rust,
-/// with render-dialect tolerance + rust-only Artifact/Unavailable arms), this is SYMMETRIC and demands EXACT
-/// value equality: both sides are the same wasm backend + `cdz-run` renderer, so any textual value
-/// difference is a real divergence, and there is no dialect to bridge. Rules: a compiler PANIC on either
-/// level → `CompileCrash`; a decline on either → not comparable (`Agree`, since a fault is pre-emit and
-/// level-independent); two values → agree iff byte-identical, else a `Value` mismatch; two traps → agree; a
-/// value-vs-trap split → a `Liveness` mismatch UNLESS a stack-exhaustion resource trap (opt can change
-/// inlining depth, and both sides share the wasm stack limit, so tolerate it exactly as [`compare`] does).
-pub fn compare_opt_invariance(lo: &Side, hi: &Side) -> Diff {
+/// Compare two outcomes of the SAME program at two OPT LEVELS (`lo_label`/`hi_label` name the levels, used
+/// verbatim in a mismatch's rendered fields so a finding names exactly which levels diverged). Unlike
+/// [`compare`] (asymmetric wasm-vs-rust, with render-dialect tolerance + rust-only Artifact/Unavailable
+/// arms), this is SYMMETRIC and demands EXACT value equality: both sides are the same wasm backend +
+/// `cdz-run` renderer, so any textual value difference is a real divergence, and there is no dialect to
+/// bridge. Rules: a compiler PANIC on either level → `CompileCrash`; a decline on either → not comparable
+/// (`Agree`, since a fault is pre-emit and level-independent); two values → agree iff byte-identical, else a
+/// `Value` mismatch; two traps → agree; a value-vs-trap split → a `Liveness` mismatch UNLESS a
+/// stack-exhaustion resource trap (opt can change inlining depth; both sides share the wasm stack limit, so
+/// tolerate it exactly as [`compare`] does).
+pub fn compare_opt_invariance(lo: &Side, hi: &Side, lo_label: &str, hi_label: &str) -> Diff {
     match (lo, hi) {
         // A compiler panic at either level is a crash finding — checked first so it is never masked.
         (Side::CompilePanic(c), _) | (_, Side::CompilePanic(c)) => Diff::CompileCrash(c.clone()),
@@ -1092,8 +1116,8 @@ pub fn compare_opt_invariance(lo: &Side, hi: &Side) -> Diff {
             } else {
                 Diff::Mismatch {
                     kind: MismatchKind::Value,
-                    wasm: format!("O1={a}"),
-                    rust: format!("O3={b}"),
+                    wasm: format!("{lo_label}={a}"),
+                    rust: format!("{hi_label}={b}"),
                 }
             }
         }
@@ -1107,8 +1131,8 @@ pub fn compare_opt_invariance(lo: &Side, hi: &Side) -> Diff {
             } else {
                 Diff::Mismatch {
                     kind: MismatchKind::Liveness,
-                    wasm: format!("O1=value {v}"),
-                    rust: format!("O3=trap {t}"),
+                    wasm: format!("{lo_label}=value {v}"),
+                    rust: format!("{hi_label}=trap {t}"),
                 }
             }
         }
@@ -1118,8 +1142,8 @@ pub fn compare_opt_invariance(lo: &Side, hi: &Side) -> Diff {
             } else {
                 Diff::Mismatch {
                     kind: MismatchKind::Liveness,
-                    wasm: format!("O1=trap {t}"),
-                    rust: format!("O3=value {v}"),
+                    wasm: format!("{lo_label}=trap {t}"),
+                    rust: format!("{hi_label}=value {v}"),
                 }
             }
         }
@@ -2007,26 +2031,37 @@ mod tests {
 
     #[test]
     fn opt_invariance_identical_values_agree() {
-        // O1 and O3 produced the same value — optimization preserved meaning.
+        // O0 and O3 produced the same value — optimization preserved meaning.
         assert_eq!(
-            compare_opt_invariance(&Side::Value("42".into()), &Side::Value("42".into())),
+            compare_opt_invariance(
+                &Side::Value("42".into()),
+                &Side::Value("42".into()),
+                "O0",
+                "O3"
+            ),
             Diff::Agree
         );
     }
 
     #[test]
     fn opt_invariance_differing_values_are_a_value_miscompile() {
-        // O1 and O3 disagree on the VALUE — a pure-optimizer miscompile (the headline finding). Uses EXACT
+        // O0 and O3 disagree on the VALUE — a pure-optimizer miscompile (the headline finding). Uses EXACT
         // equality, so this fires even for renders that `compare`'s dialect tolerance would bridge — right,
         // because both sides share the wasm/cdz-run renderer, so a textual difference IS a value difference.
-        match compare_opt_invariance(&Side::Value("3".into()), &Side::Value("4".into())) {
+        // The labels passed in are echoed verbatim so a finding names the exact levels that diverged.
+        match compare_opt_invariance(
+            &Side::Value("3".into()),
+            &Side::Value("4".into()),
+            "O0",
+            "O2",
+        ) {
             Diff::Mismatch {
                 kind: MismatchKind::Value,
                 wasm,
                 rust,
             } => {
-                assert_eq!(wasm, "O1=3");
-                assert_eq!(rust, "O3=4");
+                assert_eq!(wasm, "O0=3");
+                assert_eq!(rust, "O2=4");
             }
             other => panic!("expected a value mismatch, got {other:?}"),
         }
@@ -2040,7 +2075,9 @@ mod tests {
         assert!(matches!(
             compare_opt_invariance(
                 &Side::Value("#tuple(1 2)".into()),
-                &Side::Value("(tuple 1 2)".into())
+                &Side::Value("(tuple 1 2)".into()),
+                "O0",
+                "O3"
             ),
             Diff::Mismatch {
                 kind: MismatchKind::Value,
@@ -2056,7 +2093,9 @@ mod tests {
         assert!(matches!(
             compare_opt_invariance(
                 &Side::Value("7".into()),
-                &Side::Trap("integer divide by zero".into())
+                &Side::Trap("integer divide by zero".into()),
+                "O0",
+                "O3"
             ),
             Diff::Mismatch {
                 kind: MismatchKind::Liveness,
@@ -2072,7 +2111,9 @@ mod tests {
         assert_eq!(
             compare_opt_invariance(
                 &Side::Value("1".into()),
-                &Side::Trap("call stack exhausted".into())
+                &Side::Trap("call stack exhausted".into()),
+                "O0",
+                "O3"
             ),
             Diff::Agree
         );
@@ -2081,12 +2122,17 @@ mod tests {
     #[test]
     fn opt_invariance_both_trap_agree_and_declines_skip() {
         assert_eq!(
-            compare_opt_invariance(&Side::Trap("a".into()), &Side::Trap("b".into())),
+            compare_opt_invariance(&Side::Trap("a".into()), &Side::Trap("b".into()), "O0", "O3"),
             Diff::Agree
         );
         // A decline is a pre-emit fault → level-independent, never a mismatch.
         assert_eq!(
-            compare_opt_invariance(&Side::Declined("d".into()), &Side::Value("1".into())),
+            compare_opt_invariance(
+                &Side::Declined("d".into()),
+                &Side::Value("1".into()),
+                "O0",
+                "O3"
+            ),
             Diff::Agree
         );
     }
@@ -2100,7 +2146,12 @@ mod tests {
         };
         // A panic while compiling at EITHER level is a crash finding, never swallowed by the other side.
         assert_eq!(
-            compare_opt_invariance(&Side::Value("1".into()), &Side::CompilePanic(info.clone())),
+            compare_opt_invariance(
+                &Side::Value("1".into()),
+                &Side::CompilePanic(info.clone()),
+                "O0",
+                "O3"
+            ),
             Diff::CompileCrash(info)
         );
     }
