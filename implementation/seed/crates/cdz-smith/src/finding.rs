@@ -887,4 +887,72 @@ mod tests {
         assert!(note.contains("- **Hits:** 2"), "hits should bump:\n{note}");
         std::fs::remove_dir_all(&tmp).ok();
     }
+
+    /// A duplicate (same signature) with a SMALLER program REPLACES the stored reproducer; a LARGER
+    /// one does NOT. This is the convergence invariant that makes a deduped bucket actionable — across
+    /// cron cycles a crash/timeout bucket must shrink toward the MINIMAL reproducer, never grow. A
+    /// regression here (keep-first, or overwrite-with-larger) silently degrades every bucket's repro
+    /// quality while the hit counter still ticks, so it would pass unnoticed without this pin.
+    #[test]
+    fn a_duplicate_adopts_the_smaller_reproducer_only() {
+        let tmp = std::env::temp_dir().join(format!(
+            "cdz-smith-smaller-repro-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let store = FindingStore::open(&tmp).unwrap();
+        // Same crash site+message across all three → SAME signature; only the program varies.
+        let crash = CrashInfo {
+            site: Some("crates/rcdzc/src/x.rs:1:1".into()),
+            message: "boom".into(),
+            backtrace: String::new(),
+        };
+        let mk = |program: &str| Finding {
+            category: Category::Crash,
+            program: program.into(),
+            crash: Some(crash.clone()),
+            detail: None,
+            commit: "deadbeef".into(),
+        };
+        let large = "(do (def (main) (+ (+ 1 2) (+ 3 4))) (export main))";
+        let small = "(do (def (main) 0) (export main))";
+        assert!(
+            small.len() < large.len(),
+            "test setup: small must be shorter"
+        );
+        let sig = mk(large).signature();
+        let repro = tmp.join(format!("{sig}.smith.sexp"));
+
+        // First file: the large program is the initial reproducer.
+        assert!(matches!(store.file(&mk(large)).unwrap(), Filed::New(_)));
+        assert_eq!(std::fs::read_to_string(&repro).unwrap().trim_end(), large);
+
+        // A SMALLER duplicate REPLACES the stored reproducer (converge toward minimal).
+        assert!(matches!(
+            store.file(&mk(small)).unwrap(),
+            Filed::Duplicate(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&repro).unwrap().trim_end(),
+            small,
+            "a smaller duplicate must replace the stored reproducer"
+        );
+
+        // A LARGER duplicate must NOT grow the stored reproducer back.
+        assert!(matches!(
+            store.file(&mk(large)).unwrap(),
+            Filed::Duplicate(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&repro).unwrap().trim_end(),
+            small,
+            "a larger duplicate must NOT replace the smaller stored reproducer"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
