@@ -4012,3 +4012,79 @@ fn def_funcref_taken_builds_its_referenced_code_memo_once_not_per_query() {
         );
     });
 }
+
+// ── 28-wit:310 SHAPE-9 shell-reclaim co-fix: `escaped_field_projections` (reclaim.rs) ──────────
+// The analysis half of the wrapper shell-reclaim (v-memory-safety builds it; v-core-opt wires the
+// serialize.rs project+dup+deep-drop emit; v-memory-safety co-gates). These pin the API contract at
+// the Core level so a regression flips `cargo test`, independent of the (infra-gated) live census.
+
+#[test]
+fn wit310_escaped_field_projections_shape9_records_the_moved_out_field() {
+    // SHAPE-9: a record param `m` whose Bytes field `tok` MOVES OUT VERBATIM through a list+nested-record
+    // result (`(record (= items (list (record (= echo (. m tok))))))`). Unlike a direct compound-field
+    // forward (child-dup'd → droppable, see `site_a_record_cell_droppable_when_field_forwarded_...`), this
+    // nested path leaves the shell NOT droppable → the shell leaks today (28-wit:310 known-leak). The
+    // analysis must report the single dup target: field 0 (`tok`), one escaping occurrence → `[[0]]`.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (tok Bytes)))) \
+               (record (= items (list (record (= echo (. m tok))))))) \
+             (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select shape9");
+    let binder = params[0].0;
+    assert!(
+        !record_cell_param_droppable(&mut db, body, binder),
+        "shape-9: the field moves out through list+nested-record → shell NOT blanket-droppable"
+    );
+    assert_eq!(
+        escaped_field_projections(&mut db, body, binder),
+        Some(vec![vec![0usize]]),
+        "shape-9: analysis reports field 0 (tok) as the sole dup-then-drop target"
+    );
+}
+
+#[test]
+fn wit310_escaped_field_projections_none_when_whole_binder_moves_out() {
+    // WHOLE-binder move (`(def (f m) m)`): not droppable, but there is no FIELD to dup — the whole shell
+    // flows out. The analysis must BAIL (`None`) so the wrapper keeps the current sound suppress (leak),
+    // never a spurious shell drop that would double-free the returned cell.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (tok Bytes)))) m) (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select whole-move");
+    let binder = params[0].0;
+    assert!(!record_cell_param_droppable(&mut db, body, binder));
+    assert_eq!(
+        escaped_field_projections(&mut db, body, binder),
+        None,
+        "whole-binder move has no dup-able field → None (keep the sound leak)"
+    );
+}
+
+#[test]
+fn wit310_escaped_field_projections_none_when_shell_already_droppable() {
+    // DROPPABLE shape (direct compound-field forward + later borrow, child-dup'd): the blanket deep-drop
+    // already reclaims the shell → no per-field dup needed → `None` (use the existing drop_after path).
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (key Bytes) (flag Bool)))) \
+               (record (= a (. m key)) (= b (. m flag)))) \
+             (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select droppable");
+    let binder = params[0].0;
+    assert!(record_cell_param_droppable(&mut db, body, binder));
+    assert_eq!(
+        escaped_field_projections(&mut db, body, binder),
+        None,
+        "already blanket-droppable → None (no per-field dup needed)"
+    );
+}
