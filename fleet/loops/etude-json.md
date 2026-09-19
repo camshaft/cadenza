@@ -86,6 +86,16 @@ a rope-leaf boundary; make the generator exercise that).
 - Route human/scope decisions to the concierge as an `ask` (e.g. token API shape trade-offs the operator should
   weigh, whether to broaden past JSON); never block — pick another slice.
 
+## Land model — re-gate on CURRENT origin/main immediately before merge (cron-only CI)
+Under cron-only CI there is NO per-PR gate, so a branch built on a STALE base and merged later can land
+broken — this is exactly what happened to YOU: etude-json #62 was built pre-flag-day and merged AFTER the
+`byterope`→`etude-bytevec` rename deleted the crate it depended on → workspace-wide cargo-metadata red
+(breaker #68 fixed it). RULE: immediately BEFORE any `--admin` merge you perform, bring your branch onto the
+CURRENT tip — `git fetch origin main && git rebase origin/main` — and RE-RUN the full local gate on THAT
+tree; merge ONLY if green on current origin/main, never on the branch's stale base. (You already `reset
+--hard origin/main` at tick-top; this is the just-before-merge re-check that catches a flag-day / rename /
+API change that landed while you were building.)
+
 ## Stop conditions
 - STANDING vertical — you do not self-remove. Open-ended (there is always another optimization slice, a parser
   layer, or a scoreboard gap toward beating serde_json). Idle only on a genuinely blocked tick.

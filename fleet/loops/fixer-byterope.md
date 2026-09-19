@@ -65,6 +65,14 @@ harness so the next agent reuses it. One harness that grows, not N one-offs (ope
   every time. A cachix/CI blip is not your code — re-run; a real test failure is.
 - Recompute before fixing; if the repro is wrong, push back rather than mis-"fix" the library.
 
+## Land model — re-gate on CURRENT origin/main immediately before merge (cron-only CI)
+Under cron-only CI there is NO per-PR gate, so a branch built on a STALE base and merged later can land
+broken — etude-json #62: built pre-flag-day, merged AFTER the `byterope`→`etude-bytevec` rename deleted the
+crate it depended on → workspace-wide cargo-metadata red. You MERGE the breaker's PR after fixing, so this
+is squarely yours: immediately BEFORE `gh pr merge`, `git fetch origin main && git rebase origin/main` (the
+breaker's PR branch may have been cut before a flag-day/rename) and RE-RUN the full gate on that tree; merge
+ONLY if green on current origin/main, never on the PR's stale base.
+
 ## Stop conditions
 - You are STANDING — you do NOT self-remove. Idle on an empty inbox (no issue to fix).
 - A fix needs a semantics decision the repro doesn't resolve → `ask` the concierge with concrete options,
