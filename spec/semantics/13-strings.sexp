@@ -535,10 +535,13 @@
   (output (: 4 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  ; MEASURED (v-memory-safety DBG+RCT, this shape isolated): 1-cell residual at O0-O3 — the StrAt Some-shell
-  ; over a tail-consumed rope param with a borrow-only arm is not reclaimed (a separate class from the length-
-  ; prim borrow-site dup). UAF-safe (values hold), leak-over-UAF sound, TIGHTEN CANDIDATE.
-  (live-objects known-leak))
+  ; RE-MEASURED (v-memory-safety DBG+RCT, exact corpus shape `(String.concat "ab" "cd")`): census 0 at O0-O3
+  ; for all corpus args (2/4/0), rc-trace "every ALLOC reached a freed DROP" — this concat-rope shape is fully
+  ; reclaimed. The earlier "1-cell residual" was measured on a DIFFERENT isolation (a `rep`-built DEEP rope over
+  ; the same `go`), which leaks; the shallow concat-rope the corpus grades here does NOT. So this is a clean
+  ; exact-0 re-pin (the go StrAt loop over a concat-rope reclaims); the deep-rope residual is a separate,
+  ; non-corpus-witnessed phenomenon tracked by v-memory-safety.
+  (live-objects 0))
 
 (case
   "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
