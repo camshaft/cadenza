@@ -2412,6 +2412,34 @@
   (live-objects 0))
 
 (case
+  "a self-tail loop rebinding a boxed-sum accumulator to a BARE SumNew each iteration reclaims the old cell"
+  (doc
+    "The bare-`Core::SumNew` face of the loop-accumulator reclaim above (#9369 added `Core::SumNew => true`
+           + `Core::If{both fresh}` to `rebind_produces_fresh`, so `emit_loop_iteration`'s `drop_old_borrowed`
+           reclaims a rebound fresh-sum accumulator). The reader-loop case above rebinds via `(. r 0)`, which
+           FOLDS through the tuple ctor to an `(if c (W.Atom v) (W.Atom v))` — exercising `SumNew` UNDER the
+           `If` arm. This one rebinds the `last` accumulator DIRECTLY to a bare `(W.Atom (Bytes.at b pos))` —
+           no tuple, no projection, no `if` — so the rebind expression IS a `Core::SumNew` at top level,
+           exercising the `SumNew` arm STANDALONE. Each iteration `arr-alloc`s a fresh atom distinct from the
+           old accumulator (which does NOT embed the old `last`, so the conjunctive escape guard permits the
+           back-edge drop); the old cell is dropped before the slot is reused → no per-iteration leak. The
+           final atom is consumed internally by `wval` (extracts the Int64, no host escape). Over
+           b\"\\x05\\x07\\x09\" from pos 0: `last` ends `(W.Atom 9)`, `wval` = 9. No double-free (debug-counters
+           runtime does not trap); opt-invariant O0..O3.")
+  (input
+    (do
+      (type W (Atom Int64) (Zero))
+      (def
+        (go (: b Bytes) (: n Int64) (: pos Int64) (: last W))
+        (if (= n 0) last (go b (- n 1) (+ pos 1) (W.Atom (Option.expect (Bytes.at b pos) "v")))))
+      (def (wval (: s W)) (match s ((W.Atom li) li) ((W.Zero _) 0)))
+      (def (main (: pos Int64)) (wval (go b"\x05\x07\t" 3 pos (W.Atom 0))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
+
+(case
   "a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)"
   (doc
     "The ESCAPE/use-after-free face of the reader loop above (distinct-branch `if`): `one` returns `(tuple (W.Atom <byte>) (+ pos 1))` from an `if` whose two branches DIFFER (`(W.Atom 99)` in the else) — so the `if` cannot be merged/folded and `r` is a REAL join-produced heap handle. `loop` threads `(. r 0)` (the boxed-sum node) as the `last` accumulator and `(. r 1)` (the cursor) as the position, so the `W.Atom` child handle ESCAPES out of the tuple into the recursive call. If the let-bound tuple `r` were reclaimed after its projections (a naive rule seeing only borrows — `(. r 1)` copies its scalar out), the drop would cascade to FREE the escaped boxed sum → use-after-free → garbage 0 instead of 5. Pins that a nested-compound projection ESCAPES its aggregate (`select.rs binding_escapes`), so the aggregate is not reclaimed while its extracted child is live. All three of {distinct `if`, boxed-sum accumulator, sibling-projected cursor} are jointly required to trigger the bug. One step over b\"\\x05\\x07\" from pos 0: byte 5 → then-arm → `(W.Atom 5)` → `wval` = 5.")
