@@ -2278,6 +2278,36 @@ fn emit_expr_viewed(
                             return Ok(peel);
                         }
                     }
+                    // The NESTED-DESTRUCTURE twin of the tuple-Proj peel above: a `Core::SumPayload` whose LAST
+                    // path step is `Elem(i)` into a TUPLE or RECORD emits the nominal as a BARE projection
+                    // (`(. m i)` typed the slot's DECLARED element type — the same `Ty::Tuple`/`Ty::Record` arms
+                    // of the nested-projection walk that `Core::Proj` uses) while its solved type is the erased
+                    // inner. Because it is a `SumPayload`, not a `Core::Proj`, `proj_structural_newtype` misses
+                    // it. Peel when the projected element is an emitted single-payload newtype whose inner IS the
+                    // numeric result (22-property `Value.decode` of `(Option (Tuple Env Int64))`,
+                    // `Env = (FireAfter Int64)`, then `(* d 1000)` over the `Env` element `d` → `(* Env Int64)`
+                    // CDZ0201). Value-equivalent (recompile re-erases). Restricted to a TUPLE/RECORD container
+                    // last step (mirroring `proj_structural_newtype`): a `[Payload]` step over a newtype, or an
+                    // `Elem` over a `Ty::List`, is ALREADY unwrapped by its own emit arm (a registered
+                    // list-element binder, or the single-variant `(match node ((Ctor s) s))` walk arm) — peeling
+                    // there DOUBLE-wraps an already-inner value → `(match <Int64> ((Ctor x) x))` CDZ0203
+                    // (05-compound 0503, a recursive `Meters`-accumulator fold over a `(List Meters)`).
+                    if let Core::SumPayload { scrutinee, path } = core_of(db, n)
+                        && let Some((crate::core::PathStep::Elem(i), prefix)) = path.split_last()
+                        && let Some(elem) = match sum_payload_slot_ty(db, scrutinee, prefix) {
+                            Some(Ty::Tuple(ts)) => ts.get(*i).cloned(),
+                            Some(Ty::Record(fs)) => fs.values().nth(*i).cloned(),
+                            _ => None,
+                        }
+                        && let Ty::Nominal { decl, inner, .. } = elem
+                        && *inner == result_ty
+                        && is_emitted_single_payload_newtype(db, decl, emitted)
+                    {
+                        let scrut = emit_expr(db, b, n, None, env, emitted)?;
+                        if let Some(peel) = emit_newtype_unwrap_peel(db, b, scrut, decl, env) {
+                            return Ok(peel);
+                        }
+                    }
                 }
                 // PEEL a NEWTYPE operand of an ORDERING comparison to its orderable scalar inner. `<`/`<=`/
                 // `>`/`>=` over a single-variant newtype (`(type Instant (Instant UInt64))`) is rejected —
