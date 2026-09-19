@@ -101,3 +101,21 @@ debug = false
 [profile.release-debug]
 inherits = "dev"
 opt-level = 2
+
+# `ci` — the EXPENSIVE, diagnostic profile the code-running CI checks build under (operator principle
+# 2026-09-19: "the CI should be expensive and the local checks should optimize for speed … the ci can
+# notify us if we have failures that are harder to find"). Inherits `release` (opt-level 3) and turns the
+# correctness nets + line-table symbols back ON: `release` defaults `debug-assertions`/`overflow-checks`
+# OFF, so CI silently dropped integer-overflow and debug_assert! failures that the LOCAL gate (which runs
+# `release-debug`, a dev-inheritor with both ON) was already catching — a backwards split this fixes.
+# Line-tables give diagnosable backtraces on the harder-to-find failures. Local stays on the fast
+# `release-debug`; shipped artifacts (build.yml `--release`) and the content-addressed runtime stay on
+# lean `release` so their bytes / REQUIRED_RUNTIME_HASH are unchanged. flake.nix (v-nix) points ONLY the
+# code-running checks here (gate/opt-sweep/@test-suites/roundtrip/itest); codegen-check + bench-check STAY
+# on `release` — codegen-check builds the CA runtime component (ci would change its hash), and bench-check
+# is a perf measurement whose alloc-baseline overflow-checks would perturb.
+[profile.ci]
+inherits = "release"
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
