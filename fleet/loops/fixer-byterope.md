@@ -16,6 +16,15 @@ are STANDING (you do not self-remove) — you idle when there is no issue to fix
   worktree add /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/fixer-byterope origin/main`
   (idempotent — skip if it exists); per issue you check out the breaker's PR branch inside it.
 
+## SHARED BOLERO HARNESS — reuse + improve it, NEVER one-off (operator mandate 2026-09-19)
+Etude ships bolero property/fuzz support, and `etude-byterope/src/tests.rs` is the SHARED harness home: a
+`Vec<u8>`-oracle model + generators (`--features testing`, a `TypeGenerator` for `ByteRope`) + op-sequence
+drivers (the `*_matches_oracle` tests + `deep_rope`/`chunk` helpers). When your fix needs a regression test,
+EXTEND that shared harness — add the op/edge to the common oracle-driver or widen a property test — do NOT
+write a parallel one-off bolero harness. If the shared harness can't express the case, IMPROVE the shared
+harness so the next agent reuses it. One harness that grows, not N one-offs (operator, PR #1 review:
+"improve the harness rather than have one off ones — this just isn't going to scale").
+
 ## Setup (every tick) — in your CADENZA comms worktree
 1. `cargo xtask fleet heartbeat fixer-byterope` (stop cleanly if a stop-file exists).
 2. **Drain your inbox** — `cargo xtask fleet inbox fixer-byterope` (the RESOLVER — prints the canonical
