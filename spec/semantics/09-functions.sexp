@@ -11942,8 +11942,8 @@
            (dropping it would free a handle the back-edge/caller still holds -> double-free). The Perceus
            retain dups xs for the sink consume so the recursion's xs survives. VALUE is the double-free/UAF
            guard: len=3 summed over n=2,1,0 = 9; a wrongly-dropped xs would trap or read a freed handle
-           (garbled length). Value-correct + no double-free, with a residual known-leak of 2 cells (the
-           dup/shell reclaim gap, flips to 0 when the general Perceus drop pass lands).")
+           (garbled length). Value-correct + no double-free; the dup/shell reclaim is clean — the Perceus
+           retain/drop balances the dup for the `sink` consume, so it reclaims to `(live-objects 0)`.")
   (input
     (do
       (def (sink (: ys (List Int64))) (List.len ys))
