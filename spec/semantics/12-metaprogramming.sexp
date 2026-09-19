@@ -3290,7 +3290,8 @@ c")))
       (export main)))
   (call main (: 5 Int64))
   (output (: 5 BigInt))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — Ast escape/render case (splice-by-identity / Ast.print float render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor"
@@ -5636,7 +5637,8 @@ c")))
   (input (do (def (main (: x Float64)) (Ast.print (Ast.Float (/ x 0.0)))) (export main)))
   (call main (: 1.0 Float64))
   (output (: "inf.0" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — Ast escape/render case (splice-by-identity / Ast.print float render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0"
@@ -5644,7 +5646,8 @@ c")))
     (do (def (main (: x Float64)) (Ast.print (Ast.Float (- (/ x 0.0) (/ x 0.0))))) (export main)))
   (call main (: 1.0 Float64))
   (output (: "NaN.0" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — Ast escape/render case (splice-by-identity / Ast.print float render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "nfp3 Ast.print renders a -inf leaf inside a list as -inf.0"
@@ -5656,7 +5659,8 @@ c")))
       (export main)))
   (call main (: 1.0 Float64))
   (output (: "(f -inf.0)" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — Ast escape/render case (splice-by-identity / Ast.print float render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 ; -- a quasiquote PATTERN dispatches on the head symbol of a RUNTIME Ast (built via Ast.List/Ast.Name so it
 ; is not a constant); migration from rcdzc a_runtime_string_pattern_dispatches_by_content, 2026-08-27. The
