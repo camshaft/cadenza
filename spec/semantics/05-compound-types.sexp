@@ -2220,13 +2220,16 @@
   (doc
     "Proves the runtime-heap extraction-shell reclaim residue above is NOT `String.to-bytes`-specific but
            general to the whole allowlisted-builder set (`sum_shell_reclaim_payload_ok`): a runtime-heap
-           String extracted from a runtime `Some` and consumed by `Map.insert` (an allowlisted builder,
-           inserted as the VALUE, the temp map immediately `Map.len`'d and dropped) leaves the SAME CONSTANT
-           2 live objects (shell + payload), opt-invariant (O0..O3) and independent of the payload's rope
-           size. So the fault is the shell-deep-drop-vs-dup-on-escape balance itself when the payload is a
-           heap cell, NOT one allowlist entry — the fix locus is the reclaim balance, not allowlist
-           membership. The naked-`Map.insert` sibling below (no extraction) reclaims to 0, isolating the
-           residue to the extraction shell. IDEAL 0; flip when the heap-payload reclaim balances.")
+           String extracted from a runtime `Some` and consumed by `Map.insert` inserted as the VALUE (the
+           temp map immediately `Map.len`'d and dropped) reclaims to 0, opt-invariant (O0..O3) and
+           independent of the payload's rope size. ROOT CAUSE (now fixed): `Map.insert` into an empty map
+           CONST-FOLDS to a `Core::MapNew` (a fresh element-retaining constructor) in `lower`, which was NOT
+           in `is_allowlisted_builder` — so the consumed payload-as-value was not a builder child, the
+           subset check failed, and the shell declined (leak). The fix admits `MapNew`/`ListNew` VALUE
+           positions as fresh-ctor absorbers (the const-folded twins of the allowlisted collection builders;
+           `MapNew` KEYS stay excluded — the map-key-ownership line), so the value payload is a single-owned-
+           ref move into the fresh map and the shell deep-drop balances 1:1. The naked-`Map.insert` sibling
+           below (no extraction) also reclaims to 0, isolating the original residue to the extraction shell.")
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
@@ -2239,7 +2242,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 1 Int64))
-  (live-objects 2))
+  (live-objects 0))
 
 (case
   "the naked control: Map.insert consuming a heap String OUTSIDE an extraction reclaims to zero"
@@ -2270,12 +2273,14 @@
            String payload is CONSUMED by `String.to-bytes` (an allowlisted single-owned-ref-move consumer).
            `owned_compound_boxed` dups the payload at the consuming site (the scrutinee is Owned), so the
            payload is at rc>=2 through the arm and the shell deep-drop balances 1:1 — reclaims to 0
-           (rcdzc `sum_cont_owned_call_consume_allowlisted`). CONTRAST the inlined-producer witnesses above:
-           an `if`-inlined `mk` scrutinee is NOT admitted (an `if` can be an invisible resume-threaded
-           handler state that `dead-after` cannot see; only a `Core::Call` is provably not resume-threaded),
-           so those stay `(live-objects 2)` until the resume-safe `if`-admission generalization lands. rep
-           builds a genuine runtime rope (\"a\"+n·\"x\" = n+1 bytes; n=3 → 4). No double-free (debug-counters
-           runtime does not trap); opt-invariant O0..O3.")
+           (rcdzc `sum_cont_owned_call_consume_allowlisted`). The inlined-producer witnesses above now ALSO
+           reclaim to 0: the resume-safe `if`-admission generalization LANDED (#9320 — `is_fresh_owned_sum_
+           producer` admits an `if` of two fresh `SumNew`s, structurally resume-safe by the same argument as
+           a `Core::Call`), flipping the String.to-bytes inlined pair, and the fresh-ctor-absorber extension
+           flipped the Map.insert general case. So this case remains the fence for the ORIGINAL bare-
+           `Core::Call` producer shape (recursive `mk` stays a call, never an inlined `if`). rep builds a
+           genuine runtime rope (\"a\"+n·\"x\" = n+1 bytes; n=3 → 4). No double-free (debug-counters runtime
+           does not trap); opt-invariant O0..O3.")
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))

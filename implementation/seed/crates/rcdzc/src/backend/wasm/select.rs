@@ -4866,6 +4866,29 @@ fn collect_allowlisted_builder_children_expr(
         return;
     }
     let is_builder = is_allowlisted_builder(db, id);
+    // FRESH element-retaining collection constructors are the const-folded twins of the allowlisted
+    // collection builders (`Map.insert`/`List.push`-into-empty fold to `Core::MapNew`/`Core::ListNew` in
+    // `lower`), so a payload CONSUMED as one of their VALUE positions is a single-owned-ref move into the
+    // fresh collection — the same 1:1 balance the builder allowlist requires. Mark only VALUE positions:
+    // `ListNew` elements and `MapNew` entry VALUES. A `MapNew` KEY (and a `Set.of` element, which IS a CHAMP
+    // key) is NEVER absorbed here — the map/set-key-ownership line neither v-core-opt nor v-memory-safety
+    // crosses; a key-position payload stays a consuming site NOT in this set, so the subset check fails and
+    // the shell declines (leak beats a key double-free). Fixes the general Map.insert extraction-shell leak
+    // (05-compound:2219): the fold to `MapNew` left the payload-as-value not a builder child, so the subset
+    // check failed and the shell leaked. Imprecision only OVER-DECLINES (a value missing → subset fails).
+    match core_of(db, id) {
+        Core::ListNew { elems } => {
+            for &e in elems.iter() {
+                out.insert(e);
+            }
+        }
+        Core::MapNew { entries, .. } => {
+            for &(_key, val) in entries.iter() {
+                out.insert(val);
+            }
+        }
+        _ => {}
+    }
     for c in core_child_ids(db, id) {
         if is_builder {
             out.insert(c);
