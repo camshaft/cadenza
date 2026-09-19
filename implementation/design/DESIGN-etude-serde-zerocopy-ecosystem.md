@@ -282,10 +282,10 @@ grammar; the `NumberToken`'s flags/spans are the contract between §5's Visitor 
 ## 7. Increments (top-to-bottom, the way a vertical lands them)
 
 Each increment is independently landable and gated; a later one depends only on earlier ones. Per the
-operator's perf bar (Slack 1174, "every single function benchmarked and we should be continuously
-improving"), _every public function in every crate below carries a criterion benchmark — differential vs the
-reference crate where one exists (`serde_json`, `bigdecimal`, `num-bigint`, `num-rational`, `std`) — and a win
-is a new baseline, not a stopping point_ (§7a).
+operator's perf bar (Slack 1174/1179), _every real-work public function in every crate below carries a
+criterion benchmark — differential vs the reference crate where one exists (`serde_json`, `bigdecimal`,
+`num-bigint`, `num-rational`, `std`) — and a win is a new baseline, not a stopping point_ (§7a). Simple O(1)
+getters (`len`/`is_empty`/field reads) are exempt.
 
 - **Increment 1 — `etude-span` crate.** The `Span` type (§2) + tests (record/shrink/range; cross-chunk
   resolve via `ByteVec::slice`). Gate: `cargo test -p etude-span` + a criterion bench per public fn.
@@ -316,8 +316,10 @@ is a new baseline, not a stopping point_ (§7a).
 
 ### 7a. Benchmarking mandate (operator standing directive)
 
-- Every public function in `etude-span`, `etude-serde`, and the new surface on `etude-bytevec`/`etude-str`
-  carries a criterion benchmark; no public function ships unmeasured.
+- Every _real-work_ public function in `etude-span`, `etude-serde`, and the new surface on
+  `etude-bytevec`/`etude-str` carries a criterion benchmark, plus a constructor-group bench; no real-work
+  function ships unmeasured. Simple O(1) getters (`len`/`is_empty`/field reads like `Span::range`) are
+  exempt (operator ruling, Slack 1179) — optionally noted as intentionally unbenched.
 - Where a reference implementation exists, the bench is _differential_ against it (`serde_json` for the JSON
   decode path; `bigdecimal`/`num-bigint`/`num-rational` for the value constructors).
 - Continuous improvement: a win becomes the new baseline; keep finding the next lever. Verify before
