@@ -501,20 +501,20 @@
   (live-objects known-leak))
 
 (case
-  "the MINIMAL String.at scalar-walk over a tail-consumed rope param leaves the borrow-only-arm residual (isolated)"
+  "the MINIMAL String.at scalar-walk over a tail-consumed SHALLOW (concat) rope param is FULLY RECLAIMED"
   (doc
-    "The ISOLATED minimal form of the balanced-paren scan's residual above (501): a `(match (String.at s i)
-           ((Some _c) (go s (+ i 1) n (+ acc 1))))` self-tail loop over an OWNED runtime rope param `s`, the
-           arm only BORROWS the scalar view (`_c` unused — a pure count) and threads `s` as the consumed
-           tail-call arg. Unlike 501 this uses a LITERAL loop bound, NOT `String.scalar-len s` — so it isolates
-           the StrAt Some-shell reclaim residual from any length-prim borrow (the List.len/Map.size/Set.len/
-           String.scalar-len sibling gate broadening is a SEPARATE reclaim path). v-memory-safety isolated
-           exactly this shape and measured a persistent 1-cell residual at O0-O3 (all levels — not the O2/O3
-           CSE/B2 borrow-site-dup class; a genuinely always-on StrAt-view/Option-shell reclaim gap in a
-           self-tail loop over a tail-consumed rope param). SOUNDNESS: values hold (r=2→2, r=4→4, r=0→0), so the
-           residual is a leak-over-UAF conservative miss, NOT an over-reclaim — a TIGHTEN CANDIDATE for the
-           StrAt self-tail-loop shell reclaim, tracked by v-memory-safety. The clean coarse-gate witness they
-           asked for (leaks at O1, so the default gate pins it); 501 is the same residual mixed with scalar-len.")
+    "A `(match (String.at s i) ((Some _c) (go s (+ i 1) n (+ acc 1))))` self-tail loop over a runtime rope
+           param `s`, the arm only BORROWS the scalar view (`_c` unused — a pure count) and threads `s` as the
+           consumed tail-call arg, with a LITERAL loop bound (NOT `String.scalar-len s`, isolating the StrAt
+           Some-shell reclaim from any length-prim borrow). The SOURCE here is a SHALLOW rope
+           (`String.concat \"ab\" \"cd\"`), and it FULLY RECLAIMS: census 0 at O0-O3 for all args (DBG+RCT
+           \"every ALLOC reached a freed DROP\"), gate-proven by 13-strings chapter census. This case was
+           briefly mis-pinned known-leak (#9271→re-pinned #9280): the 1-cell residual originally cited was
+           measured on a DIFFERENT isolation — a `rep`-built DEEP rope through the same loop — which DOES leak
+           and is now its own gate-proven witness (#9283, still known-leak, the StrAt-over-DEEP-rope reclaim
+           gap v-memory-safety is chasing). The shallow concat-rope twin (this case) reclaims to 0; the
+           deep-rope twin (#9283) is the tighten target. 501 (balanced-paren scan) is the same StrAt-loop
+           reclaim mixed with `String.scalar-len` and genuinely leaks (1); its fix is being co-designed.")
   (input
     (do
       (def
