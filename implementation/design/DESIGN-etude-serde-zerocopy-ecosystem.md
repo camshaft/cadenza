@@ -42,6 +42,12 @@ the source's `Bytes` chunks), not a `&'de` reference. This removes the `'de` lif
 entire Deserializer/Visitor surface — _cleaner_ than serde, and it is the only model that works over a
 non-contiguous rope. Everything else in this design follows from Decision 0.
 
+_Empirically confirmed (etude-json spike, etude PR #184, do-not-merge)._ A real grammar-enforcing
+Deserializer over the live `etude-json` tokenizer, driving this Visitor, passes a differential test vs
+`serde_json` (accept/reject + value equality) across 1-byte / 3-byte / whole-buffer rope chunk layouts.
+Nested seq/map values re-enter `deserialize_any` over the shared token stream with _zero_ lifetime plumbing —
+Decision 0 holds against the real cursor. Still awaiting the operator's sign-off on the PR (§8.1).
+
 ---
 
 ## 1. The crate stack (bottom → top) and the boundaries
@@ -70,9 +76,13 @@ non-contiguous rope. Everything else in this design follows from Decision 0.
 - The chunk-streaming scan cursor lives _in_ `etude-bytevec` (it already owns `Reader<'a>` and `Chunks<'a>`),
   extended with absolute-offset tracking + span emission (§3). _Decision 1b: do not create a separate
   `etude-scan` crate_ — fewer crates, and the cursor is intrinsic to the rope it walks.
-- `etude-serde` depends on `etude-bytevec` + `etude-span` + `etude-str`. Decoders depend on `etude-serde` +
-  the value types. Value types (`etude-decimal` etc.) depend on `etude-span`/`etude-bytevec` only for the
-  validated-component constructor inputs — never on a decoder (§6).
+- `etude-serde` depends on `etude-bytevec` + `etude-str` — and _not_ `etude-span` (spike finding, §5): the
+  Visitor boundary has no handle on the source rope, so a token cannot carry a bare `Span` to be resolved
+  later; it carries _materialized_ O(1)-shared sub-ropes instead. `etude-span` therefore stays a
+  _decoder-internal_ scan/record primitive (where the source rope is in hand), below the Visitor boundary —
+  it is still the operator-commissioned shared primitive for the scanning phase, just not an `etude-serde`
+  dependency. Decoders depend on `etude-serde` + the value types. Value types (`etude-decimal` etc.) depend on
+  `etude-bytevec` only for the validated-component constructor inputs — never on a decoder (§6).
 
 ---
 
@@ -223,12 +233,31 @@ pub enum RopeBytes {
 ```
 
 - _Strings_ (the copy-avoidance payoff — JSON's only bulk content): a no-escape string is
-  `RopeStr::Borrowed(strrope.slice_span(inner_span))` — zero copy. An _escaped_ string must materialize
-  (`RopeStr::Owned`) — unescape can never be a pure borrow (constraint 3). The tokenizer records a cheap
-  `has_escapes` flag during its mandatory scan so the value layer picks the path with no re-scan.
-- _Numbers_ are always a decode, never a borrow, but skippable (constraint 4). A number token is a raw `Span`
-  + cheap `int/frac/exp` flags; the value is produced on demand by handing the span's digit/sign/exp
-  components to a value-type constructor (§6). Lazy decode wins when a consumer skips fields.
+  `RopeStr::Borrowed(StrRope::from_utf8(input.slice(string_span)))` — an O(1) structural share, no unescape,
+  no allocation (an escape-free JSON string's content is already valid UTF-8 in the source rope). An _escaped_
+  string materializes (`RopeStr::Owned`) via `decode_string` — unescape can never be a pure borrow (constraint
+  3). The tokenizer records a cheap `has_escapes` flag during its mandatory scan so the value layer picks the
+  arm with no re-scan. _Spike-confirmed (#184):_ this works today on `etude-json`'s `string_span` +
+  `string_has_escapes` (both on main) — the common case (unescaped strings) is zero-copy now, and
+  `etude-json` #147's `decode_str_rope` is an _optimization_ for the escaped case, not a prerequisite.
+- _Numbers_ are always a decode, never a borrow, but skippable (constraint 4). The number token carries
+  _materialized_ O(1)-shared sub-ropes, not a bare `Span` — the Visitor has no handle on the source rope, so
+  it could not resolve a span itself (spike finding b). Shape (matches `etude-json::Token::number_parts`,
+  #171):
+  ```rust
+  pub struct NumberToken {
+      pub negative: bool,
+      pub lexeme: ByteVec,               // the whole number lexeme (O(1) sub-rope) — feeds a lexeme parser
+      pub integer: ByteVec,              // integer digit run (ASCII 0-9, grammar-validated)
+      pub fraction: Option<ByteVec>,     // fraction digit run, if any
+      pub exponent: Option<ByteVec>,     // exponent digit run, if any
+      pub exponent_negative: bool,
+  }
+  ```
+  The `lexeme` is the primary payload (one slice, feeds a value type's byte-iterator parser); the component
+  sub-ropes are cheap structural metadata (integer-ness = no fraction & no exponent; sign; digit counts)
+  built with one `ByteVec::slice` each. Value produced on demand via §6. Lazy decode wins when a consumer
+  skips fields.
 
 _The Visitor contract (no `'de`, rope-shaped):_
 ```rust
@@ -236,7 +265,7 @@ pub trait Visitor {
     type Value;
     fn visit_str(self, s: RopeStr) -> Result<Self::Value, Error>;      // O(1)-shared or owned
     fn visit_bytes(self, b: RopeBytes) -> Result<Self::Value, Error>;
-    fn visit_number(self, tok: NumberToken) -> Result<Self::Value, Error>;   // NumberToken = span + flags
+    fn visit_number(self, tok: NumberToken) -> Result<Self::Value, Error>;   // materialized sub-ropes (above)
     fn visit_bool(self, b: bool) -> Result<Self::Value, Error>;
     fn visit_null(self) -> Result<Self::Value, Error>;
     fn visit_seq<A: SeqAccess>(self, seq: A) -> Result<Self::Value, Error>;
@@ -259,23 +288,31 @@ lifetime threading — the source chunks stay alive via refcount as long as any 
 Operator (from the `etude-decimal #64` concern — it had embedded the JSON-number grammar in the decimal
 type): _"I do not love doing parsing in the data structure — it should be done by the parser."_
 
-_Decision 6: decoders/parsers own grammar scanning + validation; value crates expose
-construct-from-validated-components constructors, not format-grammar parsers._ The decoder scans a number
-token into its components (sign, integer-digits span, fraction-digits span, exponent) and hands those
-_validated_ components straight to the value constructor — no intermediate `String` allocation (reinforcing
-copy-avoidance).
+_Decision 6: the decoder owns the format (JSON) grammar scan + validation; the value type only ever consumes
+decoder-validated number text, never re-scanning JSON structure._ The `etude-decimal #64` concern was that
+the decimal type had embedded the _JSON-number grammar_ — the format-level scanning. That stays in the
+decoder. Given a `NumberToken` whose bytes the decoder has already scanned and validated as a well-formed
+number, either value-constructor handoff honors the principle (spike ask, resolved):
+
+- _Full-lexeme parse (primary for `etude-decimal`)._ `Decimal::parse<I: IntoIterator<Item=u8>>(bytes)` already
+  exists and consumes a byte iterator with no pre-copy. Feed it `NumberToken::lexeme` (one O(1) sub-rope) — a
+  value type parsing its own _pre-validated_ canonical text is a normal from-string constructor, not the
+  format-grammar-in-the-value-type pattern #64 flagged (the decoder did the JSON-level scan).
+- _Split components (`from_components`, for a value type that wants pre-split digits)._ Hands the validated
+  integer/fraction/exponent digit runs directly, no re-synthesis of `.`/`e`/sign, no intermediate `String`.
 
 ```rust
-// etude-decimal exposes (no json-number grammar inside):
+// etude-decimal (no json-number grammar inside): either handoff is fine.
 impl Decimal {
-    pub fn from_components(sign: Sign, int_digits: &[u8], frac_digits: &[u8], exp: i64)
-        -> Result<Decimal, DecimalError>;    // digits are validated ASCII 0-9, guaranteed by the decoder
+    pub fn parse<I: IntoIterator<Item = u8>>(bytes: I) -> Result<Decimal, DecimalError>;   // primary; feed tok.lexeme
+    pub fn from_components(negative: bool, int_digits: &[u8], frac_digits: &[u8], exp: i64) // #108; feed tok.integer/fraction/exponent
+        -> Result<Decimal, DecimalError>;
 }
-// the JSON decoder (etude-json) owns the grammar and calls the above; it may read digits chunk-aware
-// from the ScanCursor, so even a cross-chunk number needs no linearized String.
 ```
-Same shape for `etude-bigint` (`from_ascii_digits`) and `etude-rational`. A value type never re-parses format
-grammar; the `NumberToken`'s flags/spans are the contract between §5's Visitor and these constructors.
+`etude-bigint`/`etude-rational` similarly. `NumberToken` (§5) is a superset that supports both: `lexeme` for a
+parser, component sub-ropes for `from_components` — both cheap for the tokenizer (it records every boundary
+during its mandatory scan). The contract between §5's Visitor and these constructors is: the value type reads
+grammar-validated digit text, and never performs the format-level scan.
 
 ---
 
@@ -309,10 +346,12 @@ getters (`len`/`is_empty`/field reads) are exempt.
   `BigInt::from_ascii_digits`, etc.; migrate any grammar currently in a value type out to its decoder (closes
   the `etude-decimal #64` concern). Gate: constructor tests from raw component slices; assert no `String`
   alloc on the number path; differential bench vs `bigdecimal`/`num-bigint` construction.
-- **Increment 6 — `etude-json` adopts the model.** Its slice-1 tokenizer already emits `{offset,end}` +
-  `has_escapes`; retarget it onto `etude-serde`'s Visitor and the `ScanCursor`, and route numbers through
-  Increment 5's constructors. Gate: JSON conformance corpus; a differential bench vs `serde_json` showing
-  zero allocation on a no-escape-string / skipped-number workload.
+- **Increment 6 — `etude-json` adopts the model.** _Prototyped already_ as the validating first consumer
+  (etude PR #184, do-not-merge): a real grammar-enforcing Deserializer over the live tokenizer, differential
+  vs `serde_json`, zero-copy Borrowed strings via `string_span`/`has_escapes`. Increment 6 productionizes
+  that adapter once the design is approved: route numbers through Increment 5's constructors, land the crate.
+  Gate: JSON conformance corpus; a differential bench vs `serde_json` showing zero allocation on a
+  no-escape-string / skipped-number workload.
 
 ### 7a. Benchmarking mandate (operator standing directive)
 
@@ -334,7 +373,15 @@ Defaults are chosen (above); these are the forks worth an operator eyeball on th
 
 1. _Decision 0 (drop `'de`, structural-sharing borrow)._ Confirm we are content abandoning serde
    source-compat in favor of a rope-native, lifetime-free Deserializer. (Default: yes — it is the only model
-   that works over a non-contiguous rope, and it is cleaner.)
+   that works over a non-contiguous rope, it is cleaner, and it is now _empirically confirmed_ by a real
+   grammar-enforcing `etude-json` Deserializer that passes a differential test vs `serde_json` across rope
+   chunk layouts, threading nested seq/map with zero lifetime plumbing — etude PR #184, held do-not-merge
+   pending this sign-off.)
+1a. _`NumberToken` shape (resolved with etude-json, spike-driven)._ It carries _materialized_ O(1)-shared
+   sub-ropes, not a bare `Span` (the Visitor has no source-rope handle). Payload is a superset: `lexeme` (the
+   whole number, primary — feeds `Decimal::parse`) plus split component sub-ropes (feeds `from_components`).
+   §6 accepts either value-constructor handoff since both consume decoder-validated number text. No open
+   decision; recorded for review.
 2. _Crate for the value model._ Named `etude-serde` here. Alternatives: `etude-decode`, or fold the traits
    into `etude-bytevec`. (Default: a separate `etude-serde` — decoders/value-types depend on the trait crate
    without pulling each other.)
