@@ -1459,7 +1459,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 60 20 20 1 1 1 0) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 (case
   "self-difference of a 100-element trie IS the canonical empty set by equality"
@@ -1761,7 +1762,8 @@
       (def (main) (build #set() 3))
       (export main)))
   (output (: #set(1 2 3) (Set Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 ; The escape case above crosses an INSERT-built set. A set produced by set ALGEBRA (union / intersection /
 ; difference) is also a runtime handle that must escape to the host as its value form — exercising the
@@ -1781,7 +1783,8 @@
   (output (: #set(1 2 5) (Set Int64)))
   (call main (: 1 Int64))
   (output (: #set(1 2) (Set Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 (case
   "a runtime set-difference result escapes to the host as its value form"
@@ -1797,7 +1800,8 @@
   (output (: #set(1 3) (Set Int64)))
   (call main (: 9 Int64))
   (output (: #set(1 2 3) (Set Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 ; --- RUNTIME-element `Set.of`: equality and set algebra over a set whose element is a runtime value ----
 ; The cases above build every set from CONSTANT `Set.of` literals or a constant insert-loop, so they
@@ -2554,7 +2558,8 @@
   (output (: (tuple 3 1) (Tuple Int64 Int64)))
   (call main (: -1.0 Float64))
   (output (: (tuple 3 1) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 (case
   "Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order"
@@ -5513,7 +5518,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: "abc" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 (case
   "sto6 a 20-element multi-node set to-list starts sorted 1,2,3"
@@ -5565,7 +5571,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: "ab|b|bb" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — measures live-objects 0 on every heap trial (escape/to-list return dropped-before-census); v-core-opt 40-chapter baseline diff + census-sweep provenance.
+  (live-objects 0))
 
 ; -- breaker batch 418 (2026-08-26): NON-FINITE and SIGNED-ZERO floats as CHAMP keys — hash and
 ; equality agree everywhere: {+0.0,-0.0} are TWO members / -0.0 is not a member of {+0.0} / a Map
