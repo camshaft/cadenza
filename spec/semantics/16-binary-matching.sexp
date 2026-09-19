@@ -3859,7 +3859,7 @@
   (output (: 18375252745424078600 BigInt))
   (call main (: 2 Int64))
   (output (: 144964032628459529 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's"
@@ -5260,7 +5260,7 @@
   (output (: "x" String))
   (call main (: 48 Int64))
   (output (: "x" String))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; bfx10 (breaker, GAP): a dependent segment size from an ARITHMETIC EXPRESSION over a byte binder declines
 ; ("a runtime bin utf8 segment needs a computable byte range (offset + size)"). This is a SECOND dependent-

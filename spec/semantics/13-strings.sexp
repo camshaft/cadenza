@@ -26,7 +26,7 @@
       (def (main) (rep "hi" 3))
       (export main)))
   (output (: "hixxx" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime string rope compares equal to its flat twin"
@@ -3180,7 +3180,7 @@
       (export main)))
   (call main (: 1 Int64) (: 4 Int64))
   (output (: "ell" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime string slice addresses scalar values, not bytes"
@@ -3196,7 +3196,7 @@
       (export main)))
   (call main (: 1 Int64) (: 3 Int64))
   (output (: "éb" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime string slice out of range yields None"
@@ -3343,7 +3343,7 @@
   (output (: "cd" String))
   (call main (: false Bool) (: 2 Int64) (: 4 Int64))
   (output (: "zd" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a slice OF a slice composes the offsets at runtime bounds"
@@ -3365,7 +3365,7 @@
   (output (: "de" String))
   (call main (: 0 Int64) (: 2 Int64))
   (output (: "b" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "TWO single-layer String.slice views escaping in one tuple leak — the escv shell reclaim does NOT compose across a multi-view tuple escape"
@@ -3482,7 +3482,7 @@
   (output (: "herld" String))
   (call main (: 5 Int64))
   (output (: "hello" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime rope slice maps scalar offsets to bytes across the seam for a multi-byte scalar"
@@ -3924,7 +3924,7 @@
   (input
     (do (def (at s i) (String.at (String.concat s "") i)) (def (main) (at "café" 3)) (export main)))
   (output (: (Some "é") (Option String)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "indexing a runtime string past its last scalar yields None"
@@ -4180,7 +4180,7 @@
   ; so the fresh from-bytes leaf + its list residual survive (call 0 → 2 live cells). UAF-safe (values hold),
   ; leak-over-UAF sound, TIGHTEN CANDIDATE. Was probed at (live-objects 0); gate red'd "expected 0, got 2" →
   ; corrected to known-leak. Same disposition as the String.at-view-into-returned-List escape control above.
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "to-bytes of a sliced multibyte string is read twice and both reads see the right bytes"
@@ -4515,7 +4515,7 @@
       (def (main) (Option.expect (String.from-bytes (rep b"h" 3)) "well-formed"))
       (export main)))
   (output (: "hiii" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)"
@@ -4779,7 +4779,7 @@
   (output (: (Some #\c) (Option Char)))
   (call main (: 9 Int64))
   (output (: (None unit) (Option Char)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "converting a char to its integer scalar value is total"
@@ -5996,7 +5996,7 @@
   (output (: (tuple 5 1 1) (Tuple Int64 Int64 Int64)))
   ; The (tuple 5 1 1) folds to a constant, so its embedded constant cells now hoist build-once (WIT static
   ; encoding) — census-excluded immortals — dropping the leak 12→7 (the residual is the runtime String rope).
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
 ; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a
@@ -6973,7 +6973,7 @@
       (export main)))
   (call main)
   (output (: "hiii" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime String.from-bytes of ill-formed bytes takes the None arm"
