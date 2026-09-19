@@ -290,7 +290,14 @@ pub enum RopeBytes {
   cost from 4 slices to 1 (the lexeme) with no capability lost: a `Decimal::parse` consumer pays the lexeme it
   needs; a `from_components` consumer pays only for the splits it calls; a skip/scan consumer pays neither.
   Component slices are O(1) and cross-chunk-safe (a number lexeme is short, usually single-chunk). Value
-  produced on demand via §6.
+  produced on demand via §6. Offsets are _private_ with a `NumberToken::new` constructor, so "offsets within
+  lexeme" is a tokenizer-established invariant a Visitor consumer can only read, never mis-construct.
+  _Shipped + re-measured (#184):_ the number handoff dropped ~34% (digest_numbers ~130 → ~86 µs; digest_mixed
+  ~550 → ~493 µs, ~10%) — the eager four-slice materialization was ~1/3 of the cost. It did _not_ collapse to
+  the raw tokenize (~4× still remains over the bare scan): the residual is the one lexeme slice that must stay
+  (self-containment) plus the `Stream` one-token lookahead + per-value dispatch — inherent SAX overhead, the
+  next latency lever, not a shape problem. Honest read: lazy components were a real, worthwhile cut, not the
+  whole gap.
 
 _The Visitor contract (no `'de`, rope-shaped):_
 ```rust
