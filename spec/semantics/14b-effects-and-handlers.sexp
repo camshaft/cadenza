@@ -1644,7 +1644,7 @@
           (do (Diag.emit 201) (Diag.emit 210) (Diag.collect))))
       (export main)))
   (output (: #list(201 210) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a handler threads a SET as its state — the seen-set idiom, deduping across performs"
