@@ -2409,11 +2409,25 @@ pub(super) fn emit(
             // fence slc1 relies on). This drops the SOURCE gated on the SOURCE's ownership — it does NOT touch
             // `StrAt`'s own (deliberately-non-Owned) result classification, so the MatchSum Stage-B path is
             // unperturbed. The Some/None handle sits BENEATH on the stack; `LocalGet(str_slot); OP_DROP` pops
-            // only `str`. (The fence's remaining PARAM-source husk is a separate borrow-analysis gap.)
+            // only `str`.
+            //
+            // The PARAM-source husk the old comment deferred (#9271-followup: 13-strings:501 balanced-paren scan
+            // + #9283 deep-rope twin): a self-tail scan `(match (String.at s i) ((Some c) … (scan s …)))` over a
+            // BORROW-and-back-edge-threaded Param/LocalRef `s`. Here `heap_operand_ownership(s)` is Borrowed (not
+            // Owned) so the arm above doesn't fire, but the emit STILL dup'd `s` into `str_slot` for the borrow-
+            // reads and the enclosing MatchSum recycles that slot for its Option scrutinee → the per-iteration
+            // alias dup is orphaned (leaks the string, +1/iter). The tail `Core::MatchSum` arm PRE-marks this
+            // StrAt node into `strat_selfloop_scrut_drop` iff (Param/LocalRef `s`) && param_only_borrowed_or_
+            // backedge(`s`) && arms_tail_call — the drop⟺dup-balanced predicate (co-derived with v-core-opt).
+            // Drop `str_slot` when marked: balanced 1:1 with that alias dup (the back-edge thread carries the
+            // caller's original param ref, untouched); UAF-safe by the SAME compact fence as the Owned arm (the
+            // view was flattened to an independent leaf). arms_tail_call is load-bearing — a NON-recursive multi-
+            // use StrAt-over-param is NOT marked (its dup is already balanced), so no double-free.
             if matches!(
                 heap_operand_ownership(db, string),
                 Ok(HandleOwnership::Owned)
-            ) {
+            ) || out.strat_selfloop_scrut_drop.contains(&id)
+            {
                 out.push(Lir::LocalGet(str_slot));
                 out.push(Lir::CallImport(OP_DROP));
             }

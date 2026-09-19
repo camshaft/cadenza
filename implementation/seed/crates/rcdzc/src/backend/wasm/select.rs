@@ -257,6 +257,10 @@ pub struct Emit {
     /// extra_ok` (the interior-view alias-out exclusion). DISTINCT from `nontail_match_reclaim_binders`'s
     /// SCALAR path (`nontail_param_payload_ok`, which copies out — no dup). Empty for a non-INC1 body.
     nontail_compound_reclaim_binders: HashSet<StructId>,
+    /// StrAt self-tail-loop scrutinee-alias drop set (#9271-followup): `StrAt` nodes whose borrow+back-edge
+    /// `Param`/`LocalRef` scrutinee the lowering dups into a recycled MatchSum `str_slot` and orphans; the StrAt
+    /// arm drops `str_slot` when marked (drop⟺dup, UAF-safe via `bytes-compact`). Full argument in the commit.
+    strat_selfloop_scrut_drop: HashSet<StructId>,
     /// 05:18721 PART 1 (RestFrom preservation-dup skip-gate, read by the `emit.rs` `Core::SumPayload`
     /// `RestFrom` arm): whether the function body being emitted is BOUNDARY-OWNED (an export-entry or a
     /// lifted lambda) — i.e. the scrutinee is borrowed and the CALLER emits the single shell-drop_after (the
@@ -3003,6 +3007,16 @@ fn emit_tail(
                 Ty::Int(rit) => Some(rit),
                 _ => None,
             };
+            // #9271-followup: PRE-mark a self-tail-loop `String.at` scrutinee the lowering would orphan.
+            if let Core::StrAt { string, .. } = core_of(db, scrutinee)
+                && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, string)
+                && let Some(t) = tl
+                && sum_cont_has_member_tail_call(db, &root, t.members)
+                && let Some(fb) = out.fn_body
+                && param_only_borrowed_or_backedge(db, fb, binder, t.members, t.param_slots, slots)
+            {
+                out.strat_selfloop_scrut_drop.insert(scrutinee);
+            }
             // Same scrutinee discipline as the non-tail `MatchSum` emit: a reusable handle (a param/local
             // already in a slot) is re-read per probe; a computed one is materialized ONCE into a fresh i32
             // slot above the high-water so every re-read hits the slot (and its transient scratch never
