@@ -376,6 +376,15 @@ pub fn run_wasm_at_opt(source: &str, store: &std::path::Path, opt: rcdzc::OptLev
         }
         Err(crate::oracle::ComponentFail::Crashed(info)) => return Side::CompilePanic(info),
     };
+    // VALIDATE the component at this level before running it. The crash/invalid-wasm oracle only exercises
+    // the DEFAULT level (O1); opt-invariance is the only pass that compiles at O0/O2/O3, so without this an
+    // opt-level-specific INVALID-WASM miscompile (a Core opt pass emitting structurally-broken output) would
+    // just fail in `cdz_run` → `Declined` → silently skipped. Surface it as `ArtifactError` (structurally
+    // broken backend output — the wasm analogue of the rust side's un-compilable source) so
+    // [`compare_opt_invariance`] flags it against a level that emitted VALID wasm.
+    if let Err(detail) = crate::oracle::validate_component(&component) {
+        return Side::ArtifactError(format!("invalid wasm at {}: {detail}", opt.as_str()));
+    }
     run_component(&component, store, &[])
 }
 
@@ -1101,11 +1110,34 @@ pub fn opt_invariance(source: &str, store: &std::path::Path) -> Diff {
 /// (`Agree`, since a fault is pre-emit and level-independent); two values → agree iff byte-identical, else a
 /// `Value` mismatch; two traps → agree; a value-vs-trap split → a `Liveness` mismatch UNLESS a
 /// stack-exhaustion resource trap (opt can change inlining depth; both sides share the wasm stack limit, so
-/// tolerate it exactly as [`compare`] does).
+/// tolerate it exactly as [`compare`] does). INVALID WASM at one level (an `ArtifactError` from
+/// [`run_wasm_at_opt`]'s per-level validate) against a level that emitted valid wasm → an `Artifact`
+/// mismatch (an opt-level invalid-wasm miscompile — the only such check at O0/O2/O3); invalid-vs-invalid or
+/// invalid-vs-declined is not an opt-invariance signal.
 pub fn compare_opt_invariance(lo: &Side, hi: &Side, lo_label: &str, hi_label: &str) -> Diff {
     match (lo, hi) {
         // A compiler panic at either level is a crash finding — checked first so it is never masked.
         (Side::CompilePanic(c), _) | (_, Side::CompilePanic(c)) => Diff::CompileCrash(c.clone()),
+        // INVALID WASM at one level (from `run_wasm_at_opt`'s validate) while the OTHER level emitted VALID
+        // wasm (ran to a value or trap) is an opt-level invalid-wasm MISCOMPILE — surfaced regardless (the
+        // crash/invalid-wasm oracle only validates the DEFAULT level, so this is the sole check at O0/O2/O3).
+        // Two invalid levels, or invalid-vs-declined, are not an opt-invariance signal → skip (below).
+        (Side::ArtifactError(e), Side::Value(_) | Side::Trap(_)) => Diff::Mismatch {
+            kind: MismatchKind::Artifact,
+            wasm: format!("{lo_label}: {e}"),
+            rust: format!("{hi_label} {}", describe_side(hi)),
+        },
+        (Side::Value(_) | Side::Trap(_), Side::ArtifactError(e)) => Diff::Mismatch {
+            kind: MismatchKind::Artifact,
+            wasm: format!("{lo_label} {}", describe_side(lo)),
+            rust: format!("{hi_label}: {e}"),
+        },
+        // Invalid-vs-invalid / invalid-vs-declined, and the rust-only `Unavailable`, are not opt-invariance
+        // signals → not comparable.
+        (Side::ArtifactError(_), _)
+        | (_, Side::ArtifactError(_))
+        | (Side::Unavailable(_), _)
+        | (_, Side::Unavailable(_)) => Diff::Agree,
         // A decline/skip on either level (rejected program, unresolved runtime, run-harness error) → not
         // comparable. Declines are pre-emit faults, so they do not depend on the opt level.
         (Side::Declined(_), _) | (_, Side::Declined(_)) => Diff::Agree,
@@ -1147,12 +1179,6 @@ pub fn compare_opt_invariance(lo: &Side, hi: &Side, lo_label: &str, hi_label: &s
                 }
             }
         }
-        // ArtifactError / Unavailable are rust-subprocess-only outcomes; the wasm-only opt-invariance
-        // oracle never produces them. Treat defensively as not-comparable rather than a mismatch.
-        (Side::ArtifactError(_), _)
-        | (_, Side::ArtifactError(_))
-        | (Side::Unavailable(_), _)
-        | (_, Side::Unavailable(_)) => Diff::Agree,
     }
 }
 
@@ -2153,6 +2179,35 @@ mod tests {
                 "O3"
             ),
             Diff::CompileCrash(info)
+        );
+    }
+
+    #[test]
+    fn opt_invariance_invalid_wasm_at_one_level_is_an_artifact_miscompile() {
+        // `run_wasm_at_opt` validates each level's component and yields `ArtifactError` on invalid wasm.
+        // A level that emits invalid wasm while the baseline emitted VALID wasm (ran to a value or trap) is
+        // an opt-level invalid-wasm miscompile — the ONLY check of this at O0/O2/O3 (the crash oracle only
+        // validates the default level). Surfaced regardless of the valid side's outcome (value OR trap).
+        let bad = Side::ArtifactError("invalid wasm at O3: type mismatch".into());
+        assert!(matches!(
+            compare_opt_invariance(&Side::Value("5".into()), &bad, "O0", "O3"),
+            Diff::Mismatch {
+                kind: MismatchKind::Artifact,
+                ..
+            }
+        ));
+        assert!(matches!(
+            compare_opt_invariance(&bad, &Side::Trap("unreachable".into()), "O0", "O3"),
+            Diff::Mismatch {
+                kind: MismatchKind::Artifact,
+                ..
+            }
+        ));
+        // Invalid-vs-invalid, and invalid-vs-declined, are NOT an opt-invariance signal → not comparable.
+        assert_eq!(compare_opt_invariance(&bad, &bad, "O0", "O3"), Diff::Agree);
+        assert_eq!(
+            compare_opt_invariance(&bad, &Side::Declined("x".into()), "O0", "O3"),
+            Diff::Agree
         );
     }
 }
