@@ -1501,11 +1501,18 @@
           cad-test-iterators = mkCadProjectTest { name = "iterators"; dir = ./implementation/iterators; };
           cad-test-json = mkCadProjectTest { name = "json"; dir = ./implementation/json; };
         };
-        # AGGREGATE over the 4 per-project tests — the required `cad-tests` context. A change to one project
-        # rebuilds only that project's derivation; the aggregate re-links (cheap runCommand) and the other 3
-        # cache-hit. Advisory-by-omission → unilateral cargo-twin retire once green.
-        cdzCadTestsCheck = pkgs.runCommand "cdz-cad-tests" cdzCadProjectTests ''
-          echo "ok: cad-tests aggregate — cdz test on cad + compiler-ml + choreography + iterators + json (per-project split)" > "$out"
+        # AGGREGATE over the REAL @test suites (cad + choreography + iterators + json). A change to one project
+        # rebuilds only that project's derivation; the aggregate re-links (cheap runCommand) and the others
+        # cache-hit. EXCLUDES cad-test-compiler-ml (v-nix gate-hygiene 2026-09-19, v-cadenza-ci flag): compiler-ml
+        # is operator-declared OPTIONAL/advisory (removed from local-gate #5992 + the hourly @test set — "only an
+        # effective rust-compiler stress test"), and it has ~251 pre-existing self-hosting WIP failures under BOTH
+        # the release AND the [profile.ci] compiler (v-cadenza-ci verified byte-identical 603/251 both ways), so
+        # DEPENDING on it made this aggregate un-buildable-green under every profile. It stays a standalone opt-in
+        # check (checks.<sys>.cad-test-compiler-ml, still spread from cdzCadProjectTests below) — just not forced by
+        # the buildable aggregate. The GHA required `cad-tests` context already body-swaps to exclude compiler-ml,
+        # so this makes the nix aggregate MATCH the required path (honest green) instead of silently red-always.
+        cdzCadTestsCheck = pkgs.runCommand "cdz-cad-tests" (builtins.removeAttrs cdzCadProjectTests [ "cad-test-compiler-ml" ]) ''
+          echo "ok: cad-tests aggregate — cdz test on cad + choreography + iterators + json (compiler-ml is opt-in: checks.<sys>.cad-test-compiler-ml)" > "$out"
         '';
 
         # ── test-shred: per-@test wasm matrix (v-test-shred; design/DESIGN-test-shred-per-test-caching.md) ──
