@@ -8078,17 +8078,24 @@
             # of mkPhaseBin/mkSeedCompiler/cargoArtifactsCi silently DROPS that override, those gates would
             # compile under RELEASE again — defeating the debug-assertions+overflow-checks coverage the ci
             # profile exists to provide, while staying GREEN (an undetectable no-op the shared gate can't see).
-            # This asserts the override is PRESENT on the three ci-profile derivations and ABSENT on the release
-            # cdzCompile (proving the release path is untouched). EVAL-ONLY + INSTANT: CARGO_PROFILE is a plain
-            # string attr (no store-path context), so interpolating it forces NO build of the compilers — the
-            # guard is a bash string-compare, adding ~0 gate time. Cheap teeth for a silent-no-op class a
-            # required-status can't catch under self-merge. `… or "UNSET"` so the release compiler (which sets
-            # no CARGO_PROFILE) reads as an explicit sentinel rather than an eval error.
+            # This asserts the override is PRESENT on every ci-profile derivation that carries a CARGO_PROFILE
+            # env attr (cdzCompileCi, cargoArtifactsCi, seedCompilerTestRunnerCi, optSweepCheck) and ABSENT on
+            # the release cdzCompile (proving the release path is untouched). EVAL-ONLY + INSTANT: CARGO_PROFILE
+            # is a plain string attr (no store-path context), so interpolating it forces NO build of the
+            # compilers — the guard is a bash string-compare, adding ~0 gate time. Cheap teeth for a silent-no-op
+            # class a required-status can't catch under self-merge. `… or "UNSET"` so the release compiler (which
+            # sets no CARGO_PROFILE) reads as an explicit sentinel rather than an eval error.
+            #   NOT covered: platformItest — it has NO CARGO_PROFILE env attr; it selects the profile via
+            #   `cargo build --profile ci` inline in its buildPhase AND installs from `target/ci/…`. A profile
+            #   regression there is SELF-GUARDING/LOUD, not silent: drop `--profile ci` to release and the
+            #   `install -Dm755 target/ci/…` fails (no target/ci output) = a RED build. So it needs no eval guard
+            #   (and an eval-attr check can't see a buildPhase substring anyway).
             profileCiGuard = pkgs.runCommand "profile-ci-guard"
               {
                 ciCompileProfile = cdzCompileCi.CARGO_PROFILE or "UNSET";
                 ciDepsProfile = cargoArtifactsCi.CARGO_PROFILE or "UNSET";
                 ciRunnerProfile = seedCompilerTestRunnerCi.CARGO_PROFILE or "UNSET";
+                ciOptSweepProfile = optSweepCheck.CARGO_PROFILE or "UNSET";
                 releaseCompileProfile = cdzCompile.CARGO_PROFILE or "UNSET";
               } ''
               set -euo pipefail
@@ -8099,13 +8106,14 @@
               want "cdz-compile-ci" ci "$ciCompileProfile"
               want "cargo-artifacts-ci" ci "$ciDepsProfile"
               want "seed-compiler-testrunner-ci" ci "$ciRunnerProfile"
+              want "opt-sweep" ci "$ciOptSweepProfile"
               # the RELEASE compiler must carry NO profile override (proves the release path is untouched)
               want "cdz-compile (release)" UNSET "$releaseCompileProfile"
               if [ "$fail" != 0 ]; then
                 echo "profile.ci override regressed — the ci gates would silently compile under RELEASE" >&2
                 exit 1
               fi
-              echo "ok: profile.ci override intact (cdz-compile-ci / cargo-artifacts-ci / seed-compiler-testrunner-ci = ci; release cdz-compile unset)" > "$out"
+              echo "ok: profile.ci override intact (cdz-compile-ci / cargo-artifacts-ci / seed-compiler-testrunner-ci / opt-sweep = ci; release cdz-compile unset)" > "$out"
             '';
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
             # base62 contract-id (§8 text form — `[0-9A-Za-z]`, the one post-flag-day form; no hex/base64url).
