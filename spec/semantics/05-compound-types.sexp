@@ -2266,6 +2266,36 @@
   (live-objects 0))
 
 (case
+  "the ListNew sibling of the Map.insert extraction-shell: a heap payload consumed as a List.push element reclaims to zero"
+  (doc
+    "The `ListNew`-absorber twin of the `Map.insert` extraction-shell case above (#9338 admitted BOTH the
+           `MapNew` entry-VALUE and the `ListNew` element positions of the const-folded collection ctors as
+           fresh-ctor absorbers). Here the runtime-heap `String` payload extracted from a runtime `Some` is
+           consumed by `List.push #list() s` — pushing onto an EMPTY list literal CONST-FOLDS to a
+           `Core::ListNew` (a fresh element-retaining ctor, the const-folded twin of the allowlisted
+           `List.push` builder), so the extracted payload sits in a `ListNew` element (a VALUE position, never
+           a CHAMP key), the `collect_allowlisted_builder_children_expr` subset check now passes, and the
+           extraction-shell deep-drop balances the `owned_compound_boxed` dup 1:1 → reclaims to 0 (was the same
+           2-object shell+payload residue as the pre-#9338 `Map.insert` case). Confirms the fresh-ctor-absorber
+           extension is NOT `MapNew`-specific but general to the `ListNew` element position it also marks. The
+           value payload is a single-owned-ref move into the fresh list; `rep` builds a genuine runtime rope
+           (\"a\"+n·\"x\" = n+1 bytes; n=3 → the list holds one 4-byte String, `List.len` = 1). No double-free
+           (debug-counters runtime does not trap); opt-invariant O0..O3.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+      (def (mk (: n Int64)) (if (< n 0) (None unit) (Some (rep "a" n))))
+      (def
+        (main (: n Int64))
+        (match (mk n)
+          ((Some s) (List.len (List.push #list() s)))
+          ((None _u) 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
   "a computed-Call Some (non-inlined producer) whose heap payload is consumed by a builder reclaims to zero"
   (doc
     "The DECIDABLE-SAFE subset of the general heap-payload extraction-shell balance (the leak the
